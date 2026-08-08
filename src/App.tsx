@@ -5,6 +5,7 @@ import { useWindowRestoration } from "./hooks/useWindowRestoration";
 import { useUiZoom } from "./hooks/useUiZoom";
 import { PanelResizer } from "./components/layout/PanelResizer";
 import { ModeRouter } from "./components/layout/ModeRouter";
+import { hasModePanel } from "./components/layout/modePanelLoaders";
 import { Footer } from "./components/layout/Footer";
 import { Toaster } from "./components/ui/Toaster";
 import { notify } from "./components/ui/toastService";
@@ -155,6 +156,7 @@ const App: React.FC = () => {
     setLeftPanelWidth,
     setRightPanelWidth,
     metadataRecoveryReport,
+    mode,
   ] = useAppStore(
     useShallow((state) => [
       state.isLeftPanelOpen,
@@ -166,8 +168,11 @@ const App: React.FC = () => {
       state.setLeftPanelWidth,
       state.setRightPanelWidth,
       state.metadataRecoveryReport,
+      state.mode,
     ]),
   );
+  const hasLeftPanel = hasModePanel(mode, "left");
+  const hasRightPanel = hasModePanel(mode, "right");
 
   // Ref to track panels that were auto-collapsed during resize
   const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({
@@ -431,7 +436,7 @@ const App: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex h-full min-h-0 min-w-0 overflow-hidden">
         {/* Left Panel - Mode-specific content */}
-        {isLeftOpen && (
+        {hasLeftPanel && isLeftOpen && (
           <>
             <div
               className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"
@@ -453,7 +458,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Right Panel - Mode-specific content */}
-        {isRightOpen && (
+        {hasRightPanel && isRightOpen && (
           <>
             <PanelResizer
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}

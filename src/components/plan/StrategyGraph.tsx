@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import { useNeedsStore } from '../../stores/useNeedsStore';
 import { getPlanActivationCandidateTask, useTaskStore } from '../../stores/useTaskStore';
 import {
   getGitFlowBaseBranch,
@@ -626,7 +625,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     }))
   );
   const tasks = useTaskStore((state) => state.tasks);
-  const needs = useNeedsStore((state) => state.needs);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [hoveredFrozenBadge, setHoveredFrozenBadge] = useState<FrozenBadgeTooltipState | null>(null);
@@ -649,28 +647,10 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     [projectGroups, standaloneProjects]
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
-  const activePlanNeeds = useMemo(() => {
-    if (!activePlanContext?.id) return [];
-    return needs.filter((need) => need.planId === activePlanContext.id);
-  }, [activePlanContext?.id, needs]);
-  const emptyStrategyDescription = useMemo(() => {
-    if (activePlanNeeds.length === 0) {
-      return t(
-        'architect.noStrategyNeedsMissingDescription',
-        'Identify and validate needs before generating the strategy.'
-      );
-    }
-    if (activePlanNeeds.some((need) => need.status !== 'validated')) {
-      return t(
-        'architect.noStrategyNeedsUnvalidatedDescription',
-        'Clarify needs if useful, or generate the strategy now.'
-      );
-    }
-    return t(
-      'architect.noStrategyReadyDescription',
-      'The needs are ready. Generate the strategy when you want Macro to create the task graph.'
-    );
-  }, [activePlanNeeds, t]);
+  const emptyStrategyDescription = t(
+    'architect.noStrategyDiscussionDescription',
+    'Discuss the plan with Architect, then generate the strategy when the scope is clear.'
+  );
   const [isValidating, setIsValidating] = useState(false);
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
   const [isPlanArtifactsOpen, setIsPlanArtifactsOpen] = useState(false);
@@ -698,7 +678,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       isDefaultNewPlanFamilyLabel(architectPlanSwitch.summaryHint.label) &&
       architectPlanSwitch.summaryHint.nodeCount === 0 &&
       (architectPlanSwitch.summaryHint.predictedBranchCount ?? 0) === 0 &&
-      (architectPlanSwitch.summaryHint.needCount ?? 0) === 0 &&
       (architectPlanSwitch.summaryHint.chatMessageCount ?? 0) === 0 &&
       !architectPlanSwitch.summaryHint.conversationId
   );

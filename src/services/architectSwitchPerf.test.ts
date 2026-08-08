@@ -36,14 +36,12 @@ const createBaseReport = (
   chatPayloadSource: overrides.chatPayloadSource ?? 'service',
   sharedConversation: overrides.sharedConversation ?? false,
   nodeCount: overrides.nodeCount ?? 2,
-  needCount: overrides.needCount ?? 1,
   chatMessageCount: overrides.chatMessageCount ?? 3,
   stale: overrides.stale ?? false,
   cancelledByRequestId: overrides.cancelledByRequestId ?? null,
   errorMessage: overrides.errorMessage ?? null,
   visualReady: overrides.visualReady ?? {
     chat: 10,
-    needs: 12,
     strategy: 15,
   },
   phases: overrides.phases ?? [
@@ -120,10 +118,6 @@ describe('architectSwitchPerf', () => {
     });
 
     runtime.markVisualReady({ requestId: 7, surface: 'chat' });
-    runtime.markVisualReady({ requestId: 7, surface: 'needs' });
-
-    expect(runtime.getReports()).toHaveLength(0);
-
     runtime.markVisualReady({ requestId: 7, surface: 'strategy' });
 
     const reports = runtime.getReports();

@@ -85,36 +85,36 @@ Macro suppose que l'utilisateur agit comme un decideur technique, meme lorsqu'il
 
 ---
 
-## 5. Modele fonctionnel general
+## 5. Modèle fonctionnel général
 
-### 5.1 Modele mental principal
+### 5.1 Modèle mental principal
 
-Macro organise le travail de la facon suivante :
+Macro organise le travail de la façon suivante :
 
 1. l'utilisateur formule une intention
-2. l'IA extrait et structure les besoins
-3. l'IA genere une strategie
-4. la strategie est validee
-5. les taches d'implementation sont executees dans l'ordre voulu avec un maximum de parallelisme possible
-6. l'utilisateur review les resultats
-7. le code est committe et integre
+2. l'IA inspecte le contexte utile et pose des questions ciblées si des informations importantes manquent
+3. l'utilisateur demande explicitement la génération de la stratégie
+4. l'IA génère la stratégie depuis la conversation, le périmètre du plan, les projets sélectionnés et le code inspecté
+5. la stratégie est validée
+6. les tâches d'implémentation sont exécutées dans l'ordre voulu avec un maximum de parallélisme possible
+7. l'utilisateur review les résultats
+8. le code est committé et intégré
 
-### 5.2 Unites fonctionnelles principales
+### 5.2 Unités fonctionnelles principales
 
-Macro s'appuie sur les unites suivantes :
+Macro s'appuie sur les unités suivantes :
 
 - workspace
 - groupe de projets
 - projet
 - plan
 - conversation
-- besoin
 - noeud de strategie
 - branche predictive
 - tache d'implementation
 - session de review
 
-Ces unites sont definies dans la section suivante.
+Ces unités sont définies dans la section suivante.
 
 ---
 
@@ -152,9 +152,8 @@ Un projet appartient a un groupe de projets.
 Un plan est l'unite principale de travail en mode Architect.
 
 Un plan contient :
-- une conversation dediee
-- les besoins extraits pendant la phase de planification
-- la strategie generee
+- une conversation dédiée qui capture l'intention et les clarifications
+- la stratégie générée directement depuis cette conversation et le contexte du projet
 - la structure predictive de branches associee a cette strategie
 - les artefacts de relais produits par les taches planifiees pour transmettre de l'information aux taches dependantes
 
@@ -172,16 +171,7 @@ Plusieurs plans peuvent aussi etre actifs en parallele si leur execution peut pr
 Lorsqu'un plan est termine, il est archive.
 Un plan archive reste consultable pour l'audit et l'historique, mais n'est plus destine a etre modifie.
 
-### 6.5 Besoin
-
-Un besoin est une exigence structuree identifiee par l'IA a partir de la conversation de planification.
-
-Les besoins ne sont pas saisis manuellement via un formulaire dedie.
-L'utilisateur exprime son intention de facon conversationnelle et l'IA formalise les besoins a partir de cet echange.
-
-Les besoins sont des artefacts historiques de planification.
-
-### 6.6 Noeud de strategie
+### 6.5 Nœud de stratégie
 
 Un noeud de strategie est une unite de la strategie d'un plan generee par l'IA.
 
@@ -195,7 +185,7 @@ Les noeuds de strategie definissent l'ordre, les dependances et la structure d'e
 
 Un noeud peut aussi declarer des contrats d'artefacts attendus. Ces contrats decrivent les informations critiques qu'une tache devra produire pour ses descendantes, par exemple des resultats d'audit, une carte de migration, un contrat d'API ou un registre de risques.
 
-### 6.7 Branche predictive
+### 6.6 Branche prédictive
 
 Une branche predictive est un artefact de planification qui represente la facon dont le travail doit etre decoupe dans Git pendant l'execution.
 
@@ -205,7 +195,7 @@ Son but est de :
 - conserver une branche de travail distincte par tache executable
 - reduire la derive de l'IA et les changements trop volumineux
 
-### 6.8 Tache d'implementation
+### 6.7 Tâche d'implémentation
 
 Une tache d'implementation est une unite de travail executable derivee de la strategie.
 
@@ -215,7 +205,7 @@ Une tache terminee avec succes se conclut toujours par un commit.
 
 La plupart des taches sont creees a partir d'un plan valide, mais Macro doit aussi supporter des taches autonomes pour les quick fixes ou les petites features ne justifiant pas un plan complet.
 
-### 6.9 Artefact de relais
+### 6.8 Artefact de relais
 
 Un artefact de relais est une information durable produite par une tache issue d'un plan Architect.
 
@@ -247,12 +237,12 @@ Le mode `Debug` ne fait plus partie de l'application ni de la specification fonc
 
 Le mode Architect est le mode de planification et de structuration.
 
-Son objectif est de permettre a l'utilisateur de :
-- exprimer une intention
-- definir ou affiner le scope du travail
-- laisser l'IA extraire les besoins
-- generer une strategie
-- valider la structure d'execution attendue
+Son objectif est de permettre à l'utilisateur de :
+- exprimer une intention dans la conversation du plan
+- définir ou affiner le périmètre du travail
+- répondre à des questions ciblées lorsque des informations importantes manquent
+- demander explicitement la génération d'une stratégie
+- valider la structure d'exécution attendue
 
 Le mode Architect constitue le coeur methodologique de Macro.
 
@@ -260,8 +250,8 @@ Fonctionnellement, il correspond au moment ou un senior ou un lead technique bri
 
 Le mode Architect doit supporter :
 - une conversation par plan
-- des besoins generes par l'IA
-- une strategie generee par l'IA
+- l'inspection du code pour enrichir le contexte lorsque cela est utile
+- une stratégie générée par l'IA depuis la conversation et le contexte du projet
 - la declaration d'artefacts critiques attendus par tache
 - une visualisation des dependances et de la structure predictive
 - la validation d'un plan
@@ -337,13 +327,14 @@ Le header doit permettre au minimum :
 
 ### 8.3 Panneau gauche
 
-Le panneau gauche doit accueillir le contexte lateral principal du mode courant.
+La disponibilité des panneaux est définie par la configuration du mode courant.
 
 Exemples :
 
-- besoins du plan en mode Architect
 - file de taches en mode Implement
 - historique ou navigation de conversations en mode Chat
+
+Le mode Architect ne possède temporairement aucun panneau gauche : sa conversation occupe le centre et sa stratégie le panneau droit. Aucun espace, séparateur ou bouton d'ouverture n'est rendu pour un emplacement absent.
 
 ### 8.4 Zone centrale
 
@@ -491,18 +482,19 @@ Le changement de contexte doit restaurer l'etat local utile autant que possible,
 
 L'utilisateur cree un plan depuis le mode Architect.
 
-Creer un plan cree un nouveau contexte de planification comprenant :
+Créer un plan crée un nouveau contexte de planification comprenant :
 - sa conversation propre
-- ses besoins propres
-- sa strategie propre
+- sa stratégie propre
 
 ### 11.2 Generation du plan
 
-L'utilisateur exprime ses objectifs de facon conversationnelle.
+L'utilisateur exprime ses objectifs de façon conversationnelle.
 
 L'IA doit :
-- deriver les besoins a partir de la conversation
-- construire une strategie a partir de ces besoins
+- discuter avec l'utilisateur et inspecter le code lorsque cela apporte du contexte
+- poser des questions ciblées avec l'outil `question` lorsque des informations importantes manquent
+- attendre une demande explicite avant de générer la stratégie
+- construire la stratégie depuis la conversation du plan, l'intention exprimée, le périmètre, les projets sélectionnés et le code inspecté
 - organiser cette strategie pour maximiser le parallelisme lorsque cela reste sans risque
 - maintenir chaque unite d'execution a une taille limitee pour reduire la confusion de l'IA et les changements trop larges
 
@@ -541,7 +533,7 @@ Ils ne sont plus destines a etre modifies.
 
 ### 12.1 L'IA est responsable de la formalisation
 
-Les besoins et la strategie sont generes par l'IA et non saisis manuellement dans un formalisme rigide.
+La stratégie est générée par l'IA et non saisie manuellement dans un formalisme rigide.
 
 L'utilisateur peut influencer le resultat par la conversation et les prompts, mais l'IA reste responsable de la structuration.
 
@@ -978,7 +970,7 @@ Macro doit conserver suffisamment de metadonnees pour auditer :
 
 ### 22.2 Nature historique des artefacts de planification
 
-Les besoins, noeuds de strategie et branches predictives sont durables comme historique, mais pas comme objets pilotes du futur une fois le plan clos.
+La conversation, les nœuds de stratégie et les branches prédictives sont durables comme historique, mais pas comme objets pilotes du futur une fois le plan clos.
 
 Leur utilite principale apres execution est :
 - l'audit
@@ -1012,10 +1004,10 @@ Les regles suivantes sont fondatrices :
 - Le mode Implement est pilote par les taches et oriente review-first.
 - Le mode Chat est leger et independant.
 - Le multi-projet est une capacite de premier plan.
-- Un plan contient sa conversation, ses besoins et sa strategie.
+- Un plan contient sa conversation et sa stratégie.
 - Plusieurs plans peuvent coexister en parallele.
 - Les plans archives restent lisibles mais non modifiables.
-- Les besoins et la strategie sont generes par l'IA a partir de la conversation.
+- La stratégie est générée par l'IA à partir de la conversation et du contexte du projet, après une demande explicite.
 - La validation d'un plan prepare automatiquement branches et worktrees.
 - Toute tache completee se termine par un commit.
 - Une review humaine est obligatoire a la fin de chaque tache.

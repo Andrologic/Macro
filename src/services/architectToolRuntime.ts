@@ -1,7 +1,4 @@
 import type {
-  Need,
-  NeedCategory,
-  NeedStatus,
   PlanNode,
   PlanNodeStatus,
   PlanNodeType,
@@ -28,11 +25,6 @@ import {
 import { persistArchitectPlanStrategyPreview } from "./architectPlanRuntimeService";
 import { isCanonicalArchitectPlan } from "./architectPlanPresentation";
 import {
-  formatArchitectNeedAddToolResult,
-  formatArchitectNeedDeleteToolResult,
-  formatArchitectNeedGetToolResult,
-  formatArchitectNeedListToolResult,
-  formatArchitectNeedUpdateToolResult,
   formatArchitectPlanCreateToolResult,
   formatArchitectPlanGetToolResult,
   formatArchitectPlanListToolResult,
@@ -88,29 +80,6 @@ const ARCHITECT_STRATEGY_NODE_STATUSES = new Set<PlanNodeStatus>([
   "blocked",
 ]);
 
-const ARCHITECT_NEED_CATEGORIES = new Set<NeedCategory>([
-  "functional",
-  "technical",
-  "ux",
-  "performance",
-  "security",
-  "data",
-  "business",
-  "other",
-]);
-
-const ARCHITECT_NEED_PRIORITIES = new Set<Need["priority"]>([
-  "low",
-  "medium",
-  "high",
-]);
-
-const ARCHITECT_NEED_STATUSES = new Set<NeedStatus>([
-  "identified",
-  "refined",
-  "validated",
-]);
-
 const uniqueProjectIds = (items: Array<string | null | undefined>): string[] =>
   Array.from(
     new Set(
@@ -154,15 +123,6 @@ interface ArchitectToolAppState {
     },
   ) => Promise<boolean>;
   setStrategyMutationPreview: (preview: StrategyMutationPreview | null) => void;
-}
-
-interface ArchitectToolNeedsState {
-  addNeed: (need: Omit<Need, "id" | "createdAt" | "updatedAt">) => string;
-  updateNeed: (id: string, updates: Partial<Need>) => void;
-  deleteNeed: (id: string) => void;
-  flushPendingPersistence?: (planId?: string | null) => Promise<void>;
-  getNeed: (id: string) => Need | undefined;
-  getNeedsForPlan: (planId: string) => Need[];
 }
 
 interface ArchitectToolTaskRecord {
@@ -273,7 +233,6 @@ interface ArchitectToolRuntimeDependencies {
   planService: ArchitectToolPlanService;
   strategyService: ArchitectToolStrategyService;
   getAppState: () => ArchitectToolAppState;
-  getNeedsState: () => ArchitectToolNeedsState;
   getTaskState: () => ArchitectToolTaskState;
   ensureArchitectConversationForPlan: (
     params: EnsureArchitectConversationForPlanParams,
@@ -685,21 +644,6 @@ const buildArchitectStrategyMetadataUpdate = async (params: {
   }
 
   return metadataUpdate;
-};
-
-const normalizeNeedTags = (rawTags: unknown): string[] => {
-  if (!Array.isArray(rawTags)) {
-    return [];
-  }
-
-  return Array.from(
-    new Set(
-      rawTags
-        .filter((tag): tag is string => typeof tag === "string")
-        .map((tag) => tag.trim().toLowerCase())
-        .filter((tag) => tag.length > 0),
-    ),
-  ).slice(0, 12);
 };
 
 const resolveActivePlanId = (
@@ -1127,18 +1071,6 @@ const executeStrategyMutation = async (params: {
   };
 };
 
-const getNeedForActivePlan = (
-  needId: string,
-  planId: string,
-  needsState: ArchitectToolNeedsState,
-): Need | null => {
-  const need = needsState.getNeed(needId);
-  if (!need || need.planId !== planId) {
-    return null;
-  }
-  return need;
-};
-
 export const handleArchitectToolCall = async (
   params: ArchitectToolRuntimeDependencies,
 ): Promise<string | undefined> => {
@@ -1150,269 +1082,6 @@ export const handleArchitectToolCall = async (
     strategyService,
   } = params;
   const appState = params.getAppState();
-
-  if (toolName === "need_add") {
-    const activePlanId = resolveActivePlanId(appState);
-    if (!activePlanId) {
-      return "Cannot need_add without an active plan. Create or select a plan first.";
-    }
-
-    const title = typeof args.title === "string" ? args.title.trim() : "";
-    const description =
-      typeof args.description === "string" ? args.description.trim() : "";
-    const category =
-      typeof args.category === "string"
-        ? args.category.trim().toLowerCase()
-        : "";
-    const priority =
-      typeof args.priority === "string"
-        ? args.priority.trim().toLowerCase()
-        : "";
-    if (!title || !description || !category || !priority) {
-      return "Missing required fields for need_add (title, description, category, priority).";
-    }
-
-    if (!ARCHITECT_NEED_CATEGORIES.has(category as NeedCategory)) {
-      return `Invalid category for need_add: ${category}.`;
-    }
-    if (!ARCHITECT_NEED_PRIORITIES.has(priority as Need["priority"])) {
-      return `Invalid priority for need_add: ${priority}.`;
-    }
-
-    const tags = normalizeNeedTags(args.tags);
-    const needsState = params.getNeedsState();
-    const id = needsState.addNeed({
-      planId: activePlanId,
-      title,
-      description,
-      category: category as NeedCategory,
-      priority: priority as Need["priority"],
-      tags,
-      status: "identified",
-      sourceMessageId: assistantMessageId,
-    });
-    await needsState.flushPendingPersistence?.(activePlanId);
-    const totalNeeds = needsState.getNeedsForPlan(activePlanId).length;
-
-    return formatArchitectNeedAddToolResult({
-      planId: activePlanId,
-      needId: id,
-      title,
-      category,
-      priority,
-      tags,
-      totalNeeds,
-    });
-  }
-
-  if (toolName === "need_list") {
-    const activePlanId = resolveActivePlanId(appState);
-    if (!activePlanId) {
-      return "Cannot need_list without an active plan. Create or select a plan first.";
-    }
-
-    const status =
-      typeof args.status === "string" ? args.status.trim().toLowerCase() : undefined;
-    const category =
-      typeof args.category === "string"
-        ? args.category.trim().toLowerCase()
-        : undefined;
-    const priority =
-      typeof args.priority === "string"
-        ? args.priority.trim().toLowerCase()
-        : undefined;
-    const tag =
-      typeof args.tag === "string" ? args.tag.trim().toLowerCase() : undefined;
-
-    if (status && !ARCHITECT_NEED_STATUSES.has(status as NeedStatus)) {
-      return `Invalid status for need_list: ${status}.`;
-    }
-    if (category && !ARCHITECT_NEED_CATEGORIES.has(category as NeedCategory)) {
-      return `Invalid category for need_list: ${category}.`;
-    }
-    if (priority && !ARCHITECT_NEED_PRIORITIES.has(priority as Need["priority"])) {
-      return `Invalid priority for need_list: ${priority}.`;
-    }
-
-    const filteredNeeds = params
-      .getNeedsState()
-      .getNeedsForPlan(activePlanId)
-      .filter((need) => (status ? need.status === status : true))
-      .filter((need) => (category ? need.category === category : true))
-      .filter((need) => (priority ? need.priority === priority : true))
-      .filter((need) => (tag ? need.tags.includes(tag) : true));
-
-    return formatArchitectNeedListToolResult({
-      planId: activePlanId,
-      filters: { status, category, priority, tag },
-      needs: filteredNeeds,
-    });
-  }
-
-  if (toolName === "need_get") {
-    const activePlanId = resolveActivePlanId(appState);
-    if (!activePlanId) {
-      return "Cannot need_get without an active plan. Create or select a plan first.";
-    }
-
-    const needId = typeof args.need_id === "string" ? args.need_id.trim() : "";
-    if (!needId) {
-      return "Missing need_id for need_get.";
-    }
-
-    const need = getNeedForActivePlan(needId, activePlanId, params.getNeedsState());
-    if (!need) {
-      return `Need ${needId} is unavailable on the active plan.`;
-    }
-
-    return formatArchitectNeedGetToolResult({
-      planId: activePlanId,
-      need,
-    });
-  }
-
-  if (toolName === "need_update") {
-    const activePlanId = resolveActivePlanId(appState);
-    if (!activePlanId) {
-      return "Cannot need_update without an active plan. Create or select a plan first.";
-    }
-
-    const needId = typeof args.need_id === "string" ? args.need_id.trim() : "";
-    if (!needId) {
-      return "Missing need_id for need_update.";
-    }
-
-    const needsState = params.getNeedsState();
-    const existingNeed = getNeedForActivePlan(needId, activePlanId, needsState);
-    if (!existingNeed) {
-      return `Need ${needId} is unavailable on the active plan.`;
-    }
-
-    const updates: Partial<Need> = {};
-    const changedFields: string[] = [];
-
-    if (args.title !== undefined) {
-      const title = typeof args.title === "string" ? args.title.trim() : "";
-      if (!title) {
-        return "Invalid title for need_update.";
-      }
-      updates.title = title;
-      if (title !== existingNeed.title) {
-        changedFields.push("title");
-      }
-    }
-
-    if (args.description !== undefined) {
-      const description =
-        typeof args.description === "string" ? args.description.trim() : "";
-      if (!description) {
-        return "Invalid description for need_update.";
-      }
-      updates.description = description;
-      if (description !== existingNeed.description) {
-        changedFields.push("description");
-      }
-    }
-
-    if (args.category !== undefined) {
-      const category =
-        typeof args.category === "string"
-          ? args.category.trim().toLowerCase()
-          : "";
-      if (!ARCHITECT_NEED_CATEGORIES.has(category as NeedCategory)) {
-        return `Invalid category for need_update: ${category}.`;
-      }
-      updates.category = category as NeedCategory;
-      if (category !== existingNeed.category) {
-        changedFields.push("category");
-      }
-    }
-
-    if (args.priority !== undefined) {
-      const priority =
-        typeof args.priority === "string"
-          ? args.priority.trim().toLowerCase()
-          : "";
-      if (!ARCHITECT_NEED_PRIORITIES.has(priority as Need["priority"])) {
-        return `Invalid priority for need_update: ${priority}.`;
-      }
-      updates.priority = priority as Need["priority"];
-      if (priority !== existingNeed.priority) {
-        changedFields.push("priority");
-      }
-    }
-
-    if (args.status !== undefined) {
-      const status =
-        typeof args.status === "string" ? args.status.trim().toLowerCase() : "";
-      if (!ARCHITECT_NEED_STATUSES.has(status as NeedStatus)) {
-        return `Invalid status for need_update: ${status}.`;
-      }
-      updates.status = status as NeedStatus;
-      if (status !== existingNeed.status) {
-        changedFields.push("status");
-      }
-    }
-
-    if (args.tags !== undefined) {
-      if (!Array.isArray(args.tags)) {
-        return "Invalid tags for need_update. Expected an array of strings.";
-      }
-      const tags = normalizeNeedTags(args.tags);
-      updates.tags = tags;
-      if (JSON.stringify(tags) !== JSON.stringify(existingNeed.tags)) {
-        changedFields.push("tags");
-      }
-    }
-
-    if (Object.keys(updates).length === 0) {
-      return "need_update requires at least one field to change.";
-    }
-
-    needsState.updateNeed(needId, updates);
-    await needsState.flushPendingPersistence?.(activePlanId);
-    const updatedNeed = getNeedForActivePlan(needId, activePlanId, needsState);
-    if (!updatedNeed) {
-      return `Need ${needId} became unavailable after update.`;
-    }
-
-    return formatArchitectNeedUpdateToolResult({
-      planId: activePlanId,
-      need: updatedNeed,
-      changedFields,
-    });
-  }
-
-  if (toolName === "need_delete") {
-    const activePlanId = resolveActivePlanId(appState);
-    if (!activePlanId) {
-      return "Cannot need_delete without an active plan. Create or select a plan first.";
-    }
-
-    const needId = typeof args.need_id === "string" ? args.need_id.trim() : "";
-    if (!needId) {
-      return "Missing need_id for need_delete.";
-    }
-    if (args.confirm !== true) {
-      return "need_delete requires confirm=true to proceed.";
-    }
-
-    const needsState = params.getNeedsState();
-    const existingNeed = getNeedForActivePlan(needId, activePlanId, needsState);
-    if (!existingNeed) {
-      return `Need ${needId} is unavailable on the active plan.`;
-    }
-
-    needsState.deleteNeed(needId);
-    await needsState.flushPendingPersistence?.(activePlanId);
-    const remainingNeeds = needsState.getNeedsForPlan(activePlanId).length;
-    return formatArchitectNeedDeleteToolResult({
-      planId: activePlanId,
-      needId,
-      title: existingNeed.title,
-      remainingNeeds,
-    });
-  }
 
   if (toolName === "plan_create") {
     if (args.status !== undefined && args.status !== "draft") {
@@ -1696,8 +1365,6 @@ export const handleArchitectToolCall = async (
     if (inputPlanId && inputPlanId !== activePlanId) {
       return `strategy_generate can only update the active plan (${activePlanId}).`;
     }
-    await params.getNeedsState().flushPendingPersistence?.(activePlanId);
-
     const requestedPlanSlug =
       typeof args.plan_slug === "string"
         ? args.plan_slug.trim()
@@ -1806,8 +1473,6 @@ export const handleArchitectToolCall = async (
     if (!activePlanId) {
       return "Cannot update strategy without an active plan. Create or select a plan first.";
     }
-    await params.getNeedsState().flushPendingPersistence?.(activePlanId);
-
     const activePlan = await planService.getArchitectPlan(
       targetBranch,
       activePlanId,

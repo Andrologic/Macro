@@ -105,7 +105,7 @@
         "title": "모드 선택기",
         "body": "이 세 버튼은 전체 작업 화면을 바꿉니다. Architect는 범위 잡기, Implement는 실행, Chat은 컨텍스트가 있는 자유로운 대화에 사용합니다.",
         "points": [
-          "Architect: 요구사항, 계획, 전략.",
+          "Architect: 대화, 계획, 전략.",
           "Implement: 작업, 터미널, 변경 검증.",
           "Chat: 대화, 소스, 일반 도구."
         ]
@@ -124,19 +124,15 @@
       },
       "architect-mode": {
         "title": "Architect 모드",
-        "body": "Architect는 대화를 요구사항으로, 다시 브랜치와 작업 전략으로 바꿉니다. 범위가 아직 흐릿할 때 코딩 전에 사용하는 모드입니다."
+        "body": "Architect는 사용자가 명시적으로 요청할 때 대화를 전략으로 전환합니다."
       },
       "architect-plan-selector": {
         "title": "계획",
-        "body": "계획 선택기는 대화, 요구사항, 전략을 분리합니다. 예상 Git 흐름에 따라 feature, release, hotfix, bugfix 계획을 만들 수 있습니다."
-      },
-      "architect-needs": {
-        "title": "식별된 요구사항",
-        "body": "왼쪽 패널은 Architect 대화 중 추출되거나 다듬어진 요구사항을 나열합니다. 카테고리 필터는 계획이 커져도 모든 내용을 다시 읽지 않게 해 줍니다."
+        "body": "계획 선택기는 각 계획의 대화와 전략을 분리합니다."
       },
       "architect-generate": {
         "title": "전략 생성",
-        "body": "Architect의 중요한 동작입니다. 충분한 컨텍스트가 있을 때 요구사항을 작업 그래프와 예측 가능한 브랜치로 변환합니다."
+        "body": "이 작업은 대화와 프로젝트 컨텍스트에서 작업 그래프와 예측 가능한 브랜치를 만듭니다."
       },
       "architect-strategy": {
         "title": "전략 및 브랜치",
@@ -979,7 +975,6 @@
     "name": "프로젝트 이름",
     "emptyWorkspaceTitle": "Macro를 시작하려면 프로젝트를 추가하세요.",
     "emptyWorkspaceBody": "Architect와 Implement가 계획, 작업, 브랜치, worktree를 만들려면 프로젝트가 필요합니다.",
-    "emptyWorkspaceNeedsPanel": "프로젝트를 추가하면 요구 사항을 사용할 수 있습니다.",
     "emptyWorkspaceStrategyPanel": "프로젝트를 추가하면 전략을 사용할 수 있습니다.",
     "emptyWorkspaceTasksPanel": "프로젝트를 추가하면 작업을 사용할 수 있습니다.",
     "emptyWorkspaceChangesPanel": "프로젝트를 추가하면 변경 사항을 사용할 수 있습니다.",
@@ -1219,7 +1214,6 @@
     "noTasksForProject": "이 프로젝트에 대한 작업이 없습니다."
   },
   "architect": {
-    "needs": "확인된 요구사항",
     "status": {
       "blank": "빈 계획",
       "editing": "준비 중",
@@ -1346,9 +1340,6 @@
       "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
-    "needsEmptyTitle": "이 프로젝트에 대해서는 아직 확인된 요구 사항이 없습니다.",
-    "needsEmptyDescription": "건축가와 대화하여 프로젝트 요구 사항을 알아보세요.",
-    "needsEmptyAfterUserMessageDescription": "이제 Architect가 이 설명을 구조화된 요구 사항으로 바꿔야 합니다.",
     "strategy": "전략",
     "graphExplorer": "전략 그래프 탐색기",
     "openGraphExplorer": "그래프 탐색기 열기",
@@ -1360,30 +1351,20 @@
     "dependencyFlow": "의존성 플로우",
     "itemsCount": "{{count}}아이템",
     "noStrategyTitle": "아직 생성된 전략이 없습니다.",
-    "noStrategyDescription": "Architect 채팅에서 요구 사항을 논의한 다음 전략 생성을 사용하여 이 그래프를 만듭니다.",
-    "noStrategyNeedsMissingDescription": "전략을 생성하기 전에 요구 사항을 식별하고 검증하세요.",
-    "noStrategyNeedsUnvalidatedDescription": "필요하면 요구 사항을 명확히 하거나 지금 전략을 생성하세요.",
-    "noStrategyReadyDescription": "요구 사항이 준비되었습니다. Macro가 작업 그래프를 만들 때 전략을 생성하세요.",
+    "noStrategyDescription": "Architect 채팅에서 계획을 논의한 다음 전략 생성을 사용해 이 그래프를 만드세요.",
     "noBranchesMatchingFilters": "현재 필터와 일치하는 브랜치가 없습니다.",
     "planCompleted": "계획 완료",
     "planValidated": "계획이 검증됨",
     "validatingPlan": "검증 중...",
     "noActivePlan": "활성 계획 없음",
-    "identifyNeeds": "요구 사항 식별",
-    "clarifyNeeds": "요구 사항 명확화",
     "generateStrategy": "전략 생성",
     "regenerateStrategy": "전략 재생성",
-    "identifyNeedsHint": "Architect가 코드베이스를 분석하고 첫 요구 사항을 구조화하게 합니다",
-    "clarifyNeedsHint": "Architect가 열린 질문을 해결하고 요구 사항을 검증하게 합니다",
-    "generateStrategyHint": "현재 요구사항을 바탕으로 전략 생성",
-    "regenerateStrategyHint": "현재 요구사항을 바탕으로 전략 재생성",
+    "generateStrategyHint": "계획 대화와 프로젝트 컨텍스트에서 전략 생성",
+    "regenerateStrategyHint": "계획 대화와 프로젝트 컨텍스트에서 전략 다시 생성",
     "strategyLockedAfterValidation": "Strategy is locked after plan validation.",
     "generateStrategySelectPlan": "먼저 활성 요금제를 선택하세요.",
-    "generateStrategyNeedPrompt": "전략을 생성하기 전에 하나 이상의 요구 사항을 추가하세요.",
     "strategyProgressDraftTitle": "초안 유지됨",
     "strategyProgressDraftDescription": "Macro가 다음 Architect 단계를 준비하기 전에 composer를 보내거나 비우세요.",
-    "identifyNeedsPrompt": "이 계획의 코드베이스를 분석하고 주요 제품 및 기술 쟁점을 식별한 다음 `need_add`로 구조화된 요구 사항을 추가하세요. 유용하다면 먼저 `need_list`와 `need_get`을 사용하세요. 중요한 정보가 부족하면 계속하기 전에 `question` 도구로 초점을 맞춘 질문을 하세요.",
-    "clarifyNeedsPrompt": "`need_list`와 `need_get`으로 이 계획의 현재 요구 사항을 검토하고, 필요하면 코드베이스를 살펴보고, 누락되었거나 모호한 정보를 식별하고, `question` 도구로 초점을 맞춘 질문을 한 다음, 각 요구 사항이 `validated`가 될 때까지 `need_update`로 업데이트하세요.",
     "nodeStatus": {
       "pending": "보류 중",
       "in-progress": "진행 중",
@@ -1405,21 +1386,6 @@
     "progress": "진전",
     "branchSearch": "작업 검색...",
     "filterStatusAll": "모든 상태",
-    "needCategory": {
-      "functional": "기능성",
-      "technical": "인위적인",
-      "ux": "UX",
-      "performance": "성능",
-      "security": "보안",
-      "data": "데이터",
-      "business": "사업",
-      "other": "다른"
-    },
-    "needPriority": {
-      "high": "높은",
-      "medium": "중간",
-      "low": "낮은"
-    },
     "frozenReasonCompleted": "Completed work",
     "frozenReasonDependencyLocked": "Locked dependency",
     "frozenReasonStarted": "Started work",
@@ -1444,7 +1410,8 @@
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "설계를 시작하려면 플랜을 선택하거나 만드세요.",
     "createPlanAction": "계획 만들기",
-    "selectPlanAction": "계획 선택"
+    "selectPlanAction": "계획 선택",
+    "noStrategyDiscussionDescription": "Architect와 계획을 논의하고 범위가 명확해지면 전략을 생성하세요."
   },
   "git": {
     "gitTree": "Git 트리",

@@ -1,4 +1,3 @@
-import type { Need } from '../types';
 import {
   isArchitectPlanVisibleForScope,
   type ArchitectPlanRecord,
@@ -40,7 +39,6 @@ export interface ArchitectAutoPlanDependencies {
   getArchitectPlan: (branchName: string, planId: string) => Promise<ArchitectPlanRecord | null>;
   getArchitectPlanChatMessages: (branchName: string, planId: string) => Promise<Array<unknown>>;
   getArchitectPlanEditableName: (plan: ArchitectPlanNamingShape) => string;
-  getArchitectPlanNeeds: (branchName: string, planId: string) => Promise<Need[]>;
   getArchitectPlanVisibleProjectIds: (
     plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>
   ) => string[];
@@ -71,7 +69,6 @@ export interface ArchitectAutoPlanDependencies {
 export interface EnsureProjectGroupPlanResult {
   action: 'created' | 'reused_blank' | 'expanded_blank';
   plan: ArchitectPlanRecord;
-  needs: Need[];
 }
 
 export interface EnsureScopedBlankPlanResult {
@@ -164,14 +161,12 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       ArchitectPlanRecord,
       'id' | 'slug' | 'title' | 'label' | 'status' | 'description' | 'nodes' | 'predictedBranches'
     >,
-    needs: Need[],
     chatMessages: Array<unknown>
   ): boolean =>
-    getArchitectPlanLifecyclePhase({
+    !plan.description.trim() && getArchitectPlanLifecyclePhase({
       status: plan.status,
       nodes: plan.nodes,
       predictedBranches: plan.predictedBranches,
-      needCount: needs.length,
       chatMessageCount: chatMessages.length,
     }) === 'blank';
 
@@ -180,14 +175,12 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
       ArchitectPlanRecord,
       'status' | 'description' | 'nodes' | 'predictedBranches'
     >,
-    needs: Need[],
     chatMessages: Array<unknown>
   ): boolean =>
-    getArchitectPlanLifecyclePhase({
+    !plan.description.trim() && getArchitectPlanLifecyclePhase({
       status: plan.status,
       nodes: plan.nodes,
       predictedBranches: plan.predictedBranches,
-      needCount: needs.length,
       chatMessageCount: chatMessages.length,
     }) === 'blank';
 
@@ -346,15 +339,15 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
         continue;
       }
 
-      const [needs, chatMessages] = await Promise.all([
-        deps.getArchitectPlanNeeds(params.branchName, candidate.id),
-        deps.getArchitectPlanChatMessages(params.branchName, candidate.id),
-      ]);
+      const chatMessages = await deps.getArchitectPlanChatMessages(
+        params.branchName,
+        candidate.id,
+      );
 
       if (
         params.planKind === 'feature'
-          ? isReusableBlankDraft(plan, needs, chatMessages)
-          : isStructurallyBlankDraft(plan, needs, chatMessages)
+          ? isReusableBlankDraft(plan, chatMessages)
+          : isStructurallyBlankDraft(plan, chatMessages)
       ) {
         draftCandidates.push({
           summary: candidate,
@@ -572,11 +565,9 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
 
       const blankPlan = resolvedBlankPlan.plan;
       await deps.setActiveArchitectPlan(params.branchName, blankPlan.id);
-      const needs = await deps.getArchitectPlanNeeds(params.branchName, blankPlan.id);
       return {
         action: resolvedBlankPlan.action,
         plan: blankPlan,
-        needs,
       };
     }
 
@@ -604,7 +595,6 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
     return {
       action: 'created',
       plan: createdPlan,
-      needs: [],
     };
   };
 

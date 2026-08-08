@@ -38,7 +38,6 @@ export type ArchitectPlanSwitchPerfResolutionMode =
 
 export type ArchitectPlanSwitchPerfSurface =
   | 'chat'
-  | 'needs'
   | 'strategy';
 
 export type ArchitectPlanSwitchPerfOutcome =
@@ -55,7 +54,6 @@ export type ArchitectPlanSwitchPerfPhaseName =
   | 'service_index_read'
   | 'service_scope_resolution'
   | 'service_activation_snapshot'
-  | 'service_needs_read'
   | 'service_chat_read'
   | 'chat_architect_resolution'
   | 'chat_blank_conversation_create'
@@ -96,7 +94,6 @@ export interface ArchitectPlanSwitchPerfReport {
   chatPayloadSource: ArchitectPlanSwitchPerfPayloadSource;
   sharedConversation: boolean | null;
   nodeCount: number | null;
-  needCount: number | null;
   chatMessageCount: number | null;
   stale: boolean;
   cancelledByRequestId: number | null;
@@ -163,7 +160,6 @@ type InternalSession = {
 
 const DEFAULT_VISUAL_READY: Record<ArchitectPlanSwitchPerfSurface, number | null> = {
   chat: null,
-  needs: null,
   strategy: null,
 };
 
@@ -206,7 +202,6 @@ const createDefaultReport = (
   chatPayloadSource: 'unknown',
   sharedConversation: null,
   nodeCount: null,
-  needCount: null,
   chatMessageCount: null,
   stale: false,
   cancelledByRequestId: null,

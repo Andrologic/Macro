@@ -105,7 +105,7 @@
         "title": "モードセレクター",
         "body": "この3つのボタンで作業画面全体が切り替わります。Architect は設計、Implement は実行、Chat はコンテキスト付きの自由な相談に使います。",
         "points": [
-          "Architect: 要件、計画、戦略。",
+          "Architect: 会話、計画、戦略。",
           "Implement: タスク、ターミナル、変更の検証。",
           "Chat: 会話、ソース、汎用ツール。"
         ]
@@ -124,19 +124,15 @@
       },
       "architect-mode": {
         "title": "Architect モード",
-        "body": "Architect は会話を要件に変換し、さらにブランチとタスクの戦略にします。スコープがまだ曖昧なとき、コーディング前に使うモードです。"
+        "body": "Architect は、ユーザーが明示的に要求したときに会話を戦略へ変換します。"
       },
       "architect-plan-selector": {
         "title": "計画",
-        "body": "計画セレクターは会話、要件、戦略を分離します。期待する Git フローに合わせて feature、release、hotfix、bugfix の計画を作成できます。"
-      },
-      "architect-needs": {
-        "title": "特定された要件",
-        "body": "左パネルには Architect の会話中に抽出または調整された要件が表示されます。カテゴリフィルターにより、計画が大きくなってもすべてを読み直さずに済みます。"
+        "body": "プランセレクターは、各プランの会話と戦略を分離します。"
       },
       "architect-generate": {
         "title": "戦略を生成",
-        "body": "これは Architect の重要なアクションです。十分なコンテキストがあるときだけ、要件をタスクグラフと予測しやすいブランチに変換します。"
+        "body": "この操作は、会話とプロジェクトのコンテキストからタスクグラフと予測可能なブランチを作成します。"
       },
       "architect-strategy": {
         "title": "戦略とブランチ",
@@ -979,7 +975,6 @@
     "name": "プロジェクト名",
     "emptyWorkspaceTitle": "Macro を始めるにはプロジェクトを追加してください。",
     "emptyWorkspaceBody": "Architect と Implement がプラン、タスク、ブランチ、worktree を作成するにはプロジェクトが必要です。",
-    "emptyWorkspaceNeedsPanel": "プロジェクトを追加するとニーズを利用できます。",
     "emptyWorkspaceStrategyPanel": "プロジェクトを追加すると戦略を利用できます。",
     "emptyWorkspaceTasksPanel": "プロジェクトを追加するとタスクを利用できます。",
     "emptyWorkspaceChangesPanel": "プロジェクトを追加すると変更を利用できます。",
@@ -1219,7 +1214,6 @@
     "noTasksForProject": "このプロジェクトにはタスクがありません"
   },
   "architect": {
-    "needs": "特定されたニーズ",
     "status": {
       "blank": "未入力",
       "editing": "準備中",
@@ -1346,9 +1340,6 @@
       "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
-    "needsEmptyTitle": "このプロジェクトではまだニーズが特定されていません。",
-    "needsEmptyDescription": "アーキテクトとチャットしてプロジェクトの要件を明らかにします。",
-    "needsEmptyAfterUserMessageDescription": "Architect はこの説明を構造化されたニーズに変換する段階です。",
     "strategy": "戦略",
     "graphExplorer": "戦略グラフエクスプローラー",
     "openGraphExplorer": "グラフエクスプローラーを開く",
@@ -1360,30 +1351,20 @@
     "dependencyFlow": "依存フロー",
     "itemsCount": "{{count}}アイテム",
     "noStrategyTitle": "まだ戦略が作成されていません",
-    "noStrategyDescription": "アーキテクト チャットでニーズについて話し合い、[戦略の生成] を使用してこのグラフを作成します。",
-    "noStrategyNeedsMissingDescription": "戦略を生成する前に、ニーズを特定して検証してください。",
-    "noStrategyNeedsUnvalidatedDescription": "必要ならニーズを明確化するか、今すぐ戦略を生成できます。",
-    "noStrategyReadyDescription": "ニーズの準備ができました。Macro にタスクグラフを作成させるときに戦略を生成してください。",
+    "noStrategyDescription": "Architect チャットでプランについて話し合い、戦略を生成を使ってこのグラフを作成します。",
     "noBranchesMatchingFilters": "現在のフィルターに一致するブランチはありません。",
     "planCompleted": "計画が完了しました",
     "planValidated": "計画が検証されました",
     "validatingPlan": "検証中...",
     "noActivePlan": "有効なプランはありません",
-    "identifyNeeds": "ニーズを特定",
-    "clarifyNeeds": "ニーズを明確化",
     "generateStrategy": "戦略を立てる",
     "regenerateStrategy": "再生戦略",
-    "identifyNeedsHint": "Architect にコードベースを分析させ、最初のニーズを構造化します",
-    "clarifyNeedsHint": "Architect に不明点を解消させ、ニーズを検証します",
-    "generateStrategyHint": "現在のニーズから戦略を生成する",
-    "regenerateStrategyHint": "現在のニーズから戦略を再構築する",
+    "generateStrategyHint": "プランの会話とプロジェクトのコンテキストから戦略を生成",
+    "regenerateStrategyHint": "プランの会話とプロジェクトのコンテキストから戦略を再生成",
     "strategyLockedAfterValidation": "Strategy is locked after plan validation.",
     "generateStrategySelectPlan": "最初に有効なプランを選択してください",
-    "generateStrategyNeedPrompt": "戦略を作成する前に少なくとも 1 つのニーズを追加します",
     "strategyProgressDraftTitle": "下書きを保持しました",
     "strategyProgressDraftDescription": "Macro が次の Architect ステップを準備する前に、composer を送信するか空にしてください。",
-    "identifyNeedsPrompt": "このプランのコードベースを分析し、主要なプロダクト面と技術面の論点を特定してから、`need_add` で構造化されたニーズを追加してください。必要なら先に `need_list` と `need_get` を使ってください。重要な情報が不足している場合は、続行する前に `question` ツールで絞った質問をしてください。",
-    "clarifyNeedsPrompt": "`need_list` と `need_get` でこのプランの現在のニーズを確認し、必要に応じてコードベースを調べ、不足または曖昧な情報を特定し、`question` ツールで絞った質問をしてから、各ニーズが `validated` になるまで `need_update` で更新してください。",
     "nodeStatus": {
       "pending": "保留中",
       "in-progress": "進行中",
@@ -1405,21 +1386,6 @@
     "progress": "進捗",
     "branchSearch": "タスクを検索...",
     "filterStatusAll": "すべてのステータス",
-    "needCategory": {
-      "functional": "機能的",
-      "technical": "テクニカル",
-      "ux": "UX",
-      "performance": "パフォーマンス",
-      "security": "安全",
-      "data": "データ",
-      "business": "仕事",
-      "other": "他の"
-    },
-    "needPriority": {
-      "high": "高い",
-      "medium": "中くらい",
-      "low": "低い"
-    },
     "frozenReasonCompleted": "Completed work",
     "frozenReasonDependencyLocked": "Locked dependency",
     "frozenReasonStarted": "Started work",
@@ -1444,7 +1410,8 @@
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "設計を始めるにはプランを選択または作成してください。",
     "createPlanAction": "プランを作成",
-    "selectPlanAction": "プランを選択"
+    "selectPlanAction": "プランを選択",
+    "noStrategyDiscussionDescription": "Architect とプランについて話し合い、スコープが明確になったら戦略を生成します。"
   },
   "git": {
     "gitTree": "Git ツリー",

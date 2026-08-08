@@ -82,7 +82,6 @@ describe('architectPlanPresentation', () => {
         conversationId: 'empty-conversation',
         nodeCount: 0,
         predictedBranchCount: 0,
-        needCount: 0,
         chatMessageCount: 0,
       })
     ).toBe('blank');
@@ -91,7 +90,6 @@ describe('architectPlanPresentation', () => {
         status: 'draft',
         nodeCount: 0,
         predictedBranchCount: 0,
-        needCount: 0,
         chatMessageCount: 1,
       })
     ).toBe('editing');

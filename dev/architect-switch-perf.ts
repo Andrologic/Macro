@@ -120,20 +120,6 @@ const createProgressPlanFixture = async (
     ],
   });
 
-  await service.saveArchitectPlanNeeds(BRANCH_NAME, created.id, [
-    {
-      id: `need-${planId}`,
-      planId: created.id,
-      title: 'Clarify payment retry UX',
-      description: 'Need a clean recovery path after a retryable payment failure.',
-      category: 'functional',
-      status: 'identified',
-      priority: 'high',
-      tags: ['checkout'],
-      createdAt: '2026-04-19T08:00:00.000Z',
-      updatedAt: '2026-04-19T08:00:00.000Z',
-    },
-  ]);
   await service.saveArchitectPlanChatMessages(BRANCH_NAME, created.id, [
     {
       id: `msg-${planId}`,
@@ -168,8 +154,7 @@ const runMeasuredSwitch = async (params: {
     sourcePlanType: params.sourcePlanType,
     targetPlanId: params.targetPlanId,
     targetPlanType: params.targetSummary
-      ? (params.targetSummary.needCount ?? 0) === 0 &&
-        (params.targetSummary.chatMessageCount ?? 0) === 0 &&
+      ? (params.targetSummary.chatMessageCount ?? 0) === 0 &&
         params.targetSummary.nodeCount === 0
         ? 'blank'
         : 'progress'
@@ -205,13 +190,11 @@ const runMeasuredSwitch = async (params: {
     targetPlanType:
       payload.resolutionMode === 'blank_fast_path' ||
       (payload.plan.nodes.length === 0 &&
-        payload.needs.length === 0 &&
         payload.chatMessages.length === 0 &&
         !payload.conversationId)
         ? 'blank'
         : 'progress',
     nodeCount: payload.plan.nodes.length,
-    needCount: payload.needs.length,
     chatMessageCount: payload.chatMessages.length,
     sharedConversation: payload.sharedConversation,
   });
@@ -230,11 +213,6 @@ const runMeasuredSwitch = async (params: {
   architectSwitchPerf.markVisualReady({
     requestId: params.requestId,
     surface: 'chat',
-    metadata: { planId: params.targetPlanId },
-  });
-  architectSwitchPerf.markVisualReady({
-    requestId: params.requestId,
-    surface: 'needs',
     metadata: { planId: params.targetPlanId },
   });
   architectSwitchPerf.markVisualReady({

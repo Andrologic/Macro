@@ -1,8 +1,7 @@
 import React from 'react';
-import { useTranslation } from 'react-i18next';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $getNodeByKey } from 'lexical';
-import type { ContextRefKind, Need } from '../../../types';
+import type { ContextRefKind } from '../../../types';
 import { useChatStore } from '../../../stores/useChatStore';
 import { Icon } from '../../ui/Icon';
 import { $isMentionNode, type MentionSurface } from './MentionNode';
@@ -25,15 +24,7 @@ export const MentionChip: React.FC<MentionChipProps> = ({
   surface = 'composer',
   syncContextRefs = true,
 }) => {
-  const { t } = useTranslation();
   const [editor] = useLexicalComposerContext();
-  const contextRef = useChatStore((state) =>
-    state.composerContextRefs.find((ref) => ref.id === refId && ref.kind === kind)
-  );
-  const need = kind === 'need' && contextRef?.data && 'category' in contextRef.data
-    ? contextRef.data as Need
-    : undefined;
-
   const handleRemove = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -63,9 +54,7 @@ export const MentionChip: React.FC<MentionChipProps> = ({
     <ContextReferenceChip
       kind={kind}
       title={title}
-      need={need}
       surface={surface}
-      priorityLabel={need ? t(`architect.needPriority.${need.priority}`, need.priority) : undefined}
       renderAction={removeButton}
     />
   );

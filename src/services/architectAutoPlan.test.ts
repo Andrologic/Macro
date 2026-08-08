@@ -10,7 +10,6 @@ import {
 import { createArchitectAutoPlanService } from './architectAutoPlanCore';
 import type { ArchitectPlanGitFlowMetadata, ArchitectPlanKind } from './architectPlanKinds';
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
-import type { Need } from '../types';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -46,7 +45,6 @@ const createArchitectAutoPlanHarness = (options?: {
   getTargetBranchesByProjectId?: (projectIds: string[]) => Record<string, string>;
 }) => {
   const plans = new Map<string, ArchitectPlanRecord>();
-  const needsByPlanId = new Map<string, Need[]>();
   const chatMessagesByPlanId = new Map<string, Array<unknown>>();
   let activePlanId: string | null = null;
 
@@ -70,7 +68,6 @@ const createArchitectAutoPlanHarness = (options?: {
     updatedAt: plan.updatedAt,
     nodeCount: plan.nodes.length,
     predictedBranchCount: plan.predictedBranches.length,
-    needCount: needsByPlanId.get(plan.id)?.length ?? 0,
     chatMessageCount: chatMessagesByPlanId.get(plan.id)?.length ?? 0,
   });
 
@@ -99,7 +96,6 @@ const createArchitectAutoPlanHarness = (options?: {
     updatedAt?: string;
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
-    needCount?: number;
     chatMessageCount?: number;
   }) => {
     const id = params.planId ?? `plan-${plans.size + 1}`;
@@ -130,20 +126,6 @@ const createArchitectAutoPlanHarness = (options?: {
       predictedBranches: [],
     };
     plans.set(plan.id, plan);
-    needsByPlanId.set(
-      plan.id,
-      Array.from({ length: params.needCount ?? 0 }, (_, index) => ({
-        id: `need-${plan.id}-${index + 1}`,
-        title: `Need ${index + 1}`,
-        description: '',
-        category: 'functional',
-        priority: 'medium',
-        status: 'identified',
-        tags: [],
-        createdAt: now,
-        updatedAt: now,
-      } satisfies Need))
-    );
     chatMessagesByPlanId.set(
       plan.id,
       Array.from({ length: params.chatMessageCount ?? 0 }, (_, index) => ({
@@ -251,7 +233,6 @@ const createArchitectAutoPlanHarness = (options?: {
     activePlanId = planId;
   };
 
-  const getArchitectPlanNeeds = async (_branchName: string, planId: string) => needsByPlanId.get(planId) ?? [];
   const getArchitectPlanChatMessages = async (_branchName: string, planId: string) => chatMessagesByPlanId.get(planId) ?? [];
   const getArchitectPlanVisibleProjectIds = (
     plan: Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'expectedProjectIds'>,
@@ -269,7 +250,6 @@ const createArchitectAutoPlanHarness = (options?: {
       getArchitectPlan,
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
-      getArchitectPlanNeeds,
       getArchitectPlanVisibleProjectIds,
       getNextDefaultNewPlanLabel,
       isCanonicalArchitectPlan,
@@ -287,7 +267,6 @@ const createArchitectAutoPlanHarness = (options?: {
       getArchitectPlan,
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
-      getArchitectPlanNeeds,
       getArchitectPlanVisibleProjectIds,
       getNextDefaultNewPlanLabel,
       isCanonicalArchitectPlan,
@@ -305,7 +284,6 @@ const createArchitectAutoPlanHarness = (options?: {
       getArchitectPlan,
       getArchitectPlanChatMessages,
       getArchitectPlanEditableName,
-      getArchitectPlanNeeds,
       getArchitectPlanVisibleProjectIds,
       getNextDefaultNewPlanLabel,
       isCanonicalArchitectPlan,

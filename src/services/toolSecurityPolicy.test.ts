@@ -138,20 +138,6 @@ describe("toolSecurityPolicy", () => {
   });
 
   it("allows additive Architect actions in balanced mode", () => {
-    const needResult = evaluateToolSecurity(
-      "need_add",
-      {
-        title: "Capture onboarding requirements",
-        description: "Understand the new onboarding flow.",
-        category: "functional",
-        priority: "medium",
-      },
-      {
-        mode: "Architect",
-        riskLevel: "balanced",
-        workspacePath: "/repo",
-      },
-    );
     const planResult = evaluateToolSecurity(
       "plan_create",
       { label: "Onboarding refresh" },
@@ -162,20 +148,10 @@ describe("toolSecurityPolicy", () => {
       },
     );
 
-    expect(needResult.decision).toBe("allow");
     expect(planResult.decision).toBe("allow");
   });
 
   it("asks before modifying or replacing Architect records in balanced mode", () => {
-    const needResult = evaluateToolSecurity(
-      "need_update",
-      { need_id: "need-1", description: "Replace the requirement text." },
-      {
-        mode: "Architect",
-        riskLevel: "balanced",
-        workspacePath: "/repo",
-      },
-    );
     const strategyResult = evaluateToolSecurity(
       "strategy_generate",
       { nodes: [{ title: "New plan", type: "task" }] },
@@ -186,7 +162,6 @@ describe("toolSecurityPolicy", () => {
       },
     );
 
-    expect(needResult.decision).toBe("ask");
     expect(strategyResult.decision).toBe("ask");
   });
 
@@ -229,11 +204,11 @@ describe("toolSecurityPolicy", () => {
 
   it("removes escape tools from the strict model surface", () => {
     const result = filterDeniedToolIdsForRiskLevel(
-      ["web_search", "need_delete", "strategy_delete", "need_update"],
+      ["web_search", "strategy_delete", "strategy_update"],
       "strict",
     );
 
-    expect(result).toEqual(["need_update"]);
+    expect(result).toEqual(["strategy_update"]);
   });
 
   it("treats MCP tools as external actions gated by risk level", () => {

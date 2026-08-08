@@ -20,6 +20,7 @@ import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
 import { Logo } from '../ui/Logo';
 import { Icon, type IconName } from '../ui/Icon';
 import { WindowControls } from './WindowControls';
+import { hasModePanel } from './modePanelLoaders';
 import {
   getMacosTrafficLightPosition,
   getTitleBarLayout,
@@ -396,19 +397,21 @@ export function Header({
           </div>
 
           <div className="macro-topbar-trailing flex min-w-[100px] sm:min-w-[160px] md:min-w-[200px] items-center justify-end gap-2 justify-self-end">
-            <button
-              onClick={onToggleLeft}
-              className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
-              title={t('header.toggleLeftPanel')}
-              data-tauri-drag-region="false"
-              data-tour-id="toggle-left-panel"
-            >
-              <Icon
-                name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
-                size={16}
-                className="text-muted-foreground"
-              />
-            </button>
+            {hasModePanel(mode, 'left') && (
+              <button
+                onClick={onToggleLeft}
+                className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
+                title={t('header.toggleLeftPanel')}
+                data-tauri-drag-region="false"
+                data-tour-id="toggle-left-panel"
+              >
+                <Icon
+                  name={isLeftOpen ? 'panel-left-close' : 'panel-left-open'}
+                  size={16}
+                  className="text-muted-foreground"
+                />
+              </button>
+            )}
             <button
               onClick={onToggleRight}
               className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"

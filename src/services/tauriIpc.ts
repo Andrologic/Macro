@@ -25,7 +25,6 @@ import type {
   ProjectGitSetupCommitResult,
   AppMode,
   ChatCompletionReason,
-  Need,
   MCPServer,
   MCPTool,
   ProjectMount,
@@ -994,7 +993,6 @@ export interface WorkspaceArchitectPlanSummaryDto {
   updatedAt: string;
   nodeCount: number;
   predictedBranchCount?: number | null;
-  needCount?: number | null;
   chatMessageCount?: number | null;
   expectedProjectIds?: string[];
   availableProjectIds?: string[];
@@ -1053,7 +1051,6 @@ export interface WorkspaceArchitectPlanListDto {
 
 export interface WorkspaceArchitectPlanActivationHeadDto {
   plan: WorkspaceArchitectPlanRecordDto;
-  needs: Need[];
   conversationId: string | null;
   sharedConversation: boolean;
   targetBranch: string;

@@ -18,48 +18,25 @@ describe('slashContextRanking', () => {
       },
       { query: 'src/', mode: 'Implement', hasActivePlan: false, now },
     );
-    const needScore = scoreSlashContextCandidate(
+    const skillScore = scoreSlashContextCandidate(
       {
-        key: 'need:src',
-        kind: 'need',
+        key: 'skill:src',
+        kind: 'skill',
         title: 'Source review',
         searchText: 'Source review',
       },
       { query: 'src/', mode: 'Implement', hasActivePlan: false, now },
     );
 
-    expect(fileScore).toBeGreaterThan(needScore);
-  });
-
-  it('boosts active-plan needs in Architect mode for non-file queries', () => {
-    const ranked = rankSlashContextCandidates(
-      [
-        {
-          key: 'skill:auth',
-          kind: 'skill',
-          title: 'auth',
-          searchText: 'auth',
-          skillEnabled: true,
-        },
-        {
-          key: 'need:auth',
-          kind: 'need',
-          title: 'auth',
-          searchText: 'auth',
-        },
-      ],
-      { query: 'auth', mode: 'Architect', hasActivePlan: true, now },
-    );
-
-    expect(ranked[0]?.key).toBe('need:auth');
+    expect(fileScore).toBeGreaterThan(skillScore);
   });
 
   it('moves frequently used context upward', () => {
     const ranked = rankSlashContextCandidates(
       [
         {
-          key: 'need:alpha',
-          kind: 'need',
+          key: 'file:alpha',
+          kind: 'file',
           title: 'alpha',
           searchText: 'alpha',
         },

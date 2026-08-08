@@ -306,11 +306,6 @@ const ALL_INTERNAL_TOOL_IDS = [
   'terminal_kill',
   'task_todo_get',
   'task_todo_update',
-  'need_add',
-  'need_list',
-  'need_get',
-  'need_update',
-  'need_delete',
   'strategy_generate',
   'plan_create',
   'plan_list',
@@ -732,7 +727,6 @@ const getArchitectPlanActivationPayloadMock = mock(
     const conversationId = plan.conversationId ?? null;
     return {
       plan,
-      needs: [],
       chatMessages: architectPlanMessages.get(planId) ?? [],
       conversationId,
       sharedConversation: Boolean(
@@ -932,10 +926,6 @@ const getToolModePolicyMock = mock(async (mode: AppMode) => {
         'git_branch_list',
         'git_diff',
         'git_get_tree',
-        'need_add',
-        'need_list',
-        'need_get',
-        'need_update',
         'strategy_generate',
         'plan_list',
         'plan_get',
@@ -1000,7 +990,6 @@ const getLocalProjectContextStateMock = mock(
   })
 );
 const syncArchitectPlanChatFromConversationMock = mock(async () => undefined);
-const saveArchitectPlanNeedsMock = mock(async () => undefined);
 const getChatSnapshotMock = mock(async () => ({
   conversations: chatSnapshotConversations,
   messages: chatSnapshotMessages,
@@ -1238,8 +1227,6 @@ const importMessagesMock = mock(
       conversation_id: conversationId,
     }))
 );
-const hydrateNeedsForPlanMock = mock(() => undefined);
-const replaceNeedsForPlanMock = mock(() => undefined);
 const terminalCreateSessionFromChatMock = mock(
   async ({ projectId, cwd }: { projectId: string; cwd?: string | null }) => ({
     id: `session-${projectId}`,
@@ -1564,16 +1551,6 @@ const registerUseChatStoreMocks = async () => {
     useTaskStore: useTaskStoreMock,
   }));
 
-  mock.module('./useNeedsStore', () => ({
-    useNeedsStore: {
-      getState: () => ({
-        addNeed: () => 'need-1',
-        hydrateNeedsForPlan: hydrateNeedsForPlanMock,
-        replaceNeedsForPlan: replaceNeedsForPlanMock,
-      }),
-    },
-  }));
-
   mock.module('./useTerminalStore', () => ({
     useTerminalStore: {
       getState: () => ({
@@ -1775,12 +1752,10 @@ const registerUseChatStoreMocks = async () => {
       const scopedProjectIdSet = new Set(scopedProjectIds);
       return projectIds.some((projectId) => scopedProjectIdSet.has(projectId));
     },
-    getArchitectPlanNeeds: mock(async () => []),
     listArchitectPlans: listArchitectPlansMock,
     resolvePlanProjectContextId: (plan: ArchitectPlanRecord, fallbackProjectId?: string | null) =>
       plan.projectId ?? plan.projectIds?.[0] ?? fallbackProjectId ?? null,
     restoreArchitectPlan: mock(async () => undefined),
-    saveArchitectPlanNeeds: saveArchitectPlanNeedsMock,
     setActiveArchitectPlan: mock(async () => undefined),
     syncArchitectPlanChatFromConversation: syncArchitectPlanChatFromConversationMock,
     toPlanIntegrationBranch: (planId: string) => `plan/${planId}`,
@@ -2443,7 +2418,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getToolModePolicyMock.mockClear();
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
-    saveArchitectPlanNeedsMock.mockClear();
     getChatSnapshotMock.mockClear();
     getChatBootstrapSnapshotMock.mockClear();
     listMessagesMock.mockClear();
@@ -2471,8 +2445,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     updateMessageMock.mockClear();
     deleteMessagesAfterMock.mockClear();
     importMessagesMock.mockClear();
-    hydrateNeedsForPlanMock.mockClear();
-    replaceNeedsForPlanMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
     resetSendChatNonStreamingImplementation();
@@ -2786,6 +2758,35 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         }),
       }),
     ]);
+  });
+
+  it('ignores removed legacy context kinds while hydrating a conversation', async () => {
+    tauriAvailable = true;
+    toolboxStateByConversationId.set('conv-b', {
+      conversation_id: 'conv-b',
+      composer_context_refs_json: JSON.stringify([
+        {
+          id: 'legacy-ref-1',
+          kind: ['ne', 'ed'].join(''),
+          title: 'Legacy structured reference',
+        },
+      ]),
+      created_at: '2026-03-19T00:00:00.000Z',
+      updated_at: '2026-03-19T00:00:00.000Z',
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createArchitectStoreState({
+        conversations: [createConversation('conv-a'), createConversation('conv-b')],
+        selectedConversationId: 'conv-a',
+        selectedConversationIdsByMode: { Architect: 'conv-a' },
+      }),
+    );
+
+    await useChatStore.getState().selectConversation('conv-b');
+
+    expect(useChatStore.getState().composerContextRefs).toEqual([]);
   });
 
   it('ignores stale toolbox hydration after a newer conversation switch wins', async () => {
@@ -4202,7 +4203,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
     getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => ({
       plan,
-      needs: [],
       chatMessages: [],
       chatMessagesLoaded: false,
       chatTranscriptRevision: 'revision-head-ok',
@@ -4258,7 +4258,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ];
     getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => ({
       plan,
-      needs: [],
       chatMessages: [],
       chatMessagesLoaded: false,
       chatTranscriptRevision: 'revision-head-missing',
@@ -4307,7 +4306,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
     appState.pendingArchitectPlanActivationPayload = {
       plan,
-      needs: [],
       chatMessages: [],
       conversationId: null,
       sharedConversation: false,
@@ -4461,7 +4459,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const firstResolution = createDeferred<{
       plan: ArchitectPlanRecord;
-      needs: never[];
       chatMessages: never[];
       conversationId: string;
       sharedConversation: false;
@@ -4472,7 +4469,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       .mockImplementationOnce(async () => firstResolution.promise)
       .mockImplementationOnce(async (_branchName: string) => ({
         plan,
-        needs: [],
         chatMessages: [],
         conversationId: 'plan-conv',
         sharedConversation: false,
@@ -4486,7 +4482,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useAppStoreMock.setState({ selectedProjectId: null });
     firstResolution.resolve({
       plan,
-      needs: [],
       chatMessages: [],
       conversationId: 'plan-conv',
       sharedConversation: false,
@@ -5982,9 +5977,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).not.toContain('read_sources');
     expect(streamOptions.allowedToolIds).not.toContain('edit_source_passage');
     expect(streamOptions.allowedToolIds).toContain('plan_get');
-    expect(streamOptions.allowedToolIds).toContain('need_update');
     expect(streamOptions.allowedToolIds).toContain('strategy_update');
-    expect(streamOptions.allowedToolIds).toContain('need_delete');
     expect(streamOptions.allowedToolIds).toContain('strategy_delete');
     expect(String(streamOptions.messages[0]?.content)).toContain(
       'Custom PLAN_EXPLORER prompt for tests.'
@@ -6062,7 +6055,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }).mock.calls[0]?.[0] ?? null) as {
       allowedToolIds: string[];
     };
-    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
     expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
   });
 
@@ -6104,7 +6096,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     await useChatStore.getState().sendMessage({
       conversationId: 'plan-conv',
-      content: 'Ajoute les besoins structurés.',
+      content: 'Génère la stratégie depuis notre conversation.',
     });
 
     const streamOptions = ((streamChatMock as unknown as {
@@ -6112,11 +6104,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }).mock.calls[0]?.[0] ?? null) as {
       allowedToolIds: string[];
     };
-    expect(streamOptions.allowedToolIds).toContain('need_add');
-    expect(streamOptions.allowedToolIds).toContain('need_update');
     expect(streamOptions.allowedToolIds).toContain('strategy_generate');
     expect(streamOptions.allowedToolIds).toContain('plan_update');
-    expect(streamOptions.allowedToolIds).not.toContain('need_delete');
     expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
   });
 
@@ -10183,9 +10172,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useChatStore.setState({
       composerContextRefs: [
         {
-          kind: 'need',
-          id: 'need-after-send',
-          title: 'Late context ref',
+          kind: 'file',
+          id: 'file-after-send',
+          title: 'Late file context ref',
           subtitle: 'Should not affect live diagnostics',
           data: { description: 'Added after the stream started.' },
         },

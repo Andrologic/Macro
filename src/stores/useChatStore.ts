@@ -20,7 +20,6 @@ import {
   CompactionPass,
   CompactionSummarySource,
   MCPTool,
-  Need,
   PendingToolApproval,
   PersistedContextReference,
   PlanNode,
@@ -99,7 +98,6 @@ import {
   type ChatMaxTurnsPreference,
   normalizeChatMaxTurns,
 } from "../services/chatTurnLimits";
-import { useNeedsStore } from "./useNeedsStore";
 import { useTerminalStore } from "./useTerminalStore";
 import { devLogger } from "../utils/devLogger";
 import {
@@ -118,7 +116,6 @@ import {
   getArchitectPlanTargetDisplay,
   getGitFlowBaseBranch,
   getArchitectPlanVisibleProjectIds,
-  getArchitectPlanNeeds,
   hasPersistedArchitectStrategy,
   isArchitectPlanReplicaDivergenceError,
   isArchitectPlanStrategyMutationLocked,
@@ -5591,7 +5588,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
       },
       getAppState: () => useAppStore.getState(),
-      getNeedsState: () => useNeedsStore.getState(),
       getTaskState: () => useTaskStore.getState(),
       ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
     }).catch((error) => {
@@ -5873,7 +5869,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const isPersistedContextRefKind = (value: string): value is ContextRefKind =>
-    value === "need" ||
     value === "plan-node" ||
     value === "predicted-branch" ||
     value === "skill" ||
@@ -5977,29 +5972,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         title: ref.title || skill.name,
         subtitle: ref.subtitle,
         data: skill,
-      };
-    }
-
-    if (ref.kind === "need") {
-      const need =
-        useNeedsStore.getState().needs.find((candidate) => candidate.id === ref.id) ??
-        ({
-          id: ref.id,
-          title: ref.title,
-          description: ref.subtitle ?? "",
-          category: "other",
-          status: "identified",
-          priority: "medium",
-          tags: [],
-          createdAt: "",
-          updatedAt: "",
-        } satisfies Need);
-      return {
-        id: ref.id,
-        kind: "need",
-        title: ref.title || need.title,
-        subtitle: ref.subtitle,
-        data: need,
       };
     }
 
@@ -6621,7 +6593,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (appMode === "Architect") {
       systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
       systemInstructions.push(
-        "In Architect mode, use `need_add`, `need_list`, `need_get`, and `need_update` to keep the active plan's needs structured and up to date instead of only describing requirements in prose. Use `need_list` as a compact id/title/priority index, then call `need_get` when the user asks for details about one need or before making a targeted update. Do not treat `need_list` as complete need detail.",
+        "In Architect mode, discuss the plan directly with the user. Inspect the selected project code when it provides useful context, and use the `question` tool for focused clarifications when important information is missing. Generate or regenerate strategy only after an explicit user request, using the plan conversation, expressed intent, plan scope, selected projects, inspected code context, and clarification answers.",
       );
       systemInstructions.push(
         "In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).",
@@ -7716,11 +7688,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ).size > 1,
     });
 
-    const planNeeds = await getArchitectPlanNeeds(
-      params.targetBranch,
-      params.updatedPlan.id,
-    );
-    useNeedsStore.getState().hydrateNeedsForPlan(params.updatedPlan.id, planNeeds);
   };
 
   const syncConversationMetadataFromArchitectPlan = async (
@@ -10712,7 +10679,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         status: payload.plan.status,
         nodes: payload.plan.nodes,
         predictedBranches: payload.plan.predictedBranches,
-        needCount: payload.needs.length,
         chatMessageCount: payload.chatMessages.length,
       }) === "blank");
 

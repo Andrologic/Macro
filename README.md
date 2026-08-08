@@ -64,15 +64,15 @@ Use Macro when you need to:
 
 1. **Group your projects.** Open one repository or connect several related
    repositories as a single product workspace.
-2. **Plan with Architect.** Describe the change, let Macro extract needs,
-   generate strategy, identify dependencies, and decide which projects are
-   involved.
+2. **Plan with Architect.** Describe the change, answer focused questions when
+   useful, then explicitly generate a strategy from the plan conversation,
+   inspected code, and selected projects.
 3. **Run tasks with Implement.** Start implementation tasks manually, let AI
    agents work in prepared branches and worktrees, and keep terminal/test output
    close to the task.
 4. **Review before accepting.** Inspect file changes, resolve blockers, generate
    commits, and integrate task work back through the plan.
-5. **Keep context with `@macro`.** Plans, needs, strategy, runtime state, and
+5. **Keep context with `@macro`.** Plans, conversations, strategy, runtime state, and
    chat transcript snapshots are stored as Macro metadata so the workflow has an
    audit trail beyond the final code diff.
 
@@ -85,7 +85,7 @@ That branch exists to store the information that normal Git history does not
 capture well:
 
 - which plan created the work;
-- which needs and strategy were agreed before execution;
+- which conversation and strategy shaped the work before execution;
 - which tasks belong to which branches and projects;
 - what runtime state is needed to resume or audit the plan;
 - which conversations and plan snapshots explain the implementation context.

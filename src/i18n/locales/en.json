@@ -105,7 +105,7 @@
         "title": "Mode selector",
         "body": "These three buttons change the whole workspace. Architect is for scoping, Implement is for executing, and Chat is for free-form discussion with context.",
         "points": [
-          "Architect: needs, plans, and strategy.",
+          "Architect: conversations, plans, and strategy.",
           "Implement: tasks, terminal, and change validation.",
           "Chat: conversations, sources, and general tools."
         ]
@@ -124,19 +124,15 @@
       },
       "architect-mode": {
         "title": "Architect mode",
-        "body": "Architect turns a discussion into needs, then into a branch and task strategy. Use it before coding when the scope is still fuzzy."
+        "body": "Architect turns a discussion into a strategy when the user explicitly asks for one."
       },
       "architect-plan-selector": {
         "title": "Plans",
-        "body": "The plan selector isolates conversations, needs, and strategies. You can create a feature, release, hotfix, or bugfix plan according to the expected Git flow."
-      },
-      "architect-needs": {
-        "title": "Identified needs",
-        "body": "The left panel lists needs extracted or refined during the Architect conversation. Category filters avoid rereading everything as the plan grows."
+        "body": "The plan selector isolates conversations and strategies for each plan."
       },
       "architect-generate": {
         "title": "Generate the strategy",
-        "body": "This is the important Architect action. It converts needs into a task graph and predictable branches, only when enough context is available."
+        "body": "This action builds the task graph and predictable branches from the conversation and project context."
       },
       "architect-strategy": {
         "title": "Strategy and branches",
@@ -979,7 +975,6 @@
     "name": "Project name",
     "emptyWorkspaceTitle": "Add a project to start using Macro.",
     "emptyWorkspaceBody": "Architect and Implement need a project before they can create plans, tasks, branches, and worktrees.",
-    "emptyWorkspaceNeedsPanel": "Needs will be available after you add a project.",
     "emptyWorkspaceStrategyPanel": "Strategy will be available after you add a project.",
     "emptyWorkspaceTasksPanel": "Tasks will be available after you add a project.",
     "emptyWorkspaceChangesPanel": "Changes will be available after you add a project.",
@@ -1219,7 +1214,6 @@
     "noTasksForProject": "No tasks for this project"
   },
   "architect": {
-    "needs": "Identified Needs",
     "status": {
       "blank": "Blank",
       "editing": "Prep",
@@ -1346,9 +1340,6 @@
       "back": "Back",
       "manualPlaceholder": "e.g. Checkout Recovery Refresh"
     },
-    "needsEmptyTitle": "No needs identified for this project yet.",
-    "needsEmptyDescription": "Chat with the Architect to uncover project requirements.",
-    "needsEmptyAfterUserMessageDescription": "Architect should now turn this explanation into structured needs.",
     "strategy": "Strategy",
     "graphExplorer": "Strategy graph explorer",
     "openGraphExplorer": "Open graph explorer",
@@ -1360,30 +1351,20 @@
     "dependencyFlow": "Dependency Flow",
     "itemsCount": "{{count}} items",
     "noStrategyTitle": "No strategy generated yet",
-    "noStrategyDescription": "Discuss needs in Architect chat, then use Generate Strategy to create this graph.",
-    "noStrategyNeedsMissingDescription": "Identify and validate needs before generating the strategy.",
-    "noStrategyNeedsUnvalidatedDescription": "Clarify needs if useful, or generate the strategy now.",
-    "noStrategyReadyDescription": "The needs are ready. Generate the strategy when you want Macro to create the task graph.",
+    "noStrategyDescription": "Discuss the plan in Architect chat, then use Generate Strategy to create this graph.",
     "noBranchesMatchingFilters": "No branches match the current filters.",
     "planCompleted": "Plan completed",
     "planValidated": "Plan validated",
     "validatingPlan": "Validating...",
     "noActivePlan": "No active plan",
-    "identifyNeeds": "Identify Needs",
-    "clarifyNeeds": "Clarify Needs",
     "generateStrategy": "Generate Strategy",
     "regenerateStrategy": "Regenerate Strategy",
-    "identifyNeedsHint": "Ask Architect to inspect the codebase and structure the first needs",
-    "clarifyNeedsHint": "Ask Architect to resolve open questions and validate the needs",
-    "generateStrategyHint": "Generate strategy from current needs",
-    "regenerateStrategyHint": "Regenerate strategy from current needs",
+    "generateStrategyHint": "Generate strategy from the plan conversation and project context",
+    "regenerateStrategyHint": "Regenerate strategy from the plan conversation and project context",
     "strategyLockedAfterValidation": "Strategy is locked after plan validation.",
     "generateStrategySelectPlan": "Select an active plan first",
-    "generateStrategyNeedPrompt": "Add at least one need before generating a strategy",
     "strategyProgressDraftTitle": "Draft kept",
     "strategyProgressDraftDescription": "Send or clear the composer before Macro prepares the next Architect step.",
-    "identifyNeedsPrompt": "Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.",
-    "clarifyNeedsPrompt": "Review the current needs for this plan with `need_list` and `need_get`, inspect the codebase where useful, identify missing or ambiguous information, ask focused questions with the `question` tool, then update the needs with `need_update` until each need is `validated`.",
     "nodeStatus": {
       "pending": "Pending",
       "in-progress": "In Progress",
@@ -1405,21 +1386,6 @@
     "progress": "Progress",
     "branchSearch": "Search tasks...",
     "filterStatusAll": "All statuses",
-    "needCategory": {
-      "functional": "Functional",
-      "technical": "Technical",
-      "ux": "UX",
-      "performance": "Performance",
-      "security": "Security",
-      "data": "Data",
-      "business": "Business",
-      "other": "Other"
-    },
-    "needPriority": {
-      "high": "High",
-      "medium": "Medium",
-      "low": "Low"
-    },
     "frozenReasonCompleted": "Completed work",
     "frozenReasonDependencyLocked": "Locked dependency",
     "frozenReasonStarted": "Started work",
@@ -1444,7 +1410,8 @@
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Select or create a plan to start architecting.",
     "createPlanAction": "Create a plan",
-    "selectPlanAction": "Select a plan"
+    "selectPlanAction": "Select a plan",
+    "noStrategyDiscussionDescription": "Discuss the plan with Architect, then generate the strategy when the scope is clear."
   },
   "git": {
     "gitTree": "Git Tree",

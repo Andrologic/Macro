@@ -190,7 +190,7 @@ describe('buildCompactedMessagesForRequest', () => {
       makeMessage('u2', 'user', 'Check plan state.'),
       makeMessage('a2', 'assistant', 'Protected result.', {
         hidden_context:
-          `<tool_context tool="need_get" detail="need-1">\n${'need detail\n'.repeat(300)}\n</tool_context>`,
+          `<tool_context tool="plan_get" detail="plan-1">\n${'plan detail\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u3', 'user', 'Continue.'),
     ];
@@ -239,7 +239,7 @@ describe('buildCompactedMessagesForRequest', () => {
       makeMessage('u1', 'user', 'Inspect plan state.'),
       makeMessage('a1', 'assistant', 'Protected result.', {
         hidden_context:
-          `<tool_context tool="need_get" detail="need-1">\n${'need detail\n'.repeat(300)}\n</tool_context>`,
+          `<tool_context tool="plan_get" detail="plan-1">\n${'plan detail\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u2', 'user', 'Continue.'),
       makeMessage('a2', 'assistant', 'Recent answer.'),

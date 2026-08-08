@@ -228,26 +228,6 @@ export interface PlanBlockItem {
   checked: boolean;
 }
 
-// User Needs (Architect Mode)
-export type NeedStatus = 'identified' | 'refined' | 'validated';
-export type NeedCategory = 'functional' | 'technical' | 'ux' | 'performance' | 'security' | 'data' | 'business' | 'other';
-
-export interface Need {
-  id: string;
-  planId?: string;
-  groupId?: string;
-  title: string;
-  description: string;
-  category: NeedCategory;
-  status: NeedStatus;
-  priority: 'low' | 'medium' | 'high';
-  tags: string[];
-  projectId?: string;
-  sourceMessageId?: string; // Link to the chat message where this was identified
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface WorkspaceFileReference {
   id: string;
   path: string;
@@ -260,15 +240,15 @@ export interface WorkspaceFileReference {
   isFocused?: boolean;
 }
 
-// Context references for chat composer (tag needs, nodes, branches, skills, files, sources)
-export type ContextRefKind = 'need' | 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source';
+// Context references for chat composer (nodes, branches, skills, files, sources)
+export type ContextRefKind = 'plan-node' | 'predicted-branch' | 'skill' | 'file' | 'source';
 
 export interface ContextReference {
   id: string;
   kind: ContextRefKind;
   title: string;
   subtitle?: string;
-  data: Need | PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation;
+  data: PlanNode | PredictedBranch | SkillManifest | WorkspaceFileReference | Citation;
 }
 
 export interface PersistedContextReference {

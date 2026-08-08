@@ -210,7 +210,6 @@ pub struct WorkspaceArchitectPlanSummaryDto {
     pub updated_at: String,
     pub node_count: usize,
     pub predicted_branch_count: Option<usize>,
-    pub need_count: Option<usize>,
     pub chat_message_count: Option<usize>,
     pub expected_project_ids: Vec<String>,
     pub available_project_ids: Vec<String>,
@@ -254,8 +253,6 @@ pub struct WorkspaceArchitectPlanRecordDto {
     pub has_replica_divergence: bool,
 }
 
-pub type WorkspaceArchitectNeedDto = Value;
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WorkspaceArchitectChatMessageDto {
@@ -288,7 +285,6 @@ pub struct WorkspaceArchitectPlanListDto {
 #[serde(default, rename_all = "camelCase")]
 pub struct WorkspaceArchitectPlanActivationHeadDto {
     pub plan: WorkspaceArchitectPlanRecordDto,
-    pub needs: Vec<WorkspaceArchitectNeedDto>,
     pub conversation_id: Option<String>,
     pub shared_conversation: bool,
     pub target_branch: String,

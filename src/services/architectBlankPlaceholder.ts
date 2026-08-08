@@ -22,7 +22,6 @@ type BlankArchitectPlanSummaryLike = {
   conversationId?: string | null;
   nodeCount?: number | null;
   predictedBranchCount?: number | null;
-  needCount?: number | null;
   chatMessageCount?: number | null;
 };
 
@@ -35,7 +34,6 @@ type BlankArchitectPlanRecordLike = {
   conversationId?: string | null;
   nodes?: unknown[] | null;
   predictedBranches?: unknown[] | null;
-  needCount?: number | null;
   chatMessageCount?: number | null;
 };
 
@@ -43,7 +41,6 @@ const isActivatableBlankArchitectPlan = (input: {
   plan: BlankArchitectPlanIdentityLike | null | undefined;
   nodeCount: number;
   predictedBranchCount: number;
-  needCount: number;
   chatMessageCount: number;
 }): boolean => {
   const { plan } = input;
@@ -51,11 +48,12 @@ const isActivatableBlankArchitectPlan = (input: {
     plan &&
       isCanonicalArchitectPlan(plan) &&
       isDefaultNewPlanFamilyLabel(plan.label) &&
+      !(plan.description ?? '').trim() &&
+      !plan.conversationId &&
       getArchitectPlanLifecyclePhase({
         status: plan.status ?? "draft",
         nodeCount: input.nodeCount,
         predictedBranchCount: input.predictedBranchCount,
-        needCount: input.needCount,
         chatMessageCount: input.chatMessageCount,
       }) === "blank",
   );
@@ -68,7 +66,6 @@ export const isActivatableBlankArchitectPlanSummary = (
     plan,
     nodeCount: plan?.nodeCount ?? 0,
     predictedBranchCount: plan?.predictedBranchCount ?? 0,
-    needCount: plan?.needCount ?? 0,
     chatMessageCount: plan?.chatMessageCount ?? 0,
   });
 
@@ -79,6 +76,5 @@ export const isActivatableBlankArchitectPlanRecord = (
     plan,
     nodeCount: plan?.nodes?.length ?? 0,
     predictedBranchCount: plan?.predictedBranches?.length ?? 0,
-    needCount: plan?.needCount ?? 0,
     chatMessageCount: plan?.chatMessageCount ?? 0,
   });

@@ -79,7 +79,7 @@ Etat livre pour 0.1 :
 
 Etat attendu :
 - creation et gestion fluide de plusieurs plans
-- conversation, besoins et strategie bien lies a chaque plan
+- conversation et stratégie bien liées à chaque plan
 - structuration predictive fiable
 - validation automatique propre vers branches et worktrees
 

@@ -27,8 +27,6 @@ const NON_CHAT_TOOLBOX_IDS = [
   'git_status',
   'git_commit',
   'terminal_run',
-  'need_add',
-  'need_list',
   'plan_create',
   'strategy_generate',
 ];

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
-import type { Need, Project, ProjectGroup } from '../types';
+import type { Project, ProjectGroup } from '../types';
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 type MockAppState = {
@@ -158,20 +158,6 @@ const buildPlan = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const buildNeed = (overrides: Partial<Need> = {}): Need => ({
-  id: 'need-1',
-  planId: 'plan-1',
-  title: 'First need',
-  description: 'Initial requirement.',
-  category: 'functional',
-  status: 'identified',
-  priority: 'high',
-  tags: [],
-  createdAt: '2026-03-15T00:00:00.000Z',
-  updatedAt: '2026-03-15T00:00:00.000Z',
-  ...overrides,
-});
-
 const chatLine = (message: {
   id: string;
   role: 'user' | 'assistant';
@@ -203,7 +189,6 @@ const seedReplica = (workspacePath: string, plan: ReturnType<typeof buildPlan>):
     reservedPlanSlugs: [plan.slug],
   });
   writeWorkspaceJson(workspacePath, `branches/develop/plans/${plan.id}/plan.json`, plan);
-  writeWorkspaceJson(workspacePath, `branches/develop/plans/${plan.id}/needs.json`, []);
 };
 
 const registerArchitectPlanMocks = () => {
@@ -578,77 +563,6 @@ describe('architectPlanService replicas', () => {
     expect(loaded?.hasReplicaDivergence).toBe(false);
   });
 
-  it('serializes concurrent need saves so every replica ends with the same needs', async () => {
-    const plan = buildPlan({
-      projectIds: ['web', 'api'],
-      nodes: [],
-      predictedBranches: [],
-    });
-    seedReplica('/repos/web', plan);
-    seedReplica('/repos/api', plan);
-    const firstNeed: Need = {
-      id: 'need-1',
-      planId: plan.id,
-      title: 'First need',
-      description: 'Initial requirement.',
-      category: 'functional',
-      status: 'identified',
-      priority: 'high',
-      tags: [],
-      createdAt: '2026-03-15T00:00:00.000Z',
-      updatedAt: '2026-03-15T00:00:00.000Z',
-    };
-    const secondNeed: Need = {
-      ...firstNeed,
-      id: 'need-2',
-      title: 'Second need',
-      description: 'Follow-up requirement.',
-    };
-
-    const { service } = await loadArchitectPlanService();
-    await Promise.all([
-      service.saveArchitectPlanNeeds('develop', plan.id, [firstNeed]),
-      service.saveArchitectPlanNeeds('develop', plan.id, [firstNeed, secondNeed]),
-    ]);
-
-    const webNeeds = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/needs.json`);
-    const apiNeeds = readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/needs.json`);
-    expect(webNeeds).toBe(apiNeeds);
-    expect(JSON.parse(webNeeds || '[]').map((need: Need) => need.id)).toEqual([
-      'need-1',
-      'need-2',
-    ]);
-  });
-
-  it('serializes need saves with archive so replicas stay coherent', async () => {
-    const plan = buildPlan({
-      projectIds: ['web', 'api'],
-      nodes: [],
-      predictedBranches: [],
-    });
-    seedReplica('/repos/web', plan);
-    seedReplica('/repos/api', plan);
-    const need = buildNeed({ planId: plan.id });
-
-    const { service } = await loadArchitectPlanService();
-    await Promise.all([
-      service.saveArchitectPlanNeeds('develop', plan.id, [need]),
-      service.archiveArchitectPlan('develop', plan.id),
-    ]);
-
-    const loaded = await service.getArchitectPlan('develop', plan.id);
-    const webNeeds = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/needs.json`);
-    const apiNeeds = readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/needs.json`);
-    const webIndex = JSON.parse(readWorkspaceFile('/repos/web', 'branches/develop/plans/index.json') || 'null');
-    const apiIndex = JSON.parse(readWorkspaceFile('/repos/api', 'branches/develop/plans/index.json') || 'null');
-
-    expect(loaded?.status).toBe('archived');
-    expect(webNeeds).toBe(apiNeeds);
-    expect(JSON.parse(webNeeds || '[]').map((item: Need) => item.id)).toEqual(['need-1']);
-    expect(webIndex.plans[0].status).toBe('archived');
-    expect(apiIndex.plans[0].status).toBe('archived');
-  });
-
   it('serializes chat saves with delete so replicas do not diverge', async () => {
     const plan = buildPlan({
       projectIds: ['web', 'api'],
@@ -683,33 +597,6 @@ describe('architectPlanService replicas', () => {
     expect(webPlan).toBe(apiPlan);
     expect(webChat).toBe(apiChat);
     expect(webChat).toContain('Persist this before delete.');
-  });
-
-  it('waits for queued mutations before committing plan metadata', async () => {
-    const plan = buildPlan({
-      projectIds: ['web', 'api'],
-      nodes: [],
-      predictedBranches: [],
-    });
-    seedReplica('/repos/web', plan);
-    seedReplica('/repos/api', plan);
-    const need = buildNeed({ planId: plan.id });
-
-    const { service } = await loadArchitectPlanService();
-    await Promise.all([
-      service.saveArchitectPlanNeeds('develop', plan.id, [need]),
-      service.commitArchitectPlanMetadata({
-        branchName: 'develop',
-        planId: plan.id,
-        commitMessage: 'commit after queued mutation',
-      }),
-    ]);
-
-    expect(commitSnapshots).toHaveLength(2);
-    for (const snapshot of commitSnapshots) {
-      const needs = snapshot.files[`branches/develop/plans/${plan.id}/needs.json`];
-      expect(needs).toContain('First need');
-    }
   });
 
   it('syncs chat from a fresh replica snapshot after queued chat mutations', async () => {

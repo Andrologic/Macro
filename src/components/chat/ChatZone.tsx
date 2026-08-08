@@ -12,7 +12,6 @@ import { useSkillsStore } from '../../stores/useSkillsStore';
 import type {
   ChatMessage,
   ContextReference,
-  Need,
   PersistedContextReference,
   PlanNode,
   PredictedBranch,
@@ -20,7 +19,6 @@ import type {
   SkillTurnFeedback,
   WorkspaceFileReference,
 } from '../../types';
-import { useNeedsStore } from '../../stores/useNeedsStore';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -123,11 +121,7 @@ export const shouldShowContextControls = ({
 };
 
 type ManualCompactionPhase = 'idle' | 'analyzing';
-type ArchitectStrategyProgressAction =
-  | 'identify-needs'
-  | 'clarify-needs'
-  | 'generate-strategy'
-  | 'regenerate-strategy';
+type ArchitectStrategyProgressAction = 'generate-strategy' | 'regenerate-strategy';
 interface ArchitectToolbarButton {
   icon: IconName;
   label: string;
@@ -149,53 +143,19 @@ const buildArchitectButtonActions = (t: ChatTranslation): Record<
   ArchitectStrategyProgressAction,
   ArchitectButtonAction
 > => ({
-  'identify-needs': {
-    id: 'identify-needs',
-    icon: 'sparkles',
-    label: t('architect.identifyNeeds', 'Identify Needs'),
-    title: t(
-      'architect.identifyNeedsHint',
-      'Ask Architect to inspect the codebase and structure the first needs'
-    ),
-    displayDescription: t(
-      'architect.identifyNeedsHint',
-      'Ask Architect to inspect the codebase and structure the first needs'
-    ),
-    fullPrompt: t(
-      'architect.identifyNeedsPrompt',
-      'Analyze the codebase for this plan, identify the main product and technical stakes, then add structured needs with `need_add`. Use `need_list` and `need_get` first if useful. If important information is missing, ask me focused questions with the `question` tool before continuing.'
-    ),
-  },
-  'clarify-needs': {
-    id: 'clarify-needs',
-    icon: 'message-circle-question',
-    label: t('architect.clarifyNeeds', 'Clarify Needs'),
-    title: t(
-      'architect.clarifyNeedsHint',
-      'Ask Architect to resolve open questions and validate the needs'
-    ),
-    displayDescription: t(
-      'architect.clarifyNeedsHint',
-      'Ask Architect to resolve open questions and validate the needs'
-    ),
-    fullPrompt: t(
-      'architect.clarifyNeedsPrompt',
-      'Review the current needs for this plan with `need_list` and `need_get`, inspect the codebase where useful, identify missing or ambiguous information, ask focused questions with the `question` tool, then update the needs with `need_update` until each need is `validated`.'
-    ),
-  },
   'generate-strategy': {
     id: 'generate-strategy',
     icon: 'sparkles',
     label: t('architect.generateStrategy', 'Generate Strategy'),
     title: t(
       'architect.generateStrategyHint',
-      'Generate strategy from current needs'
+      'Generate strategy from the plan conversation and project context'
     ),
     displayDescription: t(
       'architect.generateStrategyHint',
-      'Generate strategy from current needs'
+      'Generate strategy from the plan conversation and project context'
     ),
-    fullPrompt: `User requested to generate the strategy now. Based on all identified needs for the active plan, call \`strategy_generate\` with a complete initial strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
+    fullPrompt: `User explicitly requested to generate the strategy now. Use the plan conversation, the user's expressed intent, the plan scope, selected projects, inspected code context, and answers gathered with the \`question\` tool when clarification is necessary. Call \`strategy_generate\` with a complete initial strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
   },
   'regenerate-strategy': {
     id: 'regenerate-strategy',
@@ -203,13 +163,13 @@ const buildArchitectButtonActions = (t: ChatTranslation): Record<
     label: t('architect.regenerateStrategy', 'Regenerate Strategy'),
     title: t(
       'architect.regenerateStrategyHint',
-      'Regenerate strategy from current needs'
+      'Regenerate strategy from the plan conversation and project context'
     ),
     displayDescription: t(
       'architect.regenerateStrategyHint',
-      'Regenerate strategy from current needs'
+      'Regenerate strategy from the plan conversation and project context'
     ),
-    fullPrompt: `User requested to regenerate the strategy. Reassess all identified needs for the active plan and call \`strategy_generate\` with a complete replacement strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
+    fullPrompt: `User explicitly requested to regenerate the strategy. Reassess the full plan conversation, the user's expressed intent, the plan scope, selected projects, inspected code context, and answers gathered with the \`question\` tool when clarification is necessary. Call \`strategy_generate\` with a complete replacement strategy (full nodes and dependencies). ${ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX}`,
   },
 });
 
@@ -224,20 +184,6 @@ const resolveArchitectButtonActionFromContent = (
   );
   if (exactMatch) return exactMatch;
 
-  if (
-    normalizedContent.startsWith(
-      'User requested to generate the strategy now. Based on all identified needs for the active plan, call `strategy_generate`',
-    )
-  ) {
-    return actions['generate-strategy'];
-  }
-  if (
-    normalizedContent.startsWith(
-      'User requested to regenerate the strategy. Reassess all identified needs for the active plan and call `strategy_generate`',
-    )
-  ) {
-    return actions['regenerate-strategy'];
-  }
   return null;
 };
 
@@ -402,14 +348,10 @@ interface ChatMessageRowProps {
   onCopy: (content: string, messageId: string) => Promise<void>;
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
-  needsByTitle: Map<string, Need>;
   skillTurnFeedback?: SkillTurnFeedback | null;
 }
 
-const USER_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source):\s*([^\]]+)\]/gi;
-
-const normalizeNeedMentionTitle = (value: string): string =>
-  value.trim().normalize('NFC').toLocaleLowerCase();
+const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
 
 interface ComposerEditSession {
   messageId: string;
@@ -483,20 +425,6 @@ const buildSnapshotContextRefData = (
     };
   }
 
-  if (ref.kind === 'need') {
-    return {
-      id: ref.id,
-      title: ref.title,
-      description: '',
-      category: 'other',
-      status: 'identified',
-      priority: 'medium',
-      tags: [],
-      createdAt: '',
-      updatedAt: '',
-    } satisfies Need;
-  }
-
   if (ref.kind === 'plan-node') {
     return {
       id: ref.id,
@@ -554,11 +482,7 @@ const resolveAssistantActivityAnchorId = (
   return latestMessage?.role === 'assistant' ? latestMessage.id : null;
 };
 
-const UserMessageContent: React.FC<{
-  content: string;
-  needsByTitle: Map<string, Need>;
-}> = ({ content, needsByTitle }) => {
-  const { t } = useTranslation();
+const UserMessageContent: React.FC<{ content: string }> = ({ content }) => {
   const lines = content.split('\n');
 
   return (
@@ -575,25 +499,18 @@ const UserMessageContent: React.FC<{
           }
 
           const rawKind = match[1]?.toLocaleLowerCase();
-          const kind = rawKind === 'need'
-            ? 'need'
-            : rawKind === 'file'
+          const kind = rawKind === 'file'
             ? 'file'
             : rawKind === 'source'
             ? 'source'
             : 'skill';
           const title = match[2]?.trim() ?? '';
-          const need = kind === 'need'
-            ? needsByTitle.get(normalizeNeedMentionTitle(title))
-            : undefined;
           parts.push(
             <ContextReferenceChip
               key={`${lineIndex}-${match.index}-${title}`}
               kind={kind}
-              need={need}
               title={title}
               surface="message"
-              priorityLabel={need ? t(`architect.needPriority.${need.priority}`, need.priority) : undefined}
             />
           );
           lastIndex = match.index + match[0].length;
@@ -729,7 +646,6 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onCopy,
   onEditStart,
   onRegenerate,
-  needsByTitle,
   skillTurnFeedback,
 }) => {
   const { t } = useTranslation();
@@ -831,10 +747,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
               ) : questionnaireResponseSummary ? (
                 <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
               ) : (
-                <UserMessageContent
-                  content={message.content}
-                  needsByTitle={needsByTitle}
-                />
+                <UserMessageContent content={message.content} />
               )}
               {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
@@ -940,7 +853,6 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
-    prev.needsByTitle === next.needsByTitle &&
     prev.skillTurnFeedback === next.skillTurnFeedback
 );
 
@@ -1148,7 +1060,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedModelId: state.selectedModelId,
     nativeToolsSupported: state.selectedSupportsNativeToolCalling(),
   })));
-  const needs = useNeedsStore((state) => state.needs);
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -1476,14 +1387,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationId,
     t,
   ]);
-  const needsByMentionTitle = useMemo(() => {
-    const indexed = new Map<string, Need>();
-    for (const need of needs) {
-      if (typeof need.title !== 'string') continue;
-      indexed.set(normalizeNeedMentionTitle(need.title), need);
-    }
-    return indexed;
-  }, [needs]);
   const activeQuestionnaireDraft = selectedConversationId
     ? questionnaireDraftsByConversationId[selectedConversationId]
     : undefined;
@@ -1933,13 +1836,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     return t('chat.typeMessage');
   }, [activePlanContext, mode, t]);
 
-  const activePlanNeeds = useMemo(() => {
-    if (!activeArchitectPlanId) return [];
-    return needs.filter((need) => need.planId === activeArchitectPlanId);
-  }, [activeArchitectPlanId, needs]);
-  const allActivePlanNeedsValidated =
-    activePlanNeeds.length > 0 &&
-    activePlanNeeds.every((need) => need.status === 'validated');
   const hasUserArchitectMessage = useMemo(
     () =>
       mode === 'Architect' &&
@@ -1960,17 +1856,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const architectStrategyProgressAction = useMemo<ArchitectStrategyProgressAction | null>(() => {
     if (mode !== 'Architect') return null;
     if (!activeArchitectPlanId) return null;
-    if (activePlanNeeds.length === 0) {
-      return hasUserArchitectMessage ? 'identify-needs' : null;
-    }
-    if (!allActivePlanNeedsValidated) {
-      return 'clarify-needs';
-    }
+    if (!hasUserArchitectMessage) return null;
     return hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy';
   }, [
     activeArchitectPlanId,
-    activePlanNeeds.length,
-    allActivePlanNeedsValidated,
     hasExistingStrategy,
     hasUserArchitectMessage,
     mode,
@@ -1986,16 +1875,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (!architectStrategyProgressAction) return null;
     return architectButtonActions[architectStrategyProgressAction];
   }, [architectButtonActions, architectStrategyProgressAction]);
-  const architectGenerateStrategyButton = useMemo<ArchitectToolbarButton | null>(() => {
-    if (mode !== 'Architect' || !activeArchitectPlanId || activePlanNeeds.length === 0) {
-      return null;
-    }
-    return hasExistingStrategy
-      ? architectButtonActions['regenerate-strategy']
-      : architectButtonActions['generate-strategy'];
-  }, [activeArchitectPlanId, activePlanNeeds.length, architectButtonActions, hasExistingStrategy, mode]);
-  const shouldShowSecondaryGenerateStrategyButton =
-    architectStrategyProgressAction === 'clarify-needs' && Boolean(architectGenerateStrategyButton);
   const architectStrategyUnavailableTitle = isModeProjectWorkspaceMissing
     ? workspaceState.kind === 'noProjectAvailable'
       ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
@@ -2005,11 +1884,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       : isStrategyMutationLocked
         ? t('architect.strategyLockedAfterValidation', 'Strategy is locked after plan validation.')
         : null;
-  const isArchitectGenerateStrategyDisabled =
-    isArchitectStrategyProgressDisabled || activePlanNeeds.length === 0;
-  const architectGenerateStrategyTitle =
-    architectStrategyUnavailableTitle ??
-    architectGenerateStrategyButton?.title;
 
   // Scroll magnetism: auto-scroll while assistant work can append visible status rows.
   const { scrollContainerRef, separatorState } = useScrollMagnet(
@@ -2516,13 +2390,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const sendArchitectButtonAction = async (actionId: ArchitectStrategyProgressAction) => {
     if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
     if (isStrategyMutationLocked) return;
-    if (
-      (actionId === 'generate-strategy' || actionId === 'regenerate-strategy') &&
-      activePlanNeeds.length === 0
-    ) {
-      return;
-    }
-
     const conversationId = await ensureConversation();
     if (!conversationId) return;
 
@@ -2534,12 +2401,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } catch {
       // The store exposes the visible error state.
     }
-  };
-
-  const handleGenerateStrategy = async () => {
-    await sendArchitectButtonAction(
-      hasExistingStrategy ? 'regenerate-strategy' : 'generate-strategy',
-    );
   };
 
   const handleArchitectStrategyProgressAction = () => {
@@ -2952,7 +2813,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onCopy={handleCopy}
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
-                    needsByTitle={needsByMentionTitle}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
                   />
                 );
@@ -3070,8 +2930,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 <ModelDropdown />
                 <ReasoningDropdown />
               </div>
-              {mode === 'Architect' &&
-                (architectStrategyProgressButton || shouldShowSecondaryGenerateStrategyButton) && (
+              {mode === 'Architect' && architectStrategyProgressButton && (
                   <div className="flex items-center gap-2">
                     {architectStrategyProgressButton ? (
                       <button
@@ -3094,26 +2953,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       >
                         <Icon name={architectStrategyProgressButton.icon} size={12} />
                         {architectStrategyProgressButton.label}
-                      </button>
-                    ) : null}
-                    {shouldShowSecondaryGenerateStrategyButton && architectGenerateStrategyButton ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void handleGenerateStrategy();
-                        }}
-                        data-tour-id="architect-generate-strategy"
-                        disabled={isArchitectGenerateStrategyDisabled}
-                        className={cn(
-                          'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium border transition-colors',
-                          isArchitectGenerateStrategyDisabled
-                            ? 'border-border text-muted-foreground bg-card/40 cursor-not-allowed'
-                            : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
-                        )}
-                        title={architectGenerateStrategyTitle ?? architectGenerateStrategyButton.title}
-                      >
-                        <Icon name={architectGenerateStrategyButton.icon} size={12} />
-                        {architectGenerateStrategyButton.label}
                       </button>
                     ) : null}
                   </div>

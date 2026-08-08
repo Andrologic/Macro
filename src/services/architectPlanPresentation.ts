@@ -21,7 +21,6 @@ type ArchitectPlanLifecycleShape = {
   predictedBranches?: unknown[] | null;
   nodeCount?: number | null;
   predictedBranchCount?: number | null;
-  needCount?: number | null;
   chatMessageCount?: number | null;
 };
 
@@ -144,12 +143,10 @@ export const getArchitectPlanLifecyclePhase = (
   const predictedBranchCount = Array.isArray(plan.predictedBranches)
     ? plan.predictedBranches.length
     : normalizeCount(plan.predictedBranchCount);
-  const needCount = normalizeCount(plan.needCount);
   const chatMessageCount = normalizeCount(plan.chatMessageCount);
 
   return nodeCount === 0 &&
     predictedBranchCount === 0 &&
-    needCount === 0 &&
     chatMessageCount === 0
     ? 'blank'
     : 'editing';
