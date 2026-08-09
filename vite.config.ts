@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, transformWithEsbuild } from "vite";
 import react from "@vitejs/plugin-react";
@@ -33,7 +33,7 @@ const createMermaidParserSourcePlugin = () => {
         const absoluteSourcePath = resolve(dirname(entryPath), sourcePath);
         const source = sourceMap.sourcesContent?.[index];
         if (
-          absoluteSourcePath.startsWith(`${parserSourceRoot}/`) &&
+          absoluteSourcePath.startsWith(`${parserSourceRoot}${sep}`) &&
           typeof source === "string"
         ) {
           sourceByAbsolutePath.set(absoluteSourcePath, source);
