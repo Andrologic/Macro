@@ -51,7 +51,7 @@
     "i18n:audit": "bun dev/i18n/audit.mjs",
     "i18n:generate": "python dev/i18n/generate_locales.py",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
-    "lint": "bun node_modules/eslint/bin/eslint.js . --ext .ts,.tsx",
+    "lint": "node node_modules/eslint/bin/eslint.js . --ext .ts,.tsx",
     "update": "bun update",
     "test": "bun dev/run-tests.mjs",
     "version:sync": "bun dev/version/sync.mjs",
