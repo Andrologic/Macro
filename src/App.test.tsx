@@ -9,8 +9,10 @@ type AppStoreState = {
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
   leftPanelWidth: number;
+  architectLeftPanelWidth: number;
   rightPanelWidth: number;
   setLeftPanelWidth: (width: number) => void;
+  setArchitectLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
   metadataRecoveryReport: null;
 };
@@ -162,8 +164,10 @@ describe('App layout containment', () => {
       setLeftPanelOpen: () => undefined,
       setRightPanelOpen: () => undefined,
       leftPanelWidth: 320,
+      architectLeftPanelWidth: 340,
       rightPanelWidth: 360,
       setLeftPanelWidth: () => undefined,
+      setArchitectLeftPanelWidth: () => undefined,
       setRightPanelWidth: () => undefined,
       metadataRecoveryReport: null,
     };
@@ -237,6 +241,7 @@ describe('App layout containment', () => {
 
   it('renders the Architect project navigator with both panel resizers', async () => {
     appState.mode = 'Architect';
+    appState.leftPanelWidth = 600;
     const { default: App } = await loadApp();
 
     container = document.createElement('div');
@@ -252,6 +257,7 @@ describe('App layout containment', () => {
     expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="panel-right"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid="mock-resizer"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="panel-left"]')?.parentElement?.style.width).toBe('340px');
   });
 
   it('renders startup chrome while critical boot is pending', async () => {

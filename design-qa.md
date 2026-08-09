@@ -47,6 +47,8 @@ La comparaison côte à côte confirme la même structure : titre et actions glo
 
 ## Suivi de finition
 
-- P3 possible : réévaluer après usage réel si les points de statut à droite doivent recevoir une infobulle textuelle permanente.
+- Passe de finition après usage réel : le navigateur héritait d'une largeur globale de `600 px`, adaptée à d'autres panneaux mais trop importante pour une arborescence. Le mode Architect utilise désormais une largeur dédiée de `320 px`, redimensionnable entre `260` et `420 px`.
+- Les intitulés de section utilisent une casse naturelle, les actions globales ont une surface stable, et les états « projet sélectionné » et « plan actif » sont visuellement distincts.
+- Les points de statut exposent désormais leur libellé traduit. Le menu d'un plan se ferme au clic extérieur ou avec Échap, et une liste développée peut revenir à son état condensé.
 
 final result: passed

@@ -1251,7 +1251,7 @@
     },
     "projectNavigator": {
       "title": "Projects",
-      "projects": "Projects",
+      "projects": "All projects",
       "pinned": "Pinned",
       "archived": "Archived",
       "addProject": "Add project",
@@ -1261,6 +1261,7 @@
       "newPlanFor": "New plan for {{project}}",
       "firstPlan": "Create the first plan",
       "showMore": "Show {{count}} more",
+      "showLess": "Show less",
       "pin": "Pin",
       "unpin": "Unpin",
       "expandProject": "Expand project",

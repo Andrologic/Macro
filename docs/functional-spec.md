@@ -337,6 +337,8 @@ Exemples :
 
 En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet crée un plan dans cette portée.
 
+Sa largeur est propre au mode Architect afin de conserver une arborescence compacte, même si les panneaux des modes Implement ou Chat ont été agrandis. Le projet sélectionné et le plan actif utilisent des traitements visuels distincts : le premier définit la portée, le second représente le contenu actuellement ouvert.
+
 Le sélecteur de projet du header reste disponible en mode Implement, mais n'est pas dupliqué en mode Architect. De la même façon, le plan actif n'est plus sélectionné depuis un menu dans la zone centrale : celle-ci affiche le contexte courant et laisse la navigation au panneau gauche.
 
 ### 8.4 Zone centrale

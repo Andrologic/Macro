@@ -1251,7 +1251,7 @@
     },
     "projectNavigator": {
       "title": "프로젝트",
-      "projects": "프로젝트",
+      "projects": "모든 프로젝트",
       "pinned": "고정됨",
       "archived": "보관됨",
       "addProject": "프로젝트 추가",
@@ -1261,6 +1261,7 @@
       "newPlanFor": "{{project}}의 새 플랜",
       "firstPlan": "첫 플랜 만들기",
       "showMore": "{{count}}개 더 보기",
+      "showLess": "간단히 보기",
       "pin": "고정",
       "unpin": "고정 해제",
       "expandProject": "프로젝트 펼치기",
