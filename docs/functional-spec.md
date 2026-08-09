@@ -294,8 +294,8 @@ Son objectif est de permettre a l'utilisateur de :
 Le mode Chat n'est pas rattache par defaut a un contexte projet autonome.
 
 Il se distingue du mode Implement en ce que :
-- il n'est pas pilote par une strategie de plan
-- il ne travaille pas par defaut sur un contexte d'execution de projet
+- il n'est pas piloté par une stratégie de plan
+- il ne travaille pas par défaut sur un contexte d'exécution de projet
 - il ne parcourt pas un workspace complet en mode agent
 - il fonctionne conversation par conversation avec un contexte explicitement fourni
 
@@ -303,7 +303,7 @@ Le mode Chat doit conserver un historique local des conversations.
 
 ---
 
-## 8. Structure generale de l'interface
+## 8. Structure générale de l'interface
 
 ### 8.1 Structure cible
 
@@ -320,10 +320,10 @@ L'interface desktop de Macro doit etre organisee autour des zones suivantes :
 
 Le header doit permettre au minimum :
 
-- l'acces au mode actif
-- l'acces au contexte projet ou groupe courant lorsque le mode s'y prete
-- l'acces aux reglages
-- l'acces aux commandes globales de l'application
+- l'accès au mode actif
+- l'accès au contexte projet ou groupe courant lorsque le mode s'y prête
+- l'accès aux réglages
+- l'accès aux commandes globales de l'application
 
 ### 8.3 Panneau gauche
 
@@ -331,14 +331,17 @@ La disponibilité des panneaux est définie par la configuration du mode courant
 
 Exemples :
 
-- file de taches en mode Implement
+- file de tâches en mode Implement
 - historique ou navigation de conversations en mode Chat
+- navigation directe dans les projets, groupes et plans en mode Architect
 
-Le mode Architect ne possède temporairement aucun panneau gauche : sa conversation occupe le centre et sa stratégie le panneau droit. Aucun espace, séparateur ou bouton d'ouverture n'est rendu pour un emplacement absent.
+En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet crée un plan dans cette portée.
+
+Le sélecteur de projet du header reste disponible en mode Implement, mais n'est pas dupliqué en mode Architect. De la même façon, le plan actif n'est plus sélectionné depuis un menu dans la zone centrale : celle-ci affiche le contexte courant et laisse la navigation au panneau gauche.
 
 ### 8.4 Zone centrale
 
-La zone centrale doit rester le coeur operationnel de l'application.
+La zone centrale doit rester le cœur opérationnel de l'application.
 
 Elle doit principalement accueillir :
 

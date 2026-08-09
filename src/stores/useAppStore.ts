@@ -1120,6 +1120,7 @@ interface AppStore {
   projectAddOperation: ProjectAddOperation | null;
   settingsOpen: boolean;
   activeSettingsTab: SettingsTab; // Added
+  projectNavigatorOpen: boolean;
   projectModalOpen: boolean;
   projectModalGroupId: string | null;
   projectGitFlowModalProjectId: string | null;
@@ -1260,6 +1261,8 @@ interface AppStore {
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  openProjectNavigator: () => void;
+  closeProjectNavigator: () => void;
   openProjectModal: (groupId?: string | null) => void;
   closeProjectModal: () => void;
   openProjectGitFlowModal: (projectId: string) => void;
@@ -1411,6 +1414,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectAddOperation: null,
   settingsOpen: false,
   activeSettingsTab: "general",
+  projectNavigatorOpen: false,
   projectModalOpen: false,
   projectModalGroupId: null,
   projectGitFlowModalProjectId: null,
@@ -3599,6 +3603,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ settingsOpen: true, activeSettingsTab: tab }),
   closeSettings: () => set({ settingsOpen: false }),
   setSettingsTab: (tab) => set({ activeSettingsTab: tab }),
+
+  openProjectNavigator: () => set({ projectNavigatorOpen: true }),
+  closeProjectNavigator: () => set({ projectNavigatorOpen: false }),
 
   openProjectModal: (groupId = null) =>
     set({ projectModalOpen: true, projectModalGroupId: groupId }),

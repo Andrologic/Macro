@@ -91,6 +91,9 @@ export function Header({
   const mode = useAppStore((state) => state.mode);
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
+  const projectNavigatorOpen = useAppStore((state) => state.projectNavigatorOpen);
+  const openProjectNavigator = useAppStore((state) => state.openProjectNavigator);
+  const closeProjectNavigator = useAppStore((state) => state.closeProjectNavigator);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const projectGroups = useAppStore((state) => state.projectGroups);
@@ -107,7 +110,6 @@ export function Header({
   } = useTauriWindow();
   const { t } = useTranslation();
 
-  const [projectNavigatorOpen, setProjectNavigatorOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [portalPosition, setPortalPosition] = useState<{ top: number; left: number } | null>(null);
 
@@ -318,11 +320,11 @@ export function Header({
               </span>
             </div>
 
-            {mode !== 'Chat' ? (
+            {mode === 'Implement' ? (
               <>
                 <div className="ml-2 hidden h-5 w-px shrink-0 bg-border sm:block" />
                 <button
-                  onClick={() => setProjectNavigatorOpen(true)}
+                  onClick={openProjectNavigator}
                   className={cn(
                     'macro-titlebar-action flex h-8 items-center gap-2 rounded-md px-2.5',
                     'hover:bg-accent transition-colors text-sm',
@@ -456,7 +458,7 @@ export function Header({
       <Suspense fallback={null}>
         <ProjectNavigator
           isOpen={projectNavigatorOpen}
-          onClose={() => setProjectNavigatorOpen(false)}
+          onClose={closeProjectNavigator}
         />
       </Suspense>
     </>

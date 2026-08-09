@@ -342,7 +342,9 @@
       "localChangesDiscarded": "Local changes discarded"
     },
     "scope": {
-      "allProjects": "All projects"
+      "allProjects": "All projects",
+      "allRepositories": "すべてのリポジトリ",
+      "gitScope": "Git スコープ"
     }
   },
   "window": {
@@ -1246,6 +1248,45 @@
       "releaseEmptyHint": "リリースしたい内容を説明してください。Macro がバージョンとリポジトリを提案し、その後確認を求めます。",
       "hotfixEmptyHint": "本番環境のバグを説明してください。Macro がリポジトリを推定し、hotfix slug とパッチバージョンを提案してから確認を求めます。",
       "bugfixEmptyHint": "バグを説明してください。Macro がリポジトリを推定し、確認前に bugfix slug を提案します。"
+    },
+    "projectNavigator": {
+      "title": "プロジェクト",
+      "projects": "プロジェクト",
+      "pinned": "ピン留め",
+      "archived": "アーカイブ済み",
+      "addProject": "プロジェクトを追加",
+      "manageProjects": "プロジェクトを管理",
+      "refresh": "更新",
+      "newPlan": "新しいプラン",
+      "newPlanFor": "{{project}} の新しいプラン",
+      "firstPlan": "最初のプランを作成",
+      "showMore": "さらに {{count}} 件表示",
+      "pin": "ピン留め",
+      "unpin": "ピン留めを解除",
+      "expandProject": "プロジェクトを展開",
+      "collapseProject": "プロジェクトを折りたたむ",
+      "noProjects": "プロジェクトはまだありません。",
+      "loadError": "プランを読み込めませんでした。",
+      "activateError": "このプランは利用できなくなりました。",
+      "createError": "プランを作成できませんでした。",
+      "readOnlyScope": "このプロジェクトは読み取り専用です。",
+      "planReady": "新しいプランの準備ができました。",
+      "planActions": "プランの操作",
+      "rename": "名前を変更",
+      "archive": "アーカイブ",
+      "restore": "復元",
+      "delete": "削除",
+      "deleting": "削除中…",
+      "deleteTitle": "プランを削除",
+      "deleteDescription": "プラン「{{name}}」とローカルの Macro ブランチを削除します。この操作は元に戻せません。",
+      "editUnavailable": "このプランは編集できなくなりました。",
+      "editError": "プランを編集できませんでした。",
+      "archiveUnavailable": "このプランはアーカイブできなくなりました。",
+      "mutationError": "プランを更新できませんでした。",
+      "deleteError": "プランを削除できませんでした。",
+      "planRestored": "プランを復元しました。",
+      "planArchived": "プランをアーカイブしました。",
+      "planDeleted": "プランを削除しました。"
     },
     "planSelector": {
       "title": "Architect プラン",

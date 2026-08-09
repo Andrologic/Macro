@@ -342,7 +342,9 @@
       "localChangesDiscarded": "Local changes discarded"
     },
     "scope": {
-      "allProjects": "All projects"
+      "allProjects": "All projects",
+      "allRepositories": "Alle Repositories",
+      "gitScope": "Git-Bereich"
     }
   },
   "window": {
@@ -1246,6 +1248,45 @@
       "releaseEmptyHint": "Beschreibe, was du ausliefern möchtest. Macro schlägt Versionen und Repositories vor und bittet dich dann um Bestätigung.",
       "hotfixEmptyHint": "Beschreibe den Produktionsfehler. Macro ermittelt die Repositories, schlägt einen Hotfix-Slug und Patch-Versionen vor und bittet dich dann um Bestätigung.",
       "bugfixEmptyHint": "Beschreibe den Fehler. Macro ermittelt die Repositories und schlägt einen Bugfix-Slug vor, bevor es dich um Bestätigung bittet."
+    },
+    "projectNavigator": {
+      "title": "Projekte",
+      "projects": "Projekte",
+      "pinned": "Angeheftet",
+      "archived": "Archiviert",
+      "addProject": "Projekt hinzufügen",
+      "manageProjects": "Projekte verwalten",
+      "refresh": "Aktualisieren",
+      "newPlan": "Neuer Plan",
+      "newPlanFor": "Neuer Plan für {{project}}",
+      "firstPlan": "Ersten Plan erstellen",
+      "showMore": "{{count}} weitere anzeigen",
+      "pin": "Anheften",
+      "unpin": "Lösen",
+      "expandProject": "Projekt erweitern",
+      "collapseProject": "Projekt reduzieren",
+      "noProjects": "Noch keine Projekte.",
+      "loadError": "Pläne konnten nicht geladen werden.",
+      "activateError": "Dieser Plan ist nicht mehr verfügbar.",
+      "createError": "Der Plan konnte nicht erstellt werden.",
+      "readOnlyScope": "Dieses Projekt ist schreibgeschützt.",
+      "planReady": "Neuer Plan ist bereit.",
+      "planActions": "Planaktionen",
+      "rename": "Umbenennen",
+      "archive": "Archivieren",
+      "restore": "Wiederherstellen",
+      "delete": "Löschen",
+      "deleting": "Wird gelöscht…",
+      "deleteTitle": "Plan löschen",
+      "deleteDescription": "Der Plan „{{name}}“ und seine lokalen Macro-Branches werden gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
+      "editUnavailable": "Dieser Plan kann nicht mehr bearbeitet werden.",
+      "editError": "Der Plan konnte nicht bearbeitet werden.",
+      "archiveUnavailable": "Dieser Plan kann nicht mehr archiviert werden.",
+      "mutationError": "Der Plan konnte nicht aktualisiert werden.",
+      "deleteError": "Der Plan konnte nicht gelöscht werden.",
+      "planRestored": "Plan wiederhergestellt.",
+      "planArchived": "Plan archiviert.",
+      "planDeleted": "Plan gelöscht."
     },
     "planSelector": {
       "title": "Architect-Pläne",

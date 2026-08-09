@@ -448,6 +448,7 @@ const App: React.FC = () => {
             <PanelResizer
               onResize={(delta) => setLeftPanelWidth(leftPanelWidth + delta)}
               className="hidden sm:flex"
+              ariaLabel="Resize left panel"
             />
           </>
         )}
@@ -463,6 +464,7 @@ const App: React.FC = () => {
             <PanelResizer
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
               className="hidden sm:flex"
+              ariaLabel="Resize right panel"
             />
             <div
               className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"

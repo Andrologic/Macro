@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
@@ -44,6 +44,7 @@ import {
 } from '../../services/projectWorkspaceState';
 import { ARCHITECT_GENERATE_STRATEGY_BUTTON_PROMPT_SUFFIX } from '../../services/architectChat';
 import { isArchitectPlanStrategyMutationLocked } from '../../services/architectPlanService';
+import { getArchitectPlanPrimaryName } from '../../services/architectPlanPresentation';
 import { resolveActiveConversationQuestionnaire } from '../../services/chatQuestionnaires';
 import { getServiceRuntimeCapabilities } from '../../services';
 import {
@@ -223,15 +224,6 @@ const getManualCompactionSkipDescription = (
       );
   }
 };
-
-const LazyPlanSelector = lazy(async () => {
-  const module = await import('../architect/PlanSelector');
-  return { default: module.PlanSelector };
-});
-
-const PlanSelectorFallback: React.FC = () => (
-  <div className="h-8 w-28 rounded-md border border-border/60 bg-card/60 animate-pulse" aria-hidden="true" />
-);
 
 const ComposerFallbackStatus: React.FC = () => (
   <div className="sr-only" aria-live="polite">
@@ -926,6 +918,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     planNodes,
     predictedBranches,
     openProjectModal,
+    setLeftPanelOpen,
   } = useAppStore(useShallow((state) => ({
     mode: state.mode,
     agentType: state.agentType,
@@ -941,6 +934,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     planNodes: state.planNodes,
     predictedBranches: state.predictedBranches,
     openProjectModal: state.openProjectModal,
+    setLeftPanelOpen: state.setLeftPanelOpen,
   })));
   const {
     conversations,
@@ -1716,7 +1710,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         subtitle:
           isModeProjectWorkspaceMissing
             ? null
-            : currentConversation?.title ||
+            : activePlanContext
+              ? getArchitectPlanPrimaryName(activePlanContext)
+              : currentConversation?.title ||
               (focusedProjectName && focusedProjectName !== selectedGlobalProjectName
                 ? focusedProjectName
                 : null),
@@ -1738,6 +1734,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     };
   }, [
     currentConversation?.title,
+    activePlanContext,
     focusedProjectName,
     isModeProjectWorkspaceMissing,
     mode,
@@ -1779,8 +1776,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? t('architect.createPlanAction', 'Create a plan')
       : t('architect.selectPlanAction', 'Select a plan');
   const handleMissingArchitectPlanAction = useCallback(() => {
-    dispatchArchitectPlanSelectorRequest({ action: 'primary' });
-  }, []);
+    setLeftPanelOpen(true);
+    window.requestAnimationFrame(() => {
+      dispatchArchitectPlanSelectorRequest({ action: 'primary' });
+    });
+  }, [setLeftPanelOpen]);
 
   useEffect(() => {
     setIsTaskTodoDropdownOpen(false);
@@ -2654,13 +2654,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           </div>
 
           <div className="flex items-center gap-2">
-            {mode === 'Architect' && (
-              <div data-tour-id="architect-plan-selector">
-                <Suspense fallback={<PlanSelectorFallback />}>
-                  <LazyPlanSelector />
-                </Suspense>
-              </div>
-            )}
             {mode === 'Implement' && <TaskArtifactsButton />}
             {shouldShowContextIndicator && selectedConversationId && (
               <ContextWindowIndicator

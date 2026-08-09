@@ -235,7 +235,7 @@ describe('App layout containment', () => {
     expect(rightPanelWrapper?.className).toContain('overflow-hidden');
   });
 
-  it('does not render or reserve the absent Architect left panel', async () => {
+  it('renders the Architect project navigator with both panel resizers', async () => {
     appState.mode = 'Architect';
     const { default: App } = await loadApp();
 
@@ -248,10 +248,10 @@ describe('App layout containment', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.querySelector('[data-testid="panel-left"]')).toBeNull();
+    expect(container.querySelector('[data-testid="panel-left"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="panel-center"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="panel-right"]')).not.toBeNull();
-    expect(container.querySelectorAll('[data-testid="mock-resizer"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="mock-resizer"]')).toHaveLength(2);
   });
 
   it('renders startup chrome while critical boot is pending', async () => {

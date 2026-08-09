@@ -1248,7 +1248,7 @@ describe('Footer', () => {
     root?.render(<Footer />);
     await flushAsyncWork();
 
-    expect((container?.querySelector('select') as HTMLSelectElement | null)?.value).toBe('__all__');
+    expect(container?.querySelector('select')).toBeNull();
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('1@2');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('0@9');
     expect(container?.textContent ?? '').toContain('release-c');
@@ -1273,12 +1273,7 @@ describe('Footer', () => {
     root?.render(<Footer />);
     await flushAsyncWork();
 
-    const select = container?.querySelector('select') as HTMLSelectElement | null;
-    expect(select?.value).toBe('__all__');
-    expect(Array.from(select?.options ?? []).map((option) => option.value)).toEqual([
-      '__all__',
-      'project-a',
-    ]);
+    expect(container?.querySelector('select')).toBeNull();
     expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('2@5');
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('0@4');
   });
