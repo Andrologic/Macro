@@ -1399,6 +1399,7 @@ async fn apply_wsl_git_setup_action(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_project_git_setup_commit<T, F, Fut>(
     workspace_path: &Path,
     project_path: &str,
@@ -1506,6 +1507,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_project_with_git_setup(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -1748,7 +1750,7 @@ pub async fn list_tasks(
         .collect::<Vec<_>>();
     let Some(plan) = state.current_plan else {
         if manual_tasks.is_empty() {
-            tracing::warn!(
+            tracing::debug!(
                 action = "workspace_task_catalog_empty",
                 reason = "no_current_plan",
                 project_count,
@@ -1826,20 +1828,37 @@ pub async fn list_tasks(
         } else {
             "no_catalog_tasks"
         };
-        tracing::warn!(
-            action = "workspace_task_catalog_empty",
-            reason = empty_reason,
-            source = %source,
-            plan_id = %plan.id,
-            plan_status = %plan.status,
-            plan_task_count = task_count,
-            manual_feature_count,
-            project_count,
-            is_executable_plan,
-            workspace_path = %workspace_path.display(),
-            metadata_root = %metadata_root.display(),
-            "Workspace task catalog is empty after loading workspace metadata."
-        );
+        if is_executable_plan {
+            tracing::warn!(
+                action = "workspace_task_catalog_empty",
+                reason = empty_reason,
+                source = %source,
+                plan_id = %plan.id,
+                plan_status = %plan.status,
+                plan_task_count = task_count,
+                manual_feature_count,
+                project_count,
+                is_executable_plan,
+                workspace_path = %workspace_path.display(),
+                metadata_root = %metadata_root.display(),
+                "Executable workspace plan has no catalog tasks after loading metadata."
+            );
+        } else {
+            tracing::debug!(
+                action = "workspace_task_catalog_empty",
+                reason = empty_reason,
+                source = %source,
+                plan_id = %plan.id,
+                plan_status = %plan.status,
+                plan_task_count = task_count,
+                manual_feature_count,
+                project_count,
+                is_executable_plan,
+                workspace_path = %workspace_path.display(),
+                metadata_root = %metadata_root.display(),
+                "Non-executable workspace plan has no catalog tasks."
+            );
+        }
     }
 
     Ok(WorkspaceTaskCatalogDto {
@@ -5326,7 +5345,7 @@ fn discover_recoverable_project_hints(
     let mut missing_project_id_count = 0usize;
 
     for root in &roots {
-        let Ok(entries) = std::fs::read_dir(&root) else {
+        let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };
         for entry in entries.flatten().take(max_children_per_root) {

@@ -219,7 +219,13 @@ target=''
 if [ -L "$p" ]; then target=$(readlink -- "$p" 2>/dev/null || true); fi
 printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$size" "$mtime" "$perm" "$target"
 "#;
-    let output = run_wsl_shell(path, script, &[path.linux_path.clone()], WSL_FS_TIMEOUT).await?;
+    let output = run_wsl_shell(
+        path,
+        script,
+        std::slice::from_ref(&path.linux_path),
+        WSL_FS_TIMEOUT,
+    )
+    .await?;
     let stdout = output.stdout_text();
     let parts = stdout.splitn(5, '\t').collect::<Vec<_>>();
     if parts.len() < 4 {
@@ -263,7 +269,7 @@ async fn read_wsl_file_internal(
     let output = run_wsl_shell(
         &resolved,
         r#"cat -- "$1""#,
-        &[resolved.linux_path.clone()],
+        std::slice::from_ref(&resolved.linux_path),
         WSL_FS_TIMEOUT,
     )
     .await?;
@@ -516,7 +522,7 @@ async fn wsl_exists_internal(
     let output = run_wsl_shell(
         &resolved,
         r#"if [ -e "$1" ] || [ -L "$1" ]; then printf '1'; else printf '0'; fi"#,
-        &[resolved.linux_path.clone()],
+        std::slice::from_ref(&resolved.linux_path),
         WSL_FS_TIMEOUT,
     )
     .await?;

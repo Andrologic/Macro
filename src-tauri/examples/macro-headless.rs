@@ -1,5 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -122,8 +122,8 @@ fn validate_listen_security(addr: SocketAddr, bearer_token: Option<&str>) -> Res
     ))
 }
 
-fn configured_headless_allowed_roots(workspace_path: &PathBuf) -> Result<Vec<PathBuf>, String> {
-    let mut configured = vec![workspace_path.clone()];
+fn configured_headless_allowed_roots(workspace_path: &FsPath) -> Result<Vec<PathBuf>, String> {
+    let mut configured = vec![workspace_path.to_path_buf()];
     if let Ok(raw_roots) = std::env::var("MACRO_HEADLESS_ALLOWED_ROOTS") {
         configured
             .extend(std::env::split_paths(&raw_roots).filter(|path| !path.as_os_str().is_empty()));

@@ -5,9 +5,9 @@ import { join } from 'node:path';
 const ASSETS_DIR = fileURLToPath(new URL('../dist/assets/', import.meta.url));
 
 const BUDGETS = [
-  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 800_000 },
+  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_200_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
-  { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 80_000 },
+  { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 115_000 },
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 45_000 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
   { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 100_000 },

@@ -4948,6 +4948,7 @@ pub async fn git_worktree_inspect(
 
 #[tauri::command]
 /// Create a Git worktree for a specific task.
+#[allow(clippy::too_many_arguments)]
 pub async fn git_worktree_create(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,

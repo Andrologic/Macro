@@ -10,7 +10,7 @@ const ignoredPrefixes = [
 ];
 
 const run = async (args) => {
-  const proc = Bun.spawn(['bun', 'test', ...args], {
+  const proc = Bun.spawn([process.execPath, 'test', ...args], {
     stdout: 'inherit',
     stderr: 'inherit',
   });

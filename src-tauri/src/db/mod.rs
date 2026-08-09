@@ -1565,11 +1565,11 @@ mod tests {
 
     async fn apply_baseline_in_transaction(pool: &sqlx::SqlitePool) {
         let mut transaction = pool.begin().await.expect("begin baseline transaction");
-        ensure_schema_migrations_table(&mut *transaction)
+        ensure_schema_migrations_table(&mut transaction)
             .await
             .expect("schema migrations table");
         apply_migration(
-            &mut *transaction,
+            &mut transaction,
             MIGRATION_001_VERSION,
             MIGRATION_001_NAME.to_string(),
             MIGRATION_001_SQL.to_string(),
@@ -1584,11 +1584,11 @@ mod tests {
 
     async fn stamp_baseline_in_transaction(pool: &sqlx::SqlitePool) {
         let mut transaction = pool.begin().await.expect("begin stamp transaction");
-        ensure_schema_migrations_table(&mut *transaction)
+        ensure_schema_migrations_table(&mut transaction)
             .await
             .expect("schema migrations table");
         stamp_migration(
-            &mut *transaction,
+            &mut transaction,
             MIGRATION_001_VERSION,
             MIGRATION_001_NAME.to_string(),
         )
@@ -2006,7 +2006,7 @@ mod tests {
             .acquire()
             .await
             .expect("provider settings connection");
-        let columns = table_columns(&mut *connection, "provider_settings".to_string())
+        let columns = table_columns(&mut connection, "provider_settings".to_string())
             .await
             .expect("provider_settings columns");
 

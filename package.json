@@ -5,7 +5,7 @@
   "author": "Andrologic",
   "license": "AGPL-3.0-or-later",
   "type": "module",
-  "packageManager": "bun@1.1.42",
+  "packageManager": "bun@1.2.23",
   "repository": {
     "type": "git",
     "url": "https://github.com/Andrologic/Macro.git"

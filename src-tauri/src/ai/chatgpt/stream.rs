@@ -294,10 +294,7 @@ impl SseParser {
 
     fn drain_events(&mut self, flush: bool) -> Vec<String> {
         let mut events = Vec::new();
-        loop {
-            let Some((line_end, terminator_len)) = self.find_line_end(flush) else {
-                break;
-            };
+        while let Some((line_end, terminator_len)) = self.find_line_end(flush) {
             let line = self.input[..line_end].to_string();
             self.input.drain(..line_end + terminator_len);
             if line.is_empty() {

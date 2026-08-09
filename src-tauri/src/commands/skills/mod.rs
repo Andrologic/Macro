@@ -226,7 +226,7 @@ fn find_skill_file(root: &Path) -> Option<(PathBuf, bool)> {
 }
 
 fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
-    mapping.get(&Value::String(key.to_string()))
+    mapping.get(Value::String(key.to_string()))
 }
 
 fn yaml_value_to_string(value: &Value) -> String {
@@ -525,12 +525,12 @@ fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
     let normalized = raw.replace("\r\n", "\n");
     let mut body = normalized.clone();
 
-    if normalized.starts_with("---\n") {
-        let frontmatter_range = normalized[4..]
+    if let Some(without_opening) = normalized.strip_prefix("---\n") {
+        let frontmatter_range = without_opening
             .find("\n---\n")
             .map(|end_index| (4 + end_index, 4 + end_index + "\n---\n".len()))
             .or_else(|| {
-                normalized
+                without_opening
                     .ends_with("\n---")
                     .then_some((normalized.len() - "\n---".len(), normalized.len()))
             });
@@ -1091,7 +1091,7 @@ fn resolve_resource_path(
             _ => None,
         })
         .ok_or_else(|| command_error("Skill resource path is required."))?;
-    if !allowed_roots.iter().any(|allowed| first == *allowed) {
+    if !allowed_roots.contains(&first) {
         return Err(command_error(format!(
             "Skill resource path must start with one of: {}.",
             allowed_roots.join(", ")

@@ -1142,12 +1142,12 @@ fn binary_candidates(binary: &str) -> Vec<String> {
             return vec![binary.to_string()];
         }
 
-        return vec![
+        vec![
             format!("{}.exe", binary),
             format!("{}.cmd", binary),
             format!("{}.bat", binary),
             binary.to_string(),
-        ];
+        ]
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -4010,6 +4010,7 @@ pub async fn db_get_conversation(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn db_create_conversation(
     pool: State<'_, DbPool>,
     title: Option<String>,
@@ -4944,7 +4945,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     static PATH_TEST_LOCK: Mutex<()> = Mutex::new(());
-    static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static SECRET_STORE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn db_pool_propagates_failure_without_polling() {
@@ -5009,9 +5010,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_secret_metadata_reconciliation_clears_stale_database_flags() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = SECRET_STORE_TEST_LOCK.lock().await;
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -5083,9 +5082,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_api_key_change_updates_secret_store_before_database_flag() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = SECRET_STORE_TEST_LOCK.lock().await;
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -5135,9 +5132,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_api_key_change_does_not_mark_database_when_secret_write_fails() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = SECRET_STORE_TEST_LOCK.lock().await;
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let secret_file = temp_dir.path().join("provider-secrets.json");

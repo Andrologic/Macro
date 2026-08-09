@@ -2,10 +2,10 @@ use super::load_or_default_state;
 use super::metadata::{
     WorkspaceArchitectActivatePlanChatRequestDto, WorkspaceArchitectActivatePlanHeadRequestDto,
     WorkspaceArchitectChatMessageDto, WorkspaceArchitectListPlansRequestDto,
-    WorkspaceArchitectPlanActivationHeadDto,
-    WorkspaceArchitectPlanListDto, WorkspaceArchitectPlanRecordDto,
-    WorkspaceArchitectPlanReplicaDto, WorkspaceArchitectPlanRuntimeStatusDto,
-    WorkspaceArchitectPlanSummaryDto, WorkspaceArchitectPlanTranscriptDto,
+    WorkspaceArchitectPlanActivationHeadDto, WorkspaceArchitectPlanListDto,
+    WorkspaceArchitectPlanRecordDto, WorkspaceArchitectPlanReplicaDto,
+    WorkspaceArchitectPlanRuntimeStatusDto, WorkspaceArchitectPlanSummaryDto,
+    WorkspaceArchitectPlanTranscriptDto,
 };
 use crate::core::error::{BackendError, Result};
 use crate::git::GitState;
@@ -1387,14 +1387,16 @@ mod tests {
 
     #[test]
     fn collect_workspace_state_project_paths_includes_standalone_projects() {
-        let mut state = WorkspaceState::default();
-        state.standalone_projects = vec![project("project-solo", "/repos/solo")];
-        state.project_groups = vec![ProjectGroupDto {
-            id: "group-main".to_string(),
-            name: "Main".to_string(),
-            is_open: true,
-            projects: vec![project("project-grouped", "/repos/grouped")],
-        }];
+        let state = WorkspaceState {
+            standalone_projects: vec![project("project-solo", "/repos/solo")],
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![project("project-grouped", "/repos/grouped")],
+            }],
+            ..WorkspaceState::default()
+        };
 
         let paths = collect_workspace_state_project_paths(&state, None);
 
@@ -1409,17 +1411,19 @@ mod tests {
 
     #[test]
     fn collect_workspace_state_project_paths_filters_by_scope_hint() {
-        let mut state = WorkspaceState::default();
-        state.standalone_projects = vec![
-            project("project-solo", "/repos/solo"),
-            project("project-other", "/repos/other"),
-        ];
-        state.project_groups = vec![ProjectGroupDto {
-            id: "group-main".to_string(),
-            name: "Main".to_string(),
-            is_open: true,
-            projects: vec![project("project-grouped", "/repos/grouped")],
-        }];
+        let state = WorkspaceState {
+            standalone_projects: vec![
+                project("project-solo", "/repos/solo"),
+                project("project-other", "/repos/other"),
+            ],
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![project("project-grouped", "/repos/grouped")],
+            }],
+            ..WorkspaceState::default()
+        };
         let allowed_ids = ["project-solo".to_string()]
             .into_iter()
             .collect::<HashSet<_>>();
@@ -1505,11 +1509,13 @@ mod tests {
         let project_id = "project-lplr-app-1780237886690";
         let stale_project_id = "project-stale-before-standalone-migration";
         let plan_id = "refonte-catalogue-produit";
-        let mut state = WorkspaceState::default();
-        state.standalone_projects = vec![project(
-            project_id,
-            project_path.to_str().expect("project path string"),
-        )];
+        let state = WorkspaceState {
+            standalone_projects: vec![project(
+                project_id,
+                project_path.to_str().expect("project path string"),
+            )],
+            ..WorkspaceState::default()
+        };
         write_json(&metadata_root.join("workspace.json"), &state);
 
         let summary = plan_summary(plan_id, stale_project_id);

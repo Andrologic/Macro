@@ -34,6 +34,7 @@ const DEFAULT_TERMINAL_ROWS: u16 = 32;
 const MAX_TERMINAL_SNAPSHOT_BYTES: usize = 1_000_000;
 const DEFAULT_LEGACY_COMMAND_TIMEOUT_MS: u64 = 5 * 60 * 1_000;
 const MAX_LEGACY_COMMAND_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+#[cfg(not(windows))]
 const LEGACY_COMMAND_KILL_GRACE_MS: u64 = 2_000;
 const MAX_LEGACY_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const LEGACY_COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
@@ -600,9 +601,7 @@ fn parse_command_marker(buffer: &str, marker_prefix: &str) -> Option<(usize, usi
         let start = search_start + relative_start;
         let after_start = start + marker_prefix.len();
         let suffix = &buffer[after_start..];
-        let Some(end_rel) = suffix.find("__") else {
-            return None;
-        };
+        let end_rel = suffix.find("__")?;
 
         if let Ok(exit_code) = suffix[..end_rel].parse::<i32>() {
             let end = after_start + end_rel + 2;

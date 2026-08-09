@@ -763,7 +763,7 @@ pub async fn create_message(pool: &SqlitePool, input: CreateMessageInput) -> DbR
     .await?;
 
     refresh_conversation_metadata_with_connection(
-        &mut *transaction,
+        &mut transaction,
         input.conversation_id.clone(),
         Some(now.clone()),
     )
@@ -852,7 +852,7 @@ pub async fn import_messages(
 
     if last_created_at.is_some() {
         refresh_conversation_metadata_with_connection(
-            &mut *transaction,
+            &mut transaction,
             conversation_id.to_string(),
             None,
         )
@@ -921,7 +921,7 @@ pub async fn update_message_content(
     .await?;
 
     if let Some(conversation_id) = conversation_id {
-        refresh_conversation_metadata_with_connection(&mut *transaction, conversation_id, None)
+        refresh_conversation_metadata_with_connection(&mut transaction, conversation_id, None)
             .await?;
     }
 
@@ -957,7 +957,7 @@ pub async fn delete_messages_after(
     .execute(&mut *transaction)
     .await?;
     refresh_conversation_metadata_with_connection(
-        &mut *transaction,
+        &mut transaction,
         conversation_id.to_string(),
         None,
     )
