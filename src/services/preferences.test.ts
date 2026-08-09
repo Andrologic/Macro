@@ -95,13 +95,14 @@ describe('preferences legacy cleanup', () => {
     expect(value).toBeNull();
   });
 
-  it('keeps Architect action plans concise by default', async () => {
+  it('keeps Architect strategy generation explicit and task-oriented by default', async () => {
     const { getDefaultPromptForPreferenceKey, PREF_KEYS } = await loadPreferencesModule();
 
     const prompt = getDefaultPromptForPreferenceKey(PREF_KEYS.PROMPT_ARCHITECT);
 
-    expect(prompt).toContain('When the user asks for an action plan');
-    expect(prompt).toContain('Prefer 3-5 short sections or bullets');
+    expect(prompt).toContain('Do not call `strategy_generate` automatically');
+    expect(prompt).toContain('provide a concise natural-language recap');
+    expect(prompt).toContain('concrete todos for its implementation checklist');
     expect(prompt).toContain('Do not create a "Finalize plan" strategy node yourself');
   });
 
