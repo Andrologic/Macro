@@ -49,6 +49,8 @@ export const PREF_KEYS = {
   AGENT_TYPE: "agentType",
   RECENT_PROJECTS: "recentProjects",
   MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
+  ARCHITECT_PINNED_PLAN_IDS: "architectPinnedPlanIds",
+  ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS: "architectNavigatorExpandedScopeIds",
   AI_CONTEXT_SELECTIONS: "aiContextSelections",
   PROMPT_ARCHITECT: "promptArchitect",
   PROMPT_IMPLEMENT: "promptImplement",
@@ -260,6 +262,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.AGENT_TYPE]: 'build',
   [PREF_KEYS.RECENT_PROJECTS]: [],
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
+  [PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS]: [],
+  [PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS]: [],
   [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {
     version: 2,
     modeSelections: {},

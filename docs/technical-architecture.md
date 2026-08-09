@@ -148,21 +148,23 @@ Une fondation HTTP distante existe dans le code a titre experimental, mais elle 
 
 ### 5.1 Organisation
 
-Le frontend est organise autour de :
+Le frontend est organisé autour de :
 
 - `components/` pour les surfaces UI
-- `stores/` pour l'etat global
-- `services/` pour la logique d'acces et d'orchestration
+- `stores/` pour l'état global
+- `services/` pour la logique d'accès et d'orchestration
 - `hooks/` pour les comportements transverses
 - `types/` pour les types applicatifs
 
 ### 5.2 Routage fonctionnel par mode
 
-L'application n'utilise pas un routage classique base sur des pages.
+L'application n'utilise pas un routage classique basé sur des pages.
 
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
-Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise actuellement le centre pour la conversation et la droite pour la stratégie, sans panneau gauche.
+Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et stratégie à droite.
+
+Le navigateur Architect charge un catalogue transverse des plans, mais délègue toute activation à `useAppStore.activateArchitectPlan`. La sélection canonique reste `selectedGroupId`/`selectedProjectId` pour le contexte et `activeArchitectPlanId`/`activePlanContext` pour le plan. Les épingles et les groupes visuellement développés sont de simples préférences d'interface ; ils ne créent pas un nouvel état métier.
 
 ### 5.3 Decoupage des panneaux
 
@@ -171,14 +173,14 @@ L'interface est structurée autour de :
 - un header
 - un footer
 - un panneau gauche contextuel optionnel
-- une zone centrale partagee
+- une zone centrale partagée
 - un panneau droit contextuel optionnel
 
-Le centre reste principalement occupe par la conversation et la coordination du travail.
+Le centre reste principalement occupé par la conversation et la coordination du travail.
 
 ### 5.4 Initialisation
 
-Le frontend initialise ses stores par priorites afin de reduire le cout de demarrage percu.
+Le frontend initialise ses stores par priorités afin de réduire le coût de démarrage perçu.
 
 L'initialisation se fait en plusieurs niveaux :
 

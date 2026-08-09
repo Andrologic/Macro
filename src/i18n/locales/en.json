@@ -342,7 +342,9 @@
       "localChangesDiscarded": "Local changes discarded"
     },
     "scope": {
-      "allProjects": "All projects"
+      "allProjects": "All projects",
+      "allRepositories": "All repositories",
+      "gitScope": "Git scope"
     }
   },
   "window": {
@@ -1246,6 +1248,45 @@
       "releaseEmptyHint": "Describe what you want to ship. Macro will propose versions and projects, then ask you to confirm.",
       "hotfixEmptyHint": "Describe the production bug. Macro will infer the projects, propose a hotfix slug and patch versions, then ask you to confirm.",
       "bugfixEmptyHint": "Describe the bug. Macro will infer the projects and propose a bugfix slug before asking you to confirm."
+    },
+    "projectNavigator": {
+      "title": "Projects",
+      "projects": "Projects",
+      "pinned": "Pinned",
+      "archived": "Archived",
+      "addProject": "Add project",
+      "manageProjects": "Manage projects",
+      "refresh": "Refresh",
+      "newPlan": "New plan",
+      "newPlanFor": "New plan for {{project}}",
+      "firstPlan": "Create the first plan",
+      "showMore": "Show {{count}} more",
+      "pin": "Pin",
+      "unpin": "Unpin",
+      "expandProject": "Expand project",
+      "collapseProject": "Collapse project",
+      "noProjects": "No projects yet.",
+      "loadError": "Unable to load plans.",
+      "activateError": "This plan is no longer available.",
+      "createError": "Unable to create the plan.",
+      "readOnlyScope": "This project is read-only.",
+      "planReady": "New plan ready.",
+      "planActions": "Plan actions",
+      "rename": "Rename",
+      "archive": "Archive",
+      "restore": "Restore",
+      "delete": "Delete",
+      "deleting": "Deleting…",
+      "deleteTitle": "Delete plan",
+      "deleteDescription": "The plan “{{name}}” and its local Macro branches will be deleted. This action cannot be undone.",
+      "editUnavailable": "This plan can no longer be edited.",
+      "editError": "Unable to edit the plan.",
+      "archiveUnavailable": "This plan can no longer be archived.",
+      "mutationError": "Unable to update the plan.",
+      "deleteError": "Unable to delete the plan.",
+      "planRestored": "Plan restored.",
+      "planArchived": "Plan archived.",
+      "planDeleted": "Plan deleted."
     },
     "planSelector": {
       "title": "Architect plans",

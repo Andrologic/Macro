@@ -7,6 +7,7 @@ interface PanelResizerProps {
   className?: string;
   disabled?: boolean;
   orientation?: 'horizontal' | 'vertical';
+  ariaLabel?: string;
 }
 
 const RESIZER_ICON_SIZE_PX = 6;
@@ -18,6 +19,7 @@ export function PanelResizer({
   className,
   disabled = false,
   orientation = 'horizontal',
+  ariaLabel = 'Resize panel',
 }: PanelResizerProps) {
   const resizerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -47,6 +49,25 @@ export function PanelResizer({
     // Disable text selection during drag
     document.body.style.userSelect = 'none';
     document.body.style.cursor = orientation === 'vertical' ? 'row-resize' : 'col-resize';
+  }, [disabled, orientation]);
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    const step = event.shiftKey ? 32 : 8;
+    const delta = orientation === 'vertical'
+      ? event.key === 'ArrowUp'
+        ? -step
+        : event.key === 'ArrowDown'
+          ? step
+          : null
+      : event.key === 'ArrowLeft'
+        ? -step
+        : event.key === 'ArrowRight'
+          ? step
+          : null;
+    if (delta === null) return;
+    event.preventDefault();
+    onResizeRef.current(delta);
   }, [disabled, orientation]);
 
   useEffect(() => {
@@ -92,11 +113,17 @@ export function PanelResizer({
   return (
     <div
       ref={resizerRef}
+      role="separator"
+      aria-label={ariaLabel}
+      aria-orientation={orientation === 'vertical' ? 'horizontal' : 'vertical'}
+      tabIndex={disabled ? -1 : 0}
       onMouseDown={handleMouseDown}
       onTouchStart={handleMouseDown}
+      onKeyDown={handleKeyDown}
       className={cn(
         'relative flex items-center justify-center transition-colors',
         'hover:bg-accent/50 active:bg-accent/60',
+        'focus-visible:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50',
         orientation === 'vertical' ? 'cursor-row-resize select-none' : 'cursor-col-resize select-none',
         'z-10 shrink-0',
         isDragging && 'bg-accent/60',
