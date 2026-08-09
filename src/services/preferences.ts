@@ -30,6 +30,7 @@ export const PREF_KEYS = {
 
   // Panel state
   LEFT_PANEL_WIDTH: "leftPanelWidth",
+  ARCHITECT_LEFT_PANEL_WIDTH: "architectLeftPanelWidth",
   RIGHT_PANEL_WIDTH: "rightPanelWidth",
   IS_LEFT_PANEL_OPEN: "isLeftPanelOpen",
   IS_RIGHT_PANEL_OPEN: "isRightPanelOpen",
@@ -245,6 +246,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.IS_MAXIMIZED]: false,
   [PREF_KEYS.WINDOW_BOOTSTRAP_VERSION]: 0,
   [PREF_KEYS.LEFT_PANEL_WIDTH]: 280,
+  [PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH]: 320,
   [PREF_KEYS.RIGHT_PANEL_WIDTH]: 320,
   [PREF_KEYS.IS_LEFT_PANEL_OPEN]: true,
   [PREF_KEYS.IS_RIGHT_PANEL_OPEN]: true,

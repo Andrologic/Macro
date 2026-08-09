@@ -166,7 +166,9 @@ Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton 
 
 Le navigateur Architect charge un catalogue transverse des plans, mais délègue toute activation à `useAppStore.activateArchitectPlan`. La sélection canonique reste `selectedGroupId`/`selectedProjectId` pour le contexte et `activeArchitectPlanId`/`activePlanContext` pour le plan. Les épingles et les groupes visuellement développés sont de simples préférences d'interface ; ils ne créent pas un nouvel état métier.
 
-### 5.3 Decoupage des panneaux
+Le shell persiste une largeur dédiée au panneau gauche Architect. Elle est bornée séparément de la largeur générique des panneaux gauche afin qu'une préférence héritée d'un autre mode ne dégrade pas la lisibilité de l'arborescence projets/plans.
+
+### 5.3 Découpage des panneaux
 
 L'interface est structurée autour de :
 

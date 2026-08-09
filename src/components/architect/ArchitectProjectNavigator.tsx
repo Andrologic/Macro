@@ -60,12 +60,15 @@ const planKindIcon = {
 } as const;
 
 const planPhaseDotClass: Record<string, string> = {
+  blank: 'bg-muted-foreground/45',
+  editing: 'bg-amber-500',
   draft: 'bg-muted-foreground/60',
   validated: 'bg-sky-500',
   in_progress: 'bg-amber-500',
   completed: 'bg-emerald-500',
   cancelled: 'bg-red-500',
   archived: 'bg-muted-foreground/40',
+  deleted: 'bg-red-500',
 };
 
 const scopeIsSelected = (
@@ -464,6 +467,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     return () => window.removeEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
   }, [createPlan, entriesByScope, expandedScopeIds, openProjectNavigator, persistExpandedScopes, selectedScope]);
 
+  useEffect(() => {
+    if (!openPlanMenuId) return;
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-architect-plan-menu]')) return;
+      setOpenPlanMenuId(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenPlanMenuId(null);
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [openPlanMenuId]);
+
   const renderPlanRow = (entry: ArchitectNavigatorPlanEntry, showScope = false) => {
     const isActive = entry.plan.id === activeArchitectPlanId;
     const isPinned = pinnedPlanIds.includes(entry.plan.id);
@@ -476,29 +498,37 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       <div
         key={`${showScope ? 'pinned' : entry.scopeId}:${entry.plan.id}`}
         className={cn(
-          'group/plan relative flex min-w-0 items-center rounded-md pr-1 transition-colors',
-          isActive ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          'group/plan relative flex min-w-0 items-center rounded-md border border-transparent pr-1 transition-colors',
+          isActive
+            ? 'border-primary/20 bg-primary/10 text-foreground'
+            : 'text-muted-foreground hover:border-border/50 hover:bg-accent/55 hover:text-foreground',
         )}
       >
+        {isActive && <span aria-hidden="true" className="absolute bottom-1 left-0 top-1 w-0.5 rounded-r-full bg-primary" />}
         <button
           type="button"
           disabled={isBusy || entry.plan.status === 'archived'}
           onClick={() => void activatePlan(entry)}
-          className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50 disabled:cursor-default disabled:opacity-60"
+          className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70 disabled:cursor-default disabled:opacity-60"
           aria-current={isActive ? 'page' : undefined}
         >
           {isActivating || isMutating ? (
             <Icon name="loader" size={12} className="shrink-0 animate-spin text-primary" />
           ) : (
-            <Icon name={planKindIcon[kind]} size={12} className="shrink-0 opacity-75" />
+            <Icon name={planKindIcon[kind]} size={12} className={cn('shrink-0', isActive ? 'text-primary' : 'opacity-70')} />
           )}
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5">
-              <span className="truncate text-xs">{getArchitectPlanPrimaryName(entry.plan)}</span>
+              <span className={cn('truncate text-xs', isActive && 'font-medium')}>{getArchitectPlanPrimaryName(entry.plan)}</span>
             </span>
             {showScope && <span className="block truncate text-[10px] text-muted-foreground/75">{entry.scopeLabel}</span>}
           </span>
-          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', planPhaseDotClass[phase] ?? planPhaseDotClass.draft)} />
+          <span
+            className={cn('h-1.5 w-1.5 shrink-0 rounded-full ring-2 ring-background', planPhaseDotClass[phase] ?? planPhaseDotClass.draft)}
+            title={t(`architect.status.${phase}`, phase)}
+            role="img"
+            aria-label={t(`architect.status.${phase}`, phase)}
+          />
         </button>
         <button
           type="button"
@@ -516,7 +546,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         >
           <Icon name={isPinned ? 'pin-off' : 'pin'} size={11} />
         </button>
-        <div className="relative">
+        <div className="relative" data-architect-plan-menu>
           <button
             type="button"
             onClick={() => setOpenPlanMenuId((current) => current === entry.plan.id ? null : entry.plan.id)}
@@ -531,7 +561,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             <Icon name="more-horizontal" size={12} />
           </button>
           {openPlanMenuId === entry.plan.id && (
-            <div className="absolute right-0 top-7 z-30 w-40 rounded-md border border-border bg-popover p-1 text-xs text-popover-foreground shadow-lg">
+            <div className="absolute right-0 top-8 z-30 w-44 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-xl">
               {capabilities.canEditDetails && (
                 <button
                   type="button"
@@ -579,7 +609,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   };
 
   return (
-    <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-card" aria-label={t('architect.projectNavigator.title', 'Projets')}>
+    <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}>
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Icon name="folder-tree" size={15} className="shrink-0 text-primary" />
@@ -589,7 +619,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           <button
             type="button"
             onClick={() => openProjectModal(null)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/70 bg-muted/20 text-muted-foreground shadow-sm transition-colors hover:border-primary/30 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             title={t('architect.projectNavigator.addProject', 'Ajouter un projet')}
             aria-label={t('architect.projectNavigator.addProject', 'Ajouter un projet')}
           >
@@ -598,7 +628,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           <button
             type="button"
             onClick={openProjectNavigator}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/70 bg-muted/20 text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             title={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
             aria-label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
           >
@@ -607,24 +637,24 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 pt-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-2.5">
         {pinnedEntries.length > 0 && (
-          <section className="mb-3" aria-labelledby="architect-pinned-plans-title">
-            <h3 id="architect-pinned-plans-title" className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75">
+          <section className="mb-3.5" aria-labelledby="architect-pinned-plans-title">
+            <h3 id="architect-pinned-plans-title" className="px-1.5 pb-1.5 pt-0.5 text-[11px] font-medium text-muted-foreground">
               {t('architect.projectNavigator.pinned', 'Épinglés')}
             </h3>
-            <div className="space-y-0.5">{pinnedEntries.map((entry) => renderPlanRow(entry, true))}</div>
+            <div className="space-y-1">{pinnedEntries.map((entry) => renderPlanRow(entry, true))}</div>
           </section>
         )}
 
         <section aria-labelledby="architect-projects-title">
-          <div className="flex items-center justify-between px-2 pb-1 pt-1">
+          <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
             <div className="flex items-center gap-1.5">
-              <h3 id="architect-projects-title" className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75">
-                {t('architect.projectNavigator.projects', 'Projets')}
+              <h3 id="architect-projects-title" className="text-[11px] font-medium text-muted-foreground">
+                {t('architect.projectNavigator.projects', 'Tous les projets')}
               </h3>
               {scopes.length > 0 && (
-                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] tabular-nums text-muted-foreground">
+                <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/70 px-1 text-[9px] tabular-nums text-muted-foreground">
                   {scopes.length}
                 </span>
               )}
@@ -661,7 +691,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             </div>
           )}
 
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             {scopes.map((scope) => {
               const scopeEntries = entriesByScope.get(scope.id) ?? [];
               const isExpanded = expandedScopeIds.includes(scope.id);
@@ -671,11 +701,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               const hiddenCount = scopeEntries.length - visibleEntries.length;
               return (
                 <div key={scope.id}>
-                  <div className={cn('group/scope flex items-center rounded-md', isSelected && 'bg-accent/70')}>
+                  <div className={cn(
+                    'group/scope flex min-h-8 items-center rounded-md border border-transparent transition-colors',
+                    isSelected
+                      ? 'border-border/70 border-l-primary/70 bg-accent/60'
+                      : 'hover:border-border/40 hover:bg-accent/35',
+                  )}>
                     <button
                       type="button"
                       onClick={() => toggleScope(scope.id)}
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                      className="flex h-8 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70"
                       aria-expanded={isExpanded}
                       aria-label={isExpanded
                         ? t('architect.projectNavigator.collapseProject', 'Réduire le projet')
@@ -687,18 +722,24 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                       type="button"
                       onClick={() => selectScope(scope)}
                       disabled={isBusy}
-                      className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50 disabled:opacity-60"
+                      className="flex h-8 min-w-0 flex-1 items-center gap-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70 disabled:opacity-60"
                     >
-                      <Icon name="folder" size={13} className={cn('shrink-0', isSelected ? 'text-primary' : 'text-muted-foreground')} />
+                      <span className={cn('flex h-5 w-5 shrink-0 items-center justify-center rounded', isSelected ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
+                        <Icon name="folder" size={13} />
+                      </span>
                       <span className={cn('min-w-0 flex-1 truncate text-xs font-medium', isSelected ? 'text-foreground' : 'text-foreground/90')}>{scope.label}</span>
-                      {scopeEntries.length > 0 && <span className="text-[10px] tabular-nums text-muted-foreground">{scopeEntries.length}</span>}
+                      {scopeEntries.length > 0 && (
+                        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded bg-muted/60 px-1 text-[9px] tabular-nums text-muted-foreground">
+                          {scopeEntries.length}
+                        </span>
+                      )}
                     </button>
                     <button
                       type="button"
                       onClick={() => void createPlan(scope)}
                       disabled={isBusy || creatingScopeId === scope.id || !scope.projects.some(isProjectActionable)}
                       className={cn(
-                        'mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 group-hover/scope:opacity-100 disabled:cursor-not-allowed disabled:opacity-30',
+                        'mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 group-hover/scope:opacity-100 disabled:cursor-not-allowed disabled:opacity-30',
                         isSelected ? 'opacity-100' : 'opacity-0',
                       )}
                       title={t('architect.projectNavigator.newPlan', 'Nouveau plan')}
@@ -709,13 +750,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   </div>
 
                   {isExpanded && (
-                    <div className="ml-5 border-l border-border/70 pl-1.5">
+                    <div className="ml-3.5 border-l border-border/60 pb-0.5 pl-3 pt-0.5">
                       {visibleEntries.length > 0 ? visibleEntries.map((entry) => renderPlanRow(entry)) : (
                         <button
                           type="button"
                           onClick={() => void createPlan(scope)}
                           disabled={!scope.projects.some(isProjectActionable) || isBusy}
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-50"
+                          className="mt-0.5 flex min-h-8 w-full items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/10 px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground disabled:cursor-default disabled:opacity-50"
                         >
                           <Icon name="plus" size={11} />
                           {t('architect.projectNavigator.firstPlan', 'Créer le premier plan')}
@@ -728,6 +769,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                           className="w-full rounded-md px-2 py-1 text-left text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
                         >
                           {t('architect.projectNavigator.showMore', 'Afficher {{count}} de plus', { count: hiddenCount })}
+                        </button>
+                      )}
+                      {showAll && scopeEntries.length > MAX_VISIBLE_PLANS_PER_SCOPE && (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedPlanLists((current) => current.filter((id) => id !== scope.id))}
+                          className="w-full rounded-md px-2 py-1 text-left text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          {t('architect.projectNavigator.showLess', 'Afficher moins')}
                         </button>
                       )}
                     </div>

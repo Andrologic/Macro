@@ -1126,6 +1126,7 @@ interface AppStore {
   projectGitFlowModalProjectId: string | null;
   activeThemeId: string;
   leftPanelWidth: number;
+  architectLeftPanelWidth: number;
   rightPanelWidth: number;
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
@@ -1283,6 +1284,7 @@ interface AppStore {
   cancelProjectAddOperation: (requestId: string) => Promise<void>;
   refreshProjectRegistry: () => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
+  setArchitectLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
@@ -1423,6 +1425,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ? window.localStorage.getItem("theme-id")
       : null) || "macro-dark",
   leftPanelWidth: 280,
+  architectLeftPanelWidth: 320,
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
@@ -4323,6 +4326,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     savePreferenceDebounced(PREF_KEYS.LEFT_PANEL_WIDTH, clampedWidth);
   },
 
+  setArchitectLeftPanelWidth: (width) => {
+    const clampedWidth = Math.max(260, Math.min(420, width));
+    set({ architectLeftPanelWidth: clampedWidth });
+    savePreferenceDebounced(PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH, clampedWidth);
+  },
+
   setRightPanelWidth: (width) => {
     const clampedWidth = Math.max(200, Math.min(600, width));
     set({ rightPanelWidth: clampedWidth });
@@ -4358,6 +4367,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // Load persisted panel preferences
       const [
         leftWidth,
+        architectLeftWidth,
         rightWidth,
         leftOpen,
         rightOpen,
@@ -4379,6 +4389,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         sessionContext,
       ] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
+        loadPreference<number>(PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
         loadPreference<boolean>(PREF_KEYS.IS_RIGHT_PANEL_OPEN),
@@ -4608,6 +4619,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ),
         metadataRecoveryReport,
         leftPanelWidth: leftWidth,
+        architectLeftPanelWidth: architectLeftWidth,
         rightPanelWidth: rightWidth,
         isLeftPanelOpen: leftOpen,
         isRightPanelOpen: rightOpen,

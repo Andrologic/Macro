@@ -1250,7 +1250,7 @@
     },
     "projectNavigator": {
       "title": "Projets",
-      "projects": "Projets",
+      "projects": "Tous les projets",
       "pinned": "Épinglés",
       "archived": "Archivés",
       "addProject": "Ajouter un projet",
@@ -1260,6 +1260,7 @@
       "newPlanFor": "Nouveau plan pour {{project}}",
       "firstPlan": "Créer le premier plan",
       "showMore": "Afficher {{count}} de plus",
+      "showLess": "Afficher moins",
       "pin": "Épingler",
       "unpin": "Désépingler",
       "expandProject": "Développer le projet",

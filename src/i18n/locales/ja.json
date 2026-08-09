@@ -1251,7 +1251,7 @@
     },
     "projectNavigator": {
       "title": "プロジェクト",
-      "projects": "プロジェクト",
+      "projects": "すべてのプロジェクト",
       "pinned": "ピン留め",
       "archived": "アーカイブ済み",
       "addProject": "プロジェクトを追加",
@@ -1261,6 +1261,7 @@
       "newPlanFor": "{{project}} の新しいプラン",
       "firstPlan": "最初のプランを作成",
       "showMore": "さらに {{count}} 件表示",
+      "showLess": "表示を減らす",
       "pin": "ピン留め",
       "unpin": "ピン留めを解除",
       "expandProject": "プロジェクトを展開",
