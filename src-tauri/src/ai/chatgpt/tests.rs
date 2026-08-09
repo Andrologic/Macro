@@ -579,14 +579,14 @@ fn extract_reasoning_summary_from_output_item_reads_summary_text() {
         "summary": [
             {
                 "type": "summary_text",
-                "text": "Le modele a compare les besoins puis choisi un plan."
+                "text": "Le modèle a comparé les options puis choisi un plan."
             }
         ]
     });
 
     assert_eq!(
         extract_reasoning_summary_from_output_item(&item),
-        "Le modele a compare les besoins puis choisi un plan."
+        "Le modèle a comparé les options puis choisi un plan."
     );
 }
 
