@@ -24,7 +24,7 @@ La comparaison côte à côte confirme la même structure : titre et actions glo
 ### Surfaces de fidélité requises
 
 - Typographie : famille, graisse et antialiasing hérités du shell Macro ; hiérarchie claire entre titre, sections, projets et plans ; troncature prévue pour les noms longs.
-- Espacement et rythme : en-tête aligné sur les autres panneaux, liste scrollable indépendante, indentation unique et ligne de rattachement discrète ; aucune profondeur supplémentaire.
+- Espacement et rythme : en-tête aligné sur les autres panneaux, liste scrollable indépendante et indentation unique sans rail vertical ; aucune profondeur supplémentaire.
 - Couleurs et jetons : uniquement les jetons Macro (`bg-card`, `border-border`, `text-muted-foreground`, `primary`, `accent`) ; contraste actif et focus visibles.
 - Images et ressources : aucune image spécifique n'est requise ; les icônes proviennent de la bibliothèque déjà utilisée par Macro, sans dessin artisanal ni ressource de remplacement.
 - Copie : libellés français accentués et traductions synchronisées pour les six langues prises en charge.
@@ -44,11 +44,13 @@ La comparaison côte à côte confirme la même structure : titre et actions glo
 1. Première passe : les actions d'un projet actif restaient masquées et le nombre de projets d'un plan était affiché sans contexte. Ces écarts étaient classés P2 car ils réduisaient la découvrabilité et ajoutaient du bruit.
 2. Corrections : bouton de création toujours visible sur le projet actif, actions du plan actif visibles, suppression du compteur ambigu sur les lignes de plan, icône dossier alignée sur la référence et ajout du nombre de portées à la section Projets.
 3. Seconde passe : aucun écart P0, P1 ou P2 restant. La densité plus forte que le rendu généré est intentionnelle et cohérente avec l'application réelle.
+4. Passe d'usage : suppression des contours et des rails verticaux, conservation du repli sur les projets vides et remplacement de l'accordéon des archives par une vue dédiée accessible depuis le pied du panneau.
 
 ## Suivi de finition
 
 - Passe de finition après usage réel : le navigateur héritait d'une largeur globale de `600 px`, adaptée à d'autres panneaux mais trop importante pour une arborescence. Le mode Architect utilise désormais une largeur dédiée de `320 px`, redimensionnable entre `260` et `420 px`.
-- Les intitulés de section utilisent une casse naturelle, les actions globales ont une surface stable, et les états « projet sélectionné » et « plan actif » sont visuellement distincts.
+- Les intitulés de section utilisent une casse naturelle, les actions globales restent discrètes, et les états « projet sélectionné » et « plan actif » sont visuellement distincts sans bordure d'accentuation.
+- L'accès aux archives est fixé en bas du panneau, comme dans le mode Chat. Il bascule vers une liste dédiée au lieu d'ajouter une section au milieu de l'arborescence active.
 - Les points de statut exposent désormais leur libellé traduit. Le menu d'un plan se ferme au clic extérieur ou avec Échap, et une liste développée peut revenir à son état condensé.
 
 final result: passed
