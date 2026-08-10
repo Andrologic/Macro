@@ -1322,7 +1322,7 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
     let default_providers = vec![
         (
             "macro-ai",
-            "Macro AI",
+            "Andrologic",
             "openai",
             "https://lmstudio.andrologic.ai/v1",
             false,
@@ -1865,7 +1865,7 @@ mod tests {
             vec![
                 (
                     "macro-ai".to_string(),
-                    "Macro AI".to_string(),
+                    "Andrologic".to_string(),
                     "openai".to_string(),
                     "https://lmstudio.andrologic.ai/v1".to_string(),
                 ),
