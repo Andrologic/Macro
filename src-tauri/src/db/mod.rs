@@ -26,10 +26,6 @@ pub type DbResult<T> = Result<T, DbError>;
 const MIGRATION_001_VERSION: i64 = 1;
 const MIGRATION_001_NAME: &str = "001_initial";
 const MIGRATION_001_SQL: &str = include_str!("migrations/001_initial.sql");
-const MIGRATION_002_VERSION: i64 = 2;
-const MIGRATION_002_NAME: &str = "002_disable_unconfigured_default_providers";
-const MIGRATION_002_SQL: &str =
-    include_str!("migrations/002_disable_unconfigured_default_providers.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -137,16 +133,6 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     // newly added columns and indexes even when schema_migrations is already populated.
     if !is_legacy_database {
         upgrade_legacy_schema_to_baseline(connection).await?;
-    }
-
-    if !applied_migrations.contains(&MIGRATION_002_VERSION) {
-        apply_migration(
-            connection,
-            MIGRATION_002_VERSION,
-            MIGRATION_002_NAME.to_string(),
-            MIGRATION_002_SQL.to_string(),
-        )
-        .await?;
     }
 
     // Insert default providers if they don't exist
@@ -1940,81 +1926,6 @@ mod tests {
         .expect("count new defaults");
 
         assert_eq!(count, 3);
-    }
-
-    #[tokio::test]
-    async fn migration_disables_only_unconfigured_default_providers() {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let db_path = temp_dir.path().join("macro.db");
-        let pool = create_pool(&db_path).await.expect("db pool");
-
-        sqlx::query(
-            r#"
-            UPDATE provider_configs
-            SET is_enabled = 1, has_stored_api_key = 0, auth_status = NULL
-            WHERE id = 'openai'
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("simulate unconfigured enabled provider");
-        sqlx::query(
-            r#"
-            UPDATE provider_configs
-            SET is_enabled = 1, has_stored_api_key = 1
-            WHERE id = 'anthropic'
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("simulate provider with stored key");
-        sqlx::query(
-            r#"
-            UPDATE provider_configs
-            SET is_enabled = 1, auth_status = 'connected'
-            WHERE id = 'copilot'
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("simulate linked provider");
-        sqlx::query("DELETE FROM schema_migrations WHERE version = 2")
-            .execute(&pool)
-            .await
-            .expect("reset migration 002");
-
-        drop(pool);
-
-        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
-        let providers = sqlx::query(
-            r#"
-            SELECT id, is_enabled
-            FROM provider_configs
-            WHERE id IN ('anthropic', 'copilot', 'macro-ai', 'openai')
-            ORDER BY id ASC
-            "#,
-        )
-        .fetch_all(&migrated_pool)
-        .await
-        .expect("migrated provider rows")
-        .into_iter()
-        .map(|row| {
-            (
-                row.get::<String, _>("id"),
-                row.get::<i64, _>("is_enabled") != 0,
-            )
-        })
-        .collect::<Vec<_>>();
-
-        assert_eq!(
-            providers,
-            vec![
-                ("anthropic".to_string(), true),
-                ("copilot".to_string(), true),
-                ("macro-ai".to_string(), true),
-                ("openai".to_string(), false),
-            ]
-        );
     }
 
     #[tokio::test]

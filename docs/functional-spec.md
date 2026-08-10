@@ -940,12 +940,6 @@ menu de sélection compact le présente comme une IA incluse avec la bêta, tand
 que les réglages du fournisseur conservent l'information complète sur la
 journalisation.
 
-Les autres fournisseurs intégrés au catalogue sont désactivés par défaut. Ils
-restent disponibles dans les réglages pour être configurés, mais n'apparaissent
-dans les sélecteurs de l'application qu'après leur activation explicite. Les
-services distants qui l'exigent doivent également disposer d'identifiants ou
-d'une session liée utilisables.
-
 Le produit doit permettre à l'utilisateur de modeler le comportement de l'IA sans nécessiter de modification de code.
 
 Tout raccourci clavier configurable dans les reglages doit correspondre a une
