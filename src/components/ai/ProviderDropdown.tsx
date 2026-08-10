@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
-import { isMacroAiProvider, MACRO_AI_PROVIDER_ICON_PATH } from '../../config/macroAi';
+import { isMacroAiProvider } from '../../config/macroAi';
+import { AndrologicProviderIcon } from './AndrologicProviderIcon';
 
 export const ProviderDropdown: React.FC = () => {
   const { t } = useTranslation();
@@ -44,11 +45,7 @@ export const ProviderDropdown: React.FC = () => {
       >
         <div className="flex items-center gap-2 min-w-0">
           {isMacroAiProvider(selectedProvider?.id) ? (
-            <img
-              src={MACRO_AI_PROVIDER_ICON_PATH}
-              alt=""
-              className="h-3.5 w-3.5 shrink-0 object-contain"
-            />
+            <AndrologicProviderIcon className="h-3.5 w-3.5 text-muted-foreground" />
           ) : (
             <Icon
               name={selectedProvider?.isLocal ? 'hard-drive' : 'cloud'}
@@ -85,11 +82,7 @@ export const ProviderDropdown: React.FC = () => {
               )}
             >
               {isMacroAiProvider(provider.id) ? (
-                <img
-                  src={MACRO_AI_PROVIDER_ICON_PATH}
-                  alt=""
-                  className="h-4 w-4 shrink-0 object-contain"
-                />
+                <AndrologicProviderIcon className="h-4 w-4" />
               ) : (
                 <Icon name={provider.isLocal ? 'hard-drive' : 'cloud'} size={14} />
               )}
