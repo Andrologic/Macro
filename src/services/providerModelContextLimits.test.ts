@@ -47,6 +47,12 @@ describe('providerModelContextLimits', () => {
     ).toBe(300_000);
     expect(
       inferProviderContextWindowTokens({
+        max_model_len: 131_072,
+        max_input_tokens: 64_000,
+      }),
+    ).toBe(131_072);
+    expect(
+      inferProviderContextWindowTokens({
         max_input_tokens: 64_000,
       }),
     ).toBeNull();
