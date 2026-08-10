@@ -38,6 +38,7 @@ export const inferProviderContextWindowTokens = (
     | 'context_window'
     | 'context_window_tokens'
     | 'context_length'
+    | 'max_model_len'
     | 'max_input_tokens'
     | 'top_provider'
   >
@@ -45,6 +46,7 @@ export const inferProviderContextWindowTokens = (
   toPositiveInteger(model.context_window_tokens) ??
   toPositiveInteger(model.context_window) ??
   toPositiveInteger(model.context_length) ??
+  toPositiveInteger(model.max_model_len) ??
   toPositiveInteger(model.top_provider?.context_length) ??
   null;
 
@@ -70,6 +72,7 @@ export const inferProviderContextWindowSource = (
     | 'context_window'
     | 'context_window_tokens'
     | 'context_length'
+    | 'max_model_len'
     | 'max_input_tokens'
     | 'top_provider'
   >

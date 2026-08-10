@@ -24,6 +24,7 @@ export interface ProviderModel {
   output_tokens?: number;
   max_completion_tokens?: number;
   max_context_length?: number;
+  max_model_len?: number;
   loaded_instances?: Array<{
     id?: string;
     config?: {
@@ -234,6 +235,9 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
       max_completion_tokens: entry.max_completion_tokens,
       ...(typeof entry.max_context_length === 'number'
         ? { max_context_length: entry.max_context_length }
+        : {}),
+      ...(typeof entry.max_model_len === 'number'
+        ? { max_model_len: entry.max_model_len }
         : {}),
       ...(Array.isArray(entry.loaded_instances)
         ? { loaded_instances: entry.loaded_instances }
