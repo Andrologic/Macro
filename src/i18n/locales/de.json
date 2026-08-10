@@ -1431,6 +1431,11 @@
     "totalChanges": "totale Veränderungen"
   },
   "providers": {
+    "macroAi": {
+      "included": "In der Macro-Beta enthalten",
+      "dropdownNotice": "Enthaltene Beta · Gespräche werden protokolliert",
+      "loggingNotice": "Für den Betrieb und die Verbesserung dieses gemeinsam genutzten Beta-Dienstes werden an Macro AI gesendete Gespräche und Token-Nutzungsmetriken auf dem Inferenzserver protokolliert."
+    },
     "add": "Provider hinzufügen",
     "edit": "Provider bearbeiten",
     "created": "Provider erstellt",

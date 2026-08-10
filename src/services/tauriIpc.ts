@@ -507,6 +507,13 @@ export interface DbProviderSettings {
   copilot_send_timeout_ms: number | null;
 }
 
+export interface MacroAiProvisioningStatusDto {
+  providerId: string;
+  modelId: string;
+  contextWindowTokens: number;
+  activatedNow: boolean;
+}
+
 export interface DevProviderOverrideConfig {
   name?: string;
   providerType?: string;
@@ -1878,6 +1885,10 @@ export async function aiSyncProviderModels(
   providerId: string,
 ): Promise<DbAiModel[]> {
   return invoke<DbAiModel[]>("ai_sync_provider_models", { providerId });
+}
+
+export async function aiProvisionMacroAi(): Promise<MacroAiProvisioningStatusDto> {
+  return invoke<MacroAiProvisioningStatusDto>("ai_provision_macro_ai");
 }
 
 export async function aiGetDevProviderOverrides(): Promise<DevProviderOverridesFile | null> {

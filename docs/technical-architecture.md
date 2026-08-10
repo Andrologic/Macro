@@ -784,6 +784,25 @@ Les preferences utilisateur sont reparties entre :
 - regles de workflow Git et d'automatisation
 - preferences de skills activees, trusted et scripts
 
+### 17.4 Provider géré Macro AI
+
+Le provider `macro-ai` est créé par le backend et ne peut pas être modifié ou
+supprimé depuis l'interface. Au premier démarrage, le backend Tauri génère une
+identité d'installation aléatoire, appelle le service d'activation Macro AI,
+puis conserve le jeton propre à cette installation dans le stockage local des
+secrets. Aucun jeton maître d'inférence n'est intégré à l'exécutable.
+
+Le service expose un unique modèle public `macro-ai`. Le nom du modèle réel et
+le routage vLLM restent internes à la passerelle. Pour chaque requête Macro AI,
+le backend ajoute l'identifiant local de conversation ; la passerelle peut
+ainsi rapprocher les tours, les métriques de tokens et les erreurs sans exposer
+d'endpoint d'administration public.
+
+La passerelle journalise le contenu envoyé, la réponse reconstruite et les
+métriques d'usage. Cette collecte ne concerne que le provider Macro AI et doit
+rester signalée dans l'interface. Les autres providers conservent leur propre
+politique de données.
+
 ---
 
 ## 18. Principes de separation entre documents

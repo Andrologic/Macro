@@ -1431,6 +1431,11 @@
     "totalChanges": "total changes"
   },
   "providers": {
+    "macroAi": {
+      "included": "Included with the Macro beta",
+      "dropdownNotice": "Included beta · conversations logged",
+      "loggingNotice": "To operate and improve this shared beta service, conversations sent to Macro AI and token-usage metrics are logged on the inference server."
+    },
     "add": "Add Provider",
     "edit": "Edit Provider",
     "created": "Provider created",

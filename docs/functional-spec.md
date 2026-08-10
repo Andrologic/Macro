@@ -930,6 +930,13 @@ Macro doit exposer un controle utilisateur sur au moins les dimensions suivantes
 - raccourcis
 - prompts et cadrage du comportement systeme
 
+Macro AI est le fournisseur sélectionné par défaut lorsqu'il a pu être activé
+et qu'aucune sélection de conversation existante ne doit être restaurée. Il
+présente un seul modèle nommé `Macro AI`, inclus dans la bêta. L'interface doit
+indiquer clairement que les conversations envoyées à ce fournisseur ainsi que
+les métriques d'usage en tokens sont journalisées sur le serveur d'inférence.
+L'utilisateur reste libre de sélectionner un autre fournisseur configuré.
+
 Le produit doit permettre a l'utilisateur de modeler le comportement de l'IA sans necessiter de modification de code.
 
 Tout raccourci clavier configurable dans les reglages doit correspondre a une

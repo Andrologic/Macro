@@ -1321,6 +1321,13 @@ async fn backfill_conversation_scope_mode(
 async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult<()> {
     let default_providers = vec![
         (
+            "macro-ai",
+            "Macro AI",
+            "openai",
+            "https://lmstudio.andrologic.ai/v1",
+            false,
+        ),
+        (
             "chatgpt",
             "ChatGPT",
             "chatgpt",
@@ -1826,7 +1833,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_pool_inserts_minimax_and_opencode_go_default_providers() {
+    async fn create_pool_inserts_managed_and_new_default_providers() {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
@@ -1835,7 +1842,7 @@ mod tests {
             r#"
             SELECT id, name, provider_type, base_url
             FROM provider_configs
-            WHERE id IN ('minimax', 'opencode-go')
+            WHERE id IN ('macro-ai', 'minimax', 'opencode-go')
             ORDER BY id ASC
             "#,
         )
@@ -1856,6 +1863,12 @@ mod tests {
         assert_eq!(
             providers,
             vec![
+                (
+                    "macro-ai".to_string(),
+                    "Macro AI".to_string(),
+                    "openai".to_string(),
+                    "https://lmstudio.andrologic.ai/v1".to_string(),
+                ),
                 (
                     "minimax".to_string(),
                     "MiniMax".to_string(),
@@ -1878,23 +1891,25 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
 
-        sqlx::query("DELETE FROM provider_configs WHERE id IN ('minimax', 'opencode-go')")
-            .execute(&pool)
-            .await
-            .expect("delete new defaults");
+        sqlx::query(
+            "DELETE FROM provider_configs WHERE id IN ('macro-ai', 'minimax', 'opencode-go')",
+        )
+        .execute(&pool)
+        .await
+        .expect("delete new defaults");
 
         drop(pool);
 
         let migrated_pool = create_pool(&db_path).await.expect("reopened db pool");
 
         let count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM provider_configs WHERE id IN ('minimax', 'opencode-go')",
+            "SELECT COUNT(*) FROM provider_configs WHERE id IN ('macro-ai', 'minimax', 'opencode-go')",
         )
         .fetch_one(&migrated_pool)
         .await
         .expect("count new defaults");
 
-        assert_eq!(count, 2);
+        assert_eq!(count, 3);
     }
 
     #[tokio::test]
