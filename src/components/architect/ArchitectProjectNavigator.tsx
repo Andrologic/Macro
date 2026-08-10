@@ -11,17 +11,21 @@ import {
   type ArchitectPlanRecord,
 } from '../../services/architectPlanService';
 import { cleanupPlanBranches, deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
-import { getArchitectPlanKind } from '../../services/architectPlanKinds';
+import {
+  getArchitectPlanKind,
+  getCreatableArchitectPlanKinds,
+  type ArchitectPlanKind,
+} from '../../services/architectPlanKinds';
 import {
   getArchitectPlanDisplayName,
   getArchitectPlanEditableName,
   getArchitectPlanPrimaryName,
-  getArchitectPlanLifecyclePhase,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
 import { isProjectActionable } from '../../services/globalProjects';
 import { loadMacroProjectMetadataForSelection } from '../../services/macroProjectMetadataLoader';
 import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
+import { getPlanKindIconName } from '../../services/planKindPresentation';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -53,25 +57,6 @@ const summarizePlanRecord = (plan: ArchitectPlanRecord) => ({
   predictedBranchCount: plan.predictedBranches.length,
 });
 
-const planKindIcon = {
-  feature: 'sparkles',
-  release: 'milestone',
-  hotfix: 'zap',
-  bugfix: 'tool',
-} as const;
-
-const planPhaseDotClass: Record<string, string> = {
-  blank: 'bg-muted-foreground/45',
-  editing: 'bg-amber-500',
-  draft: 'bg-muted-foreground/60',
-  validated: 'bg-sky-500',
-  in_progress: 'bg-amber-500',
-  completed: 'bg-emerald-500',
-  cancelled: 'bg-red-500',
-  archived: 'bg-muted-foreground/40',
-  deleted: 'bg-red-500',
-};
-
 const scopeIsSelected = (
   scope: ArchitectNavigatorScope,
   selectedGroupId: string | null,
@@ -99,6 +84,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const isProjectSwitching = useAppStore((state) => state.isProjectSwitching);
   const setSelectedGroup = useAppStore((state) => state.setSelectedGroup);
   const setSelectedProject = useAppStore((state) => state.setSelectedProject);
+  const setLeftPanelOpen = useAppStore((state) => state.setLeftPanelOpen);
   const activateArchitectPlan = useAppStore((state) => state.activateArchitectPlan);
   const refreshCurrentPlanCatalog = useAppStore((state) => state.loadMacroProjectMetadataForSelection);
   const openProjectNavigator = useAppStore((state) => state.openProjectNavigator);
@@ -111,8 +97,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [showArchived, setShowArchived] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [creatingScopeId, setCreatingScopeId] = useState<string | null>(null);
+  const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
   const [activatingPlanId, setActivatingPlanId] = useState<string | null>(null);
   const [openPlanMenuId, setOpenPlanMenuId] = useState<string | null>(null);
+  const [openScopeMenuId, setOpenScopeMenuId] = useState<string | null>(null);
   const [planToEdit, setPlanToEdit] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [planToDelete, setPlanToDelete] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [formLoading, setFormLoading] = useState(false);
@@ -161,6 +149,30 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   );
   const isBusy = isProjectSwitching || architectPlanSwitch.status === 'resolving';
   const activeTargetBranch = activePlanContext?.targetBranch ?? null;
+  const planKindLabel = useCallback((planKind: ArchitectPlanKind): string => {
+    switch (planKind) {
+      case 'release':
+        return t('architect.planSelector.kindRelease', 'Release');
+      case 'hotfix':
+        return t('architect.planSelector.kindHotfix', 'Hotfix');
+      case 'bugfix':
+        return t('architect.planSelector.kindBugfix', 'Bugfix');
+      default:
+        return t('architect.planSelector.kindFeature', 'Feature');
+    }
+  }, [t]);
+  const planKindHelp = useCallback((planKind: ArchitectPlanKind): string => {
+    switch (planKind) {
+      case 'release':
+        return t('architect.planSelector.kindReleaseHelp', 'Stabiliser et livrer.');
+      case 'hotfix':
+        return t('architect.planSelector.kindHotfixHelp', 'Corriger rapidement la production.');
+      case 'bugfix':
+        return t('architect.planSelector.kindBugfixHelp', 'Corriger un bug normal.');
+      default:
+        return t('architect.planSelector.kindFeatureHelp', 'Construire quelque chose de nouveau.');
+    }
+  }, [t]);
 
   const refreshPlans = useCallback(async () => {
     const requestId = ++requestIdRef.current;
@@ -246,6 +258,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, []);
 
   const toggleScope = (scopeId: string) => {
+    setOpenScopeMenuId(null);
     persistExpandedScopes(toggleArchitectNavigatorScope(expandedScopeIds, scopeId));
   };
 
@@ -265,6 +278,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [applyScopeSelection, expandedScopeIds, persistExpandedScopes]);
 
   const selectAndToggleScope = useCallback((scope: ArchitectNavigatorScope) => {
+    setOpenPlanMenuId(null);
+    setOpenScopeMenuId(null);
     applyScopeSelection(scope);
     persistExpandedScopes(toggleArchitectNavigatorScope(expandedScopeIds, scope.id));
   }, [applyScopeSelection, expandedScopeIds, persistExpandedScopes]);
@@ -412,7 +427,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
   };
 
-  const createPlan = useCallback(async (scope: ArchitectNavigatorScope) => {
+  const createPlan = useCallback(async (
+    scope: ArchitectNavigatorScope,
+    planKind: ArchitectPlanKind,
+  ) => {
     if (creatingScopeId || isBusy) return;
     const editableProjectIds = scope.projects.filter(isProjectActionable).map((project) => project.id);
     const contextProjectIds = scope.projectIds.filter((projectId) => !editableProjectIds.includes(projectId));
@@ -420,7 +438,9 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       notify.warning(t('architect.projectNavigator.readOnlyScope', 'Ce projet est en lecture seule.'));
       return;
     }
+    setOpenScopeMenuId(null);
     setCreatingScopeId(scope.id);
+    setCreatingPlanKind(planKind);
     setError(null);
     try {
       selectScope(scope);
@@ -428,7 +448,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         branchName: getGitFlowBaseBranch(),
         scopedProjectIds: editableProjectIds,
         contextProjectIds,
-        planKind: 'feature',
+        planKind,
         trigger: 'explicit_create',
       });
       if (!result) throw new Error(t('architect.projectNavigator.createError', 'Impossible de créer le plan.'));
@@ -448,6 +468,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       notify.error(message);
     } finally {
       setCreatingScopeId(null);
+      setCreatingPlanKind(null);
     }
   }, [activateArchitectPlan, creatingScopeId, isBusy, refreshPlans, selectScope, t]);
 
@@ -460,24 +481,35 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           persistExpandedScopes([...expandedScopeIds, selectedScope.id]);
         }
         const selectedPlans = entriesByScope.get(selectedScope.id) ?? [];
-        if (selectedPlans.length === 0) void createPlan(selectedScope);
+        if (selectedPlans.length === 0) {
+          setLeftPanelOpen(true);
+          setOpenPlanMenuId(null);
+          setOpenScopeMenuId(selectedScope.id);
+        }
       } else {
         openProjectNavigator();
       }
     };
     window.addEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
     return () => window.removeEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
-  }, [createPlan, entriesByScope, expandedScopeIds, openProjectNavigator, persistExpandedScopes, selectedScope]);
+  }, [entriesByScope, expandedScopeIds, openProjectNavigator, persistExpandedScopes, selectedScope, setLeftPanelOpen]);
 
   useEffect(() => {
-    if (!openPlanMenuId) return;
+    if (!openPlanMenuId && !openScopeMenuId) return;
 
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Element && event.target.closest('[data-architect-plan-menu]')) return;
+      if (
+        event.target instanceof Element
+        && event.target.closest('[data-architect-plan-menu], [data-architect-scope-menu]')
+      ) return;
       setOpenPlanMenuId(null);
+      setOpenScopeMenuId(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpenPlanMenuId(null);
+      if (event.key === 'Escape') {
+        setOpenPlanMenuId(null);
+        setOpenScopeMenuId(null);
+      }
     };
 
     document.addEventListener('pointerdown', closeOnOutsidePointer);
@@ -486,13 +518,12 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
       document.removeEventListener('keydown', closeOnEscape);
     };
-  }, [openPlanMenuId]);
+  }, [openPlanMenuId, openScopeMenuId]);
 
   const renderPlanRow = (entry: ArchitectNavigatorPlanEntry, showScope = false) => {
     const isActive = entry.plan.id === activeArchitectPlanId;
     const isPinned = pinnedPlanIds.includes(entry.plan.id);
     const isActivating = activatingPlanId === entry.plan.id;
-    const phase = getArchitectPlanLifecyclePhase(entry.plan);
     const kind = getArchitectPlanKind(entry.plan);
     const capabilities = getArchitectPlanCrudCapabilities(entry.plan);
     const isMutating = mutatingPlanId === entry.plan.id;
@@ -505,6 +536,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             ? 'bg-accent text-foreground'
             : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
         )}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (isBusy) return;
+          setOpenScopeMenuId(null);
+          setOpenPlanMenuId(entry.plan.id);
+        }}
       >
         <button
           type="button"
@@ -516,7 +554,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           {isActivating || isMutating ? (
             <Icon name="loader" size={12} className="shrink-0 animate-spin text-primary" />
           ) : (
-            <Icon name={planKindIcon[kind]} size={12} className={cn('shrink-0', isActive ? 'text-primary' : 'opacity-70')} />
+            <Icon name={getPlanKindIconName(kind)} size={12} className={cn('shrink-0', isActive ? 'text-primary' : 'opacity-70')} />
           )}
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5">
@@ -525,11 +563,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             {showScope && <span className="block truncate text-[10px] text-muted-foreground/75">{entry.scopeLabel}</span>}
           </span>
           <span
-            className={cn('h-1.5 w-1.5 shrink-0 rounded-full ring-2 ring-background', planPhaseDotClass[phase] ?? planPhaseDotClass.draft)}
-            title={t(`architect.status.${phase}`, phase)}
-            role="img"
-            aria-label={t(`architect.status.${phase}`, phase)}
-          />
+            className="max-w-14 shrink-0 truncate rounded bg-muted/65 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+            title={planKindHelp(kind)}
+          >
+            {planKindLabel(kind)}
+          </span>
         </button>
         <button
           type="button"
@@ -550,7 +588,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         <div className="relative" data-architect-plan-menu>
           <button
             type="button"
-            onClick={() => setOpenPlanMenuId((current) => current === entry.plan.id ? null : entry.plan.id)}
+            onClick={() => {
+              setOpenScopeMenuId(null);
+              setOpenPlanMenuId((current) => current === entry.plan.id ? null : entry.plan.id);
+            }}
             className={cn(
               'flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 group-hover/plan:opacity-100 group-focus-within/plan:opacity-100',
               isActive ? 'opacity-100' : 'opacity-0',
@@ -563,6 +604,21 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </button>
           {openPlanMenuId === entry.plan.id && (
             <div className="absolute right-0 top-8 z-30 w-44 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-xl">
+              {entry.plan.status !== 'archived' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenPlanMenuId(null);
+                    togglePin(entry.plan.id);
+                  }}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"
+                >
+                  <Icon name={isPinned ? 'pin-off' : 'pin'} size={11} />
+                  {isPinned
+                    ? t('architect.projectNavigator.unpin', 'Désépingler')
+                    : t('architect.projectNavigator.pin', 'Épingler')}
+                </button>
+              )}
               {capabilities.canEditDetails && (
                 <button
                   type="button"
@@ -701,14 +757,28 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               const showAll = expandedPlanLists.includes(scope.id);
               const visibleEntries = showAll ? scopeEntries : scopeEntries.slice(0, MAX_VISIBLE_PLANS_PER_SCOPE);
               const hiddenCount = scopeEntries.length - visibleEntries.length;
+              const canCreatePlan = scope.projects.some(isProjectActionable);
+              const creatablePlanKinds = getCreatableArchitectPlanKinds(
+                scope.projects.map((project) => project.gitFlowSettings),
+              );
               return (
-                <div key={scope.id}>
+                <div
+                  key={scope.id}
+                  className="relative"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    if (isBusy) return;
+                    applyScopeSelection(scope);
+                    setOpenPlanMenuId(null);
+                    setOpenScopeMenuId(scope.id);
+                  }}
+                >
                   <div className={cn(
                     'group/scope flex min-h-8 items-center rounded-md transition-colors',
                     isSelected
                       ? 'bg-accent/80'
                       : 'hover:bg-accent/45',
-                  )}>
+                  )} data-architect-scope-menu>
                     <button
                       type="button"
                       onClick={() => toggleScope(scope.id)}
@@ -738,8 +808,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     </button>
                     <button
                       type="button"
-                      onClick={() => void createPlan(scope)}
-                      disabled={isBusy || creatingScopeId === scope.id || !scope.projects.some(isProjectActionable)}
+                      onClick={() => {
+                        setOpenPlanMenuId(null);
+                        setOpenScopeMenuId((current) => current === scope.id ? null : scope.id);
+                      }}
+                      disabled={isBusy || creatingScopeId === scope.id || !canCreatePlan}
                       className={cn(
                         'mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 group-hover/scope:opacity-100 disabled:cursor-not-allowed disabled:opacity-30',
                         isSelected ? 'opacity-100' : 'opacity-0',
@@ -751,13 +824,77 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     </button>
                   </div>
 
+                  {openScopeMenuId === scope.id && (
+                    <div
+                      className="absolute right-0 top-8 z-40 w-60 max-w-[calc(100%-0.5rem)] rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-xl"
+                      data-architect-scope-menu
+                    >
+                      <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium text-muted-foreground">
+                        {t('architect.projectNavigator.newPlanFor', 'Nouveau plan pour {{project}}', { project: scope.label })}
+                      </p>
+                      {creatablePlanKinds.map((planKind) => {
+                        const isCreatingKind = creatingScopeId === scope.id && creatingPlanKind === planKind;
+                        return (
+                          <button
+                            key={planKind}
+                            type="button"
+                            disabled={isBusy || Boolean(creatingScopeId) || !canCreatePlan}
+                            onClick={() => void createPlan(scope, planKind)}
+                            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-muted/65 text-muted-foreground">
+                              <Icon
+                                name={isCreatingKind ? 'loader' : getPlanKindIconName(planKind)}
+                                size={12}
+                                className={cn(isCreatingKind && 'animate-spin text-primary')}
+                              />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium text-foreground">
+                                {planKindLabel(planKind)}
+                              </span>
+                              <span className="block truncate text-[10px] text-muted-foreground">
+                                {planKindHelp(planKind)}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                      <div className="my-1 border-t border-border/70" />
+                      <button
+                        type="button"
+                        onClick={() => toggleScope(scope.id)}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                      >
+                        <Icon name={isExpanded ? 'chevron-right' : 'chevron-down'} size={11} />
+                        {isExpanded
+                          ? t('architect.projectNavigator.collapseProject', 'Réduire le projet')
+                          : t('architect.projectNavigator.expandProject', 'Développer le projet')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenScopeMenuId(null);
+                          openProjectNavigator();
+                        }}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                      >
+                        <Icon name="settings" size={11} />
+                        {t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
+                      </button>
+                    </div>
+                  )}
+
                   {isExpanded && (
                     <div className="ml-7 space-y-0.5 pb-0.5 pt-0.5">
                       {visibleEntries.length > 0 ? visibleEntries.map((entry) => renderPlanRow(entry)) : (
                         <button
                           type="button"
-                          onClick={() => void createPlan(scope)}
-                          disabled={!scope.projects.some(isProjectActionable) || isBusy}
+                          onClick={() => {
+                            setOpenPlanMenuId(null);
+                            setOpenScopeMenuId(scope.id);
+                          }}
+                          disabled={!canCreatePlan || isBusy}
                           className="mt-0.5 flex min-h-8 w-full items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/10 px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground disabled:cursor-default disabled:opacity-50"
                         >
                           <Icon name="plus" size={11} />
@@ -818,6 +955,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           type="button"
           onClick={() => {
             setOpenPlanMenuId(null);
+            setOpenScopeMenuId(null);
             setShowArchived((current) => !current);
           }}
           data-tour-id="architect-archive-toggle"
