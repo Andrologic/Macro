@@ -13,10 +13,8 @@ import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import type { ProviderConfig } from '../../../../types';
-import {
-  isMacroAiProvider,
-  MACRO_AI_PROVIDER_ICON_PATH,
-} from '../../../../config/macroAi';
+import { isMacroAiProvider } from '../../../../config/macroAi';
+import { AndrologicProviderIcon } from '../../../ai/AndrologicProviderIcon';
 
 interface EditingProvider {
   id: string;
@@ -1347,11 +1345,7 @@ export const ProvidersSettings: React.FC = () => {
                     )}
                   >
                     {isManagedMacroAi ? (
-                      <img
-                        src={MACRO_AI_PROVIDER_ICON_PATH}
-                        alt=""
-                        className="h-7 w-7 object-contain"
-                      />
+                      <AndrologicProviderIcon className="h-7 w-7" />
                     ) : (
                       <Icon name="cpu" size={20} />
                     )}
