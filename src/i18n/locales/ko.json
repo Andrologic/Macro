@@ -1432,8 +1432,8 @@
   },
   "providers": {
     "macroAi": {
-      "included": "Macro 베타에 포함됨",
-      "dropdownNotice": "포함된 베타 · 대화 기록됨",
+      "included": "Macro 베타에 AI 포함",
+      "dropdownNotice": "베타에 AI 포함",
       "loggingNotice": "이 공유 베타 서비스를 운영하고 개선하기 위해 Macro AI로 전송된 대화와 토큰 사용량 지표가 추론 서버에 기록됩니다."
     },
     "add": "프로바이더 추가",

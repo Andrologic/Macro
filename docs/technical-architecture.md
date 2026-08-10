@@ -780,14 +780,15 @@ Les preferences utilisateur sont reparties entre :
 
 - persistence locale frontend
 - settings backend
-- configurations providers et modeles
-- regles de workflow Git et d'automatisation
-- preferences de skills activees, trusted et scripts
+- configurations providers et modèles
+- règles de workflow Git et d'automatisation
+- préférences de skills activées, trusted et scripts
 
-### 17.4 Provider géré Macro AI
+### 17.4 Provider géré Andrologic
 
-Le provider `macro-ai` est créé par le backend et ne peut pas être modifié ou
-supprimé depuis l'interface. Au premier démarrage, le backend Tauri génère une
+Le provider `macro-ai`, affiché sous le nom Andrologic, est créé par le backend
+et ne peut pas être modifié ou supprimé depuis l'interface. Au premier démarrage,
+le backend Tauri génère une
 identité d'installation aléatoire, appelle le service d'activation Macro AI,
 puis conserve le jeton propre à cette installation dans le stockage local des
 secrets. Aucun jeton maître d'inférence n'est intégré à l'exécutable.
@@ -799,9 +800,9 @@ ainsi rapprocher les tours, les métriques de tokens et les erreurs sans exposer
 d'endpoint d'administration public.
 
 La passerelle journalise le contenu envoyé, la réponse reconstruite et les
-métriques d'usage. Cette collecte ne concerne que le provider Macro AI et doit
-rester signalée dans l'interface. Les autres providers conservent leur propre
-politique de données.
+métriques d'usage. Cette collecte ne concerne que le provider Andrologic et
+doit rester signalée dans l'interface. Les autres providers conservent leur
+propre politique de données.
 
 ---
 

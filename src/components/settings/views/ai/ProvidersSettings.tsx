@@ -13,7 +13,10 @@ import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import type { ProviderConfig } from '../../../../types';
-import { isMacroAiProvider } from '../../../../config/macroAi';
+import {
+  isMacroAiProvider,
+  MACRO_AI_PROVIDER_ICON_PATH,
+} from '../../../../config/macroAi';
 
 interface EditingProvider {
   id: string;
@@ -1343,14 +1346,22 @@ export const ProvidersSettings: React.FC = () => {
                         : 'bg-muted text-muted-foreground'
                     )}
                   >
-                    <Icon name="cpu" size={20} />
+                    {isManagedMacroAi ? (
+                      <img
+                        src={MACRO_AI_PROVIDER_ICON_PATH}
+                        alt=""
+                        className="h-7 w-7 object-contain"
+                      />
+                    ) : (
+                      <Icon name="cpu" size={20} />
+                    )}
                   </div>
                   <div>
                     <h4 className="font-medium text-foreground">{provider.name}</h4>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       {isManagedMacroAi ? (
                         <span>
-                          {t('providers.macroAi.included', 'Included with the Macro beta')}
+                          {t('providers.macroAi.included', 'AI included with the Macro beta')}
                         </span>
                       ) : (
                         <>

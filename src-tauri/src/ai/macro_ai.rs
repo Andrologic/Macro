@@ -6,9 +6,10 @@ use sqlx::SqlitePool;
 use std::time::Duration;
 
 pub const PROVIDER_ID: &str = "macro-ai";
-pub const PROVIDER_NAME: &str = "Macro AI";
+pub const PROVIDER_NAME: &str = "Andrologic";
 pub const PROVIDER_BASE_URL: &str = "https://lmstudio.andrologic.ai/v1";
 pub const MODEL_ID: &str = "macro-ai";
+pub const MODEL_NAME: &str = "Macro AI";
 const INSTALLATION_IDENTITY_SECRET_ID: &str = "__macro_ai_installation_identity";
 const BOOTSTRAP_URL: &str = "https://lmstudio.andrologic.ai/macro/v1/instances/bootstrap";
 const CONTEXT_WINDOW_TOKENS: i32 = 131_072;
@@ -99,12 +100,12 @@ async fn ensure_managed_provider_and_model(pool: &SqlitePool) -> Result<(), Stri
         PROVIDER_ID,
         &[ProviderModelInput {
             model_id: MODEL_ID.to_string(),
-            name: PROVIDER_NAME.to_string(),
+            name: MODEL_NAME.to_string(),
             description: Some(
                 "Modèle de code inclus avec la bêta de Macro. Les échanges et les métriques d’usage sont journalisés côté serveur."
                     .to_string(),
             ),
-            owned_by: Some("Macro".to_string()),
+            owned_by: Some(PROVIDER_NAME.to_string()),
             pricing_prompt: Some("0".to_string()),
             pricing_completion: Some("0".to_string()),
             pricing_request: Some("0".to_string()),
@@ -208,5 +209,11 @@ mod tests {
             .installation_proof
             .chars()
             .all(|character| character.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn provider_and_model_have_distinct_display_names() {
+        assert_eq!(PROVIDER_NAME, "Andrologic");
+        assert_eq!(MODEL_NAME, "Macro AI");
     }
 }

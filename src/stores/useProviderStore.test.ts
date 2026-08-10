@@ -389,7 +389,7 @@ describe('useProviderStore secret resolution', () => {
     listProviderConfigsMock.mockImplementationOnce(async () => [
       {
         id: 'macro-ai',
-        name: 'Macro AI',
+        name: 'Andrologic',
         provider_type: 'openai',
         base_url: 'https://lmstudio.andrologic.ai/v1',
         api_key: null,
