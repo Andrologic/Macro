@@ -804,6 +804,13 @@ métriques d'usage. Cette collecte ne concerne que le provider Andrologic et
 doit rester signalée dans l'interface. Les autres providers conservent leur
 propre politique de données.
 
+Les providers de catalogue autres qu'Andrologic sont insérés avec
+`is_enabled = 0`. Une migration désactive également les providers intégrés non
+configurés des bases existantes, tout en préservant ceux qui possèdent déjà une
+clé, une session liée ou des modèles découverts. Les sélecteurs continuent de
+filtrer sur l'activation et, lorsque le type de provider l'exige, sur la présence
+d'identifiants utilisables.
+
 ---
 
 ## 18. Principes de separation entre documents

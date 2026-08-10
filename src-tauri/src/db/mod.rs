@@ -26,6 +26,10 @@ pub type DbResult<T> = Result<T, DbError>;
 const MIGRATION_001_VERSION: i64 = 1;
 const MIGRATION_001_NAME: &str = "001_initial";
 const MIGRATION_001_SQL: &str = include_str!("migrations/001_initial.sql");
+const MIGRATION_002_VERSION: i64 = 2;
+const MIGRATION_002_NAME: &str = "002_disable_unconfigured_default_providers";
+const MIGRATION_002_SQL: &str =
+    include_str!("migrations/002_disable_unconfigured_default_providers.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -133,6 +137,16 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     // newly added columns and indexes even when schema_migrations is already populated.
     if !is_legacy_database {
         upgrade_legacy_schema_to_baseline(connection).await?;
+    }
+
+    if !applied_migrations.contains(&MIGRATION_002_VERSION) {
+        apply_migration(
+            connection,
+            MIGRATION_002_VERSION,
+            MIGRATION_002_NAME.to_string(),
+            MIGRATION_002_SQL.to_string(),
+        )
+        .await?;
     }
 
     // Insert default providers if they don't exist
@@ -1326,12 +1340,14 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
             "openai",
             "https://lmstudio.andrologic.ai/v1",
             false,
+            true,
         ),
         (
             "chatgpt",
             "ChatGPT",
             "chatgpt",
             "https://chatgpt.com/backend-api",
+            false,
             false,
         ),
         (
@@ -1340,12 +1356,14 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
             "copilot",
             "copilot://cli",
             false,
+            false,
         ),
         (
             "openai",
             "OpenAI",
             "openai",
             "https://api.openai.com/v1",
+            false,
             false,
         ),
         (
@@ -1354,12 +1372,14 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
             "openai",
             "https://api.z.ai/api/coding/paas/v4",
             false,
+            false,
         ),
         (
             "anthropic",
             "Anthropic",
             "anthropic",
             "https://api.anthropic.com/v1",
+            false,
             false,
         ),
         (
@@ -1368,12 +1388,14 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
             "openrouter",
             "https://openrouter.ai/api/v1",
             false,
+            false,
         ),
         (
             "minimax",
             "MiniMax",
             "openai",
             "https://api.minimax.io/v1",
+            false,
             false,
         ),
         (
@@ -1382,6 +1404,7 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
             "openai",
             "https://opencode.ai/zen/go/v1",
             false,
+            false,
         ),
         (
             "ollama",
@@ -1389,6 +1412,7 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
             "ollama",
             "http://localhost:11434/v1",
             true,
+            false,
         ),
         (
             "lmstudio",
@@ -1396,15 +1420,16 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
             "lmstudio",
             "http://localhost:1234/v1",
             true,
+            false,
         ),
     ];
 
-    for (id, name, provider_type, base_url, is_local) in default_providers {
+    for (id, name, provider_type, base_url, is_local, is_enabled) in default_providers {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             r#"
             INSERT OR IGNORE INTO provider_configs (id, name, provider_type, base_url, is_local, is_enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(id)
@@ -1412,6 +1437,7 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
         .bind(provider_type)
         .bind(base_url)
         .bind(is_local as i32)
+        .bind(is_enabled as i32)
         .bind(&now)
         .bind(&now)
         .execute(&mut *connection)
@@ -1840,7 +1866,7 @@ mod tests {
 
         let providers = sqlx::query(
             r#"
-            SELECT id, name, provider_type, base_url
+            SELECT id, name, provider_type, base_url, is_enabled
             FROM provider_configs
             WHERE id IN ('macro-ai', 'minimax', 'opencode-go')
             ORDER BY id ASC
@@ -1856,6 +1882,7 @@ mod tests {
                 row.get::<String, _>("name"),
                 row.get::<String, _>("provider_type"),
                 row.get::<String, _>("base_url"),
+                row.get::<i64, _>("is_enabled") != 0,
             )
         })
         .collect::<Vec<_>>();
@@ -1868,18 +1895,21 @@ mod tests {
                     "Andrologic".to_string(),
                     "openai".to_string(),
                     "https://lmstudio.andrologic.ai/v1".to_string(),
+                    true,
                 ),
                 (
                     "minimax".to_string(),
                     "MiniMax".to_string(),
                     "openai".to_string(),
                     "https://api.minimax.io/v1".to_string(),
+                    false,
                 ),
                 (
                     "opencode-go".to_string(),
                     "OpenCode Go".to_string(),
                     "openai".to_string(),
                     "https://opencode.ai/zen/go/v1".to_string(),
+                    false,
                 ),
             ]
         );
@@ -1910,6 +1940,81 @@ mod tests {
         .expect("count new defaults");
 
         assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn migration_disables_only_unconfigured_default_providers() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("db pool");
+
+        sqlx::query(
+            r#"
+            UPDATE provider_configs
+            SET is_enabled = 1, has_stored_api_key = 0, auth_status = NULL
+            WHERE id = 'openai'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("simulate unconfigured enabled provider");
+        sqlx::query(
+            r#"
+            UPDATE provider_configs
+            SET is_enabled = 1, has_stored_api_key = 1
+            WHERE id = 'anthropic'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("simulate provider with stored key");
+        sqlx::query(
+            r#"
+            UPDATE provider_configs
+            SET is_enabled = 1, auth_status = 'connected'
+            WHERE id = 'copilot'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("simulate linked provider");
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 2")
+            .execute(&pool)
+            .await
+            .expect("reset migration 002");
+
+        drop(pool);
+
+        let migrated_pool = create_pool(&db_path).await.expect("migrated pool");
+        let providers = sqlx::query(
+            r#"
+            SELECT id, is_enabled
+            FROM provider_configs
+            WHERE id IN ('anthropic', 'copilot', 'macro-ai', 'openai')
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&migrated_pool)
+        .await
+        .expect("migrated provider rows")
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<String, _>("id"),
+                row.get::<i64, _>("is_enabled") != 0,
+            )
+        })
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            providers,
+            vec![
+                ("anthropic".to_string(), true),
+                ("copilot".to_string(), true),
+                ("macro-ai".to_string(), true),
+                ("openai".to_string(), false),
+            ]
+        );
     }
 
     #[tokio::test]
