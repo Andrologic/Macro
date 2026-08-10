@@ -1431,6 +1431,11 @@
     "totalChanges": "cambios totales"
   },
   "providers": {
+    "macroAi": {
+      "included": "Incluido con la beta de Macro",
+      "dropdownNotice": "Beta incluida · conversaciones registradas",
+      "loggingNotice": "Para operar y mejorar este servicio beta compartido, las conversaciones enviadas a Macro AI y las métricas de uso de tokens se registran en el servidor de inferencia."
+    },
     "add": "Añadir provider",
     "edit": "Editar provider",
     "created": "Provider creado",

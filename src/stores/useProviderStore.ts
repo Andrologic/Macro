@@ -30,6 +30,7 @@ import {
   providerHasUsableCredentials,
 } from '../services/providerCredentials';
 import { devLogger } from '../utils/devLogger';
+import { MACRO_AI_MODEL_ID, MACRO_AI_PROVIDER_ID } from '../config/macroAi';
 
 export { isLinkedProviderType, providerHasAuthSession };
 
@@ -951,6 +952,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   initialize: async () => {
     const { loadProviderConfigs, loadProviderModels, testConnection } = get();
+    if (ipcIsTauriAvailable()) {
+      try {
+        await tauriIpc.aiProvisionMacroAi();
+      } catch (error) {
+        devLogger.warn('[macro-ai] automatic activation is unavailable', {
+          error: getErrorMessage(error, 'Unknown activation error'),
+        });
+      }
+    }
     await loadProviderConfigs();
 
     const { providerConfigs, selectedProviderId } = get();
@@ -988,6 +998,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     await Promise.allSettled(connectivityChecks);
+
+    if (!get().selectedProviderId) {
+      await get().commitRestoredSelection({
+        providerId: MACRO_AI_PROVIDER_ID,
+        modelId: MACRO_AI_MODEL_ID,
+        reasoningEffort: null,
+      });
+    }
   },
 
   resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {

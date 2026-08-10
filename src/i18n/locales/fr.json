@@ -1430,6 +1430,11 @@
     "totalChanges": "changements totaux"
   },
   "providers": {
+    "macroAi": {
+      "included": "Inclus avec la bêta de Macro",
+      "dropdownNotice": "Bêta incluse · conversations journalisées",
+      "loggingNotice": "Pour exploiter et améliorer ce service bêta partagé, les conversations envoyées à Macro AI et les métriques d’usage en tokens sont journalisées sur le serveur d’inférence."
+    },
     "add": "Ajouter un provider",
     "edit": "Modifier le provider",
     "created": "Provider créé",

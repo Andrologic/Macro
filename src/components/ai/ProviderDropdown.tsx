@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { isMacroAiProvider } from '../../config/macroAi';
 
 export const ProviderDropdown: React.FC = () => {
   const { t } = useTranslation();
@@ -72,7 +73,14 @@ export const ProviderDropdown: React.FC = () => {
               )}
             >
               <Icon name={provider.isLocal ? 'hard-drive' : 'cloud'} size={14} />
-              <span>{provider.name}</span>
+              <span className="flex min-w-0 flex-col">
+                <span>{provider.name}</span>
+                {isMacroAiProvider(provider.id) && (
+                  <span className="text-[10px] opacity-75">
+                    {t('providers.macroAi.dropdownNotice', 'Included beta · conversations logged')}
+                  </span>
+                )}
+              </span>
             </button>
           ))}
 

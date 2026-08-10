@@ -4605,6 +4605,12 @@ pub async fn db_update_provider_config(
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
 
+    if params.id == crate::ai::macro_ai::PROVIDER_ID {
+        return Err(CommandError {
+            message: "Macro AI is managed automatically and cannot be edited.".to_string(),
+        });
+    }
+
     let provider_id = params.id.clone();
     let api_key_for_store = params.api_key.clone();
 
@@ -4658,6 +4664,12 @@ pub async fn db_create_provider_config(
 #[tauri::command]
 pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
+
+    if id == crate::ai::macro_ai::PROVIDER_ID {
+        return Err(CommandError {
+            message: "Macro AI is managed automatically and cannot be deleted.".to_string(),
+        });
+    }
 
     secrets::delete_api_key(&id).map_err(|error| CommandError {
         message: format!(

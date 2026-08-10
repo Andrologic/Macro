@@ -408,6 +408,7 @@ pub fn run() {
             commands::db_delete_provider_config,
             commands::ai_get_dev_provider_overrides,
             commands::ai::ai_start_chatgpt_auth,
+            commands::ai::ai_provision_macro_ai,
             commands::ai::ai_get_copilot_status,
             commands::ai::ai_download_copilot_runtime,
             commands::ai::ai_cancel_copilot_runtime_download,
