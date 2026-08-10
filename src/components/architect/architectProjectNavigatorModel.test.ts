@@ -6,6 +6,7 @@ import {
   buildArchitectNavigatorPlanEntries,
   buildArchitectNavigatorScopes,
   sanitizeArchitectNavigatorIds,
+  toggleArchitectNavigatorScope,
 } from './architectProjectNavigatorModel';
 
 const project = (id: string, name = id): Project => ({ id, name } as Project);
@@ -91,5 +92,10 @@ describe('architect project navigator model', () => {
       ['group:one', '', 'group:one', 12, 'project:gone'],
       new Set(['group:one']),
     )).toEqual(['group:one']);
+  });
+
+  it('toggles the same project row open and closed', () => {
+    expect(toggleArchitectNavigatorScope([], 'project:macro')).toEqual(['project:macro']);
+    expect(toggleArchitectNavigatorScope(['project:macro'], 'project:macro')).toEqual([]);
   });
 });

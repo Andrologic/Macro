@@ -40,6 +40,7 @@ import {
   buildArchitectNavigatorPlanEntries,
   buildArchitectNavigatorScopes,
   sanitizeArchitectNavigatorIds,
+  toggleArchitectNavigatorScope,
   type ArchitectNavigatorPlanEntry,
   type ArchitectNavigatorScope,
 } from './architectProjectNavigatorModel';
@@ -245,22 +246,28 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, []);
 
   const toggleScope = (scopeId: string) => {
-    const next = expandedScopeIds.includes(scopeId)
-      ? expandedScopeIds.filter((id) => id !== scopeId)
-      : [...expandedScopeIds, scopeId];
-    persistExpandedScopes(next);
+    persistExpandedScopes(toggleArchitectNavigatorScope(expandedScopeIds, scopeId));
   };
 
-  const selectScope = useCallback((scope: ArchitectNavigatorScope) => {
+  const applyScopeSelection = useCallback((scope: ArchitectNavigatorScope) => {
     if (scope.kind === 'group') {
       setSelectedGroup(scope.groupId);
     } else {
       setSelectedProject(scope.projectId);
     }
+  }, [setSelectedGroup, setSelectedProject]);
+
+  const selectScope = useCallback((scope: ArchitectNavigatorScope) => {
+    applyScopeSelection(scope);
     if (!expandedScopeIds.includes(scope.id)) {
       persistExpandedScopes([...expandedScopeIds, scope.id]);
     }
-  }, [expandedScopeIds, persistExpandedScopes, setSelectedGroup, setSelectedProject]);
+  }, [applyScopeSelection, expandedScopeIds, persistExpandedScopes]);
+
+  const selectAndToggleScope = useCallback((scope: ArchitectNavigatorScope) => {
+    applyScopeSelection(scope);
+    persistExpandedScopes(toggleArchitectNavigatorScope(expandedScopeIds, scope.id));
+  }, [applyScopeSelection, expandedScopeIds, persistExpandedScopes]);
 
   const togglePin = (planId: string) => {
     const next = pinnedPlanIds.includes(planId)
@@ -715,7 +722,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     </button>
                     <button
                       type="button"
-                      onClick={() => selectScope(scope)}
+                      onClick={() => selectAndToggleScope(scope)}
                       disabled={isBusy}
                       className="flex h-8 min-w-0 flex-1 items-center gap-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70 disabled:opacity-60"
                     >
@@ -751,7 +758,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                           type="button"
                           onClick={() => void createPlan(scope)}
                           disabled={!scope.projects.some(isProjectActionable) || isBusy}
-                          className="flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:cursor-default disabled:opacity-50"
+                          className="mt-0.5 flex min-h-8 w-full items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/10 px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground disabled:cursor-default disabled:opacity-50"
                         >
                           <Icon name="plus" size={11} />
                           {t('architect.projectNavigator.firstPlan', 'Créer le premier plan')}
