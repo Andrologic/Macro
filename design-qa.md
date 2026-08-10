@@ -51,6 +51,8 @@ La comparaison côte à côte confirme la même structure : titre et actions glo
 - Passe de finition après usage réel : le navigateur héritait d'une largeur globale de `600 px`, adaptée à d'autres panneaux mais trop importante pour une arborescence. Le mode Architect utilise désormais une largeur dédiée de `320 px`, redimensionnable entre `260` et `420 px`.
 - Les intitulés de section utilisent une casse naturelle, les actions globales restent discrètes, et les états « projet sélectionné » et « plan actif » sont visuellement distincts sans bordure d'accentuation.
 - L'action « Créer le premier plan » conserve un contour pointillé comme repère visuel propre à l'état vide, sans réintroduire de cadre sur les lignes de navigation.
+- Le type du plan est désormais écrit sur chaque ligne ; l'ancien point de cycle de vie, ambigu sans légende, a été retiré. Le bouton `+`, l'état vide et le clic droit ouvrent le même choix de type.
+- Le clic droit d'un projet ou d'un plan expose les actions pertinentes déjà disponibles dans l'interface, avec les mêmes restrictions métier.
 - L'accès aux archives est fixé en bas du panneau, comme dans le mode Chat. Il bascule vers une liste dédiée au lieu d'ajouter une section au milieu de l'arborescence active.
 - Les points de statut exposent désormais leur libellé traduit. Le menu d'un plan se ferme au clic extérieur ou avec Échap, et une liste développée peut revenir à son état condensé.
 
