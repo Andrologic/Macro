@@ -335,7 +335,9 @@ Exemples :
 - historique ou navigation de conversations en mode Chat
 - navigation directe dans les projets, groupes et plans en mode Architect
 
-En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet crée un plan dans cette portée.
+En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. Un projet peut être réduit même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit alors l'état développé ou réduit. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet crée un plan dans cette portée.
+
+Les archives ne constituent pas une section dépliable dans l'arborescence active. Une barre fixe en bas du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, sur le même principe que l'historique du mode Chat. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
 
 Sa largeur est propre au mode Architect afin de conserver une arborescence compacte, même si les panneaux des modes Implement ou Chat ont été agrandis. Le projet sélectionné et le plan actif utilisent des traitements visuels distincts : le premier définit la portée, le second représente le contenu actuellement ouvert.
 

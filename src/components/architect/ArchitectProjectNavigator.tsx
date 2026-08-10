@@ -229,11 +229,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [refreshPlans]);
 
   useEffect(() => {
-    if (!selectedScope || expandedScopeIds.includes(selectedScope.id)) return;
-    setExpandedScopeIds((current) => [...current, selectedScope.id]);
-  }, [expandedScopeIds, selectedScope]);
-
-  useEffect(() => {
     const selectedPlans = selectedScope ? entriesByScope.get(selectedScope.id) ?? [] : [];
     const detail: ArchitectPlanSelectorStateDetail = {
       status: error ? 'error' : isLoading ? 'loading' : 'ready',
@@ -498,13 +493,12 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       <div
         key={`${showScope ? 'pinned' : entry.scopeId}:${entry.plan.id}`}
         className={cn(
-          'group/plan relative flex min-w-0 items-center rounded-md border border-transparent pr-1 transition-colors',
+          'group/plan relative flex min-w-0 items-center rounded-md pr-1 transition-colors',
           isActive
-            ? 'border-primary/20 bg-primary/10 text-foreground'
-            : 'text-muted-foreground hover:border-border/50 hover:bg-accent/55 hover:text-foreground',
+            ? 'bg-accent text-foreground'
+            : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
         )}
       >
-        {isActive && <span aria-hidden="true" className="absolute bottom-1 left-0 top-1 w-0.5 rounded-r-full bg-primary" />}
         <button
           type="button"
           disabled={isBusy || entry.plan.status === 'archived'}
@@ -619,7 +613,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           <button
             type="button"
             onClick={() => openProjectModal(null)}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/70 bg-muted/20 text-muted-foreground shadow-sm transition-colors hover:border-primary/30 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             title={t('architect.projectNavigator.addProject', 'Ajouter un projet')}
             aria-label={t('architect.projectNavigator.addProject', 'Ajouter un projet')}
           >
@@ -628,7 +622,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           <button
             type="button"
             onClick={openProjectNavigator}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/70 bg-muted/20 text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             title={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
             aria-label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
           >
@@ -638,7 +632,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-2.5">
-        {pinnedEntries.length > 0 && (
+        {error && (
+          <div className="mx-1 mb-2 rounded-md bg-red-500/10 px-2 py-1.5 text-[11px] text-red-400" role="alert">
+            {error}
+          </div>
+        )}
+
+        {!showArchived && pinnedEntries.length > 0 && (
           <section className="mb-3.5" aria-labelledby="architect-pinned-plans-title">
             <h3 id="architect-pinned-plans-title" className="px-1.5 pb-1.5 pt-0.5 text-[11px] font-medium text-muted-foreground">
               {t('architect.projectNavigator.pinned', 'Épinglés')}
@@ -647,7 +647,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </section>
         )}
 
-        <section aria-labelledby="architect-projects-title">
+        {!showArchived ? (
+          <section aria-labelledby="architect-projects-title">
           <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
             <div className="flex items-center gap-1.5">
               <h3 id="architect-projects-title" className="text-[11px] font-medium text-muted-foreground">
@@ -669,12 +670,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               <Icon name="rotate-ccw" size={11} className={cn(isLoading && 'animate-spin')} />
             </button>
           </div>
-
-          {error && (
-            <div className="mx-1 mb-2 rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-400" role="alert">
-              {error}
-            </div>
-          )}
 
           {!isLoading && scopes.length === 0 && (
             <div className="mx-2 mt-6 text-center">
@@ -702,10 +697,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               return (
                 <div key={scope.id}>
                   <div className={cn(
-                    'group/scope flex min-h-8 items-center rounded-md border border-transparent transition-colors',
+                    'group/scope flex min-h-8 items-center rounded-md transition-colors',
                     isSelected
-                      ? 'border-border/70 border-l-primary/70 bg-accent/60'
-                      : 'hover:border-border/40 hover:bg-accent/35',
+                      ? 'bg-accent/80'
+                      : 'hover:bg-accent/45',
                   )}>
                     <button
                       type="button"
@@ -750,13 +745,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   </div>
 
                   {isExpanded && (
-                    <div className="ml-3.5 border-l border-border/60 pb-0.5 pl-3 pt-0.5">
+                    <div className="ml-7 space-y-0.5 pb-0.5 pt-0.5">
                       {visibleEntries.length > 0 ? visibleEntries.map((entry) => renderPlanRow(entry)) : (
                         <button
                           type="button"
                           onClick={() => void createPlan(scope)}
                           disabled={!scope.projects.some(isProjectActionable) || isBusy}
-                          className="mt-0.5 flex min-h-8 w-full items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/10 px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground disabled:cursor-default disabled:opacity-50"
+                          className="flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:cursor-default disabled:opacity-50"
                         >
                           <Icon name="plus" size={11} />
                           {t('architect.projectNavigator.firstPlan', 'Créer le premier plan')}
@@ -786,23 +781,46 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               );
             })}
           </div>
-        </section>
-
-        {archivedEntries.length > 0 && (
-          <section className="mt-3 border-t border-border/70 pt-2">
-            <button
-              type="button"
-              onClick={() => setShowArchived((current) => !current)}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 hover:bg-accent hover:text-foreground"
-              aria-expanded={showArchived}
-            >
-              <Icon name={showArchived ? 'chevron-down' : 'chevron-right'} size={11} />
-              {t('architect.projectNavigator.archived', 'Archivés')}
-              <span className="ml-auto tabular-nums">{archivedEntries.length}</span>
-            </button>
-            {showArchived && <div className="mt-0.5 space-y-0.5">{archivedEntries.map((entry) => renderPlanRow(entry, true))}</div>}
+          </section>
+        ) : (
+          <section aria-labelledby="architect-archived-plans-title">
+            <h3 id="architect-archived-plans-title" className="px-1.5 pb-1.5 pt-0.5 text-[11px] font-medium text-muted-foreground">
+              {t('architect.projectNavigator.archivedPlans', 'Plans archivés')}
+            </h3>
+            {archivedEntries.length > 0 ? (
+              <div className="space-y-0.5">{archivedEntries.map((entry) => renderPlanRow(entry, true))}</div>
+            ) : (
+              <div className="mx-2 mt-8 text-center">
+                <Icon name="archive" size={20} className="mx-auto mb-2 text-muted-foreground/45" />
+                <p className="text-xs text-muted-foreground">
+                  {t('architect.projectNavigator.noArchivedPlans', 'Aucun plan archivé.')}
+                </p>
+              </div>
+            )}
           </section>
         )}
+      </div>
+
+      <div className="flex h-12 shrink-0 items-center justify-between border-t border-border bg-card px-3">
+        <span className="text-xs text-muted-foreground">
+          {showArchived
+            ? t('architect.projectNavigator.archivedPlanCount', '{{count}} plans archivés', { count: archivedEntries.length })
+            : t('architect.projectNavigator.activePlanCount', '{{count}} plans actifs', { count: activeEntries.length })}
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setOpenPlanMenuId(null);
+            setShowArchived((current) => !current);
+          }}
+          data-tour-id="architect-archive-toggle"
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+        >
+          <Icon name={showArchived ? 'arrow-left' : 'archive'} size={12} />
+          {showArchived
+            ? t('architect.projectNavigator.activePlans', 'Plans actifs')
+            : t('architect.projectNavigator.archives', 'Archives')}
+        </button>
       </div>
       {planToEdit && (
         <PlanFormModal
