@@ -141,3 +141,9 @@ export const sanitizeArchitectNavigatorIds = (
   return Array.from(new Set(normalized));
 };
 
+export const toggleArchitectNavigatorScope = (
+  expandedScopeIds: string[],
+  scopeId: string,
+): string[] => expandedScopeIds.includes(scopeId)
+  ? expandedScopeIds.filter((id) => id !== scopeId)
+  : [...expandedScopeIds, scopeId];
