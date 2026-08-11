@@ -39,7 +39,30 @@ let validateArtifactMock: ReturnType<typeof mock>;
 let unvalidateArtifactMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
-const translationMock = createTranslationMock();
+const translationMock = createTranslationMock({
+  'errors.degraded.fallback.dynamic': '{{message}}',
+  'errors.degraded.worktree.checkedOut.title': 'Macro could not prepare the task workspace',
+  'errors.degraded.worktree.checkedOut.body':
+    'The branch needed for this task is still open in the main repository with local changes.',
+  'errors.degraded.worktree.checkedOut.nextStep':
+    'Commit, stash, or discard those local changes, then retry the task.',
+  'errors.degraded.worktree.fallback.title': 'Macro could not prepare the task workspace',
+  'errors.degraded.worktree.fallback.body':
+    'The task workspace is not ready yet, so Macro cannot safely review or edit files.',
+  'errors.degraded.worktree.fallback.nextStep':
+    'Retry the task. If it still fails, open the project Git settings and check the repository state.',
+  'errors.degraded.gitFlow.conflict.title': 'Resolve these conflicts before finishing',
+  'errors.degraded.gitFlow.conflict.body': 'The plan cannot be merged cleanly yet.',
+  'errors.degraded.gitFlow.conflict.filesNextStep':
+    'Resolve the listed files, then retry the merge.',
+  'errors.degraded.gitFlow.conflict.blockersNextStep':
+    'Resolve the merge blockers, then retry.',
+  'errors.degraded.service.resourcePressure.title': 'Macro is temporarily overloaded',
+  'errors.degraded.service.resourcePressure.body':
+    'The system has too many files open, so Macro paused automatic repository refreshes before retrying.',
+  'errors.degraded.service.resourcePressure.nextStep':
+    'Wait a moment, then retry. If this keeps happening, close extra project windows or terminals.',
+});
 
 class ResizeObserverTestMock {
   private callback: ResizeObserverCallback;
@@ -657,7 +680,11 @@ describe('FileChangesPanel', () => {
 
   beforeEach(async () => {
     mock.restore();
-    installTauriRuntimeMock();
+    installTauriRuntimeMock(mock(async (command: string) => {
+      if (command === 'plugin:store|load') return 1;
+      if (command === 'plugin:store|get') return [undefined, false];
+      return undefined;
+    }));
     resizeObserverWidth = 640;
     globalThis.ResizeObserver = ResizeObserverTestMock as unknown as typeof ResizeObserver;
     notifySuccessMock = mock(() => undefined);

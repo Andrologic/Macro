@@ -7,6 +7,10 @@ import type { AIModel, ProviderConfig } from '../../../../types';
 let importCounter = 0;
 let providerConfigs: ProviderConfig[];
 let modelsByProvider: Record<string, AIModel[]>;
+let metadataModelConfigListeners: Set<(value: unknown) => void>;
+let loadMetadataModelConfigMock: ReturnType<typeof mock>;
+let saveMetadataModelConfigMock: ReturnType<typeof mock>;
+const translate = (_key: string, fallback?: string) => fallback ?? _key;
 
 const provider = (id: string, overrides: Partial<ProviderConfig> = {}): ProviderConfig => ({
   id,
@@ -32,7 +36,7 @@ const loadModelsSettings = async () => {
 
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
-      t: (_key: string, fallback?: string) => fallback ?? _key,
+      t: translate,
     }),
   }));
 
@@ -56,25 +60,9 @@ const loadModelsSettings = async () => {
     }),
   }));
 
-  const metadataModelConfigListeners = new Set<(value: unknown) => void>();
   mock.module('../../../../services/metadataModelPreference', () => ({
-    loadMetadataModelConfig: async () => {
-      const persisted = window.localStorage.getItem('macro_metadataModelConfig');
-      if (persisted !== null) return JSON.parse(persisted);
-      const legacy = window.localStorage.getItem('macro_smartCommitModelConfig');
-      if (legacy !== null) {
-        window.localStorage.setItem('macro_metadataModelConfig', legacy);
-        return JSON.parse(legacy);
-      }
-      return null;
-    },
-    saveMetadataModelConfig: async (value: unknown) => {
-      window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify(value));
-      for (const listener of metadataModelConfigListeners) {
-        listener(value);
-      }
-      return value;
-    },
+    loadMetadataModelConfig: () => loadMetadataModelConfigMock(),
+    saveMetadataModelConfig: (value: unknown) => saveMetadataModelConfigMock(value),
     subscribeMetadataModelConfig: (listener: (value: unknown) => void) => {
       metadataModelConfigListeners.add(listener);
       return () => metadataModelConfigListeners.delete(listener);
@@ -148,6 +136,24 @@ describe('ModelsSettings metadata model config', () => {
       'provider-a': [model('provider-a', 'model-a')],
       'provider-b': [model('provider-b', 'model-b')],
     };
+    metadataModelConfigListeners = new Set();
+    loadMetadataModelConfigMock = mock(async () => {
+      const persisted = window.localStorage.getItem('macro_metadataModelConfig');
+      if (persisted !== null) return JSON.parse(persisted);
+      const legacy = window.localStorage.getItem('macro_smartCommitModelConfig');
+      if (legacy !== null) {
+        window.localStorage.setItem('macro_metadataModelConfig', legacy);
+        return JSON.parse(legacy);
+      }
+      return null;
+    });
+    saveMetadataModelConfigMock = mock(async (value: unknown) => {
+      window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify(value));
+      for (const listener of metadataModelConfigListeners) {
+        listener(value);
+      }
+      return value;
+    });
     window.localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);

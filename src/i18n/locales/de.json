@@ -379,6 +379,7 @@
     "resetZoom": "Zoom zurücksetzen",
     "renderingDiagram": "Rendering-Diagramm...",
     "mermaidRenderError": "Das Meerjungfrau-Diagramm kann nicht gerendert werden",
+    "copyFailed": "Der Diagrammcode konnte nicht kopiert werden.",
     "inputTokens": "Eingabe",
     "contextTokens": "Kontext",
     "tokens": "Token",
@@ -524,6 +525,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Archivierte Unterhaltungen konnten nicht geladen werden.",
+    "archivePreferenceSaveFailed": "Archivierte Unterhaltungen konnten nicht gespeichert werden.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1773,6 +1776,8 @@
     "commitUseConversationModel": "Konversationsmodell verwenden",
     "commitUseDedicatedModel": "Dediziertes Modell verwenden",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Die Metadaten-Modellpräferenz konnte nicht geladen werden.",
+    "metadataPreferenceSaveFailed": "Die Metadaten-Modellpräferenz konnte nicht gespeichert werden.",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -1984,6 +1989,12 @@
     "searchPlaceholder": "Terminal durchsuchen",
     "searchPrevious": "Vorheriger Treffer",
     "searchNext": "Nächster Treffer"
+  },
+  "codeViewer": {
+    "title": "Code-Datei",
+    "copied": "Kopiert",
+    "copyCode": "Code kopieren",
+    "copyFailed": "Der Code konnte nicht kopiert werden."
   },
   "notify": {
     "connectionFailed": "Connection failed",

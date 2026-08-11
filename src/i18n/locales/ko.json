@@ -379,6 +379,7 @@
     "resetZoom": "확대/축소 재설정",
     "renderingDiagram": "렌더링 다이어그램...",
     "mermaidRenderError": "인어 다이어그램을 렌더링할 수 없습니다.",
+    "copyFailed": "다이어그램 코드를 복사할 수 없습니다.",
     "inputTokens": "입력",
     "contextTokens": "문맥",
     "tokens": "토큰",
@@ -524,6 +525,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Unable to load archived conversations.",
+    "archivePreferenceSaveFailed": "Unable to save archived conversations.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1773,6 +1776,8 @@
     "commitUseConversationModel": "대화 모델 사용",
     "commitUseDedicatedModel": "전용 모델 사용",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Failed to load metadata model preference",
+    "metadataPreferenceSaveFailed": "Failed to save metadata model preference",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -1984,6 +1989,12 @@
     "searchPlaceholder": "터미널 검색",
     "searchPrevious": "이전 일치 항목",
     "searchNext": "다음 일치 항목"
+  },
+  "codeViewer": {
+    "title": "코드 파일",
+    "copied": "복사됨",
+    "copyCode": "코드 복사",
+    "copyFailed": "코드를 복사할 수 없습니다."
   },
   "notify": {
     "connectionFailed": "Connection failed",

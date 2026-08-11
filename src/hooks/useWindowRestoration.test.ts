@@ -7,6 +7,8 @@ let loadPreferencesMock: ReturnType<typeof mock>;
 let loadPersistedPreferenceMock: ReturnType<typeof mock>;
 let savePreferenceMock: ReturnType<typeof mock>;
 let showMainWindowMock: ReturnType<typeof mock>;
+let windowAvailableMonitorBoundsMock: ReturnType<typeof mock>;
+let windowCloseMock: ReturnType<typeof mock>;
 let windowCurrentMonitorWorkAreaMock: ReturnType<typeof mock>;
 let windowMaximizeMock: ReturnType<typeof mock>;
 let windowIsMaximizedMock: ReturnType<typeof mock>;
@@ -31,7 +33,7 @@ let persistedPreferenceValues: Record<string, unknown>;
 let preferenceValues: Record<string, unknown>;
 let importCounter = 0;
 let pageShuttingDown = false;
-let closeRequestedListener: (() => void | Promise<void>) | null = null;
+let closeRequestedListener: ((event: { preventDefault: () => void }) => void | Promise<void>) | null = null;
 let movedListener: (() => void) | null = null;
 let resizedListener: (() => void) | null = null;
 
@@ -53,6 +55,8 @@ const registerWindowRestorationMocks = async () => {
   mock.module('../services/tauriWindow', () => ({
     isTauriEnvironment: () => true,
     showMainWindow: (...args: unknown[]) => showMainWindowMock(...args),
+    windowAvailableMonitorBounds: (...args: unknown[]) => windowAvailableMonitorBoundsMock(...args),
+    windowClose: (...args: unknown[]) => windowCloseMock(...args),
     windowCurrentMonitorWorkArea: (...args: unknown[]) => windowCurrentMonitorWorkAreaMock(...args),
     windowIsMaximized: (...args: unknown[]) => windowIsMaximizedMock(...args),
     windowMaximize: (...args: unknown[]) => windowMaximizeMock(...args),
@@ -116,6 +120,7 @@ const loadWindowRestoration = async () => {
 };
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const createCloseRequestedEvent = () => ({ preventDefault: mock(() => undefined) });
 
 const renderWindowRestorationHook = async (
   useWindowRestoration: () => void
@@ -179,6 +184,15 @@ describe('ensureWindowRestoredOnce', () => {
     showMainWindowMock = mock(async () => {
       invocationOrder.push('show');
     });
+    windowAvailableMonitorBoundsMock = mock(async () => [{
+      position: { x: 0, y: 0 },
+      size: { width: 1728, height: 1117 },
+      workArea: {
+        position: { x: 0, y: 40 },
+        size: { width: 1728, height: 1077 },
+      },
+    }]);
+    windowCloseMock = mock(async () => undefined);
     windowCurrentMonitorWorkAreaMock = mock(async () => ({
       x: 0,
       y: 40,
@@ -210,7 +224,7 @@ describe('ensureWindowRestoredOnce', () => {
     windowSetThemeMock = mock(async () => {
       invocationOrder.push('theme');
     });
-    windowOnCloseRequestedMock = mock(async (listener: () => void | Promise<void>) => {
+    windowOnCloseRequestedMock = mock(async (listener: (event: { preventDefault: () => void }) => void | Promise<void>) => {
       closeRequestedListener = listener;
       return () => {
         if (closeRequestedListener === listener) {
@@ -333,6 +347,103 @@ describe('ensureWindowRestoredOnce', () => {
     expect(savePreferenceMock.mock.calls).toHaveLength(0);
   });
 
+  it('moves a disconnected secondary-monitor window into the current visible work area', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    chromeState = {
+      platform: 'windows',
+      isTauriWindow: true,
+      showCustomWindowControls: true,
+      disableCustomDoubleClickZoom: false,
+      usesNativeMacosTitlebar: false,
+    };
+    preferenceValues = {
+      ...preferenceValues,
+      windowWidth: 1400,
+      windowHeight: 900,
+      windowX: 3000,
+      windowY: 100,
+    };
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowSetSizeMock.mock.calls).toEqual([[1400, 900]]);
+    expect(windowSetPositionMock.mock.calls).toEqual([[328, 100]]);
+  });
+
+  it('keeps a valid negative position on a monitor to the left', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    chromeState = {
+      platform: 'windows',
+      isTauriWindow: true,
+      showCustomWindowControls: true,
+      disableCustomDoubleClickZoom: false,
+      usesNativeMacosTitlebar: false,
+    };
+    windowAvailableMonitorBoundsMock = mock(async () => [
+      {
+        position: { x: -1600, y: 0 },
+        size: { width: 1600, height: 900 },
+        workArea: { position: { x: -1600, y: 0 }, size: { width: 1600, height: 860 } },
+      },
+      {
+        position: { x: 0, y: 0 },
+        size: { width: 1728, height: 1117 },
+        workArea: { position: { x: 0, y: 40 }, size: { width: 1728, height: 1077 } },
+      },
+    ]);
+    preferenceValues = {
+      ...preferenceValues,
+      windowWidth: 1200,
+      windowHeight: 800,
+      windowX: -1400,
+      windowY: 40,
+    };
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowSetPositionMock.mock.calls).toEqual([[-1400, 40]]);
+  });
+
+  it('clamps oversized restored dimensions to the monitor work area', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    chromeState = {
+      platform: 'windows',
+      isTauriWindow: true,
+      showCustomWindowControls: true,
+      disableCustomDoubleClickZoom: false,
+      usesNativeMacosTitlebar: false,
+    };
+    preferenceValues = {
+      ...preferenceValues,
+      windowWidth: 3000,
+      windowHeight: 2000,
+      windowX: 0,
+      windowY: 40,
+    };
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(windowSetSizeMock.mock.calls).toEqual([[1728, 1077]]);
+    expect(windowSetPositionMock.mock.calls).toEqual([[0, 40]]);
+  });
+
+  it('retries a transient main-window display failure before leaving the app hidden', async () => {
+    const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    let attempts = 0;
+    showMainWindowMock = mock(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('window not ready');
+    });
+
+    __resetWindowRestorationForTests();
+    await ensureWindowRestoredOnce();
+
+    expect(showMainWindowMock.mock.calls).toHaveLength(2);
+  });
+
   it('does not migrate an already customized macOS window state from an older bootstrap version', async () => {
     const { __resetWindowRestorationForTests, ensureWindowRestoredOnce } = await loadWindowRestoration();
     persistedPreferenceValues = {
@@ -357,7 +468,7 @@ describe('ensureWindowRestoredOnce', () => {
 
     expect(windowCurrentMonitorWorkAreaMock.mock.calls).toHaveLength(0);
     expect(windowSetSizeMock.mock.calls).toEqual([[1380, 860]]);
-    expect(windowSetPositionMock.mock.calls).toEqual([[20, 30]]);
+    expect(windowSetPositionMock.mock.calls).toEqual([[20, 40]]);
     expect(savePreferenceMock.mock.calls).toEqual([['windowBootstrapVersion', 2]]);
   });
 
@@ -446,7 +557,7 @@ describe('ensureWindowRestoredOnce', () => {
     expect(typeof closeRequestedListener).toBe('function');
 
     await act(async () => {
-      await closeRequestedListener?.();
+      await closeRequestedListener?.(createCloseRequestedEvent());
     });
 
     releasePreferences();
@@ -473,7 +584,7 @@ describe('ensureWindowRestoredOnce', () => {
 
     await delay(10);
     await act(async () => {
-      await closeRequestedListener?.();
+      await closeRequestedListener?.(createCloseRequestedEvent());
     });
     await delay(70);
 
@@ -498,12 +609,15 @@ describe('ensureWindowRestoredOnce', () => {
     expect(typeof closeRequestedListener).toBe('function');
 
     movedListener?.();
+    const closeEvent = createCloseRequestedEvent();
     await act(async () => {
-      await closeRequestedListener?.();
+      await closeRequestedListener?.(closeEvent);
     });
     await delay(650);
 
-    expect(savePreferenceMock.mock.calls).toHaveLength(0);
+    expect(savePreferenceMock.mock.calls).toHaveLength(5);
+    expect(closeEvent.preventDefault).toHaveBeenCalledTimes(1);
+    expect(windowCloseMock.mock.calls).toHaveLength(1);
 
     await act(async () => {
       root.unmount();

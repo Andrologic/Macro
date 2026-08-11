@@ -1,9 +1,15 @@
 import { isTauriEnvironment } from '../utils/isTauriEnvironment';
+import type { MonitorBounds } from './windowBounds';
 
 type WindowSize = { width: number; height: number };
 type WindowPosition = { x: number; y: number };
 export type WindowWorkArea = WindowSize & WindowPosition;
-export type WindowCloseRequestedListener = () => void | Promise<void>;
+export type WindowCloseRequestedEvent = {
+  preventDefault: () => void;
+};
+export type WindowCloseRequestedListener = (
+  event: WindowCloseRequestedEvent
+) => void | Promise<void>;
 
 async function invokeWindow<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
@@ -36,6 +42,46 @@ async function getLogicalMonitorWorkArea(
     width: Math.round(monitor.workArea.size.width / scaleFactor),
     height: Math.round(monitor.workArea.size.height / scaleFactor),
   };
+}
+
+async function getLogicalMonitorBounds(
+  readMonitors: () => Promise<Array<{
+    position: { x: number; y: number };
+    size: { width: number; height: number };
+    workArea: {
+      position: { x: number; y: number };
+      size: { width: number; height: number };
+    };
+    scaleFactor: number;
+  }>>
+): Promise<MonitorBounds[]> {
+  const monitors = await readMonitors();
+
+  return monitors.map((monitor) => {
+    const scaleFactor = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
+    const toLogical = (value: number) => Math.round(value / scaleFactor);
+
+    return {
+      position: {
+        x: toLogical(monitor.position.x),
+        y: toLogical(monitor.position.y),
+      },
+      size: {
+        width: toLogical(monitor.size.width),
+        height: toLogical(monitor.size.height),
+      },
+      workArea: {
+        position: {
+          x: toLogical(monitor.workArea.position.x),
+          y: toLogical(monitor.workArea.position.y),
+        },
+        size: {
+          width: toLogical(monitor.workArea.size.width),
+          height: toLogical(monitor.workArea.size.height),
+        },
+      },
+    };
+  });
 }
 
 const backgroundColorPermissionFailures = new Set<string>();
@@ -127,6 +173,11 @@ export async function windowPrimaryMonitorWorkArea(): Promise<WindowWorkArea | n
   return getLogicalMonitorWorkArea(() => primaryMonitor());
 }
 
+export async function windowAvailableMonitorBounds(): Promise<MonitorBounds[]> {
+  const { availableMonitors } = await import('@tauri-apps/api/window');
+  return getLogicalMonitorBounds(() => availableMonitors());
+}
+
 export async function windowSetZoom(scale: number): Promise<void> {
   await invokeWindow<void>('window_set_zoom', { scale });
 }
@@ -183,5 +234,5 @@ export async function windowOnCloseRequested(
   listener: WindowCloseRequestedListener
 ): Promise<() => void> {
   const window = await getCurrentTauriWindow();
-  return window.onCloseRequested(() => listener());
+  return window.onCloseRequested((event) => listener(event));
 }
