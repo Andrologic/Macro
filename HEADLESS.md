@@ -1,8 +1,22 @@
 # Experimental Headless Kernel
 
-This document describes an internal, experimental foundation for future remote
-and no-GUI work. It is not exposed as a Macro 0.1 product feature, is not part
-of the supported release surface, and may change without compatibility guarantees.
+This document describes internal foundations for remote and no-GUI development.
+None of them is exposed as a Macro 0.1 product feature or belongs to the
+supported release surface. They may change without compatibility guarantees.
+
+Three separate surfaces coexist in the repository:
+
+- The desktop **tool host** is an internal HTTP server started automatically by
+  the Tauri runtime for trusted local integrations such as the Copilot bridge.
+  It binds only to an ephemeral `127.0.0.1` port and uses an automatically
+  generated bearer token. It is not the headless kernel or a remote API.
+- The **headless kernel** is the experimental `macro-headless` executable
+  documented below. It owns the prototype HTTP API and can bind beyond loopback
+  only when explicitly configured with a bearer token.
+- The frontend **remote transport** is an internal development adapter that can
+  target a compatible headless API. Its presence in `serviceRuntime` is not a
+  supported mode selector or a promise that the desktop UI works end to end
+  without Tauri IPC.
 
 ## Run The Kernel
 
@@ -57,9 +71,20 @@ Current endpoints include:
 - `GET /api/v1/projects/{project_id}/git/tree`
 - `GET /api/v1/projects/{project_id}/git/commits`
 
-## Remote Frontend Transport
+When `MACRO_HEADLESS_BEARER_TOKEN` is set, authentication applies to `/health`
+as well as every API endpoint. On the default loopback listener without a token,
+`/health` is intentionally public because the whole experimental server is
+local and unauthenticated in that configuration.
 
-The frontend can use the remote service provider with:
+The separate desktop tool host also leaves its non-sensitive `/health` response
+unauthenticated. This is intentional and acceptable only because that server is
+hard-coded to an ephemeral `127.0.0.1` listener; all tool endpoints still
+require its generated bearer token.
+
+## Internal Frontend Remote Transport
+
+For repository development and contract testing, the frontend adapter can be
+selected explicitly with:
 
 ```env
 VITE_BACKEND_TRANSPORT=remote
@@ -70,15 +95,16 @@ VITE_REMOTE_AUTH_TOKEN=
 VITE_REMOTE_TIMEOUT_MS=15000
 ```
 
-Remote mode currently supports workspace bootstrap, task catalog, Architect plan
-listing and activation, Git tree and history, remote tool policy, remote tool
-validation, remote tool execution, and local browser persistence for tool and
-MCP preferences.
+The adapter currently implements workspace bootstrap, task catalog, Architect
+plan listing and activation, Git tree and history, remote tool policy, remote
+tool validation, remote tool execution, and local browser persistence for tool
+and MCP preferences. This inventory describes implemented prototype paths; it
+does not make `VITE_BACKEND_TRANSPORT=remote` a supported Macro 0.1 capability.
 
 ## Current Limits
 
-The remote provider does not yet replace the full desktop IPC surface. In the
-0.1 line, these remain desktop-only:
+The adapter does not replace the full desktop IPC surface. In the 0.1 line,
+these remain desktop-only:
 
 - project creation, import, rename, archive, and access changes;
 - Git worktree creation and removal;

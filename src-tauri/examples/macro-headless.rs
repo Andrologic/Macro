@@ -12,6 +12,7 @@ use macro_lib::commands::workspace_tools::{
 };
 use macro_lib::commands::{execute_workspace_tool, git, WorkspaceProjectMount};
 use macro_lib::core::error::BackendError;
+use macro_lib::core::http_auth::BearerTokenDigest;
 use macro_lib::core::load_config;
 use macro_lib::core::tool_policy::{
     get_mode_policy, validate_tool_execution, ToolModePolicyResult, ToolValidationResult,
@@ -29,7 +30,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 #[derive(Clone)]
 struct HeadlessState {
-    bearer_token: Option<String>,
+    bearer_token: Option<BearerTokenDigest>,
     allowed_roots: Vec<PathBuf>,
     workspace_path: PathBuf,
     git_state: GitState,
@@ -278,8 +279,7 @@ fn authorized(headers: &HeaderMap, state: &HeadlessState) -> bool {
         return false;
     };
 
-    let provided = auth_str.strip_prefix("Bearer ").unwrap_or_default();
-    provided == expected
+    expected.authorizes(Some(auth_str))
 }
 
 fn unauthorized_response() -> impl IntoResponse {
@@ -640,7 +640,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let allowed_roots = configured_headless_allowed_roots(&workspace_path)?;
 
     let state = Arc::new(HeadlessState {
-        bearer_token,
+        bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
         allowed_roots,
         workspace_path,
         git_state: GitState::new(),

@@ -68,7 +68,7 @@ Les stores centralisent les decisions d'orchestration cote interface.
 La couche services frontend encapsule les acces aux sources de donnees et aux outils.
 
 Elle fournit :
-- une abstraction de provider (`ipc`, `remote`)
+- une abstraction de provider (`ipc`, `remote` expérimental)
 - des services specialises pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
 
 Elle a pour role d'isoler le reste de l'interface des details du transport.
@@ -101,7 +101,7 @@ Il fournit les capacites natives suivantes :
 - validation de politique d'outils
 - execution d'outils de workspace
 - providers IA cote backend
-- kernel headless HTTP pour l'execution distante
+- fondation expérimentale du kernel headless HTTP
 
 ---
 
@@ -130,7 +130,7 @@ Le backend desktop utilise principalement :
 - SQLx avec SQLite
 - git2
 - notify
-- axum pour le kernel headless
+- axum pour le kernel headless expérimental et le tool host interne
 - reqwest pour les providers IA distants
 
 ### 4.3 Transports
@@ -140,7 +140,7 @@ Le produit 0.1 supporte un transport cote application :
 - `desktop`
 
 Le transport `desktop` passe par Tauri IPC.
-Une fondation HTTP distante existe dans le code a titre experimental, mais elle n'est ni exposee ni supportee comme capacite produit en 0.1. Elle pourra servir a une future ligne remote sans modifier le contrat desktop actuel.
+Une fondation HTTP distante existe dans le code à titre expérimental, mais elle n'est ni exposée ni supportée comme capacité produit en 0.1. La valeur interne `VITE_BACKEND_TRANSPORT=remote` sélectionne un adaptateur de développement incomplet ; ce n'est ni un sélecteur produit ni une garantie de fonctionnement de l'interface sans Tauri IPC. Cette fondation pourra servir à une future ligne remote sans modifier le contrat desktop actuel.
 
 ---
 
@@ -265,15 +265,17 @@ Les composants doivent surtout afficher, recueillir des intentions utilisateur e
 
 ### 7.1 Abstraction provider
 
-La couche `services/index.ts` selectionne dynamiquement le provider de donnees selon :
+La couche `services/index.ts` sélectionne dynamiquement le provider de données selon :
 
-- le transport cible (`desktop` ou `remote`)
-- la disponibilite effective du runtime Tauri
+- le transport cible (`desktop` ou l'adaptateur interne `remote`)
+- la disponibilité effective du runtime Tauri
 
 Cette abstraction permet :
 
-- d'utiliser Tauri en mode desktop
-- de parler a un backend distant sans reecrire le reste de l'application
+- d'utiliser Tauri en mode desktop ;
+- d'expérimenter avec un backend headless compatible sans réécrire le reste de l'application.
+
+Le second chemin reste une infrastructure de développement partielle et ne fait pas partie des modes supportés de Macro 0.1.
 
 ### 7.2 Services de domaine
 
@@ -695,25 +697,33 @@ Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestrati
 
 ---
 
-## 16. Fondation experimentale : backend distant et kernel headless
+## 16. Fondation expérimentale : backend distant et kernel headless
 
-Cette section documente du code exploratoire interne. Ce code n'est pas expose comme mode produit, n'est pas supporte en 0.1 et ne constitue pas un engagement de compatibilite.
+Cette section documente du code exploratoire interne. Ce code n'est pas exposé comme mode produit, n'est pas supporté en 0.1 et ne constitue pas un engagement de compatibilité.
 
-### 16.1 Role du kernel headless
+Trois surfaces doivent rester distinguées :
+
+- le **tool host desktop**, démarré par `lib.rs`, sert uniquement des intégrations locales de confiance comme le pont Copilot sur un port éphémère de `127.0.0.1` ;
+- le **kernel headless expérimental**, démarré par l'exemple `macro-headless`, porte le prototype d'API HTTP décrit ci-dessous ;
+- le **transport frontend remote** est un adaptateur interne et incomplet vers une API headless compatible. Sa sélection par variable Vite ne l'intègre pas au contrat produit.
+
+Le tool host et le kernel headless partagent le contrat de validation du bearer token afin d'éviter une dérive de leur authentification, mais restent deux serveurs, deux cycles de vie et deux surfaces HTTP distincts.
+
+### 16.1 Rôle du kernel headless
 
 Le prototype de kernel headless est une version sans GUI du backend Macro.
 
-Il explore la possibilite pour un futur client Macro distant de :
+Il explore la possibilité pour un futur client Macro distant de :
 
-- recuperer l'etat du workspace
-- recuperer les taches
+- récupérer l'état du workspace
+- récupérer les tâches
 - interroger les politiques d'outils
-- executer certains outils
-- consulter l'etat Git
+- exécuter certains outils
+- consulter l'état Git
 
 ### 16.2 Exposition HTTP
 
-Le kernel headless expose une API HTTP basee sur axum.
+Le kernel headless expose une API HTTP basée sur axum.
 
 Cette API couvre au minimum :
 
@@ -735,24 +745,26 @@ Cette API couvre au minimum :
 - `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
 - `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
 
-Cette surface HTTP est une fondation experimentale incomplete. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
+Cette surface HTTP est une fondation expérimentale incomplète. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
 
-Les capabilities runtime separent les skills en deux niveaux : `skills` pour la decouverte, l'activation et la lecture de ressources; `skillScripts` pour l'execution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
+Les capabilities runtime séparent les skills en deux niveaux : `skills` pour la découverte, l'activation et la lecture de ressources ; `skillScripts` pour l'exécution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
 
-### 16.3 Protection experimentale
+### 16.3 Protection expérimentale
 
-Le kernel headless peut etre protege par un bearer token.
+Le kernel headless peut être protégé par un bearer token. Le token est facultatif uniquement sur une adresse loopback et obligatoire sur toute autre adresse. Lorsqu'il est configuré, il protège aussi `/health`. Sans token sur loopback, `/health` est public comme le reste du prototype local.
 
-Ce token protege uniquement le prototype HTTP. Il n'implique aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
+Le tool host desktop est toujours limité à `127.0.0.1`, génère un token éphémère et exige ce token pour tous ses endpoints d'outils. Son endpoint `/health` reste volontairement public : il n'expose qu'un état de vie non sensible et ne doit pas devenir accessible hors localhost.
+
+Ces bearer tokens protègent uniquement leurs surfaces HTTP internes. Ils n'impliquent aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
 
 ### 16.4 Position architecturale
 
-Si cette exploration devient un jour une capacite produit, elle pourrait servir de base a :
+Si cette exploration devient un jour une capacité produit, elle pourrait servir de base à :
 
-- l'execution distante
-- la continuite entre plusieurs clients
+- l'exécution distante
+- la continuité entre plusieurs clients
 - la supervision mobile future
-- les offres eventuelles d'hebergement dedie
+- les offres éventuelles d'hébergement dédié
 
 ---
 
