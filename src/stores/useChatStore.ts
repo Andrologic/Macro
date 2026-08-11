@@ -270,7 +270,11 @@ import {
   restoreAgentCodeReplayPreview,
   saveAgentCodeCheckpoints,
 } from "../services/agentCodeCheckpoints";
-import { loadLinkedTaskDeletionSagas } from "../services/linkedTaskDeletionSaga";
+import {
+  LinkedConversationDeletionSagaCorruptionError,
+  loadLinkedConversationDeletionSagas,
+  upsertLinkedConversationDeletionSaga,
+} from "../services/linkedTaskDeletionSaga";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
 import {
   filterToolIdsForInternalAgentProfile,
@@ -940,6 +944,7 @@ interface ChatStore {
   appendToMessage: (messageId: string, tokenChunk: string) => void;
   clearMessages: () => void;
   selectConversation: (conversationId: string) => Promise<boolean>;
+  clearSelectedConversation: () => void;
   createConversation: (
     title: string,
     taskId: string | null,
@@ -8813,6 +8818,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         assistantMessageId,
         error,
       );
+      throw error;
     }
   };
 
@@ -10669,7 +10675,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     } else {
       newConversation = {
-        id: `conv-${Date.now()}`,
+        id: `conv-${createConversationSessionId()}`,
         title: resolvedTitle,
         description: "",
         scope_mode: mode,
@@ -11179,7 +11185,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             await deletePersistedConversation(chatPersistenceAdapters, conversation.id);
             applyLocalConversationRemoval([conversation.id]);
           } catch (cleanupError) {
-            deletedConversationIds.delete(conversation.id);
+            await upsertLinkedConversationDeletionSaga({
+              ownerType: "plan",
+              ownerId: plan.id,
+              conversationId: conversation.id,
+              phase: "task_deleted",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              lastError: toServiceError(cleanupError).message,
+            }).catch(() => undefined);
             const normalized = toServiceError(error);
             const cleanupMessage = toServiceError(cleanupError).message;
             throw new Error(
@@ -11219,9 +11233,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas().catch(
-      () => [],
-    );
+    let pendingLinkedTaskDeletions;
+    try {
+      pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+    } catch (error) {
+      if (error instanceof LinkedConversationDeletionSagaCorruptionError) {
+        error.recoverableConversationIds.forEach((conversationId) => {
+          deletedConversationIds.add(conversationId);
+        });
+      }
+      throw error;
+    }
     const pendingConversationIds = new Set(
       pendingLinkedTaskDeletions
         .filter((saga) => saga.phase !== "prepared")
@@ -12611,6 +12633,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
     },
 
+    clearSelectedConversation: () => {
+      set({ selectedConversationId: null, activeContextKey: null, restoreStatus: "idle" });
+    },
+
     togglePinConversation: async (conversationId) => {
       const conversation = get().conversations.find(
         (candidate) => candidate.id === conversationId,
@@ -12696,6 +12722,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
 
+      if (
+        linkedTask &&
+        linkedTask.task_source === "standalone" &&
+        linkedTask.standalone_kind === "manual_feature" &&
+        linkedTask.draft
+      ) {
+        await useTaskStore.getState().deleteTask(linkedTask.id);
+        if (!get().conversations.some((candidate) => candidate.id === conversationId)) {
+          return;
+        }
+      }
+
       deletedConversationIds.add(conversationId);
       pendingConversationDeletionIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
@@ -12729,16 +12767,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         hydrateSelectedConversationAfterRemoval([conversationId]),
       );
 
-      if (
-        linkedTask &&
-        linkedTask.task_source === "standalone" &&
-        linkedTask.standalone_kind === "manual_feature" &&
-        linkedTask.draft
-      ) {
-        await runCleanup("brouillon de fonctionnalité", () =>
-          useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id),
-        );
-      }
       if (cleanupFailures.length > 0) {
         const message = `Conversation supprimée, mais certaines ressources n'ont pas pu être nettoyées : ${cleanupFailures.join("; ")}`;
         set({ lastError: message });
@@ -13993,14 +14021,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const updatedTargetMessage =
           get().messages.find((message) => message.id === messageId) ?? target;
 
-        await trimConversationAfterMessage({
-          conversationId,
-          messageId,
-          clearQuestionnaireSession: options?.clearQuestionnaireSession,
-          updatedMessage: updatedTargetMessage,
-        });
-        committedCodeReplay = true;
-        pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
+        try {
+          await trimConversationAfterMessage({
+            conversationId,
+            messageId,
+            clearQuestionnaireSession: options?.clearQuestionnaireSession,
+            updatedMessage: updatedTargetMessage,
+          });
+        } catch (trimError) {
+          await persistEditedUserMessage({
+            messageId,
+            turnId: getMessageTurnId(target),
+            content: target.content,
+            hiddenContext: target.hidden_context,
+            providerInputItems: target.provider_input_items,
+            replaceStructuredFields: true,
+          });
+          throw trimError;
+        }
         if (!isCurrentPreparation()) {
           return;
         }
@@ -14024,6 +14062,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           manualFeatureDraftRecovery,
           agentTypeAtSend: agentTypeAtEdit,
         });
+        committedCodeReplay = true;
+        pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
       } catch (error) {
         if (!committedCodeReplay) {
           const rollback = pendingAgentCodeReplayRollbacksByConversationId.get(

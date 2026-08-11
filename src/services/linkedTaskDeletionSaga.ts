@@ -4,12 +4,22 @@ const SAGA_KEY = 'pendingLinkedTaskDeletions:v1';
 
 export type LinkedConversationDeletionOwner = 'task' | 'plan';
 
+export interface LinkedTaskDeletionTarget {
+  worktreeKey: string;
+  repoPath: string;
+  branchName: string;
+  branchExisted: boolean;
+  worktreeRemoved: boolean;
+  branchRemoved: boolean;
+}
+
 export interface LinkedConversationDeletionSaga {
   ownerType: LinkedConversationDeletionOwner;
   ownerId: string;
   conversationId: string;
   phase: 'prepared' | 'task_deleting' | 'task_deleted';
   draft?: boolean;
+  executionTargets?: LinkedTaskDeletionTarget[];
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -20,18 +30,34 @@ export interface LinkedTaskDeletionSaga {
   conversationId: string;
   phase: 'prepared' | 'task_deleting' | 'task_deleted';
   draft?: boolean;
+  executionTargets?: LinkedTaskDeletionTarget[];
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+}
+
+export class LinkedConversationDeletionSagaCorruptionError extends Error {
+  readonly recoverableConversationIds: string[];
+
+  constructor(value: string) {
+    super('Le journal de suppression liée est corrompu et doit être réparé avant de réafficher les conversations concernées.');
+    this.name = 'LinkedConversationDeletionSagaCorruptionError';
+    this.recoverableConversationIds = Array.from(
+      value.matchAll(/"conversationId"\s*:\s*"([^"\\]+)"/g),
+      (match) => match[1],
+    );
+  }
 }
 
 const parseSagas = (value: string | null | undefined): LinkedConversationDeletionSaga[] => {
   if (!value) return [];
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) throw new LinkedConversationDeletionSagaCorruptionError(value);
     return parsed.flatMap((entry): LinkedConversationDeletionSaga[] => {
-      if (typeof entry !== 'object' || entry === null) return [];
+      if (typeof entry !== 'object' || entry === null) {
+        throw new LinkedConversationDeletionSagaCorruptionError(value);
+      }
       const candidate = entry as Partial<LinkedConversationDeletionSaga & { taskId: string }>;
       const ownerType = candidate.ownerType ?? (typeof candidate.taskId === 'string' ? 'task' : null);
       const ownerId = candidate.ownerId ?? candidate.taskId;
@@ -43,7 +69,7 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
           candidate.phase !== 'task_deleting' &&
           candidate.phase !== 'task_deleted')
       ) {
-        return [];
+        throw new LinkedConversationDeletionSagaCorruptionError(value);
       }
       return [{
         ...candidate,
@@ -51,8 +77,9 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
         ownerId,
       } as LinkedConversationDeletionSaga];
     });
-  } catch {
-    return [];
+  } catch (error) {
+    if (error instanceof LinkedConversationDeletionSagaCorruptionError) throw error;
+    throw new LinkedConversationDeletionSagaCorruptionError(value);
   }
 };
 
@@ -117,6 +144,7 @@ export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionS
           conversationId: saga.conversationId,
           phase: saga.phase,
           draft: saga.draft,
+          executionTargets: saga.executionTargets,
           createdAt: saga.createdAt,
           updatedAt: saga.updatedAt,
           lastError: saga.lastError,
