@@ -96,8 +96,10 @@ const supportedLanguages = readSupportedLanguages();
 const englishLocale = readLocale("en");
 const englishEntries = flattenObject(englishLocale);
 const englishKeys = new Map(englishEntries);
+const frenchKeys = new Map(flattenObject(readLocale("fr")));
 
 const localeErrors = [];
+const copiedFrenchErrors = [];
 const translationKeyErrors = [];
 
 for (const language of supportedLanguages) {
@@ -134,6 +136,17 @@ for (const language of supportedLanguages) {
     if (englishPlaceholders.join("|") !== localizedPlaceholders.join("|")) {
       localeErrors.push(
         `${language}.json placeholder mismatch for ${key}: expected [${englishPlaceholders.join(", ")}], got [${localizedPlaceholders.join(", ")}]`
+      );
+    }
+
+    const frenchValue = frenchKeys.get(key);
+    if (
+      language !== "fr" &&
+      localizedValue === frenchValue &&
+      /[àâçéèêëîïôùûüÿœ]/i.test(localizedValue)
+    ) {
+      copiedFrenchErrors.push(
+        `${language}.json appears to copy French for ${key}: ${JSON.stringify(localizedValue)}`
       );
     }
   }
@@ -214,7 +227,13 @@ for (const relativeFile of uiStringAuditFiles) {
   });
 }
 
-const errors = [...localeErrors, ...translationKeyErrors, ...localePatternErrors, ...uiLiteralErrors];
+const errors = [
+  ...localeErrors,
+  ...copiedFrenchErrors,
+  ...translationKeyErrors,
+  ...localePatternErrors,
+  ...uiLiteralErrors,
+];
 
 if (errors.length > 0) {
   console.error("i18n audit failed:\n");

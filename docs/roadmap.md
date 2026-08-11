@@ -4,262 +4,262 @@
 
 Ce document decrit la trajectoire de livraison de Macro.
 
-Il sert a :
-- identifier les ecarts entre la cible produit et l'etat actuel
+Il sert à :
+- identifier les écarts entre la cible produit et l'état actuel
 - prioriser les chantiers
-- definir un ordre de livraison coherent
+- définir un ordre de livraison cohérent
 - servir de support de pilotage produit et technique
 
-La cible fonctionnelle est definie dans `docs/functional-spec.md`.
-L'architecture technique de reference est definie dans `docs/technical-architecture.md`.
+La cible fonctionnelle est définie dans `docs/functional-spec.md`.
+L'architecture technique de référence est définie dans `docs/technical-architecture.md`.
 
 ---
 
-## 2. Regle de lecture
+## 2. Règle de lecture
 
-Cette roadmap est organisee en trois niveaux :
+Cette roadmap est organisée en trois niveaux :
 
-- ecarts constates ou probables entre la cible et l'etat actuel
+- écarts constatés ou probables entre la cible et l'état actuel
 - chantiers prioritaires
-- sequence de livraison recommandee
+- séquence de livraison recommandée
 
 Elle doit rester vivante.
-Un chantier livre doit etre retire ou marque comme termine.
-Un ecart devenu obsolete doit etre supprime.
+Un chantier livré doit être retiré ou marqué comme terminé.
+Un écart devenu obsolète doit être supprimé.
 
 ---
 
-## 3. Etat actuel synthetique
+## 3. État actuel synthétique
 
-L'application dispose deja d'une base solide :
+L'application dispose déjà d'une base solide :
 
 - shell desktop React + Tauri fonctionnel
-- modes `Architect`, `Implement`, `Chat` deja presents
-- gestion de plans cote Architect deja avancee
-- pipeline Git et metadata deja bien amorce
-- taches, review et commit deja presents cote Implement
-- socle desktop `Architect -> Implement -> Review -> Commit -> validation finale de plan` maintenant stabilise
-- catalogue de taches `Implement` maintenant capable d'agreger plusieurs plans executables et plusieurs branches cibles cote desktop
-- filtres par plan et prise en charge des taches hors plan maintenant presents dans la file de taches
-- resumes de plans `Implement` maintenant fiables pour les filtres et la validation quand plusieurs plans vivants coexistent
-- review Implement multi-depots maintenant explicite dans la file et dans la review, avec progression depot par depot et completion unifiee de la tache
+- modes `Architect`, `Implement`, `Chat` déjà présents
+- gestion de plans côté Architect déjà avancée
+- pipeline Git et metadata déjà bien amorcé
+- tâches, review et commit déjà présents côté Implement
+- socle desktop `Architect -> Implement -> Review -> Commit -> validation finale de plan` maintenant stabilisé
+- catalogue de tâches `Implement` maintenant capable d'agréger plusieurs plans exécutables et plusieurs branches cibles côté desktop
+- filtres par plan et prise en charge des tâches hors plan maintenant présents dans la file de tâches
+- résumés de plans `Implement` maintenant fiables pour les filtres et la validation quand plusieurs plans vivants coexistent
+- review Implement multi-dépôts maintenant explicite dans la file et dans la review, avec progression dépôt par dépôt et complétion unifiée de la tâche
 - lifecycle des plans maintenant robuste sur le socle desktop local-first
-- sync `@macro` maintenant structuree avec etats exploitables, actions explicites et erreurs remontees proprement
-- merge conflicts pilotes par Macro maintenant detectes, bloques en fail-closed et traites via un workflow assiste de resolution et reprise
-- couches de services, stores et IPC deja structurees
-- fondation headless experimentale presente dans le code, sans capacite produit exposee
+- sync `@macro` maintenant structurée avec états exploitables, actions explicites et erreurs remontées proprement
+- merge conflicts pilotés par Macro maintenant détectés, bloqués en fail-closed et traités via un workflow assisté de résolution et reprise
+- couches de services, stores et IPC déjà structurées
+- fondation headless expérimentale présente dans le code, sans capacité produit exposée
 
 En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiques :
 
-- experience Implement encore partiellement inachevee
-- automatisation et orchestration encore a fiabiliser
-- notifications et supervision distante non finalisees
-- articulation desktop / remote / mobile encore incomplete
-- experience multi-plan et multi-projet encore a consolider de bout en bout
-- documents de reference recentres autour d'un socle unique et d'une archive minimale non normative
+- expérience Implement encore partiellement inachevée
+- automatisation et orchestration encore à fiabiliser
+- notifications et supervision distante non finalisées
+- articulation desktop / remote / mobile encore incomplète
+- expérience multi-plan et multi-projet encore à consolidér de bout en bout
+- documents de référence recentrés autour d'un socle unique et d'une archive minimale non normative
 
 ---
 
-## 4. Ecarts principaux par domaine
+## 4. Écarts principaux par domaine
 
 ### 4.1 Cadrage produit et documentation
 
-Etat attendu :
+État attendu :
 - un socle documentaire court, propre et non redondant
-- une specification fonctionnelle de reference
-- une architecture technique de reference
+- une spécification fonctionnelle de référence
+- une architecture technique de référence
 - une roadmap exploitable
 
-Etat livre pour 0.1 :
-- le socle documentaire actif est recentre sur `functional-spec.md`, `technical-architecture.md` et `roadmap.md`
-- l'archive documentaire est reduite a un historique minimal non normatif
-- les documents actifs constituent l'unique source de verite
+État livre pour 0.1 :
+- le socle documentaire actif est recentré sur `functional-spec.md`, `technical-architecture.md` et `roadmap.md`
+- l'archive documentaire est réduite à un historique minimal non normatif
+- les documents actifs constituent l'unique source de vérité
 
 ### 4.2 Mode Architect
 
-Etat attendu :
-- creation et gestion fluide de plusieurs plans
+État attendu :
+- création et gestion fluide de plusieurs plans
 - conversation et stratégie bien liées à chaque plan
-- structuration predictive fiable
+- structuration prédictive fiable
 - validation automatique propre vers branches et worktrees
 
-Etat a consolider :
-- cleanup complet des structures lorsque des plans sont supprimes ou abandonnes
-- robustesse multi-plans paralleles
-- lisibilite du mode Architect quand plusieurs plans coexistent
+État à consolidér :
+- cleanup complet des structures lorsque des plans sont supprimés ou abandonnés
+- robustesse multi-plans parallèles
+- lisibilité du mode Architect quand plusieurs plans coexistent
 
 ### 4.3 Mode Implement
 
-Etat attendu :
-- file de taches claire, filtrable et fiable
-- demarrage manuel des taches clair et fiable
-- questions IA rapides a traiter
-- review de fin de tache ergonomique
-- commits et integration bien verrouilles
+État attendu :
+- file de tâches claire, filtrable et fiable
+- démarrage manuel des tâches clair et fiable
+- questions IA rapides à traiter
+- review de fin de tâche ergonomique
+- commits et intégration bien verrouillés
 
-Etat deja consolide :
-- derivation et agregation de taches depuis plusieurs plans executables cote desktop
-- catalogue/backend de listing des taches maintenant decouple du seul plan actif et d'une seule branche cible
+État déjà consolidé :
+- derivation et agrégation de tâches depuis plusieurs plans exécutables côté desktop
+- catalogue/backend de listing des tâches maintenant découplé du seul plan actif et d'une seule branche cible
 - filtrage de la file par plan
-- resumes de plans maintenant coherents pour les filtres et la validation quand plusieurs plans vivent en parallele
-- support des taches hors plan dans la file et dans le cycle de completion
-- meilleur rattachement des taches multi-projets au projet courant
-- review multi-depots cote Implement maintenant lisible dans la file et dans la review
-- navigation explicite depot par depot, commits distincts par depot et completion de tache unifiee
-- verrouillage des etats fantomes entre review, commit par depot et completion finale
+- résumés de plans maintenant cohérents pour les filtres et la validation quand plusieurs plans vivent en parallèle
+- support des tâches hors plan dans la file et dans le cycle de complétion
+- meilleur rattachement des tâches multi-projets au projet courant
+- review multi-dépôts côté Implement maintenant lisible dans la file et dans la review
+- navigation explicite dépôt par dépôt, commits distincts par dépôt et complétion de tâche unifiée
+- verrouillage des états fantômes entre review, commit par dépôt et complétion finale
 
-Etat a consolider :
-- UX de la review et de l'edition ciblee
-- questions IA a reponses rapides reellement branchees
-- articulation claire entre review de tache, commit, validation finale de plan et merge
-- comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en meme temps
+État à consolidér :
+- UX de la review et de l'édition ciblée
+- questions IA à réponses rapides réellement branchées
+- articulation claire entre review de tâche, commit, validation finale de plan et merge
+- comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en même temps
 
-### 4.4 Review et edition ciblee
+### 4.4 Review et édition ciblée
 
-Etat attendu :
+État attendu :
 - review principalement en lecture
-- possibilite d'ajuster rapidement les modifications de l'IA
+- possibilité d'ajuster rapidement les modifications de l'IA
 - chargement progressif de contexte puis du fichier complet si besoin
 
-Etat a consolider :
-- surface d'edition exacte
-- experience de correction manuelle dans les diffs
-- ergonomie de validation du code apres retouche
+État à consolidér :
+- surface d'édition exacte
+- expérience de correction manuelle dans les diffs
+- ergonomie de validation du code après retouche
 
 ### 4.5 Git, plans et metadata
 
-Etat attendu :
+État attendu :
 - workflow Git stable autour des plans, branches de feature, branche de base et `@macro`
 - worktrees fiables
 - metadata auditables et synchronisables
-- conflicts metadata et merge conflicts techniques traites proprement
+- conflicts metadata et merge conflicts techniques traités proprement
 
-Etat deja consolide :
-- finalisation, suppression logique et cleanup des plans maintenant preflightes et rejouables
-- cleanup fiable des branches et worktrees de plan et de tache
-- sync `@macro` maintenant exposee comme `clean / pending / failed / conflict` avec diagnostics structures
-- actions explicites `commit / pull / push` pour `@macro` maintenant disponibles cote UI/store
-- erreurs de divergence, remote manquant, upstream manquant, auth absente, reseau et conflit maintenant mieux remontees
-- duplication coherente de la metadata de plan sur chaque depot implique pour les plans multi-projets
-- lecture, restauration, archivage, suppression et sync metadata des plans multi-projets maintenant decouplees d'un `projectId` unique
-- divergence entre copies metadata d'un meme plan maintenant detectee en fail-closed avec reparation explicite
-- merge conflicts de finalisation de plan et de sync `@macro` maintenant detectes avant mutation avec diagnostic par depot, aide IA et reprise explicite
+État déjà consolidé :
+- finalisation, suppression logique et cleanup des plans maintenant préflightés et rejouables
+- cleanup fiable des branches et worktrees de plan et de tâche
+- sync `@macro` maintenant exposée comme `clean / pending / failed / conflict` avec diagnostics structurés
+- actions explicites `commit / pull / push` pour `@macro` maintenant disponibles côté UI/store
+- erreurs de divergence, remote manquant, upstream manquant, auth absente, réseau et conflit maintenant mieux remontées
+- duplication cohérente de la metadata de plan sur chaque dépôt impliqué pour les plans multi-projets
+- lecture, restauration, archivage, suppression et sync metadata des plans multi-projets maintenant découplées d'un `projectId` unique
+- divergence entre copies metadata d'un même plan maintenant détectée en fail-closed avec réparation explicite
+- merge conflicts de finalisation de plan et de sync `@macro` maintenant détectés avant mutation avec diagnostic par dépôt, aide IA et reprise explicite
 
-Etat a consolider :
-- la phase coeur Git/metadata n'a plus de blocage critique cote desktop local-first
-- les prochains gains structurants sur ce domaine passent surtout par l'experience multi-projet premium cote Implement et review
+État à consolidér :
+- la phase cœur Git/metadata n'a plus de blocage critique côté desktop local-first
+- les prochains gains structurants sur ce domaine passent surtout par l'expérience multi-projet premium côté Implement et review
 
 ### 4.6 Multi-projet
 
-Etat attendu :
+État attendu :
 - groupes de projets natifs
-- execution coherente sur plusieurs depots
-- vision partagee du contexte
-- commits distincts par projet mais validation fonctionnelle unifiee
+- exécution cohérente sur plusieurs dépôts
+- vision partagée du contexte
+- commits distincts par projet mais validation fonctionnelle unifiée
 
-Etat deja consolide :
-- review Implement multi-depots maintenant explicite dans les parcours quotidiens
-- progression et prochaine action attendue maintenant visibles pour les taches multi-projets actives
-- commits par depot maintenant mieux exposes sans perdre la completion unifiee de la tache
-- catalogue Implement maintenant global a l'echelle du contexte desktop local-first, avec coexistence coherente de plusieurs plans vivants et des taches hors plan
+État déjà consolidé :
+- review Implement multi-dépôts maintenant explicite dans les parcours quotidiens
+- progression et prochaine action attendue maintenant visibles pour les tâches multi-projets actives
+- commits par dépôt maintenant mieux exposés sans perdre la complétion unifiée de la tâche
+- catalogue Implement maintenant global à l'échelle du contexte desktop local-first, avec coexistence cohérente de plusieurs plans vivants et des tâches hors plan
 
-Etat a consolider :
-- lisibilite UX du multi-projet
-- gestion de bout en bout des taches qui touchent plusieurs projets
-- clarte globale des filtres, de la review et de la navigation
+État à consolidér :
+- lisibilité UX du multi-projet
+- gestion de bout en bout des tâches qui touchent plusieurs projets
+- clarté globale des filtres, de la review et de la navigation
 
 ### 4.7 Mode Chat
 
-Etat attendu :
-- mode simple, leger, local
+État attendu :
+- mode simple, léger, local
 - historique conversationnel local
-- pieces jointes par conversation
+- pièces jointes par conversation
 - outils web et MCP configurables
 
-Etat a consolider :
-- simplification assumee du mode
-- separation nette avec le mode Implement
-- politique d'outils clairement exposee a l'utilisateur
+État à consolidér :
+- simplification assumée du mode
+- séparation nette avec le mode Implement
+- politique d'outils clairement exposée à l'utilisateur
 
 ### 4.8 Notifications et supervision distante
 
-Etat attendu :
+État attendu :
 - notifications desktop
 - notifications mobiles
 - demandes d'attention claires
-- reponses rapides depuis mobile
+- réponses rapides depuis mobile
 
-Etat a consolider :
-- systeme de notification encore absent ou incomplet
-- protocole d'echange entre execution et client mobile
-- definition de la supervision distante comme experience produit complete
+État à consolidér :
+- système de notification encore absent ou incomplet
+- protocole d'échange entre exécution et client mobile
+- définition de la supervision distante comme expérience produit complète
 
 ### 4.9 Kernel distant
 
-Etat attendu :
-- execution continue sans GUI
+État attendu :
+- exécution continue sans GUI
 - reprise entre desktop, laptop et mobile
-- acces distant stable au workspace et aux outils
-- base pour les offres serveur dedie ou heberge
+- accès distant stable au workspace et aux outils
+- base pour les offres serveur dédié ou hébergé
 
-Etat a consolider :
+État à consolidér :
 - enrichissement de l'API headless
-- securisation et session utilisateur
-- orchestration d'execution longue duree
-- articulation produit entre machine locale, serveur personnel et infrastructure hebergee
+- sécurisation et session utilisateur
+- orchestration d'exécution longue durée
+- articulation produit entre machine locale, serveur personnel et infrastructure hébergée
 
 ### 4.10 Comptes et abonnement
 
-Etat attendu :
+État attendu :
 - authentification utilisateur
 - liaison avec mobile
-- synchronisation de certaines preferences
+- synchronisation de certaines préférences
 - eventuels modes d'abonnement
 
-Etat a consolider :
-- fonctionnalite encore a introduire reellement dans le produit
-- frontieres entre coeur local-first et services comptes a formaliser
+État à consolidér :
+- fonctionnalité encore à introduire réellement dans le produit
+- frontières entre cœur local-first et services comptes à formaliser
 
 ---
 
 ## 5. Chantiers prioritaires
 
-### 5.1 Priorite 1 - Stabiliser le coeur desktop
+### 5.1 Priorité 1 - Stabiliser le cœur desktop
 
 Objectif :
-- rendre l'experience desktop suffisamment robuste pour servir de base produit
+- rendre l'expérience desktop suffisamment robuste pour servir de base produit
 
 Chantiers :
 - finir la boucle Architect -> Implement -> Review -> Commit -> Validation de plan
 - durcir le workflow Git de plan
-- fiabiliser les transitions de taches
-- finaliser l'UX de review et d'edition ciblee
-- stabiliser la lisibilite du multi-plan cote Implement dans la review et la finalisation
+- fiabiliser les transitions de tâches
+- finaliser l'UX de review et d'édition ciblée
+- stabiliser la lisibilité du multi-plan côté Implement dans la review et la finalisation
 
-### 5.2 Priorite 2 - Rendre le multi-projet reellement premium
-
-Objectif :
-- faire du multi-projet une vraie force du produit plutot qu'une capacite partielle
-
-Chantiers :
-- clarifier la structure groupe / projet / plan / tache
-- fiabiliser les taches multi-projets
-- garantir la qualite des commits par projet
-- ameliorer navigation, filtres et lisibilite de contexte
-- mieux articuler finalisation de plan, review et navigation quand plusieurs plans restent actifs en parallele
-
-### 5.3 Priorite 3 - Fiabiliser l'autonomie assistee
+### 5.2 Priorité 2 - Rendre le multi-projet réellement premium
 
 Objectif :
-- rendre l'IA capable d'avancer longtemps sans degrader la qualite de supervision
+- faire du multi-projet une vraie force du produit plutôt qu'une capacité partielle
 
 Chantiers :
-- demarrage manuel des taches bien borne
-- questions IA a choix rapides
+- clarifier la structure groupe / projet / plan / tâche
+- fiabiliser les tâches multi-projets
+- garantir la qualité des commits par projet
+- améliorer navigation, filtres et lisibilité de contexte
+- mieux articuler finalisation de plan, review et navigation quand plusieurs plans restent actifs en parallèle
+
+### 5.3 Priorité 3 - Fiabiliser l'autonomie assistée
+
+Objectif :
+- rendre l'IA capable d'avancer longtemps sans degrader la qualité de supervision
+
+Chantiers :
+- démarrage manuel des tâches bien borne
+- questions IA à choix rapides
 - gestion claire des points de blocage
-- execution test/build observable et interpretable
+- exécution test/build observable et interprétable
 
-### 5.4 Priorite 4 - Introduire la supervision distante
+### 5.4 Priorité 4 - Introduire la supervision distante
 
 Objectif :
 - permettre la poursuite du travail hors du poste principal
@@ -267,34 +267,34 @@ Objectif :
 Chantiers :
 - notifications desktop d'abord
 - socle de supervision mobile ensuite
-- protocoles de questions/reponses a distance
-- review et validation a distance
+- protocoles de questions/réponses à distance
+- review et validation à distance
 
-### 5.5 Priorite 5 - Industrialiser le kernel distant
+### 5.5 Priorité 5 - Industrialiser le kernel distant
 
 Objectif :
 - transformer le kernel headless en brique produit stable
 
 Chantiers :
 - enrichir l'API headless
-- fiabiliser l'execution distante
-- gerer l'authentification et la securisation
-- preparer les scenarios serveur personnel et heberge
+- fiabiliser l'exécution distante
+- gérer l'authentification et la sécurisation
+- préparer les scenarios serveur personnel et hébergé
 
-### 5.6 Priorite 6 - Introduire le compte utilisateur et la monetisation
+### 5.6 Priorité 6 - Introduire le compte utilisateur et la monétisation
 
 Objectif :
-- ouvrir la voie au produit connecte sans casser le coeur local-first
+- ouvrir la voie au produit connecté sans casser le cœur local-first
 
 Chantiers :
 - authentification
-- synchronisation selective de preferences
+- synchronisation sélective de préférences
 - liaison mobile
-- modeles d'abonnement
+- modèles d'abonnement
 
 ---
 
-## 6. Sequence de livraison recommandee
+## 6. Séquence de livraison recommandée
 
 ### Phase 0 - Assainissement documentaire
 
@@ -302,31 +302,31 @@ Livrables :
 - `functional-spec.md`
 - `technical-architecture.md`
 - `roadmap.md`
-- archivage des anciens documents non references
+- archivage des anciens documents non références
 
-Critere de sortie :
-- la documentation de reference devient claire et non superposee
+Critère de sortie :
+- la documentation de référence devient claire et non superposée
 
-Etat :
-- phase livree pour 0.1
-- l'ancienne specification API mobile / remote a ete retiree de l'archive pour eviter une lecture contractuelle
+État :
+- phase livrée pour 0.1
+- l'ancienne spécification API mobile / remote à été retiree de l'archive pour éviter une lecture contractuelle
 
-### Phase 1 - Coeur Architect / Implement stable
+### Phase 1 - Cœur Architect / Implement stable
 
 Livrables :
-- plans paralleles bien tenus
-- derivation de taches fiable, y compris sur plusieurs plans executables cote desktop
-- review de tache exploitable
+- plans parallèles bien tenus
+- derivation de tâches fiable, y compris sur plusieurs plans exécutables côté desktop
+- review de tâche exploitable
 - commits robustes
 - validation finale de plan robuste
 
-Critere de sortie :
+Critère de sortie :
 - un utilisateur peut livrer un plan complet sur desktop sans bricolage majeur
 
-Etat :
-- socle documentaire de reference assaini et archive historique reduite au minimum utile
-- socle desktop local-first considere comme stabilise
-- les prochaines evolutions doivent preserver les contrats deja poses du flow Implement
+État :
+- socle documentaire de référence assaini et archive historique réduite au minimum utile
+- socle desktop local-first considéré comme stabilisé
+- les prochaines évolutions doivent préserver les contrats déjà posés du flow Implement
 
 ### Phase 2 - Git flow et metadata robustes
 
@@ -334,88 +334,88 @@ Livrables :
 - nettoyage robuste des branches et worktrees
 - sync `@macro` fiable avec diagnostics et actions explicites
 - lifecycle complet des plans sur le socle desktop local-first
-- resolution assistee des merge conflicts pilotes par Macro
+- résolution assistée des merge conflicts pilotés par Macro
 
-Critere de sortie :
+Critère de sortie :
 - l'infrastructure Git de Macro est suffisamment fiable pour du travail long cours
 
-Etat :
-- phase consideree comme livree sur le socle desktop local-first
+État :
+- phase considérée comme livrée sur le socle desktop local-first
 - finalisation, suppression logique, cleanup, preflights et sync `@macro` maintenant robustes
-- coherence metadata par projet maintenant livree pour les plans multi-projets cote desktop local-first
-- merge conflicts pilotes par Macro maintenant detectes, bloques en fail-closed et traitables via un workflow assiste avec reprise explicite
-- les prochaines evolutions prioritaires basculent sur l'experience multi-projet premium
+- cohérence metadata par projet maintenant livrée pour les plans multi-projets côté desktop local-first
+- merge conflicts pilotés par Macro maintenant détectés, bloqués en fail-closed et traitables via un workflow assisté avec reprise explicite
+- les prochaines évolutions prioritaires basculent sur l'expérience multi-projet premium
 
-### Phase 3 - Experience multi-projet premium
+### Phase 3 - Expérience multi-projet premium
 
 Livrables :
 - UX multi-projet lisible
-- taches multi-projets bien gerees
+- tâches multi-projets bien gérées
 - filtres par plan et par projet complets
-- integration coherente des commits par depot
+- intégration cohérente des commits par dépôt
 
-Critere de sortie :
+Critère de sortie :
 - le multi-projet devient un vrai avantage produit visible
 
-Etat :
-- tranche `review multi-projet premium cote Implement` consideree comme livree sur le socle desktop local-first
-- tranche `catalogue global multi-plan / multi-projet cote Implement` consideree comme livree sur le socle desktop local-first
-- la file de taches et la review exposent maintenant les depots impliques, la progression depot par depot et la prochaine action attendue
-- commits distincts par depot et completion unifiee de la tache maintenant tenus sans etats fantomes dans le flow Implement stabilise
-- le catalogue charge maintenant tous les plans executables pertinents sans dependre du seul plan actif ni d'une seule branche cible
-- la synthese de plans, la file de taches et les filtres restent maintenant coherents quand plusieurs plans vivants coexistent dans un meme groupe, sans regression sur les taches hors plan
-- le prochain verrou majeur de la phase redevient la lisibilite UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
+État :
+- tranche `review multi-projet premium côté Implement` considérée comme livrée sur le socle desktop local-first
+- tranche `catalogue global multi-plan / multi-projet côté Implement` considérée comme livrée sur le socle desktop local-first
+- la file de tâches et la review exposent maintenant les dépôts impliqués, la progression dépôt par dépôt et la prochaine action attendue
+- commits distincts par dépôt et complétion unifiée de la tâche maintenant tenus sans états fantômes dans le flow Implement stabilisé
+- le catalogue charge maintenant tous les plans exécutables pertinents sans dépendre du seul plan actif ni d'une seule branche cible
+- la synthèse de plans, la file de tâches et les filtres restent maintenant cohérents quand plusieurs plans vivants coexistent dans un même groupe, sans régression sur les tâches hors plan
+- le prochain verrou majeur de la phase redevient la lisibilité UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
 
-Prochaine tranche recommandee apres merge 0.1 :
-- lisibilite UX groupe / projet / plan / tache cote Implement
-- clarte des filtres, de la navigation et de la review quand plusieurs plans et plusieurs depots restent actifs en parallele
-- meilleure articulation entre review de tache multi-projet, validation globale de plan et finalisation
+Prochaine tranche recommandée après merge 0.1 :
+- lisibilité UX groupe / projet / plan / tâche côté Implement
+- clarté des filtres, de la navigation et de la review quand plusieurs plans et plusieurs dépôts restent actifs en parallèle
+- meilleure articulation entre review de tâche multi-projet, validation globale de plan et finalisation
 
 ### Phase 4 - Automatisation et supervision
 
 Livrables :
-- demarrage manuel des taches abouti
+- démarrage manuel des tâches abouti
 - notifications desktop
-- systeme de questions/reponses rapides
+- système de questions/réponses rapides
 
-Critere de sortie :
+Critère de sortie :
 - l'utilisateur peut laisser Macro avancer puis reprendre la main efficacement
 
 ### Phase 5 - Remote kernel et mobile supervision
 
 Livrables :
-- API headless elargie
+- API headless élargie
 - supervision distante fiable
-- premiere integration mobile utile pour Implement
-- execution continue entre plusieurs machines
+- première intégration mobile utile pour Implement
+- exécution continue entre plusieurs machines
 
-Critere de sortie :
-- Macro n'est plus lie a un unique poste allume en permanence
+Critère de sortie :
+- Macro n'est plus lié à un unique poste allumé en permanence
 
-### Phase 6 - Comptes, sync et offres connectees
+### Phase 6 - Comptes, sync et offres connectées
 
 Livrables :
 - authentification
 - liaison compte / mobile / serveur
-- synchronisation selective
+- synchronisation sélective
 - base des offres abonnement
 
-Critere de sortie :
-- le produit connecte existe sans fragiliser le coeur desktop local-first
+Critère de sortie :
+- le produit connecté existe sans fragiliser le cœur desktop local-first
 
 ---
 
-## 7. Decisions produit encore a verrouiller
+## 7. Decisions produit encore à verrouiller
 
-Les sujets suivants doivent rester visibles tant qu'ils ne sont pas totalement figes :
+Les sujets suivants doivent rester visibles tant qu'ils ne sont pas totalement figés :
 
 - niveau exact d'autonomie acceptable dans le mode Implement
-- UX precise de la review et de l'edition manuelle
+- UX précise de la review et de l'édition manuelle
 - politique exacte de merge automatique
-- modelisation definitive des taches hors plan
-- profondeur fonctionnelle du mobile a la V1
-- frontiere entre execution locale, serveur personnel et hebergement Macro
-- niveau de synchronisation associe au compte utilisateur
+- modélisation définitive des tâches hors plan
+- profondeur fonctionnelle du mobile à la V1
+- frontière entre exécution locale, serveur personnel et hébergement Macro
+- niveau de synchronisation associé au compte utilisateur
 
 ---
 
@@ -423,7 +423,7 @@ Les sujets suivants doivent rester visibles tant qu'ils ne sont pas totalement f
 
 La roadmap ne doit pas devenir :
 
-- une copie de la specification fonctionnelle
+- une copie de la spécification fonctionnelle
 - un inventaire de tickets trop fins
 - un changelog
 - un document purement technique de bas niveau
@@ -432,18 +432,18 @@ Elle doit rester un outil de pilotage.
 
 ---
 
-## 9. Regles de maintenance du document
+## 9. Règles de maintenance du document
 
-Cette roadmap doit etre mise a jour lorsque :
+Cette roadmap doit être mise à jour lorsque :
 
-- une phase est terminee
-- une priorite change
+- une phase est terminée
+- une priorité change
 - un nouveau chantier majeur apparait
-- une decision produit ferme un sujet ouvert
+- une décision produit ferme un sujet ouvert
 
-Chaque entree importante de roadmap doit pouvoir etre reliee a :
+Chaque entrée importante de roadmap doit pouvoir être reliée à :
 
 - une exigence de `docs/functional-spec.md`
 - un impact sur `docs/technical-architecture.md`
 
-Lorsqu'un chantier est livre, son etat doit etre mis a jour plutot que laisse implicite.
+Lorsqu'un chantier est livre, son état doit être mis à jour plutôt que laisse implicite.
