@@ -7,6 +7,10 @@ import type { AIModel, ProviderConfig } from '../../../../types';
 let importCounter = 0;
 let providerConfigs: ProviderConfig[];
 let modelsByProvider: Record<string, AIModel[]>;
+let metadataModelConfigListeners: Set<(value: unknown) => void>;
+let loadMetadataModelConfigMock: ReturnType<typeof mock>;
+let saveMetadataModelConfigMock: ReturnType<typeof mock>;
+const translate = (_key: string, fallback?: string) => fallback ?? _key;
 
 const provider = (id: string, overrides: Partial<ProviderConfig> = {}): ProviderConfig => ({
   id,
@@ -32,7 +36,7 @@ const loadModelsSettings = async () => {
 
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
-      t: (_key: string, fallback?: string) => fallback ?? _key,
+      t: translate,
     }),
   }));
 
@@ -56,25 +60,9 @@ const loadModelsSettings = async () => {
     }),
   }));
 
-  const metadataModelConfigListeners = new Set<(value: unknown) => void>();
   mock.module('../../../../services/metadataModelPreference', () => ({
-    loadMetadataModelConfig: async () => {
-      const persisted = window.localStorage.getItem('macro_metadataModelConfig');
-      if (persisted !== null) return JSON.parse(persisted);
-      const legacy = window.localStorage.getItem('macro_smartCommitModelConfig');
-      if (legacy !== null) {
-        window.localStorage.setItem('macro_metadataModelConfig', legacy);
-        return JSON.parse(legacy);
-      }
-      return null;
-    },
-    saveMetadataModelConfig: async (value: unknown) => {
-      window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify(value));
-      for (const listener of metadataModelConfigListeners) {
-        listener(value);
-      }
-      return value;
-    },
+    loadMetadataModelConfig: () => loadMetadataModelConfigMock(),
+    saveMetadataModelConfig: (value: unknown) => saveMetadataModelConfigMock(value),
     subscribeMetadataModelConfig: (listener: (value: unknown) => void) => {
       metadataModelConfigListeners.add(listener);
       return () => metadataModelConfigListeners.delete(listener);
@@ -148,6 +136,24 @@ describe('ModelsSettings metadata model config', () => {
       'provider-a': [model('provider-a', 'model-a')],
       'provider-b': [model('provider-b', 'model-b')],
     };
+    metadataModelConfigListeners = new Set();
+    loadMetadataModelConfigMock = mock(async () => {
+      const persisted = window.localStorage.getItem('macro_metadataModelConfig');
+      if (persisted !== null) return JSON.parse(persisted);
+      const legacy = window.localStorage.getItem('macro_smartCommitModelConfig');
+      if (legacy !== null) {
+        window.localStorage.setItem('macro_metadataModelConfig', legacy);
+        return JSON.parse(legacy);
+      }
+      return null;
+    });
+    saveMetadataModelConfigMock = mock(async (value: unknown) => {
+      window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify(value));
+      for (const listener of metadataModelConfigListeners) {
+        listener(value);
+      }
+      return value;
+    });
     window.localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -277,6 +283,119 @@ describe('ModelsSettings metadata model config', () => {
       modelId: 'model-a',
       reasoningEffort: 'high',
     });
+  });
+
+  it('does not let a slow older save overwrite the latest metadata model selection', async () => {
+    modelsByProvider = {
+      'provider-a': [
+        model('provider-a', 'model-a'),
+        model('provider-a', 'model-b'),
+        model('provider-a', 'model-c'),
+      ],
+      'provider-b': [model('provider-b', 'model-b')],
+    };
+    window.localStorage.setItem(
+      'macro_metadataModelConfig',
+      JSON.stringify({
+        mode: 'dedicated',
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningEffort: null,
+      })
+    );
+    let releaseFirstSave: () => void = () => undefined;
+    const firstSave = new Promise<void>((resolve) => {
+      releaseFirstSave = resolve;
+    });
+    let saveCount = 0;
+    saveMetadataModelConfigMock = mock(async (value: unknown) => {
+      saveCount += 1;
+      if (saveCount === 1) {
+        await firstSave;
+      }
+      for (const listener of metadataModelConfigListeners) {
+        listener(value);
+      }
+      return value;
+    });
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    const modelSelect = Array.from(container!.querySelectorAll('select')).find((select) =>
+      Array.from(select.options).some((option) => option.value === 'model-c')
+    );
+    expect(modelSelect?.value).toBe('model-a');
+
+    await act(async () => {
+      modelSelect!.value = 'model-b';
+      modelSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      modelSelect!.value = 'model-c';
+      modelSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+    });
+
+    releaseFirstSave();
+    await act(async () => {
+      await flush();
+      await flush();
+      await flush();
+    });
+
+    expect(modelSelect?.value).toBe('model-c');
+  });
+
+  it('accepts a later external update after the latest local metadata preference save fails', async () => {
+    modelsByProvider = {
+      'provider-a': [model('provider-a', 'model-a'), model('provider-a', 'model-b')],
+      'provider-b': [model('provider-b', 'model-b')],
+    };
+    window.localStorage.setItem(
+      'macro_metadataModelConfig',
+      JSON.stringify({
+        mode: 'dedicated',
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningEffort: null,
+      })
+    );
+    saveMetadataModelConfigMock = mock(async () => {
+      throw new Error('preference write failed');
+    });
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    const modelSelect = Array.from(container!.querySelectorAll('select')).find((select) =>
+      Array.from(select.options).some((option) => option.value === 'model-b')
+    );
+    await act(async () => {
+      modelSelect!.value = 'model-b';
+      modelSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+      await flush();
+    });
+
+    await act(async () => {
+      for (const listener of metadataModelConfigListeners) {
+        listener({ mode: 'conversation' });
+      }
+      await flush();
+    });
+
+    const conversationButton = Array.from(container!.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Use conversation model')
+    );
+    expect(conversationButton?.className).toContain('bg-primary');
   });
 
   it('shows compact context window metadata for models', async () => {

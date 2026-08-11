@@ -5,7 +5,7 @@
  * Works only in Tauri environment with persistence via preferences service.
  */
 
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import {
   savePreference,
   loadPersistedPreference,
@@ -16,6 +16,8 @@ import { useAppStore } from "../stores/useAppStore";
 import {
   isTauriEnvironment,
   showMainWindow,
+  windowAvailableMonitorBounds,
+  windowClose,
   windowCurrentMonitorWorkArea,
   windowIsMaximized,
   windowMaximize,
@@ -35,6 +37,7 @@ import { markWindowCloseShutdown } from "../services/windowShutdown";
 import { getPlatformChromeState } from "../utils/desktopPlatform";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
 import { devLogger } from "../utils/devLogger";
+import { sanitizeWindowBounds, type MonitorBounds } from '../services/windowBounds';
 
 type WindowApi = {
   setSize: (width: number, height: number) => Promise<void>;
@@ -71,6 +74,33 @@ const LEGACY_MACOS_DEFAULT_WINDOW_SIZE = {
   width: 1200,
   height: 800,
 } as const;
+const WINDOW_CLOSE_FLUSH_TIMEOUT_MS = 1_000;
+
+const monitorBoundsFromWorkArea = (
+  workArea: { width: number; height: number; x: number; y: number } | null
+): MonitorBounds | null =>
+  workArea
+    ? {
+        position: { x: workArea.x, y: workArea.y },
+        size: { width: workArea.width, height: workArea.height },
+        workArea: {
+          position: { x: workArea.x, y: workArea.y },
+          size: { width: workArea.width, height: workArea.height },
+        },
+      }
+    : null;
+
+const retryWindowOperation = async <T>(
+  operation: () => Promise<T>,
+  description: string
+): Promise<T> => {
+  try {
+    return await operation();
+  } catch (error) {
+    devLogger.log(`Retrying ${description} after a transient failure: ${String(error)}`);
+    return operation();
+  }
+};
 
 const isLegacyMacosDefaultWindowSize = (
   width: number | undefined,
@@ -276,12 +306,42 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         await api.maximize();
         if (shouldAbortRestore()) return;
       } else if (!restoredWithMacosWorkArea && width && height && width > 100 && height > 100) {
-        await api.setSize(width, height);
-        if (shouldAbortRestore()) return;
-        if (x !== null && y !== null && x >= 0 && y >= 0) {
-          await api.setPosition(x, y);
-          if (shouldAbortRestore()) return;
+        let monitors: MonitorBounds[] = [];
+        try {
+          monitors = await windowAvailableMonitorBounds();
+        } catch (error) {
+          devLogger.log(`Failed to read available monitors: ${String(error)}`);
         }
+
+        let fallbackMonitor: MonitorBounds | null = monitors[0] ?? null;
+        if (!fallbackMonitor) {
+          const currentWorkArea = await windowCurrentMonitorWorkArea();
+          fallbackMonitor = monitorBoundsFromWorkArea(currentWorkArea);
+        }
+        if (!fallbackMonitor) {
+          const primaryWorkArea = await windowPrimaryMonitorWorkArea();
+          fallbackMonitor = monitorBoundsFromWorkArea(primaryWorkArea);
+        }
+
+        const restoredBounds = sanitizeWindowBounds({
+          requestedBounds: { width, height, x: x ?? undefined, y: y ?? undefined },
+          monitors,
+          fallbackMonitor,
+          defaultSize: LEGACY_MACOS_DEFAULT_WINDOW_SIZE,
+          platform: chromeState.platform,
+          chromeMode: chromeState.usesNativeMacosTitlebar ? 'overlay' : 'frameless',
+        });
+
+        await retryWindowOperation(
+          () => api.setSize(restoredBounds.width, restoredBounds.height),
+          'window size restoration'
+        );
+        if (shouldAbortRestore()) return;
+        await retryWindowOperation(
+          () => api.setPosition(restoredBounds.x, restoredBounds.y),
+          'window position restoration'
+        );
+        if (shouldAbortRestore()) return;
       }
 
       if (
@@ -313,7 +373,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
     if (shouldAbortRestore()) return;
 
     try {
-      await showMainWindow();
+      await retryWindowOperation(() => showMainWindow(), 'main window display');
       if (shouldAbortRestore()) return;
       devLogger.log("Window shown via command");
     } catch (error) {
@@ -329,6 +389,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
  * Hook to save and restore window state on app start/close
  */
 export function useWindowRestoration() {
+  const closeInProgressRef = useRef(false);
   // Save current window state with debounce
   const saveWindowState = useCallback(async () => {
     const api = await getWindowApi();
@@ -402,13 +463,37 @@ export function useWindowRestoration() {
     let cancelled = false;
     let unlistenCloseRequested: (() => void) | null = null;
 
-    void windowOnCloseRequested(async () => {
+    void windowOnCloseRequested(async (event) => {
+      if (closeInProgressRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      closeInProgressRef.current = true;
       clearPendingWindowStateSave();
-      await saveWindowState();
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      try {
+        await Promise.race([
+          saveWindowState(),
+          new Promise<void>((resolve) => {
+            timeout = setTimeout(resolve, WINDOW_CLOSE_FLUSH_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+      }
       markWindowCloseShutdown(
         'window-close-requested',
         getSelectedProjectGroupWorkspacePaths()
       );
+      try {
+        await windowClose();
+      } catch (error) {
+        console.error('Failed to close window after flushing its state:', error);
+        closeInProgressRef.current = false;
+      }
     })
       .then((unlisten) => {
         if (cancelled) {

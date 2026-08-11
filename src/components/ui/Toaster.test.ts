@@ -71,6 +71,7 @@ const SonnerToasterMock = mock((_props?: unknown) => undefined);
 
 const maybeSendDesktopNotificationMock = mock(async (_input?: unknown) => true);
 let desktopNotificationRuntimeSupported = true;
+let desktopNotificationStatus: 'granted' | 'denied' = 'granted';
 
 const defaultNotificationChannelModes: NotificationChannelModes = {
   task_attention_required: 'both',
@@ -96,7 +97,7 @@ const registerToasterMocks = () => {
     maybeSendDesktopNotification: maybeSendDesktopNotificationMock,
     isDesktopNotificationRuntimeSupported: () => desktopNotificationRuntimeSupported,
     sendDesktopNotificationPreview: maybeSendDesktopNotificationMock,
-    getDesktopNotificationStatus: () => 'granted' as const,
+    getDesktopNotificationStatus: () => desktopNotificationStatus,
     initializeDesktopNotifications: async () => undefined,
     subscribeDesktopNotificationStatus: () => () => undefined,
   }));
@@ -177,6 +178,7 @@ describe('toast wrapper', () => {
   beforeEach(async () => {
     await loadToasterModules();
     desktopNotificationRuntimeSupported = true;
+    desktopNotificationStatus = 'granted';
     localStorageMock.clear();
     clearToastBatch();
     useNotificationCenterStore.setState({
@@ -706,6 +708,19 @@ describe('toast wrapper', () => {
 
   it('falls back to an in-app toast when desktop notifications are unavailable', () => {
     desktopNotificationRuntimeSupported = false;
+
+    toast.success('Commands completed', {
+      notification: {
+        category: 'task_run_completed',
+      },
+    });
+
+    expect(sonnerToastMock.success).toHaveBeenCalledTimes(1);
+    expect(maybeSendDesktopNotificationMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a persisted desktop-only category visible as a toast when desktop permission is denied', () => {
+    desktopNotificationStatus = 'denied';
 
     toast.success('Commands completed', {
       notification: {

@@ -74,23 +74,17 @@ fn normalize_frontend_log_level(level: &str) -> &'static str {
 
 // Command to show the main window explicitly from frontend
 #[tauri::command]
-async fn show_main_window(window: tauri::WebviewWindow) {
+async fn show_main_window(window: tauri::WebviewWindow) -> Result<(), String> {
     let app_quit_state = window.state::<AppQuitState>();
     if app_quit_state.is_quitting() {
         tracing::info!(
             window = %window.label(),
             "Ignoring show_main_window because app quit is in progress"
         );
-        return;
+        return Ok(());
     }
 
-    if let Err(error) = window.show() {
-        tracing::warn!(
-            window = %window.label(),
-            error = %error,
-            "Failed to show main window"
-        );
-    }
+    window.show().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
