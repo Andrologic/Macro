@@ -1617,6 +1617,35 @@ export async function dbTrimConversationReplay(params: {
   return invoke('db_trim_conversation_replay', params);
 }
 
+export async function dbPrepareConversationReplay(params: {
+  conversationId: string;
+  messageId: string;
+  sessionId: string;
+  turnId: string;
+  replayId: string;
+  content: string;
+  hiddenContext?: string | null;
+  providerInputItemsJson?: string | null;
+  codeCheckpointsJson?: string | null;
+  deleteContextCompactionState: boolean;
+}): Promise<void> {
+  return invoke('db_prepare_conversation_replay', { params });
+}
+
+export async function dbRestoreConversationReplay(params: {
+  conversationId: string;
+  replayId: string;
+}): Promise<boolean> {
+  return invoke('db_restore_conversation_replay', params);
+}
+
+export async function dbCompleteConversationReplay(params: {
+  conversationId: string;
+  replayId: string;
+}): Promise<void> {
+  return invoke('db_complete_conversation_replay', params);
+}
+
 // ============ File System ============
 
 export async function fsReadFile(path: string): Promise<FsFileContentDto> {
