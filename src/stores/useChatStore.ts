@@ -1372,6 +1372,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let hydrationPromise: Promise<void> | null = null;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
+  const pendingConversationDeletionIds = new Set<string>();
   const latestConversationSessionIdByConversationId = new Map<string, string>();
   const completionPersistenceOwnersByConversationId = new Map<
     string,
@@ -2489,6 +2490,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const buildSendError = (message: string): Error => new Error(message);
 
   const assertConversationRuntimeAvailableForSend = (conversationId: string) => {
+    if (
+      deletedConversationIds.has(conversationId) ||
+      !get().conversations.some((conversation) => conversation.id === conversationId)
+    ) {
+      throw buildSendError("This conversation is no longer available.");
+    }
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
       conversationId,
@@ -2498,6 +2505,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "This conversation is already running. Wait for it to finish before sending again.",
       );
     }
+  };
+
+  const transferConversationSessionOwnership = (
+    previousConversationId: string,
+    materializedConversationId: string,
+    sessionId: string,
+  ): boolean => {
+    if (
+      latestConversationSessionIdByConversationId.get(previousConversationId) !==
+      sessionId
+    ) {
+      return false;
+    }
+    const materializedOwner = latestConversationSessionIdByConversationId.get(
+      materializedConversationId,
+    );
+    if (materializedOwner && materializedOwner !== sessionId) {
+      return false;
+    }
+    latestConversationSessionIdByConversationId.set(
+      materializedConversationId,
+      sessionId,
+    );
+    latestConversationSessionIdByConversationId.delete(previousConversationId);
+    return true;
   };
 
   const setConversationRuntime = (
@@ -11920,6 +11952,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearMessages: () => {
       conversationCompactionStateCache.clear();
       cancelAllLiveContextDiagnosticsRefreshSchedules();
+      latestConversationSessionIdByConversationId.clear();
+      completionPersistenceOwnersByConversationId.clear();
       Object.keys(get().conversationRuntimeById).forEach((conversationId) => {
         stopConversationRuntimeLocally(conversationId);
       });
@@ -12560,6 +12594,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       stopConversationRuntimeLocally(conversationId);
       deletedConversationIds.add(conversationId);
+      pendingConversationDeletionIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
       try {
@@ -12567,6 +12602,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch (error) {
         deletedConversationIds.delete(conversationId);
         throw error;
+      } finally {
+        pendingConversationDeletionIds.delete(conversationId);
       }
       await deleteConversationToolboxStateIfAvailable(conversationId);
       conversationCompactionStateCache.delete(conversationId);
@@ -12602,6 +12639,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const snapshot = buildConversationRemovalSnapshot();
       uniqueIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
+        pendingConversationDeletionIds.add(conversationId);
         latestConversationSessionIdByConversationId.delete(conversationId);
         completionPersistenceOwnersByConversationId.delete(conversationId);
         stopConversationRuntimeLocally(conversationId);
@@ -12626,6 +12664,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         restoreConversationRemovalSnapshot(snapshot);
         throw error;
+      } finally {
+        uniqueIds.forEach((conversationId) => {
+          pendingConversationDeletionIds.delete(conversationId);
+        });
       }
     },
 
@@ -13160,7 +13202,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           get().conversationRuntimeById,
           conversationId,
         );
-        return !preparationAbortController.signal.aborted &&
+        return !deletedConversationIds.has(conversationId) &&
+          !preparationAbortController.signal.aborted &&
           runtime.sessionId === activeSessionId &&
           runtime.turnId === activeTurnId &&
           runtime.phase === "preparing";
@@ -13203,6 +13246,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         if (
           preparationAbortController.signal.aborted ||
+          deletedConversationIds.has(conversationId) ||
           currentPreparingRuntime.sessionId !== activeSessionId ||
           currentPreparingRuntime.turnId !== activeTurnId
         ) {
@@ -13220,10 +13264,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId =
             await materializePendingArchitectConversationIfNeeded(conversationId);
         }
-        if (preparationAbortController.signal.aborted) {
+        if (
+          preparationAbortController.signal.aborted ||
+          deletedConversationIds.has(previousConversationId)
+        ) {
           return cancelledResult();
         }
         if (hasPendingArchitectConversation && conversationId !== previousConversationId) {
+          if (
+            !transferConversationSessionOwnership(
+              previousConversationId,
+              conversationId,
+              activeSessionId,
+            )
+          ) {
+            return cancelledResult();
+          }
           setConversationRuntime(previousConversationId, null);
           setConversationRuntime(
             conversationId,
@@ -13684,6 +13740,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId,
         );
         return (
+          !deletedConversationIds.has(conversationId) &&
           !abortController.signal.aborted &&
           runtime.phase === "preparing" &&
           runtime.sessionId === sessionId &&
@@ -13787,8 +13844,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     initializeCritical: async () => {
+      latestConversationSessionIdByConversationId.clear();
+      completionPersistenceOwnersByConversationId.clear();
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
+      });
+      deletedConversationIds.clear();
+      pendingConversationDeletionIds.forEach((conversationId) => {
+        deletedConversationIds.add(conversationId);
       });
       messageLoadPromisesByConversationId.clear();
       agentCodeCheckpointLoadPromisesByConversationId.clear();
