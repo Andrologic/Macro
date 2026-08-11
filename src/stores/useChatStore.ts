@@ -11952,11 +11952,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearMessages: () => {
       conversationCompactionStateCache.clear();
       cancelAllLiveContextDiagnosticsRefreshSchedules();
-      latestConversationSessionIdByConversationId.clear();
-      completionPersistenceOwnersByConversationId.clear();
       Object.keys(get().conversationRuntimeById).forEach((conversationId) => {
         stopConversationRuntimeLocally(conversationId);
       });
+      latestConversationSessionIdByConversationId.clear();
+      completionPersistenceOwnersByConversationId.clear();
       set({
         ...buildMessageState([]),
         messageLoadStatusByConversationId: {},
@@ -13844,11 +13844,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     initializeCritical: async () => {
-      latestConversationSessionIdByConversationId.clear();
-      completionPersistenceOwnersByConversationId.clear();
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
       });
+      latestConversationSessionIdByConversationId.clear();
+      completionPersistenceOwnersByConversationId.clear();
       deletedConversationIds.clear();
       pendingConversationDeletionIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
