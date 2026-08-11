@@ -4108,6 +4108,160 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('keeps the materialized Architect session as the owner of empty-placeholder cleanup', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Architect';
+    const plan = createScenarioPlan('blank', {
+      id: 'plan-materialized-cleanup',
+      slug: 'plan-materialized-cleanup',
+      title: 'plan-materialized-cleanup',
+      conversationId: undefined,
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+    (
+      streamChatMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (options: { signal?: AbortSignal }) => Promise<void>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async (options) => {
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+    const pendingConversationId =
+      await useChatStore.getState().ensureConversationForCurrentMode();
+
+    const result = await useChatStore.getState().sendMessage({
+      conversationId: pendingConversationId!,
+      content: 'Prépare le plan de migration.',
+    });
+    const materializedConversationId = result.conversationId;
+    const userMessage = useChatStore
+      .getState()
+      .getConversationMessages(materializedConversationId)
+      .find((message: ChatMessage) => message.role === 'user');
+
+    expect(materializedConversationId).not.toBe(pendingConversationId);
+    expect(useChatStore.getState().getConversationRuntime(materializedConversationId).phase).toBe(
+      'streaming',
+    );
+
+    useChatStore.getState().stopConversationStream(materializedConversationId);
+    await flushAsyncWork();
+
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages(materializedConversationId)
+        .filter((message: ChatMessage) => message.role === 'assistant'),
+    ).toEqual([]);
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith(
+      materializedConversationId,
+      userMessage!.id,
+    );
+  });
+
+  it('does not transfer a pending Architect runtime to a tombstoned materialized conversation', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Architect';
+    const plan = createScenarioPlan('blank', {
+      id: 'plan-materialized-deletion',
+      slug: 'plan-materialized-deletion',
+      title: 'plan-materialized-deletion',
+      conversationId: undefined,
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+    const materializedConversation = {
+      id: 'materialized-architect-conv',
+      title: 'Architect plan',
+      description: '',
+      scope_mode: 'Architect' as AppMode,
+      task_id: null,
+      group_id: 'group-1',
+      project_id: 'project-1',
+      provider_id: null,
+      model_id: null,
+      reasoning_effort: null,
+      created_at: '2026-03-19T00:00:00.000Z',
+      last_message: '',
+      message_count: 0,
+      updated_at: '2026-03-19T00:00:00.000Z',
+      is_pinned: false,
+    };
+    const materialization = createDeferred<typeof materializedConversation>();
+    (
+      createConversationMock as unknown as {
+        mockImplementationOnce: (
+          implementation: () => Promise<typeof materializedConversation>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async () => materialization.promise);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+    const pendingConversationId =
+      await useChatStore.getState().ensureConversationForCurrentMode();
+    const send = useChatStore.getState().sendMessage({
+      conversationId: pendingConversationId!,
+      content: 'Ne relance pas une conversation supprimée.',
+    });
+    await flushAsyncWork();
+
+    let deletionPromise: Promise<void> | null = null;
+    const unsubscribe = useChatStore.subscribe((state: { conversations: Conversation[] }) => {
+      if (
+        deletionPromise ||
+        !state.conversations.some(
+          (conversation: Conversation) => conversation.id === materializedConversation.id,
+        )
+      ) {
+        return;
+      }
+      deletionPromise = useChatStore.getState().deleteConversation(
+        materializedConversation.id,
+        { mode: 'architect', typedProjectName: 'Macro' },
+      );
+    });
+
+    materialization.resolve(materializedConversation);
+    const result = await send;
+    unsubscribe();
+    await deletionPromise;
+
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      conversationId: materializedConversation.id,
+    });
+    expect(
+      useChatStore.getState().getConversationRuntime(materializedConversation.id).phase,
+    ).toBe('idle');
+    expect(
+      useChatStore.getState().getConversationRuntime(pendingConversationId!).phase,
+    ).toBe('idle');
+    expect(
+      useChatStore.getState().conversationRuntimeById[pendingConversationId!],
+    ).toBeUndefined();
+    expect(useChatStore.getState()).toMatchObject({
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+    });
+    expect(
+      useChatStore
+        .getState()
+        .conversations.some((conversation: Conversation) => conversation.id === materializedConversation.id),
+    ).toBe(false);
+    expect(createMessageMock).not.toHaveBeenCalled();
+  });
+
   it('removes a pending blank architect conversation when switching away before the first message', async () => {
     const blankPlan = createScenarioPlan('blank', {
       id: 'plan-pending-switch-away',
@@ -9744,10 +9898,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       selectedConversationIdsByMode: { Chat: 'chat-conv' },
     }));
 
-    await useChatStore.getState().sendMessage({
-      conversationId: 'chat-conv',
-      content: `Réponds à ce payload impossible.\n${'dernier message énorme\n'.repeat(6000)}`,
-    });
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: `Réponds à ce payload impossible.\n${'dernier message énorme\n'.repeat(6000)}`,
+      }),
+    ).rejects.toThrow('The conversation is still too large');
     await flushAsyncWork();
 
     expect(streamChatMock).not.toHaveBeenCalled();
@@ -12301,6 +12457,56 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toBe('git_commit');
   });
 
+  it('does not recreate checkpoints when deletion wins a completed workspace mutation', async () => {
+    tauriAvailable = false;
+    const mutationFinished = createDeferred<void>();
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async (...args: unknown[]) => {
+        const executionContext = args[3] as {
+          onCodeCheckpoint?: (checkpoint: {
+            toolName: string;
+            files: unknown[];
+          }) => Promise<void>;
+        };
+        await mutationFinished.promise;
+        await executionContext.onCodeCheckpoint?.({
+          toolName: 'write',
+          files: [
+            {
+              path: 'src/late.ts',
+              realPath: 'C:/repo/src/late.ts',
+              status: 'created',
+              before: { exists: false, content: null, isBinary: false, size: 0 },
+              after: {
+                exists: true,
+                content: 'export const late = true;\n',
+                isBinary: false,
+                size: 25,
+              },
+            },
+          ],
+        });
+      }) as unknown as () => Promise<undefined>,
+    );
+    const { useChatStore, onToolCall } = await startImplementToolConversation();
+
+    const toolCall = onToolCall('write', {
+      path: 'src/late.ts',
+      content: 'export const late = true;\n',
+    });
+    await Promise.resolve();
+    await useChatStore.getState().deleteConversation('implement-conv', {
+      mode: 'implement',
+    });
+    mutationFinished.resolve();
+    await toolCall;
+
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(
+      useChatStore.getState().agentCodeCheckpointsByConversationId['implement-conv'],
+    ).toBeUndefined();
+  });
+
   it('limits implement plan agent turns to read-only inspection tools', async () => {
     await startImplementToolConversation(
       'Analyse la correction avant de toucher au code.',
@@ -12584,6 +12790,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   it('resets the git stage/commit challenge for a new assistant turn', async () => {
+    const firstStreamCompletion = createDeferred<void>();
+    const secondStreamCompletion = createDeferred<void>();
     streamChatMock
       .mockImplementationOnce((async (...args: unknown[]) => {
         const options = (args[0] ?? {}) as {
@@ -12594,6 +12802,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
             usage: null;
           }) => void;
         };
+        await firstStreamCompletion.promise;
         options.onComplete?.({
           visibleContent: 'Premier tour terminé.',
           toolTraces: [],
@@ -12611,8 +12820,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
             usage: null;
           }) => void;
         };
+        await secondStreamCompletion.promise;
         options.onComplete?.({
-          visibleContent: 'Deuxième tour terminé.',
+          visibleContent: 'Second tour terminé.',
           toolTraces: [],
           hiddenContext: undefined,
           usage: null,
@@ -12636,13 +12846,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
     expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
 
+    firstStreamCompletion.resolve();
     await flushAsyncWork();
     await useChatStore.getState().sendMessage({
       conversationId: 'implement-conv',
       content: 'Continue.',
       taskId: 'task-1',
     });
-    await flushAsyncWork();
+    await waitForStreamCallCount(2);
 
     const nextTurnToolCall = getLatestArchitectToolHandler();
     const nextTurnResult = await nextTurnToolCall(
@@ -12655,6 +12866,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'Do not stage or commit unless the user explicitly asked',
     );
     expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
+
+    secondStreamCompletion.resolve();
+    await flushAsyncWork();
   });
 
   it('includes explicit anti stage/commit instructions when git tools are exposed', async () => {
@@ -13346,14 +13560,23 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       { command: 'npm test', session_id: 'session-1' },
       'tool-call-1'
     );
+    const queuedToolCallPromise = onToolCall(
+      'terminal_run',
+      { command: 'npm test -- --watch=false', session_id: 'session-2' },
+      'tool-call-2'
+    );
 
     await flushAsyncWork();
-    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).not.toBeNull();
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolCallId).toBe(
+      'tool-call-1'
+    );
 
     useChatStore.getState().stopConversationStream('implement-conv');
 
     await expect(toolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
+    await expect(queuedToolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
     expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+    expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
     expect(
       useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
     ).toBeUndefined();
@@ -13511,10 +13734,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().sendMessage({
-      conversationId: 'chat-conv',
-      content: 'Hello',
-    });
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Hello',
+      }),
+    ).rejects.toThrow('Failed to load tool settings');
     await flushAsyncWork();
 
     const messages = useChatStore.getState().getConversationMessages('chat-conv');
@@ -13563,10 +13788,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().sendMessage({
-      conversationId: 'chat-conv',
-      content: 'Hello',
-    });
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Hello',
+      }),
+    ).rejects.toThrow('Failed to load tool settings');
     await flushAsyncWork();
 
     expect(useChatStore.getState().messagesByConversationId['other-conv']).toEqual([
@@ -13834,6 +14061,53 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('idle');
   });
 
+  it('keeps the active stream cleanup owner when an edit is rejected', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    (
+      streamChatMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (options: { signal?: AbortSignal }) => Promise<void>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async (options) => {
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Active stream',
+    });
+    const userMessage = useChatStore
+      .getState()
+      .getConversationMessages('chat-conv')
+      .find((message: ChatMessage) => message.role === 'user');
+
+    await expect(
+      useChatStore.getState().editMessage(
+        userMessage!.id,
+        'Rejected replay',
+        { skipAgentCodeReplayCheck: true },
+      ),
+    ).rejects.toThrow('This conversation is already running.');
+
+    useChatStore.getState().stopConversationStream('chat-conv');
+    await flushAsyncWork();
+
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith(
+      'chat-conv',
+      userMessage!.id,
+    );
+  });
+
   it('stops an active Implement stream when the linked task becomes completed', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
@@ -14052,6 +14326,130 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(Object.keys(useChatStore.getState().messageImagesByMessageId)).toEqual(['m-4']);
   });
 
+  it('does not restore messages when deletion wins a deferred conversation load', async () => {
+    tauriAvailable = true;
+    const deferredMessages = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredMessages.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-1'), scope_mode: 'Chat', message_count: 1 },
+      ],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+
+    const loading = useChatStore.getState().ensureMessagesLoaded('chat-1');
+    await Promise.resolve();
+    await useChatStore.getState().deleteChatConversations(['chat-1']);
+    deferredMessages.resolve([
+      createChatMessageRecord({ id: 'late-message', conversation_id: 'chat-1' }),
+    ]);
+    await loading;
+
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+  });
+
+  it('refuses a send while a deferred conversation deletion owns its tombstone', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const deletion = createDeferred<undefined>();
+    deleteConversationMock.mockImplementationOnce(async () => deletion.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-1'), scope_mode: 'Chat' },
+      ],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+
+    const deletionPromise = useChatStore.getState().deleteConversation('chat-1');
+    await Promise.resolve();
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-1',
+        content: 'Cette demande ne doit pas recréer la conversation.',
+      }),
+    ).rejects.toThrow('This conversation is no longer available.');
+
+    expect(useChatStore.getState().getConversationRuntime('chat-1').phase).toBe('idle');
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+
+    deletion.resolve(undefined);
+    await deletionPromise;
+
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+  });
+
+  it('cleans an empty placeholder once before rebuilding a new session', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const oldStreamReleased = createDeferred<undefined>();
+    (
+      streamChatMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (options: { signal?: AbortSignal }) => Promise<void>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async (options) => {
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener(
+          'abort',
+          () => void oldStreamReleased.promise.then(() => resolve()),
+          { once: true },
+        );
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-1')],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+    const oldSend = await useChatStore.getState().sendMessage({
+      conversationId: 'chat-1',
+      content: 'Ancien stream.',
+    });
+
+    useChatStore.getState().clearMessages();
+    await flushAsyncWork();
+    expect(deleteMessagesAfterMock).toHaveBeenCalledTimes(1);
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith(
+      'chat-1',
+      oldSend.userMessageId,
+    );
+    await useChatStore.getState().initializeCritical();
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-1')],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+
+    const newSend = await useChatStore.getState().sendMessage({
+      conversationId: 'chat-1',
+      content: 'Nouvelle session légitime.',
+    });
+    oldStreamReleased.resolve(undefined);
+    await flushAsyncWork();
+
+    expect(newSend).toMatchObject({ status: 'sent', conversationId: 'chat-1' });
+    expect(deleteMessagesAfterMock).toHaveBeenCalledTimes(1);
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('chat-1')
+        .some((message: ChatMessage) => message.content === 'Nouvelle session légitime.'),
+    ).toBe(true);
+  });
+
   it('restores the previous snapshot when bulk chat deletion fails', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
@@ -14218,6 +14616,397 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         .getConversationMessages('conv-1')
         .map((message: { id: string }) => message.id)
     ).toEqual(['m-user', 'm-assistant']);
+  });
+
+  it('claims an edited conversation before credential loading so a second replay cannot trim it', async () => {
+    appState.mode = 'Chat';
+    providerState.providerConfigs = [
+      {
+        ...DEFAULT_PROVIDER_CONFIGS[0],
+        isLocal: false,
+      },
+    ];
+    const credential = createDeferred<undefined>();
+    providerState.resolveProviderApiKey.mockImplementationOnce(
+      async () => credential.promise,
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv')],
+      messages: [
+        {
+          id: 'user-1',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Original request',
+          timestamp: '2026-03-19T00:01:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    const firstEdit = useChatStore.getState().editMessage(
+      'user-1',
+      'First replay request',
+      { skipAgentCodeReplayCheck: true },
+    );
+    await Promise.resolve();
+
+    expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe(
+      'preparing',
+    );
+    await expect(
+      useChatStore.getState().editMessage(
+        'user-1',
+        'Second replay request',
+        { skipAgentCodeReplayCheck: true },
+      ),
+    ).rejects.toThrow(
+      'This conversation is already running. Wait for it to finish before sending again.',
+    );
+
+    useChatStore.getState().stopConversationStream('chat-conv');
+    credential.resolve(undefined);
+    await firstEdit;
+
+    expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe('idle');
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toHaveLength(1);
+    expect(deleteMessagesAfterMock).not.toHaveBeenCalled();
+  });
+
+  it('removes a deferred edit-replay placeholder when Stop wins after its creation', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const placeholderCreated = createDeferred<ReturnType<typeof createChatMessageRecord>>();
+    (
+      createMessageMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (...args: unknown[]) => Promise<ReturnType<typeof createChatMessageRecord>>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async () => placeholderCreated.promise);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv')],
+      messages: [
+        {
+          id: 'user-1',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Original request',
+          timestamp: '2026-03-19T00:01:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    const edit = useChatStore.getState().editMessage(
+      'user-1',
+      'Edited request',
+      { skipAgentCodeReplayCheck: true },
+    );
+    await flushAsyncWork();
+    expect(createMessageMock).toHaveBeenCalledWith(
+      'chat-conv',
+      'assistant',
+      '',
+      expect.objectContaining({ turnId: 'legacy-turn-user-1' }),
+    );
+
+    useChatStore.getState().stopConversationStream('chat-conv');
+    placeholderCreated.resolve(
+      createChatMessageRecord({
+        id: 'deferred-assistant',
+        conversation_id: 'chat-conv',
+        role: 'assistant',
+        content: '',
+      }),
+    );
+    await edit;
+
+    expect(
+      useChatStore.getState().getConversationMessages('chat-conv'),
+    ).not.toContainEqual(expect.objectContaining({ id: 'deferred-assistant' }));
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'user-1');
+  });
+
+  it('keeps generation A bound to its captured context after delayed loading', async () => {
+    appState.mode = 'Implement';
+    appState.agentType = 'build';
+    appState.selectedTaskId = 'task-1';
+    tauriAvailable = true;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        {
+          ...createConversation('chat-a'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          message_count: 1,
+        },
+        { ...createConversation('chat-b'), scope_mode: 'Chat', message_count: 0 },
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Implement: 'chat-a' },
+    }));
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'A stays isolated.', taskId: 'task-1',
+    });
+    await Promise.resolve();
+    appState.mode = 'Chat';
+    appState.selectedTaskId = 'task-b';
+    appState.selectedProjectId = 'project-2';
+    providerState.selectedProviderId = 'provider-2';
+    providerState.selectedModelId = 'model-2';
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'sent', conversationId: 'chat-a' });
+    const options = getLatestStreamOptions<{
+      conversationId?: string;
+      providerId?: string;
+      modelId?: string;
+      onToolCall?: (
+        toolName: string,
+        args: Record<string, unknown>,
+        toolCallId?: string,
+      ) => Promise<unknown>;
+    }>();
+    expect(options.conversationId).toBe('chat-a');
+    expect(options.providerId).toBe('provider-1');
+    expect(options.modelId).toBe('model-1');
+    expect(useChatStore.getState().getConversationMessages('chat-a').every(
+      (message: ChatMessage) => message.conversation_id === 'chat-a',
+    )).toBe(true);
+    await options.onToolCall?.('read', { path: 'src/a.ts' }, 'read-from-a');
+    expect(executeWorkspaceToolMock).toHaveBeenCalledWith(
+      'read',
+      { path: 'src/a.ts' },
+      'Implement',
+      expect.objectContaining({ projectId: 'project-1' }),
+    );
+  });
+
+  it('does not revive stopped preparation A after generation B starts', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-a'), scope_mode: 'Chat', message_count: 1 },
+        { ...createConversation('chat-b'), scope_mode: 'Chat', message_count: 0 },
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'late A',
+    });
+    await Promise.resolve();
+    expect(listMessagesMock).toHaveBeenCalledWith('chat-a');
+    expect(useChatStore.getState().getConversationRuntime('chat-a').phase).toBe('preparing');
+    useChatStore.getState().stopConversationStream('chat-a');
+    const sendB = await useChatStore.getState().sendMessage({
+      conversationId: 'chat-b', content: 'live B',
+    });
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'cancelled', conversationId: 'chat-a' });
+    expect(sendB).toMatchObject({ status: 'sent', conversationId: 'chat-b' });
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    expect(getLatestStreamOptions<{ conversationId?: string }>().conversationId).toBe('chat-b');
+    expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getConversationRuntime('chat-a').phase).toBe('idle');
+    expect(useChatStore.getState().getConversationRuntime('chat-b').phase).toBe('streaming');
+    expect(useChatStore.getState().getConversationMessages('chat-a').some(
+      (message: ChatMessage) => message.content === 'late A',
+    )).toBe(false);
+  });
+
+  it('does not clear B composer references when A finishes preparing', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-a'), message_count: 1 },
+        createConversation('chat-b'),
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+    useChatStore.getState().replaceComposerContextRefs([
+      { id: 'src/a.ts', kind: 'file', title: 'a.ts', path: 'src/a.ts' },
+    ], 'chat-a');
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'A keeps its references.',
+    });
+    await Promise.resolve();
+    useChatStore.setState({
+      selectedConversationId: 'chat-b',
+      selectedConversationIdsByMode: { Chat: 'chat-b' },
+    });
+    const bRefs = [
+      { id: 'src/b.ts', kind: 'file' as const, title: 'b.ts', path: 'src/b.ts' },
+    ];
+    useChatStore.getState().replaceComposerContextRefs(bRefs, 'chat-b');
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'sent', conversationId: 'chat-a' });
+    expect(useChatStore.getState().composerContextRefs).toEqual(bRefs);
+  });
+
+  it('clears A toolbox references without touching B after a selection-only switch', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-a'), message_count: 1 },
+        createConversation('chat-b'),
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+    useChatStore.getState().replaceComposerContextRefs([
+      { id: 'src/a.ts', kind: 'file', title: 'a.ts', path: 'src/a.ts' },
+    ], 'chat-a');
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'A sends while B is selected.',
+    });
+    await Promise.resolve();
+    const bRefs = [
+      { id: 'src/b.ts', kind: 'file' as const, title: 'b.ts', path: 'src/b.ts' },
+    ];
+    useChatStore.setState({
+      selectedConversationId: 'chat-b',
+      selectedConversationIdsByMode: { Chat: 'chat-b' },
+      composerContextRefs: bRefs,
+    });
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'sent', conversationId: 'chat-a' });
+    await waitForToolboxPersistence();
+    expect(useChatStore.getState().composerContextRefs).toEqual(bRefs);
+    expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('chat-a');
+    expect(deleteConversationToolboxStateMock).not.toHaveBeenCalledWith('chat-b');
+  });
+
+  it('keeps the Architect plan and branch captured at send when the selection changes', async () => {
+    appState.mode = 'Architect';
+    const planA = createScenarioPlan('blank', {
+      id: 'plan-a-at-send', targetBranch: 'feature/plan-a', conversationId: undefined,
+    });
+    const planB = createScenarioPlan('started', {
+      id: 'plan-b-after-send', targetBranch: 'feature/plan-b', conversationId: 'chat-b',
+    });
+    architectPlans.set(planA.id, planA);
+    architectPlans.set(planB.id, planB);
+    appState.activeArchitectPlanId = planA.id;
+    appState.activePlanContext = { id: planA.id, targetBranch: planA.targetBranch };
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+    const conversationId = await useChatStore.getState().ensureConversationForCurrentMode();
+    expect(conversationId).toMatch(/^pending-architect-/);
+
+    providerState.providerConfigs = [{ ...DEFAULT_PROVIDER_CONFIGS[0], isLocal: false }];
+    const credential = createDeferred<undefined>();
+    providerState.resolveProviderApiKey.mockImplementationOnce(async () => credential.promise);
+
+    const send = useChatStore.getState().sendMessage({
+      conversationId: conversationId!, content: 'Keep plan A.',
+    });
+    await flushAsyncWork();
+    expect(providerState.resolveProviderApiKey).toHaveBeenCalledWith('provider-1');
+    appState.activeArchitectPlanId = planB.id;
+    appState.activePlanContext = { id: planB.id, targetBranch: planB.targetBranch };
+    credential.resolve(undefined);
+
+    const result = await send;
+    expect(result).toMatchObject({ status: 'sent' });
+    expect(bindArchitectPlanConversationMock).toHaveBeenCalledWith({
+      branchName: planA.targetBranch,
+      planId: planA.id,
+      conversationId: result.conversationId,
+    });
+    expect(syncArchitectPlanChatFromConversationMock).toHaveBeenCalledWith({
+      branchName: planA.targetBranch,
+      planId: planA.id,
+      conversationId: result.conversationId,
+    });
+    expect(bindArchitectPlanConversationMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ planId: planB.id }),
+    );
+  });
+
+  it('publishes a user message persisted just before Stop without deleting its anchor', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const persistedUser = createDeferred<Awaited<ReturnType<typeof createMessageMock>>>();
+    createMessageMock.mockImplementationOnce(async () => persistedUser.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-a')],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+
+    const send = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'Persisted before Stop.',
+    });
+    await Promise.resolve();
+    useChatStore.getState().stopConversationStream('chat-a');
+    persistedUser.resolve({
+      id: 'persisted-user',
+      conversation_id: 'chat-a',
+      turn_id: null,
+      role: 'user',
+      content: 'Persisted before Stop.',
+      created_at: '2026-03-19T00:00:00.000Z',
+      tool_traces_json: null,
+      hidden_context: null,
+      provider_input_items_json: null,
+      provider_turn_state_json: null,
+      context_refs_json: null,
+    });
+
+    await expect(send).resolves.toMatchObject({
+      status: 'sent',
+      conversationId: 'chat-a',
+      userMessageId: 'persisted-user',
+      assistantMessageId: null,
+    });
+    expect(useChatStore.getState().getConversationMessages('chat-a')).toEqual([
+      expect.objectContaining({ id: 'persisted-user', role: 'user' }),
+    ]);
+    expect(deleteMessagesAfterMock).not.toHaveBeenCalled();
   });
 });
 
