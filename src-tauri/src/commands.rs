@@ -2912,17 +2912,30 @@ async fn apply_provider_api_key_change(
     };
 
     let has_stored_api_key = !api_key.trim().is_empty();
-    if has_stored_api_key {
+    let secret_write = if has_stored_api_key {
         secrets::set_api_key(provider_id, api_key)
     } else {
         secrets::delete_api_key(provider_id)
+    };
+    if let Err(error) = secret_write {
+        let actual_has_stored_api_key = previous_api_key.is_some();
+        let metadata_error = repository::set_provider_has_stored_api_key(
+            pool,
+            provider_id,
+            actual_has_stored_api_key,
+        )
+        .await
+        .err();
+        let suffix = metadata_error
+            .map(|metadata_error| {
+                format!(" Failed to reconcile provider secret metadata: {metadata_error}")
+            })
+            .unwrap_or_default();
+        return Err(command_error(format!(
+            "Failed to update the local provider secret for {}: {}.{}",
+            provider_id, error, suffix
+        )));
     }
-    .map_err(|error| CommandError {
-        message: format!(
-            "Failed to update the local provider secret for {}: {}",
-            provider_id, error
-        ),
-    })?;
 
     if let Err(error) =
         repository::set_provider_has_stored_api_key(pool, provider_id, has_stored_api_key).await
@@ -2946,7 +2959,11 @@ async fn apply_provider_api_key_change(
     Ok(Some(has_stored_api_key))
 }
 
-async fn restore_provider_config(pool: &SqlitePool, config: &ProviderConfig) -> Result<(), String> {
+async fn restore_provider_config(
+    pool: &SqlitePool,
+    config: &ProviderConfig,
+    has_stored_api_key: bool,
+) -> Result<(), String> {
     repository::update_provider_config(
         pool,
         UpdateProviderConfigInput {
@@ -2961,7 +2978,7 @@ async fn restore_provider_config(pool: &SqlitePool, config: &ProviderConfig) -> 
     )
     .await
     .map_err(|error| error.to_string())?;
-    repository::set_provider_has_stored_api_key(pool, &config.id, config.has_stored_api_key)
+    repository::set_provider_has_stored_api_key(pool, &config.id, has_stored_api_key)
         .await
         .map_err(|error| error.to_string())
 }
@@ -3068,7 +3085,7 @@ pub async fn db_update_provider_config(
     )
     .await
     {
-        let suffix = restore_provider_config(&pool, &previous_config)
+        let suffix = restore_provider_config(&pool, &previous_config, previous_api_key.is_some())
             .await
             .err()
             .map(|compensation_error| {
@@ -3448,10 +3465,16 @@ mod tests {
     use crate::secrets;
     use serde_json::json;
     use std::fs;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
 
     static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_secret_store() -> MutexGuard<'static, ()> {
+        SECRET_STORE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[tokio::test]
     async fn db_pool_propagates_failure_without_polling() {
@@ -3516,9 +3539,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_secret_metadata_reconciliation_clears_stale_database_flags() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = lock_secret_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -3616,9 +3637,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_api_key_change_updates_secret_store_before_database_flag() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = lock_secret_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -3670,9 +3689,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_api_key_change_does_not_mark_database_when_secret_write_fails() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = lock_secret_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let secret_file = temp_dir.path().join("provider-secrets.json");
