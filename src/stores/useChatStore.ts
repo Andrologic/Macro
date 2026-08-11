@@ -2573,6 +2573,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return didMatch;
   };
 
+  const abortAndClearPreparingRuntimeIfSessionMatches = (
+    conversationId: string,
+    sessionId: string,
+    turnId: string,
+    abortController: AbortController,
+  ): void => {
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
+    if (
+      runtime.phase !== "preparing" ||
+      runtime.sessionId !== sessionId ||
+      runtime.turnId !== turnId ||
+      runtime.abortController !== abortController
+    ) {
+      return;
+    }
+    abortController.abort();
+    if (latestConversationSessionIdByConversationId.get(conversationId) === sessionId) {
+      latestConversationSessionIdByConversationId.delete(conversationId);
+    }
+    updateConversationRuntimeIfSessionMatches(
+      conversationId,
+      sessionId,
+      () => null,
+    );
+  };
+
   const getLiveContextDiagnosticsRefreshState = (
     conversationId: string,
   ): LiveContextDiagnosticsRefreshState => {
@@ -13281,6 +13310,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
               activeSessionId,
             )
           ) {
+            abortAndClearPreparingRuntimeIfSessionMatches(
+              previousConversationId,
+              activeSessionId,
+              activeTurnId,
+              preparationAbortController,
+            );
             return cancelledResult();
           }
           setConversationRuntime(previousConversationId, null);
