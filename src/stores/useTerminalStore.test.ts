@@ -17,6 +17,7 @@ type TerminalTabDto = {
   has_live_session: boolean;
   is_restored: boolean;
   output_sequence: number;
+  generation?: number;
   created_at: string;
   updated_at: string;
 };
@@ -1162,6 +1163,61 @@ describe('useTerminalStore', () => {
     expect(terminalInterruptMock).toHaveBeenCalledWith('manual-tab-task-1-project-1');
     expect(tab.lastExitCode).toBe(130);
     expect(useTerminalStore.getState().tabs['manual-tab-task-1-project-1']?.lastExitCode).toBe(130);
+  });
+
+  it('ignores a terminal tab event from an older runtime generation', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().initialize();
+    const tab = await useTerminalStore.getState().createManualTab();
+
+    eventHandlers['terminal:tab']?.({
+      payload: buildManualTabDto({
+        id: tab.id,
+        snapshot: 'new snapshot',
+        generation: 2,
+        output_sequence: 2,
+      }),
+    });
+    eventHandlers['terminal:tab']?.({
+      payload: buildManualTabDto({
+        id: tab.id,
+        snapshot: 'stale snapshot',
+        generation: 1,
+        output_sequence: 1,
+      }),
+    });
+
+    expect(useTerminalStore.getState().tabs[tab.id]?.snapshot).toBe('new snapshot');
+    expect(useTerminalStore.getState().tabs[tab.id]?.generation).toBe(2);
+  });
+
+  it('ignores terminal output from an older runtime generation', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().initialize();
+    const tab = await useTerminalStore.getState().createManualTab();
+
+    eventHandlers['terminal:tab']?.({
+      payload: buildManualTabDto({
+        id: tab.id,
+        snapshot: 'current snapshot',
+        generation: 2,
+        output_sequence: 2,
+      }),
+    });
+    eventHandlers['terminal:output']?.({
+      payload: {
+        tab_id: tab.id,
+        data: 'stale output',
+        snapshot: 'stale snapshot',
+        sequence: 9,
+        generation: 1,
+        updated_at: '2026-03-26T10:01:00.000Z',
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(useTerminalStore.getState().tabs[tab.id]?.snapshot).toBe('current snapshot');
+    expect(useTerminalStore.getState().tabs[tab.id]?.generation).toBe(2);
   });
 
   it('clears a terminal tab through the Tauri command and resets unread output', async () => {

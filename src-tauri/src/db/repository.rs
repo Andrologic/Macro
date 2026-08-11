@@ -25,6 +25,68 @@ fn parse_reasoning_efforts(raw: Option<String>) -> Option<Vec<String>> {
         })
 }
 
+#[cfg(test)]
+mod terminal_tab_tests {
+    use super::*;
+
+    fn terminal_tab(generation: i64, snapshot: &str) -> TerminalTabRecord {
+        TerminalTabRecord {
+            id: "terminal-tab-generation".to_string(),
+            kind: "manual".to_string(),
+            task_id: None,
+            project_id: "project-1".to_string(),
+            project_name: "Project".to_string(),
+            mount_name: "project".to_string(),
+            workspace_path: "/workspace/project".to_string(),
+            cwd: "/workspace/project".to_string(),
+            title: "Terminal".to_string(),
+            prompt_context_json: None,
+            status: "idle".to_string(),
+            snapshot: snapshot.to_string(),
+            last_command: None,
+            last_exit_code: None,
+            generation,
+            created_at: "2026-08-11T10:00:00Z".to_string(),
+            updated_at: format!("2026-08-11T10:00:0{generation}Z"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_tab_upsert_rejects_an_older_generation() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("open in-memory database");
+        sqlx::query(
+            r#"
+            CREATE TABLE terminal_tabs (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, task_id TEXT, project_id TEXT NOT NULL,
+                project_name TEXT NOT NULL, mount_name TEXT NOT NULL, workspace_path TEXT NOT NULL,
+                cwd TEXT NOT NULL, title TEXT NOT NULL, prompt_context_json TEXT, status TEXT NOT NULL,
+                snapshot TEXT NOT NULL, last_command TEXT, last_exit_code INTEGER,
+                generation INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create terminal tab table");
+
+        upsert_terminal_tab(&pool, &terminal_tab(2, "new snapshot"))
+            .await
+            .expect("persist new generation");
+        upsert_terminal_tab(&pool, &terminal_tab(1, "old snapshot"))
+            .await
+            .expect("attempt old generation");
+
+        let persisted = get_terminal_tab(&pool, "terminal-tab-generation")
+            .await
+            .expect("read terminal tab")
+            .expect("terminal tab exists");
+        assert_eq!(persisted.generation, 2);
+        assert_eq!(persisted.snapshot, "new snapshot");
+    }
+}
+
 fn serialize_reasoning_efforts(efforts: Option<&Vec<String>>) -> Option<String> {
     let efforts = efforts.filter(|items| !items.is_empty())?;
 
@@ -2391,6 +2453,7 @@ pub async fn list_terminal_tabs(pool: &SqlitePool) -> DbResult<Vec<TerminalTabRe
             snapshot,
             last_command,
             last_exit_code,
+            generation,
             created_at,
             updated_at
         FROM terminal_tabs
@@ -2417,6 +2480,7 @@ pub async fn list_terminal_tabs(pool: &SqlitePool) -> DbResult<Vec<TerminalTabRe
             snapshot: row.get("snapshot"),
             last_command: row.get("last_command"),
             last_exit_code: row.get("last_exit_code"),
+            generation: row.get("generation"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -2441,6 +2505,7 @@ pub async fn get_terminal_tab(pool: &SqlitePool, id: &str) -> DbResult<Option<Te
             snapshot,
             last_command,
             last_exit_code,
+            generation,
             created_at,
             updated_at
         FROM terminal_tabs
@@ -2466,6 +2531,7 @@ pub async fn get_terminal_tab(pool: &SqlitePool, id: &str) -> DbResult<Option<Te
         snapshot: row.get("snapshot"),
         last_command: row.get("last_command"),
         last_exit_code: row.get("last_exit_code"),
+        generation: row.get("generation"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }))
@@ -2492,10 +2558,11 @@ pub async fn upsert_terminal_tab(
             snapshot,
             last_command,
             last_exit_code,
+            generation,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             kind = excluded.kind,
             task_id = excluded.task_id,
@@ -2510,7 +2577,9 @@ pub async fn upsert_terminal_tab(
             snapshot = excluded.snapshot,
             last_command = excluded.last_command,
             last_exit_code = excluded.last_exit_code,
+            generation = excluded.generation,
             updated_at = excluded.updated_at
+        WHERE excluded.generation > terminal_tabs.generation
         "#,
     )
     .bind(&tab.id)
@@ -2527,6 +2596,7 @@ pub async fn upsert_terminal_tab(
     .bind(&tab.snapshot)
     .bind(&tab.last_command)
     .bind(tab.last_exit_code)
+    .bind(tab.generation)
     .bind(&tab.created_at)
     .bind(&tab.updated_at)
     .execute(pool)
