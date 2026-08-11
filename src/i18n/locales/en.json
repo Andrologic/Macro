@@ -1393,7 +1393,7 @@
     "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
     "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
     "frozenNodeLocked": "Locked",
-    "taskTodos": "TODO attaché",
+    "taskTodos": "Attached TODO",
     "expectedArtifacts": "Expected artifacts",
     "artifacts": "Artifacts",
     "openArtifacts": "Open artifacts",
