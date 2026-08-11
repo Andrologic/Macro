@@ -26,7 +26,14 @@ async function applyLatestTauriZoom(scale: number): Promise<void> {
       const nextScale = requestedTauriZoom;
       requestedTauriZoom = null;
       if (lastAppliedTauriZoom === nextScale) continue;
-      await windowSetZoom(nextScale);
+      try {
+        await windowSetZoom(nextScale);
+      } catch (error) {
+        if (requestedTauriZoom !== null) {
+          continue;
+        }
+        throw error;
+      }
       if (requestedTauriZoom === null) {
         lastAppliedTauriZoom = nextScale;
       }
