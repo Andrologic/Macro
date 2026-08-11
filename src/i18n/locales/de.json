@@ -1660,7 +1660,46 @@
     "saveFailed": "Anbieter konnte nicht gespeichert werden",
     "nextStep": "Nächster Schritt",
     "hideDetails": "Details ausblenden",
-    "showDetails": "Details anzeigen"
+    "showDetails": "Details anzeigen",
+    "degraded": {
+      "fallback": { "title": "Hier ist Ihre Aufmerksamkeit erforderlich", "body": "Macro konnte diese Aktion nicht sicher abschließen.", "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut.", "dynamic": "{{message}}" },
+      "worktree": {
+        "checkedOut": { "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten", "body": "Der für diese Aufgabe benötigte Branch ist im Haupt-Repository noch mit lokalen Änderungen geöffnet.", "nextStep": "Committen, stashen oder verwerfen Sie diese lokalen Änderungen und starten Sie die Aufgabe erneut." },
+        "missingBase": { "title": "Macro konnte den Basis-Branch nicht finden", "body": "Diese Aufgabe benötigt einen Basis-Branch, bevor ihr Worktree erstellt werden kann.", "nextStep": "Erstellen Sie den Branch oder aktualisieren Sie die Git-Workflow-Einstellungen des Projekts und versuchen Sie es erneut." },
+        "fallback": { "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten", "body": "Der Aufgabenarbeitsbereich ist noch nicht bereit. Macro kann Dateien daher nicht sicher prüfen oder bearbeiten.", "nextStep": "Starten Sie die Aufgabe erneut. Falls sie weiterhin fehlschlägt, öffnen Sie die Git-Einstellungen des Projekts und prüfen Sie den Repository-Status." }
+      },
+      "readOnly": { "title": "Dieses Projekt ist nur zum Lesen verfügbar", "body": "Dieses Projekt kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.", "namedBody": "{{projectName}} kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.", "missingGitNextStep": "Initialisieren Sie Git für dieses Projekt und aktivieren Sie anschließend die Bearbeitung.", "settingsNextStep": "Öffnen Sie die Projekteinstellungen und stellen Sie sicher, dass der Git-Workflow bereit ist." },
+      "replica": {
+        "missing": { "titleSingular": "Planmetadaten fehlen in {{count}} Repository", "titlePlural": "Planmetadaten fehlen in {{count}} Repositories", "body": "Macro benötigt alle erwarteten Replikate der Planmetadaten, bevor der Plan sicher aktualisiert werden kann.", "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut." },
+        "diverged": { "title": "Planmetadaten unterscheiden sich zwischen Repositories", "body": "Macro hat mehrere Versionen dieser Planmetadaten gefunden und muss vor dem Fortfahren eine kanonische Kopie auswählen.", "nextStep": "Reparieren Sie anhand des neuesten Replikats, sofern Sie nicht absichtlich eine ältere Kopie benötigen." }
+      },
+      "gitFlow": {
+        "repositoryDirty": { "title": "Das Repository enthält lokale Änderungen", "body": "Macro kann diesen Merge nicht abschließen, solange das Ziel-Repository nicht zugehörige, uncommittete Änderungen enthält.", "nextStep": "Committen, stashen oder verwerfen Sie die lokalen Änderungen und versuchen Sie den Merge erneut." },
+        "mergeInProgress": { "title": "Ein Merge läuft bereits", "body": "Macro hat in diesem Repository einen unvollständigen Merge gefunden.", "nextStep": "Schließen Sie den vorhandenen Merge ab oder brechen Sie ihn ab und versuchen Sie es erneut." },
+        "conflict": { "title": "Lösen Sie diese Konflikte vor dem Abschluss", "body": "Der Plan kann noch nicht sauber zusammengeführt werden.", "filesNextStep": "Lösen Sie die aufgeführten Dateien und versuchen Sie den Merge erneut.", "blockersNextStep": "Beheben Sie die Merge-Blockaden und versuchen Sie es erneut." }
+      },
+      "metadata": {
+        "clean": { "title": "Die @macro-Metadaten sind aktuell", "body": "Es ist keine Aktion erforderlich." },
+        "dirty": { "title": "Die @macro-Metadaten enthalten lokale Änderungen", "body": "Macro muss Metadatenänderungen vor der Synchronisierung speichern.", "nextStep": "Speichern Sie die @macro-Metadaten und versuchen Sie die Synchronisierung erneut." },
+        "ahead": { "title": "Die @macro-Metadaten können veröffentlicht werden", "body": "Ihr lokaler Metadaten-Branch enthält Änderungen, die noch nicht im Remote-Repository liegen.", "nextStep": "Pushen Sie @macro, sobald Sie bereit sind." },
+        "behind": { "title": "Die @macro-Metadaten liegen hinter dem Remote-Stand", "body": "Die Remote-Metadaten enthalten Aktualisierungen, die lokal noch fehlen.", "nextStep": "Pullen Sie @macro und versuchen Sie die Aktion erneut." },
+        "diverged": { "title": "Die @macro-Metadaten sind divergiert", "body": "Sowohl lokale als auch Remote-Metadaten wurden geändert.", "nextStep": "Pullen Sie @macro, lösen Sie mögliche Konflikte und pushen Sie anschließend." },
+        "mergeConflict": { "title": "Die @macro-Metadaten enthalten Konflikte", "body": "Der Metadaten-Branch enthält nicht aufgelöste Konfliktdateien.", "nextStep": "Lösen Sie die Konflikte in den Metadatendateien und wiederholen Sie denselben Synchronisierungsschritt." },
+        "missingOrigin": { "title": "Das Remote-Repository für @macro ist nicht konfiguriert", "body": "Macro kann die Metadaten nicht synchronisieren, weil das Repository kein origin-Remote besitzt.", "nextStep": "Konfigurieren Sie das Git-Remote und versuchen Sie es erneut." },
+        "missingUpstream": { "title": "@macro besitzt keinen Upstream-Branch", "body": "Der Metadaten-Branch ist lokal vorhanden, aber noch nicht mit einem Remote-Branch verknüpft.", "nextStep": "Pushen Sie @macro zur Veröffentlichung oder ignorieren Sie diese Warnung, um die Metadaten lokal zu behalten." },
+        "authRequired": { "title": "Git-Authentifizierung ist erforderlich", "body": "Macro kann mit den aktuellen Anmeldedaten nicht auf das Metadaten-Remote zugreifen.", "nextStep": "Konfigurieren Sie die Git-Authentifizierung und versuchen Sie es erneut." },
+        "networkError": { "title": "Die Metadatensynchronisierung konnte das Remote-Repository nicht erreichen", "body": "Das Netzwerk oder der Remote-Dienst ist derzeit nicht verfügbar.", "nextStep": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut." },
+        "unknownError": { "title": "Die Macro-Metadatensynchronisierung ist fehlgeschlagen", "body": "Macro konnte die Metadatensynchronisierung nicht sicher abschließen.", "nextStep": "Versuchen Sie die Synchronisierung erneut. Prüfen Sie bei einem weiteren Fehler die technischen Details." }
+      },
+      "service": {
+        "resourcePressure": { "title": "Macro ist vorübergehend überlastet", "body": "Im System sind zu viele Dateien geöffnet. Macro hat daher automatische Repository-Aktualisierungen vor dem erneuten Versuch pausiert.", "nextStep": "Warten Sie einen Moment und versuchen Sie es erneut. Falls das Problem bestehen bleibt, schließen Sie zusätzliche Projektfenster oder Terminals." },
+        "replicaRepair": { "title": "Die Planmetadaten müssen repariert werden", "body": "Macro hat inkonsistente Planmetadaten gefunden und muss die kanonische Kopie vor dem Fortfahren reparieren.", "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut." },
+        "metadataMissing": { "title": "Die Planmetadaten sind unvollständig", "body": "Macro hat eine Aufgabe oder Unterhaltung gefunden, die auf fehlende oder nur teilweise gespeicherte Planmetadaten verweist.", "nextStep": "Reparieren Sie die Metadatenverknüpfungen und versuchen Sie es erneut." },
+        "workspaceUnavailable": { "title": "Der Arbeitsbereichsstatus ist vorübergehend nicht verfügbar", "body": "Macro konnte den für diese Aktion erforderlichen Arbeitsbereichsstatus nicht lesen.", "nextStep": "Versuchen Sie es nach Abschluss der Arbeitsbereichsaktualisierung erneut. Öffnen Sie das Projekt neu, falls das Problem bestehen bleibt." },
+        "gitNotReady": { "title": "Dieses Projekt ist noch nicht zur Bearbeitung bereit", "body": "Macro kann dieses Projekt weiterhin als Kontext verwenden, aber erst darin schreiben, wenn Git bereit ist.", "nextStep": "Öffnen Sie die Projekteinstellungen und schließen Sie die Git-Einrichtung ab." },
+        "fallback": { "title": "Hier ist Ihre Aufmerksamkeit erforderlich", "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut." }
+      }
+    }
   },
   "toast": {
     "languageChanged": "Sprache geändert zu {{language}}",

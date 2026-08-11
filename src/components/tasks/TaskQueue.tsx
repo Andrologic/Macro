@@ -73,7 +73,10 @@ import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getDependencyBlockedMessage } from '../implement/TaskBlockedState';
-import { presentServiceError } from '../../services/degradedErrorPresentation';
+import {
+  presentServiceError,
+  resolveDegradedErrorPresentation,
+} from '../../services/degradedErrorPresentation';
 import {
   getTooManyOpenFilesNotificationKey,
   isTooManyOpenFilesMessage,
@@ -1718,6 +1721,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         : null,
     [selectedProjectId, selectedTaskForErrorScope?.project_id, taskError]
   );
+  const resolvedTaskErrorPresentation = useMemo(
+    () => taskErrorPresentation
+      ? resolveDegradedErrorPresentation(
+          taskErrorPresentation,
+          (key, options) => String(t(key, options))
+        )
+      : null,
+    [taskErrorPresentation, t]
+  );
   const taskErrorActionLabel =
     taskErrorPresentation?.primaryAction === 'open_project_settings' ||
     taskErrorPresentation?.primaryAction === 'configure_git'
@@ -1751,7 +1763,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   ]);
 
   useEffect(() => {
-    if (!taskError || !taskErrorPresentation) {
+    if (!taskError || !taskErrorPresentation || !resolvedTaskErrorPresentation) {
       lastErrorToastRef.current = null;
       return;
     }
@@ -1767,10 +1779,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     if (dedupeKey === lastErrorToastRef.current) return;
 
     lastErrorToastRef.current = dedupeKey;
-    const nextStep = taskErrorPresentation.nextStep
-      ? `${t('errors.nextStep', 'Next step')}: ${taskErrorPresentation.nextStep}`
+    const nextStep = resolvedTaskErrorPresentation.nextStep
+      ? `${t('errors.nextStep', 'Next step')}: ${resolvedTaskErrorPresentation.nextStep}`
       : null;
-    const description = [taskErrorPresentation.body, nextStep]
+    const description = [resolvedTaskErrorPresentation.body, nextStep]
       .filter((value): value is string => Boolean(value?.trim()))
       .join('\n\n');
     const targetProjectId = selectedTaskForErrorScope?.project_id || selectedProjectId;
@@ -1796,7 +1808,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       : `implement-task-error:${selectedTaskForError?.id ?? 'no-task'}:${taskError}`;
 
     if (canOpenProjectSettings || canRetry || canRepairMetadata) {
-      notify.actionRequired(taskErrorPresentation.title, {
+      notify.actionRequired(resolvedTaskErrorPresentation.title, {
         notificationKey,
         tone,
         description,
@@ -1831,11 +1843,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       category: 'task_attention_required' as const,
     };
     if (taskErrorPresentation.severity === 'warning') {
-      notify.warning(taskErrorPresentation.title, notifyOptions);
+      notify.warning(resolvedTaskErrorPresentation.title, notifyOptions);
       return;
     }
 
-    notify.error(taskErrorPresentation.title, notifyOptions);
+    notify.error(resolvedTaskErrorPresentation.title, notifyOptions);
   }, [
     activateTask,
     openProjectGitFlowModal,
@@ -1847,6 +1859,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskError,
     taskErrorActionLabel,
     taskErrorPresentation,
+    resolvedTaskErrorPresentation,
     handleTaskErrorAction,
     missingBaseBranchIssue?.message,
     refreshFromPlan,

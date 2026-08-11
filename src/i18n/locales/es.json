@@ -1660,7 +1660,46 @@
     "saveFailed": "No se pudo guardar el proveedor",
     "nextStep": "Siguiente paso",
     "hideDetails": "Ocultar detalles",
-    "showDetails": "Mostrar detalles"
+    "showDetails": "Mostrar detalles",
+    "degraded": {
+      "fallback": { "title": "Hay algo que requiere atención", "body": "Macro no pudo completar esta acción de forma segura.", "nextStep": "Revise los detalles, corrija el bloqueo y vuelva a intentarlo.", "dynamic": "{{message}}" },
+      "worktree": {
+        "checkedOut": { "title": "Macro no pudo preparar el espacio de trabajo de la tarea", "body": "La rama necesaria para esta tarea sigue abierta en el repositorio principal con cambios locales.", "nextStep": "Confirme, guarde temporalmente o descarte esos cambios locales y vuelva a intentar la tarea." },
+        "missingBase": { "title": "Macro no pudo encontrar la rama base", "body": "Esta tarea necesita una rama base antes de crear su árbol de trabajo.", "nextStep": "Cree la rama o actualice la configuración del flujo Git del proyecto y vuelva a intentarlo." },
+        "fallback": { "title": "Macro no pudo preparar el espacio de trabajo de la tarea", "body": "El espacio de trabajo de la tarea aún no está listo, por lo que Macro no puede revisar ni editar archivos de forma segura.", "nextStep": "Vuelva a intentar la tarea. Si sigue fallando, abra la configuración Git del proyecto y compruebe el estado del repositorio." }
+      },
+      "readOnly": { "title": "Este proyecto solo está disponible para lectura", "body": "Este proyecto puede usarse como contexto, pero Macro todavía no puede crear ramas, árboles de trabajo, confirmaciones ni fusiones en él.", "namedBody": "{{projectName}} puede usarse como contexto, pero Macro todavía no puede crear ramas, árboles de trabajo, confirmaciones ni fusiones en él.", "missingGitNextStep": "Inicialice Git para este proyecto y active después el trabajo editable.", "settingsNextStep": "Abra la configuración del proyecto y asegúrese de que el flujo Git esté listo." },
+      "replica": {
+        "missing": { "titleSingular": "Faltan metadatos del plan en {{count}} repositorio", "titlePlural": "Faltan metadatos del plan en {{count}} repositorios", "body": "Macro necesita todas las réplicas esperadas de los metadatos del plan para poder actualizarlo de forma segura.", "nextStep": "Repare los metadatos del plan y vuelva a intentarlo." },
+        "diverged": { "title": "Los metadatos del plan difieren entre repositorios", "body": "Macro encontró más de una versión de estos metadatos y debe elegir una copia canónica antes de continuar.", "nextStep": "Repare desde la réplica más reciente, salvo que necesite expresamente una copia anterior." }
+      },
+      "gitFlow": {
+        "repositoryDirty": { "title": "El repositorio tiene cambios locales", "body": "Macro no puede terminar esta fusión mientras el repositorio de destino tenga cambios no confirmados ajenos.", "nextStep": "Confirme, guarde temporalmente o descarte los cambios locales y vuelva a intentar la fusión." },
+        "mergeInProgress": { "title": "Ya hay una fusión en curso", "body": "Macro encontró una fusión sin terminar en este repositorio.", "nextStep": "Termine o cancele la fusión existente y vuelva a intentarlo." },
+        "conflict": { "title": "Resuelva estos conflictos antes de terminar", "body": "El plan aún no puede fusionarse correctamente.", "filesNextStep": "Resuelva los archivos indicados y vuelva a intentar la fusión.", "blockersNextStep": "Resuelva los bloqueos de la fusión y vuelva a intentarlo." }
+      },
+      "metadata": {
+        "clean": { "title": "Los metadatos de @macro están actualizados", "body": "No se necesita ninguna acción." },
+        "dirty": { "title": "Los metadatos de @macro tienen cambios locales", "body": "Macro debe guardar los cambios de metadatos antes de sincronizar.", "nextStep": "Guarde los metadatos de @macro y vuelva a intentar la sincronización." },
+        "ahead": { "title": "Los metadatos de @macro están listos para publicarse", "body": "La rama local de metadatos contiene cambios que aún no están en el remoto.", "nextStep": "Envíe @macro cuando esté listo." },
+        "behind": { "title": "Los metadatos de @macro están atrasados respecto al remoto", "body": "Los metadatos remotos tienen actualizaciones que aún no están en local.", "nextStep": "Descargue @macro y vuelva a intentar la acción." },
+        "diverged": { "title": "Los metadatos de @macro han divergido", "body": "Los metadatos locales y remotos han cambiado.", "nextStep": "Descargue @macro, resuelva los conflictos y envíe los cambios." },
+        "mergeConflict": { "title": "Los metadatos de @macro tienen conflictos", "body": "La rama de metadatos contiene archivos con conflictos sin resolver.", "nextStep": "Resuelva los archivos de metadatos en conflicto y repita el mismo paso de sincronización." },
+        "missingOrigin": { "title": "El remoto de @macro no está configurado", "body": "Macro no puede sincronizar los metadatos porque el repositorio no tiene un remoto origin.", "nextStep": "Configure el remoto Git y vuelva a intentarlo." },
+        "missingUpstream": { "title": "@macro no tiene rama remota de seguimiento", "body": "La rama de metadatos existe localmente, pero aún no está vinculada a una rama remota.", "nextStep": "Envíe @macro para publicarla o ignore este aviso para mantener los metadatos en local." },
+        "authRequired": { "title": "Se requiere autenticación Git", "body": "Macro no puede acceder al remoto de metadatos con las credenciales actuales.", "nextStep": "Configure la autenticación Git y vuelva a intentarlo." },
+        "networkError": { "title": "La sincronización de metadatos no pudo acceder al remoto", "body": "La red o el servicio remoto no están disponibles en este momento.", "nextStep": "Compruebe la conexión y vuelva a intentarlo." },
+        "unknownError": { "title": "Falló la sincronización de metadatos de Macro", "body": "Macro no pudo completar la sincronización de metadatos de forma segura.", "nextStep": "Vuelva a intentar la sincronización. Si vuelve a fallar, consulte los detalles técnicos." }
+      },
+      "service": {
+        "resourcePressure": { "title": "Macro está sobrecargado temporalmente", "body": "El sistema tiene demasiados archivos abiertos, así que Macro pausó las actualizaciones automáticas de los repositorios antes de volver a intentarlo.", "nextStep": "Espere un momento y vuelva a intentarlo. Si sigue ocurriendo, cierre ventanas de proyecto o terminales adicionales." },
+        "replicaRepair": { "title": "Los metadatos del plan deben repararse", "body": "Macro encontró metadatos del plan incoherentes y debe reparar la copia canónica antes de continuar.", "nextStep": "Repare los metadatos del plan y vuelva a intentarlo." },
+        "metadataMissing": { "title": "Los metadatos del plan están incompletos", "body": "Macro encontró una tarea o conversación que apunta a metadatos del plan ausentes o guardados solo parcialmente.", "nextStep": "Repare los vínculos de metadatos y vuelva a intentarlo." },
+        "workspaceUnavailable": { "title": "El estado del espacio de trabajo no está disponible temporalmente", "body": "Macro no pudo leer el estado del espacio de trabajo necesario para esta acción.", "nextStep": "Vuelva a intentarlo cuando termine la actualización del espacio de trabajo. Si persiste, vuelva a abrir el proyecto." },
+        "gitNotReady": { "title": "Este proyecto no está listo para editarse", "body": "Macro puede seguir usando este proyecto como contexto, pero no puede escribir en él hasta que Git esté listo.", "nextStep": "Abra la configuración del proyecto y termine de configurar Git." },
+        "fallback": { "title": "Hay algo que requiere atención", "nextStep": "Revise los detalles, corrija el bloqueo y vuelva a intentarlo." }
+      }
+    }
   },
   "toast": {
     "languageChanged": "Idioma cambiado a {{language}}",
