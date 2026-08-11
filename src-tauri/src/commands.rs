@@ -2734,11 +2734,19 @@ pub async fn db_restore_conversation_replay(
     pool: State<'_, DbPool>,
     conversation_id: String,
     replay_id: String,
+    session_id: String,
+    turn_id: String,
 ) -> CommandResult<bool> {
     let pool = get_pool(&pool).await?;
-    repository::restore_conversation_replay(&pool, &conversation_id, &replay_id)
-        .await
-        .map_err(CommandError::from)
+    repository::restore_conversation_replay(
+        &pool,
+        &conversation_id,
+        &replay_id,
+        Some(&session_id),
+        Some(&turn_id),
+    )
+    .await
+    .map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -2749,6 +2757,30 @@ pub async fn db_complete_conversation_replay(
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
     repository::complete_conversation_replay(&pool, &conversation_id, &replay_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_mark_conversation_replay_launched(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    replay_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::mark_conversation_replay_launched(&pool, &conversation_id, &replay_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_finalize_conversation_replay(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    replay_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::finalize_conversation_replay(&pool, &conversation_id, &replay_id)
         .await
         .map_err(CommandError::from)
 }

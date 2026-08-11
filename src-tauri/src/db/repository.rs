@@ -13,12 +13,26 @@ struct ReplayRecoverySnapshot {
     message_id: String,
     session_id: String,
     turn_id: String,
+    /// Canonical transcript revision before the replay trim. This lets recovery
+    /// distinguish its own empty placeholder from a later transcript write.
+    transcript_revision: String,
+    prepared_message_content: String,
+    phase: String,
     original_message: Message,
     tail_messages: Vec<Message>,
     citations: Vec<ConversationCitation>,
     checkpoints_json: Option<String>,
     compaction_state: Option<ConversationCompactionStateRecord>,
     compaction_events: Vec<ReplayCompactionEvent>,
+}
+
+fn replay_transcript_revision(message: &Message, tail_messages: &[Message]) -> String {
+    let tail = tail_messages
+        .iter()
+        .map(|message| format!("{}:{}", message.id, message.created_at))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}:{}:{}", message.id, message.created_at, tail)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1303,14 +1317,18 @@ pub async fn prepare_conversation_replay(
         id: row.get("id"), conversation_id: row.get("conversation_id"), trigger: row.get("trigger"), provider_id: row.get("provider_id"), model_id: row.get("model_id"), model_context_window_tokens: row.get("model_context_window_tokens"), tokens_before: row.get("tokens_before"), tokens_after: row.get("tokens_after"), status: row.get("status"), error_code: row.get("error_code"), reason: row.get("reason"), metadata_json: row.get("metadata_json"), created_at: row.get("created_at"),
     }).collect();
     let compaction_state = sqlx::query("SELECT conversation_id, up_to_message_id, summary_text, tool_digest_json, used_source_passage_ids_json, interesting_source_passage_ids_json, estimated_tokens_before, estimated_tokens_after, fingerprint, version, pruned_tool_context_message_ids_json, reserved_tokens, footprint_before_json, footprint_after_json, degraded_reason, compaction_kind, compaction_pass, summary_format_version, summary_source, policy_version, fingerprint_inputs_json, source_hashes_json, model_context_window_tokens, provider_id, model_id, checkpoint_health, last_trigger, created_at, updated_at FROM conversation_compactions WHERE conversation_id = ?").bind(input.conversation_id).fetch_optional(&mut *transaction).await?.as_ref().map(map_compaction_state_row);
+    let tail_messages = tail_rows.iter().map(map_message_row).collect::<Vec<_>>();
     let snapshot = ReplayRecoverySnapshot {
         replay_id: input.replay_id.to_string(),
         conversation_id: input.conversation_id.to_string(),
         message_id: input.message_id.to_string(),
         session_id: input.session_id.to_string(),
         turn_id: input.turn_id.to_string(),
+        transcript_revision: replay_transcript_revision(&original_message, &tail_messages),
+        prepared_message_content: input.content.to_string(),
+        phase: "prepared".to_string(),
         original_message,
-        tail_messages: tail_rows.iter().map(map_message_row).collect(),
+        tail_messages,
         citations,
         checkpoints_json,
         compaction_state,
@@ -1355,6 +1373,8 @@ pub async fn restore_conversation_replay(
     pool: &SqlitePool,
     conversation_id: &str,
     replay_id: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
 ) -> DbResult<bool> {
     let mut transaction = pool.begin().await?;
     let key = replay_recovery_key(conversation_id);
@@ -1369,7 +1389,60 @@ pub async fn restore_conversation_replay(
     };
     let snapshot: ReplayRecoverySnapshot =
         serde_json::from_str(&raw).map_err(|error| DbError::Validation(error.to_string()))?;
-    if snapshot.replay_id != replay_id || snapshot.conversation_id != conversation_id {
+    if snapshot.replay_id != replay_id
+        || snapshot.conversation_id != conversation_id
+        || session_id.is_some_and(|session_id| snapshot.session_id != session_id)
+        || turn_id.is_some_and(|turn_id| snapshot.turn_id != turn_id)
+    {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    if snapshot.transcript_revision
+        != replay_transcript_revision(&snapshot.original_message, &snapshot.tail_messages)
+    {
+        return Err(DbError::Validation(
+            "Replay recovery transcript revision is invalid".to_string(),
+        ));
+    }
+
+    // A recovery can only undo its own trim. A later turn, an edited anchor,
+    // or streamed content on the launched turn is a definitive fence: preserve
+    // the marker and let the winning transcript remain authoritative.
+    let current_anchor =
+        sqlx::query("SELECT turn_id, content FROM messages WHERE id = ? AND conversation_id = ?")
+            .bind(&snapshot.message_id)
+            .bind(conversation_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some(current_anchor) = current_anchor else {
+        transaction.commit().await?;
+        return Ok(false);
+    };
+    let anchor_turn_id: String = current_anchor.get("turn_id");
+    let anchor_content: String = current_anchor.get("content");
+    if anchor_turn_id != snapshot.turn_id || anchor_content != snapshot.prepared_message_content {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    let later_rows = sqlx::query("SELECT turn_id, content, tool_traces_json FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))")
+        .bind(conversation_id)
+        .bind(&snapshot.original_message.created_at)
+        .bind(&snapshot.original_message.created_at)
+        .bind(&snapshot.message_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+    let has_competing_turn = later_rows.iter().any(|row| {
+        let row_turn_id: String = row.get("turn_id");
+        row_turn_id != snapshot.turn_id
+    });
+    let launched_has_progress = snapshot.phase == "launched"
+        && later_rows.iter().any(|row| {
+            let content: String = row.get("content");
+            let tool_traces_json: Option<String> = row.get("tool_traces_json");
+            !content.is_empty()
+                || tool_traces_json.is_some_and(|traces| traces != "[]" && !traces.is_empty())
+        });
+    if has_competing_turn || launched_has_progress {
         transaction.commit().await?;
         return Ok(false);
     }
@@ -1434,9 +1507,62 @@ pub async fn complete_conversation_replay(
     let Some(setting) = get_app_setting(pool, &key).await? else {
         return Ok(());
     };
+    let mut snapshot: ReplayRecoverySnapshot = serde_json::from_str(&setting.value_json)
+        .map_err(|error| DbError::Validation(error.to_string()))?;
+    if snapshot.replay_id == replay_id && snapshot.phase == "prepared" {
+        snapshot.phase = "launch_ready".to_string();
+        set_app_setting(
+            pool,
+            &key,
+            &serde_json::to_string(&snapshot)
+                .map_err(|error| DbError::Validation(error.to_string()))?,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn mark_conversation_replay_launched(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    replay_id: &str,
+) -> DbResult<()> {
+    let key = replay_recovery_key(conversation_id);
+    let Some(setting) = get_app_setting(pool, &key).await? else {
+        return Err(DbError::Validation(
+            "Replay recovery marker is missing".to_string(),
+        ));
+    };
+    let mut snapshot: ReplayRecoverySnapshot = serde_json::from_str(&setting.value_json)
+        .map_err(|error| DbError::Validation(error.to_string()))?;
+    if snapshot.replay_id != replay_id || snapshot.phase != "launch_ready" {
+        return Err(DbError::Validation(
+            "Replay recovery marker is no longer launch-ready".to_string(),
+        ));
+    }
+    snapshot.phase = "launched".to_string();
+    set_app_setting(
+        pool,
+        &key,
+        &serde_json::to_string(&snapshot)
+            .map_err(|error| DbError::Validation(error.to_string()))?,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn finalize_conversation_replay(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    replay_id: &str,
+) -> DbResult<()> {
+    let key = replay_recovery_key(conversation_id);
+    let Some(setting) = get_app_setting(pool, &key).await? else {
+        return Ok(());
+    };
     let snapshot: ReplayRecoverySnapshot = serde_json::from_str(&setting.value_json)
         .map_err(|error| DbError::Validation(error.to_string()))?;
-    if snapshot.replay_id == replay_id {
+    if snapshot.replay_id == replay_id && snapshot.phase == "launched" {
         sqlx::query("DELETE FROM app_settings WHERE key = ?")
             .bind(key)
             .execute(pool)
@@ -3672,12 +3798,12 @@ mod tests {
         );
 
         assert!(
-            restore_conversation_replay(&pool, &conversation.id, "replay-1")
+            restore_conversation_replay(&pool, &conversation.id, "replay-1", None, None)
                 .await
                 .expect("restore")
         );
         assert!(
-            !restore_conversation_replay(&pool, &conversation.id, "replay-1")
+            !restore_conversation_replay(&pool, &conversation.id, "replay-1", None, None)
                 .await
                 .expect("idempotent retry")
         );
@@ -3703,6 +3829,250 @@ mod tests {
             .await
             .expect("compaction")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn replay_recovery_handles_crash_phases_without_overwriting_a_newer_turn() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Replay fences").await;
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "anchor".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "user".to_string(),
+                    content: "Original".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "tail".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: "Tail".to_string(),
+                    created_at: "2026-03-19T00:00:01.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed messages");
+
+        let prepare = |replay_id: &'static str| PrepareConversationReplayInput {
+            conversation_id: &conversation.id,
+            message_id: "anchor",
+            session_id: "session-1",
+            turn_id: "turn-1",
+            replay_id,
+            content: "Edited",
+            hidden_context: None,
+            provider_input_items_json: None,
+            code_checkpoints_json: None,
+            delete_context_compaction_state: false,
+        };
+
+        // Crash after trim (prepared) and after dbComplete (launch_ready) both restore.
+        prepare_conversation_replay(&pool, prepare("prepared"))
+            .await
+            .expect("prepare");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "prepared",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("restore prepared"));
+
+        prepare_conversation_replay(&pool, prepare("ready"))
+            .await
+            .expect("prepare ready");
+        complete_conversation_replay(&pool, &conversation.id, "ready")
+            .await
+            .expect("mark ready");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "ready",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("restore ready"));
+
+        // An empty launched placeholder is still safe to compensate after a crash.
+        prepare_conversation_replay(&pool, prepare("empty-launch"))
+            .await
+            .expect("prepare empty launch");
+        complete_conversation_replay(&pool, &conversation.id, "empty-launch")
+            .await
+            .expect("mark empty launch ready");
+        mark_conversation_replay_launched(&pool, &conversation.id, "empty-launch")
+            .await
+            .expect("mark launched");
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![ImportMessageInput {
+                id: "placeholder".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                role: "assistant".to_string(),
+                content: String::new(),
+                created_at: "2026-03-19T00:00:02.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("insert placeholder");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "empty-launch",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("restore empty launch"));
+
+        // A different turn is a durable fence. The old snapshot remains pending
+        // until bootstrap can classify it, but must never overwrite the winner.
+        prepare_conversation_replay(&pool, prepare("fenced"))
+            .await
+            .expect("prepare fenced");
+        complete_conversation_replay(&pool, &conversation.id, "fenced")
+            .await
+            .expect("ready fenced");
+        mark_conversation_replay_launched(&pool, &conversation.id, "fenced")
+            .await
+            .expect("launched fenced");
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![ImportMessageInput {
+                id: "newer-turn".to_string(),
+                turn_id: Some("turn-2".to_string()),
+                role: "user".to_string(),
+                content: "Winning request".to_string(),
+                created_at: "2026-03-19T00:00:03.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("insert newer turn");
+        assert!(!restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "fenced",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("fence recovery"));
+        assert!(list_messages(&pool, &conversation.id)
+            .await
+            .expect("winning transcript")
+            .iter()
+            .any(|message| message.id == "newer-turn"));
+    }
+
+    #[tokio::test]
+    async fn replay_recovery_keeps_the_marker_after_a_sqlite_failure_and_retries() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Replay retry").await;
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "anchor".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "user".to_string(),
+                    content: "Original".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "tail".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: "Tail".to_string(),
+                    created_at: "2026-03-19T00:00:01.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed messages");
+        prepare_conversation_replay(
+            &pool,
+            PrepareConversationReplayInput {
+                conversation_id: &conversation.id,
+                message_id: "anchor",
+                session_id: "session-1",
+                turn_id: "turn-1",
+                replay_id: "retry",
+                content: "Edited",
+                hidden_context: None,
+                provider_input_items_json: None,
+                code_checkpoints_json: None,
+                delete_context_compaction_state: false,
+            },
+        )
+        .await
+        .expect("prepare replay");
+        sqlx::query(&format!(
+            "CREATE TRIGGER fail_replay_restore BEFORE UPDATE ON messages WHEN OLD.conversation_id = '{}' BEGIN SELECT RAISE(ABORT, 'injected recovery failure'); END",
+            conversation.id
+        ))
+        .execute(&pool)
+        .await
+        .expect("install failure trigger");
+
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "retry",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .is_err());
+        assert!(
+            get_app_setting(&pool, &replay_recovery_key(&conversation.id))
+                .await
+                .expect("load marker")
+                .is_some()
+        );
+        assert_eq!(
+            list_messages(&pool, &conversation.id)
+                .await
+                .expect("trim remains committed")
+                .len(),
+            1
+        );
+
+        sqlx::query("DROP TRIGGER fail_replay_restore")
+            .execute(&pool)
+            .await
+            .expect("remove failure trigger");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "retry",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("retry restore"));
+        assert!(
+            get_app_setting(&pool, &replay_recovery_key(&conversation.id))
+                .await
+                .expect("load marker")
+                .is_none()
+        );
     }
 
     #[tokio::test]

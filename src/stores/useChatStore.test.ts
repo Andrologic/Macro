@@ -1231,6 +1231,8 @@ const dbTrimConversationReplayMock = mock(async () => undefined);
 const dbPrepareConversationReplayMock = mock(async () => undefined);
 const dbRestoreConversationReplayMock = mock(async () => true);
 const dbCompleteConversationReplayMock = mock(async () => undefined);
+const dbMarkConversationReplayLaunchedMock = mock(async () => undefined);
+const dbFinalizeConversationReplayMock = mock(async () => undefined);
 const importMessagesMock = mock(
   async (
     conversationId: string,
@@ -1740,6 +1742,8 @@ const registerUseChatStoreMocks = async () => {
     dbPrepareConversationReplay: dbPrepareConversationReplayMock,
     dbRestoreConversationReplay: dbRestoreConversationReplayMock,
     dbCompleteConversationReplay: dbCompleteConversationReplayMock,
+    dbMarkConversationReplayLaunched: dbMarkConversationReplayLaunchedMock,
+    dbFinalizeConversationReplay: dbFinalizeConversationReplayMock,
     updateConversationDetails: updateConversationDetailsMock,
     updateConversationAISelection: updateConversationAISelectionMock,
     updateConversationScope: updateConversationScopeMock,
@@ -2476,6 +2480,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbRestoreConversationReplayMock.mockImplementation(async () => true);
     dbCompleteConversationReplayMock.mockClear();
     dbCompleteConversationReplayMock.mockImplementation(async () => undefined);
+    dbMarkConversationReplayLaunchedMock.mockClear();
+    dbMarkConversationReplayLaunchedMock.mockImplementation(async () => undefined);
+    dbFinalizeConversationReplayMock.mockClear();
+    dbFinalizeConversationReplayMock.mockImplementation(async () => undefined);
     importMessagesMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
@@ -4602,6 +4610,57 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'conversation-pending-cleanup',
     );
     expect(useChatStore.getState().getConversationMessages('conversation-pending-cleanup')).toEqual([]);
+  });
+
+  it('retries a failed SQLite replay recovery on the next bootstrap', async () => {
+    tauriAvailable = true;
+    chatSnapshotConversations = [createChatSnapshotConversation('replay-retry')];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'replay-anchor',
+        conversation_id: 'replay-retry',
+        content: 'Edited request',
+      }),
+    ];
+    appSettingValues.set(
+      'conversationReplayRecovery:replay-retry',
+      JSON.stringify({
+        replay_id: 'replay-retry-id',
+        session_id: 'session-retry',
+        turn_id: 'turn-retry',
+        phase: 'launch_ready',
+      }),
+    );
+    dbRestoreConversationReplayMock.mockImplementationOnce(async () => {
+      throw new Error('injected SQLite restore failure');
+    });
+    dbRestoreConversationReplayMock.mockImplementationOnce(async () => {
+      appSettingValues.delete('conversationReplayRecovery:replay-retry');
+      chatSnapshotMessages = [
+        createChatMessageRecord({
+          id: 'replay-anchor',
+          conversation_id: 'replay-retry',
+          content: 'Original request',
+        }),
+        createChatMessageRecord({
+          id: 'replay-tail',
+          conversation_id: 'replay-retry',
+          role: 'assistant',
+          content: 'Restored tail',
+        }),
+      ];
+      return true;
+    });
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().lastError).toContain('Replay recovery is pending');
+
+    await useChatStore.getState().initializeCritical();
+    expect(useChatStore.getState().conversations.map((conversation: { id: string }) => conversation.id))
+      .toContain('replay-retry');
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledTimes(2);
   });
 
   it('repairs stale scope metadata for the active plan conversation during initialize', async () => {
@@ -11992,6 +12051,54 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       skipAgentCodeReplayCheck: true,
     });
 
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv' }),
+    );
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
+  });
+
+  it('does not start the provider when durable replay completion fails', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    dbCompleteConversationReplayMock.mockImplementationOnce(async () => {
+      throw new Error('injected replay completion failure');
+    });
+    citationRecords = [
+      {
+        id: 'citation-tail',
+        type: 'file',
+        scope: 'context',
+        source: 'tail.md',
+        title: 'Tail',
+        messageId: 'replay-assistant',
+        conversationId: 'chat-conv',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: { 'chat-conv': [] },
+      sessionCompactionEventsByConversationId: { 'chat-conv': [] },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(dbMarkConversationReplayLaunchedMock).not.toHaveBeenCalled();
     expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'chat-conv' }),
     );

@@ -386,6 +386,8 @@ pub fn run() {
             commands::db_prepare_conversation_replay,
             commands::db_restore_conversation_replay,
             commands::db_complete_conversation_replay,
+            commands::db_mark_conversation_replay_launched,
+            commands::db_finalize_conversation_replay,
             commands::db_list_conversation_citations,
             commands::db_get_conversation_citation_content,
             commands::db_upsert_conversation_citation,
