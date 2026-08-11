@@ -1608,6 +1608,15 @@ export async function deleteMessagesAfter(
   return invoke("db_delete_messages_after", { conversationId, afterMessageId });
 }
 
+export async function dbTrimConversationReplay(params: {
+  conversationId: string;
+  afterMessageId: string;
+  codeCheckpointsJson?: string | null;
+  deleteContextCompactionState: boolean;
+}): Promise<void> {
+  return invoke('db_trim_conversation_replay', params);
+}
+
 // ============ File System ============
 
 export async function fsReadFile(path: string): Promise<FsFileContentDto> {

@@ -2670,6 +2670,26 @@ pub async fn db_delete_messages_after(
 }
 
 #[tauri::command]
+pub async fn db_trim_conversation_replay(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    after_message_id: String,
+    code_checkpoints_json: Option<String>,
+    delete_context_compaction_state: bool,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::trim_conversation_replay(
+        &pool,
+        &conversation_id,
+        &after_message_id,
+        code_checkpoints_json.as_deref(),
+        delete_context_compaction_state,
+    )
+    .await
+    .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub async fn db_list_conversation_citations(
     pool: State<'_, DbPool>,
     conversation_id: String,

@@ -1217,6 +1217,7 @@ const updateMessageMock = mock(
   ) => undefined
 );
 const deleteMessagesAfterMock = mock(async () => undefined);
+const dbTrimConversationReplayMock = mock(async () => undefined);
 const importMessagesMock = mock(
   async (
     conversationId: string,
@@ -1718,6 +1719,7 @@ const registerUseChatStoreMocks = async () => {
     fsReadFileWithOptions: fsReadFileWithOptionsMock,
 	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
+    dbTrimConversationReplay: dbTrimConversationReplayMock,
     updateConversationDetails: updateConversationDetailsMock,
     updateConversationAISelection: updateConversationAISelectionMock,
     updateConversationScope: updateConversationScopeMock,
@@ -2444,6 +2446,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     updateConversationScopeMock.mockClear();
     updateMessageMock.mockClear();
     deleteMessagesAfterMock.mockClear();
+    dbTrimConversationReplayMock.mockClear();
+    dbTrimConversationReplayMock.mockImplementation(async () => undefined);
     importMessagesMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
@@ -11682,7 +11686,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         ],
       }),
     );
-    expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'user-questionnaire');
+    expect(dbTrimConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'chat-conv',
+        afterMessageId: 'user-questionnaire',
+      }),
+    );
     expect(streamChatMock).toHaveBeenCalledTimes(1);
     const streamOptions = ((streamChatMock as unknown as {
       mock: { calls: Array<Array<unknown>> };
@@ -11804,7 +11813,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
     await flushAsyncWork();
 
-    expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'u2');
+    expect(dbTrimConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv', afterMessageId: 'u2' }),
+    );
     expect(
       useChatStore.getState().sessionCompactionEventsByConversationId[
         'chat-conv'
@@ -11824,6 +11835,58 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         id: 'other-compaction',
       }),
     ]);
+  });
+
+  it('keeps the transcript tail in state when the atomic replay trim fails', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    dbTrimConversationReplayMock.mockImplementation(async () => {
+      throw new Error('injected replay trim failure');
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'replay-user',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Original request',
+          timestamp: '2026-04-14T10:00:00.000Z',
+        },
+        {
+          id: 'replay-assistant',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Existing answer',
+          timestamp: '2026-04-14T10:01:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+
+    expect(dbTrimConversationReplayMock).toHaveBeenCalledTimes(1);
+    expect(
+      useChatStore.getState().getConversationMessages('chat-conv').map((message: { id: string }) => message.id),
+    ).toEqual(['replay-user', 'replay-assistant']);
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().lastError).toContain('injected replay trim failure');
   });
 
   it('blocks direct edits that would rewind agent code checkpoints without confirmation', async () => {

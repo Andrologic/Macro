@@ -2574,6 +2574,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   createManualFeatureDraft: async (params) => {
     set({ lastError: null });
     assertTaskMutationRuntime('createManualFeatureDraft');
+    let draftCreated = false;
 
     try {
       if (!tauriIpc.isTauriAvailable()) {
@@ -2590,6 +2591,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         title: params.title ?? null,
         description: params.description ?? null,
       });
+      draftCreated = true;
 
       await get().refreshFromPlan();
       await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
@@ -2597,6 +2599,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       });
     } catch (error) {
       const normalized = toServiceError(error);
+      if (draftCreated) {
+        try {
+          await tauriIpc.workspaceDeleteManualFeatureDraft(params.taskId);
+          await get().refreshFromPlan();
+        } catch (rollbackError) {
+          const rollbackMessage = toServiceError(rollbackError).message;
+          normalized.message = `${normalized.message} Le brouillon créé n'a pas pu être annulé : ${rollbackMessage}`;
+        }
+      }
       set({ lastError: normalized.message });
       throw normalized;
     }
