@@ -91,6 +91,7 @@ export const ShortcutsView: React.FC = () => {
   const [search, setSearch] = useState('');
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
   const [pendingBinding, setPendingBinding] = useState<string | null>(null);
+  const [bindingError, setBindingError] = useState<string | null>(null);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
   const categoryLabels = useMemo<Record<ShortcutCategory, string>>(
@@ -156,13 +157,26 @@ export const ShortcutsView: React.FC = () => {
       const nextBinding = eventToBinding(event);
       if (!nextBinding) return;
       setPendingBinding(nextBinding);
+      const conflictingShortcut = shortcutDefinitions.find((shortcut) =>
+        shortcut.id !== recordingId &&
+        bindings[shortcut.id] === nextBinding &&
+        shortcutsCanConflict(recordingId, shortcut.id)
+      );
+      if (conflictingShortcut) {
+        setBindingError(
+          `${t('shortcuts.conflictWith', 'Conflict with')}: ${shortcutLabelsById[conflictingShortcut.id]}`
+        );
+        setRecordingId(null);
+        return;
+      }
       setBinding(recordingId, nextBinding);
+      setBindingError(null);
       setRecordingId(null);
     };
 
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [recordingId, setBinding]);
+  }, [bindings, recordingId, setBinding, shortcutLabelsById, t]);
 
   const conflictMap = useMemo(() => {
     const map: Record<ShortcutId, ShortcutId[]> = {} as Record<ShortcutId, ShortcutId[]>;
@@ -232,6 +246,12 @@ export const ShortcutsView: React.FC = () => {
       {recordingId && (
         <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary">
           {t('shortcuts.recordingHint', 'Press your shortcut now... (Esc to cancel)')}
+        </div>
+      )}
+
+      {bindingError && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300" role="alert">
+          {bindingError}
         </div>
       )}
 
