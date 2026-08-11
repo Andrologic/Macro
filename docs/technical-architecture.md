@@ -2,38 +2,38 @@
 
 ## 1. Objet du document
 
-Ce document decrit l'architecture technique de reference de Macro.
+Ce document decrit l'architecture technique de référence de Macro.
 
 Il couvre :
 - les couches principales de l'application
-- les responsabilites de chaque couche
-- les flux de donnees entre frontend, runtime desktop et backend distant
+- les responsabilités de chaque couche
+- les flux de données entre frontend, runtime desktop et backend distant
 - la persistance locale et metadata
-- les mecanismes techniques relies aux workflows du produit
+- les mécanismes techniques reliés aux workflows du produit
 
-Ce document n'est pas une roadmap et n'est pas une specification fonctionnelle.
+Ce document n'est pas une roadmap et n'est pas une spécification fonctionnelle.
 
-La cible fonctionnelle du produit est definie dans `docs/functional-spec.md`.
-Les evolutions a venir et les ecarts avec l'etat courant relevent de `docs/roadmap.md`.
+La cible fonctionnelle du produit est définie dans `docs/functional-spec.md`.
+Les évolutions à venir et les écarts avec l'état courant relèvent de `docs/roadmap.md`.
 
 ---
 
 ## 2. Vue d'ensemble
 
-Macro est une application desktop construite autour d'un frontend React TypeScript et d'un backend Rust embarque via Tauri.
+Macro est une application desktop construite autour d'un frontend React TypeScript et d'un backend Rust embarqué via Tauri.
 
 L'architecture repose sur quatre principes :
 
-- local-first par defaut
-- separation stricte entre surface produit et details d'implementation
+- local-first par défaut
+- séparation stricte entre surface produit et détails d'implémentation
 - transport interchangeable entre backend desktop et backend distant
-- preservation d'un historique de travail auditable via la persistence locale et la branche metadata
+- préservation d'un historique de travail auditable via la persistence locale et la branche metadata
 
 Macro doit pouvoir fonctionner dans trois topologies techniques :
 
-- desktop local avec backend Tauri embarque
-- client desktop connecte a un kernel distant
-- client web/mobile connecte a un kernel distant
+- desktop local avec backend Tauri embarqué
+- client desktop connecté à un kernel distant
+- client web/mobile connecté à un kernel distant
 
 ---
 
@@ -41,67 +41,67 @@ Macro doit pouvoir fonctionner dans trois topologies techniques :
 
 ### 3.1 Couche interface
 
-La couche interface est composee du frontend React dans `src/`.
+La couche interface est composée du frontend React dans `src/`.
 
 Elle est responsable de :
 - l'affichage des modes et des panneaux
 - la gestion des interactions utilisateur
-- la visualisation des plans, taches, diffs et etats
-- la configuration des providers, outils et preferences
+- la visualisation des plans, tâches, diffs et états
+- la configuration des providers, outils et préférences
 
-Le frontend ne doit pas contenir la logique bas niveau du systeme de fichiers, de Git ou de la persistence native.
+Le frontend ne doit pas contenir la logique bas niveau du système de fichiers, de Git ou de la persistence native.
 
-### 3.2 Couche etat client
+### 3.2 Couche état client
 
-La couche etat client est principalement basee sur Zustand.
+La couche état client est principalement basée sur Zustand.
 
 Elle est responsable de :
-- l'etat global de l'application
+- l'état global de l'application
 - les contextes de projet, plan et conversation
-- l'etat des taches, changements de fichiers et outils
-- la synchronisation des preferences locales cote client
+- l'état des tâches, changements de fichiers et outils
+- la synchronisation des préférences locales côté client
 
-Les stores centralisent les decisions d'orchestration cote interface.
+Les stores centralisent les decisions d'orchestration côté interface.
 
 ### 3.3 Couche services frontend
 
-La couche services frontend encapsule les acces aux sources de donnees et aux outils.
+La couche services frontend encapsule les accès aux sources de données et aux outils.
 
 Elle fournit :
 - une abstraction de provider (`ipc`, `remote`)
-- des services specialises pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'execution d'outils
+- des services spécialisés pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'exécution d'outils
 
-Elle a pour role d'isoler le reste de l'interface des details du transport.
+Elle à pour rôle d'isoler le reste de l'interface des détails du transport.
 
 ### 3.4 Couche runtime desktop
 
 Le runtime desktop est fourni par Tauri.
 
 Il sert de pont entre :
-- le frontend web embarque
+- le frontend web embarqué
 - les commandes natives Rust
 - les plugins natifs Tauri
 
-Cette couche permet l'acces natif a :
-- la fenetre desktop
-- les dialogues systeme
+Cette couche permet l'accès natif à :
+- la fenêtre desktop
+- les dialogues système
 - le store natif
-- le reseau natif
-- les commandes IPC exposees par le backend Rust
+- le réseau natif
+- les commandes IPC exposées par le backend Rust
 
 ### 3.5 Couche backend Rust
 
 Le backend Rust est contenu dans `src-tauri/`.
 
-Il fournit les capacites natives suivantes :
-- base de donnees SQLite
-- acces systeme de fichiers
-- integration Git
+Il fournit les capacités natives suivantes :
+- base de données SQLite
+- accès système de fichiers
+- intégration Git
 - gestion du workspace
 - validation de politique d'outils
-- execution d'outils de workspace
-- providers IA cote backend
-- kernel headless HTTP pour l'execution distante
+- exécution d'outils de workspace
+- providers IA côté backend
+- kernel headless HTTP pour l'exécution distante
 
 ---
 
@@ -115,8 +115,8 @@ Le frontend utilise principalement :
 - TypeScript
 - Vite
 - Zustand
-- Lexical pour l'editeur de composition
-- CodeMirror pour l'affichage et l'edition de code
+- Lexical pour l'éditeur de composition
+- CodeMirror pour l'affichage et l'édition de code
 - Mermaid et React Markdown pour le rendu enrichi
 - Tailwind CSS pour la couche UI
 
@@ -135,12 +135,12 @@ Le backend desktop utilise principalement :
 
 ### 4.3 Transports
 
-Le produit 0.1 supporte un transport cote application :
+Le produit 0.1 supporte un transport côté application :
 
 - `desktop`
 
 Le transport `desktop` passe par Tauri IPC.
-Une fondation HTTP distante existe dans le code a titre experimental, mais elle n'est ni exposee ni supportee comme capacite produit en 0.1. Elle pourra servir a une future ligne remote sans modifier le contrat desktop actuel.
+Une fondation HTTP distante existe dans le code à titre expérimental, mais elle n'est ni exposée ni supportée comme capacité produit en 0.1. Elle pourra servir à une future ligne remote sans modifier le contrat desktop actuel.
 
 ---
 
@@ -151,50 +151,50 @@ Une fondation HTTP distante existe dans le code a titre experimental, mais elle 
 Le frontend est organise autour de :
 
 - `components/` pour les surfaces UI
-- `stores/` pour l'etat global
-- `services/` pour la logique d'acces et d'orchestration
+- `stores/` pour l'état global
+- `services/` pour la logique d'accès et d'orchestration
 - `hooks/` pour les comportements transverses
 - `types/` pour les types applicatifs
 
 ### 5.2 Routage fonctionnel par mode
 
-L'application n'utilise pas un routage classique base sur des pages.
+L'application n'utilise pas un routage classique basé sur des pages.
 
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
 Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise actuellement le centre pour la conversation et la droite pour la stratégie, sans panneau gauche.
 
-### 5.3 Decoupage des panneaux
+### 5.3 Découpage des panneaux
 
 L'interface est structurée autour de :
 
 - un header
 - un footer
 - un panneau gauche contextuel optionnel
-- une zone centrale partagee
+- une zone centrale partagée
 - un panneau droit contextuel optionnel
 
-Le centre reste principalement occupe par la conversation et la coordination du travail.
+Le centre reste principalement occupé par la conversation et la coordination du travail.
 
 ### 5.4 Initialisation
 
-Le frontend initialise ses stores par priorites afin de reduire le cout de demarrage percu.
+Le frontend initialise ses stores par priorités afin de réduire le coût de démarrage perçu.
 
 L'initialisation se fait en plusieurs niveaux :
 
 - bootstrap critique de l'application
 - session utilisateur et contexte
-- donnees coeur comme chat et taches
-- configuration et providers en basse priorite
+- données cœur comme chat et tâches
+- configuration et providers en basse priorité
 
 ### 5.5 Lazy loading
 
 L'application charge paresseusement :
 
-- les composants associes aux modes
+- les composants associés aux modes
 - plusieurs modales non critiques
 
-Le but est de limiter le cout du bundle initial et d'accelerer l'affichage du shell applicatif.
+Le but est de limiter le coût du bundle initial et d'accélérer l'affichage du shell applicatif.
 
 ---
 
@@ -204,38 +204,38 @@ Le but est de limiter le cout du bundle initial et d'accelerer l'affichage du sh
 
 `useAppStore` est le store pivot du frontend.
 
-Il gere notamment :
+Il gère notamment :
 
 - le mode actif
-- la selection du groupe et du projet
+- la sélection du groupe et du projet
 - le plan courant
 - les plan nodes et predicted branches
-- les panneaux, modales et preferences globales
-- l'etat de sync metadata
+- les panneaux, modales et préférences globales
+- l'état de sync metadata
 - le changement de contexte projet
 
 ### 6.2 `useChatStore`
 
-`useChatStore` gere :
+`useChatStore` gère :
 
 - les conversations
 - les messages
 - le streaming
-- les pieces jointes image
-- les references de contexte du composeur
-- la relation entre mode actif et conversation selectionnee
+- les pièces jointes image
+- les références de contexte du composeur
+- la relation entre mode actif et conversation sélectionnée
 
 Le store porte aussi une partie de la logique d'orchestration entre chat et mode produit.
 
 ### 6.3 `useTaskStore`
 
-`useTaskStore` gere :
+`useTaskStore` gère :
 
-- les taches derivees de la strategie
+- les tâches dérivées de la stratégie
 - leur activation
-- leurs transitions d'etat
-- la relation entre tache, branche et worktree
-- la persistance du statut d'execution dans les metadata du plan
+- leurs transitions d'état
+- la relation entre tâche, branche et worktree
+- la persistance du statut d'exécution dans les metadata du plan
 
 ### 6.4 Stores spécialisés
 
@@ -243,21 +243,21 @@ D'autres stores portent des responsabilités ciblées :
 
 - `useGitStore` pour arbres et commits Git
 - `useFileChangesStore` pour la review de changements
-- `useProviderStore` pour les providers et modeles IA
+- `useProviderStore` pour les providers et modèles IA
 - `useToolsStore` pour les outils internes et MCP
-- `useSkillsStore` pour la decouverte, les preferences et les activations de skills
+- `useSkillsStore` pour la découverte, les préférences et les activations de skills
 
 ### 6.5 Principe d'orchestration
 
-Le frontend ne doit pas dupliquer les decisions metier dans plusieurs composants.
+Le frontend ne doit pas dupliquer les decisions métier dans plusieurs composants.
 
-La logique transverse doit etre concentree dans :
+La logique transverse doit être concentrée dans :
 
 - les stores
 - les services
 - quelques hooks d'orchestration
 
-Les composants doivent surtout afficher, recueillir des intentions utilisateur et appeler les actions prevues.
+Les composants doivent surtout afficher, recueillir des intentions utilisateur et appeler les actions prévues.
 
 ---
 
@@ -265,19 +265,19 @@ Les composants doivent surtout afficher, recueillir des intentions utilisateur e
 
 ### 7.1 Abstraction provider
 
-La couche `services/index.ts` selectionne dynamiquement le provider de donnees selon :
+La couche `services/index.ts` sélectionne dynamiquement le provider de données selon :
 
 - le transport cible (`desktop` ou `remote`)
-- la disponibilite effective du runtime Tauri
+- la disponibilité effective du runtime Tauri
 
 Cette abstraction permet :
 
 - d'utiliser Tauri en mode desktop
-- de parler a un backend distant sans reecrire le reste de l'application
+- de parler à un backend distant sans reecrire le reste de l'application
 
 ### 7.2 Services de domaine
 
-Les services frontend sont specialises par sujet.
+Les services frontend sont spécialisés par sujet.
 
 Exemples principaux :
 
@@ -289,7 +289,7 @@ Exemples principaux :
 - `remoteKernelApi`
 - `toolModePolicy`
 - `projectExecutionContext`
-- `skills` via le contrat provider et les commandes IPC dediees
+- `skills` via le contrat provider et les commandes IPC dédiées
 
 ### 7.3 Contrats et DTO
 
@@ -299,43 +299,43 @@ Les DTO frontend servent de couche de stabilisation entre :
 - les retours des providers
 - les transports backend
 
-Cette couche limite le couplage direct entre composants React et details de serialisation.
+Cette couche limite le couplage direct entre composants React et détails de sérialisation.
 
 ---
 
 ## 8. Runtime desktop et IPC
 
-### 8.1 Role de Tauri
+### 8.1 Rôle de Tauri
 
 Tauri sert de runtime desktop et d'interface native.
 
-Il heberge :
+Il hébergé :
 
-- la fenetre applicative
-- les plugins systeme
+- la fenêtre applicative
+- les plugins système
 - le frontend web
 - le registre de commandes IPC Rust
 
 ### 8.2 Commandes IPC
 
-Le backend expose de nombreuses commandes Tauri, regroupees par domaine :
+Le backend expose de nombreuses commandes Tauri, regroupées par domaine :
 
-- base de donnees
+- base de données
 - workspace
 - outils
 - skills
-- systeme de fichiers
+- système de fichiers
 - Git
 
-Ces commandes sont centralisees dans le point d'entree du backend.
+Ces commandes sont centralisées dans le point d'entrée du backend.
 
-### 8.3 Plugins natifs utilises
+### 8.3 Plugins natifs utilisés
 
 Le runtime embarque des plugins Tauri pour :
 
 - l'ouverture de ressources externes
-- les requetes HTTP
-- les dialogues systeme
+- les requêtes HTTP
+- les dialogues système
 - le stockage natif
 
 ---
@@ -371,23 +371,23 @@ Le module `db` porte :
 
 - l'initialisation SQLite
 - les migrations
-- les modeles et repositories
+- les modèles et repositories
 - les commandes de persistence de conversations, messages, providers et contextes locaux
 
 ### 9.4 `fs`
 
 Le module `fs` porte :
 
-- la lecture et l'ecriture de fichiers
+- la lecture et l'écriture de fichiers
 - la validation des chemins
 - le support du watcher de fichiers
-- la resolution speciale du workspace metadata
+- la résolution spéciale du workspace metadata
 
 ### 9.5 `git`
 
 Le module `git` porte :
 
-- l'ouverture et la validation des depots
+- l'ouverture et la validation des dépôts
 - les commandes de status, log, branches, diff, push, pull, merge
 - la gestion des worktrees
 - la branche metadata `@macro`
@@ -399,16 +399,16 @@ Le module `workspace` porte :
 - le bootstrap du workspace
 - la liste des groupes et projets
 - la persistence du fichier `workspace.json`
-- les operations de creation, import, renommage, archivage et fermeture de projets
+- les opérations de création, import, renommage, archivage et fermeture de projets
 
 ### 9.7 `ai`
 
 Le module `ai` porte :
 
-- l'abstraction provider cote backend
-- les implementations OpenAI, Anthropic et local
+- l'abstraction provider côté backend
+- les implémentations OpenAI, Anthropic et local
 
-Cette couche est encore partiellement utilisee selon les flux, mais fait partie de l'architecture cible.
+Cette couche est encore partiellement utilisée selon les flux, mais fait partie de l'architecture cible.
 
 ---
 
@@ -424,21 +424,21 @@ Elle stocke notamment :
 - messages
 - settings
 - cache local de workspace
-- references de depots Git et worktrees
+- références de dépôts Git et worktrees
 
 ### 10.2 Persistance locale frontend
 
-Le frontend utilise aussi de la persistence locale legere pour :
+Le frontend utilise aussi de la persistence locale légère pour :
 
-- certaines preferences
-- les selections de modele par contexte
-- l'etat de session local
+- certaines préférences
+- les sélections de modèle par contexte
+- l'état de session local
 - certains fallback de plans
-- des donnees temporaires de pieces jointes
+- des données temporaires de pièces jointes
 
 ### 10.3 Metadata dans la branche `@macro`
 
-L'historique structure de Macro est conserve dans une branche metadata dediee.
+L'historique structuré de Macro est conservé dans une branche metadata dédiée.
 
 Cette branche contient notamment :
 
@@ -455,11 +455,11 @@ Le stockage metadata dans Git permet l'audit, la redondance et la conservation d
 
 ---
 
-## 11. Modele metadata et plans
+## 11. Modèle metadata et plans
 
-### 11.1 Structure des plans
+### 11.1 Structuré des plans
 
-Les plans sont stockes dans une structure de type :
+Les plans sont stockés dans une structure de type :
 
 - `branches/<target-branch>/plans/index.json`
 - `branches/<target-branch>/plans/<plan-id>/plan.json`
@@ -469,25 +469,25 @@ Les plans sont stockes dans une structure de type :
 - `branches/<target-branch>/plans/<plan-id>/artifacts/index.json`
 - `branches/<target-branch>/plans/<plan-id>/artifacts/tasks/<task-id>/<artifact-id>.md|json|txt`
 
-Les artefacts de relais de taches sont separes du dossier `tasks/<task-id>/`, qui reste reserve aux rendus generes comme `planned.md` et `executed.md`.
+Les artefacts de relais de tâches sont séparés du dossier `tasks/<task-id>/`, qui reste réservé aux rendus générés comme `planned.md` et `executed.md`.
 
-`artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement a marquer la revue de l'artefact pour la tache consommatrice courante.
+`artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement à marquer la revue de l'artefact pour la tâche consommatrice courante.
 
 ### 11.2 Raison de cette structure
 
-Cette structure sert a :
+Cette structure sert à :
 
 - conserver une representation machine des plans
 - conserver une representation lisible par humain
-- permettre une auditabilite fine tache par tache
-- rendre la metadata consultable meme hors de l'application
+- permettre une auditabilité fine tâche par tâche
+- rendre la metadata consultable même hors de l'application
 
 ### 11.3 Relation avec le frontend
 
-Le frontend lit, ecrit et synchronise cette structure via :
+Le frontend lit, écrit et synchronise cette structure via :
 
 - les services de planification
-- le service d'artefacts de plan, qui calcule la fermeture transitive des dependances et applique les droits de lecture/ecriture par tache
+- le service d'artefacts de plan, qui calcule la fermeture transitive des dépendances et applique les droits de lecture/écriture par tâche
 - les commandes FS avec scope metadata
 - les commandes Git de sync `@macro`
 
@@ -499,72 +499,72 @@ Le frontend lit, ecrit et synchronise cette structure via :
 
 L'architecture Git de Macro repose sur trois niveaux principaux :
 
-- branche de base de developpement
-- branches d'integration de plan
-- branches de feature ou d'execution
+- branche de base de développement
+- branches d'intégration de plan
+- branches de feature ou d'exécution
 
 ### 12.2 Branches de plan
 
-Pour le travail planifie, Macro utilise une branche d'integration dediee au plan.
+Pour le travail planifié, Macro utilise une branche d'intégration dédiée au plan.
 
 Cette branche sert de point de convergence avant le merge final vers la branche de base.
 
-Macro ajoute au rendu et a la file Implement une tache de finalisation synthetique. Elle depend des feuilles non archivees de la strategie et n'est pas persistee comme un noeud Architect.
+Macro ajoute au rendu et à la file Implement une tâche de finalisation synthétique. Elle dépend des feuilles non archivées de la stratégie et n'est pas persistée comme un nœud Architect.
 
 ### 12.3 Branches de feature
 
-Les taches de la strategie peuvent etre reparties sur plusieurs branches de feature rattachees au plan afin de :
+Les tâches de la stratégie peuvent être réparties sur plusieurs branches de feature rattachées au plan afin de :
 
-- maximiser le parallelisme
+- maximiser le parallélisme
 - conserver des lots de travail plus petits
 - limiter les changements trop larges
 
-Chaque tache executable dispose de sa propre branche de feature par sous-projet editable.
+Chaque tâche exécutable dispose de sa propre branche de feature par sous-projet éditable.
 
-Les dependances entre taches expriment le sequentiel ; elles ne sont pas modelees par la reutilisation d'une meme branche.
+Les dépendances entre tâches expriment le séquentiel ; elles ne sont pas modélées par la reutilisation d'une même branche.
 
-Une fois valide, le travail d'une tache est merge vers la branche d'integration du plan. Les taches dependantes demarrent ensuite depuis cette branche de plan mise a jour.
+Une fois valide, le travail d'une tâche est merge vers la branche d'intégration du plan. Les tâches dependantes demarrent ensuite depuis cette branche de plan mise à jour.
 
 ### 12.4 Worktrees
 
-Les worktrees permettent d'isoler l'execution par tache.
+Les worktrees permettent d'isoler l'exécution par tâche.
 
-Ils sont utilises pour :
+Ils sont utilisés pour :
 
-- eviter de tout faire dans un seul arbre de travail
-- permettre plusieurs executions en parallele
-- conserver une separation nette entre contextes d'execution
+- éviter de tout faire dans un seul arbre de travail
+- permettre plusieurs exécutions en parallèle
+- conserver une séparation nette entre contextes d'exécution
 
 ### 12.5 Branche `@macro`
 
-La branche `@macro` sert de branche metadata dediee.
+La branche `@macro` sert de branche metadata dédiée.
 
-Elle est synchronisee separatement du code metier.
+Elle est synchronisée separatement du code métier.
 
-Le systeme doit pouvoir :
+Le système doit pouvoir :
 
 - s'assurer de son existence
-- connaitre son etat de divergence
-- committer les metadata si necessaire
+- connaitre son état de divergence
+- committer les metadata si nécessaire
 - push et pull cette branche
 
 ### 12.6 Sync metadata
 
-La sync metadata est geree comme une couche distincte de la sync du code.
+La sync metadata est gérée comme une couche distincte de la sync du code.
 
-Cette separation permet :
+Cette séparation permet :
 
-- de ne pas melanger l'historique produit avec l'historique source classique
-- d'exposer un etat clair dans l'interface
-- de gerer les conflits metadata de facon explicite
+- de ne pas mélanger l'historique produit avec l'historique source classique
+- d'exposer un état clair dans l'interface
+- de gérer les conflits metadata de façon explicite
 
 ---
 
-## 13. Outils, politiques d'acces et execution
+## 13. Outils, politiques d'accès et exécution
 
 ### 13.1 Politique par mode
 
-Macro applique une politique d'outils differente selon le mode.
+Macro applique une politique d'outils différente selon le mode.
 
 L'objectif est de limiter les droits selon le contexte fonctionnel.
 
@@ -572,95 +572,95 @@ Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
 - Chat reste plus restreint
-- Implement a acces a davantage d'outils de workspace et Git
+- Implement à accès à davantage d'outils de workspace et Git
 
-### 13.2 Validation d'execution
+### 13.2 Validation d'exécution
 
-Avant execution d'un outil, Macro peut valider :
+Avant exécution d'un outil, Macro peut valider :
 
-- si l'outil est autorise dans le mode courant
-- si le chemin cible est autorise
+- si l'outil est autorisé dans le mode courant
+- si le chemin cible est autorisé
 - si les restrictions metadata doivent s'appliquer
 
-### 13.3 Execution de workspace tools
+### 13.3 Exécution de workspace tools
 
-La couche d'execution d'outils encapsule :
+La couche d'exécution d'outils encapsule :
 
-- la resolution du bon workspace
-- la difference entre scope normal et scope metadata
+- la résolution du bon workspace
+- la différence entre scope normal et scope metadata
 - le fallback entre transport Tauri et transport distant
 
-Cette couche unifie l'execution des outils cote produit.
+Cette couche unifié l'exécution des outils côté produit.
 
 ---
 
 ## 14. Skills
 
-### 14.1 Role
+### 14.1 Rôle
 
 Les skills sont une couche de contexte agent distincte de MCP.
 
-Une skill fournit des instructions reutilisables a l'agent. Elle ne cree pas de nouveaux outils arbitraires. Les outils externes restent portes par MCP et par la politique d'outils Macro.
+Une skill fournit des instructions réutilisables à l'agent. Elle ne créé pas de nouveaux outils arbitraires. Les outils externes restent portes par MCP et par la politique d'outils Macro.
 
 ### 14.2 Format local
 
 La version locale supporte des dossiers contenant :
 
-- `SKILL.md` prioritaire, avec `skill.md` accepte en mode compatibilite
+- `SKILL.md` prioritaire, avec `skill.md` accepté en mode compatibilité
 - frontmatter YAML AgentSkills avec `name`, `description`, `license`, `compatibility`, `allowed-tools` et `metadata`
 - dossiers optionnels `references/`, `assets/` et `scripts/`
 
-Les sources supportees en 0.1 sont :
+Les sources supportées en 0.1 sont :
 
 - `.agents/skills`, `.codex/skills`, `.opencode/skills`, `.opencode/skill` et `.claude/skills` dans les projets visibles par Macro
 - `~/.agents/skills`, `~/.codex/skills`, `~/.config/opencode/skills`, `~/.config/opencode/skill`, `~/.opencode/skills`, `~/.opencode/skill` et `~/.claude/skills` pour les skills utilisateur globales
 
-La decouverte ignore les dossiers caches internes, `.git`, `node_modules`, les racines symlinkees et applique des limites de profondeur et de volume. La validation separe `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
+La découverte ignore les dossiers cachés internes, `.git`, `node_modules`, les racines symlinkées et applique des limites de profondeur et de volume. La validation sépare `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
 
-Le validateur suit la logique `skills-ref` pour les noms : comparaison apres normalisation Unicode NFKC, lettres/chiffres Unicode acceptes avec tirets, et lowercase Unicode. Les ecarts d'usage courants (uppercase, underscores, tirets en debut/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` genere le diagnostic `unexpected_frontmatter_field`.
+Le validateur suit la logique `skills-ref` pour les noms : comparaison après normalisation Unicode NFKC, lettres/chiffres Unicode acceptés avec tirets, et lowercase Unicode. Les écarts d'usage courants (uppercase, underscores, tirets en début/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` généré le diagnostic `unexpected_frontmatter_field`.
 
-Les collisions sont resolues de facon deterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposee au catalogue agent et a la resolution `$skill-name`. Les skills shadowed restent listees dans Settings et peuvent etre chargees par selection explicite/id exact.
+Les collisions sont résolues de façon déterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposée au catalogue agent et à la résolution `$skill-name`. Les skills shadowed restent listées dans Settings et peuvent être chargées par sélection explicite/id exact.
 
 ### 14.3 Chargement progressif
 
 Le chargement doit rester progressif :
 
 - au bootstrap, Macro ne charge que le manifeste compact
-- dans le prompt, Macro injecte seulement le catalogue des skills activees, chargeables et non-shadowed
-- le corps body-only de `SKILL.md` est charge via `skill_activate` dans un bloc `<skill_content ...>` structure
+- dans le prompt, Macro injecté seulement le catalogue des skills activées, chargeables et non-shadowed
+- le corps body-only de `SKILL.md` est chargé via `skill_activate` dans un bloc `<skill_content ...>` structuré
 - les fichiers de `references/` et `assets/` sont lus via `skill_read_resource`
-- les scripts de `scripts/` sont executes via `skill_run_script`
+- les scripts de `scripts/` sont exécutés via `skill_run_script`
 
-`skill_activate` liste les ressources et scripts mais ne les lit pas. Les activations sont dedupliquees par conversation et rechargees seulement si le hash de contenu change. Les outils `skill_*` ne sont enregistres aupres du modele que lorsqu'une skill activee et chargeable existe; `skill_run_script` exige en plus une skill trusted avec scripts actives et un niveau de risque compatible.
+`skill_activate` liste les ressources et scripts mais ne les lit pas. Les activations sont dédupliquées par conversation et rechargées seulement si le hash de contenu change. Les outils `skill_*` ne sont enregistrés auprès du modèle que lorsqu'une skill activée et chargeable existe; `skill_run_script` exige en plus une skill trusted avec scripts activés et un niveau de risque compatible.
 
-Les preferences d'activation sont persistees comme preferences Macro cote client, pas dans les dossiers de skills.
+Les préférences d'activation sont persistées comme préférences Macro côté client, pas dans les dossiers de skills.
 
-### 14.4 Securite
+### 14.4 Sécurité
 
-Les skills decouvertes sont desactivees par defaut.
+Les skills découvertes sont désactivées par défaut.
 
-L'execution de scripts exige :
+L'exécution de scripts exige :
 
-- skill activee
-- skill marquee comme trusted
-- scripts actives pour cette skill
-- passage par la politique d'approbation d'outils a risque
+- skill activée
+- skill marquée comme trusted
+- scripts activés pour cette skill
+- passage par la politique d'approbation d'outils à risque
 
-Le backend bloque les chemins hors skill, les traversals, les fichiers caches non autorises et les symlinks sortants. Les scripts s'executent sans secrets injectes par defaut, avec timeout, sortie tronquee et repertoire temporaire par defaut.
+Le backend bloque les chemins hors skill, les traversals, les fichiers cachés non autorisés et les symlinks sortants. Les scripts s'exécutent sans secrets injectés par défaut, avec timeout, sortie tronquée et répertoire temporaire par défaut.
 
-`allowed-tools` est expose comme metadata informative. Il ne modifie jamais la politique d'outils Macro, les modes, les approvals ou le niveau de risque.
+`allowed-tools` est exposé comme metadata informative. Il ne modifie jamais la politique d'outils Macro, les modes, les approvals ou le niveau de risque.
 
-### 14.5 Fondation de transport remote (experimentale)
+### 14.5 Fondation de transport remote (expérimentale)
 
-Cette couche reste interne et hors du contrat produit 0.1. Les details ci-dessous documentent le prototype existant, pas un mode selectionnable dans l'application.
+Cette couche reste interne et hors du contrat produit 0.1. Les détails ci-dessous documentent le prototype existant, pas un mode selectionnable dans l'application.
 
-Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilite UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilegier quand le runtime n'est pas local. La deduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
+Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilité UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilégier quand le runtime n'est pas local. La déduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
 
-Le provider remote expose les operations equivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le prefixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolerant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit repondre `unsupported` ou 404/405/501; l'UI presente alors que le runtime courant ne supporte pas la capacite precise.
+Le provider remote expose les opérations équivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le préfixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolérant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit répondre `unsupported` ou 404/405/501; l'UI présente alors que le runtime courant ne supporte pas la capacité précise.
 
-Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des reglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par defaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
+Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal à `skills=true` et `skillScripts=false`.
 
-La surface complete reste supportee par le desktop local via Tauri IPC.
+La surface complète reste supportée par le desktop local via Tauri IPC.
 
 ---
 
@@ -668,52 +668,52 @@ La surface complete reste supportee par le desktop local via Tauri IPC.
 
 ### 15.1 Chat streaming
 
-Le streaming des reponses IA est gere cote frontend par un service dedie.
+Le streaming des réponses IA est géré côté frontend par un service dédié.
 
 Cette couche s'occupe de :
 
 - envoyer le contexte conversationnel
 - recevoir les tokens ou chunks
-- mettre a jour la conversation en cours
-- annuler un stream si necessaire
+- mettre à jour la conversation en cours
+- annuler un stream si nécessaire
 
 ### 15.2 Couplage avec les plans
 
-En mode Architect, certaines actions conversationnelles declenchent une sync metadata a la fin du stream.
+En mode Architect, certaines actions conversationnelles declenchent une sync metadata à la fin du stream.
 
-L'objectif est d'ancrer les changements de plan dans la branche metadata de facon reguliere.
+L'objectif est d'ancrer les changements de plan dans la branche metadata de façon régulière.
 
 ### 15.3 Couplage avec le mode Implement
 
 En mode Implement, le chat sert aussi de couche d'interaction pour :
 
-- les clarifications de tache
+- les clarifications de tâche
 - les questions de l'IA
-- le kickoff d'execution
+- le kickoff d'exécution
 
 Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestration utilisateur.
 
 ---
 
-## 16. Fondation experimentale : backend distant et kernel headless
+## 16. Fondation expérimentale : backend distant et kernel headless
 
-Cette section documente du code exploratoire interne. Ce code n'est pas expose comme mode produit, n'est pas supporte en 0.1 et ne constitue pas un engagement de compatibilite.
+Cette section documente du code exploratoire interne. Ce code n'est pas exposé comme mode produit, n'est pas supporté en 0.1 et ne constitue pas un engagement de compatibilité.
 
-### 16.1 Role du kernel headless
+### 16.1 Rôle du kernel headless
 
 Le prototype de kernel headless est une version sans GUI du backend Macro.
 
-Il explore la possibilite pour un futur client Macro distant de :
+Il explore la possibilité pour un futur client Macro distant de :
 
-- recuperer l'etat du workspace
-- recuperer les taches
+- récupérer l'état du workspace
+- récupérer les tâches
 - interroger les politiques d'outils
-- executer certains outils
-- consulter l'etat Git
+- exécuter certains outils
+- consulter l'état Git
 
 ### 16.2 Exposition HTTP
 
-Le kernel headless expose une API HTTP basee sur axum.
+Le kernel headless expose une API HTTP basée sur axum.
 
 Cette API couvre au minimum :
 
@@ -735,24 +735,24 @@ Cette API couvre au minimum :
 - `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
 - `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
 
-Cette surface HTTP est une fondation experimentale incomplete. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
+Cette surface HTTP est une fondation expérimentale incomplète. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
 
-Les capabilities runtime separent les skills en deux niveaux : `skills` pour la decouverte, l'activation et la lecture de ressources; `skillScripts` pour l'execution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
+Les capabilities runtime separent les skills en deux niveaux : `skills` pour la découverte, l'activation et la lecture de ressources; `skillScripts` pour l'exécution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
 
-### 16.3 Protection experimentale
+### 16.3 Protection expérimentale
 
-Le kernel headless peut etre protege par un bearer token.
+Le kernel headless peut être protège par un bearer token.
 
-Ce token protege uniquement le prototype HTTP. Il n'implique aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
+Ce token protège uniquement le prototype HTTP. Il n'impliqué aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
 
 ### 16.4 Position architecturale
 
-Si cette exploration devient un jour une capacite produit, elle pourrait servir de base a :
+Si cette exploration devient un jour une capacité produit, elle pourrait servir de base à :
 
-- l'execution distante
-- la continuite entre plusieurs clients
+- l'exécution distante
+- la continuité entre plusieurs clients
 - la supervision mobile future
-- les offres eventuelles d'hebergement dedie
+- les offres éventuelles d'hébergement dédié
 
 ---
 
@@ -760,11 +760,11 @@ Si cette exploration devient un jour une capacite produit, elle pourrait servir 
 
 ### 17.1 Configuration frontend
 
-Le frontend depend notamment de variables d'environnement pour :
+Le frontend dépend notamment de variables d'environnement pour :
 
-- choisir le provider de donnees
+- choisir le provider de données
 - choisir le transport backend
-- configurer l'acces au backend distant
+- configurer l'accès au backend distant
 
 ### 17.2 Configuration backend
 
@@ -776,49 +776,49 @@ Le backend Rust charge une configuration runtime pour :
 
 ### 17.3 Configuration utilisateur
 
-Les preferences utilisateur sont reparties entre :
+Les préférences utilisateur sont réparties entre :
 
 - persistence locale frontend
 - settings backend
-- configurations providers et modeles
-- regles de workflow Git et d'automatisation
-- preferences de skills activees, trusted et scripts
+- configurations providers et modèles
+- règles de workflow Git et d'automatisation
+- préférences de skills activées, trusted et scripts
 
 ---
 
-## 18. Principes de separation entre documents
+## 18. Principes de séparation entre documents
 
-Le present document doit decrire :
+Le présent document doit décrire :
 
 - comment Macro est construit
 - quelles couches existent
 - comment elles communiquent
-- ou les donnees vivent
+- où les données vivent
 
-Le present document ne doit pas decrire en detail :
+Le présent document ne doit pas décrire en détail :
 
 - la philosophie produit generale
 - les workflows utilisateur comme contrat principal
-- les priorites de developpement
+- les priorités de développement
 
-Ces sujets appartiennent respectivement a :
+Ces sujets appartiennent respectivement à :
 
 - `docs/functional-spec.md`
 - `docs/roadmap.md`
 
 ---
 
-## 19. Regles de maintenance du document
+## 19. Règles de maintenance du document
 
-Ce document doit etre mis a jour lorsque :
+Ce document doit être mis à jour lorsque :
 
 - une couche architecturale change
-- un transport ou un flux de donnees change
-- une responsabilite systeme change de place
-- un mecanisme de persistance ou de sync change
+- un transport ou un flux de données change
+- une responsabilité système change de place
+- un mécanisme de persistance ou de sync change
 
-Ce document ne doit pas etre mis a jour pour :
+Ce document ne doit pas être mis à jour pour :
 
 - des ajustements purement visuels
-- des details d'UX sans impact d'architecture
+- des détails d'UX sans impact d'architecture
 - des idees produit non encore traduites en architecture cible
