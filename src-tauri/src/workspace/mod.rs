@@ -35,6 +35,8 @@ use std::ffi::OsStr;
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 use tokio::fs;
@@ -72,9 +74,14 @@ const GIT_SETUP_ACTION_CREATE_DEVELOP: &str = "create_develop";
 const INITIAL_COMMIT_PREVIEW_LIMIT: usize = 20;
 const PROJECT_GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const PROJECT_WSL_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
+const NEW_REPO_OWNERSHIP_MARKER: &str = ".macro-create-in-progress";
 
 static WORKSPACE_STATE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
+static NEW_REPO_TARGET_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
+#[cfg(test)]
+static CANCEL_NEW_REPO_AFTER_INIT: AtomicBool = AtomicBool::new(false);
 
 fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
     std::fs::canonicalize(metadata_root).unwrap_or_else(|_| absolutize_path(metadata_root))
@@ -2623,7 +2630,11 @@ async fn rollback_created_new_repo<T>(
     project_path: &Path,
     original_error: BackendError,
 ) -> Result<T> {
-    if !project_path.exists() {
+    // Only remove a target that this operation can still prove it owns.  A plain
+    // `exists()` check made the previous rollback capable of deleting a folder
+    // created or populated by a concurrent operation.
+    let marker = project_path.join(NEW_REPO_OWNERSHIP_MARKER);
+    if !marker.exists() {
         return Err(original_error);
     }
 
@@ -2637,6 +2648,37 @@ async fn rollback_created_new_repo<T>(
         })?;
 
     Err(original_error)
+}
+
+async fn lock_new_repo_target(metadata_root: &Path, target: &str) -> OwnedMutexGuard<()> {
+    let key = format!(
+        "{}::{target}",
+        workspace_state_lock_key(metadata_root).to_string_lossy()
+    );
+    let lock = {
+        let locks = NEW_REPO_TARGET_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+        let mut locks = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
+
+async fn clear_new_repo_ownership_marker(project_path: &Path) {
+    let marker = project_path.join(NEW_REPO_OWNERSHIP_MARKER);
+    if let Err(error) = fs::remove_file(&marker).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                action = "new_project_repo_ownership_marker_cleanup_failed",
+                project_path = %project_path.display(),
+                error = %error
+            );
+        }
+    }
 }
 
 pub async fn create_project(
@@ -2654,6 +2696,15 @@ pub async fn create_project_with_cancel(
     cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<ProjectDto> {
     let _state_guard = lock_workspace_state(metadata_root).await;
+    create_project_with_cancel_locked(workspace_path, metadata_root, request, cancel_rx).await
+}
+
+async fn create_project_with_cancel_locked(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateProjectRequest,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<ProjectDto> {
     ensure_not_cancelled(cancel_rx.as_ref())?;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     tracing::info!(
@@ -2736,6 +2787,36 @@ pub async fn create_new_project_repo_with_cancel(
     request: CreateNewProjectRepoRequest,
     cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<metadata::ProjectGitSetupCommitResultDto> {
+    // Git setup can block, especially through WSL. Serialize only this target,
+    // leaving the registry lock available to unrelated project operations.
+    let folder_name = normalize_new_repo_folder_name(&request.folder_name)?;
+    let target = if let Some(wsl_parent) = parse_wsl_unc_path(&request.parent_path) {
+        wsl_unc_path(
+            &wsl_parent.distro,
+            &format!(
+                "{}/{}",
+                wsl_parent.linux_path.trim_end_matches('/'),
+                folder_name
+            ),
+        )
+    } else {
+        absolutize_path(
+            &resolve_project_path(workspace_path, &request.parent_path).join(folder_name),
+        )
+        .to_string_lossy()
+        .to_string()
+    };
+    let _target_guard = lock_new_repo_target(metadata_root, &target).await;
+    create_new_project_repo_with_cancel_locked(workspace_path, metadata_root, request, cancel_rx)
+        .await
+}
+
+async fn create_new_project_repo_with_cancel_locked(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: CreateNewProjectRepoRequest,
+    cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<metadata::ProjectGitSetupCommitResultDto> {
     ensure_not_cancelled(cancel_rx.as_ref())?;
     if let Some(wsl_parent) = parse_wsl_unc_path(&request.parent_path) {
         return create_new_wsl_project_repo(
@@ -2753,7 +2834,10 @@ pub async fn create_new_project_repo_with_cancel(
     let project_path = absolutize_path(&parent_path.join(folder_name));
     let project_path_string = project_path.to_string_lossy().to_string();
 
-    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let state = {
+        let _state_guard = lock_workspace_state(metadata_root).await;
+        load_or_create_state(workspace_path, metadata_root).await?
+    };
     ensure_valid_project_group_target(
         &state.project_groups,
         request.group_id.as_deref(),
@@ -2771,15 +2855,38 @@ pub async fn create_new_project_repo_with_cancel(
     ensure_new_repo_target_available(&project_path)?;
 
     ensure_not_cancelled(cancel_rx.as_ref())?;
-    fs::create_dir_all(&project_path)
-        .await
-        .map_err(|error| BackendError::Filesystem {
-            message: format!(
-                "Failed to create repository directory {}: {}",
-                project_path.display(),
-                error
-            ),
-        })?;
+    fs::create_dir(&project_path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            BackendError::FilesystemAlreadyExists {
+                message: format!(
+                    "New project folder {} already exists.",
+                    project_path.display()
+                ),
+            }
+        } else {
+            BackendError::Filesystem {
+                message: format!(
+                    "Failed to create repository directory {}: {}",
+                    project_path.display(),
+                    error
+                ),
+            }
+        }
+    })?;
+
+    if let Err(error) = fs::write(project_path.join(NEW_REPO_OWNERSHIP_MARKER), b"").await {
+        return rollback_created_new_repo(
+            &project_path,
+            BackendError::Filesystem {
+                message: format!(
+                    "Failed to mark repository directory {} as owned: {}",
+                    project_path.display(),
+                    error
+                ),
+            },
+        )
+        .await;
+    }
 
     ensure_not_cancelled(cancel_rx.as_ref())?;
     let setup_result: Result<()> = (|| {
@@ -2793,6 +2900,18 @@ pub async fn create_new_project_repo_with_cancel(
                     error
                 ),
             })?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(repo.path().join("info").join("exclude"))
+            .and_then(|mut file| writeln!(file, "/{}", NEW_REPO_OWNERSHIP_MARKER))
+            .map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Failed to exclude the temporary repository ownership marker at {}: {}",
+                    project_path.display(),
+                    error
+                ),
+            })?;
         create_initial_commit(&repo)?;
         Ok(())
     })();
@@ -2800,6 +2919,25 @@ pub async fn create_new_project_repo_with_cancel(
     if let Err(error) = setup_result {
         return rollback_created_new_repo(&project_path, error).await;
     }
+
+    #[cfg(test)]
+    if CANCEL_NEW_REPO_AFTER_INIT.swap(false, Ordering::SeqCst) {
+        return rollback_created_new_repo(&project_path, project_operation_cancelled_error()).await;
+    }
+
+    // Resolve the result before registry persistence.  Once the project has
+    // been persisted, this function must return success even if cancellation
+    // was requested while the metadata write was finishing.
+    let detection = match detect_project_git_flow_for_add(
+        workspace_path,
+        Some(project_path_string.as_str()),
+        cancel_rx.clone(),
+    )
+    .await
+    {
+        Ok(detection) => detection,
+        Err(error) => return rollback_created_new_repo(&project_path, error).await,
+    };
 
     let create_request = CreateProjectRequest {
         name: request.repo_name,
@@ -2810,14 +2948,14 @@ pub async fn create_new_project_repo_with_cancel(
         git_flow_settings: request.git_flow_settings,
     };
 
-    match create_project(workspace_path, metadata_root, create_request).await {
+    let create_result = {
+        let _state_guard = lock_workspace_state(metadata_root).await;
+        create_project_with_cancel_locked(workspace_path, metadata_root, create_request, cancel_rx)
+            .await
+    };
+    match create_result {
         Ok(project) => {
-            let detection = detect_project_git_flow_for_add(
-                workspace_path,
-                Some(project_path_string.as_str()),
-                cancel_rx,
-            )
-            .await?;
+            clear_new_repo_ownership_marker(&project_path).await;
             Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
         }
         Err(error) => rollback_created_new_repo(&project_path, error).await,
@@ -2875,7 +3013,10 @@ async fn create_new_wsl_project_repo(
         unc_path: project_path_string.clone(),
     };
 
-    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let state = {
+        let _state_guard = lock_workspace_state(metadata_root).await;
+        load_or_create_state(workspace_path, metadata_root).await?
+    };
     ensure_valid_project_group_target(
         &state.project_groups,
         request.group_id.as_deref(),
@@ -2892,20 +3033,26 @@ async fn create_new_wsl_project_repo(
     ensure_not_cancelled(cancel_rx.as_ref())?;
 
     let create_script = r#"set -e
-parent="$1"
-project="$parent"
-if [ -e "$project" ]; then
-  if [ "$(find "$project" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
-    echo "target exists and is not empty" >&2
-    exit 17
+project="$1"
+marker="$project/.macro-create-in-progress"
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ] && [ -f "$marker" ]; then
+    rm -rf "$project"
   fi
-else
-  mkdir -p "$project"
-fi
+  exit "$status"
+}
+trap cleanup EXIT
+[ -d "$(dirname "$project")" ] || { echo "parent folder does not exist" >&2; exit 18; }
+[ ! -e "$project" ] || { echo "target exists" >&2; exit 17; }
+mkdir "$project"
+: > "$marker"
 git -C "$project" init -b main
+printf '/.macro-create-in-progress\n' >> "$project/.git/info/exclude"
 git -C "$project" config user.name >/dev/null 2>&1 || git -C "$project" config user.name Macro
 git -C "$project" config user.email >/dev/null 2>&1 || git -C "$project" config user.email macro@local
 git -C "$project" commit --allow-empty -m "chore(git): initialize repository"
+trap - EXIT
 "#;
     let output = match run_wsl_shell(
         &project_wsl_path,
@@ -2917,24 +3064,12 @@ git -C "$project" commit --allow-empty -m "chore(git): initialize repository"
     {
         Ok(output) => output,
         Err(error) => {
-            let _ = run_wsl_shell(
-                &project_wsl_path,
-                r#"rm -rf "$1/.git""#,
-                PROJECT_GIT_PROBE_TIMEOUT,
-                None,
-            )
-            .await;
+            rollback_created_wsl_new_repo(&project_wsl_path).await;
             return Err(error);
         }
     };
     if !output.status.success() {
-        let _ = run_wsl_shell(
-            &project_wsl_path,
-            r#"rm -rf "$1/.git""#,
-            PROJECT_GIT_PROBE_TIMEOUT,
-            None,
-        )
-        .await;
+        rollback_created_wsl_new_repo(&project_wsl_path).await;
         return Err(BackendError::Git {
             message: format!(
                 "Failed to initialize WSL git repository: {}",
@@ -2942,7 +3077,19 @@ git -C "$project" commit --allow-empty -m "chore(git): initialize repository"
             ),
         });
     }
-    ensure_not_cancelled(cancel_rx.as_ref())?;
+    let detection = match detect_project_git_flow_for_add(
+        workspace_path,
+        Some(project_path_string.as_str()),
+        cancel_rx.clone(),
+    )
+    .await
+    {
+        Ok(detection) => detection,
+        Err(error) => {
+            rollback_created_wsl_new_repo(&project_wsl_path).await;
+            return Err(error);
+        }
+    };
 
     let create_request = CreateProjectRequest {
         name: request.repo_name,
@@ -2953,34 +3100,37 @@ git -C "$project" commit --allow-empty -m "chore(git): initialize repository"
         git_flow_settings: request.git_flow_settings,
     };
 
-    match create_project_with_cancel(
-        workspace_path,
-        metadata_root,
-        create_request,
-        cancel_rx.clone(),
-    )
-    .await
-    {
+    let create_result = {
+        let _state_guard = lock_workspace_state(metadata_root).await;
+        create_project_with_cancel_locked(workspace_path, metadata_root, create_request, cancel_rx)
+            .await
+    };
+    match create_result {
         Ok(project) => {
-            let detection = detect_project_git_flow_for_add(
-                workspace_path,
-                Some(project_path_string.as_str()),
-                cancel_rx,
-            )
-            .await?;
-            Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
-        }
-        Err(error) => {
             let _ = run_wsl_shell(
                 &project_wsl_path,
-                r#"rm -rf "$1/.git""#,
+                r#"rm -f "$1/.macro-create-in-progress""#,
                 PROJECT_GIT_PROBE_TIMEOUT,
                 None,
             )
             .await;
+            Ok(metadata::ProjectGitSetupCommitResultDto { project, detection })
+        }
+        Err(error) => {
+            rollback_created_wsl_new_repo(&project_wsl_path).await;
             Err(error)
         }
     }
+}
+
+async fn rollback_created_wsl_new_repo(project_wsl_path: &WslProjectPath) {
+    let _ = run_wsl_shell(
+        project_wsl_path,
+        r#"if [ -f "$1/.macro-create-in-progress" ]; then rm -rf "$1"; fi"#,
+        PROJECT_GIT_PROBE_TIMEOUT,
+        None,
+    )
+    .await;
 }
 
 pub async fn import_git_repo(
@@ -7478,6 +7628,93 @@ mod tests {
             Err(BackendError::FilesystemAlreadyExists { message })
                 if message.contains("backend-api")
         ));
+    }
+
+    #[tokio::test]
+    async fn create_new_project_repo_serializes_same_target() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        stdfs::create_dir_all(&parent_path).expect("create parent");
+
+        let first = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        );
+        let second = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        );
+        let (first, second) = tokio::join!(first, second);
+
+        assert!(first.is_ok() ^ second.is_ok());
+        let error = first.err().or_else(|| second.err()).expect("one failure");
+        assert!(matches!(
+            error,
+            BackendError::FilesystemAlreadyExists { .. } | BackendError::Validation(_)
+        ));
+        let state = load_or_create_state(&workspace_path, &metadata_root)
+            .await
+            .expect("read state");
+        assert_eq!(
+            count_registry_projects(&state.standalone_projects, &state.project_groups),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_new_repo_after_git_init_is_compensated_before_persistence() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("app-data").join("workspace");
+        let metadata_root = workspace_path.join(".macro");
+        let parent_path = temp.path().join("repos");
+        let project_path = parent_path.join("backend-api");
+        stdfs::create_dir_all(&parent_path).expect("create parent");
+
+        CANCEL_NEW_REPO_AFTER_INIT.store(true, Ordering::SeqCst);
+
+        let result = create_new_project_repo(
+            &workspace_path,
+            &metadata_root,
+            CreateNewProjectRepoRequest {
+                repo_name: "Backend API".to_string(),
+                parent_path: parent_path.to_string_lossy().to_string(),
+                folder_name: "backend-api".to_string(),
+                group_id: None,
+                group_name: Some("Suite".to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(BackendError::Validation(message)) if message.contains("cancelled"))
+        );
+        assert!(!project_path.exists());
+        let state = load_or_create_state(&workspace_path, &metadata_root)
+            .await
+            .expect("read state");
+        assert_eq!(
+            count_registry_projects(&state.standalone_projects, &state.project_groups),
+            0
+        );
     }
 
     #[tokio::test]
