@@ -4244,6 +4244,17 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().getConversationRuntime(materializedConversation.id).phase,
     ).toBe('idle');
     expect(
+      useChatStore.getState().getConversationRuntime(pendingConversationId!).phase,
+    ).toBe('idle');
+    expect(
+      useChatStore.getState().conversationRuntimeById[pendingConversationId!],
+    ).toBeUndefined();
+    expect(useChatStore.getState()).toMatchObject({
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+    });
+    expect(
       useChatStore
         .getState()
         .conversations.some((conversation: Conversation) => conversation.id === materializedConversation.id),
