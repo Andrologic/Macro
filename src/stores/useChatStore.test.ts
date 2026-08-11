@@ -13907,6 +13907,53 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('idle');
   });
 
+  it('keeps the active stream cleanup owner when an edit is rejected', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    (
+      streamChatMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (options: { signal?: AbortSignal }) => Promise<void>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async (options) => {
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv')],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Active stream',
+    });
+    const userMessage = useChatStore
+      .getState()
+      .getConversationMessages('chat-conv')
+      .find((message: ChatMessage) => message.role === 'user');
+
+    await expect(
+      useChatStore.getState().editMessage(
+        userMessage!.id,
+        'Rejected replay',
+        { skipAgentCodeReplayCheck: true },
+      ),
+    ).rejects.toThrow('This conversation is already running.');
+
+    useChatStore.getState().stopConversationStream('chat-conv');
+    await flushAsyncWork();
+
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith(
+      'chat-conv',
+      userMessage!.id,
+    );
+  });
+
   it('stops an active Implement stream when the linked task becomes completed', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';

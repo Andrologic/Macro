@@ -13662,10 +13662,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const turnId = getMessageTurnId(target);
       const sessionId = createConversationSessionId();
       const abortController = new AbortController();
-      latestConversationSessionIdByConversationId.set(conversationId, sessionId);
       const executionContextAtEdit = resolveConversationExecutionContext(conversationId);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
       assertConversationRuntimeAvailableForSend(conversationId);
+      latestConversationSessionIdByConversationId.set(conversationId, sessionId);
       setConversationRuntime(
         conversationId,
         {
