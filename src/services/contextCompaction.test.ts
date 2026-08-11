@@ -203,7 +203,7 @@ describe('buildCompactedMessagesForRequest', () => {
 
     expect(result.prunedMessageIds).toEqual(['a1']);
     expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
-    expect(String(result.messages[3]?.content)).toContain('need detail');
+    expect(String(result.messages[3]?.content)).toContain('plan detail');
   });
 
   it('preserves activated skill context during normal pruning', () => {
