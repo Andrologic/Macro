@@ -72,6 +72,12 @@ export interface ChatStreamLifecycleRuntimeAdapters {
     assistantMessageId: string;
     message: string;
   }) => void;
+  clearCompletionPersistenceOwnership: (params: {
+    conversationId: string;
+    sessionId: string;
+    turnId: string | null;
+    assistantMessageId: string;
+  }) => void;
   maybeMarkImplementTaskFailedAfterStreamError: () => Promise<void>;
   tryRecoverFromOverflow: (
     error: Error,
@@ -179,6 +185,13 @@ export const createChatStreamLifecycleRuntime = (params: {
       handleCompletionPersistenceFailure(error);
       return;
     }
+
+    adapters.clearCompletionPersistenceOwnership({
+      conversationId: stream.conversationId,
+      sessionId: stream.sessionId,
+      turnId: stream.turnId,
+      assistantMessageId: stream.assistantMessageId,
+    });
 
     try {
       await adapters.consolidatePendingToolBoundaryCompactionAfterPersistence();
@@ -301,6 +314,23 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.modeAtSend,
         stream.conversationId,
       );
+      tokenControls.dispose();
+    },
+
+    onAbort: async (tokenControls: ChatStreamTokenControls) => {
+      tokenControls.flushNow();
+      const assistantMessage = adapters.getAssistantMessage(
+        stream.assistantMessageId,
+      );
+      if (assistantMessage && hasAssistantProgress(assistantMessage)) {
+        await persistPartialAssistantSafely(
+          assistantMessage,
+          "Failed to persist partial assistant response after abort:",
+        );
+      } else {
+        adapters.removeEmptyAssistantPlaceholder(stream.assistantMessageId);
+        await adapters.deleteEmptyAssistantMessageFromDb();
+      }
       tokenControls.dispose();
     },
 
