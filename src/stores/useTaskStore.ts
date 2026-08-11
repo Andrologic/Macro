@@ -443,6 +443,53 @@ const getExecutionTargetsWithRepoPaths = (
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
 };
 
+const resumeLinkedTaskGitCleanup = async (
+  saga: LinkedTaskDeletionSaga,
+): Promise<LinkedTaskDeletionSaga> => {
+  let current = saga;
+  for (const target of current.executionTargets ?? []) {
+    if (!target.worktreeRemoved) {
+      await tauriIpc.gitWorktreeRemove({
+        repoPath: target.repoPath,
+        taskId: target.worktreeKey,
+        force: true,
+        branchName: target.branchName,
+      });
+      current = {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        executionTargets: (current.executionTargets ?? []).map((candidate) =>
+          candidate.worktreeKey === target.worktreeKey
+            ? { ...candidate, worktreeRemoved: true }
+            : candidate,
+        ),
+      };
+      await upsertLinkedTaskDeletionSaga(current);
+    }
+    const updatedTarget = current.executionTargets?.find(
+      (candidate) => candidate.worktreeKey === target.worktreeKey,
+    );
+    if (updatedTarget?.branchExisted && !updatedTarget.branchRemoved) {
+      await tauriIpc.gitBranchDelete({
+        repoPath: updatedTarget.repoPath,
+        branchName: updatedTarget.branchName,
+        force: true,
+      });
+      current = {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        executionTargets: (current.executionTargets ?? []).map((candidate) =>
+          candidate.worktreeKey === updatedTarget.worktreeKey
+            ? { ...candidate, branchRemoved: true }
+            : candidate,
+        ),
+      };
+      await upsertLinkedTaskDeletionSaga(current);
+    }
+  }
+  return current;
+};
+
 const findActiveTasksSharingExecutionBranch = (
   task: CatalogedImplementTask,
   tasks: CatalogedImplementTask[]
@@ -2341,11 +2388,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         if (pending.phase === 'task_deleting' && taskStillExists) {
           try {
+            const resumed = await resumeLinkedTaskGitCleanup(pending);
             if (pending.draft) {
               await tauriIpc.workspaceDeleteManualFeatureDraft(pending.taskId);
             } else {
               await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
             }
+            pending.executionTargets = resumed.executionTargets;
           } catch (error) {
             const message = toServiceError(error).message;
             await upsertLinkedTaskDeletionSaga({
@@ -3059,7 +3108,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     let linkedConversationSaga: LinkedTaskDeletionSaga | null = null;
-    let taskWorkspaceDeleted = false;
     try {
       if (!task.draft) {
         const published = await hasPublishedStandaloneBranch(task);
@@ -3095,33 +3143,45 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             conversationId: task.conversation_id,
             phase: 'prepared' as const,
             draft: task.draft,
+            executionTargets: executionTargets.map((target) => ({
+              worktreeKey: target.worktreeKey,
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
+                (branch) => branch.name === target.branchName,
+              ),
+              worktreeRemoved: false,
+              branchRemoved: false,
+            })),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }
         : null;
       if (linkedConversationSaga) {
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
-        await upsertLinkedTaskDeletionSaga({
+        linkedConversationSaga = {
           ...linkedConversationSaga,
           phase: 'task_deleting',
           updatedAt: new Date().toISOString(),
-        });
-      }
-      for (const target of executionTargets) {
-        await tauriIpc.gitWorktreeRemove({
-          repoPath: target.repoPath,
-          taskId: target.worktreeKey,
-          force: true,
-          branchName: target.branchName,
-        });
-
-        const branches = branchSnapshots.get(target.worktreeKey) ?? { local: [] };
-        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
-          await tauriIpc.gitBranchDelete({
+        };
+        await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
+      } else {
+        for (const target of executionTargets) {
+          await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
-            branchName: target.branchName,
+            taskId: target.worktreeKey,
             force: true,
+            branchName: target.branchName,
           });
+          const branches = branchSnapshots.get(target.worktreeKey) ?? { local: [] };
+          if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+            await tauriIpc.gitBranchDelete({
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              force: true,
+            });
+          }
         }
       }
 
@@ -3152,8 +3212,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       } else {
         await tauriIpc.workspaceDeleteManualFeature(taskId);
       }
-      taskWorkspaceDeleted = true;
-
       let linkedConversationCleanupCompleted = true;
       if (linkedConversationSaga) {
         const taskDeletedSaga: LinkedTaskDeletionSaga = {
@@ -3164,6 +3222,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         let sagaPersistenceError: unknown = null;
         try {
           await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
+          linkedConversationSaga = taskDeletedSaga;
         } catch (error) {
           sagaPersistenceError = error;
         }
@@ -3207,14 +3266,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         );
       }
     } catch (error) {
-      if (linkedConversationSaga && !taskWorkspaceDeleted) {
-        await upsertLinkedTaskDeletionSaga({
-          ...linkedConversationSaga,
-          phase: 'prepared',
-          updatedAt: new Date().toISOString(),
-          lastError: toServiceError(error).message,
-        }).catch(() => undefined);
-      }
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
       throw normalized;

@@ -373,6 +373,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     conversationCompactionStatusById,
     selectedConversationId,
     selectConversation,
+    clearSelectedConversation,
     createConversation,
     togglePinConversation,
     deleteChatConversations,
@@ -382,6 +383,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectedConversationId: state.selectedConversationId,
     selectConversation: state.selectConversation,
+    clearSelectedConversation: state.clearSelectedConversation,
     createConversation: state.createConversation,
     togglePinConversation: state.togglePinConversation,
     deleteChatConversations: state.deleteChatConversations,
@@ -667,6 +669,9 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             if (fallbackConversation && !(await selectConversation(fallbackConversation.id))) {
               throw new Error('Unable to select the replacement conversation.');
             }
+            if (!fallbackConversation) {
+              clearSelectedConversation();
+            }
           }
           notify.success(
             shouldArchive
@@ -705,6 +710,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       chatConversations,
       persistArchivedConversationIds,
       selectConversation,
+      clearSelectedConversation,
       selectedConversationId,
       t,
     ]

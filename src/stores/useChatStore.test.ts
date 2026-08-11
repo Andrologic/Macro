@@ -661,6 +661,9 @@ const taskStoreState = {
     taskStoreState.tasks = taskStoreState.tasks.filter((task) => task.id !== taskId);
     emitTaskStoreUpdate(previousTasks);
   }),
+  deleteTask: mock(async (taskId: string) => {
+    await taskStoreState.deleteManualFeatureDraft(taskId);
+  }),
 };
 
 const architectPlans = new Map<string, ArchitectPlanRecord>();
@@ -3960,14 +3963,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
       expect(result.createdConversation).toBe(true);
       expect(result.restoredTranscript).toBe(true);
-      expect(result.conversationId).toBe('conv-1773900000000');
-      expect(updateArchitectPlanMock).toHaveBeenCalledWith({
+      expect(result.conversationId).toMatch(/^conv-conversation-session-1773900000000-/);
+      expect(updateArchitectPlanMock).toHaveBeenCalledWith(expect.objectContaining({
         branchName: 'develop',
         planId: plan.id,
-        conversationId: 'conv-1773900000000',
-      });
-      expect(useChatStore.getState().getConversationMessages('conv-1773900000000')).toHaveLength(1);
-      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773900000000');
+        conversationId: result.conversationId,
+      }));
+      expect(useChatStore.getState().getConversationMessages(result.conversationId!)).toHaveLength(1);
+      expect(useChatStore.getState().selectedConversationId).toBe(result.conversationId);
     } finally {
       Date.now = originalNow;
     }
@@ -8034,12 +8037,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
       const conversation = await useChatStore.getState().createConversation('New Conversation', null, null);
 
-      expect(conversation.id).toBe('conv-1773910000000');
+      expect(conversation.id).toMatch(/^conv-conversation-session-1773910000000-/);
       expect(conversation.task_id).toBe('task-1');
       expect(conversation.project_id).toBe('project-1');
       expect(conversation.title).toBe('Task - Implement checkout');
-      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773910000000');
-      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('conv-1773910000000');
+      expect(useChatStore.getState().selectedConversationId).toBe(conversation.id);
+      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe(conversation.id);
     } finally {
       Date.now = originalNow;
     }
@@ -8116,11 +8119,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
       const recreatedId = await useChatStore.getState().ensureConversationForCurrentMode();
 
-      expect(recreatedId).toBe('conv-1773920000000');
+      expect(recreatedId).toMatch(/^conv-conversation-session-1773920000000-/);
       expect(useChatStore.getState().conversations).toHaveLength(1);
       expect(useChatStore.getState().conversations[0]?.task_id).toBe('task-1');
-      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773920000000');
-      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('conv-1773920000000');
+      expect(useChatStore.getState().selectedConversationId).toBe(recreatedId);
+      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe(recreatedId);
     } finally {
       Date.now = originalNow;
     }

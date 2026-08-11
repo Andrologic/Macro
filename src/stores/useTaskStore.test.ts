@@ -949,6 +949,73 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it('resumes only the remaining Git cleanup targets after a partial worktree failure', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-git-retry',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: 'conv-git-retry',
+      execution_targets: [
+        {
+          projectId: 'project-1',
+          branchName: 'feature/git-retry-one',
+          executionKind: 'worktree',
+          worktreeKey: 'project-1::feature/git-retry-one',
+          repoPath: '/repos/web',
+        },
+        {
+          projectId: 'project-1',
+          branchName: 'feature/git-retry-two',
+          executionKind: 'worktree',
+          worktreeKey: 'project-1::feature/git-retry-two',
+          repoPath: '/repos/web',
+        },
+      ],
+    });
+    let worktreeAttempts = 0;
+    gitWorktreeRemoveMock.mockImplementation(async () => {
+      worktreeAttempts += 1;
+      if (worktreeAttempts === 2) {
+        throw new Error('second worktree failed');
+      }
+      return { removed: true, removedPath: '/repos/web/.macro/worktrees/task-1' };
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+    await expect(useTaskStore.getState().deleteTask(task.id)).rejects.toThrow('second worktree failed');
+
+    const pending = JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')[0];
+    expect(pending.phase).toBe('task_deleting');
+    expect(pending.executionTargets.some((target: { worktreeRemoved: boolean }) => target.worktreeRemoved)).toBe(true);
+    expect(pending.executionTargets.some((target: { worktreeRemoved: boolean }) => !target.worktreeRemoved)).toBe(true);
+
+    gitWorktreeRemoveMock.mockImplementation(async () => ({
+      removed: true,
+      removedPath: '/repos/api/.macro/worktrees/task-2',
+    }));
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task],
+      plans: [],
+      hasStandaloneTasks: true,
+      source: 'fallback' as const,
+    }));
+    try {
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith('conv-git-retry');
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
   it('reuses an in-flight merge review load for repeated non-forced calls', async () => {
     let resolveDiff: (() => void) | null = null;
     gitDiffMock.mockImplementation(
