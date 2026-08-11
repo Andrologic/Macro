@@ -374,6 +374,19 @@ describe('useGlobalShortcuts', () => {
     expect(appState.openSettings.mock.calls).toHaveLength(0);
   });
 
+  it('suspends application shortcuts while an aria-modal dialog is open', async () => {
+    const modal = document.createElement('div');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    document.body.appendChild(modal);
+    await renderHook();
+
+    const event = await dispatchShortcut('app.openSettings');
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(appState.openSettings.mock.calls).toHaveLength(0);
+  });
+
   it('does not execute non-editable shortcuts from editable fields', async () => {
     const input = document.createElement('textarea');
     document.body.appendChild(input);

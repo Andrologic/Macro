@@ -14,6 +14,7 @@ import { ShortcutsView } from './views/ShortcutsView';
 import { PromptsView } from './views/PromptsView';
 import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
 import { useAppVersion } from '../../hooks/useAppVersion';
+import { Dialog } from '../ui/Dialog';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -48,7 +49,11 @@ export const SettingsModal: React.FC = () => {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fade-in p-3 md:p-6">
+    <Dialog
+      title={t('settings.title') || 'Settings'}
+      onClose={closeSettings}
+      backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fade-in p-3 md:p-6"
+    >
       {/* Modal Container */}
       <div className="flex h-[min(90vh,calc(100vh-1.5rem))] w-full max-w-[1200px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl ring-1 ring-white/5 md:h-[min(85vh,calc(100vh-3rem))] md:flex-row">
 
@@ -102,6 +107,8 @@ export const SettingsModal: React.FC = () => {
               </p>
             </div>
             <button
+              type="button"
+              aria-label={t('common.close', 'Close')}
               onClick={closeSettings}
               className="p-2 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
             >
@@ -125,7 +132,7 @@ export const SettingsModal: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 };
 

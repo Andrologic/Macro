@@ -4,6 +4,7 @@ import { useEditorStore } from '../../stores/useEditorStore';
 import { DiffViewer } from '../editor/DiffViewer';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
+import { Dialog } from '../ui/Dialog';
 
 export const DiffModal: React.FC = () => {
   const { t } = useTranslation();
@@ -12,7 +13,7 @@ export const DiffModal: React.FC = () => {
   if (!isOpen || !codeDiff) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <Dialog title={t('git.reviewDiff', 'Review Diff')} onClose={closeDiffViewer}>
       <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <header className="h-12 shrink-0 px-4 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -20,6 +21,8 @@ export const DiffModal: React.FC = () => {
             <span className="text-sm text-foreground">{t('git.reviewDiff', 'Review Diff')}</span>
           </div>
           <button
+            type="button"
+            aria-label={t('common.close', 'Close')}
             onClick={closeDiffViewer}
             className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           >
@@ -35,12 +38,9 @@ export const DiffModal: React.FC = () => {
           <Button variant="ghost" size="sm" onClick={closeDiffViewer}>
             {t('common.close', 'Close')}
           </Button>
-          <Button variant="success" size="sm">
-            {t('git.acceptChanges', 'Accept changes')}
-          </Button>
         </footer>
       </div>
-    </div>
+    </Dialog>
   );
 };
 

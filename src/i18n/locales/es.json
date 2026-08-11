@@ -379,6 +379,7 @@
     "resetZoom": "Restablecer zoom",
     "renderingDiagram": "Diagrama de renderizado...",
     "mermaidRenderError": "No se puede renderizar el diagrama de sirena",
+    "copyFailed": "No se ha podido copiar el código del diagrama.",
     "inputTokens": "Entrada",
     "contextTokens": "Contexto",
     "tokens": "fichas",
@@ -1984,6 +1985,12 @@
     "searchPlaceholder": "Buscar en terminal",
     "searchPrevious": "Coincidencia anterior",
     "searchNext": "Coincidencia siguiente"
+  },
+  "codeViewer": {
+    "title": "Archivo de código",
+    "copied": "Copiado",
+    "copyCode": "Copiar código",
+    "copyFailed": "No se ha podido copiar el código."
   },
   "notify": {
     "connectionFailed": "Connection failed",
