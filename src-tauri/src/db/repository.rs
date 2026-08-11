@@ -1481,6 +1481,7 @@ pub async fn create_provider_config(
     base_url: &str,
     api_key: Option<&str>,
     is_local: bool,
+    is_enabled: bool,
 ) -> DbResult<ProviderConfig> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -1489,7 +1490,7 @@ pub async fn create_provider_config(
     sqlx::query(
         r#"
         INSERT INTO provider_configs (id, name, provider_type, base_url, api_key, has_stored_api_key, is_enabled, is_local, created_at, updated_at)
-        VALUES (?, ?, ?, ?, NULL, ?, 1, ?, ?, ?)
+        VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&id)
@@ -1497,6 +1498,7 @@ pub async fn create_provider_config(
     .bind(provider_type)
     .bind(base_url)
     .bind(has_stored_api_key as i32)
+    .bind(is_enabled as i32)
     .bind(is_local as i32)
     .bind(&now)
     .bind(&now)
@@ -1510,7 +1512,7 @@ pub async fn create_provider_config(
         base_url: base_url.to_string(),
         api_key: None,
         has_stored_api_key,
-        is_enabled: true,
+        is_enabled,
         is_local,
         auth_status: None,
         auth_source: None,
@@ -1615,21 +1617,22 @@ pub async fn update_provider_auth_metadata(
 }
 
 pub async fn delete_provider_config(pool: &SqlitePool, id: &str) -> DbResult<()> {
+    let mut transaction = pool.begin().await?;
     sqlx::query("DELETE FROM ai_models WHERE provider_id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
 
     sqlx::query("DELETE FROM provider_settings WHERE provider_id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
 
     sqlx::query("DELETE FROM provider_configs WHERE id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
-
+    transaction.commit().await?;
     Ok(())
 }
 
