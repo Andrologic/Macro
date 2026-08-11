@@ -95,13 +95,15 @@ describe('preferences legacy cleanup', () => {
     expect(value).toBeNull();
   });
 
-  it('keeps Architect action plans concise by default', async () => {
+  it('keeps the Architect prompt aligned with the conversation-first strategy workflow', async () => {
     const { getDefaultPromptForPreferenceKey, PREF_KEYS } = await loadPreferencesModule();
 
     const prompt = getDefaultPromptForPreferenceKey(PREF_KEYS.PROMPT_ARCHITECT);
 
-    expect(prompt).toContain('When the user asks for an action plan');
-    expect(prompt).toContain('Prefer 3-5 short sections or bullets');
+    expect(prompt).toContain('retains its own conversation and strategy');
+    expect(prompt).toContain('Do not impose a mandatory structured collection phase before strategy');
+    expect(prompt).toContain('Generate or regenerate strategy only after an explicit user request');
+    expect(prompt).not.toContain('need_add');
     expect(prompt).toContain('Do not create a "Finalize plan" strategy node yourself');
   });
 
