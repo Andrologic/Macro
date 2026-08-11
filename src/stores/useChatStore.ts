@@ -2512,6 +2512,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     materializedConversationId: string,
     sessionId: string,
   ): boolean => {
+    if (deletedConversationIds.has(materializedConversationId)) {
+      return false;
+    }
     if (
       latestConversationSessionIdByConversationId.get(previousConversationId) !==
       sessionId
