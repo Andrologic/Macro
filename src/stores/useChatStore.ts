@@ -12861,10 +12861,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // operation boundary; later continuations are fenced by its session and
       // controller instead of consulting the current UI selection.
       const appStateAtSend = useAppStore.getState();
-      const providerStateAtSend = useProviderStore.getState();
+      const providerState = useProviderStore.getState();
       const modeAtSend = appStateAtSend.mode;
       const agentTypeAtSend =
         modeAtSend === "Implement" ? appStateAtSend.agentType : null;
+      const activeArchitectPlanIdAtSend = appStateAtSend.activeArchitectPlanId;
+      const providerSelectionAtSend = {
+        selectedProviderId: providerState.selectedProviderId,
+        selectedModelId: providerState.selectedModelId,
+        selectedReasoningEffort: providerState.selectedReasoningEffort,
+        isLoading: providerState.isLoading,
+        providerConfigs: providerState.providerConfigs.map((provider) => ({
+          ...provider,
+        })),
+        resolveProviderApiKey: providerState.resolveProviderApiKey,
+      };
       const conversationAtSend = get().conversations.find(
         (conversation) => conversation.id === conversationId,
       );
@@ -12934,7 +12945,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return cancelledResult();
         }
         emitSendTimeline("messages_ready", { conversationId });
-        if (modeAtSend === "Architect" && !appStateAtSend.activeArchitectPlanId) {
+        if (modeAtSend === "Architect" && !activeArchitectPlanIdAtSend) {
           throw buildSendError("Select a plan before sending an Architect message.");
         }
 
@@ -12968,10 +12979,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectedModelId,
           selectedReasoningEffort,
           providerConfigs,
-        } = providerStateAtSend;
+        } = providerSelectionAtSend;
         persistSelectionForContext(modeAtSend, conversationId);
 
-        if (providerStateAtSend.isLoading) {
+        if (providerSelectionAtSend.isLoading) {
           throw buildSendError("Provider settings are still loading.");
         }
 
@@ -12990,7 +13001,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const resolvedApiKey =
           providerConfig.isLocal || providerHasAuthSession(providerConfig)
             ? providerConfig.apiKey
-            : await providerStateAtSend.resolveProviderApiKey(selectedProviderId);
+            : await providerSelectionAtSend.resolveProviderApiKey(selectedProviderId);
         if (!isCurrentPreparation()) {
           return cancelledResult();
         }
