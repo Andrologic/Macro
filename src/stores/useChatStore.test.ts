@@ -14236,6 +14236,66 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         .map((message: { id: string }) => message.id)
     ).toEqual(['m-user', 'm-assistant']);
   });
+
+  it('claims an edited conversation before credential loading so a second replay cannot trim it', async () => {
+    appState.mode = 'Chat';
+    providerState.providerConfigs = [
+      {
+        ...DEFAULT_PROVIDER_CONFIGS[0],
+        isLocal: false,
+      },
+    ];
+    const credential = createDeferred<undefined>();
+    providerState.resolveProviderApiKey.mockImplementationOnce(
+      async () => credential.promise,
+    );
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv')],
+      messages: [
+        {
+          id: 'user-1',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Original request',
+          timestamp: '2026-03-19T00:01:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    const firstEdit = useChatStore.getState().editMessage(
+      'user-1',
+      'First replay request',
+      { skipAgentCodeReplayCheck: true },
+    );
+    await Promise.resolve();
+
+    expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe(
+      'preparing',
+    );
+    await expect(
+      useChatStore.getState().editMessage(
+        'user-1',
+        'Second replay request',
+        { skipAgentCodeReplayCheck: true },
+      ),
+    ).rejects.toThrow(
+      'This conversation is already running. Wait for it to finish before sending again.',
+    );
+
+    useChatStore.getState().stopConversationStream('chat-conv');
+    credential.resolve(undefined);
+    await firstEdit;
+
+    expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe('idle');
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toHaveLength(1);
+    expect(deleteMessagesAfterMock).not.toHaveBeenCalled();
+  });
+
   it('keeps generation A bound to its captured context after delayed loading', async () => {
     appState.mode = 'Implement';
     appState.agentType = 'build';

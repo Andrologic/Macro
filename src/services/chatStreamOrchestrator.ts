@@ -114,6 +114,12 @@ export interface ChatStreamLifecycleCallbacks {
     error: Error,
     controls: ChatStreamTokenControls,
   ) => void | Promise<void>;
+  /**
+   * Flushes and persists visible progress when the owning conversation stops.
+   * This runs synchronously from AbortController.abort(), before the store
+   * releases the runtime ownership fence.
+   */
+  onAbort?: (controls: ChatStreamTokenControls) => void | Promise<void>;
 }
 
 export interface RunAssistantStreamParams
@@ -159,6 +165,12 @@ export const runAssistantStream = async ({
     }
   };
 
+  const handleAbort = () => {
+    controls.flushNow();
+    void Promise.resolve(lifecycle.onAbort?.(controls)).catch(() => undefined);
+  };
+  streamOptions.signal?.addEventListener("abort", handleAbort, { once: true });
+
   try {
     await streamChatImpl({
       ...streamOptions,
@@ -186,5 +198,7 @@ export const runAssistantStream = async ({
     const normalized =
       error instanceof Error ? error : new Error(String(error));
     await handleErrorOnce(normalized);
+  } finally {
+    streamOptions.signal?.removeEventListener("abort", handleAbort);
   }
 };
