@@ -512,6 +512,13 @@ fn sse_parser_flushes_final_event_and_preserves_split_utf8() {
 }
 
 #[test]
+fn sse_parser_rejects_an_unbounded_event_buffer() {
+    let mut parser = SseParser::default();
+    let oversized = vec![b'x'; 1_048_577];
+    assert!(parser.push(&oversized).is_err());
+}
+
+#[test]
 fn extract_output_text_from_output_item_reads_completed_message_items() {
     let item = json!({
         "id": "msg_123",

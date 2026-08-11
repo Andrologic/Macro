@@ -199,6 +199,79 @@ describe('streamingChat Architect tool contracts', () => {
   });
 });
 
+describe('streamingChat native request ownership', () => {
+  beforeEach(() => {
+    mock.restore();
+  });
+
+  it('keeps the newer native request listeners after an older same-session request finishes', async () => {
+    const listeners = new Map<string, Array<(event: { payload: Record<string, unknown> }) => void>>();
+    const requestIds: string[] = [];
+    let markBothRequestsStarted!: () => void;
+    const bothRequestsStarted = new Promise<void>((resolve) => {
+      markBothRequestsStarted = resolve;
+    });
+    const listenImpl = mock(async (
+      eventName: string,
+      handler: (event: { payload: Record<string, unknown> }) => void,
+    ) => {
+      const handlers = listeners.get(eventName) ?? [];
+      handlers.push(handler);
+      listeners.set(eventName, handlers);
+      return () => {
+        listeners.set(
+          eventName,
+          (listeners.get(eventName) ?? []).filter((candidate) => candidate !== handler),
+        );
+      };
+    });
+    const invokeImpl = mock(async (
+      command: string,
+      params: { request?: { request_id?: string } },
+    ) => {
+      if (command !== 'ai_stream_chat' || !params.request?.request_id) return;
+      requestIds.push(params.request.request_id);
+      if (requestIds.length === 2) markBothRequestsStarted();
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl,
+      invokeImpl,
+    });
+    const secondTokens: string[] = [];
+    const start = (onToken: (token: string) => void) => streamChat({
+      sessionId: 'shared-session',
+      providerId: 'chatgpt',
+      providerType: 'chatgpt',
+      modelId: 'gpt-5',
+      messages: [{ role: 'user', content: 'hello' }],
+      onToken,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+    const emit = (eventName: string, payload: Record<string, unknown>) => {
+      for (const handler of [...(listeners.get(eventName) ?? [])]) {
+        handler({ payload });
+      }
+    };
+
+    const first = start(() => undefined);
+    const second = start((token) => secondTokens.push(token));
+    await bothRequestsStarted;
+    expect(requestIds).toHaveLength(2);
+
+    emit('ai:done', { request_id: requestIds[0], output_text: 'first', tool_calls: [] });
+    await first;
+    emit('ai:stream', { request_id: requestIds[1], delta: 'second' });
+    emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
+    await second;
+
+    expect(secondTokens).toEqual(['second']);
+  });
+});
+
 describe('streamingChat context estimates', () => {
   beforeEach(() => {
     mock.restore();

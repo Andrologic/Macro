@@ -192,6 +192,17 @@ const remoteKernelRequest = async <T>(
   options: RemoteKernelRequestOptions = {},
 ): Promise<T> => remoteRequest<T>(path, options);
 
+const invalidResponse = (endpoint: string, response: unknown): never => {
+  throw {
+    code: 'REMOTE_INVALID_RESPONSE',
+    message: `Remote ${endpoint} response did not match its contract`,
+    details: response,
+  };
+};
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+
 const remoteToolTimeoutMs = (toolId: string): number | null | undefined => {
   if (toolId === 'grep') return TOOL_OUTPUT_LIMITS.grep.timeoutMs + 1_000;
   if (toolId === 'ast_grep') return TOOL_OUTPUT_LIMITS.ast.timeoutMs + 1_000;
@@ -213,11 +224,14 @@ const createRemoteToolExecutionId = (): string => {
 };
 
 export const cancelRemoteWorkspaceTool = async (executionId: string): Promise<boolean> => {
-  const result = await remoteKernelRequest<{ cancelled?: boolean }>('/tools/cancel', {
+  const result = await remoteKernelRequest<unknown>('/tools/cancel', {
     method: 'POST',
     body: JSON.stringify({ execution_id: executionId }),
   });
-  return Boolean(result?.cancelled);
+  if (!result || typeof result !== 'object' || typeof (result as Record<string, unknown>).cancelled !== 'boolean') {
+    return invalidResponse('tool cancellation', result);
+  }
+  return (result as { cancelled: boolean }).cancelled;
 };
 
 const remoteErrorCode = (error: unknown): string | null => {
@@ -238,10 +252,21 @@ const readRemoteToolExecutionStatus = async (
   executionId: string,
 ): Promise<RemoteToolExecutionStatus | null> => {
   try {
-    return await remoteKernelRequest<RemoteToolExecutionStatus>(
+    const result = await remoteKernelRequest<unknown>(
       `/tools/executions/${encodeURIComponent(executionId)}`,
       { method: 'GET', timeoutMs: REMOTE_MUTATION_RESPONSE_TIMEOUT_MS },
     );
+    if (!result || typeof result !== 'object') {
+      return invalidResponse('tool execution status', result);
+    }
+    const status = result as Record<string, unknown>;
+    if (
+      (status.state !== 'pending' && status.state !== 'completed') ||
+      (status.status_code !== undefined && !Number.isInteger(status.status_code))
+    ) {
+      return invalidResponse('tool execution status', result);
+    }
+    return status as unknown as RemoteToolExecutionStatus;
   } catch (error) {
     if (remoteErrorStatus(error) === 404) return null;
     throw error;
@@ -316,10 +341,26 @@ export const getRemoteToolModePolicy = async (
     `mode=${encodeURIComponent(mode)}`,
     ...(projectId ? [`projectId=${encodeURIComponent(projectId)}`] : []),
   ].join('&');
-  return remoteKernelRequest<RemoteToolModePolicy>(`/tools/mode-policy?${query}`, {
+  const response = await remoteKernelRequest<unknown>(`/tools/mode-policy?${query}`, {
     method: 'GET',
     signal,
   });
+  if (!response || typeof response !== 'object') {
+    return invalidResponse('mode policy', response);
+  }
+  const value = response as Record<string, unknown>;
+  if (
+    !isStringArray(value.allowed_tool_ids) ||
+    typeof value.enforce_macro_only_writes !== 'boolean' ||
+    (value.capabilities !== undefined && !isStringArray(value.capabilities))
+  ) {
+    return invalidResponse('mode policy', response);
+  }
+  return {
+    allowed_tool_ids: value.allowed_tool_ids,
+    enforce_macro_only_writes: value.enforce_macro_only_writes,
+    ...(value.capabilities === undefined ? {} : { capabilities: value.capabilities }),
+  };
 };
 
 export const validateRemoteToolExecution = async (params: {
@@ -329,7 +370,7 @@ export const validateRemoteToolExecution = async (params: {
   projectId: string;
   args?: Record<string, unknown>;
 }): Promise<RemoteToolValidation> => {
-  return remoteKernelRequest<RemoteToolValidation>('/tools/validate', {
+  const response = await remoteKernelRequest<unknown>('/tools/validate', {
     method: 'POST',
     body: JSON.stringify({
       mode: params.mode,
@@ -339,6 +380,22 @@ export const validateRemoteToolExecution = async (params: {
       args: params.args ?? {},
     }),
   });
+  if (!response || typeof response !== 'object') {
+    return invalidResponse('tool validation', response);
+  }
+  const value = response as Record<string, unknown>;
+  if (
+    typeof value.allowed !== 'boolean' ||
+    typeof value.enforce_macro_only_writes !== 'boolean' ||
+    (value.reason !== undefined && value.reason !== null && typeof value.reason !== 'string')
+  ) {
+    return invalidResponse('tool validation', response);
+  }
+  return {
+    allowed: value.allowed,
+    enforce_macro_only_writes: value.enforce_macro_only_writes,
+    reason: value.reason as string | null | undefined,
+  };
 };
 
 export interface RemoteCheckpointSnapshotFile {
@@ -511,13 +568,18 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
       ...requestPayload,
       execution_id: executionId,
     });
-    const requestExecution = (): Promise<RemoteWorkspaceToolExecution> =>
-      remoteKernelRequest<RemoteWorkspaceToolExecution>('/tools/execute', {
+    const requestExecution = async (): Promise<RemoteWorkspaceToolExecution> => {
+      const response = await remoteKernelRequest<unknown>('/tools/execute', {
         method: 'POST',
         signal: interruptible ? signal : undefined,
         timeoutMs: remoteToolTimeoutMs(params.toolId),
         body: requestBody,
       });
+      if (!response || typeof response !== 'object' || typeof (response as Record<string, unknown>).result !== 'string') {
+        return invalidResponse('tool execution', response);
+      }
+      return response as RemoteWorkspaceToolExecution;
+    };
     let payload: RemoteWorkspaceToolExecution;
     try {
       payload = await requestExecution();

@@ -94,6 +94,60 @@ describe('remoteKernelApi', () => {
     );
   });
 
+  it('rejects mode policies that do not match the remote contract', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    globalThis.fetch = mock(async () => jsonResponse({ allowed_tool_ids: 'read' })) as unknown as typeof fetch;
+
+    await expect(getRemoteToolModePolicy('Implement')).rejects.toMatchObject({
+      code: 'REMOTE_INVALID_RESPONSE',
+    });
+  });
+
+  it('rejects invalid JSON and oversized remote responses before decoding a payload', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    globalThis.fetch = mock(async () => new Response('{', {
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof fetch;
+
+    await expect(getRemoteToolModePolicy('Implement')).rejects.toMatchObject({
+      code: 'REMOTE_INVALID_RESPONSE',
+    });
+
+    globalThis.fetch = mock(async () => new Response('ignored', {
+      headers: {
+        'content-type': 'application/json',
+        'content-length': '1048577',
+      },
+    })) as unknown as typeof fetch;
+
+    await expect(getRemoteToolModePolicy('Implement')).rejects.toMatchObject({
+      code: 'REMOTE_RESPONSE_TOO_LARGE',
+    });
+  });
+
+  it('rejects a successful tool execution response without a string result', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['read'],
+          enforce_macro_only_writes: false,
+          capabilities: ['bounded_tool_output_v1'],
+        });
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    await expect(executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'read',
+      args: { path: 'src/App.tsx' },
+    })).rejects.toMatchObject({ code: 'REMOTE_INVALID_RESPONSE' });
+  });
+
   it('calls validate and execute endpoints with apiPrefix', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
