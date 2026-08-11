@@ -19,7 +19,10 @@ import { Button, type ButtonProps } from '../ui/Button';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
-import { presentGitFlowBlockingIssue } from '../../services/degradedErrorPresentation';
+import {
+  presentGitFlowBlockingIssue,
+  resolveDegradedErrorPresentation,
+} from '../../services/degradedErrorPresentation';
 import { useElementSize } from '../../hooks/useElementSize';
 import { useChatStore } from '../../stores/useChatStore';
 
@@ -414,6 +417,15 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         : null,
     [primaryBlockedRepository]
   );
+  const resolvedPrimaryBlockingPresentation = useMemo(
+    () => primaryBlockingPresentation
+      ? resolveDegradedErrorPresentation(
+          primaryBlockingPresentation,
+          (key, options) => String(t(key, options))
+        )
+      : null,
+    [primaryBlockingPresentation, t]
+  );
 
   useEffect(() => {
     if (
@@ -804,24 +816,24 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   }, [loadMergeWorkflowReview, manualResolutionRepositoryId, task.id]);
 
   const blockingNotificationKey = useMemo(() => {
-    if (!primaryBlockedRepository || !primaryBlockingPresentation || !isBlocked) return null;
+    if (!primaryBlockedRepository || !resolvedPrimaryBlockingPresentation || !isBlocked) return null;
 
     return [
       'merge-workflow-blocker',
       task.id,
       primaryBlockedRepository.id,
       primaryBlockedRepository.blockingKind || 'unknown',
-      primaryBlockedRepository.blockingReason || primaryBlockingPresentation.body,
+      primaryBlockedRepository.blockingReason || resolvedPrimaryBlockingPresentation.body,
     ].join(':');
   }, [
     isBlocked,
     primaryBlockedRepository,
-    primaryBlockingPresentation,
+    resolvedPrimaryBlockingPresentation,
     task.id,
   ]);
 
   useEffect(() => {
-    if (!primaryBlockedRepository || !primaryBlockingPresentation || !blockingNotificationKey) {
+    if (!primaryBlockedRepository || !primaryBlockingPresentation || !resolvedPrimaryBlockingPresentation || !blockingNotificationKey) {
       return;
     }
 
@@ -831,10 +843,10 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
 
     const action = resolveRepositoryAction(primaryBlockedRepository);
     lastBlockingNotificationKeyRef.current = blockingNotificationKey;
-    notify.actionRequired(primaryBlockingPresentation.title, {
+    notify.actionRequired(resolvedPrimaryBlockingPresentation.title, {
       description: [
-        primaryBlockingPresentation.body,
-        primaryBlockingPresentation.nextStep,
+        resolvedPrimaryBlockingPresentation.body,
+        resolvedPrimaryBlockingPresentation.nextStep,
       ].filter(Boolean).join(' '),
       category: 'task_attention_required',
       notificationKey: blockingNotificationKey,
@@ -860,6 +872,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     openBlockerResolutionModal,
     primaryBlockedRepository,
     primaryBlockingPresentation,
+    resolvedPrimaryBlockingPresentation,
     t,
   ]);
 
