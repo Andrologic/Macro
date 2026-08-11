@@ -8587,6 +8587,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
   }) => {
     let assistantMessageId: string | null = null;
     const agentTypeAtSend = params.agentTypeAtSend;
+    const cleanupCancelledAssistantPlaceholder = async (
+      placeholderMessageId: string,
+    ): Promise<void> => {
+      set((state) =>
+        removeEmptyAssistantPlaceholderFromState(state, placeholderMessageId),
+      );
+      if (
+        latestConversationSessionIdByConversationId.get(
+          params.conversationId,
+        ) !== params.sessionId
+      ) {
+        return;
+      }
+      try {
+        await deletePersistedMessagesAfter(
+          chatPersistenceAdapters,
+          params.conversationId,
+          params.messageId,
+        );
+      } catch (error) {
+        console.warn(
+          "Failed to delete cancelled assistant placeholder after edit:",
+          error,
+        );
+      }
+    };
     const isCurrentPreparation = () => {
       const runtime = getConversationRuntimeSnapshot(
         get().conversationRuntimeById,
@@ -8627,6 +8653,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         taskId: params.taskId,
       });
       if (!isCurrentPreparation()) {
+        await cleanupCancelledAssistantPlaceholder(assistantMessage.id);
         return;
       }
       rememberAssistantTurnContext(
