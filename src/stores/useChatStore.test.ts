@@ -14292,7 +14292,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
   });
 
-  it('does not let a cleared runtime clean up a reinitialized session', async () => {
+  it('cleans an empty placeholder once before rebuilding a new session', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
     const oldStreamReleased = createDeferred<undefined>();
@@ -14324,7 +14324,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     useChatStore.getState().clearMessages();
+    await flushAsyncWork();
+    expect(deleteMessagesAfterMock).toHaveBeenCalledTimes(1);
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith(
+      'chat-1',
+      oldSend.userMessageId,
+    );
     await useChatStore.getState().initializeCritical();
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
     useChatStore.setState(createIdleChatStoreState({
       conversations: [createConversation('chat-1')],
       selectedConversationId: 'chat-1',
@@ -14339,10 +14346,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await flushAsyncWork();
 
     expect(newSend).toMatchObject({ status: 'sent', conversationId: 'chat-1' });
-    expect(deleteMessagesAfterMock).not.toHaveBeenCalledWith(
-      'chat-1',
-      oldSend.userMessageId,
-    );
+    expect(deleteMessagesAfterMock).toHaveBeenCalledTimes(1);
     expect(
       useChatStore
         .getState()
