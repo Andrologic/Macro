@@ -340,6 +340,7 @@ export function useWindowRestoration() {
       const nextState: Record<string, number | boolean | null> = {
         isMaximized: isMax,
       };
+      let serializedState: string;
 
       // Only save size/position if not maximized
       if (!isMax) {
@@ -359,12 +360,10 @@ export function useWindowRestoration() {
         nextState.x = logicalX;
         nextState.y = logicalY;
 
-        const serializedState = JSON.stringify(nextState);
+        serializedState = JSON.stringify(nextState);
         if (lastSavedState === serializedState) {
           return;
         }
-        lastSavedState = serializedState;
-
         await Promise.all([
           savePreference(PREF_KEYS.WINDOW_WIDTH, logicalWidth),
           savePreference(PREF_KEYS.WINDOW_HEIGHT, logicalHeight),
@@ -372,14 +371,14 @@ export function useWindowRestoration() {
           savePreference(PREF_KEYS.WINDOW_Y, logicalY),
         ]);
       } else {
-        const serializedState = JSON.stringify(nextState);
+        serializedState = JSON.stringify(nextState);
         if (lastSavedState === serializedState) {
           return;
         }
-        lastSavedState = serializedState;
       }
 
       await savePreference(PREF_KEYS.IS_MAXIMIZED, isMax);
+      lastSavedState = serializedState;
     } catch (error) {
       console.error("Failed to save window state:", error);
     }
@@ -403,8 +402,9 @@ export function useWindowRestoration() {
     let cancelled = false;
     let unlistenCloseRequested: (() => void) | null = null;
 
-    void windowOnCloseRequested(() => {
+    void windowOnCloseRequested(async () => {
       clearPendingWindowStateSave();
+      await saveWindowState();
       markWindowCloseShutdown(
         'window-close-requested',
         getSelectedProjectGroupWorkspacePaths()
@@ -428,7 +428,7 @@ export function useWindowRestoration() {
       cancelled = true;
       unlistenCloseRequested?.();
     };
-  }, []);
+  }, [saveWindowState]);
 
   // Restore window state on mount
   useEffect(() => {

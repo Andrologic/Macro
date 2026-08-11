@@ -503,7 +503,7 @@ describe('ensureWindowRestoredOnce', () => {
     });
     await delay(650);
 
-    expect(savePreferenceMock.mock.calls).toHaveLength(0);
+    expect(savePreferenceMock.mock.calls).toHaveLength(5);
 
     await act(async () => {
       root.unmount();

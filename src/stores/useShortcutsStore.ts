@@ -108,9 +108,15 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
     resetBinding: (id) => {
       mutationVersion += 1;
       set((state) => {
+        const nextBinding = shortcutDefaults[id]
+          ? normalizeBinding(shortcutDefaults[id] as string)
+          : null;
+        if (hasBindingConflict(state.bindings, id, nextBinding)) {
+          return state;
+        }
         const nextBindings = {
           ...state.bindings,
-          [id]: shortcutDefaults[id] ? normalizeBinding(shortcutDefaults[id] as string) : null,
+          [id]: nextBinding,
         };
         void persistBindings(nextBindings);
         return { bindings: nextBindings };
