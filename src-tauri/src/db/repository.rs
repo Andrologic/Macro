@@ -374,13 +374,7 @@ pub async fn update_conversation_ai_selection(
 }
 
 pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> DbResult<()> {
-    // Messages are deleted via CASCADE
-    sqlx::query("DELETE FROM conversations WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-    Ok(())
+    delete_conversations(pool, &[id.to_string()]).await
 }
 
 pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult<()> {
@@ -392,6 +386,15 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     let query = format!("DELETE FROM conversations WHERE id IN ({})", placeholders);
 
     let mut tx = pool.begin().await?;
+    // Checkpoints are intentionally stored as app settings so older databases
+    // can replay them. They have no foreign key, therefore delete them in the
+    // same transaction as their owning conversations.
+    for id in ids {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?")
+            .bind(format!("agentCodeCheckpoints:{}", id))
+            .execute(&mut *tx)
+            .await?;
+    }
     let mut statement = sqlx::query(&query);
     for id in ids {
         statement = statement.bind(id);

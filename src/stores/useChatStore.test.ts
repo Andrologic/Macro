@@ -14387,6 +14387,29 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
   });
 
+  it('does not materialize a ghost conversation when durable creation fails', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    createConversationMock.mockImplementationOnce(async () => {
+      throw new Error('SQLite unavailable');
+    });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('existing-chat')],
+      selectedConversationId: 'existing-chat',
+      selectedConversationIdsByMode: { Chat: 'existing-chat' },
+    }));
+
+    await expect(
+      useChatStore.getState().createConversation('Nouvelle conversation', null, null),
+    ).rejects.toThrow('Impossible de créer la conversation de manière durable');
+
+    expect(useChatStore.getState().conversations.map((conversation: Conversation) => conversation.id)).toEqual([
+      'existing-chat',
+    ]);
+    expect(useChatStore.getState().selectedConversationId).toBe('existing-chat');
+  });
+
   it('cleans an empty placeholder once before rebuilding a new session', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
