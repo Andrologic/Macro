@@ -270,6 +270,7 @@ import {
   restoreAgentCodeReplayPreview,
   saveAgentCodeCheckpoints,
 } from "../services/agentCodeCheckpoints";
+import { loadLinkedTaskDeletionSagas } from "../services/linkedTaskDeletionSaga";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
 import {
   filterToolIdsForInternalAgentProfile,
@@ -969,6 +970,7 @@ interface ChatStore {
     },
   ) => Promise<void>;
   deleteChatConversations: (conversationIds: string[]) => Promise<void>;
+  completeLinkedTaskConversationDeletion: (conversationId: string) => Promise<boolean>;
   markAsRead: (conversationId: string) => void;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
@@ -11217,15 +11219,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    pruneConversationSelections(conversations);
+    const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas().catch(
+      () => [],
+    );
+    const pendingConversationIds = new Set(
+      pendingLinkedTaskDeletions
+        .filter((saga) => saga.phase !== "prepared")
+        .map((saga) => saga.conversationId),
+    );
+    pendingConversationIds.forEach((conversationId) => {
+      deletedConversationIds.add(conversationId);
+    });
+    const visibleConversations = conversations.filter(
+      (conversation) => !pendingConversationIds.has(conversation.id),
+    );
+    const visibleMessages = messages.filter(
+      (message) => !pendingConversationIds.has(message.conversation_id),
+    );
+
+    pruneConversationSelections(visibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
 
     set({
-      conversations,
-      ...buildMessageState(messages),
+      conversations: visibleConversations,
+      ...buildMessageState(visibleMessages),
       messageLoadStatusByConversationId: Object.fromEntries(
-        Array.from(loadedConversationIds).map((conversationId) => [
+        Array.from(loadedConversationIds)
+          .filter((conversationId) => !pendingConversationIds.has(conversationId))
+          .map((conversationId) => [
           conversationId,
           "ready" as const,
         ]),
@@ -12802,6 +12824,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
         uniqueIds.forEach((conversationId) => {
           pendingConversationDeletionIds.delete(conversationId);
         });
+      }
+    },
+
+    completeLinkedTaskConversationDeletion: async (conversationId) => {
+      deletedConversationIds.add(conversationId);
+      latestConversationSessionIdByConversationId.delete(conversationId);
+      completionPersistenceOwnersByConversationId.delete(conversationId);
+      stopConversationRuntimeLocally(conversationId);
+      conversationCompactionStateCache.delete(conversationId);
+      clearAgentCodeCheckpoints(conversationId);
+      clearConversationCitationsIfAvailable(conversationId);
+      removeConversationSelectionData(conversationId);
+      applyLocalConversationRemoval([conversationId]);
+
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await deleteConversationToolboxStateIfAvailable(conversationId);
+        await hydrateSelectedConversationAfterRemoval([conversationId]);
+        return true;
+      } catch (error) {
+        const message = `La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente : ${toServiceError(error).message}`;
+        set({ lastError: message });
+        return false;
       }
     },
 
