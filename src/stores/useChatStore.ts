@@ -1371,6 +1371,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
+  const deletedConversationIds = new Set<string>();
+  const latestConversationSessionIdByConversationId = new Map<string, string>();
+  const completionPersistenceOwnersByConversationId = new Map<
+    string,
+    { sessionId: string; turnId: string | null; assistantMessageId: string }
+  >();
   const contextDiagnosticsRequestIds = new Map<string, number>();
   const liveContextDiagnosticsRefreshByConversationId = new Map<
     string,
@@ -2366,7 +2372,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const ensureMessagesLoadedForConversation = async (
     conversationId: string,
   ): Promise<void> => {
-    if (!conversationId) {
+    if (!conversationId || deletedConversationIds.has(conversationId)) {
       return;
     }
     if (get().hydrationStatus === "hydrating") {
@@ -2423,6 +2429,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversations: get().conversations,
           },
         );
+        if (deletedConversationIds.has(conversationId)) {
+          return;
+        }
         replaceLoadedConversationMessages(
           conversationId,
           loadedMessages,
@@ -4645,6 +4654,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
   ): Promise<AgentCodeCheckpoint[]> => {
     const cached = get().agentCodeCheckpointsByConversationId[conversationId];
+    if (deletedConversationIds.has(conversationId)) {
+      return [];
+    }
     if (cached) {
       return cached;
     }
@@ -4662,6 +4674,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
     try {
       const checkpoints = await loadPromise;
+      if (deletedConversationIds.has(conversationId)) {
+        return [];
+      }
       set((state) => ({
         agentCodeCheckpointsByConversationId: {
           ...state.agentCodeCheckpointsByConversationId,
@@ -4678,13 +4693,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
     checkpoints: AgentCodeCheckpoint[],
   ): Promise<void> => {
+    if (deletedConversationIds.has(conversationId)) {
+      return;
+    }
     set((state) => ({
       agentCodeCheckpointsByConversationId: {
         ...state.agentCodeCheckpointsByConversationId,
         [conversationId]: checkpoints,
       },
     }));
+    if (deletedConversationIds.has(conversationId)) {
+      set((state) => {
+        const next = { ...state.agentCodeCheckpointsByConversationId };
+        delete next[conversationId];
+        return { agentCodeCheckpointsByConversationId: next };
+      });
+      return;
+    }
     await saveAgentCodeCheckpoints(conversationId, checkpoints);
+    if (deletedConversationIds.has(conversationId)) {
+      set((state) => {
+        const next = { ...state.agentCodeCheckpointsByConversationId };
+        delete next[conversationId];
+        return { agentCodeCheckpointsByConversationId: next };
+      });
+    }
   };
 
   const recordAgentCodeCheckpoint = async (params: {
@@ -4699,7 +4732,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
+    if (deletedConversationIds.has(params.conversationId)) {
+      return;
+    }
+
     const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+    if (deletedConversationIds.has(params.conversationId)) {
+      return;
+    }
     const checkpoint = createAgentCodeCheckpoint(existing, params);
     await persistAgentCodeCheckpointsForConversation(
       params.conversationId,
@@ -5222,6 +5262,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             contextProjectIds: operation.executionContext.contextProjectIds.filter(
               (projectId) => !promotedProjectIdsForTool.includes(projectId),
             ),
+            projectMounts: operation.executionContext.projectMounts.map(
+              (mount) =>
+                promotedProjectIdsForTool.includes(mount.projectId)
+                  ? { ...mount, isReadOnly: false }
+                  : mount,
+            ),
           };
           if (!isCurrentOperation()) {
             return TOOL_EXECUTION_ABORTED_RESULT;
@@ -5323,9 +5369,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         virtualRootEnabled: executionContext.virtualRootEnabled,
         workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
         onCodeCheckpoint: async (checkpoint) => {
-          if (!isCurrentOperation()) {
-            return;
-          }
           await recordAgentCodeCheckpoint({
             conversationId,
             turnId: assistantTurnId,
@@ -5686,6 +5729,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversationId,
         persistedRefs,
       );
+      composerContextRefsRevision += 1;
       set({ composerContextRefs });
     } catch (error) {
       console.warn("[chat] Failed to hydrate toolbox state:", error);
@@ -8539,12 +8583,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerSupportsNativeToolCalling: boolean;
     abortController: AbortController;
     manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
+    agentTypeAtSend: AgentType | null;
   }) => {
     let assistantMessageId: string | null = null;
-    const agentTypeAtSend =
-      params.modeAtSend === "Implement"
-        ? useAppStore.getState().agentType
-        : null;
+    const agentTypeAtSend = params.agentTypeAtSend;
     const isCurrentPreparation = () => {
       const runtime = getConversationRuntimeSnapshot(
         get().conversationRuntimeById,
@@ -9234,6 +9276,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       { globalLastError: null },
     );
     const deleteEmptyAssistantMessageFromDb = async () => {
+      if (
+        latestConversationSessionIdByConversationId.get(
+          params.conversationId,
+        ) !== params.sessionId
+      ) {
+        return;
+      }
       try {
         await deletePersistedMessagesAfter(
           chatPersistenceAdapters,
@@ -9332,6 +9381,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       await recordProviderContextOverflowLimit(error);
+      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
+        return true;
+      }
       tokenControls.flushNow();
       const assistantMessage = get().messages.find(
         (message) => message.id === params.assistantMessage.id,
@@ -9361,7 +9413,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           sessionId: params.sessionId,
           turnId: streamTurnId,
           assistantMessageId: params.assistantMessage.id,
-          abortController: null,
+          abortController,
           lastError: null,
         }),
       );
@@ -9395,7 +9447,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           runtimeAfterCompaction.phase !== "overflow_recovery" ||
           runtimeAfterCompaction.sessionId !== params.sessionId ||
           runtimeAfterCompaction.turnId !== streamTurnId ||
-          runtimeAfterCompaction.assistantMessageId !== params.assistantMessage.id
+          runtimeAfterCompaction.assistantMessageId !== params.assistantMessage.id ||
+          runtimeAfterCompaction.abortController !== abortController ||
+          abortController.signal.aborted
         ) {
           return true;
         }
@@ -9923,6 +9977,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           useTaskStore.getState().markTaskAwaitingResponse(taskId),
         assistantTurnRequiresUserReply,
         updateConversationAfterCompletion: (conversationId, visibleContent) => {
+          completionPersistenceOwnersByConversationId.set(conversationId, {
+            sessionId: params.sessionId,
+            turnId: streamTurnId,
+            assistantMessageId: params.assistantMessage.id,
+          });
           set((state) => ({
             conversations: state.conversations.map((conv) =>
               conv.id === conversationId
@@ -9977,9 +10036,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             get().conversationRuntimeById,
             conversationId,
           );
-          if (currentRuntime.sessionId && currentRuntime.sessionId !== sessionId) {
+          const completionOwner =
+            completionPersistenceOwnersByConversationId.get(conversationId);
+          if (
+            completionOwner?.sessionId !== sessionId ||
+            completionOwner.turnId !== turnId ||
+            completionOwner.assistantMessageId !== assistantMessageId ||
+            currentRuntime.phase !== "idle"
+          ) {
             return;
           }
+          completionPersistenceOwnersByConversationId.delete(conversationId);
           setConversationRuntime(
             conversationId,
             {
@@ -9995,6 +10062,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             { globalLastError: message },
           );
           set({ sendState: "error" });
+        },
+        clearCompletionPersistenceOwnership: ({
+          conversationId,
+          sessionId,
+          turnId,
+          assistantMessageId,
+        }) => {
+          const completionOwner =
+            completionPersistenceOwnersByConversationId.get(conversationId);
+          if (
+            completionOwner?.sessionId === sessionId &&
+            completionOwner.turnId === turnId &&
+            completionOwner.assistantMessageId === assistantMessageId
+          ) {
+            completionPersistenceOwnersByConversationId.delete(conversationId);
+          }
         },
         maybeMarkImplementTaskFailedAfterStreamError,
         tryRecoverFromOverflow,
@@ -12449,7 +12532,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       stopConversationRuntimeLocally(conversationId);
-      await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+      deletedConversationIds.add(conversationId);
+      latestConversationSessionIdByConversationId.delete(conversationId);
+      completionPersistenceOwnersByConversationId.delete(conversationId);
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+      } catch (error) {
+        deletedConversationIds.delete(conversationId);
+        throw error;
+      }
       await deleteConversationToolboxStateIfAvailable(conversationId);
       conversationCompactionStateCache.delete(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
@@ -12483,6 +12574,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const snapshot = buildConversationRemovalSnapshot();
       uniqueIds.forEach((conversationId) => {
+        deletedConversationIds.add(conversationId);
+        latestConversationSessionIdByConversationId.delete(conversationId);
+        completionPersistenceOwnersByConversationId.delete(conversationId);
         stopConversationRuntimeLocally(conversationId);
       });
       applyLocalConversationRemoval(uniqueIds);
@@ -12500,6 +12594,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           removeConversationSelectionData(conversationId);
         });
       } catch (error) {
+        uniqueIds.forEach((conversationId) => {
+          deletedConversationIds.delete(conversationId);
+        });
         restoreConversationRemovalSnapshot(snapshot);
         throw error;
       }
@@ -12949,6 +13046,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerInputItems,
       });
 
+      if (result.status === "cancelled") {
+        return result;
+      }
+
       set((state) => {
         const nextDrafts = clearQuestionnaireDraftsForConversations(
           state.questionnaireDraftsByConversationId,
@@ -13051,6 +13152,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         assertConversationRuntimeAvailableForSend(conversationId);
         activeSessionId = createConversationSessionId();
         activeTurnId = createConversationTurnId();
+        latestConversationSessionIdByConversationId.set(
+          conversationId,
+          activeSessionId,
+        );
         emitSendTimeline("send_requested", { conversationId });
         setConversationRuntime(
           conversationId,
@@ -13305,11 +13410,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             taskId: resolvedTaskId,
           });
           if (!isCurrentPreparation()) {
-            await deletePersistedMessagesAfter(
-              chatPersistenceAdapters,
-              conversationId,
-              userMessage.id,
-            ).catch(() => undefined);
+            if (
+              latestConversationSessionIdByConversationId.get(
+                conversationId,
+              ) === activeSessionId
+            ) {
+              await deletePersistedMessagesAfter(
+                chatPersistenceAdapters,
+                conversationId,
+                userMessage.id,
+              ).catch(() => undefined);
+            }
             return sentWithoutAssistantResult();
           }
           rememberAssistantTurnContext(
@@ -13488,7 +13599,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedReasoningEffort,
         providerConfigs,
       } = providerStateAtEdit;
-      const modeAtEdit = useAppStore.getState().mode;
+      const appStateAtEdit = useAppStore.getState();
+      const modeAtEdit = appStateAtEdit.mode;
+      const agentTypeAtEdit =
+        modeAtEdit === "Implement" ? appStateAtEdit.agentType : null;
       if (!selectedProviderId || !selectedModelId) {
         set({
           lastError: "Select a provider and model before sending a message.",
@@ -13521,6 +13635,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const turnId = getMessageTurnId(target);
       const sessionId = createConversationSessionId();
       const abortController = new AbortController();
+      latestConversationSessionIdByConversationId.set(conversationId, sessionId);
       const executionContextAtEdit = resolveConversationExecutionContext(conversationId);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
       assertConversationRuntimeAvailableForSend(conversationId);
@@ -13628,6 +13743,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerStateAtEdit.selectedSupportsNativeToolCalling(),
           abortController,
           manualFeatureDraftRecovery,
+          agentTypeAtSend: agentTypeAtEdit,
         });
       } catch (error) {
         if (manualFeatureDraftRecovery) {

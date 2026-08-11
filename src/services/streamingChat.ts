@@ -2641,6 +2641,9 @@ const streamNativeTurnViaTauri = async (params: {
                 });
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
+                if (params.signal?.aborted) {
+                  return;
+                }
                 const toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
                 await tauriIpc.aiSubmitToolResult({
                   requestId,

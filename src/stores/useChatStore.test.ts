@@ -14075,6 +14075,31 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(Object.keys(useChatStore.getState().messageImagesByMessageId)).toEqual(['m-4']);
   });
 
+  it('does not restore messages when deletion wins a deferred conversation load', async () => {
+    tauriAvailable = true;
+    const deferredMessages = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredMessages.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-1'), scope_mode: 'Chat', message_count: 1 },
+      ],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+
+    const loading = useChatStore.getState().ensureMessagesLoaded('chat-1');
+    await Promise.resolve();
+    await useChatStore.getState().deleteChatConversations(['chat-1']);
+    deferredMessages.resolve([
+      createChatMessageRecord({ id: 'late-message', conversation_id: 'chat-1' }),
+    ]);
+    await loading;
+
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+  });
+
   it('restores the previous snapshot when bulk chat deletion fails', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';

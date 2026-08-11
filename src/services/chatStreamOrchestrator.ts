@@ -140,6 +140,8 @@ export const runAssistantStream = async ({
   };
   let handledError = false;
   let handledComplete = false;
+  let handledAbort = false;
+  let abortPromise: Promise<void> | null = null;
   let completionPromise: Promise<void> | null = null;
   let errorPromise: Promise<void> | null = null;
   const handleErrorOnce = async (error: Error): Promise<void> => {
@@ -152,7 +154,7 @@ export const runAssistantStream = async ({
   const handleCompleteOnce = async (
     result: StreamCompletionResult,
   ): Promise<void> => {
-    if (handledError || handledComplete) {
+    if (handledAbort || handledError || handledComplete) {
       return;
     }
     handledComplete = true;
@@ -166,8 +168,14 @@ export const runAssistantStream = async ({
   };
 
   const handleAbort = () => {
+    if (handledAbort) {
+      return;
+    }
+    handledAbort = true;
     controls.flushNow();
-    void Promise.resolve(lifecycle.onAbort?.(controls)).catch(() => undefined);
+    abortPromise = Promise.resolve(lifecycle.onAbort?.(controls)).catch(
+      () => undefined,
+    );
   };
   streamOptions.signal?.addEventListener("abort", handleAbort, { once: true });
 
@@ -190,6 +198,9 @@ export const runAssistantStream = async ({
     if (errorPromise) {
       await errorPromise;
     }
+    if (abortPromise) {
+      await abortPromise;
+    }
   } catch (error) {
     if (completionPromise) {
       await completionPromise;
@@ -199,6 +210,9 @@ export const runAssistantStream = async ({
       error instanceof Error ? error : new Error(String(error));
     await handleErrorOnce(normalized);
   } finally {
+    if (abortPromise) {
+      await abortPromise;
+    }
     streamOptions.signal?.removeEventListener("abort", handleAbort);
   }
 };

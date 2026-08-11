@@ -80,6 +80,9 @@ const makeRuntime = (params?: {
     setCompletionPersistenceError: ({ message: errorMessage }) => {
       events.push(`persistence-error:${errorMessage}`);
     },
+    clearCompletionPersistenceOwnership: () => {
+      events.push("clear-persistence-ownership");
+    },
     maybeMarkImplementTaskFailedAfterStreamError: async () => {
       events.push("task-failed");
     },
@@ -288,6 +291,19 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(controls.dispose).toHaveBeenCalledTimes(1);
     expect(events).toContain("persist-partial");
     expect(events).not.toContain("remove-placeholder");
+  });
+
+  test("abort removes an assistant placeholder that never received a token", async () => {
+    const controls = makeControls();
+    const { runtime, events } = makeRuntime();
+
+    await runtime.onAbort(controls);
+
+    expect(controls.flushNow).toHaveBeenCalledTimes(1);
+    expect(controls.dispose).toHaveBeenCalledTimes(1);
+    expect(events).toContain("remove-placeholder");
+    expect(events).toContain("delete-db");
+    expect(events).not.toContain("persist-partial");
   });
 
   test("completion persistence failure marks a Macro runtime error", async () => {
