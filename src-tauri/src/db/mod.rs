@@ -1135,6 +1135,7 @@ async fn ensure_legacy_terminal_tabs(connection: &mut SqliteConnection) -> DbRes
             snapshot TEXT NOT NULL DEFAULT '',
             last_command TEXT,
             last_exit_code INTEGER,
+            generation INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -1156,6 +1157,11 @@ async fn ensure_legacy_terminal_tabs(connection: &mut SqliteConnection) -> DbRes
     }
     if !columns.contains("prompt_context_json") {
         sqlx::query("ALTER TABLE terminal_tabs ADD COLUMN prompt_context_json TEXT")
+            .execute(&mut *connection)
+            .await?;
+    }
+    if !columns.contains("generation") {
+        sqlx::query("ALTER TABLE terminal_tabs ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
             .execute(&mut *connection)
             .await?;
     }

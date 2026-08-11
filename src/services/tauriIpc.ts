@@ -1210,6 +1210,7 @@ export interface TerminalTabDto {
   has_live_session: boolean;
   is_restored: boolean;
   output_sequence: number;
+  generation?: number;
   created_at: string;
   updated_at: string;
 }
@@ -1225,6 +1226,7 @@ export interface TerminalOutputEvent {
   data: string;
   snapshot: string;
   sequence: number;
+  generation?: number;
   updated_at: string;
 }
 
