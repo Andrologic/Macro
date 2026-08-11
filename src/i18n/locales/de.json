@@ -1630,7 +1630,11 @@
       "serverAdded": "MCP-Server hinzugefügt.",
       "toolsRefreshed": "MCP-Tools aktualisiert.",
       "refreshFailed": "MCP-Tools konnten nicht aktualisiert werden.",
-      "serverDeleted": "MCP-Server gelöscht."
+      "serverDeleted": "MCP-Server gelöscht.",
+      "identifierCollision": "Ein MCP-Server mit dieser Kennung ist bereits vorhanden.",
+      "saveFailed": "Der MCP-Server konnte nicht gespeichert werden.",
+      "deleteFailed": "Der MCP-Server konnte nicht gelöscht werden.",
+      "toggleFailed": "Der MCP-Server konnte nicht aktualisiert werden."
     }
   },
   "account": {

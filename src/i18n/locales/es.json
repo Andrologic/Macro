@@ -1630,7 +1630,11 @@
       "serverAdded": "Servidor MCP agregado.",
       "toolsRefreshed": "Herramientas MCP actualizadas.",
       "refreshFailed": "No se pudieron actualizar las herramientas MCP.",
-      "serverDeleted": "Servidor MCP eliminado."
+      "serverDeleted": "Servidor MCP eliminado.",
+      "identifierCollision": "Ya existe un servidor MCP con este identificador.",
+      "saveFailed": "No se pudo guardar el servidor MCP.",
+      "deleteFailed": "No se pudo eliminar el servidor MCP.",
+      "toggleFailed": "No se pudo actualizar el servidor MCP."
     }
   },
   "account": {

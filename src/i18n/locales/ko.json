@@ -1630,7 +1630,11 @@
       "serverAdded": "MCP 서버가 추가되었습니다.",
       "toolsRefreshed": "MCP 도구가 새로 고쳐졌습니다.",
       "refreshFailed": "MCP 도구를 새로 고치지 못했습니다.",
-      "serverDeleted": "MCP 서버가 삭제되었습니다."
+      "serverDeleted": "MCP 서버가 삭제되었습니다.",
+      "identifierCollision": "이 식별자를 사용하는 MCP 서버가 이미 있습니다.",
+      "saveFailed": "MCP 서버를 저장하지 못했습니다.",
+      "deleteFailed": "MCP 서버를 삭제하지 못했습니다.",
+      "toggleFailed": "MCP 서버를 업데이트하지 못했습니다."
     }
   },
   "account": {
