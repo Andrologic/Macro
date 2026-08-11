@@ -1015,6 +1015,13 @@ const getChatBootstrapSnapshotMock = mock(async (params?: {
     ),
   };
 });
+const appSettingValues = new Map<string, string>();
+const dbGetAppSettingMock = mock(async (key: string) => {
+  const valueJson = appSettingValues.get(key);
+  return valueJson === undefined
+    ? null
+    : { key, value_json: valueJson, updated_at: '2026-08-12T00:00:00.000Z' };
+});
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
@@ -1682,6 +1689,7 @@ const registerUseChatStoreMocks = async () => {
     deleteConversationToolboxState: deleteConversationToolboxStateMock,
     deleteConversation: deleteConversationMock,
     deleteConversations: deleteConversationsMock,
+    dbGetAppSetting: dbGetAppSettingMock,
     gitBranchList: gitBranchListMock,
     getChatBootstrapSnapshot: getChatBootstrapSnapshotMock,
     getChatSnapshot: getChatSnapshotMock,
@@ -2399,6 +2407,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbMessageCounter = 0;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
+    appSettingValues.clear();
+    dbGetAppSettingMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();
     getArchitectPlanChatTranscriptMock.mockClear();
@@ -4534,6 +4544,46 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().getConversationMessages('plan-conv').map((message: { id: string }) => message.id)
     ).toEqual(['m-1', 'm-2']);
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a conversation hidden while a task-deletion saga is pending at bootstrap', async () => {
+    tauriAvailable = true;
+    appSettingValues.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: 'task-pending-cleanup',
+        conversationId: 'conversation-pending-cleanup',
+        phase: 'task_deleted',
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conversation-pending-cleanup', {
+        message_count: 1,
+      }),
+      createChatSnapshotConversation('conversation-visible', {
+        message_count: 1,
+      }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'message-pending-cleanup',
+        conversation_id: 'conversation-pending-cleanup',
+      }),
+      createChatMessageRecord({
+        id: 'message-visible',
+        conversation_id: 'conversation-visible',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+
+    expect(useChatStore.getState().conversations.map((conversation: { id: string }) => conversation.id)).not.toContain(
+      'conversation-pending-cleanup',
+    );
+    expect(useChatStore.getState().getConversationMessages('conversation-pending-cleanup')).toEqual([]);
   });
 
   it('repairs stale scope metadata for the active plan conversation during initialize', async () => {
