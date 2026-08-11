@@ -262,6 +262,7 @@ import {
 import {
   appendAgentCodeCheckpoint,
   buildAgentCodeReplayPreview,
+  clearAgentCodeCheckpoints,
   createAgentCodeCheckpoint,
   hydrateAgentCodeReplayPreviewCurrentState,
   loadAgentCodeCheckpoints,
@@ -1371,6 +1372,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
+  const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
   const latestConversationSessionIdByConversationId = new Map<string, string>();
@@ -1401,6 +1403,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     (resolution: PendingToolApprovalResolution) => void
   >();
   const pendingToolApprovalQueues = new Map<string, Promise<void>>();
+  const pendingAgentCodeReplayRollbacksByConversationId = new Map<
+    string,
+    () => Promise<void>
+  >();
 
   const serializeToolApproval = async <T>(
     conversationId: string,
@@ -4753,6 +4759,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const serializeAgentCodeCheckpointMutation = async <T>(
+    conversationId: string,
+    mutate: () => Promise<T>,
+  ): Promise<T> => {
+    const previous =
+      checkpointMutationQueuesByConversationId.get(conversationId) ??
+      Promise.resolve();
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => slot);
+    checkpointMutationQueuesByConversationId.set(conversationId, queued);
+    await previous.catch(() => undefined);
+    try {
+      return await mutate();
+    } finally {
+      release();
+      if (checkpointMutationQueuesByConversationId.get(conversationId) === queued) {
+        checkpointMutationQueuesByConversationId.delete(conversationId);
+      }
+    }
+  };
+
   const persistAgentCodeCheckpointsForConversation = async (
     conversationId: string,
     checkpoints: AgentCodeCheckpoint[],
@@ -4800,31 +4830,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
-    if (deletedConversationIds.has(params.conversationId)) {
-      return;
-    }
-    const checkpoint = createAgentCodeCheckpoint(existing, params);
-    await persistAgentCodeCheckpointsForConversation(
-      params.conversationId,
-      appendAgentCodeCheckpoint(existing, checkpoint),
-    );
+    await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
+      const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+      if (deletedConversationIds.has(params.conversationId)) {
+        return;
+      }
+      const checkpoint = createAgentCodeCheckpoint(existing, params);
+      await persistAgentCodeCheckpointsForConversation(
+        params.conversationId,
+        appendAgentCodeCheckpoint(existing, checkpoint),
+      );
+    });
   };
 
   const pruneAgentCodeCheckpointsForConversation = async (
     conversationId: string,
     keptMessageIds: Set<string>,
   ): Promise<void> => {
-    const existing = await getLoadedAgentCodeCheckpoints(conversationId);
-    const pruned = pruneAgentCodeCheckpointsToMessageIds(
-      existing,
-      conversationId,
-      keptMessageIds,
-    );
-    if (pruned.length === existing.length) {
-      return;
-    }
-    await persistAgentCodeCheckpointsForConversation(conversationId, pruned);
+    await serializeAgentCodeCheckpointMutation(conversationId, async () => {
+      const existing = await getLoadedAgentCodeCheckpoints(conversationId);
+      const pruned = pruneAgentCodeCheckpointsToMessageIds(
+        existing,
+        conversationId,
+        keptMessageIds,
+      );
+      if (pruned.length === existing.length) {
+        return;
+      }
+      await persistAgentCodeCheckpointsForConversation(conversationId, pruned);
+    });
   };
 
   const shouldChallengeGitStageCommitToolCall = (
@@ -6815,31 +6849,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     | "selectedConversationIdsByMode"
   >;
 
-  const buildConversationRemovalSnapshot = (): ConversationRemovalSnapshot => {
-    const state = get();
-    return {
-      conversations: state.conversations,
-      messages: state.messages,
-      messagesByConversationId: state.messagesByConversationId,
-      messageIndexById: state.messageIndexById,
-      messageLoadStatusByConversationId: state.messageLoadStatusByConversationId,
-      contextDiagnosticsByConversationId: state.contextDiagnosticsByConversationId,
-      liveStreamContextEstimatesByConversationId:
-        state.liveStreamContextEstimatesByConversationId,
-      messageImagesByMessageId: state.messageImagesByMessageId,
-      questionnaireDraftsByConversationId:
-        state.questionnaireDraftsByConversationId,
-      pendingToolApprovalByConversationId:
-        state.pendingToolApprovalByConversationId,
-      conversationApprovalGrantsByConversationId:
-        state.conversationApprovalGrantsByConversationId,
-      skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
-      conversationRuntimeById: state.conversationRuntimeById,
-      selectedConversationId: state.selectedConversationId,
-      selectedConversationIdsByMode: state.selectedConversationIdsByMode,
-    };
-  };
-
   const buildConversationRemovalState = (
     state: ConversationRemovalSnapshot,
     conversationIds: string[],
@@ -6965,21 +6974,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationIds.forEach((conversationId) => {
       clearConversationSecurityState(conversationId);
       cancelLiveContextDiagnosticsRefreshSchedule(conversationId);
+      pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
     });
     set((state) => buildConversationRemovalState(state, conversationIds));
   };
 
-  const restoreConversationRemovalSnapshot = (
-    snapshot: ConversationRemovalSnapshot,
-  ) => {
-    saveMessageImagesToStorage(snapshot.messageImagesByMessageId);
-    saveQuestionnaireDraftsToStorage(snapshot.questionnaireDraftsByConversationId);
-    set({
-      ...snapshot,
-      ...buildLegacyStreamingFlags({
-        conversationRuntimeById: snapshot.conversationRuntimeById,
-        selectedConversationId: snapshot.selectedConversationId,
-      }),
+  const hydrateSelectedConversationAfterRemoval = async (
+    removedConversationIds: string[],
+  ): Promise<void> => {
+    const conversationId = get().selectedConversationId;
+    if (!conversationId || removedConversationIds.includes(conversationId)) {
+      return;
+    }
+    const mode = useAppStore.getState().mode;
+    await ensureMessagesLoadedForConversation(conversationId);
+    await hydrateConversationCitationsIfAvailable(conversationId);
+    await hydrateConversationToolboxStateIfAvailable(conversationId);
+    await getConversationCompactionState(conversationId);
+    await runAiSelectionRestore({
+      mode,
+      conversationId,
+      activeContextKey: get().activeContextKey,
+      shouldShowResolving: true,
     });
   };
 
@@ -10639,23 +10655,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
-        console.error("Failed to create conversation in DB:", error);
-        newConversation = {
-          id: `conv-${Date.now()}`,
-          title: resolvedTitle,
-          description: "",
-          scope_mode: mode,
-          task_id: resolvedTaskId,
-          group_id: resolvedGroupId,
-          project_id: resolvedProjectId,
-          provider_id: initialAISelection?.providerId ?? null,
-          model_id: initialAISelection?.modelId ?? null,
-          reasoning_effort: initialAISelection?.reasoningEffort ?? null,
-          last_message: "",
-          message_count: 0,
-          updated_at: new Date().toISOString(),
-          is_unread: true,
-        };
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message });
+        throw new Error(
+          `Impossible de créer la conversation de manière durable : ${normalized.message}`,
+        );
       }
     } else {
       newConversation = {
@@ -12615,16 +12619,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
 
-      if (
-        linkedTask &&
-        linkedTask.task_source === "standalone" &&
-        linkedTask.standalone_kind === "manual_feature" &&
-        linkedTask.draft
-      ) {
-        await useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id);
-      }
-
-      stopConversationRuntimeLocally(conversationId);
       deletedConversationIds.add(conversationId);
       pendingConversationDeletionIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
@@ -12637,11 +12631,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } finally {
         pendingConversationDeletionIds.delete(conversationId);
       }
+      stopConversationRuntimeLocally(conversationId);
       await deleteConversationToolboxStateIfAvailable(conversationId);
       conversationCompactionStateCache.delete(conversationId);
+      clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
       removeConversationSelectionData(conversationId);
       applyLocalConversationRemoval([conversationId]);
+      await hydrateSelectedConversationAfterRemoval([conversationId]);
+
+      if (
+        linkedTask &&
+        linkedTask.task_source === "standalone" &&
+        linkedTask.standalone_kind === "manual_feature" &&
+        linkedTask.draft
+      ) {
+        await useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id);
+      }
     },
 
     deleteChatConversations: async (conversationIds) => {
@@ -12668,18 +12674,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       });
 
-      const snapshot = buildConversationRemovalSnapshot();
       uniqueIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
         pendingConversationDeletionIds.add(conversationId);
         latestConversationSessionIdByConversationId.delete(conversationId);
         completionPersistenceOwnersByConversationId.delete(conversationId);
-        stopConversationRuntimeLocally(conversationId);
       });
-      applyLocalConversationRemoval(uniqueIds);
 
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
+        uniqueIds.forEach((conversationId) => {
+          stopConversationRuntimeLocally(conversationId);
+        });
         await Promise.all(
           uniqueIds.map((conversationId) =>
             deleteConversationToolboxStateIfAvailable(conversationId),
@@ -12688,13 +12694,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         clearConversationCitationsBulkIfAvailable(uniqueIds);
         uniqueIds.forEach((conversationId) => {
           conversationCompactionStateCache.delete(conversationId);
+          clearAgentCodeCheckpoints(conversationId);
           removeConversationSelectionData(conversationId);
         });
+        applyLocalConversationRemoval(uniqueIds);
+        await hydrateSelectedConversationAfterRemoval(uniqueIds);
       } catch (error) {
         uniqueIds.forEach((conversationId) => {
           deletedConversationIds.delete(conversationId);
         });
-        restoreConversationRemovalSnapshot(snapshot);
         throw error;
       } finally {
         uniqueIds.forEach((conversationId) => {
@@ -13702,7 +13710,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
       try {
-        await restoreAgentCodeReplayPreview(preview);
+        const rollback = await restoreAgentCodeReplayPreview(preview);
+        pendingAgentCodeReplayRollbacksByConversationId.set(
+          preview.conversationId,
+          rollback,
+        );
       } catch (error) {
         const normalized = toServiceError(error);
         set({ lastError: normalized.message, sendState: "error" });
@@ -13725,29 +13737,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const agentTypeAtEdit =
         modeAtEdit === "Implement" ? appStateAtEdit.agentType : null;
       if (!selectedProviderId || !selectedModelId) {
-        set({
-          lastError: "Select a provider and model before sending a message.",
-        });
-        return;
+        const message = "Select a provider and model before sending a message.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
       }
 
       const providerConfig = providerConfigs.find(
         (p) => p.id === selectedProviderId,
       );
       if (!providerConfig) {
-        set({ lastError: "Provider configuration not found." });
-        return;
+        const message = "Provider configuration not found.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
       }
       const state = get();
       const target = state.messages.find((message) => message.id === messageId);
-      if (!target) return;
+      if (!target) {
+        const message = "The message to edit is no longer available.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
+      }
       if (!options?.skipAgentCodeReplayCheck) {
         const replayPreview = await get().getAgentCodeReplayPreview(messageId);
         if (replayPreview && replayPreview.affectedFiles.length > 0) {
-          set({
-            lastError:
-              "Replay blocked: confirm the code checkpoint restore before editing this earlier message.",
-          });
+          const message =
+            "Replay blocked: confirm the code checkpoint restore before editing this earlier message.";
+          set({ lastError: message, sendState: "error" });
           return;
         }
       }
@@ -13758,6 +13773,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const abortController = new AbortController();
       const executionContextAtEdit = resolveConversationExecutionContext(conversationId);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
+      let committedCodeReplay = !options?.skipAgentCodeReplayCheck;
       assertConversationRuntimeAvailableForSend(conversationId);
       latestConversationSessionIdByConversationId.set(conversationId, sessionId);
       setConversationRuntime(
@@ -13844,6 +13860,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           clearQuestionnaireSession: options?.clearQuestionnaireSession,
           updatedMessage: updatedTargetMessage,
         });
+        committedCodeReplay = true;
+        pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
         if (!isCurrentPreparation()) {
           return;
         }
@@ -13868,6 +13886,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
           agentTypeAtSend: agentTypeAtEdit,
         });
       } catch (error) {
+        if (!committedCodeReplay) {
+          const rollback = pendingAgentCodeReplayRollbacksByConversationId.get(
+            conversationId,
+          );
+          pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
+          if (rollback) {
+            try {
+              await rollback();
+            } catch (rollbackError) {
+              console.error("Failed to roll back replayed code:", rollbackError);
+            }
+          }
+        }
         if (manualFeatureDraftRecovery) {
           await rollbackManualFeatureDraftAfterFailedLaunch(
             manualFeatureDraftRecovery,
@@ -13897,6 +13928,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       cancelAllLiveContextDiagnosticsRefreshSchedules();
       pendingArchitectConversationIdsByPlanKey.clear();
       pendingArchitectConversationDetailsById.clear();
+      pendingAgentCodeReplayRollbacksByConversationId.clear();
       cancelStream();
       set({
         conversationRuntimeById: {},
