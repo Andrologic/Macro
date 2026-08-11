@@ -1365,6 +1365,7 @@ const compareArchitectTranscriptState = (
 export const useChatStore = create<ChatStore>((set, get) => {
   let aiSelections = { ...EMPTY_AI_CONTEXT_SELECTIONS };
   let aiSelectionsLoaded = false;
+  let composerContextRefsRevision = 0;
   let providerSelectionUnsubscribe: (() => void) | null = null;
   let contextSelectionUnsubscribe: (() => void) | null = null;
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
@@ -5633,6 +5634,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     void persist().catch((error) => {
       console.warn("[chat] Failed to persist toolbox state:", error);
     });
+  };
+
+  const clearComposerContextRefsIfRevisionMatches = (
+    conversationId: string,
+    expectedRevision: number,
+  ): void => {
+    if (composerContextRefsRevision !== expectedRevision) {
+      return;
+    }
+    composerContextRefsRevision += 1;
+    if (get().selectedConversationId === conversationId) {
+      set({ composerContextRefs: [] });
+    }
+    persistComposerContextRefsForConversation(
+      conversationId,
+      [],
+    );
   };
 
   const deleteConversationToolboxStateIfAvailable = async (
@@ -11999,6 +12017,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     replaceComposerContextRefs: (refs, conversationId) => {
       const nextRefs = refs.map((ref) => ({ ...ref }));
+      composerContextRefsRevision += 1;
       set({ composerContextRefs: nextRefs });
       if (conversationId) {
         persistComposerContextRefsForConversation(conversationId, nextRefs);
@@ -12012,6 +12031,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           (r) => r.id === ref.id && r.kind === ref.kind,
         );
         if (exists) return state;
+        composerContextRefsRevision += 1;
         nextRefs = [...state.composerContextRefs, ref];
         return { composerContextRefs: nextRefs };
       });
@@ -12026,6 +12046,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     removeComposerContextRef: (id, kind) => {
       let nextRefs: ContextReference[] | null = null;
       set((state) => {
+        composerContextRefsRevision += 1;
         nextRefs = state.composerContextRefs.filter(
           (r) => !(r.id === id && r.kind === kind),
         );
@@ -12040,6 +12061,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     clearComposerContextRefs: () => {
+      composerContextRefsRevision += 1;
       set({ composerContextRefs: [] });
       persistComposerContextRefsForConversation(
         get().selectedConversationId,
@@ -12952,9 +12974,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerInputItems,
       } = payload;
       const contextRefsForMessage = persistableContextRefs(get().composerContextRefs);
+      const composerContextRefsRevisionAtSend = composerContextRefsRevision;
       let activeSessionId: string | null = null;
       let activeTurnId: string | null = null;
       let assistantMessageId: string | null = null;
+      let launchError: unknown = null;
       // Capture every mutable selection before the first await.  This is the
       // operation boundary; later continuations are fenced by its session and
       // controller instead of consulting the current UI selection.
@@ -12964,6 +12988,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const agentTypeAtSend =
         modeAtSend === "Implement" ? appStateAtSend.agentType : null;
       const activeArchitectPlanIdAtSend = appStateAtSend.activeArchitectPlanId;
+      const architectPlanAtSend =
+        modeAtSend === "Architect" && activeArchitectPlanIdAtSend
+          ? {
+              planId: activeArchitectPlanIdAtSend,
+              targetBranch: resolveTargetBranch(
+                appStateAtSend.activePlanContext?.targetBranch,
+              ),
+            }
+          : undefined;
       const providerSelectionAtSend = {
         selectedProviderId: providerState.selectedProviderId,
         selectedModelId: providerState.selectedModelId,
@@ -13044,7 +13077,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return cancelledResult();
         }
         emitSendTimeline("messages_ready", { conversationId });
-        if (modeAtSend === "Architect" && !activeArchitectPlanIdAtSend) {
+        if (modeAtSend === "Architect" && !architectPlanAtSend) {
           throw buildSendError("Select a plan before sending an Architect message.");
         }
 
@@ -13164,45 +13197,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
           providerInputItems,
           contextRefs: contextRefsForMessage,
         });
+        const publishUserMessage = () => {
+          get().addMessage(userMessage);
+          if (images && images.length > 0) {
+            get().setMessageImages(userMessage.id, images);
+          }
+          for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
+            const path = getFileRefPath(ref);
+            useCitationsStore.getState().addCitation({
+              type: "file",
+              scope: "context",
+              source: path,
+              title: ref.title,
+              path,
+              messageId: userMessage.id,
+              conversationId,
+            });
+          }
+        };
+        const sentWithoutAssistantResult = () => ({
+          status: "sent" as const,
+          conversationId,
+          turnId: activeTurnId ?? "",
+          userMessageId: userMessage.id,
+          assistantMessageId: null,
+        });
         if (!isCurrentPreparation()) {
-          await deletePersistedMessagesAfter(
-            chatPersistenceAdapters,
+          publishUserMessage();
+          clearComposerContextRefsIfRevisionMatches(
             conversationId,
-            userMessage.id,
-          ).catch(() => undefined);
-          return cancelledResult();
+            composerContextRefsRevisionAtSend,
+          );
+          return sentWithoutAssistantResult();
         }
 
-        get().addMessage(userMessage);
-        if (images && images.length > 0) {
-          get().setMessageImages(userMessage.id, images);
-        }
-        for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
-          const path = getFileRefPath(ref);
-          useCitationsStore.getState().addCitation({
-            type: "file",
-            scope: "context",
-            source: path,
-            title: ref.title,
-            path,
-            messageId: userMessage.id,
-            conversationId,
-          });
-        }
-        get().clearComposerContextRefs();
+        publishUserMessage();
+        clearComposerContextRefsIfRevisionMatches(
+          conversationId,
+          composerContextRefsRevisionAtSend,
+        );
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
-          const appState = useAppStore.getState();
           let skipMetadataGeneration = false;
-          let architectPlan =
-            modeAtSend === "Architect" && appState.activeArchitectPlanId
-              ? {
-                  planId: appState.activeArchitectPlanId,
-                  targetBranch: resolveTargetBranch(
-                    appState.activePlanContext?.targetBranch,
-                  ),
-                }
-              : undefined;
+          const architectPlan = architectPlanAtSend;
           if (architectPlan) {
             const bindingSucceeded =
               await bindPendingArchitectConversationIfNeeded({
@@ -13254,7 +13291,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               providerSelectionAtSend.supportsNativeToolCalling,
           });
           if (!isCurrentPreparation()) {
-            return cancelledResult();
+            return sentWithoutAssistantResult();
           }
           emitSendTimeline("compaction_done", {
             conversationId,
@@ -13273,7 +13310,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               conversationId,
               userMessage.id,
             ).catch(() => undefined);
-            return cancelledResult();
+            return sentWithoutAssistantResult();
           }
           rememberAssistantTurnContext(
             assistantMessage.id,
@@ -13336,20 +13373,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             abortController: preparationAbortController,
           });
         } catch (error) {
+          launchError = error;
           if (manualFeatureDraftRecovery) {
             await rollbackManualFeatureDraftAfterFailedLaunch(
               manualFeatureDraftRecovery,
             );
           }
-          applyAssistantLaunchError(
-            conversationId,
-            activeSessionId,
-            assistantMessageId,
-            error,
-            {
-              setSendState: true,
-            },
-          );
+          throw error;
         }
 
         if (!activeTurnId) {
@@ -13377,6 +13407,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             { setSendState: true },
           );
           if (!result.applied) {
+            if (launchError) {
+              throw normalized;
+            }
             return cancelledResult();
           }
         } else {
