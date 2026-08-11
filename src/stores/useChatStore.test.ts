@@ -12584,9 +12584,45 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   it('resets the git stage/commit challenge for a new assistant turn', async () => {
+    const firstStreamCompletion = createDeferred<void>();
+    const secondStreamCompletion = createDeferred<void>();
     streamChatMock
-      .mockImplementationOnce((async () => ({ usage: null })) as unknown as typeof streamChatMock)
-      .mockImplementationOnce((async () => ({ usage: null })) as unknown as typeof streamChatMock);
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: string;
+            usage: null;
+          }) => void;
+        };
+        await firstStreamCompletion.promise;
+        options.onComplete?.({
+          visibleContent: 'Premier tour terminé.',
+          toolTraces: [],
+          hiddenContext: undefined,
+          usage: null,
+        });
+        return { usage: null };
+      }) as unknown as typeof streamChatMock)
+      .mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            hiddenContext?: string;
+            usage: null;
+          }) => void;
+        };
+        await secondStreamCompletion.promise;
+        options.onComplete?.({
+          visibleContent: 'Second tour terminé.',
+          toolTraces: [],
+          hiddenContext: undefined,
+          usage: null,
+        });
+        return { usage: null };
+      }) as unknown as typeof streamChatMock);
 
     const { useChatStore, onToolCall } = await startImplementToolConversation(
       'Tu peux commit après vérification.',
@@ -12604,14 +12640,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
     expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
 
+    firstStreamCompletion.resolve();
     await flushAsyncWork();
-    useChatStore.getState().stopConversationStream('implement-conv');
     await useChatStore.getState().sendMessage({
       conversationId: 'implement-conv',
       content: 'Continue.',
       taskId: 'task-1',
     });
-    await flushAsyncWork();
+    await waitForStreamCallCount(2);
 
     const nextTurnToolCall = getLatestArchitectToolHandler();
     const nextTurnResult = await nextTurnToolCall(
@@ -12624,6 +12660,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'Do not stage or commit unless the user explicitly asked',
     );
     expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
+
+    secondStreamCompletion.resolve();
+    await flushAsyncWork();
   });
 
   it('includes explicit anti stage/commit instructions when git tools are exposed', async () => {
@@ -14196,6 +14235,109 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         .getConversationMessages('conv-1')
         .map((message: { id: string }) => message.id)
     ).toEqual(['m-user', 'm-assistant']);
+  });
+  it('keeps generation A bound to its captured context after delayed loading', async () => {
+    appState.mode = 'Implement';
+    appState.agentType = 'build';
+    appState.selectedTaskId = 'task-1';
+    tauriAvailable = true;
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        {
+          ...createConversation('chat-a'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          message_count: 1,
+        },
+        { ...createConversation('chat-b'), scope_mode: 'Chat', message_count: 0 },
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Implement: 'chat-a' },
+    }));
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'A stays isolated.', taskId: 'task-1',
+    });
+    await Promise.resolve();
+    appState.mode = 'Chat';
+    appState.selectedTaskId = 'task-b';
+    appState.selectedProjectId = 'project-2';
+    providerState.selectedProviderId = 'provider-2';
+    providerState.selectedModelId = 'model-2';
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'sent', conversationId: 'chat-a' });
+    const options = getLatestStreamOptions<{
+      conversationId?: string;
+      providerId?: string;
+      modelId?: string;
+      onToolCall?: (
+        toolName: string,
+        args: Record<string, unknown>,
+        toolCallId?: string,
+      ) => Promise<unknown>;
+    }>();
+    expect(options.conversationId).toBe('chat-a');
+    expect(options.providerId).toBe('provider-1');
+    expect(options.modelId).toBe('model-1');
+    expect(useChatStore.getState().getConversationMessages('chat-a').every(
+      (message: ChatMessage) => message.conversation_id === 'chat-a',
+    )).toBe(true);
+    await options.onToolCall?.('read', { path: 'src/a.ts' }, 'read-from-a');
+    expect(executeWorkspaceToolMock).toHaveBeenCalledWith(
+      'read',
+      { path: 'src/a.ts' },
+      'Implement',
+      expect.objectContaining({ projectId: 'project-1' }),
+    );
+  });
+
+  it('does not revive stopped preparation A after generation B starts', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-a'), scope_mode: 'Chat', message_count: 1 },
+        { ...createConversation('chat-b'), scope_mode: 'Chat', message_count: 0 },
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'late A',
+    });
+    await Promise.resolve();
+    expect(listMessagesMock).toHaveBeenCalledWith('chat-a');
+    expect(useChatStore.getState().getConversationRuntime('chat-a').phase).toBe('preparing');
+    useChatStore.getState().stopConversationStream('chat-a');
+    const sendB = await useChatStore.getState().sendMessage({
+      conversationId: 'chat-b', content: 'live B',
+    });
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'cancelled', conversationId: 'chat-a' });
+    expect(sendB).toMatchObject({ status: 'sent', conversationId: 'chat-b' });
+    expect(streamChatMock).toHaveBeenCalledTimes(1);
+    expect(getLatestStreamOptions<{ conversationId?: string }>().conversationId).toBe('chat-b');
+    expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getConversationRuntime('chat-a').phase).toBe('idle');
+    expect(useChatStore.getState().getConversationRuntime('chat-b').phase).toBe('streaming');
+    expect(useChatStore.getState().getConversationMessages('chat-a').some(
+      (message: ChatMessage) => message.content === 'late A',
+    )).toBe(false);
   });
 });
 
