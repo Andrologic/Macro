@@ -2,7 +2,7 @@
 
 ## 1. Objet du document
 
-Ce document decrit la trajectoire de livraison de Macro.
+Ce document décrit la trajectoire de livraison de Macro.
 
 Il sert à :
 - identifier les écarts entre la cible produit et l'état actuel
@@ -55,7 +55,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - automatisation et orchestration encore à fiabiliser
 - notifications et supervision distante non finalisées
 - articulation desktop / remote / mobile encore incomplète
-- expérience multi-plan et multi-projet encore à consolidér de bout en bout
+- expérience multi-plan et multi-projet encore à consolider de bout en bout
 - documents de référence recentrés autour d'un socle unique et d'une archive minimale non normative
 
 ---
@@ -70,7 +70,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - une architecture technique de référence
 - une roadmap exploitable
 
-État livre pour 0.1 :
+État livré pour 0.1 :
 - le socle documentaire actif est recentré sur `functional-spec.md`, `technical-architecture.md` et `roadmap.md`
 - l'archive documentaire est réduite à un historique minimal non normatif
 - les documents actifs constituent l'unique source de vérité
@@ -83,7 +83,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - structuration prédictive fiable
 - validation automatique propre vers branches et worktrees
 
-État à consolidér :
+État à consolider :
 - cleanup complet des structures lorsque des plans sont supprimés ou abandonnés
 - robustesse multi-plans parallèles
 - lisibilité du mode Architect quand plusieurs plans coexistent
@@ -98,7 +98,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - commits et intégration bien verrouillés
 
 État déjà consolidé :
-- derivation et agrégation de tâches depuis plusieurs plans exécutables côté desktop
+- dérivation et agrégation de tâches depuis plusieurs plans exécutables côté desktop
 - catalogue/backend de listing des tâches maintenant découplé du seul plan actif et d'une seule branche cible
 - filtrage de la file par plan
 - résumés de plans maintenant cohérents pour les filtres et la validation quand plusieurs plans vivent en parallèle
@@ -108,7 +108,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - navigation explicite dépôt par dépôt, commits distincts par dépôt et complétion de tâche unifiée
 - verrouillage des états fantômes entre review, commit par dépôt et complétion finale
 
-État à consolidér :
+État à consolider :
 - UX de la review et de l'édition ciblée
 - questions IA à réponses rapides réellement branchées
 - articulation claire entre review de tâche, commit, validation finale de plan et merge
@@ -121,7 +121,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - possibilité d'ajuster rapidement les modifications de l'IA
 - chargement progressif de contexte puis du fichier complet si besoin
 
-État à consolidér :
+État à consolider :
 - surface d'édition exacte
 - expérience de correction manuelle dans les diffs
 - ergonomie de validation du code après retouche
@@ -145,7 +145,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - divergence entre copies metadata d'un même plan maintenant détectée en fail-closed avec réparation explicite
 - merge conflicts de finalisation de plan et de sync `@macro` maintenant détectés avant mutation avec diagnostic par dépôt, aide IA et reprise explicite
 
-État à consolidér :
+État à consolider :
 - la phase cœur Git/metadata n'a plus de blocage critique côté desktop local-first
 - les prochains gains structurants sur ce domaine passent surtout par l'expérience multi-projet premium côté Implement et review
 
@@ -163,7 +163,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - commits par dépôt maintenant mieux exposés sans perdre la complétion unifiée de la tâche
 - catalogue Implement maintenant global à l'échelle du contexte desktop local-first, avec coexistence cohérente de plusieurs plans vivants et des tâches hors plan
 
-État à consolidér :
+État à consolider :
 - lisibilité UX du multi-projet
 - gestion de bout en bout des tâches qui touchent plusieurs projets
 - clarté globale des filtres, de la review et de la navigation
@@ -176,7 +176,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - pièces jointes par conversation
 - outils web et MCP configurables
 
-État à consolidér :
+État à consolider :
 - simplification assumée du mode
 - séparation nette avec le mode Implement
 - politique d'outils clairement exposée à l'utilisateur
@@ -189,7 +189,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - demandes d'attention claires
 - réponses rapides depuis mobile
 
-État à consolidér :
+État à consolider :
 - système de notification encore absent ou incomplet
 - protocole d'échange entre exécution et client mobile
 - définition de la supervision distante comme expérience produit complète
@@ -202,7 +202,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - accès distant stable au workspace et aux outils
 - base pour les offres serveur dédié ou hébergé
 
-État à consolidér :
+État à consolider :
 - enrichissement de l'API headless
 - sécurisation et session utilisateur
 - orchestration d'exécution longue durée
@@ -214,9 +214,9 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - authentification utilisateur
 - liaison avec mobile
 - synchronisation de certaines préférences
-- eventuels modes d'abonnement
+- éventuels modes d'abonnement
 
-État à consolidér :
+État à consolider :
 - fonctionnalité encore à introduire réellement dans le produit
 - frontières entre cœur local-first et services comptes à formaliser
 
@@ -251,10 +251,10 @@ Chantiers :
 ### 5.3 Priorité 3 - Fiabiliser l'autonomie assistée
 
 Objectif :
-- rendre l'IA capable d'avancer longtemps sans degrader la qualité de supervision
+- rendre l'IA capable d'avancer longtemps sans dégrader la qualité de supervision
 
 Chantiers :
-- démarrage manuel des tâches bien borne
+- démarrage manuel des tâches bien borné
 - questions IA à choix rapides
 - gestion claire des points de blocage
 - exécution test/build observable et interprétable
@@ -279,7 +279,7 @@ Chantiers :
 - enrichir l'API headless
 - fiabiliser l'exécution distante
 - gérer l'authentification et la sécurisation
-- préparer les scenarios serveur personnel et hébergé
+- préparer les scénarios serveur personnel et hébergé
 
 ### 5.6 Priorité 6 - Introduire le compte utilisateur et la monétisation
 
@@ -309,13 +309,13 @@ Critère de sortie :
 
 État :
 - phase livrée pour 0.1
-- l'ancienne spécification API mobile / remote à été retiree de l'archive pour éviter une lecture contractuelle
+- l'ancienne spécification API mobile / remote a été retirée de l'archive pour éviter une lecture contractuelle
 
 ### Phase 1 - Cœur Architect / Implement stable
 
 Livrables :
 - plans parallèles bien tenus
-- derivation de tâches fiable, y compris sur plusieurs plans exécutables côté desktop
+- dérivation de tâches fiable, y compris sur plusieurs plans exécutables côté desktop
 - review de tâche exploitable
 - commits robustes
 - validation finale de plan robuste
@@ -405,7 +405,7 @@ Critère de sortie :
 
 ---
 
-## 7. Decisions produit encore à verrouiller
+## 7. Décisions produit encore à verrouiller
 
 Les sujets suivants doivent rester visibles tant qu'ils ne sont pas totalement figés :
 
@@ -446,4 +446,4 @@ Chaque entrée importante de roadmap doit pouvoir être reliée à :
 - une exigence de `docs/functional-spec.md`
 - un impact sur `docs/technical-architecture.md`
 
-Lorsqu'un chantier est livre, son état doit être mis à jour plutôt que laisse implicite.
+Lorsqu'un chantier est livré, son état doit être mis à jour plutôt que laissé implicite.
