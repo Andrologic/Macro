@@ -272,10 +272,9 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       
       set({ saving: false });
     } catch (error) {
-      set({
-        saving: false,
-        lastError: toServiceError(error).message,
-      });
+      const message = toServiceError(error).message;
+      set({ saving: false, lastError: message });
+      throw new Error(message);
     }
   },
 
@@ -292,7 +291,9 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
       set({ mcpServers: nextServers, saving: false });
     } catch (error) {
-      set({ saving: false, lastError: toServiceError(error).message });
+      const message = toServiceError(error).message;
+      set({ saving: false, lastError: message });
+      throw new Error(message);
     }
   },
 
@@ -304,7 +305,9 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
       set({ mcpServers: nextServers, saving: false });
     } catch (error) {
-      set({ saving: false, lastError: toServiceError(error).message });
+      const message = toServiceError(error).message;
+      set({ saving: false, lastError: message });
+      throw new Error(message);
     }
   },
 
@@ -504,6 +507,9 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         toolName: resolved.tool.name,
         arguments: args,
       });
+      if (response.isError) {
+        throw new Error(response.content || `MCP tool ${resolved.tool.name} reported an error.`);
+      }
       return response.content;
     } catch (error) {
       const message = toServiceError(error).message;
@@ -516,7 +522,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         () => undefined
       );
       set({ mcpServers: nextServers, lastError: message });
-      return `Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`;
+      throw new Error(`Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`);
     }
   },
 

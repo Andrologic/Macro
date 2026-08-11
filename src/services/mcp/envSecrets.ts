@@ -52,11 +52,47 @@ export const parseMCPArgs = (value: string): string[] => {
         ? parsed.filter((item): item is string => typeof item === 'string')
         : [];
     } catch {
-      return trimmed.split(/\s+/);
+      // Fall through to shell-style parsing for a partially typed JSON value.
     }
   }
-  return trimmed.split(/\s+/);
+  const args: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const character = trimmed[index];
+    if (quote && character === '\\' && index + 1 < trimmed.length) {
+      const next = trimmed[index + 1];
+      if (next === quote || next === '\\') {
+        current += next;
+        index += 1;
+        continue;
+      }
+    }
+    if (character === '"' || character === "'") {
+      if (quote === character) {
+        quote = null;
+      } else if (!quote) {
+        quote = character;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+    if (!quote && /\s/.test(character)) {
+      if (current) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += character;
+  }
+  if (current) args.push(current);
+  return args;
 };
+
+export const formatMCPArgsForEdit = (args: string[] = []): string => JSON.stringify(args);
 
 export const parseMCPEnv = (
   value: string,
