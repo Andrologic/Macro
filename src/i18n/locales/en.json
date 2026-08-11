@@ -379,6 +379,7 @@
     "resetZoom": "Reset zoom",
     "renderingDiagram": "Rendering diagram...",
     "mermaidRenderError": "Unable to render Mermaid diagram",
+    "copyFailed": "Unable to copy the diagram code.",
     "inputTokens": "Input",
     "contextTokens": "Context",
     "tokens": "tokens",
@@ -524,6 +525,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Unable to load archived conversations.",
+    "archivePreferenceSaveFailed": "Unable to save archived conversations.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1818,6 +1821,8 @@
     "commitUseConversationModel": "Use conversation model",
     "commitUseDedicatedModel": "Use dedicated model",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Failed to load metadata model preference",
+    "metadataPreferenceSaveFailed": "Failed to save metadata model preference",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -2029,6 +2034,12 @@
     "searchPlaceholder": "Search terminal",
     "searchPrevious": "Previous match",
     "searchNext": "Next match"
+  },
+  "codeViewer": {
+    "title": "Code file",
+    "copied": "Copied",
+    "copyCode": "Copy code",
+    "copyFailed": "Unable to copy the code."
   },
   "notify": {
     "connectionFailed": "Connection failed",

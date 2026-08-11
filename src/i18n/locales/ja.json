@@ -379,6 +379,7 @@
     "resetZoom": "ズームをリセットする",
     "renderingDiagram": "レンダリング図...",
     "mermaidRenderError": "人魚図をレンダリングできません",
+    "copyFailed": "ダイアグラムのコードをコピーできませんでした。",
     "inputTokens": "入力",
     "contextTokens": "コンテクスト",
     "tokens": "トークン",
@@ -524,6 +525,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Unable to load archived conversations.",
+    "archivePreferenceSaveFailed": "Unable to save archived conversations.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1773,6 +1776,8 @@
     "commitUseConversationModel": "会話モデルを使用",
     "commitUseDedicatedModel": "専用モデルを使用",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Failed to load metadata model preference",
+    "metadataPreferenceSaveFailed": "Failed to save metadata model preference",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -1984,6 +1989,12 @@
     "searchPlaceholder": "ターミナルを検索",
     "searchPrevious": "前の一致",
     "searchNext": "次の一致"
+  },
+  "codeViewer": {
+    "title": "コードファイル",
+    "copied": "コピーしました",
+    "copyCode": "コードをコピー",
+    "copyFailed": "コードをコピーできませんでした。"
   },
   "notify": {
     "connectionFailed": "Connection failed",

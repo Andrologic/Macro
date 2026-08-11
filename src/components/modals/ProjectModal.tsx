@@ -7,6 +7,7 @@ import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
 import { GroupCombobox } from '../ui/GroupCombobox';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
+import { Dialog } from '../ui/Dialog';
 import { toServiceError } from '../../services/contracts/errors';
 import { isWslProjectPath } from '../../services/wslPaths';
 import {
@@ -66,7 +67,6 @@ export const ProjectModal: React.FC = () => {
     createNewProjectRepo,
     createProjectGroup,
     projectAddOperation,
-    cancelProjectAddOperation,
   } = useAppStore();
 
   const [sourceMode, setSourceMode] = useState<ProjectModalSourceMode>('new_repo');
@@ -189,10 +189,14 @@ export const ProjectModal: React.FC = () => {
     }
   };
 
+  const closeDisabled =
+    isSubmitting ||
+    projectAddOperation?.status === 'running' ||
+    projectAddOperation?.status === 'cancelling';
+
   const handleClose = () => {
-    const requestId = activeRequestIdRef.current || projectAddOperation?.requestId || null;
-    if (requestId && (isSubmitting || projectAddOperation?.status === 'running')) {
-      void cancelProjectAddOperation(requestId);
+    if (closeDisabled) {
+      return;
     }
     closeProjectModal();
   };
@@ -535,7 +539,7 @@ export const ProjectModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <Dialog title={t('project.addProjectTitle', 'Add Project')} onClose={handleClose}>
       <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[620px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl ring-1 ring-white/5">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
@@ -547,7 +551,10 @@ export const ProjectModal: React.FC = () => {
             </div>
           </div>
           <button
+            type="button"
+            aria-label={t('common.close', 'Close')}
             onClick={handleClose}
+            disabled={closeDisabled}
             className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-accent transition-colors"
           >
             <Icon name="x" size={14} className="text-muted-foreground" />
@@ -848,6 +855,7 @@ export const ProjectModal: React.FC = () => {
             variant="secondary"
             size="sm"
             onClick={handleClose}
+            disabled={closeDisabled}
           >
             {t('common.cancel', 'Cancel')}
           </Button>
@@ -999,7 +1007,7 @@ export const ProjectModal: React.FC = () => {
           </div>
         </ConfirmPromptModal>
       )}
-    </div>
+    </Dialog>
   );
 };
 

@@ -27,6 +27,7 @@ import {
   subscribeMetadataModelConfig,
 } from '../../../../services/metadataModelPreference';
 import type { AIModel, ReasoningEffort } from '../../../../types';
+import { MetadataModelConfigPersistence } from './metadataModelConfigPersistence';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -138,6 +139,17 @@ export const ModelsSettings: React.FC = () => {
   const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null>(null);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [metadataModelConfigPersistence] = useState(
+    () => new MetadataModelConfigPersistence({
+      save: saveMetadataModelConfig,
+      applyConfig: setMetadataModelConfig,
+      onSaveError: (error) => {
+        notify.error(
+          getErrorMessage(error, t('models.metadataPreferenceSaveFailed', 'Failed to save metadata model preference'))
+        );
+      },
+    })
+  );
 
   const handleProviderSettingsChange = async (
     providerId: string,
@@ -223,28 +235,33 @@ export const ModelsSettings: React.FC = () => {
 
   useEffect(() => {
     let disposed = false;
+    const hydrationVersion = metadataModelConfigPersistence.getVersion();
     void loadMetadataModelConfig()
       .then((modelConfig) => {
+        if (!disposed) metadataModelConfigPersistence.hydrate(modelConfig, hydrationVersion);
+      })
+      .catch((error) => {
         if (!disposed) {
-          setMetadataModelConfig(modelConfig);
+          notify.error(
+            getErrorMessage(error, t('models.metadataPreferenceLoadFailed', 'Failed to load metadata model preference'))
+          );
         }
       });
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [metadataModelConfigPersistence, t]);
 
   useEffect(() => {
     const unsubscribe = subscribeMetadataModelConfig((config) => {
-      setMetadataModelConfig(config);
+      metadataModelConfigPersistence.acceptExternal(config);
     });
     return unsubscribe;
-  }, []);
+  }, [metadataModelConfigPersistence]);
 
   const saveCommitModelConfig = useCallback((config: MetadataModelConfig) => {
-    setMetadataModelConfig(config);
-    void saveMetadataModelConfig(config);
-  }, []);
+    void metadataModelConfigPersistence.persist(config);
+  }, [metadataModelConfigPersistence]);
 
   useEffect(() => {
     if (!metadataModelConfig || !normalizedMetadataModelConfig) return;

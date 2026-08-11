@@ -378,6 +378,7 @@
     "resetZoom": "Réinitialiser le zoom",
     "renderingDiagram": "Schéma de rendu...",
     "mermaidRenderError": "Impossible de restituer le diagramme Sirène",
+    "copyFailed": "Impossible de copier le code du diagramme.",
     "inputTokens": "Entrée",
     "contextTokens": "Contexte",
     "tokens": "jetons",
@@ -523,6 +524,8 @@
     },
     "conversationActions": "Actions de conversation",
     "conversationArchived": "Conversation archivée",
+    "archivePreferenceLoadFailed": "Impossible de charger les conversations archivées.",
+    "archivePreferenceSaveFailed": "Impossible d’enregistrer les conversations archivées.",
     "conversationsArchived": "Conversations archivées",
     "conversationRestored": "Conversation restaurée",
     "conversationsRestored": "Conversations restaurées",
@@ -1772,6 +1775,8 @@
     "commitUseConversationModel": "Utiliser le modèle de la conversation",
     "commitUseDedicatedModel": "Utiliser un modèle dédié",
     "metadataGenerationTitle": "Génération des métadonnées",
+    "metadataPreferenceLoadFailed": "Impossible de charger la préférence du modèle de métadonnées.",
+    "metadataPreferenceSaveFailed": "Impossible d’enregistrer la préférence du modèle de métadonnées.",
     "metadataGenerationDescription": "Choisissez quel modèle Macro utilise pour les messages de commit, noms de plan, titres de conversation, résumés et slugs de feature générés.",
     "metadataUseConversationModel": "Utiliser le modèle de la conversation",
     "metadataUseDedicatedModel": "Utiliser un modèle dédié",
@@ -1983,6 +1988,12 @@
     "searchPlaceholder": "Rechercher dans le terminal",
     "searchPrevious": "Correspondance précédente",
     "searchNext": "Correspondance suivante"
+  },
+  "codeViewer": {
+    "title": "Fichier de code",
+    "copied": "Copié",
+    "copyCode": "Copier le code",
+    "copyFailed": "Impossible de copier le code."
   },
   "notify": {
     "connectionFailed": "Connection failed",
