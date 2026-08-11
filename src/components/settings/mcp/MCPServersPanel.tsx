@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { MCPServer, MCPTool } from '../../../types';
 import {
   formatMCPEnvForEdit,
+  formatMCPArgsForEdit,
   getMCPStatusLabel,
   MCP_STATUS_STYLES,
   normalizeMCPIdentifier,
@@ -301,7 +302,7 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
       command: server.transport?.type === 'stdio' ? server.transport.command : '',
       args:
         server.transport?.type === 'stdio' && server.transport.args
-          ? server.transport.args.join(' ')
+          ? formatMCPArgsForEdit(server.transport.args)
           : '',
       env:
         server.transport?.type === 'stdio' && server.transport.env
@@ -323,6 +324,15 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
       ? servers.find((server) => server.id === editingServerId)
       : null;
     const id = existing?.id ?? normalizeMCPIdentifier(name);
+    if (!existing && servers.some((server) => normalizeMCPIdentifier(server.id) === id)) {
+      notify.error(
+        t(
+          'tools.mcp.identifierCollision',
+          'Another MCP server already uses this normalized identifier. Choose a different name.'
+        )
+      );
+      return;
+    }
     const previousEnv =
       existing?.transport?.type === 'stdio' ? existing.transport.env ?? {} : {};
     const server: MCPServer = {
@@ -349,13 +359,19 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
       },
     };
 
-    await onUpsertServer(server);
-    notify.success(
-      editingServerId
-        ? t('tools.mcp.serverUpdated', 'MCP server updated.')
-        : t('tools.mcp.serverAdded', 'MCP server added.')
-    );
-    resetDraft();
+    try {
+      await onUpsertServer(server);
+      notify.success(
+        editingServerId
+          ? t('tools.mcp.serverUpdated', 'MCP server updated.')
+          : t('tools.mcp.serverAdded', 'MCP server added.')
+      );
+      resetDraft();
+    } catch (error) {
+      notify.error(t('tools.mcp.saveFailed', 'Failed to save MCP server.'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const refreshServer = async (serverId: string) => {
@@ -370,9 +386,25 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
   };
 
   const deleteServer = async (serverId: string) => {
-    await onRemoveServer(serverId);
-    if (editingServerId === serverId) resetDraft();
-    notify.success(t('tools.mcp.serverDeleted', 'MCP server deleted.'));
+    try {
+      await onRemoveServer(serverId);
+      if (editingServerId === serverId) resetDraft();
+      notify.success(t('tools.mcp.serverDeleted', 'MCP server deleted.'));
+    } catch (error) {
+      notify.error(t('tools.mcp.deleteFailed', 'Failed to delete MCP server.'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const toggleServer = async (serverId: string) => {
+    try {
+      await onToggleServer(serverId);
+    } catch (error) {
+      notify.error(t('tools.mcp.toggleFailed', 'Failed to update MCP server.'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   return (
@@ -389,7 +421,7 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
         onEdit={beginEditServer}
         onDelete={(serverId) => void deleteServer(serverId)}
         onRefresh={(serverId) => void refreshServer(serverId)}
-        onToggle={(serverId) => void onToggleServer(serverId)}
+        onToggle={(serverId) => void toggleServer(serverId)}
       />
     </div>
   );

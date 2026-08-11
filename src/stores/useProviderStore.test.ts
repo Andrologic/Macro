@@ -464,9 +464,40 @@ describe('useProviderStore secret resolution', () => {
     });
 
     expect(createProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(createProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: true })
+    );
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves enabled state and infers local custom Ollama providers', async () => {
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().createProviderConfig({
+      name: 'Custom Ollama',
+      providerType: 'ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: '',
+      isEnabled: false,
+      isLocal: false,
+    });
+
+    expect(createProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: false, isLocal: true })
+    );
+  });
+
+  it('rejects a second ChatGPT OAuth start while one is active', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      authRequestIdsByProvider: { chatgpt: 'already-started' },
+    });
+
+    await expect(
+      providerStore.useProviderStore.getState().startChatGptAuth('chatgpt')
+    ).rejects.toThrow('ChatGPT login is already in progress');
   });
 
   it('rejects provider mutations outside desktop IPC', async () => {

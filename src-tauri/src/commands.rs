@@ -42,12 +42,25 @@ use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 use tauri::State;
 use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
 
 const DB_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+static PROVIDER_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn provider_mutation_lock(provider_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    PROVIDER_MUTATION_LOCKS
+        .lock()
+        .expect("provider mutation lock registry")
+        .entry(provider_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 
 #[derive(Clone, Debug)]
 pub enum DbInitializationState {
@@ -2892,39 +2905,82 @@ async fn apply_provider_api_key_change(
     pool: &SqlitePool,
     provider_id: &str,
     api_key: Option<&str>,
+    previous_api_key: Option<&str>,
 ) -> CommandResult<Option<bool>> {
     let Some(api_key) = api_key else {
         return Ok(None);
     };
 
-    if api_key.trim().is_empty() {
-        secrets::delete_api_key(provider_id).map_err(|error| CommandError {
-            message: format!(
-                "Failed to delete the local provider secret for {}: {}",
-                provider_id, error
-            ),
-        })?;
-        repository::set_provider_has_stored_api_key(pool, provider_id, false)
-            .await
-            .map_err(CommandError::from)?;
-        return Ok(Some(false));
+    let has_stored_api_key = !api_key.trim().is_empty();
+    let secret_write = if has_stored_api_key {
+        secrets::set_api_key(provider_id, api_key)
+    } else {
+        secrets::delete_api_key(provider_id)
+    };
+    if let Err(error) = secret_write {
+        let actual_has_stored_api_key = previous_api_key.is_some();
+        let metadata_error = repository::set_provider_has_stored_api_key(
+            pool,
+            provider_id,
+            actual_has_stored_api_key,
+        )
+        .await
+        .err();
+        let suffix = metadata_error
+            .map(|metadata_error| {
+                format!(" Failed to reconcile provider secret metadata: {metadata_error}")
+            })
+            .unwrap_or_default();
+        return Err(command_error(format!(
+            "Failed to update the local provider secret for {}: {}.{}",
+            provider_id, error, suffix
+        )));
     }
 
-    if let Err(error) = secrets::set_api_key(provider_id, api_key) {
-        repository::set_provider_has_stored_api_key(pool, provider_id, false)
-            .await
-            .map_err(CommandError::from)?;
-        return Err(CommandError {
-            message: format!(
-                "Failed to store the local provider secret for {}: {}",
-                provider_id, error
-            ),
-        });
+    if let Err(error) =
+        repository::set_provider_has_stored_api_key(pool, provider_id, has_stored_api_key).await
+    {
+        let compensation = match previous_api_key {
+            Some(previous) => secrets::set_api_key(provider_id, previous),
+            None => secrets::delete_api_key(provider_id),
+        };
+        let suffix = compensation
+            .err()
+            .map(|compensation_error| {
+                format!(" Secret compensation also failed: {compensation_error}")
+            })
+            .unwrap_or_default();
+        return Err(command_error(format!(
+            "Failed to update provider secret metadata for {}: {}.{}",
+            provider_id, error, suffix
+        )));
     }
-    repository::set_provider_has_stored_api_key(pool, provider_id, true)
+
+    Ok(Some(has_stored_api_key))
+}
+
+async fn restore_provider_config(
+    pool: &SqlitePool,
+    config: &ProviderConfig,
+    has_stored_api_key: bool,
+) -> Result<(), String> {
+    repository::update_provider_config(
+        pool,
+        UpdateProviderConfigInput {
+            id: config.id.clone(),
+            name: Some(config.name.clone()),
+            provider_type: Some(config.provider_type.clone()),
+            base_url: Some(config.base_url.clone()),
+            api_key: None,
+            is_local: Some(config.is_local),
+            is_enabled: Some(config.is_enabled),
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    repository::set_provider_has_stored_api_key(pool, &config.id, has_stored_api_key)
         .await
-        .map_err(CommandError::from)?;
-    Ok(Some(true))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2987,8 +3043,23 @@ pub async fn db_update_provider_config(
     params: DbUpdateProviderConfigParams,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
-
     let provider_id = params.id.clone();
+    let lock = provider_mutation_lock(&provider_id);
+    let _guard = lock.lock().await;
+    let previous_config = repository::get_provider_config(&pool, &provider_id)
+        .await
+        .map_err(CommandError::from)?
+        .ok_or_else(|| command_error(format!("Provider {} not found", provider_id)))?;
+    let previous_api_key = if params.api_key.is_some() {
+        secrets::get_api_key(&provider_id).map_err(|error| {
+            command_error(format!(
+                "Failed to read the local provider secret for {}: {}",
+                provider_id, error
+            ))
+        })?
+    } else {
+        None
+    };
     let api_key_for_store = params.api_key.clone();
 
     repository::update_provider_config(
@@ -3006,7 +3077,23 @@ pub async fn db_update_provider_config(
     .await
     .map_err(CommandError::from)?;
 
-    apply_provider_api_key_change(&pool, &provider_id, api_key_for_store.as_deref()).await?;
+    if let Err(error) = apply_provider_api_key_change(
+        &pool,
+        &provider_id,
+        api_key_for_store.as_deref(),
+        previous_api_key.as_deref(),
+    )
+    .await
+    {
+        let suffix = restore_provider_config(&pool, &previous_config, previous_api_key.is_some())
+            .await
+            .err()
+            .map(|compensation_error| {
+                format!(" SQLite compensation also failed: {compensation_error}")
+            })
+            .unwrap_or_default();
+        return Err(command_error(format!("{}{}", error.message, suffix)));
+    }
 
     Ok(())
 }
@@ -3019,19 +3106,36 @@ pub async fn db_create_provider_config(
     base_url: String,
     api_key: Option<String>,
     is_local: bool,
+    is_enabled: bool,
 ) -> CommandResult<ProviderConfig> {
     let pool = get_pool(&pool).await?;
 
-    let mut created =
-        repository::create_provider_config(&pool, &name, &provider_type, &base_url, None, is_local)
-            .await
-            .map_err(CommandError::from)?;
+    let mut created = repository::create_provider_config(
+        &pool,
+        &name,
+        &provider_type,
+        &base_url,
+        None,
+        is_local,
+        is_enabled,
+    )
+    .await
+    .map_err(CommandError::from)?;
 
     if let Some(key) = api_key {
-        if let Some(has_stored_api_key) =
-            apply_provider_api_key_change(&pool, &created.id, Some(&key)).await?
-        {
-            created.has_stored_api_key = has_stored_api_key;
+        match apply_provider_api_key_change(&pool, &created.id, Some(&key), None).await {
+            Ok(Some(has_stored_api_key)) => created.has_stored_api_key = has_stored_api_key,
+            Ok(None) => {}
+            Err(error) => {
+                let suffix = repository::delete_provider_config(&pool, &created.id)
+                    .await
+                    .err()
+                    .map(|compensation_error| {
+                        format!(" SQLite compensation also failed: {compensation_error}")
+                    })
+                    .unwrap_or_default();
+                return Err(command_error(format!("{}{}", error.message, suffix)));
+            }
         }
     }
 
@@ -3041,22 +3145,69 @@ pub async fn db_create_provider_config(
 #[tauri::command]
 pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
-
+    let lock = provider_mutation_lock(&id);
+    let _guard = lock.lock().await;
+    let previous_config = repository::get_provider_config(&pool, &id)
+        .await
+        .map_err(CommandError::from)?
+        .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
+    let previous_api_key = secrets::get_api_key(&id).map_err(|error| {
+        command_error(format!(
+            "Failed to read the local provider API key for {}: {}",
+            id, error
+        ))
+    })?;
+    let previous_linked_secret = secrets::get_chatgpt_secret(&id).map_err(|error| {
+        command_error(format!(
+            "Failed to read the local linked-provider session for {}: {}",
+            id, error
+        ))
+    })?;
     secrets::delete_api_key(&id).map_err(|error| CommandError {
         message: format!(
             "Failed to delete the local provider API key for {}: {}",
             id, error
         ),
     })?;
-    secrets::delete_provider_secret(&id).map_err(|error| CommandError {
-        message: format!(
-            "Failed to delete the local linked-provider session for {}: {}",
-            id, error
-        ),
-    })?;
-    repository::delete_provider_config(&pool, &id)
-        .await
-        .map_err(Into::into)
+    if let Err(error) = secrets::delete_provider_secret(&id) {
+        let suffix = match previous_api_key.as_deref() {
+            Some(value) => secrets::set_api_key(&id, value),
+            None => secrets::delete_api_key(&id),
+        }
+        .err()
+        .map(|compensation_error| {
+            format!(" API-key compensation also failed: {compensation_error}")
+        })
+        .unwrap_or_default();
+        return Err(command_error(format!(
+            "Failed to delete the local linked-provider session for {}: {}.{}",
+            id, error, suffix
+        )));
+    }
+    if let Err(error) = repository::delete_provider_config(&pool, &id).await {
+        let restore_key = match previous_api_key {
+            Some(ref value) => secrets::set_api_key(&id, value),
+            None => secrets::delete_api_key(&id),
+        };
+        let restore_session = match previous_linked_secret {
+            Some(ref value) => secrets::set_chatgpt_secret(&id, value),
+            None => secrets::delete_provider_secret(&id),
+        };
+        let suffix = restore_key
+            .err()
+            .map(|restore_error| format!(" API-key compensation also failed: {restore_error}"))
+            .or_else(|| {
+                restore_session.err().map(|restore_error| {
+                    format!(" Session compensation also failed: {restore_error}")
+                })
+            })
+            .unwrap_or_default();
+        return Err(command_error(format!(
+            "Failed to delete provider {} from SQLite: {}.{}",
+            previous_config.name, error, suffix
+        )));
+    }
+    Ok(())
 }
 
 // ============ AI MODELS ============
@@ -3314,10 +3465,16 @@ mod tests {
     use crate::secrets;
     use serde_json::json;
     use std::fs;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
 
     static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_secret_store() -> MutexGuard<'static, ()> {
+        SECRET_STORE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[tokio::test]
     async fn db_pool_propagates_failure_without_polling() {
@@ -3382,9 +3539,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_secret_metadata_reconciliation_clears_stale_database_flags() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = lock_secret_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -3396,6 +3551,7 @@ mod tests {
             "https://api.openai.com/v1",
             Some("test-api-key"),
             false,
+            true,
         )
         .await
         .expect("create provider");
@@ -3419,6 +3575,7 @@ mod tests {
             "https://chatgpt.com/backend-api",
             None,
             false,
+            true,
         )
         .await
         .expect("create ChatGPT provider");
@@ -3455,10 +3612,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_creation_preserves_requested_enabled_state() {
+        let pool = test_provider_pool().await;
+        let created = repository::create_provider_config(
+            &pool,
+            "Disabled Ollama",
+            "ollama",
+            "http://localhost:11434/v1",
+            None,
+            true,
+            false,
+        )
+        .await
+        .expect("create provider");
+
+        assert!(!created.is_enabled);
+        assert!(created.is_local);
+        let stored = repository::get_provider_config(&pool, &created.id)
+            .await
+            .expect("get provider")
+            .expect("provider exists");
+        assert!(!stored.is_enabled);
+    }
+
+    #[tokio::test]
     async fn provider_api_key_change_updates_secret_store_before_database_flag() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = lock_secret_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -3469,12 +3648,13 @@ mod tests {
             "https://api.openai.com/v1",
             Some("test-api-key"),
             false,
+            true,
         )
         .await
         .expect("create provider");
         assert!(provider.has_stored_api_key);
 
-        let stored = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key"))
+        let stored = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key"), None)
             .await
             .expect("store key");
 
@@ -3491,9 +3671,10 @@ mod tests {
             .expect("provider exists");
         assert!(after_store.has_stored_api_key);
 
-        let cleared = apply_provider_api_key_change(&pool, &provider.id, Some(""))
-            .await
-            .expect("clear key");
+        let cleared =
+            apply_provider_api_key_change(&pool, &provider.id, Some(""), Some("test-api-key"))
+                .await
+                .expect("clear key");
 
         assert_eq!(cleared, Some(false));
         assert!(secrets::get_api_key(&provider.id)
@@ -3508,9 +3689,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_api_key_change_does_not_mark_database_when_secret_write_fails() {
-        let _guard = SECRET_STORE_TEST_LOCK
-            .lock()
-            .expect("secret store test lock");
+        let _guard = lock_secret_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let secret_file = temp_dir.path().join("provider-secrets.json");
@@ -3524,12 +3703,14 @@ mod tests {
             "https://api.openai.com/v1",
             Some("test-api-key"),
             false,
+            true,
         )
         .await
         .expect("create provider");
         assert!(provider.has_stored_api_key);
 
-        let result = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key")).await;
+        let result =
+            apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key"), None).await;
 
         assert!(result.is_err());
         let after_failure = repository::get_provider_config(&pool, &provider.id)
