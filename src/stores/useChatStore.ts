@@ -251,7 +251,7 @@ import {
 } from "../services/contextCompactionSession";
 import { createChatCompactionRuntime } from "../services/chatCompactionRuntime";
 import {
-  executeConversationReplay,
+  buildConversationReplayPlan,
   type ConversationReplayPlan,
 } from "../services/conversationReplayService";
 import {
@@ -960,6 +960,7 @@ interface ChatStore {
   ensureConversationForCurrentMode: () => Promise<string | null>;
   reapplySelectionForCurrentContext: () => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
+  togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
     conversationId: string,
     confirmation?: {
@@ -4843,24 +4844,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const pruneAgentCodeCheckpointsForConversation = async (
-    conversationId: string,
-    keptMessageIds: Set<string>,
-  ): Promise<void> => {
-    await serializeAgentCodeCheckpointMutation(conversationId, async () => {
-      const existing = await getLoadedAgentCodeCheckpoints(conversationId);
-      const pruned = pruneAgentCodeCheckpointsToMessageIds(
-        existing,
-        conversationId,
-        keptMessageIds,
-      );
-      if (pruned.length === existing.length) {
-        return;
-      }
-      await persistAgentCodeCheckpointsForConversation(conversationId, pruned);
-    });
-  };
-
   const shouldChallengeGitStageCommitToolCall = (
     conversationId: string,
     assistantTurnId: string | null,
@@ -8599,7 +8582,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     };
 
-    await executeConversationReplay({
+    const plan = buildConversationReplayPlan({
       conversationId: params.conversationId,
       replayMessageId: params.messageId,
       conversationMessages: replayMessages,
@@ -8608,41 +8591,62 @@ export const useChatStore = create<ChatStore>((set, get) => {
         stateBeforeReplay.sessionCompactionEventsByConversationId[
           params.conversationId
         ],
-      adapters: {
-        trimMessages: async (plan) => {
-          try {
-            await deletePersistedMessagesAfter(
-              chatPersistenceAdapters,
-              params.conversationId,
-              params.messageId,
-            );
-          } catch (error) {
-            const normalized = toServiceError(error);
-            set({ lastError: normalized.message, sendState: "error" });
-            throw buildSendError(
-              `Failed to trim the conversation before retrying: ${normalized.message}`,
-            );
-          }
-          applyReplayTrimToState(plan);
-        },
-        pruneCodeCheckpoints: async (plan) => {
-          const keptConversationMessageIds = Array.from(plan.keptMessageIds);
-          await pruneAgentCodeCheckpointsForConversation(
-            params.conversationId,
-            plan.keptMessageIds,
-          );
-          useCitationsStore
-            .getState()
-            .pruneConversationSourceCitations(
-              params.conversationId,
-              keptConversationMessageIds,
-            );
-        },
-        deleteContextCompactionState: async () => {
-          await deleteConversationCompactionState(params.conversationId);
-        },
-      },
     });
+
+    try {
+      await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
+        const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+        const pruned = pruneAgentCodeCheckpointsToMessageIds(
+          existing,
+          params.conversationId,
+          plan.keptMessageIds,
+        );
+        const checkpointsChanged = pruned.length !== existing.length;
+
+        if (tauriIpc.isTauriAvailable()) {
+          await tauriIpc.dbTrimConversationReplay({
+            conversationId: params.conversationId,
+            afterMessageId: params.messageId,
+            codeCheckpointsJson: checkpointsChanged ? JSON.stringify(pruned) : null,
+            deleteContextCompactionState: plan.shouldDeleteContextCompactionState,
+          });
+        } else {
+          await deletePersistedMessagesAfter(
+            chatPersistenceAdapters,
+            params.conversationId,
+            params.messageId,
+          );
+          if (checkpointsChanged) {
+            await saveAgentCodeCheckpoints(params.conversationId, pruned);
+          }
+        }
+
+        if (checkpointsChanged) {
+          set((state) => ({
+            agentCodeCheckpointsByConversationId: {
+              ...state.agentCodeCheckpointsByConversationId,
+              [params.conversationId]: pruned,
+            },
+          }));
+        }
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message, sendState: "error" });
+      throw buildSendError(
+        `Failed to trim the conversation before retrying: ${normalized.message}`,
+      );
+    }
+
+    applyReplayTrimToState(plan);
+    useCitationsStore.getState().pruneConversationSourceCitations(
+      params.conversationId,
+      Array.from(plan.keptMessageIds),
+    );
+    if (plan.shouldDeleteContextCompactionState) {
+      conversationCompactionStateCache.delete(params.conversationId);
+      setConversationCompactionStatus(params.conversationId, null);
+    }
   };
 
   const restartAssistantFromEditedMessage = async (params: {
@@ -12568,6 +12572,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
     },
 
+    togglePinConversation: async (conversationId) => {
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === conversationId,
+      );
+      if (!conversation || deletedConversationIds.has(conversationId)) {
+        throw new Error("Conversation introuvable.");
+      }
+
+      if (!tauriIpc.isTauriAvailable()) {
+        const isPinned = !conversation.is_pinned;
+        set((state) => ({
+          conversations: state.conversations.map((candidate) =>
+            candidate.id === conversationId
+              ? { ...candidate, is_pinned: isPinned }
+              : candidate,
+          ),
+        }));
+        return isPinned;
+      }
+
+      const isPinned = await tauriIpc.togglePinConversation(conversationId);
+      if (deletedConversationIds.has(conversationId)) {
+        return isPinned;
+      }
+      set((state) => ({
+        conversations: state.conversations.map((candidate) =>
+          candidate.id === conversationId
+            ? { ...candidate, is_pinned: isPinned }
+            : candidate,
+        ),
+      }));
+      return isPinned;
+    },
+
     deleteConversation: async (conversationId, confirmation) => {
       const conversation = get().conversations.find(
         (candidate) => candidate.id === conversationId,
@@ -12631,14 +12669,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } finally {
         pendingConversationDeletionIds.delete(conversationId);
       }
+      const cleanupFailures: string[] = [];
+      const runCleanup = async (label: string, cleanup: () => Promise<void>) => {
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupFailures.push(`${label}: ${toServiceError(error).message}`);
+        }
+      };
       stopConversationRuntimeLocally(conversationId);
-      await deleteConversationToolboxStateIfAvailable(conversationId);
+      await runCleanup("toolbox", () =>
+        deleteConversationToolboxStateIfAvailable(conversationId),
+      );
       conversationCompactionStateCache.delete(conversationId);
       clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
       removeConversationSelectionData(conversationId);
       applyLocalConversationRemoval([conversationId]);
-      await hydrateSelectedConversationAfterRemoval([conversationId]);
+      await runCleanup("sélection", () =>
+        hydrateSelectedConversationAfterRemoval([conversationId]),
+      );
 
       if (
         linkedTask &&
@@ -12646,7 +12696,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         linkedTask.standalone_kind === "manual_feature" &&
         linkedTask.draft
       ) {
-        await useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id);
+        await runCleanup("brouillon de fonctionnalité", () =>
+          useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id),
+        );
+      }
+      if (cleanupFailures.length > 0) {
+        const message = `Conversation supprimée, mais certaines ressources n'ont pas pu être nettoyées : ${cleanupFailures.join("; ")}`;
+        set({ lastError: message });
+        throw new Error(message);
       }
     },
 
@@ -12681,15 +12738,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
         completionPersistenceOwnersByConversationId.delete(conversationId);
       });
 
+      let persistedDeletionCommitted = false;
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
+        persistedDeletionCommitted = true;
         uniqueIds.forEach((conversationId) => {
           stopConversationRuntimeLocally(conversationId);
         });
+        const cleanupFailures: string[] = [];
         await Promise.all(
-          uniqueIds.map((conversationId) =>
-            deleteConversationToolboxStateIfAvailable(conversationId),
-          ),
+          uniqueIds.map(async (conversationId) => {
+            try {
+              await deleteConversationToolboxStateIfAvailable(conversationId);
+            } catch (error) {
+              cleanupFailures.push(
+                `toolbox ${conversationId}: ${toServiceError(error).message}`,
+              );
+            }
+          }),
         );
         clearConversationCitationsBulkIfAvailable(uniqueIds);
         uniqueIds.forEach((conversationId) => {
@@ -12698,11 +12764,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
           removeConversationSelectionData(conversationId);
         });
         applyLocalConversationRemoval(uniqueIds);
-        await hydrateSelectedConversationAfterRemoval(uniqueIds);
+        try {
+          await hydrateSelectedConversationAfterRemoval(uniqueIds);
+        } catch (error) {
+          cleanupFailures.push(`sélection: ${toServiceError(error).message}`);
+        }
+        if (cleanupFailures.length > 0) {
+          const message = `Conversations supprimées, mais certaines ressources n'ont pas pu être nettoyées : ${cleanupFailures.join("; ")}`;
+          set({ lastError: message });
+          throw new Error(message);
+        }
       } catch (error) {
-        uniqueIds.forEach((conversationId) => {
-          deletedConversationIds.delete(conversationId);
-        });
+        if (!persistedDeletionCommitted) {
+          uniqueIds.forEach((conversationId) => {
+            deletedConversationIds.delete(conversationId);
+          });
+        }
         throw error;
       } finally {
         uniqueIds.forEach((conversationId) => {

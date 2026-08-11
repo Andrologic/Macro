@@ -1032,6 +1032,93 @@ pub async fn delete_messages_after(
     Ok(())
 }
 
+pub async fn trim_conversation_replay(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    after_message_id: &str,
+    code_checkpoints_json: Option<&str>,
+    delete_context_compaction_state: bool,
+) -> DbResult<()> {
+    let mut transaction = pool.begin().await?;
+    let row = sqlx::query("SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?")
+        .bind(after_message_id)
+        .bind(conversation_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+    let created_at: String = row.get("created_at");
+
+    sqlx::query(
+        r#"
+        DELETE FROM conversation_citations
+        WHERE conversation_id = ?
+          AND message_id IN (
+              SELECT id FROM messages
+              WHERE conversation_id = ?
+                AND (created_at > ? OR (created_at = ? AND id > ?))
+          )
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(conversation_id)
+    .bind(&created_at)
+    .bind(&created_at)
+    .bind(after_message_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM messages
+        WHERE conversation_id = ?
+          AND (created_at > ? OR (created_at = ? AND id > ?))
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(&created_at)
+    .bind(&created_at)
+    .bind(after_message_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    if let Some(code_checkpoints_json) = code_checkpoints_json {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(format!("agentCodeCheckpoints:{conversation_id}"))
+        .bind(code_checkpoints_json)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+    }
+
+    if delete_context_compaction_state {
+        sqlx::query("DELETE FROM conversation_compactions WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM conversation_compaction_events WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+
+    refresh_conversation_metadata_with_connection(
+        &mut *transaction,
+        conversation_id.to_string(),
+        None,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
 // ============ CONVERSATION CITATIONS ============
 
 fn map_conversation_citation_row(row: sqlx::sqlite::SqliteRow) -> ConversationCitation {
@@ -3096,6 +3183,74 @@ mod tests {
             .expect("conversation");
         assert_eq!(refreshed.message_count, 1);
         assert_eq!(refreshed.last_message.as_deref(), Some("Keep me"));
+    }
+
+    #[tokio::test]
+    async fn trim_conversation_replay_rolls_back_tail_when_checkpoint_write_fails() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Thread").await;
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "replay-keep".to_string(),
+                    turn_id: None,
+                    role: "user".to_string(),
+                    content: "Keep me".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "replay-tail".to_string(),
+                    turn_id: None,
+                    role: "assistant".to_string(),
+                    content: "Do not lose me".to_string(),
+                    created_at: "2026-03-19T00:00:01.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("import messages");
+
+        let checkpoint_key = format!("agentCodeCheckpoints:{}", conversation.id);
+        set_app_setting(&pool, &checkpoint_key, "[\"old\"]")
+            .await
+            .expect("save checkpoints");
+        sqlx::query(&format!(
+            "CREATE TRIGGER fail_replay_checkpoint BEFORE INSERT ON app_settings WHEN NEW.key = 'agentCodeCheckpoints:{}' BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END",
+            conversation.id
+        ))
+        .execute(&pool)
+        .await
+        .expect("install failure trigger");
+
+        let result = trim_conversation_replay(
+            &pool,
+            &conversation.id,
+            "replay-keep",
+            Some("[\"new\"]"),
+            true,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let remaining_ids = list_messages(&pool, &conversation.id)
+            .await
+            .expect("list messages")
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_ids, vec!["replay-keep", "replay-tail"]);
+        assert_eq!(
+            get_app_setting(&pool, &checkpoint_key)
+                .await
+                .expect("load checkpoints")
+                .expect("checkpoint setting")
+                .value_json,
+            "[\"old\"]",
+        );
     }
 
     #[tokio::test]

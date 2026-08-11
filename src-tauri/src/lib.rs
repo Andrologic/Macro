@@ -382,6 +382,7 @@ pub fn run() {
             commands::db_import_messages,
             commands::db_update_message,
             commands::db_delete_messages_after,
+            commands::db_trim_conversation_replay,
             commands::db_list_conversation_citations,
             commands::db_get_conversation_citation_content,
             commands::db_upsert_conversation_citation,
