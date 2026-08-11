@@ -379,6 +379,7 @@
     "resetZoom": "Zoom zurücksetzen",
     "renderingDiagram": "Rendering-Diagramm...",
     "mermaidRenderError": "Das Meerjungfrau-Diagramm kann nicht gerendert werden",
+    "copyFailed": "Der Diagrammcode konnte nicht kopiert werden.",
     "inputTokens": "Eingabe",
     "contextTokens": "Kontext",
     "tokens": "Token",
@@ -1984,6 +1985,12 @@
     "searchPlaceholder": "Terminal durchsuchen",
     "searchPrevious": "Vorheriger Treffer",
     "searchNext": "Nächster Treffer"
+  },
+  "codeViewer": {
+    "title": "Code-Datei",
+    "copied": "Kopiert",
+    "copyCode": "Code kopieren",
+    "copyFailed": "Der Code konnte nicht kopiert werden."
   },
   "notify": {
     "connectionFailed": "Connection failed",

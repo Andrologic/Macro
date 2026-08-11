@@ -379,6 +379,7 @@
     "resetZoom": "Reset zoom",
     "renderingDiagram": "Rendering diagram...",
     "mermaidRenderError": "Unable to render Mermaid diagram",
+    "copyFailed": "Unable to copy the diagram code.",
     "inputTokens": "Input",
     "contextTokens": "Context",
     "tokens": "tokens",
@@ -2029,6 +2030,12 @@
     "searchPlaceholder": "Search terminal",
     "searchPrevious": "Previous match",
     "searchNext": "Next match"
+  },
+  "codeViewer": {
+    "title": "Code file",
+    "copied": "Copied",
+    "copyCode": "Copy code",
+    "copyFailed": "Unable to copy the code."
   },
   "notify": {
     "connectionFailed": "Connection failed",

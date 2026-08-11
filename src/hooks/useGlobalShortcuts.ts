@@ -6,6 +6,7 @@ import { useShortcutsStore } from '../stores/useShortcutsStore';
 import { useAppStore } from '../stores/useAppStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useProviderStore } from '../stores/useProviderStore';
+import { hasOpenDialog } from '../components/ui/Dialog';
 
 export const useGlobalShortcuts = (): void => {
   const bindings = useShortcutsStore((state) => state.bindings);
@@ -24,6 +25,7 @@ export const useGlobalShortcuts = (): void => {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return;
+      if (hasOpenDialog()) return;
 
       const editable = isEditableTarget(event.target);
       const focusedElement = document.activeElement;

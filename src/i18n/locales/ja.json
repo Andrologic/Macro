@@ -379,6 +379,7 @@
     "resetZoom": "ズームをリセットする",
     "renderingDiagram": "レンダリング図...",
     "mermaidRenderError": "人魚図をレンダリングできません",
+    "copyFailed": "ダイアグラムのコードをコピーできませんでした。",
     "inputTokens": "入力",
     "contextTokens": "コンテクスト",
     "tokens": "トークン",
@@ -1984,6 +1985,12 @@
     "searchPlaceholder": "ターミナルを検索",
     "searchPrevious": "前の一致",
     "searchNext": "次の一致"
+  },
+  "codeViewer": {
+    "title": "コードファイル",
+    "copied": "コピーしました",
+    "copyCode": "コードをコピー",
+    "copyFailed": "コードをコピーできませんでした。"
   },
   "notify": {
     "connectionFailed": "Connection failed",
