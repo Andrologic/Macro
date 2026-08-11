@@ -4167,6 +4167,90 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
   });
 
+  it('does not transfer a pending Architect runtime to a tombstoned materialized conversation', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Architect';
+    const plan = createScenarioPlan('blank', {
+      id: 'plan-materialized-deletion',
+      slug: 'plan-materialized-deletion',
+      title: 'plan-materialized-deletion',
+      conversationId: undefined,
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+    const materializedConversation = {
+      id: 'materialized-architect-conv',
+      title: 'Architect plan',
+      description: '',
+      scope_mode: 'Architect' as AppMode,
+      task_id: null,
+      group_id: 'group-1',
+      project_id: 'project-1',
+      provider_id: null,
+      model_id: null,
+      reasoning_effort: null,
+      created_at: '2026-03-19T00:00:00.000Z',
+      last_message: '',
+      message_count: 0,
+      updated_at: '2026-03-19T00:00:00.000Z',
+      is_pinned: false,
+    };
+    const materialization = createDeferred<typeof materializedConversation>();
+    (
+      createConversationMock as unknown as {
+        mockImplementationOnce: (
+          implementation: () => Promise<typeof materializedConversation>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async () => materialization.promise);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+    const pendingConversationId =
+      await useChatStore.getState().ensureConversationForCurrentMode();
+    const send = useChatStore.getState().sendMessage({
+      conversationId: pendingConversationId!,
+      content: 'Ne relance pas une conversation supprimée.',
+    });
+    await flushAsyncWork();
+
+    let deletionPromise: Promise<void> | null = null;
+    const unsubscribe = useChatStore.subscribe((state: { conversations: Conversation[] }) => {
+      if (
+        deletionPromise ||
+        !state.conversations.some(
+          (conversation: Conversation) => conversation.id === materializedConversation.id,
+        )
+      ) {
+        return;
+      }
+      deletionPromise = useChatStore.getState().deleteConversation(
+        materializedConversation.id,
+        { mode: 'architect', typedProjectName: 'Macro' },
+      );
+    });
+
+    materialization.resolve(materializedConversation);
+    const result = await send;
+    unsubscribe();
+    await deletionPromise;
+
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      conversationId: materializedConversation.id,
+    });
+    expect(
+      useChatStore.getState().getConversationRuntime(materializedConversation.id).phase,
+    ).toBe('idle');
+    expect(
+      useChatStore
+        .getState()
+        .conversations.some((conversation: Conversation) => conversation.id === materializedConversation.id),
+    ).toBe(false);
+    expect(createMessageMock).not.toHaveBeenCalled();
+  });
+
   it('removes a pending blank architect conversation when switching away before the first message', async () => {
     const blankPlan = createScenarioPlan('blank', {
       id: 'plan-pending-switch-away',
