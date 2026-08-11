@@ -83,6 +83,7 @@ import {
 import {
   presentServiceError,
   presentWorktreeError,
+  resolveDegradedErrorPresentation,
 } from '../../services/degradedErrorPresentation';
 import {
   getTooManyOpenFilesNotificationKey,
@@ -1076,10 +1077,14 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
     noteTooManyOpenFilesBackoff();
     const presentation = presentServiceError(lastError);
-    notify.actionRequired(presentation.title, {
+    const resolvedPresentation = resolveDegradedErrorPresentation(
+      presentation,
+      (key, options) => String(t(key, options))
+    );
+    notify.actionRequired(resolvedPresentation.title, {
       notificationKey: getTooManyOpenFilesNotificationKey(),
       tone: 'warning',
-      description: [presentation.body, presentation.nextStep].filter(Boolean).join('\n\n'),
+      description: [resolvedPresentation.body, resolvedPresentation.nextStep].filter(Boolean).join('\n\n'),
       category: 'task_attention_required',
       actions: [
         {
