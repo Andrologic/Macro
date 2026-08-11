@@ -38,6 +38,8 @@ const gitMutatingToolIds = new Set([
 const gitBackendToolIds = new Set([...gitReadToolIds, ...gitMutatingToolIds]);
 
 export interface ExecuteWorkspaceToolOptions {
+  /** Best-effort cancellation fence for callers that own a generation. */
+  signal?: AbortSignal;
   workspacePath?: string | null;
   defaultWorkspacePath?: string | null;
   workspacePathsByProjectId?: Record<string, string>;
@@ -1601,6 +1603,9 @@ export const executeWorkspaceTool = async (
   mode: AppMode,
   options: ExecuteWorkspaceToolOptions = {},
 ): Promise<string | undefined> => {
+  if (options.signal?.aborted) {
+    return "Tool execution aborted";
+  }
   const useTauri = tauriIpc.isTauriAvailable();
   const useRemoteKernel = !useTauri && canUseRemoteKernel();
   const candidates = getProjectWorkspaceCandidates(options);
@@ -1726,6 +1731,10 @@ export const executeWorkspaceTool = async (
       try {
         const backendResult = await executeBackendTool(toolName, args);
 
+        if (options.signal?.aborted) {
+          return "Tool execution aborted";
+        }
+
         if (backendResult && backendResult !== "UNSUPPORTED_WORKSPACE_TOOL") {
           return backendResult;
         }
@@ -1748,6 +1757,10 @@ export const executeWorkspaceTool = async (
 
         try {
           const backendResult = await executeBackendTool(toolName, backendArgs);
+
+          if (options.signal?.aborted) {
+            return "Tool execution aborted";
+          }
 
           if (backendResult && backendResult !== "UNSUPPORTED_WORKSPACE_TOOL") {
             return backendResult;
