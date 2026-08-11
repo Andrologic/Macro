@@ -11170,8 +11170,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
           planId: plan.id,
           conversationId: conversation.id,
         });
-      } catch {
-        // Keep local conversation even if metadata cannot be rewritten right now.
+      } catch (error) {
+        if (createdConversation) {
+          deletedConversationIds.add(conversation.id);
+          try {
+            await deletePersistedConversation(chatPersistenceAdapters, conversation.id);
+            applyLocalConversationRemoval([conversation.id]);
+          } catch (cleanupError) {
+            deletedConversationIds.delete(conversation.id);
+            const normalized = toServiceError(error);
+            const cleanupMessage = toServiceError(cleanupError).message;
+            throw new Error(
+              `Impossible d’associer la conversation au plan, et son annulation a échoué : ${normalized.message}; ${cleanupMessage}`,
+            );
+          }
+        }
+        const normalized = toServiceError(error);
+        throw new Error(
+          `Impossible d’associer durablement la conversation au plan : ${normalized.message}`,
+        );
       }
     }
 
