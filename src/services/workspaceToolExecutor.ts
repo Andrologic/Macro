@@ -221,6 +221,25 @@ type PatchWriteRollbackSnapshot = {
   postMutationExpectedRevision?: string;
 };
 
+const assertDistinctPatchTargets = (
+  paths: Array<{ displayPath: string; realPath: string }>,
+): void => {
+  const seen = new Map<string, string>();
+  for (const path of paths) {
+    const normalized = path.realPath.replace(/\\/g, "/");
+    const key = /^[a-z]:\//i.test(normalized)
+      ? normalized.toLocaleLowerCase()
+      : normalized;
+    const previous = seen.get(key);
+    if (previous) {
+      throw new Error(
+        `Invalid apply_patch payload: ${path.displayPath} aliases already-targeted ${previous}.`,
+      );
+    }
+    seen.set(key, path.displayPath);
+  }
+};
+
 const rollbackSnapshotsFromBackendPatch = (
   changes: PatchWriteCommitChange[],
   beforeSnapshots: AgentCodeCheckpointFileSnapshot[],
@@ -1063,6 +1082,26 @@ const normalizeWorkspacePath = (value?: string | null): string | null => {
   return trimmed;
 };
 
+const normalizeAbsolutePath = (value: string): string =>
+  value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+
+const relativePathWithinRoot = (path: string, root: string): string | null => {
+  const normalizedPath = normalizeAbsolutePath(path);
+  const normalizedRoot = normalizeAbsolutePath(root);
+  const caseInsensitive = /^[a-z]:\//i.test(normalizedRoot);
+  const comparedPath = caseInsensitive ? normalizedPath.toLowerCase() : normalizedPath;
+  const comparedRoot = caseInsensitive ? normalizedRoot.toLowerCase() : normalizedRoot;
+  const pathSegments = comparedPath.split("/").filter(Boolean);
+  const rootSegments = comparedRoot.split("/").filter(Boolean);
+  if (
+    rootSegments.length > pathSegments.length ||
+    rootSegments.some((segment, index) => pathSegments[index] !== segment)
+  ) {
+    return null;
+  }
+  return normalizedPath.split("/").filter(Boolean).slice(rootSegments.length).join("/") || ".";
+};
+
 interface ProjectWorkspaceCandidate {
   id: string;
   name: string;
@@ -1225,10 +1264,10 @@ const findProjectByAbsolutePath = (
   if (!normalizedInput) return null;
 
   const matchingCandidates = candidates
-    .filter(
-      (candidate) =>
-        candidate.workspacePath &&
-        normalizedInput.startsWith(candidate.workspacePath),
+    .filter((candidate) =>
+      candidate.workspacePath
+        ? relativePathWithinRoot(normalizedInput, candidate.workspacePath) !== null
+        : false,
     )
     .sort(
       (left, right) =>
@@ -1676,6 +1715,9 @@ const joinPathWithinWorkspace = (
 ): string => {
   const normalizedInput = (inputPath || ".").replace(/\\/g, "/");
   if (isAbsolutePath(normalizedInput)) {
+    if (workspacePath !== "." && relativePathWithinRoot(normalizedInput, workspacePath) === null) {
+      throw new Error("Absolute path is outside the selected workspace.");
+    }
     return normalizedInput;
   }
 
@@ -1845,16 +1887,19 @@ const resolveVirtualToolTarget = async (params: {
     if (match) {
       return {
         candidate: match,
-        relativePath:
-          params.rawPath
-            .replace(/\\/g, "/")
-            .slice((match.workspacePath || "").length)
-            .replace(/^\/+/, "") || ".",
+        relativePath: relativePathWithinRoot(params.rawPath, match.workspacePath || "") || ".",
         explicitTarget: true,
         usedFocusedProject: false,
         matchCount: 1,
       };
     }
+    return {
+      candidate: null,
+      relativePath: params.rawPath,
+      explicitTarget: true,
+      usedFocusedProject: false,
+      matchCount: 0,
+    };
   }
 
   const focusedCandidate =
@@ -3061,6 +3106,17 @@ export const executeWorkspaceTool = async (
           });
         }
 
+        try {
+          assertDistinctPatchTargets(
+            pendingChanges.map((change) => ({
+              displayPath: change.target.displayPath,
+              realPath: change.target.realPath,
+            })),
+          );
+        } catch (error) {
+          return formatToolError(error);
+        }
+
         const backendChanges: PatchWriteCommitChange[] = pendingChanges.map(
           (change) => ({
             displayPath: change.target.displayPath,
@@ -4162,6 +4218,17 @@ export const executeWorkspaceTool = async (
           bytesWritten: newContent.length,
           expectedRevision,
         });
+      }
+
+      try {
+        assertDistinctPatchTargets(
+          pendingChanges.map((change) => ({
+            displayPath: change.path,
+            realPath: change.realPath,
+          })),
+        );
+      } catch (error) {
+        return formatToolError(error);
       }
 
       const backendChanges: PatchWriteCommitChange[] = pendingChanges.map(

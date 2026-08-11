@@ -55,7 +55,7 @@ fn ensure_within_workspace(
     canonical_workspace: &Path,
     description: &str,
 ) -> Result<()> {
-    if path.starts_with(canonical_workspace) {
+    if path_is_same_or_descendant(path, canonical_workspace) {
         return Ok(());
     }
 
@@ -65,6 +65,46 @@ fn ensure_within_workspace(
             description, path, canonical_workspace
         ),
     })
+}
+
+/// Compare absolute paths by components, not by textual prefix. Windows file
+/// systems are case-insensitive, so canonical paths that differ only by case
+/// still describe the same workspace hierarchy.
+pub fn path_is_same_or_descendant(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let segments = |value: &Path| {
+            let normalized = value.to_string_lossy().replace('/', "\\");
+            normalized
+                .strip_prefix(r"\\?\")
+                .unwrap_or(&normalized)
+                .split('\\')
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>()
+        };
+        let path_segments = segments(path);
+        let root_segments = segments(root);
+        return root_segments.len() <= path_segments.len()
+            && root_segments
+                .iter()
+                .zip(path_segments.iter())
+                .all(|(root, path)| root == path);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let path_components = path.components().collect::<Vec<_>>();
+        let root_components = root.components().collect::<Vec<_>>();
+        if root_components.len() > path_components.len() {
+            return false;
+        }
+
+        root_components
+            .iter()
+            .zip(path_components.iter())
+            .all(|(root_component, path_component)| root_component == path_component)
+    }
 }
 
 fn reconstruct_missing_path(
@@ -98,7 +138,7 @@ pub fn validate_path(path: &Path, workspace: &Path) -> Result<PathBuf> {
     let (abs_path, canonical_workspace) = resolve_absolute(path, workspace)?;
     match abs_path.canonicalize() {
         Ok(canonical_path) => {
-            if canonical_path.starts_with(&canonical_workspace) {
+            if path_is_same_or_descendant(&canonical_path, &canonical_workspace) {
                 Ok(normalize_path(&canonical_path))
             } else {
                 Err(BackendError::FilesystemPathOutsideWorkspace {
@@ -394,6 +434,20 @@ mod tests {
     use std::env;
     use std::fs::{self, File};
     use std::io::Write;
+
+    #[cfg(windows)]
+    #[test]
+    fn path_containment_is_case_insensitive_and_component_bounded_on_windows() {
+        let root = Path::new(r"C:\Workspace\Project");
+        assert!(path_is_same_or_descendant(
+            Path::new(r"c:\workspace\project\src\main.rs"),
+            root,
+        ));
+        assert!(!path_is_same_or_descendant(
+            Path::new(r"C:\Workspace\Project-old\src\main.rs"),
+            root,
+        ));
+    }
 
     // Helper to create a temporary workspace
     fn setup_workspace(name: &str) -> PathBuf {

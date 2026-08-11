@@ -537,6 +537,33 @@ describe("workspaceToolExecutor helpers", () => {
     expect(routing.args).toEqual({ path: "src/server.ts" });
   });
 
+  it("matches absolute project roots by path segments, not textual prefixes", async () => {
+    const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor();
+    const options = {
+      workspacePathsByProjectId: { repo: "/repo", repo2: "/repo2" },
+      projectMounts: [
+        { projectId: "repo", mountName: "repo", displayName: "Repo", workspacePath: "/repo" },
+        { projectId: "repo2", mountName: "repo2", displayName: "Repo 2", workspacePath: "/repo2" },
+      ],
+    };
+    expect(resolveToolWorkspaceRouting("read", { path: "/repo2/a.ts" }, options).projectId).toBe("repo2");
+    expect(resolveToolWorkspaceRouting("read", { path: "/repo-extra/a.ts" }, options).projectId).toBeNull();
+  });
+
+  it("rejects a patch that targets the same Windows file through a case alias", async () => {
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: { isTauriAvailable: () => true, validateToolExecution: async () => ({ allowed: true }) },
+    } as Partial<MockAppState>);
+    const result = await executeWorkspaceTool("apply_patch", { patch_text: [
+      "*** Begin Patch", "*** Add File: web/src/App.tsx", "+one",
+      "*** Add File: web/SRC/app.tsx", "+two", "*** End Patch",
+    ].join("\n") }, "Implement", {
+      virtualRootEnabled: true,
+      projectMounts: [{ projectId: "web", mountName: "web", displayName: "Web", workspacePath: "C:/repo" }],
+    });
+    expect(result).toContain("aliases already-targeted");
+  });
+
   it("uses explicit project_id for git tools", async () => {
     const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor();
 
@@ -1456,15 +1483,6 @@ describe("workspaceToolExecutor helpers", () => {
           path === "C:/dev/macro-web/src/App.tsx" ||
           writes.some((entry) => entry.path === path),
         fsReadFileWithOptions: async ({ path }: { path: string }) => {
-          if (path === "C:/dev/macro-web/src/App.tsx") {
-            return {
-              content: "export const App = 'before';\n",
-              language: "typescript",
-              is_binary: false,
-              size: 28,
-              encoding: "utf-8",
-            };
-          }
           if (writes.some((entry) => entry.path === path)) {
             const written = writes.find((entry) => entry.path === path)!;
             return {
@@ -1472,6 +1490,15 @@ describe("workspaceToolExecutor helpers", () => {
               language: "typescript",
               is_binary: false,
               size: written.content.length,
+              encoding: "utf-8",
+            };
+          }
+          if (path === "C:/dev/macro-web/src/App.tsx") {
+            return {
+              content: "export const App = 'before';\n",
+              language: "typescript",
+              is_binary: false,
+              size: 28,
               encoding: "utf-8",
             };
           }
