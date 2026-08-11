@@ -9744,10 +9744,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       selectedConversationIdsByMode: { Chat: 'chat-conv' },
     }));
 
-    await useChatStore.getState().sendMessage({
-      conversationId: 'chat-conv',
-      content: `Réponds à ce payload impossible.\n${'dernier message énorme\n'.repeat(6000)}`,
-    });
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: `Réponds à ce payload impossible.\n${'dernier message énorme\n'.repeat(6000)}`,
+      }),
+    ).rejects.toThrow('The conversation is still too large');
     await flushAsyncWork();
 
     expect(streamChatMock).not.toHaveBeenCalled();
@@ -13528,10 +13530,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().sendMessage({
-      conversationId: 'chat-conv',
-      content: 'Hello',
-    });
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Hello',
+      }),
+    ).rejects.toThrow('Failed to load tool settings');
     await flushAsyncWork();
 
     const messages = useChatStore.getState().getConversationMessages('chat-conv');
@@ -13580,10 +13584,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       composerContextRefs: [],
     });
 
-    await useChatStore.getState().sendMessage({
-      conversationId: 'chat-conv',
-      content: 'Hello',
-    });
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Hello',
+      }),
+    ).rejects.toThrow('Failed to load tool settings');
     await flushAsyncWork();
 
     expect(useChatStore.getState().messagesByConversationId['other-conv']).toEqual([
@@ -14398,6 +14404,175 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('chat-a').some(
       (message: ChatMessage) => message.content === 'late A',
     )).toBe(false);
+  });
+
+  it('does not clear B composer references when A finishes preparing', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-a'), message_count: 1 },
+        createConversation('chat-b'),
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+    useChatStore.getState().replaceComposerContextRefs([
+      { id: 'src/a.ts', kind: 'file', title: 'a.ts', path: 'src/a.ts' },
+    ], 'chat-a');
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'A keeps its references.',
+    });
+    await Promise.resolve();
+    useChatStore.setState({
+      selectedConversationId: 'chat-b',
+      selectedConversationIdsByMode: { Chat: 'chat-b' },
+    });
+    const bRefs = [
+      { id: 'src/b.ts', kind: 'file' as const, title: 'b.ts', path: 'src/b.ts' },
+    ];
+    useChatStore.getState().replaceComposerContextRefs(bRefs, 'chat-b');
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'sent', conversationId: 'chat-a' });
+    expect(useChatStore.getState().composerContextRefs).toEqual(bRefs);
+  });
+
+  it('clears A toolbox references without touching B after a selection-only switch', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
+    listMessagesMock.mockImplementationOnce(async () => deferredA.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-a'), message_count: 1 },
+        createConversation('chat-b'),
+      ],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+    useChatStore.getState().replaceComposerContextRefs([
+      { id: 'src/a.ts', kind: 'file', title: 'a.ts', path: 'src/a.ts' },
+    ], 'chat-a');
+
+    const sendA = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'A sends while B is selected.',
+    });
+    await Promise.resolve();
+    const bRefs = [
+      { id: 'src/b.ts', kind: 'file' as const, title: 'b.ts', path: 'src/b.ts' },
+    ];
+    useChatStore.setState({
+      selectedConversationId: 'chat-b',
+      selectedConversationIdsByMode: { Chat: 'chat-b' },
+      composerContextRefs: bRefs,
+    });
+    deferredA.resolve([createChatMessageRecord({
+      id: 'history-a', conversation_id: 'chat-a', role: 'user',
+    })]);
+
+    await expect(sendA).resolves.toMatchObject({ status: 'sent', conversationId: 'chat-a' });
+    await waitForToolboxPersistence();
+    expect(useChatStore.getState().composerContextRefs).toEqual(bRefs);
+    expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('chat-a');
+    expect(deleteConversationToolboxStateMock).not.toHaveBeenCalledWith('chat-b');
+  });
+
+  it('keeps the Architect plan and branch captured at send when the selection changes', async () => {
+    appState.mode = 'Architect';
+    const planA = createScenarioPlan('blank', {
+      id: 'plan-a-at-send', targetBranch: 'feature/plan-a', conversationId: undefined,
+    });
+    const planB = createScenarioPlan('started', {
+      id: 'plan-b-after-send', targetBranch: 'feature/plan-b', conversationId: 'chat-b',
+    });
+    architectPlans.set(planA.id, planA);
+    architectPlans.set(planB.id, planB);
+    appState.activeArchitectPlanId = planA.id;
+    appState.activePlanContext = { id: planA.id, targetBranch: planA.targetBranch };
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+    const conversationId = await useChatStore.getState().ensureConversationForCurrentMode();
+    expect(conversationId).toMatch(/^pending-architect-/);
+
+    providerState.providerConfigs = [{ ...DEFAULT_PROVIDER_CONFIGS[0], isLocal: false }];
+    const credential = createDeferred<undefined>();
+    providerState.resolveProviderApiKey.mockImplementationOnce(async () => credential.promise);
+
+    const send = useChatStore.getState().sendMessage({
+      conversationId: conversationId!, content: 'Keep plan A.',
+    });
+    await flushAsyncWork();
+    expect(providerState.resolveProviderApiKey).toHaveBeenCalledWith('provider-1');
+    appState.activeArchitectPlanId = planB.id;
+    appState.activePlanContext = { id: planB.id, targetBranch: planB.targetBranch };
+    credential.resolve(undefined);
+
+    const result = await send;
+    expect(result).toMatchObject({ status: 'sent' });
+    expect(bindArchitectPlanConversationMock).toHaveBeenCalledWith({
+      branchName: planA.targetBranch,
+      planId: planA.id,
+      conversationId: result.conversationId,
+    });
+    expect(syncArchitectPlanChatFromConversationMock).toHaveBeenCalledWith({
+      branchName: planA.targetBranch,
+      planId: planA.id,
+      conversationId: result.conversationId,
+    });
+    expect(bindArchitectPlanConversationMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ planId: planB.id }),
+    );
+  });
+
+  it('publishes a user message persisted just before Stop without deleting its anchor', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const persistedUser = createDeferred<Awaited<ReturnType<typeof createMessageMock>>>();
+    createMessageMock.mockImplementationOnce(async () => persistedUser.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-a')],
+      selectedConversationId: 'chat-a',
+      selectedConversationIdsByMode: { Chat: 'chat-a' },
+    }));
+
+    const send = useChatStore.getState().sendMessage({
+      conversationId: 'chat-a', content: 'Persisted before Stop.',
+    });
+    await Promise.resolve();
+    useChatStore.getState().stopConversationStream('chat-a');
+    persistedUser.resolve({
+      id: 'persisted-user',
+      conversation_id: 'chat-a',
+      turn_id: null,
+      role: 'user',
+      content: 'Persisted before Stop.',
+      created_at: '2026-03-19T00:00:00.000Z',
+      tool_traces_json: null,
+      hidden_context: null,
+      provider_input_items_json: null,
+      provider_turn_state_json: null,
+      context_refs_json: null,
+    });
+
+    await expect(send).resolves.toMatchObject({
+      status: 'sent',
+      conversationId: 'chat-a',
+      userMessageId: 'persisted-user',
+      assistantMessageId: null,
+    });
+    expect(useChatStore.getState().getConversationMessages('chat-a')).toEqual([
+      expect.objectContaining({ id: 'persisted-user', role: 'user' }),
+    ]);
+    expect(deleteMessagesAfterMock).not.toHaveBeenCalled();
   });
 });
 
