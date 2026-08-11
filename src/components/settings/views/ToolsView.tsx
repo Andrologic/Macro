@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useToolsStore } from '../../../stores/useToolsStore';
 import { Icon } from '../../ui/Icon';
-// @ts-ignore
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../ui/Tabs';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';

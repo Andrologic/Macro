@@ -18,7 +18,6 @@ import { useAppVersion } from '../../hooks/useAppVersion';
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
   const appVersion = useAppVersion();
-  // @ts-ignore - store types updated but might not be picked up by lsp immediately
   const { settingsOpen, closeSettings, activeSettingsTab, setSettingsTab } = useAppStore();
 
   if (!settingsOpen) return null;
