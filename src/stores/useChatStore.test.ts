@@ -4108,6 +4108,65 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('keeps the materialized Architect session as the owner of empty-placeholder cleanup', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Architect';
+    const plan = createScenarioPlan('blank', {
+      id: 'plan-materialized-cleanup',
+      slug: 'plan-materialized-cleanup',
+      title: 'plan-materialized-cleanup',
+      conversationId: undefined,
+    });
+    architectPlans.set(plan.id, plan);
+    appState.activeArchitectPlanId = plan.id;
+    appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+    (
+      streamChatMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (options: { signal?: AbortSignal }) => Promise<void>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async (options) => {
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState());
+    const pendingConversationId =
+      await useChatStore.getState().ensureConversationForCurrentMode();
+
+    const result = await useChatStore.getState().sendMessage({
+      conversationId: pendingConversationId!,
+      content: 'Prépare le plan de migration.',
+    });
+    const materializedConversationId = result.conversationId;
+    const userMessage = useChatStore
+      .getState()
+      .getConversationMessages(materializedConversationId)
+      .find((message: ChatMessage) => message.role === 'user');
+
+    expect(materializedConversationId).not.toBe(pendingConversationId);
+    expect(useChatStore.getState().getConversationRuntime(materializedConversationId).phase).toBe(
+      'streaming',
+    );
+
+    useChatStore.getState().stopConversationStream(materializedConversationId);
+    await flushAsyncWork();
+
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages(materializedConversationId)
+        .filter((message: ChatMessage) => message.role === 'assistant'),
+    ).toEqual([]);
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith(
+      materializedConversationId,
+      userMessage!.id,
+    );
+  });
+
   it('removes a pending blank architect conversation when switching away before the first message', async () => {
     const blankPlan = createScenarioPlan('blank', {
       id: 'plan-pending-switch-away',
@@ -14195,6 +14254,101 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect(useChatStore.getState().conversations).toEqual([]);
     expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+  });
+
+  it('refuses a send while a deferred conversation deletion owns its tombstone', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const deletion = createDeferred<undefined>();
+    deleteConversationMock.mockImplementationOnce(async () => deletion.promise);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-1'), scope_mode: 'Chat' },
+      ],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+
+    const deletionPromise = useChatStore.getState().deleteConversation('chat-1');
+    await Promise.resolve();
+
+    await expect(
+      useChatStore.getState().sendMessage({
+        conversationId: 'chat-1',
+        content: 'Cette demande ne doit pas recréer la conversation.',
+      }),
+    ).rejects.toThrow('This conversation is no longer available.');
+
+    expect(useChatStore.getState().getConversationRuntime('chat-1').phase).toBe('idle');
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+
+    deletion.resolve(undefined);
+    await deletionPromise;
+
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+  });
+
+  it('does not let a cleared runtime clean up a reinitialized session', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const oldStreamReleased = createDeferred<undefined>();
+    (
+      streamChatMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (options: { signal?: AbortSignal }) => Promise<void>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async (options) => {
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener(
+          'abort',
+          () => void oldStreamReleased.promise.then(() => resolve()),
+          { once: true },
+        );
+      });
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-1')],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+    const oldSend = await useChatStore.getState().sendMessage({
+      conversationId: 'chat-1',
+      content: 'Ancien stream.',
+    });
+
+    useChatStore.getState().clearMessages();
+    await useChatStore.getState().initializeCritical();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-1')],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+    }));
+
+    const newSend = await useChatStore.getState().sendMessage({
+      conversationId: 'chat-1',
+      content: 'Nouvelle session légitime.',
+    });
+    oldStreamReleased.resolve(undefined);
+    await flushAsyncWork();
+
+    expect(newSend).toMatchObject({ status: 'sent', conversationId: 'chat-1' });
+    expect(deleteMessagesAfterMock).not.toHaveBeenCalledWith(
+      'chat-1',
+      oldSend.userMessageId,
+    );
+    expect(
+      useChatStore
+        .getState()
+        .getConversationMessages('chat-1')
+        .some((message: ChatMessage) => message.content === 'Nouvelle session légitime.'),
+    ).toBe(true);
   });
 
   it('restores the previous snapshot when bulk chat deletion fails', async () => {
