@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
@@ -15,12 +15,15 @@ import { resolveRunningConversationIds } from '../../services/taskStatusPresenta
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import {
   areConversationIdSetsEqual,
+  canApplyArchivedConversationHydration,
+  commitArchivedConversationMutation,
   filterConversationsByQuery,
   getArchiveViewConversations,
   getChatOnlyConversations,
   normalizeConversationIdList,
   partitionPinnedConversations,
   pruneConversationIdSet,
+  resolveArchivedConversationHydration,
   toggleAllConversationIds,
   toggleConversationIdInSet,
 } from './conversationArchiveState';
@@ -385,6 +388,36 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+  const archiveMutationVersionRef = useRef(0);
+  const archivePersistenceRef = useRef<Promise<void>>(Promise.resolve());
+  const archivedIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    archivedIdsRef.current = archivedIds;
+  }, [archivedIds]);
+
+  const persistArchivedConversationIds = useCallback(
+    async (nextArchivedIds: Set<string>): Promise<boolean> => {
+      const write = archivePersistenceRef.current
+        .catch(() => undefined)
+        .then(() =>
+          savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, Array.from(nextArchivedIds))
+        );
+      archivePersistenceRef.current = write.catch(() => undefined);
+
+      try {
+        await write;
+        return true;
+      } catch (error) {
+        notify.error(
+          t('chat.archivePreferenceSaveFailed', 'Unable to save archived conversations.'),
+          { description: error instanceof Error ? error.message : undefined }
+        );
+        return false;
+      }
+    },
+    [t]
+  );
 
   useEffect(() => {
     if (isArchivePersistenceReady) {
@@ -392,35 +425,40 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     }
 
     let cancelled = false;
+    const hydrationVersion = archiveMutationVersionRef.current;
 
-    void loadPreference<string[]>(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS)
-      .then((storedIds) => {
-        if (cancelled) {
+    void resolveArchivedConversationHydration(() =>
+      loadPreference<string[]>(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS)
+    ).then((result) => {
+        if (!result.ok) {
+          if (!cancelled) {
+            notify.error(
+              t('chat.archivePreferenceLoadFailed', 'Unable to load archived conversations.'),
+              { description: result.error instanceof Error ? result.error.message : undefined }
+            );
+          }
+          return;
+        }
+        if (
+          cancelled ||
+          !canApplyArchivedConversationHydration(
+            hydrationVersion,
+            archiveMutationVersionRef.current
+          )
+        ) {
           return;
         }
 
-        setArchivedIds((current) =>
-          current.size > 0 ? current : new Set(normalizeConversationIdList(storedIds))
-        );
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsArchivePersistenceReady(true);
-        }
+        const hydratedIds = new Set(result.ids);
+        archivedIdsRef.current = hydratedIds;
+        setArchivedIds(hydratedIds);
+        setIsArchivePersistenceReady(true);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [isArchivePersistenceReady]);
-
-  useEffect(() => {
-    if (!isArchivePersistenceReady) {
-      return;
-    }
-
-    void savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, Array.from(archivedIds));
-  }, [archivedIds, isArchivePersistenceReady]);
+  }, [isArchivePersistenceReady, t]);
 
   const chatConversations = useMemo(
     () => getChatOnlyConversations(conversations),
@@ -450,6 +488,9 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     });
     setArchivedIds((current) => {
       const next = pruneConversationIdSet(current, chatConversationIds);
+      if (!areConversationIdSetsEqual(current, next)) {
+        archivedIdsRef.current = next;
+      }
       return areConversationIdSetsEqual(current, next) ? current : next;
     });
   }, [chatConversationIds]);
@@ -555,25 +596,30 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   }, []);
 
   const applyConversationArchiveState = useCallback(
-    (conversationIds: string[], shouldArchive: boolean) => {
+    async (conversationIds: string[], shouldArchive: boolean): Promise<boolean> => {
       const normalizedIds = normalizeConversationIdList(conversationIds);
       if (normalizedIds.length === 0) {
-        return;
+        return false;
       }
 
       const idsToUpdate = new Set(normalizedIds);
-
-      setArchivedIds((current) => {
-        const next = new Set(current);
-        normalizedIds.forEach((conversationId) => {
-          if (shouldArchive) {
-            next.add(conversationId);
-            return;
-          }
-          next.delete(conversationId);
-        });
-        return areConversationIdSetsEqual(current, next) ? current : next;
+      archiveMutationVersionRef.current += 1;
+      const previousArchivedIds = archivedIdsRef.current;
+      const nextArchivedIds = new Set(previousArchivedIds);
+      normalizedIds.forEach((conversationId) => {
+        if (shouldArchive) {
+          nextArchivedIds.add(conversationId);
+          return;
+        }
+        nextArchivedIds.delete(conversationId);
       });
+      if (areConversationIdSetsEqual(previousArchivedIds, nextArchivedIds)) {
+        return false;
+      }
+
+      archivedIdsRef.current = nextArchivedIds;
+      setArchivedIds(nextArchivedIds);
+      setIsArchivePersistenceReady(true);
 
       setSelectedIds((current) => {
         const next = removeConversationIdsFromSet(current, idsToUpdate);
@@ -589,21 +635,42 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         }
       }
 
-      notify.success(
-        shouldArchive
-          ? normalizedIds.length === 1
-            ? t('chat.conversationArchived', 'Conversation archived')
-            : t('chat.conversationsArchived', '{{count}} conversations archived', {
-                count: normalizedIds.length,
-              })
-          : normalizedIds.length === 1
-            ? t('chat.conversationRestored', 'Conversation restored')
-            : t('chat.conversationsRestored', '{{count}} conversations restored', {
-                count: normalizedIds.length,
-              })
-      );
+      return commitArchivedConversationMutation({
+        write: async () => {
+          if (!(await persistArchivedConversationIds(nextArchivedIds))) {
+            throw new Error('archive preference write failed');
+          }
+        },
+        onCommitted: () => {
+          notify.success(
+            shouldArchive
+              ? normalizedIds.length === 1
+                ? t('chat.conversationArchived', 'Conversation archived')
+                : t('chat.conversationsArchived', '{{count}} conversations archived', {
+                    count: normalizedIds.length,
+                  })
+              : normalizedIds.length === 1
+                ? t('chat.conversationRestored', 'Conversation restored')
+                : t('chat.conversationsRestored', '{{count}} conversations restored', {
+                    count: normalizedIds.length,
+                  })
+          );
+        },
+        onFailure: () => {
+          if (archivedIdsRef.current === nextArchivedIds) {
+            archivedIdsRef.current = previousArchivedIds;
+            setArchivedIds(previousArchivedIds);
+          }
+        },
+      });
     },
-    [archiveSourceConversations, selectConversation, selectedConversationId, t]
+    [
+      archiveSourceConversations,
+      persistArchivedConversationIds,
+      selectConversation,
+      selectedConversationId,
+      t,
+    ]
   );
 
   const handleConversationDeleted = useCallback((conversationId: string) => {
@@ -623,26 +690,35 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       return removeConversationIdsFromSet(current, idsToRemove);
     });
 
-    setArchivedIds((current) => {
-      if (!current.has(conversationId)) {
-        return current;
+    archiveMutationVersionRef.current += 1;
+    const previousArchivedIds = archivedIdsRef.current;
+    if (!previousArchivedIds.has(conversationId)) {
+      return;
+    }
+    const nextArchivedIds = removeConversationIdsFromSet(previousArchivedIds, idsToRemove);
+    archivedIdsRef.current = nextArchivedIds;
+    setArchivedIds(nextArchivedIds);
+    void persistArchivedConversationIds(nextArchivedIds).then((saved) => {
+      if (!saved && archivedIdsRef.current === nextArchivedIds) {
+        archivedIdsRef.current = previousArchivedIds;
+        setArchivedIds(previousArchivedIds);
       }
-      return removeConversationIdsFromSet(current, idsToRemove);
     });
-  }, []);
+  }, [persistArchivedConversationIds]);
 
   const handleToggleSelectAll = useCallback(() => {
     setSelectedIds((current) => toggleAllConversationIds(current, visibleConversationIds));
   }, [visibleConversationIds]);
 
-  const handleBulkArchiveAction = useCallback(() => {
+  const handleBulkArchiveAction = useCallback(async () => {
     const conversationIds = Array.from(selectedIds);
     if (conversationIds.length === 0) {
       return;
     }
 
-    applyConversationArchiveState(conversationIds, !showArchived);
-    exitMultiSelectMode();
+    if (await applyConversationArchiveState(conversationIds, !showArchived)) {
+      exitMultiSelectMode();
+    }
   }, [applyConversationArchiveState, exitMultiSelectMode, selectedIds, showArchived]);
 
   const handleDeleteSelected = async () => {

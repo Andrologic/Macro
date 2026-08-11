@@ -138,6 +138,10 @@ export const ModelsSettings: React.FC = () => {
   const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null>(null);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const metadataModelConfigVersionRef = useRef(0);
+  const metadataModelConfigPersistenceRef = useRef<Promise<void>>(Promise.resolve());
+  const latestRequestedMetadataModelConfigRef = useRef<MetadataModelConfig | null>(null);
+  const persistedMetadataModelConfigRef = useRef<MetadataModelConfig | null>(null);
 
   const handleProviderSettingsChange = async (
     providerId: string,
@@ -223,28 +227,75 @@ export const ModelsSettings: React.FC = () => {
 
   useEffect(() => {
     let disposed = false;
+    const hydrationVersion = metadataModelConfigVersionRef.current;
     void loadMetadataModelConfig()
       .then((modelConfig) => {
-        if (!disposed) {
+        if (!disposed && hydrationVersion === metadataModelConfigVersionRef.current) {
+          persistedMetadataModelConfigRef.current = modelConfig;
           setMetadataModelConfig(modelConfig);
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          notify.error(
+            getErrorMessage(error, t('models.metadataPreferenceLoadFailed', 'Failed to load metadata model preference'))
+          );
         }
       });
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const unsubscribe = subscribeMetadataModelConfig((config) => {
+      const latestRequestedConfig = latestRequestedMetadataModelConfigRef.current;
+      if (
+        latestRequestedConfig &&
+        !metadataModelConfigsEqual(config, latestRequestedConfig)
+      ) {
+        return;
+      }
+      if (latestRequestedConfig) {
+        latestRequestedMetadataModelConfigRef.current = null;
+      }
+      metadataModelConfigVersionRef.current += 1;
+      persistedMetadataModelConfigRef.current = config;
       setMetadataModelConfig(config);
     });
     return unsubscribe;
   }, []);
 
   const saveCommitModelConfig = useCallback((config: MetadataModelConfig) => {
+    const requestVersion = metadataModelConfigVersionRef.current + 1;
+    metadataModelConfigVersionRef.current = requestVersion;
+    latestRequestedMetadataModelConfigRef.current = config;
     setMetadataModelConfig(config);
-    void saveMetadataModelConfig(config);
-  }, []);
+    metadataModelConfigPersistenceRef.current = metadataModelConfigPersistenceRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        await saveMetadataModelConfig(config);
+        persistedMetadataModelConfigRef.current = config;
+        if (
+          metadataModelConfigVersionRef.current === requestVersion &&
+          latestRequestedMetadataModelConfigRef.current === config
+        ) {
+          latestRequestedMetadataModelConfigRef.current = null;
+        }
+      })
+      .catch((error) => {
+        if (
+          metadataModelConfigVersionRef.current === requestVersion &&
+          latestRequestedMetadataModelConfigRef.current === config
+        ) {
+          latestRequestedMetadataModelConfigRef.current = null;
+          setMetadataModelConfig(persistedMetadataModelConfigRef.current);
+        }
+        notify.error(
+          getErrorMessage(error, t('models.metadataPreferenceSaveFailed', 'Failed to save metadata model preference'))
+        );
+      });
+  }, [t]);
 
   useEffect(() => {
     if (!metadataModelConfig || !normalizedMetadataModelConfig) return;
