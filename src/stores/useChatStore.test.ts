@@ -12303,6 +12303,56 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toBe('git_commit');
   });
 
+  it('does not recreate checkpoints when deletion wins a completed workspace mutation', async () => {
+    tauriAvailable = false;
+    const mutationFinished = createDeferred<void>();
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async (...args: unknown[]) => {
+        const executionContext = args[3] as {
+          onCodeCheckpoint?: (checkpoint: {
+            toolName: string;
+            files: unknown[];
+          }) => Promise<void>;
+        };
+        await mutationFinished.promise;
+        await executionContext.onCodeCheckpoint?.({
+          toolName: 'write',
+          files: [
+            {
+              path: 'src/late.ts',
+              realPath: 'C:/repo/src/late.ts',
+              status: 'created',
+              before: { exists: false, content: null, isBinary: false, size: 0 },
+              after: {
+                exists: true,
+                content: 'export const late = true;\n',
+                isBinary: false,
+                size: 25,
+              },
+            },
+          ],
+        });
+      }) as unknown as () => Promise<undefined>,
+    );
+    const { useChatStore, onToolCall } = await startImplementToolConversation();
+
+    const toolCall = onToolCall('write', {
+      path: 'src/late.ts',
+      content: 'export const late = true;\n',
+    });
+    await Promise.resolve();
+    await useChatStore.getState().deleteConversation('implement-conv', {
+      mode: 'implement',
+    });
+    mutationFinished.resolve();
+    await toolCall;
+
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(
+      useChatStore.getState().agentCodeCheckpointsByConversationId['implement-conv'],
+    ).toBeUndefined();
+  });
+
   it('limits implement plan agent turns to read-only inspection tools', async () => {
     await startImplementToolConversation(
       'Analyse la correction avant de toucher au code.',
