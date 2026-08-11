@@ -27,6 +27,7 @@ import {
   subscribeMetadataModelConfig,
 } from '../../../../services/metadataModelPreference';
 import type { AIModel, ReasoningEffort } from '../../../../types';
+import { MetadataModelConfigPersistence } from './metadataModelConfigPersistence';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -138,10 +139,17 @@ export const ModelsSettings: React.FC = () => {
   const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null>(null);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const metadataModelConfigVersionRef = useRef(0);
-  const metadataModelConfigPersistenceRef = useRef<Promise<void>>(Promise.resolve());
-  const latestRequestedMetadataModelConfigRef = useRef<MetadataModelConfig | null>(null);
-  const persistedMetadataModelConfigRef = useRef<MetadataModelConfig | null>(null);
+  const [metadataModelConfigPersistence] = useState(
+    () => new MetadataModelConfigPersistence({
+      save: saveMetadataModelConfig,
+      applyConfig: setMetadataModelConfig,
+      onSaveError: (error) => {
+        notify.error(
+          getErrorMessage(error, t('models.metadataPreferenceSaveFailed', 'Failed to save metadata model preference'))
+        );
+      },
+    })
+  );
 
   const handleProviderSettingsChange = async (
     providerId: string,
@@ -227,13 +235,10 @@ export const ModelsSettings: React.FC = () => {
 
   useEffect(() => {
     let disposed = false;
-    const hydrationVersion = metadataModelConfigVersionRef.current;
+    const hydrationVersion = metadataModelConfigPersistence.getVersion();
     void loadMetadataModelConfig()
       .then((modelConfig) => {
-        if (!disposed && hydrationVersion === metadataModelConfigVersionRef.current) {
-          persistedMetadataModelConfigRef.current = modelConfig;
-          setMetadataModelConfig(modelConfig);
-        }
+        if (!disposed) metadataModelConfigPersistence.hydrate(modelConfig, hydrationVersion);
       })
       .catch((error) => {
         if (!disposed) {
@@ -245,57 +250,18 @@ export const ModelsSettings: React.FC = () => {
     return () => {
       disposed = true;
     };
-  }, [t]);
+  }, [metadataModelConfigPersistence, t]);
 
   useEffect(() => {
     const unsubscribe = subscribeMetadataModelConfig((config) => {
-      const latestRequestedConfig = latestRequestedMetadataModelConfigRef.current;
-      if (
-        latestRequestedConfig &&
-        !metadataModelConfigsEqual(config, latestRequestedConfig)
-      ) {
-        return;
-      }
-      if (latestRequestedConfig) {
-        latestRequestedMetadataModelConfigRef.current = null;
-      }
-      metadataModelConfigVersionRef.current += 1;
-      persistedMetadataModelConfigRef.current = config;
-      setMetadataModelConfig(config);
+      metadataModelConfigPersistence.acceptExternal(config);
     });
     return unsubscribe;
-  }, []);
+  }, [metadataModelConfigPersistence]);
 
   const saveCommitModelConfig = useCallback((config: MetadataModelConfig) => {
-    const requestVersion = metadataModelConfigVersionRef.current + 1;
-    metadataModelConfigVersionRef.current = requestVersion;
-    latestRequestedMetadataModelConfigRef.current = config;
-    setMetadataModelConfig(config);
-    metadataModelConfigPersistenceRef.current = metadataModelConfigPersistenceRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        await saveMetadataModelConfig(config);
-        persistedMetadataModelConfigRef.current = config;
-        if (
-          metadataModelConfigVersionRef.current === requestVersion &&
-          latestRequestedMetadataModelConfigRef.current === config
-        ) {
-          latestRequestedMetadataModelConfigRef.current = null;
-        }
-      })
-      .catch((error) => {
-        if (
-          metadataModelConfigVersionRef.current === requestVersion &&
-          latestRequestedMetadataModelConfigRef.current === config
-        ) {
-          latestRequestedMetadataModelConfigRef.current = null;
-          setMetadataModelConfig(persistedMetadataModelConfigRef.current);
-        }
-        notify.error(
-          getErrorMessage(error, t('models.metadataPreferenceSaveFailed', 'Failed to save metadata model preference'))
-        );
-      });
-  }, [t]);
+    void metadataModelConfigPersistence.persist(config);
+  }, [metadataModelConfigPersistence]);
 
   useEffect(() => {
     if (!metadataModelConfig || !normalizedMetadataModelConfig) return;
