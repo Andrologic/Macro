@@ -14377,6 +14377,65 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(deleteMessagesAfterMock).not.toHaveBeenCalled();
   });
 
+  it('removes a deferred edit-replay placeholder when Stop wins after its creation', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const placeholderCreated = createDeferred<ReturnType<typeof createChatMessageRecord>>();
+    (
+      createMessageMock as unknown as {
+        mockImplementationOnce: (
+          implementation: (...args: unknown[]) => Promise<ReturnType<typeof createChatMessageRecord>>,
+        ) => void;
+      }
+    ).mockImplementationOnce(async () => placeholderCreated.promise);
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv')],
+      messages: [
+        {
+          id: 'user-1',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Original request',
+          timestamp: '2026-03-19T00:01:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    }));
+
+    const edit = useChatStore.getState().editMessage(
+      'user-1',
+      'Edited request',
+      { skipAgentCodeReplayCheck: true },
+    );
+    await flushAsyncWork();
+    expect(createMessageMock).toHaveBeenCalledWith(
+      'chat-conv',
+      'assistant',
+      '',
+      expect.objectContaining({ turnId: 'legacy-turn-user-1' }),
+    );
+
+    useChatStore.getState().stopConversationStream('chat-conv');
+    placeholderCreated.resolve(
+      createChatMessageRecord({
+        id: 'deferred-assistant',
+        conversation_id: 'chat-conv',
+        role: 'assistant',
+        content: '',
+      }),
+    );
+    await edit;
+
+    expect(
+      useChatStore.getState().getConversationMessages('chat-conv'),
+    ).not.toContainEqual(expect.objectContaining({ id: 'deferred-assistant' }));
+    expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'user-1');
+  });
+
   it('keeps generation A bound to its captured context after delayed loading', async () => {
     appState.mode = 'Implement';
     appState.agentType = 'build';
