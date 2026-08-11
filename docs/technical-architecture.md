@@ -2,7 +2,7 @@
 
 ## 1. Objet du document
 
-Ce document decrit l'architecture technique de référence de Macro.
+Ce document décrit l'architecture technique de référence de Macro.
 
 Il couvre :
 - les couches principales de l'application
@@ -61,7 +61,7 @@ Elle est responsable de :
 - l'état des tâches, changements de fichiers et outils
 - la synchronisation des préférences locales côté client
 
-Les stores centralisent les decisions d'orchestration côté interface.
+Les stores centralisent les décisions d'orchestration côté interface.
 
 ### 3.3 Couche services frontend
 
@@ -71,7 +71,7 @@ Elle fournit :
 - une abstraction de provider (`ipc`, `remote`)
 - des services spécialisés pour les plans, le workflow Git, la sync metadata, le streaming chat, le contexte projet et l'exécution d'outils
 
-Elle à pour rôle d'isoler le reste de l'interface des détails du transport.
+Elle a pour rôle d'isoler le reste de l'interface des détails du transport.
 
 ### 3.4 Couche runtime desktop
 
@@ -249,7 +249,7 @@ D'autres stores portent des responsabilités ciblées :
 
 ### 6.5 Principe d'orchestration
 
-Le frontend ne doit pas dupliquer les decisions métier dans plusieurs composants.
+Le frontend ne doit pas dupliquer les décisions métier dans plusieurs composants.
 
 La logique transverse doit être concentrée dans :
 
@@ -273,7 +273,7 @@ La couche `services/index.ts` sélectionne dynamiquement le provider de données
 Cette abstraction permet :
 
 - d'utiliser Tauri en mode desktop
-- de parler à un backend distant sans reecrire le reste de l'application
+- de parler à un backend distant sans réécrire le reste de l'application
 
 ### 7.2 Services de domaine
 
@@ -309,7 +309,7 @@ Cette couche limite le couplage direct entre composants React et détails de sé
 
 Tauri sert de runtime desktop et d'interface native.
 
-Il hébergé :
+Il héberge :
 
 - la fenêtre applicative
 - les plugins système
@@ -457,7 +457,7 @@ Le stockage metadata dans Git permet l'audit, la redondance et la conservation d
 
 ## 11. Modèle metadata et plans
 
-### 11.1 Structuré des plans
+### 11.1 Structure des plans
 
 Les plans sont stockés dans une structure de type :
 
@@ -477,8 +477,8 @@ Les artefacts de relais de tâches sont séparés du dossier `tasks/<task-id>/`,
 
 Cette structure sert à :
 
-- conserver une representation machine des plans
-- conserver une representation lisible par humain
+- conserver une représentation machine des plans
+- conserver une représentation lisible par humain
 - permettre une auditabilité fine tâche par tâche
 - rendre la metadata consultable même hors de l'application
 
@@ -521,9 +521,9 @@ Les tâches de la stratégie peuvent être réparties sur plusieurs branches de 
 
 Chaque tâche exécutable dispose de sa propre branche de feature par sous-projet éditable.
 
-Les dépendances entre tâches expriment le séquentiel ; elles ne sont pas modélées par la reutilisation d'une même branche.
+Les dépendances entre tâches expriment le séquentiel ; elles ne sont pas modélées par la réutilisation d'une même branche.
 
-Une fois valide, le travail d'une tâche est merge vers la branche d'intégration du plan. Les tâches dependantes demarrent ensuite depuis cette branche de plan mise à jour.
+Une fois valide, le travail d'une tâche est merge vers la branche d'intégration du plan. Les tâches dépendantes démarrent ensuite depuis cette branche de plan mise à jour.
 
 ### 12.4 Worktrees
 
@@ -572,7 +572,7 @@ Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
 - Chat reste plus restreint
-- Implement à accès à davantage d'outils de workspace et Git
+- Implement a accès à davantage d'outils de workspace et Git
 
 ### 13.2 Validation d'exécution
 
@@ -590,7 +590,7 @@ La couche d'exécution d'outils encapsule :
 - la différence entre scope normal et scope metadata
 - le fallback entre transport Tauri et transport distant
 
-Cette couche unifié l'exécution des outils côté produit.
+Cette couche unifie l'exécution des outils côté produit.
 
 ---
 
@@ -600,7 +600,7 @@ Cette couche unifié l'exécution des outils côté produit.
 
 Les skills sont une couche de contexte agent distincte de MCP.
 
-Une skill fournit des instructions réutilisables à l'agent. Elle ne créé pas de nouveaux outils arbitraires. Les outils externes restent portes par MCP et par la politique d'outils Macro.
+Une skill fournit des instructions réutilisables à l'agent. Elle ne crée pas de nouveaux outils arbitraires. Les outils externes restent portés par MCP et par la politique d'outils Macro.
 
 ### 14.2 Format local
 
@@ -617,7 +617,7 @@ Les sources supportées en 0.1 sont :
 
 La découverte ignore les dossiers cachés internes, `.git`, `node_modules`, les racines symlinkées et applique des limites de profondeur et de volume. La validation sépare `isValid` (chargeable par Macro) de `specCompliant` (strict AgentSkills) et expose les diagnostics au frontend.
 
-Le validateur suit la logique `skills-ref` pour les noms : comparaison après normalisation Unicode NFKC, lettres/chiffres Unicode acceptés avec tirets, et lowercase Unicode. Les écarts d'usage courants (uppercase, underscores, tirets en début/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` généré le diagnostic `unexpected_frontmatter_field`.
+Le validateur suit la logique `skills-ref` pour les noms : comparaison après normalisation Unicode NFKC, lettres/chiffres Unicode acceptés avec tirets, et lowercase Unicode. Les écarts d'usage courants (uppercase, underscores, tirets en début/fin, doubles tirets, mismatch dossier) restent des warnings lenient tant que la skill est chargeable. Tout champ de frontmatter hors `name`, `description`, `license`, `compatibility`, `metadata` et `allowed-tools` génère le diagnostic `unexpected_frontmatter_field`.
 
 Les collisions sont résolues de façon déterministe : projet avant global, puis namespace `.agents`, `.codex`, `.opencode`, `.claude`, puis chemin lexical stable. La skill gagnante est la seule exposée au catalogue agent et à la résolution `$skill-name`. Les skills shadowed restent listées dans Settings et peuvent être chargées par sélection explicite/id exact.
 
@@ -626,7 +626,7 @@ Les collisions sont résolues de façon déterministe : projet avant global, pui
 Le chargement doit rester progressif :
 
 - au bootstrap, Macro ne charge que le manifeste compact
-- dans le prompt, Macro injecté seulement le catalogue des skills activées, chargeables et non-shadowed
+- dans le prompt, Macro injecte seulement le catalogue des skills activées, chargeables et non-shadowed
 - le corps body-only de `SKILL.md` est chargé via `skill_activate` dans un bloc `<skill_content ...>` structuré
 - les fichiers de `references/` et `assets/` sont lus via `skill_read_resource`
 - les scripts de `scripts/` sont exécutés via `skill_run_script`
@@ -652,13 +652,13 @@ Le backend bloque les chemins hors skill, les traversals, les fichiers cachés n
 
 ### 14.5 Fondation de transport remote (expérimentale)
 
-Cette couche reste interne et hors du contrat produit 0.1. Les détails ci-dessous documentent le prototype existant, pas un mode selectionnable dans l'application.
+Cette couche reste interne et hors du contrat produit 0.1. Les détails ci-dessous documentent le prototype existant, pas un mode sélectionnable dans l'application.
 
 Les DTO de skills sont transport-neutres. Le manifeste conserve les champs historiques locaux (`rootPath`, `skillFilePath`) pour compatibilité UI/cache quand ils existent, mais ils sont optionnels. La source principale est une `location` opaque (`local`, `remote` ou `bundled`) que les clients doivent privilégier quand le runtime n'est pas local. La déduplication utilise `contentHash`, puis `location.uri` comme fallback stable.
 
 Le provider remote expose les opérations équivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le préfixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolérant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit répondre `unsupported` ou 404/405/501; l'UI présente alors que le runtime courant ne supporte pas la capacité précise.
 
-Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal à `skills=true` et `skillScripts=false`.
+Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
 
 La surface complète reste supportée par le desktop local via Tauri IPC.
 
@@ -679,7 +679,7 @@ Cette couche s'occupe de :
 
 ### 15.2 Couplage avec les plans
 
-En mode Architect, certaines actions conversationnelles declenchent une sync metadata à la fin du stream.
+En mode Architect, certaines actions conversationnelles déclenchent une sync metadata à la fin du stream.
 
 L'objectif est d'ancrer les changements de plan dans la branche metadata de façon régulière.
 
@@ -737,13 +737,13 @@ Cette API couvre au minimum :
 
 Cette surface HTTP est une fondation expérimentale incomplète. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
 
-Les capabilities runtime separent les skills en deux niveaux : `skills` pour la découverte, l'activation et la lecture de ressources; `skillScripts` pour l'exécution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
+Les capabilities runtime séparent les skills en deux niveaux : `skills` pour la découverte, l'activation et la lecture de ressources; `skillScripts` pour l'exécution de scripts. Un provider remote peut supporter les manifests et ressources sans autoriser les scripts cloud.
 
 ### 16.3 Protection expérimentale
 
-Le kernel headless peut être protège par un bearer token.
+Le kernel headless peut être protégé par un bearer token.
 
-Ce token protège uniquement le prototype HTTP. Il n'impliqué aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
+Ce token protège uniquement le prototype HTTP. Il n'implique aucun compte applicatif, aucune session utilisateur Macro et aucun abonnement.
 
 ### 16.4 Position architecturale
 
@@ -797,7 +797,7 @@ Le présent document doit décrire :
 
 Le présent document ne doit pas décrire en détail :
 
-- la philosophie produit generale
+- la philosophie produit générale
 - les workflows utilisateur comme contrat principal
 - les priorités de développement
 
@@ -821,4 +821,4 @@ Ce document ne doit pas être mis à jour pour :
 
 - des ajustements purement visuels
 - des détails d'UX sans impact d'architecture
-- des idees produit non encore traduites en architecture cible
+- des idées produit non encore traduites en architecture cible

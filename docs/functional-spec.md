@@ -2,9 +2,9 @@
 
 ## 1. Objet du document
 
-Ce document definit la cible fonctionnelle de Macro en tant que produit fini.
+Ce document définit la cible fonctionnelle de Macro en tant que produit fini.
 
-Il decrit :
+Il décrit :
 - ce qu'est Macro
 - ce que Macro doit permettre à un développeur de faire
 - comment les principaux workflows doivent fonctionner
@@ -13,7 +13,7 @@ Il decrit :
 Ce document n'est pas un plan d'implémentation.
 Les écarts entre la cible et l'état courant, les phases de livraison et les priorités relèvent de `docs/roadmap.md`.
 
-Sauf mention explicite contraire, les exigences de ce document décrivent le comportement produit attendu, y compris quand certaines capacités ne sont pas encore entierement stabilisées dans l'application.
+Sauf mention explicite contraire, les exigences de ce document décrivent le comportement produit attendu, y compris quand certaines capacités ne sont pas encore entièrement stabilisées dans l'application.
 Pour la ligne 0.1, le contrat public est le workflow desktop local-first. Le remote et le mobile sont des pistes futures, non disponibles et non supportées dans le produit actuel. Macro 0.1 n'expose ni compte applicatif ni abonnement.
 
 ---
@@ -24,7 +24,7 @@ Pour la ligne 0.1, le contrat public est le workflow desktop local-first. Le rem
 
 Macro est un environnement de développement qui organise le vibe-coding en transformant le développeur en architecte et pilote de l'exécution par l'IA plutôt qu'en producteur direct du code.
 
-Utiliser Macro doit ressembler au travail d'un senior ou d'un lead technique qui briefe, coordonné et contrôle une équipe d'exécuteurs IA juniors.
+Utiliser Macro doit ressembler au travail d'un senior ou d'un lead technique qui briefe, coordonne et contrôle une équipe d'exécuteurs IA juniors.
 
 ### 2.2 Philosophie centrale
 
@@ -50,8 +50,8 @@ Macro doit permettre à un développeur de définir le travail une fois, de le s
 
 Macro doit couvrir :
 
-- la planification et la structuration du travail d'ingenierie
-- la derivation de tâches exécutables à partir d'un plan
+- la planification et la structuration du travail d'ingénierie
+- la dérivation de tâches exécutables à partir d'un plan
 - l'exécution de tâches avec assistance IA
 - la review des changements avant validation finale
 - la coordination de plusieurs projets reliés dans un même espace de travail
@@ -143,7 +143,7 @@ Le groupe est le contexte fonctionnel principal pour le travail coordonné.
 
 ### 6.3 Projet
 
-Un projet est une codebase technique individuelle, generalement adossée à son propre dépôt.
+Un projet est une codebase technique individuelle, généralement adossée à son propre dépôt.
 
 Un projet appartient à un groupe de projets.
 
@@ -155,7 +155,7 @@ Un plan contient :
 - une conversation dédiée qui capture l'intention et les clarifications
 - la stratégie générée directement depuis cette conversation et le contexte du projet
 - la structure prédictive de branches associée à cette stratégie
-- les artefacts de relais produits par les tâches planifiées pour transmettre de l'information aux tâches dependantes
+- les artefacts de relais produits par les tâches planifiées pour transmettre de l'information aux tâches dépendantes
 
 Un plan sert à définir une vague de travail cohérente.
 
@@ -166,9 +166,9 @@ Exemples typiques :
 
 Plusieurs plans peuvent exister en parallèle pour un même groupe de projets.
 
-Plusieurs plans peuvent aussi être actifs en parallèle si leur exécution peut progresser simultanement.
+Plusieurs plans peuvent aussi être actifs en parallèle si leur exécution peut progresser simultanément.
 
-Lorsqu'un plan est termine, il est archive.
+Lorsqu'un plan est terminé, il est archivé.
 Un plan archivé reste consultable pour l'audit et l'historique, mais n'est plus destiné à être modifié.
 
 ### 6.5 Nœud de stratégie
@@ -193,7 +193,7 @@ Son but est de :
 - organiser l'exécution
 - maximiser le parallélisme lorsque cela reste sans risque
 - conserver une branche de travail distincte par tâche exécutable
-- réduire la dérivé de l'IA et les changements trop volumineux
+- réduire la dérive de l'IA et les changements trop volumineux
 
 ### 6.7 Tâche d'implémentation
 
@@ -212,13 +212,13 @@ Un artefact de relais est une information durable produite par une tâche issue 
 Il sert à transmettre du contexte exploitable aux tâches qui dépendent directement ou indirectement de la tâche productrice.
 
 Les artefacts de relais :
-- sont rattaches à un plan et à une tâche productrice
+- sont rattachés à un plan et à une tâche productrice
 - sont stockés dans les métadonnées `@macro`, pas dans le code source applicatif
 - peuvent être déclarés à l'avance par la stratégie ou produits librement par l'agent Implement
 - ne sont visibles que par la tâche productrice, ses descendantes et la tâche synthétique de finalisation du plan
 - ne sont pas partagés entre tâches parallèles sans dépendance
 - sont affichés dans le panneau des changements comme un sous-projet `Artifacts`, avec revue et validation metadata séparées du staging Git
-- peuvent superséder un artefact hérité en creant une nouvelle version rattachée à la tâche courante, sans écraser la version parente
+- peuvent superséder un artefact hérité en créant une nouvelle version rattachée à la tâche courante, sans écraser la version parente
 - restent limités en v1 à du contenu texte, Markdown ou JSON
 
 ---
@@ -252,7 +252,7 @@ Le mode Architect doit supporter :
 - une conversation par plan
 - l'inspection du code pour enrichir le contexte lorsque cela est utile
 - une stratégie générée par l'IA depuis la conversation et le contexte du projet
-- la declaration d'artefacts critiques attendus par tâche
+- la déclaration d'artefacts critiques attendus par tâche
 - une visualisation des dépendances et de la structure prédictive
 - la validation d'un plan
 - la préparation automatique de la structure d'exécution après validation
@@ -267,7 +267,7 @@ Le mode Implement est le mode d'exécution et de review.
 Son objectif est de :
 - exécuter les tâches dérivées d'un ou plusieurs plans
 - gérer les questions de l'IA pendant l'exécution
-- presenter les changements générés pour review
+- présenter les changements générés pour review
 - permettre un ajustement humain si nécessaire
 - valider et committer le travail tâche par tâche
 
@@ -275,7 +275,7 @@ Le mode Implement doit supporter :
 - une file de tâches issue de plusieurs plans
 - le filtrage des tâches par plan et par autres critères pertinents
 - la prise en compte explicite des dépendances et de l'état de disponibilité d'une tâche
-- la consultation des artefacts hérités depuis les tâches parentes et la production d'artefacts pour les tâches dependantes
+- la consultation des artefacts hérités depuis les tâches parentes et la production d'artefacts pour les tâches dépendantes
 - une review en fin de tâche
 - une validation globale du plan avant merge du plan vers la branche de base
 
@@ -303,9 +303,9 @@ Le mode Chat doit conserver un historique local des conversations.
 
 ---
 
-## 8. Structuré generale de l'interface
+## 8. Structure générale de l'interface
 
-### 8.1 Structuré cible
+### 8.1 Structure cible
 
 L'interface desktop de Macro doit être organisée autour des zones suivantes :
 
@@ -338,13 +338,13 @@ Le mode Architect ne possède temporairement aucun panneau gauche : sa conversat
 
 ### 8.4 Zone centrale
 
-La zone centrale doit rester le cœur operationnel de l'application.
+La zone centrale doit rester le cœur opérationnel de l'application.
 
 Elle doit principalement accueillir :
 
 - la conversation
 - les actions de supervision
-- les decisions de pilotage
+- les décisions de pilotage
 - les interactions avec l'IA
 
 ### 8.5 Panneau droit
@@ -381,7 +381,7 @@ Exemples :
 
 ---
 
-## 9. Structuré projet et multi-projet
+## 9. Structure projet et multi-projet
 
 ### 9.1 Le multi-projet comme capacité centrale
 
@@ -480,7 +480,7 @@ Le changement de contexte doit restaurer l'état local utile autant que possible
 
 ### 11.1 Création du plan
 
-L'utilisateur créé un plan depuis le mode Architect.
+L'utilisateur crée un plan depuis le mode Architect.
 
 Créer un plan crée un nouveau contexte de planification comprenant :
 - sa conversation propre
@@ -511,7 +511,7 @@ Un plan valide peut entrer en exécution pendant que d'autres plans restent acti
 
 ### 11.5 Complétion du plan
 
-Un plan est considéré comme termine lorsque :
+Un plan est considéré comme terminé lorsque :
 - toutes les tâches requises sont complétées
 - la validation globale du plan est réalisée
 - la branche du plan est acceptée pour intégration dans la branche de base configurée
@@ -523,7 +523,7 @@ Les plans termines doivent être archives.
 Les plans archives doivent rester accessibles pour :
 - la lecture
 - l'audit
-- l'analyse retrospective
+- l'analyse rétrospective
 
 Ils ne sont plus destinés à être modifiés.
 
@@ -609,9 +609,9 @@ Au début d'une tâche, l'IA peut :
 
 Quand l'IA pose des questions, Macro doit privilégier une interaction rapide.
 
-Le modèle privilegie est :
+Le modèle privilégié est :
 - trois réponses suggérées
-- une quatrième voie libre pour une réponse personnalisee
+- une quatrième voie libre pour une réponse personnalisée
 
 Ce modèle existe pour réduire le frottement utilisateur et faciliter la supervision depuis mobile.
 
@@ -628,7 +628,7 @@ Pendant l'exécution d'une tâche, l'IA peut :
 
 Une review humaine est obligatoire à la fin de chaque tâche.
 
-La review de tâche doit presenter :
+La review de tâche doit présenter :
 - la liste des fichiers modifiés
 - l'accès aux diffs
 - suffisamment de contexte fichier pour comprendre le changement
@@ -643,7 +643,7 @@ L'utilisateur doit pouvoir :
 
 Macro doit rester majoritairement en lecture seule.
 
-Cependant, la review doit permettre un ajustement manuel cible.
+Cependant, la review doit permettre un ajustement manuel ciblé.
 
 L'expérience de review doit prioriser :
 - l'édition des lignes modifiées par l'IA
@@ -686,7 +686,7 @@ Après acceptation de la review :
 - l'IA doit générer le message de commit
 - le commit doit être créé sur la branche appropriée
 
-### 15.4 Structuré des merges
+### 15.4 Structure des merges
 
 Pour le travail dérivé d'un plan, le flux par défaut est :
 
@@ -717,7 +717,7 @@ La validation d'un plan doit préparer :
 - les worktrees
 - la trace metadata correspondante
 
-### 16.2 Exigence de proprete
+### 16.2 Exigence de propreté
 
 Lorsqu'un plan ou une structure d'exécution de plan est supprimé avant réel démarrage, Macro doit nettoyer les branches associées et les structures temporaires afin d'éviter les artefacts parasites.
 
@@ -725,8 +725,8 @@ Lorsqu'un plan ou une structure d'exécution de plan est supprimé avant réel d
 
 Quand une même tâche affecte plusieurs projets :
 - la validation reste une seule action cohérente du point de vue du produit
-- les commits peuvent être créés separement par projet
-- chaque message de commit doit refleter les changements effectifs du projet concerne
+- les commits peuvent être créés séparément par projet
+- chaque message de commit doit refléter les changements effectifs du projet concerné
 
 ---
 
@@ -742,12 +742,12 @@ Le mode Chat ne doit pas supposer un contexte agent autonome à l'échelle d'un 
 
 Il doit fonctionner sur :
 - la conversation courante
-- les fichiers explicitement attaches
+- les fichiers explicitement attachés
 - les outils externes explicitement autorisés
 
 ### 17.3 Pièces jointes
 
-Les fichiers attaches en mode Chat sont scopes à la conversation.
+Les fichiers attachés en mode Chat sont scopes à la conversation.
 
 Il n'y a pas d'exigence de bibliothèque de contexte réutilisable entre plusieurs conversations.
 
@@ -785,7 +785,7 @@ Une skill locale est un dossier contenant :
 - champs optionnels `license`, `compatibility`, `allowed-tools` et `metadata`
 - dossiers optionnels `references/`, `assets/` et `scripts/`
 
-Macro decouvre les sources projet et utilisateur suivantes :
+Macro découvre les sources projet et utilisateur suivantes :
 
 - les skills projet dans `.agents/skills`
 - les skills globales utilisateur dans `~/.agents/skills`
@@ -830,7 +830,7 @@ Une skill peut être activée sans être trusted.
 
 Les scripts restent indisponibles tant que la skill n'est pas trusted et que l'option scripts n'est pas activée pour cette skill.
 
-`allowed-tools` est une information declarative de la skill. Elle ne contourne jamais les modes Macro, la politique d'approbation, le niveau de risque ou les réglages utilisateur.
+`allowed-tools` est une information déclarative de la skill. Elle ne contourne jamais les modes Macro, la politique d'approbation, le niveau de risque ou les réglages utilisateur.
 
 Toute exécution de script doit passer par la politique d'approbation Macro des outils à risque, capturer la sortie, appliquer un timeout et éviter l'injection de secrets par défaut.
 
@@ -838,14 +838,14 @@ Les chemins hors dossier skill, traversals, fichiers cachés non autorisés et s
 
 ### 18.5 Cible future : remote et cloud
 
-Cette section decrit un contrat technique potentiel pour une future ligne remote. Elle ne correspond à aucune capacité produit disponible en 0.1. Un runtime remote pourrait exposer les skills sans filesystem local lisible par le frontend avec les opérations :
+Cette section décrit un contrat technique potentiel pour une future ligne remote. Elle ne correspond à aucune capacité produit disponible en 0.1. Un runtime remote pourrait exposer les skills sans filesystem local lisible par le frontend avec les opérations :
 
 - `POST /skills/list`
 - `POST /skills/get`
 - `POST /skills/read-resource`
 - `POST /skills/run-script`
 
-Les payloads publics côté frontend utilisent le camelCase. Les kernels distants doivent pouvoir répondre `unsupported`; 404, 405 et 501 sont présentes à l'utilisateur comme une capacité indisponible précise.
+Les payloads publics côté frontend utilisent le camelCase. Les kernels distants doivent pouvoir répondre `unsupported`; 404, 405 et 501 sont présentés à l'utilisateur comme une capacité indisponible précise.
 
 La capacité `skills` contrôle `skill_activate` et `skill_read_resource`. La capacité séparée `skillScripts` contrôle `skill_run_script`; elle est false par défaut en remote et doit être déclarée explicitement avant qu'un script cloud soit proposé au modèle.
 
@@ -855,7 +855,7 @@ La capacité `skills` contrôle `skill_activate` et `skill_read_resource`. La ca
 
 ### 19.1 Appels d'attention
 
-Lorsque l'IA à besoin de l'utilisateur, Macro doit rendre cette demande d'attention explicite.
+Lorsque l'IA a besoin de l'utilisateur, Macro doit rendre cette demande d'attention explicite.
 
 Exemples :
 - question de clarification
@@ -870,7 +870,7 @@ La cible produit inclut une supervision distante depuis une application mobile c
 L'utilisateur doit pouvoir :
 - suivre l'avancement des tâches
 - recevoir les questions
-- répondre aux decisions attendues
+- répondre aux décisions attendues
 - reviewer et valider à distance
 
 La création complète de plans depuis mobile n'est pas un besoin central initial.
@@ -895,9 +895,9 @@ Si le runtime ne supporte pas les notifications bureau, les modes bureau ne doiv
 
 ### 20.1 Périmètre
 
-Le kernel distant n'est pas une capacité du produit 0.1. Aucun mode remote ne doit être présente comme disponible ou supporte dans l'application actuelle.
+Le kernel distant n'est pas une capacité du produit 0.1. Aucun mode remote ne doit être présenté comme disponible ou supporté dans l'application actuelle.
 
-Une future ligne produit pourra permettre à l'exécution Macro de continuer indépendamment d'une seule session GUI locale. La fondation présente dans le dépôt reste expérimentale et interne jusque-la.
+Une future ligne produit pourra permettre à l'exécution Macro de continuer indépendamment d'une seule session GUI locale. La fondation présente dans le dépôt reste expérimentale et interne jusque-là.
 
 ### 20.2 Résultats fonctionnels attendus
 
@@ -907,13 +907,13 @@ Un futur kernel produit devra rendre possibles :
 - l'exécution continue sur une machine dédiée ou un serveur hébergé
 - la supervision distante depuis un client Macro ou mobile
 
-### 20.3 Scenarios utilisateurs cibles
+### 20.3 Scénarios utilisateurs cibles
 
-Une future ligne remote pourra viser les scenarios suivants :
+Une future ligne remote pourra viser les scénarios suivants :
 
 - l'utilisateur démarre sur un desktop puis reprend la supervision sur un laptop
 - l'utilisateur quitte son poste et poursuit la supervision depuis mobile
-- l'utilisateur exécuté Macro sur un serveur dédié au lieu d'un poste local unique
+- l'utilisateur exécute Macro sur un serveur dédié au lieu d'un poste local unique
 
 ---
 
@@ -930,7 +930,7 @@ Macro doit exposer un contrôle utilisateur sur au moins les dimensions suivante
 - raccourcis
 - prompts et cadrage du comportement système
 
-Le produit doit permettre à l'utilisateur de modeler le comportement de l'IA sans necessiter de modification de code.
+Le produit doit permettre à l'utilisateur de modeler le comportement de l'IA sans nécessiter de modification de code.
 
 Tout raccourci clavier configurable dans les réglages doit correspondre à une
 action runtime câblée et à une règle de disponibilité explicite. Si un raccourci
@@ -943,15 +943,15 @@ Matrice fonctionnelle des raccourcis configurables :
 | --- | --- | --- |
 | Ouvrir les réglages | Ouvre les réglages généraux | Global |
 | Fermer les réglages | Ferme la modale de réglages | Réglages ouverts |
-| Nouvelle conversation | Créé une conversation Chat | Mode Chat |
-| Passer en Architect | Activé le mode Architect | Hors réglages |
-| Passer en Implement | Activé le mode Implement | Hors réglages |
-| Passer en Chat | Activé le mode Chat | Hors réglages |
+| Nouvelle conversation | Crée une conversation Chat | Mode Chat |
+| Passer en Architect | Active le mode Architect | Hors réglages |
+| Passer en Implement | Active le mode Implement | Hors réglages |
+| Passer en Chat | Active le mode Chat | Hors réglages |
 | Basculer panneau gauche | Ouvre ou ferme le panneau gauche | Global |
 | Basculer panneau droit | Ouvre ou ferme le panneau droit | Global |
-| Fournisseur suivant | Sélectionné le fournisseur IA suivant disponible | Global |
-| Modèle suivant | Sélectionné le modèle IA suivant disponible | Global |
-| Stopper le streaming | Arrêté la réponse assistant en cours | Réponse en cours |
+| Fournisseur suivant | Sélectionne le fournisseur IA suivant disponible | Global |
+| Modèle suivant | Sélectionne le modèle IA suivant disponible | Global |
+| Stopper le streaming | Arrête la réponse assistant en cours | Réponse en cours |
 | Focus input Chat | Place le focus dans le compositeur Chat | Global |
 | Prompt précédent | Navigue dans l'historique de prompts vers le précédent | Compositeur focus et mode historique par raccourci |
 | Prompt suivant | Navigue dans l'historique de prompts vers le suivant | Compositeur focus et mode historique par raccourci |
@@ -974,7 +974,7 @@ La conversation, les nœuds de stratégie et les branches prédictives sont dura
 
 Leur utilité principale après exécution est :
 - l'audit
-- la retrospective
+- la rétrospective
 - la traçabilité
 
 ### 22.3 Persistance des métadonnées
@@ -985,13 +985,13 @@ Les métadonnées liées aux plans doivent être stockées dans la structure met
 
 ## 23. Exclusions publiques
 
-Les elements suivants sont exclus de la surface fonctionnelle publique tant qu'ils ne sont pas promus explicitement :
+Les éléments suivants sont exclus de la surface fonctionnelle publique tant qu'ils ne sont pas promus explicitement :
 
 - les workflows internes de debug
 - les outils d'inspection réservés au développement de Macro
 - les détails internes d'implémentation runtime ou backend
 
-Ces elements peuvent exister dans l'application, mais ils ne font pas partie du contrat produit utilisateur.
+Ces éléments peuvent exister dans l'application, mais ils ne font pas partie du contrat produit utilisateur.
 
 ---
 
@@ -1028,4 +1028,4 @@ Ce document doit être mis à jour lorsque :
 Ce document ne doit pas être modifié pour :
 - des détails d'implémentation bas niveau
 - des refactors internes sans impact produit
-- des experimentations temporaires qui ne font pas partie de la cible produit
+- des expérimentations temporaires qui ne font pas partie de la cible produit
