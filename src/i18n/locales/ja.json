@@ -1630,7 +1630,11 @@
       "serverAdded": "MCP サーバーを追加しました。",
       "toolsRefreshed": "MCP ツールを更新しました。",
       "refreshFailed": "MCP ツールを更新できませんでした。",
-      "serverDeleted": "MCP サーバーを削除しました。"
+      "serverDeleted": "MCP サーバーを削除しました。",
+      "identifierCollision": "この識別子の MCP サーバーは既に存在します。",
+      "saveFailed": "MCP サーバーを保存できませんでした。",
+      "deleteFailed": "MCP サーバーを削除できませんでした。",
+      "toggleFailed": "MCP サーバーを更新できませんでした。"
     }
   },
   "account": {

@@ -1630,7 +1630,11 @@
       "serverAdded": "MCP server added.",
       "toolsRefreshed": "MCP tools refreshed.",
       "refreshFailed": "Failed to refresh MCP tools.",
-      "serverDeleted": "MCP server deleted."
+      "serverDeleted": "MCP server deleted.",
+      "identifierCollision": "An MCP server with this identifier already exists.",
+      "saveFailed": "Failed to save MCP server.",
+      "deleteFailed": "Failed to delete MCP server.",
+      "toggleFailed": "Failed to update MCP server."
     }
   },
   "account": {
