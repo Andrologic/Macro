@@ -8702,6 +8702,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController: AbortController;
     manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
     agentTypeAtSend: AgentType | null;
+    replayRecovery?: { replayId: string; onLaunched: () => void };
   }) => {
     let assistantMessageId: string | null = null;
     const agentTypeAtSend = params.agentTypeAtSend;
@@ -8799,6 +8800,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
+      if (params.replayRecovery) {
+        await tauriIpc.dbMarkConversationReplayLaunched({
+          conversationId: params.conversationId,
+          replayId: params.replayRecovery.replayId,
+        });
+        params.replayRecovery.onLaunched();
+      }
+
       startAssistantStream({
         sessionId: params.sessionId,
         assistantMessage,
@@ -8832,6 +8841,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         maxTurns: streamLaunch.maxTurns,
         compactionDecision: streamLaunch.compactionDecision,
         abortController: params.abortController,
+        replayRecovery: params.replayRecovery
+          ? {
+              replayId: params.replayRecovery.replayId,
+            }
+          : undefined,
       });
     } catch (error) {
       if (params.manualFeatureDraftRecovery) {
@@ -9378,6 +9392,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController?: AbortController;
     compactionDecision?: ContextCompactionDecision;
     overflowRecoveryAttempted?: boolean;
+    replayRecovery?: { replayId: string };
   }) => {
     const streamTurnId = getMessageTurnId(params.assistantMessage);
     const abortController = params.abortController ?? new AbortController();
@@ -9464,6 +9479,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
     });
     let pendingToolBoundaryCompaction: PendingToolBoundaryCompaction | null = null;
+    let replayRecoveryFinalized = false;
+    const finalizeReplayRecoveryAfterProgress = () => {
+      if (!params.replayRecovery || replayRecoveryFinalized) return;
+      replayRecoveryFinalized = true;
+      void tauriIpc
+        .dbFinalizeConversationReplay({
+          conversationId: params.conversationId,
+          replayId: params.replayRecovery.replayId,
+        })
+        .catch((error) => {
+          console.error("Replay recovery finalization remains pending", error);
+        });
+    };
 
     const maybeMarkImplementTaskFailedAfterStreamError = async () => {
       if (
@@ -10102,6 +10130,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         shouldAcceptStreamUpdate,
         isAbortSignalAborted: () => abortController.signal.aborted,
         appendTokenChunk: (messageId, tokenChunk) => {
+          if (tokenChunk.length > 0) finalizeReplayRecoveryAfterProgress();
           get().appendToMessage(messageId, tokenChunk);
         },
         getAssistantMessage: (messageId) =>
@@ -10308,6 +10337,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
         }
+        if (toolTraces.length > 0) {
+          finalizeReplayRecoveryAfterProgress();
+        }
         get().updateMessageFields(params.assistantMessage.id, {
           tool_traces: toolTraces,
         });
@@ -10334,6 +10366,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       },
       onToolCall: (toolName, args, toolCallId) => {
+        finalizeReplayRecoveryAfterProgress();
         return handleToolCall(
           {
             conversationId: params.conversationId,
@@ -11252,6 +11285,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       loadedConversationIds,
       bootstrapError,
     } = await loadChatBootstrapSnapshot(chatPersistenceAdapters);
+    let replayRecoveryError: string | null = null;
 
     if (tauriIpc.isTauriAvailable()) {
       let restoredAnyReplay = false;
@@ -11261,22 +11295,57 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
         if (!marker) continue;
         try {
-          const replayId = (JSON.parse(marker.value_json) as { replay_id?: unknown })
-            .replay_id;
-          if (typeof replayId !== "string" || !replayId) {
+          const recovery = JSON.parse(marker.value_json) as {
+            replay_id?: unknown;
+            session_id?: unknown;
+            turn_id?: unknown;
+            phase?: unknown;
+          };
+          const replayId = recovery.replay_id;
+          const sessionId = recovery.session_id;
+          const turnId = recovery.turn_id;
+          if (
+            typeof replayId !== "string" ||
+            !replayId ||
+            typeof sessionId !== "string" ||
+            !sessionId ||
+            typeof turnId !== "string" ||
+            !turnId
+          ) {
             throw new Error("The replay recovery marker is invalid.");
           }
           const restored = await tauriIpc.dbRestoreConversationReplay({
             conversationId: conversation.id,
             replayId,
+            sessionId,
+            turnId,
           });
           if (!restored) {
-            throw new Error("The replay recovery marker could not be applied.");
+            // A launched replay that has already persisted output (or lost the
+            // race to a later turn) must win over the old snapshot. Finalizing
+            // only removes that exact launched marker; otherwise it remains
+            // fail-closed and is retried at the next bootstrap.
+            if (recovery.phase === "launched") {
+              await tauriIpc.dbFinalizeConversationReplay({
+                conversationId: conversation.id,
+                replayId,
+              });
+              const remaining = await tauriIpc.dbGetAppSetting(
+                `conversationReplayRecovery:${conversation.id}`,
+              );
+              if (!remaining) {
+                replayRecoveryBlockedConversationIds.delete(conversation.id);
+                continue;
+              }
+            }
+            throw new Error("The replay recovery marker could not be applied safely.");
           }
           replayRecoveryBlockedConversationIds.delete(conversation.id);
           restoredAnyReplay = true;
         } catch (error) {
           replayRecoveryBlockedConversationIds.add(conversation.id);
+          replayRecoveryError =
+            "Replay recovery is pending for a conversation. Its transcript is preserved and editing is locked; reload Macro to retry.";
           console.error("Replay recovery is pending for conversation", conversation.id, error);
         }
       }
@@ -11366,7 +11435,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       isLoading: false,
       isStreaming: false,
       sendState: "idle",
-      lastError: null,
+      lastError: replayRecoveryError ?? null,
       abortController: null,
     });
     scheduleImplementAwaitingResponseReconciliation();
@@ -14161,6 +14230,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return;
         }
 
+        if (replayPrepared) {
+          await tauriIpc.dbCompleteConversationReplay({ conversationId, replayId });
+        }
+        if (!isCurrentPreparation()) {
+          return;
+        }
+
         await restartAssistantFromEditedMessage({
           sessionId,
           turnId,
@@ -14179,11 +14255,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
           abortController,
           manualFeatureDraftRecovery,
           agentTypeAtSend: agentTypeAtEdit,
+          replayRecovery: replayPrepared
+            ? {
+                replayId,
+                onLaunched: () => {
+                  replayPrepared = false;
+                },
+              }
+            : undefined,
         });
-        if (replayPrepared) {
-          await tauriIpc.dbCompleteConversationReplay({ conversationId, replayId });
-          replayPrepared = false;
-        }
         committedCodeReplay = true;
         pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
       } catch (error) {
@@ -14200,9 +14280,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const restored = await tauriIpc.dbRestoreConversationReplay({
               conversationId,
               replayId,
+              sessionId,
+              turnId,
             });
             if (!restored) {
               throw new Error("The replay recovery marker no longer matches this session.");
+            }
+            const latestRuntime = getConversationRuntimeSnapshot(
+              get().conversationRuntimeById,
+              conversationId,
+            );
+            if (
+              latestConversationSessionIdByConversationId.get(conversationId) !== sessionId ||
+              latestRuntime.sessionId !== sessionId ||
+              latestRuntime.turnId !== turnId
+            ) {
+              throw new Error("A newer replay session won before recovery could update the local transcript.");
             }
             set({
               ...buildMessageState(replayLocalSnapshot.messages),
