@@ -276,6 +276,20 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(events).not.toContain("remove-placeholder");
   });
 
+  test("abort flushes and persists already received assistant progress", async () => {
+    const controls = makeControls();
+    const { runtime, events } = makeRuntime({
+      message: makeMessage({ content: "partial" }),
+    });
+
+    await runtime.onAbort?.(controls);
+
+    expect(controls.flushNow).toHaveBeenCalledTimes(1);
+    expect(controls.dispose).toHaveBeenCalledTimes(1);
+    expect(events).toContain("persist-partial");
+    expect(events).not.toContain("remove-placeholder");
+  });
+
   test("completion persistence failure marks a Macro runtime error", async () => {
     const controls = makeControls();
     const { runtime, events } = makeRuntime({

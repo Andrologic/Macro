@@ -157,6 +157,39 @@ describe("runAssistantStream", () => {
     expect(events).toEqual(["append:done", "persist"]);
   });
 
+  test("flushes buffered tokens before invoking the abort lifecycle", async () => {
+    const events: string[] = [];
+    const controller = new AbortController();
+
+    const running = runAssistantStream({
+      ...minimalStreamOptions,
+      signal: controller.signal,
+      lifecycle: {
+        appendTokenChunk: (chunk) => {
+          events.push(`append:${chunk}`);
+        },
+        onComplete: () => undefined,
+        onError: () => undefined,
+        onAbort: () => {
+          events.push("persist-partial");
+        },
+      },
+      streamChatImpl: mock(async (options: StreamingChatOptions) => {
+        options.onToken("partial");
+        await new Promise<void>((resolve) => {
+          options.signal?.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+      }),
+    });
+
+    controller.abort();
+    await running;
+
+    expect(events).toEqual(["append:partial", "persist-partial"]);
+  });
+
   test("waits for async completion callbacks", async () => {
     const events: string[] = [];
 

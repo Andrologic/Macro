@@ -304,6 +304,20 @@ export const createChatStreamLifecycleRuntime = (params: {
       tokenControls.dispose();
     },
 
+    onAbort: async (tokenControls: ChatStreamTokenControls) => {
+      tokenControls.flushNow();
+      const assistantMessage = adapters.getAssistantMessage(
+        stream.assistantMessageId,
+      );
+      if (assistantMessage && hasAssistantProgress(assistantMessage)) {
+        await persistPartialAssistantSafely(
+          assistantMessage,
+          "Failed to persist partial assistant response after abort:",
+        );
+      }
+      tokenControls.dispose();
+    },
+
     onError: async (error: Error, tokenControls: ChatStreamTokenControls) => {
       if (
         adapters.isAbortSignalAborted() ||
