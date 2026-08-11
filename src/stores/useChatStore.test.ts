@@ -12585,40 +12585,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
   it('resets the git stage/commit challenge for a new assistant turn', async () => {
     streamChatMock
-      .mockImplementationOnce((async (...args: unknown[]) => {
-        const options = (args[0] ?? {}) as {
-          onComplete?: (result: {
-            visibleContent: string;
-            toolTraces: unknown[];
-            hiddenContext?: string;
-            usage: null;
-          }) => void;
-        };
-        options.onComplete?.({
-          visibleContent: 'Premier tour terminé.',
-          toolTraces: [],
-          hiddenContext: undefined,
-          usage: null,
-        });
-        return { usage: null };
-      }) as unknown as typeof streamChatMock)
-      .mockImplementationOnce((async (...args: unknown[]) => {
-        const options = (args[0] ?? {}) as {
-          onComplete?: (result: {
-            visibleContent: string;
-            toolTraces: unknown[];
-            hiddenContext?: string;
-            usage: null;
-          }) => void;
-        };
-        options.onComplete?.({
-          visibleContent: 'Deuxième tour terminé.',
-          toolTraces: [],
-          hiddenContext: undefined,
-          usage: null,
-        });
-        return { usage: null };
-      }) as unknown as typeof streamChatMock);
+      .mockImplementationOnce((async () => ({ usage: null })) as unknown as typeof streamChatMock)
+      .mockImplementationOnce((async () => ({ usage: null })) as unknown as typeof streamChatMock);
 
     const { useChatStore, onToolCall } = await startImplementToolConversation(
       'Tu peux commit après vérification.',
@@ -12637,6 +12605,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(executeWorkspaceToolMock).toHaveBeenCalledTimes(1);
 
     await flushAsyncWork();
+    useChatStore.getState().stopConversationStream('implement-conv');
     await useChatStore.getState().sendMessage({
       conversationId: 'implement-conv',
       content: 'Continue.',
@@ -13346,14 +13315,23 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       { command: 'npm test', session_id: 'session-1' },
       'tool-call-1'
     );
+    const queuedToolCallPromise = onToolCall(
+      'terminal_run',
+      { command: 'npm test -- --watch=false', session_id: 'session-2' },
+      'tool-call-2'
+    );
 
     await flushAsyncWork();
-    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).not.toBeNull();
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')?.toolCallId).toBe(
+      'tool-call-1'
+    );
 
     useChatStore.getState().stopConversationStream('implement-conv');
 
     await expect(toolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
+    await expect(queuedToolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
     expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+    expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
     expect(
       useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
     ).toBeUndefined();
