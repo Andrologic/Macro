@@ -1320,61 +1320,73 @@ export const createArchitectGitFlowService = (
     });
 
     const results: ProvisionedPlanRepositoryResult[] = [];
-    for (const repository of repositories) {
-      const branches = await deps.tauri.gitBranchList(repository.repoPath);
-      const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
-      const createdFeatureBranches: string[] = [];
-      const existingFeatureBranches: string[] = [];
-      const repositoryPlanBranchName = renderPlanBranchNameForProject({
-        plan,
-        projectId: repository.projectId,
-        getProjectById: deps.getAppState().getProjectById,
-      });
-      const repositorySourceBranchName = resolvePlanProjectSourceBranchName(
-        plan,
-        repository.projectId,
-        deps.getAppState().getProjectById
-      );
-
-      let createdPlanBranch = false;
-      if (!localBranchNames.has(repositoryPlanBranchName)) {
-        const fromRef = resolveBranchSourceRef(
-          branches,
-          repositorySourceBranchName,
-          deps.getAppState().getProjectById(repository.projectId)?.path || repository.projectId
-        );
-        await deps.tauri.gitBranchCreate({
-          repoPath: repository.repoPath,
-          branchName: repositoryPlanBranchName,
-          fromRef,
+    const createdBranches: Array<{ repoPath: string; branchName: string }> = [];
+    try {
+      for (const repository of repositories) {
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+        const createdFeatureBranches: string[] = [];
+        const existingFeatureBranches: string[] = [];
+        const repositoryPlanBranchName = renderPlanBranchNameForProject({
+          plan,
+          projectId: repository.projectId,
+          getProjectById: deps.getAppState().getProjectById,
         });
-        localBranchNames.add(repositoryPlanBranchName);
-        createdPlanBranch = true;
-      }
+        const repositorySourceBranchName = resolvePlanProjectSourceBranchName(
+          plan,
+          repository.projectId,
+          deps.getAppState().getProjectById
+        );
 
-      for (const featureBranch of featureBranchesByProject.get(repository.projectId) || []) {
-        if (localBranchNames.has(featureBranch)) {
-          existingFeatureBranches.push(featureBranch);
-          continue;
+        let createdPlanBranch = false;
+        if (!localBranchNames.has(repositoryPlanBranchName)) {
+          const fromRef = resolveBranchSourceRef(
+            branches,
+            repositorySourceBranchName,
+            deps.getAppState().getProjectById(repository.projectId)?.path || repository.projectId
+          );
+          await deps.tauri.gitBranchCreate({
+            repoPath: repository.repoPath,
+            branchName: repositoryPlanBranchName,
+            fromRef,
+          });
+          createdBranches.push({ repoPath: repository.repoPath, branchName: repositoryPlanBranchName });
+          localBranchNames.add(repositoryPlanBranchName);
+          createdPlanBranch = true;
         }
 
-        await deps.tauri.gitBranchCreate({
-          repoPath: repository.repoPath,
-          branchName: featureBranch,
-          fromRef: repositoryPlanBranchName,
-        });
-        localBranchNames.add(featureBranch);
-        createdFeatureBranches.push(featureBranch);
-      }
+        for (const featureBranch of featureBranchesByProject.get(repository.projectId) || []) {
+          if (localBranchNames.has(featureBranch)) {
+            existingFeatureBranches.push(featureBranch);
+            continue;
+          }
 
-      results.push({
-        projectId: repository.projectId,
-        repoPath: repository.repoPath,
-        planBranchName: repositoryPlanBranchName,
-        createdPlanBranch,
-        createdFeatureBranches,
-        existingFeatureBranches,
-      });
+          await deps.tauri.gitBranchCreate({
+            repoPath: repository.repoPath,
+            branchName: featureBranch,
+            fromRef: repositoryPlanBranchName,
+          });
+          createdBranches.push({ repoPath: repository.repoPath, branchName: featureBranch });
+          localBranchNames.add(featureBranch);
+          createdFeatureBranches.push(featureBranch);
+        }
+
+        results.push({
+          projectId: repository.projectId,
+          repoPath: repository.repoPath,
+          planBranchName: repositoryPlanBranchName,
+          createdPlanBranch,
+          createdFeatureBranches,
+          existingFeatureBranches,
+        });
+      }
+    } catch (error) {
+      await Promise.allSettled(
+        createdBranches.reverse().map(async ({ repoPath, branchName }) => {
+          await deps.tauri.gitBranchDelete({ repoPath, branchName, force: true });
+        })
+      );
+      throw error;
     }
 
     return {
