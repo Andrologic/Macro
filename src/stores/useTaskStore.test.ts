@@ -1661,7 +1661,7 @@ describe('useTaskStore merge workflow review loading', () => {
     ).toBe('merged');
   });
 
-  it('completes a materialized merge when conflicts are already resolved', async () => {
+  it('does not report a materialized merge complete when its plan metadata is missing', async () => {
     let statusCallCount = 0;
     gitStatusMock.mockImplementation(async () => {
       statusCallCount += 1;
@@ -1695,14 +1695,17 @@ describe('useTaskStore merge workflow review loading', () => {
       lastError: null,
     });
 
-    await useTaskStore.getState().runMergeWorkflow('task-1');
+    await expect(useTaskStore.getState().runMergeWorkflow('task-1')).rejects.toThrow(
+      'Plan not found: plan-1'
+    );
 
     expect(gitCompleteMergeMock).toHaveBeenCalledWith({
       repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
     });
     expect(gitFastForwardMock).not.toHaveBeenCalled();
     expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
-    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']).toBeUndefined();
+    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']).toBeDefined();
+    expect(useTaskStore.getState().lastError).toContain('Plan not found: plan-1');
   });
 
   it('does not start a second manual merge resolution when conflicts are already materialized', async () => {
