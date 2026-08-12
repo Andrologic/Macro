@@ -1026,6 +1026,12 @@ const dbGetAppSettingMock = mock(async (key: string) => {
     ? null
     : { key, value_json: valueJson, updated_at: '2026-08-12T00:00:00.000Z' };
 });
+const dbSetAppSettingMock = mock(async ({ key, valueJson }: {
+  key: string;
+  valueJson: string;
+}) => {
+  appSettingValues.set(key, valueJson);
+});
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
@@ -1702,6 +1708,7 @@ const registerUseChatStoreMocks = async () => {
     deleteConversation: deleteConversationMock,
     deleteConversations: deleteConversationsMock,
     dbGetAppSetting: dbGetAppSettingMock,
+    dbSetAppSetting: dbSetAppSettingMock,
     gitBranchList: gitBranchListMock,
     getChatBootstrapSnapshot: getChatBootstrapSnapshotMock,
     getChatSnapshot: getChatSnapshotMock,
@@ -2426,6 +2433,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     chatSnapshotMessages = [];
     appSettingValues.clear();
     dbGetAppSettingMock.mockClear();
+    dbSetAppSettingMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();
     getArchitectPlanChatTranscriptMock.mockClear();
@@ -4039,6 +4047,56 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  it('keeps a durable cleanup guard when plan transcript import fails after creating a conversation', async () => {
+    tauriAvailable = true;
+    const plan = createPlan({
+      id: 'plan-import-cleanup',
+      conversationId: 'shared-plan-import-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    architectPlanMessages.set(plan.id, [{
+      id: 'plan-import-message',
+      role: 'assistant',
+      content: 'This import must either persist or be compensated.',
+      createdAt: '2026-08-12T00:00:00.000Z',
+    }]);
+    importMessagesMock.mockImplementationOnce(async () => {
+      throw new Error('injected transcript import failure');
+    });
+    deleteConversationMock.mockImplementationOnce(async () => {
+      throw new Error('injected conversation cleanup failure');
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('shared-plan-import-conv')],
+    }));
+
+    await expect(
+      useChatStore.getState().ensureArchitectConversationForPlan({
+        plan,
+        targetBranch: 'develop',
+        fallbackProjectId: 'project-1',
+        fallbackGroupId: 'group-1',
+        sharedConversation: true,
+      }),
+    ).rejects.toThrow('nettoyage sera repris automatiquement');
+
+    const pendingSagas = JSON.parse(
+      appSettingValues.get('pendingLinkedTaskDeletions:v1') ?? '[]',
+    );
+    expect(pendingSagas).toEqual([expect.objectContaining({
+      ownerType: 'plan',
+      ownerId: plan.id,
+      phase: 'task_deleted',
+      targetBranch: 'develop',
+    })]);
+
+    await useChatStore.getState().initializeCritical();
+
+    expect(appSettingValues.get('pendingLinkedTaskDeletions:v1')).toBe('[]');
   });
 
   it('prefers the active plan conversation over the project architect conversation fallback', async () => {
@@ -12175,6 +12233,61 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
   });
 
+  it('restores only the replay conversation when another conversation changes before provider failure', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const providerFailure = createDeferred<void>();
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as { onError?: (error: Error) => void };
+      await providerFailure.promise;
+      options.onError?.(new Error('injected provider failure after another conversation changed'));
+      return { usage: null };
+    }) as unknown as typeof streamChatMock);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-replay', ''), message_count: 2, last_message: 'Existing answer' },
+        { ...createConversation('chat-other', ''), message_count: 1, last_message: 'Before replay recovery' },
+      ],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-replay', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-replay', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+        { id: 'other-user', task_id: '', conversation_id: 'chat-other', role: 'user', content: 'Before replay recovery', timestamp: '2026-04-14T10:02:00.000Z' },
+      ],
+      selectedConversationId: 'chat-replay',
+      selectedConversationIdsByMode: { Chat: 'chat-replay' },
+      agentCodeCheckpointsByConversationId: { 'chat-replay': [], 'chat-other': [] },
+      sessionCompactionEventsByConversationId: { 'chat-replay': [], 'chat-other': [] },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+    await flushAsyncWork();
+    useChatStore.getState().addMessage({
+      id: 'other-assistant',
+      task_id: '',
+      conversation_id: 'chat-other',
+      role: 'assistant',
+      content: 'Concurrent message must survive.',
+      timestamp: '2026-04-14T10:03:00.000Z',
+    });
+    providerFailure.resolve();
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().getConversationMessages('chat-replay')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(useChatStore.getState().getConversationMessages('chat-other')).toEqual([
+      expect.objectContaining({ id: 'other-user' }),
+      expect.objectContaining({ id: 'other-assistant', content: 'Concurrent message must survive.' }),
+    ]);
+    expect(
+      useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'chat-other'),
+    ).toMatchObject({ message_count: 2, last_message: 'Concurrent message must survive.' });
+  });
+
   it('immediately restores a launched replay when it is aborted before its first token', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
@@ -14810,6 +14923,56 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect(useChatStore.getState().conversations).toEqual([]);
     expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+  });
+
+  it('persists and resumes toolbox cleanup after a conversation deletion commits', async () => {
+    tauriAvailable = true;
+    deleteConversationToolboxStateMock.mockImplementationOnce(async () => {
+      throw new Error('injected toolbox cleanup failure');
+    });
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('chat-toolbox-retry', { message_count: 1 }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'toolbox-retry-message',
+        conversation_id: 'chat-toolbox-retry',
+      }),
+    ];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('chat-toolbox-retry'), scope_mode: 'Chat' }],
+      messages: [{
+        id: 'toolbox-retry-message',
+        task_id: '',
+        conversation_id: 'chat-toolbox-retry',
+        role: 'user',
+        content: 'Delete me safely.',
+        timestamp: '2026-08-12T00:00:00.000Z',
+      }],
+      selectedConversationId: 'chat-toolbox-retry',
+      selectedConversationIdsByMode: { Chat: 'chat-toolbox-retry' },
+    }));
+
+    await expect(
+      useChatStore.getState().deleteConversation('chat-toolbox-retry'),
+    ).rejects.toThrow('certaines ressources');
+
+    expect(JSON.parse(appSettingValues.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        ownerType: 'conversation',
+        ownerId: 'chat-toolbox-retry',
+        conversationId: 'chat-toolbox-retry',
+        phase: 'task_deleted',
+      }),
+    ]);
+    expect(useChatStore.getState().conversations).toEqual([]);
+
+    await useChatStore.getState().initializeCritical();
+
+    expect(deleteConversationToolboxStateMock).toHaveBeenCalledTimes(2);
+    expect(appSettingValues.get('pendingLinkedTaskDeletions:v1')).toBe('[]');
+    expect(useChatStore.getState().conversations).toEqual([]);
   });
 
   it('refuses a send while a deferred conversation deletion owns its tombstone', async () => {

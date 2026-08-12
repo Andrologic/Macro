@@ -2432,13 +2432,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         if (pending.phase === 'prepared' && taskStillExists) {
           continue;
         }
-        if (pending.phase === 'task_deleting' && taskStillExists) {
+        if (pending.phase === 'task_deleting') {
           try {
             const resumed = await resumeLinkedTaskGitCleanup(pending);
-            if (pending.draft) {
-              await tauriIpc.workspaceDeleteManualFeatureDraft(pending.taskId);
-            } else {
-              await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
+            if (taskStillExists) {
+              if (pending.draft) {
+                await tauriIpc.workspaceDeleteManualFeatureDraft(pending.taskId);
+              } else {
+                await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
+              }
             }
             pending.executionTargets = resumed.executionTargets;
           } catch (error) {
