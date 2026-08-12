@@ -1274,7 +1274,6 @@ export const createArchitectGitFlowService = (
         });
         await deps.tauri.gitPull({
           repoPath: repository.repoPath,
-          branch: baseBranchName,
         });
       })
     );
@@ -1583,7 +1582,6 @@ export const createArchitectGitFlowService = (
         });
         await deps.tauri.gitPull({
           repoPath: repository.repoPath,
-          branch: backmergeBranchName,
         });
         backmergeOutput = await deps.tauri.gitMerge({
           repoPath: repository.repoPath,

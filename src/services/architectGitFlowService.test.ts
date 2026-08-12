@@ -803,11 +803,9 @@ describe('architectGitFlowService', () => {
     expect(gitPullMock).toHaveBeenCalledTimes(2);
     expect(gitPullMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
-      branch: 'develop',
     });
     expect(gitPullMock).toHaveBeenCalledWith({
       repoPath: '/repos/api',
-      branch: 'develop',
     });
   });
 

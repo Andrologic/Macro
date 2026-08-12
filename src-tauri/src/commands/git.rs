@@ -1189,6 +1189,7 @@ async fn wsl_git_sync(
     remote: Option<String>,
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
+    let use_tracking_upstream = remote.is_none() && branch.is_none();
     let remote_name = remote
         .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
         .trim()
@@ -1207,6 +1208,7 @@ async fn wsl_git_sync(
             remote_name.clone(),
             branch_name.clone(),
         ],
+        "pull" if use_tracking_upstream => vec!["pull".to_string(), "--no-rebase".to_string()],
         "pull" => vec![
             "pull".to_string(),
             "--no-rebase".to_string(),
@@ -5407,6 +5409,7 @@ pub async fn git_pull(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        let use_tracking_upstream = remote.is_none() && branch.is_none();
         let remote_name = remote
             .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
             .trim()
@@ -5416,12 +5419,16 @@ pub async fn git_pull(
         let root = repo_root(&repo)?;
         drop(repo);
 
-        let args = vec![
-            "pull".to_string(),
-            "--no-rebase".to_string(),
-            remote_name.clone(),
-            branch_name.clone(),
-        ];
+        let args = if use_tracking_upstream {
+            vec!["pull".to_string(), "--no-rebase".to_string()]
+        } else {
+            vec![
+                "pull".to_string(),
+                "--no-rebase".to_string(),
+                remote_name.clone(),
+                branch_name.clone(),
+            ]
+        };
         let output = run_git_command_with_timeout(&root, &args, NATIVE_GIT_NETWORK_TIMEOUT)?;
         if !output.success {
             let details = command_output_text(&output);
