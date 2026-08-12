@@ -10,6 +10,7 @@ import {
 import { isPlanMetadataMissingError, toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
+import { isConversationRuntimeActive } from './chat/chatRuntimeState';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
 import {
@@ -2227,16 +2228,36 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   const activePlanWorktreeMutations = new Set<string>();
   const taskCommandRunCompletions = new Map<string, TaskCommandRunCompletion>();
   const taskCommandCancellationPromises = new Map<string, Promise<void>>();
+  // Catalog loads and task activation await metadata/filesystem work. Keep their
+  // effects scoped to the latest request so a stale context cannot win a race.
+  let refreshRequestId = 0;
+  let taskActivationRequestId = 0;
 
   const getTaskCommandMutationBlockedMessage = (action: 'archive' | 'delete' | 'complete'): string =>
     tTask(
       'implement.taskCommandsActiveMutationBlocked',
-      'Stop the active command run before {{action}} this task.',
+      'Wait for the active task operation before {{action}} this task.',
       { action }
     );
 
   const isTaskCommandRunActive = (taskId: string): boolean =>
     Boolean(get().taskCommandRuns[taskId]) || activeTaskOperations.get(taskId) === 'commands';
+
+  const isTaskConversationRuntimeActive = (taskId: string): boolean => {
+    const task = get().getTaskById(taskId);
+    const chatState = useChatStore.getState();
+    const conversationIds = new Set<string>();
+    if (task?.conversation_id) conversationIds.add(task.conversation_id);
+    for (const conversation of chatState.conversations) {
+      if (conversation.task_id === taskId) conversationIds.add(conversation.id);
+    }
+    return [...conversationIds].some((conversationId) =>
+      isConversationRuntimeActive(chatState.conversationRuntimeById[conversationId]),
+    );
+  };
+
+  const isTaskRuntimeActive = (taskId: string): boolean =>
+    isTaskCommandRunActive(taskId) || isTaskConversationRuntimeActive(taskId);
 
   const acquireTaskOperation = (taskId: string, operation: TaskOperationKind): boolean => {
     if (activeTaskOperations.has(taskId)) {
@@ -2362,10 +2383,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return false;
     }
 
-    const hasActiveTaskCommand = get().tasks.some(
-      (task) => task.plan_id === safePlanId && isTaskCommandRunActive(task.id)
+    const hasActiveTaskRuntime = get().tasks.some(
+      (task) => task.plan_id === safePlanId && isTaskRuntimeActive(task.id)
     );
-    if (hasActiveTaskCommand) {
+    if (hasActiveTaskRuntime) {
       return false;
     }
 
@@ -2407,6 +2428,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   refreshFromPlan: async (options) => {
+    const requestId = ++refreshRequestId;
     const restoreSelection = options?.restoreSelection !== false;
     const activateSelectedTask = options?.activateSelectedTask !== false;
     try {
@@ -2415,8 +2437,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
       const catalog = await services.listTasks();
+      if (requestId !== refreshRequestId) return;
       const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
+      if (requestId !== refreshRequestId) return;
       for (const pending of pendingLinkedTaskDeletions) {
+        if (requestId !== refreshRequestId) return;
         const taskStillExists = catalog.tasks.some((task) => task.id === pending.taskId);
         if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
           const message =
@@ -2543,6 +2568,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         };
       });
       const publishedStandaloneTasks = await buildStandalonePublicationMap(tasks);
+      if (requestId !== refreshRequestId) return;
       set({
         tasks,
         planSummaries: catalog.plans,
@@ -2573,6 +2599,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           try {
             const contextKey = selectedGroupId || selectedProjectId;
             const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
+            if (requestId !== refreshRequestId) return;
             const candidateTaskId = context?.lastTaskId;
             if (candidateTaskId) {
               const candidateTask = tasks.find((task) => task.id === candidateTaskId);
@@ -2603,8 +2630,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         });
       }
       if (activateSelectedTask && selectedTaskAfterRestore) {
-        void get().activateTask(selectedTaskAfterRestore);
-        void useChatStore.getState().ensureConversationForCurrentMode();
+        if (requestId === refreshRequestId) {
+          void get().activateTask(selectedTaskAfterRestore);
+          void useChatStore.getState().ensureConversationForCurrentMode();
+        }
       } else if (
         restoreSelection &&
         useAppStore.getState().mode === 'Implement' &&
@@ -2614,12 +2643,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         await useChatStore.getState().reapplySelectionForCurrentContext();
       }
     } catch (error) {
+      if (requestId !== refreshRequestId) return;
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message, publishedStandaloneTasks: {} });
     }
   },
 
   activateTask: async (taskId) => {
+    const requestId = ++taskActivationRequestId;
     const appState = useAppStore.getState();
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     const mergeRuntime = task ? get().mergeWorkflowRuntimeByTaskId[task.id] ?? null : null;
@@ -2645,6 +2676,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           .map((projectId) => appState.getProjectById(projectId)?.path ?? null)
           .find((path): path is string => typeof path === 'string' && path.trim().length > 0) ?? null;
 
+      if (requestId !== taskActivationRequestId) return;
       set({
         activeBranchName: null,
         activeRepositoryPath: projectPath,
@@ -2666,6 +2698,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         appState.selectedProjectId
       );
 
+      if (requestId !== taskActivationRequestId) return;
       set({
         activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
         activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
@@ -2683,6 +2716,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const knownWorktree = primaryTarget
       ? await inspectTargetWorktreePath(primaryTarget, get().branchWorktrees)
       : null;
+    if (requestId !== taskActivationRequestId) return;
     if (knownWorktree) {
       if (primaryTarget) {
         set((state) => ({
@@ -2711,6 +2745,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ? appState.getProjectById(executionTask.project_id)?.path ?? null
       : null;
 
+    if (requestId !== taskActivationRequestId) return;
     set({
       activeBranchName: branchName,
       activeRepositoryPath: projectPath,
@@ -3009,7 +3044,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    if (isTaskCommandRunActive(taskId)) {
+    if (isTaskRuntimeActive(taskId)) {
       set({ lastError: getTaskCommandMutationBlockedMessage('archive') });
       return;
     }
@@ -3146,7 +3181,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    if (isTaskCommandRunActive(taskId)) {
+    if (isTaskRuntimeActive(taskId)) {
       set({ lastError: getTaskCommandMutationBlockedMessage('delete') });
       return;
     }
