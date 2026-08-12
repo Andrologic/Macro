@@ -2,7 +2,12 @@ import * as tauriIpc from './tauriIpc';
 
 const SAGA_KEY = 'pendingLinkedTaskDeletions:v1';
 
-export type LinkedConversationDeletionOwner = 'task' | 'plan';
+export type LinkedConversationDeletionOwner = 'task' | 'plan' | 'conversation';
+export type LinkedConversationDeletionPhase =
+  | 'prepared'
+  | 'task_deleting'
+  | 'task_deleted'
+  | 'plan_conversation_created';
 
 export interface LinkedTaskDeletionTarget {
   worktreeKey: string;
@@ -17,9 +22,10 @@ export interface LinkedConversationDeletionSaga {
   ownerType: LinkedConversationDeletionOwner;
   ownerId: string;
   conversationId: string;
-  phase: 'prepared' | 'task_deleting' | 'task_deleted';
+  phase: LinkedConversationDeletionPhase;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
+  targetBranch?: string;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -28,9 +34,10 @@ export interface LinkedConversationDeletionSaga {
 export interface LinkedTaskDeletionSaga {
   taskId: string;
   conversationId: string;
-  phase: 'prepared' | 'task_deleting' | 'task_deleted';
+  phase: LinkedConversationDeletionPhase;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
+  targetBranch?: string;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -62,12 +69,14 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
       const ownerType = candidate.ownerType ?? (typeof candidate.taskId === 'string' ? 'task' : null);
       const ownerId = candidate.ownerId ?? candidate.taskId;
       if (
-        (ownerType !== 'task' && ownerType !== 'plan') ||
+        (ownerType !== 'task' && ownerType !== 'plan' && ownerType !== 'conversation') ||
         typeof ownerId !== 'string' ||
         typeof candidate.conversationId !== 'string' ||
         (candidate.phase !== 'prepared' &&
           candidate.phase !== 'task_deleting' &&
-          candidate.phase !== 'task_deleted')
+          candidate.phase !== 'task_deleted' &&
+          candidate.phase !== 'plan_conversation_created') ||
+        (ownerType === 'task' && candidate.phase === 'plan_conversation_created')
       ) {
         throw new LinkedConversationDeletionSagaCorruptionError(value);
       }
@@ -145,6 +154,7 @@ export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionS
           phase: saga.phase,
           draft: saga.draft,
           executionTargets: saga.executionTargets,
+          targetBranch: saga.targetBranch,
           createdAt: saga.createdAt,
           updatedAt: saga.updatedAt,
           lastError: saga.lastError,

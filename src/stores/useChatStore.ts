@@ -5793,11 +5793,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): Promise<void> => {
     if (!tauriIpc.isTauriAvailable()) return;
     if (typeof tauriIpc.deleteConversationToolboxState !== "function") return;
-    try {
-      await tauriIpc.deleteConversationToolboxState(conversationId);
-    } catch (error) {
-      console.warn("[chat] Failed to delete toolbox state:", error);
-    }
+    await tauriIpc.deleteConversationToolboxState(conversationId);
+  };
+
+  const beginStandaloneConversationDeletionSaga = async (
+    conversationId: string,
+  ): Promise<void> => {
+    await upsertLinkedConversationDeletionSaga({
+      ownerType: "conversation",
+      ownerId: conversationId,
+      conversationId,
+      phase: "task_deleted",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const completeStandaloneConversationDeletionSaga = async (
+    conversationId: string,
+  ): Promise<void> => {
+    await removeLinkedConversationDeletionSaga("conversation", conversationId);
   };
 
   const hydrateConversationToolboxStateIfAvailable = async (
@@ -11008,6 +11023,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return appendImportedMessagesToState(conversationId, imported);
       } catch (error) {
         console.error("Failed to import architect transcript into DB:", error);
+        throw error;
       }
     }
 
@@ -11103,8 +11119,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let conversation =
       existingConversation && !sharedConversation ? existingConversation : null;
     let createdConversation = false;
+    let createdConversationId: string | null = null;
     let restoredTranscript = false;
 
+    try {
     if (!conversation) {
       conversation = await createConversationRecord({
         title: getArchitectPlanConversationTitle(plan),
@@ -11114,6 +11132,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectConversation: false,
       });
       createdConversation = true;
+      createdConversationId = conversation.id;
+      await upsertLinkedConversationDeletionSaga({
+        ownerType: "plan",
+        ownerId: plan.id,
+        conversationId: conversation.id,
+        phase: "plan_conversation_created",
+        targetBranch,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
     }
 
     const repairedConversation = await repairArchitectPlanConversationScope({
@@ -11258,33 +11286,79 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId: conversation.id,
         });
       } catch (error) {
-        if (createdConversation) {
-          deletedConversationIds.add(conversation.id);
-          try {
-            await deletePersistedConversation(chatPersistenceAdapters, conversation.id);
-            applyLocalConversationRemoval([conversation.id]);
-          } catch (cleanupError) {
-            await upsertLinkedConversationDeletionSaga({
-              ownerType: "plan",
-              ownerId: plan.id,
-              conversationId: conversation.id,
-              phase: "task_deleted",
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              lastError: toServiceError(cleanupError).message,
-            }).catch(() => undefined);
-            const normalized = toServiceError(error);
-            const cleanupMessage = toServiceError(cleanupError).message;
-            throw new Error(
-              `Impossible d’associer la conversation au plan, et son annulation a échoué : ${normalized.message}; ${cleanupMessage}`,
-            );
-          }
-        }
         const normalized = toServiceError(error);
         throw new Error(
           `Impossible d’associer durablement la conversation au plan : ${normalized.message}`,
         );
       }
+    }
+
+    if (createdConversation) {
+      try {
+        await removeLinkedConversationDeletionSaga("plan", plan.id);
+      } catch (error) {
+        // The persisted guard is safe to leave behind: bootstrap verifies the
+        // plan binding before deciding whether it is a cleanup candidate.
+        console.error("Plan conversation creation guard remains pending", error);
+      }
+    }
+
+    } catch (error) {
+      if (!createdConversation || !createdConversationId) {
+        throw error;
+      }
+      const conversationId = createdConversationId;
+      deletedConversationIds.add(conversationId);
+      const lastError = toServiceError(error).message;
+      try {
+        await upsertLinkedConversationDeletionSaga({
+          ownerType: "plan",
+          ownerId: plan.id,
+          conversationId,
+          phase: "task_deleted",
+          targetBranch,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastError,
+        });
+      } catch (sagaError) {
+        console.error(
+          "Plan conversation cleanup guard could not be updated",
+          sagaError,
+        );
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await deleteConversationToolboxStateIfAvailable(conversationId);
+        applyLocalConversationRemoval([conversationId]);
+        try {
+          await removeLinkedConversationDeletionSaga("plan", plan.id);
+        } catch (sagaError) {
+          console.error("Plan conversation cleanup guard remains pending", sagaError);
+        }
+      } catch (cleanupError) {
+        const cleanupMessage = toServiceError(cleanupError).message;
+        try {
+          await upsertLinkedConversationDeletionSaga({
+            ownerType: "plan",
+            ownerId: plan.id,
+            conversationId,
+            phase: "task_deleted",
+            targetBranch,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastError: cleanupMessage,
+          });
+        } catch (sagaError) {
+          throw new Error(
+            `Impossible d’annuler la conversation créée pour le plan : ${cleanupMessage}; le journal de reprise a aussi échoué : ${toServiceError(sagaError).message}`,
+          );
+        }
+        throw new Error(
+          `Impossible d’annuler la conversation créée pour le plan ; le nettoyage sera repris automatiquement : ${cleanupMessage}`,
+        );
+      }
+      throw error;
     }
 
     return {
@@ -11392,12 +11466,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       throw error;
     }
+    const completedPendingConversationDeletionIds = new Set<string>();
     for (const saga of pendingLinkedTaskDeletions) {
-      if (saga.ownerType !== "plan" || saga.phase !== "task_deleted") continue;
+      if (
+        saga.ownerType === "plan" &&
+        saga.phase === "plan_conversation_created"
+      ) {
+        if (!saga.targetBranch) {
+          console.error(
+            "Plan conversation creation guard has no target branch and remains fail-closed",
+            saga.conversationId,
+          );
+          continue;
+        }
+        try {
+          const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (plan?.conversationId === saga.conversationId) {
+            await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+            continue;
+          }
+          await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+          await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+          completedPendingConversationDeletionIds.add(saga.conversationId);
+        } catch (error) {
+          console.error(
+            "Plan conversation creation cleanup remains pending",
+            saga.conversationId,
+            error,
+          );
+        }
+        continue;
+      }
+      if (
+        (saga.ownerType !== "plan" && saga.ownerType !== "conversation") ||
+        saga.phase !== "task_deleted"
+      ) {
+        continue;
+      }
       try {
         await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
         await deleteConversationToolboxStateIfAvailable(saga.conversationId);
         await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+        completedPendingConversationDeletionIds.add(saga.conversationId);
       } catch (error) {
         console.error("Plan conversation deletion remains pending", saga.conversationId, error);
       }
@@ -11408,6 +11519,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .filter((saga) => saga.phase !== "prepared")
         .map((saga) => saga.conversationId),
     );
+    completedPendingConversationDeletionIds.forEach((conversationId) => {
+      pendingConversationIds.add(conversationId);
+    });
     pendingConversationIds.forEach((conversationId) => {
       deletedConversationIds.add(conversationId);
     });
@@ -12922,9 +13036,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
       try {
-        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await beginStandaloneConversationDeletionSaga(conversationId);
       } catch (error) {
         deletedConversationIds.delete(conversationId);
+        pendingConversationDeletionIds.delete(conversationId);
+        throw error;
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+      } catch (error) {
+        try {
+          await completeStandaloneConversationDeletionSaga(conversationId);
+          deletedConversationIds.delete(conversationId);
+        } catch (sagaError) {
+          set({
+            lastError: `La suppression de la conversation reste en attente : ${toServiceError(sagaError).message}`,
+          });
+        }
         throw error;
       } finally {
         pendingConversationDeletionIds.delete(conversationId);
@@ -12941,6 +13069,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await runCleanup("toolbox", () =>
         deleteConversationToolboxStateIfAvailable(conversationId),
       );
+      if (!cleanupFailures.some((failure) => failure.startsWith("toolbox"))) {
+        await runCleanup("journal de nettoyage", () =>
+          completeStandaloneConversationDeletionSaga(conversationId),
+        );
+      }
       conversationCompactionStateCache.delete(conversationId);
       clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
@@ -12987,6 +13120,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         latestConversationSessionIdByConversationId.delete(conversationId);
         completionPersistenceOwnersByConversationId.delete(conversationId);
       });
+      try {
+        for (const conversationId of uniqueIds) {
+          await beginStandaloneConversationDeletionSaga(conversationId);
+        }
+      } catch (error) {
+        uniqueIds.forEach((conversationId) => {
+          deletedConversationIds.delete(conversationId);
+          pendingConversationDeletionIds.delete(conversationId);
+        });
+        throw error;
+      }
 
       let persistedDeletionCommitted = false;
       try {
@@ -13007,6 +13151,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
           }),
         );
+        await Promise.all(
+          uniqueIds
+            .filter(
+              (conversationId) =>
+                !cleanupFailures.some((failure) =>
+                  failure.startsWith(`toolbox ${conversationId}:`),
+                ),
+            )
+            .map(async (conversationId) => {
+              try {
+                await completeStandaloneConversationDeletionSaga(conversationId);
+              } catch (error) {
+                cleanupFailures.push(
+                  `journal de nettoyage ${conversationId}: ${toServiceError(error).message}`,
+                );
+              }
+            }),
+        );
         clearConversationCitationsBulkIfAvailable(uniqueIds);
         uniqueIds.forEach((conversationId) => {
           conversationCompactionStateCache.delete(conversationId);
@@ -13026,9 +13188,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       } catch (error) {
         if (!persistedDeletionCommitted) {
-          uniqueIds.forEach((conversationId) => {
-            deletedConversationIds.delete(conversationId);
-          });
+          await Promise.all(
+            uniqueIds.map(async (conversationId) => {
+              try {
+                await completeStandaloneConversationDeletionSaga(conversationId);
+                deletedConversationIds.delete(conversationId);
+              } catch (sagaError) {
+                set({
+                  lastError: `La suppression de la conversation reste en attente : ${toServiceError(sagaError).message}`,
+                });
+              }
+            }),
+          );
         }
         throw error;
       } finally {
@@ -14127,17 +14298,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const turnId = getMessageTurnId(target);
       const sessionId = createConversationSessionId();
       const replayId = createConversationSessionId();
+      const replayConversationMessages = getConversationMessagesFromState(
+        state,
+        conversationId,
+      );
+      const replayConversationMessageIds = new Set(
+        replayConversationMessages.map((message) => message.id),
+      );
       const replayLocalSnapshot = {
         conversation: state.conversations.find(
           (conversation) => conversation.id === conversationId,
         ) ?? null,
-        messages: state.messages,
-        messageImagesByMessageId: state.messageImagesByMessageId,
-        questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
-        agentCodeCheckpointsByConversationId: state.agentCodeCheckpointsByConversationId,
-        sessionCompactionEventsByConversationId:
-          state.sessionCompactionEventsByConversationId,
-        citations: useCitationsStore.getState().citations,
+        messages: replayConversationMessages,
+        messageImagesByMessageId: Object.fromEntries(
+          Object.entries(state.messageImagesByMessageId).filter(([messageId]) =>
+            replayConversationMessageIds.has(messageId),
+          ),
+        ),
+        questionnaireDrafts: state.questionnaireDraftsByConversationId[
+          conversationId
+        ],
+        agentCodeCheckpoints: state.agentCodeCheckpointsByConversationId[
+          conversationId
+        ],
+        sessionCompactionEvents: state.sessionCompactionEventsByConversationId[
+          conversationId
+        ],
+        citations: useCitationsStore
+          .getState()
+          .citations.filter((citation) => citation.conversationId === conversationId),
       };
       let replayPrepared = false;
       let replayRecoveryActive = false;
@@ -14205,24 +14394,79 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ) {
             throw new Error("A newer replay session won before recovery could update the local transcript.");
           }
-          set((current) => ({
-            ...buildMessageState(replayLocalSnapshot.messages),
-            conversations: replayLocalSnapshot.conversation
-              ? current.conversations.map((conversation) =>
-                  conversation.id === conversationId
-                    ? replayLocalSnapshot.conversation!
-                    : conversation,
-                )
-              : current.conversations,
-            messageImagesByMessageId: replayLocalSnapshot.messageImagesByMessageId,
-            questionnaireDraftsByConversationId:
-              replayLocalSnapshot.questionnaireDraftsByConversationId,
-            agentCodeCheckpointsByConversationId:
-              replayLocalSnapshot.agentCodeCheckpointsByConversationId,
-            sessionCompactionEventsByConversationId:
-              replayLocalSnapshot.sessionCompactionEventsByConversationId,
-          }));
-          useCitationsStore.setState({ citations: replayLocalSnapshot.citations });
+          set((current) => {
+            const currentConversationMessages = getConversationMessagesFromState(
+              current,
+              conversationId,
+            );
+            const currentConversationMessageIds = new Set(
+              currentConversationMessages.map((message) => message.id),
+            );
+            const nextQuestionnaireDrafts = {
+              ...current.questionnaireDraftsByConversationId,
+            };
+            if (replayLocalSnapshot.questionnaireDrafts) {
+              nextQuestionnaireDrafts[conversationId] =
+                replayLocalSnapshot.questionnaireDrafts;
+            } else {
+              delete nextQuestionnaireDrafts[conversationId];
+            }
+            const nextAgentCodeCheckpoints = {
+              ...current.agentCodeCheckpointsByConversationId,
+            };
+            if (replayLocalSnapshot.agentCodeCheckpoints) {
+              nextAgentCodeCheckpoints[conversationId] =
+                replayLocalSnapshot.agentCodeCheckpoints;
+            } else {
+              delete nextAgentCodeCheckpoints[conversationId];
+            }
+            const nextCompactionEvents = {
+              ...current.sessionCompactionEventsByConversationId,
+            };
+            if (replayLocalSnapshot.sessionCompactionEvents) {
+              nextCompactionEvents[conversationId] =
+                replayLocalSnapshot.sessionCompactionEvents;
+            } else {
+              delete nextCompactionEvents[conversationId];
+            }
+            const nextMessageImages = Object.fromEntries(
+              Object.entries(current.messageImagesByMessageId).filter(
+                ([messageId]) => !currentConversationMessageIds.has(messageId),
+              ),
+            );
+            Object.assign(
+              nextMessageImages,
+              replayLocalSnapshot.messageImagesByMessageId,
+            );
+            return {
+              ...buildMessageState([
+                ...current.messages.filter(
+                  (message) => message.conversation_id !== conversationId,
+                ),
+                ...replayLocalSnapshot.messages,
+              ]),
+              conversations: replayLocalSnapshot.conversation
+                ? current.conversations.map((conversation) =>
+                    conversation.id === conversationId
+                      ? replayLocalSnapshot.conversation!
+                      : conversation,
+                  )
+                : current.conversations,
+              messageImagesByMessageId: nextMessageImages,
+              questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+              agentCodeCheckpointsByConversationId: nextAgentCodeCheckpoints,
+              sessionCompactionEventsByConversationId: nextCompactionEvents,
+            };
+          });
+          const currentCitations = useCitationsStore.getState().citations;
+          useCitationsStore.setState({
+            citations: [
+              ...currentCitations.filter(
+                (citation) => citation.conversationId !== conversationId,
+              ),
+              ...replayLocalSnapshot.citations,
+            ],
+          });
           conversationCompactionStateCache.delete(conversationId);
           replayRecoveryActive = false;
         } catch (recoveryError) {

@@ -980,6 +980,81 @@ describe('useTaskStore merge workflow review loading', () => {
     ]);
   });
 
+  it('resumes persisted Git cleanup before finalizing a task-deletion saga whose task is absent', async () => {
+    const taskId = 'manual-task-missing-after-crash';
+    const conversationId = 'conv-missing-after-crash';
+    let worktreeExists = true;
+    let branchExists = true;
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      branchName: params.branchName ?? null,
+      status: worktreeExists ? 'ready' as const : 'absent' as const,
+      isDirty: false,
+    }));
+    gitWorktreeRemoveMock.mockImplementation(async () => {
+      worktreeExists = false;
+      return { removed: true, removedPath: '/repos/web/.macro/worktrees/missing-after-crash' };
+    });
+    gitBranchListMock.mockImplementation(async () => ({
+      local: branchExists
+        ? [{ name: 'feature/missing-after-crash', is_head: false, commit: 'abc123' }]
+        : [],
+      remote: [],
+      current: '',
+    }));
+    gitBranchDeleteMock.mockImplementation(async () => {
+      branchExists = false;
+    });
+    dbAppSettings.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId,
+        conversationId,
+        phase: 'task_deleting',
+        draft: false,
+        executionTargets: [{
+          worktreeKey: 'project-1::feature/missing-after-crash',
+          repoPath: '/repos/web',
+          branchName: 'feature/missing-after-crash',
+          branchExisted: true,
+          worktreeRemoved: false,
+          branchRemoved: false,
+        }],
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [],
+      plans: [],
+      hasStandaloneTasks: false,
+      source: 'empty' as const,
+    }));
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: '/repos/web',
+      taskId: 'project-1::feature/missing-after-crash',
+    }));
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: '/repos/web',
+      branchName: 'feature/missing-after-crash',
+    }));
+    expect(workspaceDeleteManualFeatureMock).not.toHaveBeenCalled();
+    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(conversationId);
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
   it('resumes only the remaining Git cleanup targets after a partial worktree failure', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-git-retry',
