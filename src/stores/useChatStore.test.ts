@@ -4,6 +4,7 @@ import type {
   AgentType,
   AppMode,
   ChatMessage,
+  CompactionPass,
   Conversation,
   ContextReference,
   ProjectGroup,
@@ -2610,6 +2611,47 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBeNull();
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
     expect(createConversationMock).not.toHaveBeenCalled();
+  });
+
+  it('does not revive the only archived Chat conversation after clearing its selection', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem(
+      'macro_chatArchivedConversationIds',
+      JSON.stringify(['archived-chat']),
+    );
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createIdleChatStoreState({
+        conversations: [
+          { ...createConversation('archived-chat'), scope_mode: 'Chat' },
+        ],
+        selectedConversationId: 'archived-chat',
+        selectedConversationIdsByMode: {
+          Chat: 'archived-chat',
+          Architect: 'architect-selection-must-survive',
+        },
+        hydrationStatus: 'ready',
+        restoreStatus: 'ready',
+      }),
+    );
+
+    useChatStore.getState().clearSelectedConversation();
+
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBeNull();
+    expect(
+      useChatStore.getState().selectedConversationIdsByMode.Architect,
+    ).toBe('architect-selection-must-survive');
+
+    const ensuredId = await useChatStore
+      .getState()
+      .ensureConversationForCurrentMode();
+
+    expect(ensuredId).toBeNull();
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBeNull();
   });
 
   it('rejects Architect sends before creating messages when no plan is selected', async () => {
@@ -12035,8 +12077,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       },
     ];
     const { useChatStore } = await loadChatStore();
+    const originalConversation = {
+      ...createConversation('chat-conv', ''),
+      last_message: 'Existing answer',
+      message_count: 2,
+      updated_at: '2026-04-14T10:01:00.000Z',
+    };
     useChatStore.setState(createIdleChatStoreState({
-      conversations: [createConversation('chat-conv', '')],
+      conversations: [originalConversation],
       messages: [
         { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
         { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
@@ -12058,6 +12106,136 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
       expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
     ]);
+    expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
+    expect(useChatStore.getState().conversations).toContainEqual(originalConversation);
+  });
+
+  it('immediately restores a launched replay when the provider fails before its first token', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as { onError?: (error: Error) => void };
+      options.onError?.(new Error('injected provider failure before first token'));
+      return { usage: null };
+    }) as unknown as typeof streamChatMock);
+    citationRecords = [
+      {
+        id: 'citation-tail',
+        type: 'file',
+        scope: 'context',
+        source: 'tail.md',
+        title: 'Tail',
+        messageId: 'replay-assistant',
+        conversationId: 'chat-conv',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    const { useChatStore } = await loadChatStore();
+    const originalConversation = {
+      ...createConversation('chat-conv', ''),
+      last_message: 'Existing answer',
+      message_count: 2,
+      updated_at: '2026-04-14T10:01:00.000Z',
+    };
+    const originalCheckpoints: AgentCodeCheckpoint[] = [];
+    const originalCompactionEvents: CompactionPass[] = [];
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [originalConversation],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: { 'chat-conv': originalCheckpoints },
+      sessionCompactionEventsByConversationId: { 'chat-conv': originalCompactionEvents },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+    await flushAsyncWork();
+
+    expect(dbMarkConversationReplayLaunchedMock).toHaveBeenCalledTimes(1);
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv' }),
+    );
+    expect(dbFinalizeConversationReplayMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(useChatStore.getState().conversations).toContainEqual(originalConversation);
+    expect(useChatStore.getState().agentCodeCheckpointsByConversationId['chat-conv']).toBe(
+      originalCheckpoints,
+    );
+    expect(useChatStore.getState().sessionCompactionEventsByConversationId['chat-conv']).toBe(
+      originalCompactionEvents,
+    );
+    expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
+  });
+
+  it('immediately restores a launched replay when it is aborted before its first token', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as { signal?: AbortSignal };
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) {
+          resolve();
+          return;
+        }
+        options.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return { usage: null };
+    }) as unknown as typeof streamChatMock);
+    citationRecords = [
+      {
+        id: 'citation-tail',
+        type: 'file',
+        scope: 'context',
+        source: 'tail.md',
+        title: 'Tail',
+        messageId: 'replay-assistant',
+        conversationId: 'chat-conv',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    const { useChatStore } = await loadChatStore();
+    const originalConversation = {
+      ...createConversation('chat-conv', ''),
+      last_message: 'Existing answer',
+      message_count: 2,
+      updated_at: '2026-04-14T10:01:00.000Z',
+    };
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [originalConversation],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: { 'chat-conv': [] },
+      sessionCompactionEventsByConversationId: { 'chat-conv': [] },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+    await flushAsyncWork();
+    useChatStore.getState().stopConversationStream('chat-conv');
+    await flushAsyncWork();
+
+    expect(dbMarkConversationReplayLaunchedMock).toHaveBeenCalledTimes(1);
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv' }),
+    );
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(useChatStore.getState().conversations).toContainEqual(originalConversation);
     expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
   });
 
