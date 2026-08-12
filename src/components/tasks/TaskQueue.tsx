@@ -616,6 +616,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationRuntimeById,
     conversationCompactionStatusById,
     selectConversation,
+    deleteConversation,
   } = useChatStore(useShallow((state) => ({
     createConversation: state.createConversation,
     conversations: state.conversations,
@@ -623,6 +624,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationRuntimeById: state.conversationRuntimeById,
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectConversation: state.selectConversation,
+    deleteConversation: state.deleteConversation,
   })));
   const {
     tasks,
@@ -828,6 +830,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
     const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setPendingTaskId(taskId);
+    let conversationId: string | null = null;
 
     try {
       setSelectedTask(taskId);
@@ -837,6 +840,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         conversationProjectId,
         selectedGroupId
       );
+      conversationId = conversation.id;
       await createManualFeatureDraft({
         taskId,
         conversationId: conversation.id,
@@ -848,11 +852,25 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         description: '',
       });
       await activateTask(taskId);
-      selectConversation(conversation.id);
+      if (!(await selectConversation(conversation.id))) {
+        throw new Error('Impossible de sélectionner la nouvelle conversation.');
+      }
     } catch (error) {
+      let cleanupError: unknown = null;
+      if (conversationId) {
+        try {
+          await deleteConversation(conversationId, { mode: 'implement' });
+        } catch (cleanupFailure) {
+          cleanupError = cleanupFailure;
+        }
+      }
       setSelectedTask(null);
       const message = error instanceof Error ? error.message : t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
-      notify.error(message);
+      notify.error(message, {
+        description: cleanupError instanceof Error
+          ? `La conversation créée n'a pas pu être nettoyée : ${cleanupError.message}`
+          : undefined,
+      });
     } finally {
       setPendingTaskId((current) => (current === taskId ? null : current));
     }

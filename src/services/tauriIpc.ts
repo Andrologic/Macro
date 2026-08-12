@@ -1608,6 +1608,60 @@ export async function deleteMessagesAfter(
   return invoke("db_delete_messages_after", { conversationId, afterMessageId });
 }
 
+export async function dbTrimConversationReplay(params: {
+  conversationId: string;
+  afterMessageId: string;
+  codeCheckpointsJson?: string | null;
+  deleteContextCompactionState: boolean;
+}): Promise<void> {
+  return invoke('db_trim_conversation_replay', params);
+}
+
+export async function dbPrepareConversationReplay(params: {
+  conversationId: string;
+  messageId: string;
+  sessionId: string;
+  turnId: string;
+  replayId: string;
+  content: string;
+  hiddenContext?: string | null;
+  providerInputItemsJson?: string | null;
+  codeCheckpointsJson?: string | null;
+  deleteContextCompactionState: boolean;
+}): Promise<void> {
+  return invoke('db_prepare_conversation_replay', { params });
+}
+
+export async function dbRestoreConversationReplay(params: {
+  conversationId: string;
+  replayId: string;
+  sessionId: string;
+  turnId: string;
+}): Promise<boolean> {
+  return invoke('db_restore_conversation_replay', params);
+}
+
+export async function dbCompleteConversationReplay(params: {
+  conversationId: string;
+  replayId: string;
+}): Promise<void> {
+  return invoke('db_complete_conversation_replay', params);
+}
+
+export async function dbMarkConversationReplayLaunched(params: {
+  conversationId: string;
+  replayId: string;
+}): Promise<void> {
+  return invoke('db_mark_conversation_replay_launched', params);
+}
+
+export async function dbFinalizeConversationReplay(params: {
+  conversationId: string;
+  replayId: string;
+}): Promise<void> {
+  return invoke('db_finalize_conversation_replay', params);
+}
+
 // ============ File System ============
 
 export async function fsReadFile(path: string): Promise<FsFileContentDto> {

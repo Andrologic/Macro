@@ -34,15 +34,15 @@ export const commitArchivedConversationMutation = async ({
   onFailure,
 }: {
   write: () => Promise<void>;
-  onCommitted: () => void;
-  onFailure: (error: unknown) => void;
+  onCommitted: () => Promise<void> | void;
+  onFailure: (error: unknown) => Promise<void> | void;
 }): Promise<boolean> => {
   try {
     await write();
-    onCommitted();
+    await onCommitted();
     return true;
   } catch (error) {
-    onFailure(error);
+    await onFailure(error);
     return false;
   }
 };

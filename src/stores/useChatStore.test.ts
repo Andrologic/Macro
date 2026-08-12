@@ -4,6 +4,7 @@ import type {
   AgentType,
   AppMode,
   ChatMessage,
+  CompactionPass,
   Conversation,
   ContextReference,
   ProjectGroup,
@@ -661,6 +662,9 @@ const taskStoreState = {
     taskStoreState.tasks = taskStoreState.tasks.filter((task) => task.id !== taskId);
     emitTaskStoreUpdate(previousTasks);
   }),
+  deleteTask: mock(async (taskId: string) => {
+    await taskStoreState.deleteManualFeatureDraft(taskId);
+  }),
 };
 
 const architectPlans = new Map<string, ArchitectPlanRecord>();
@@ -1015,6 +1019,19 @@ const getChatBootstrapSnapshotMock = mock(async (params?: {
     ),
   };
 });
+const appSettingValues = new Map<string, string>();
+const dbGetAppSettingMock = mock(async (key: string) => {
+  const valueJson = appSettingValues.get(key);
+  return valueJson === undefined
+    ? null
+    : { key, value_json: valueJson, updated_at: '2026-08-12T00:00:00.000Z' };
+});
+const dbSetAppSettingMock = mock(async ({ key, valueJson }: {
+  key: string;
+  valueJson: string;
+}) => {
+  appSettingValues.set(key, valueJson);
+});
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
@@ -1217,6 +1234,12 @@ const updateMessageMock = mock(
   ) => undefined
 );
 const deleteMessagesAfterMock = mock(async () => undefined);
+const dbTrimConversationReplayMock = mock(async () => undefined);
+const dbPrepareConversationReplayMock = mock(async () => undefined);
+const dbRestoreConversationReplayMock = mock(async () => true);
+const dbCompleteConversationReplayMock = mock(async () => undefined);
+const dbMarkConversationReplayLaunchedMock = mock(async () => undefined);
+const dbFinalizeConversationReplayMock = mock(async () => undefined);
 const importMessagesMock = mock(
   async (
     conversationId: string,
@@ -1376,6 +1399,9 @@ const registerUseChatStoreMocks = async () => {
 
   mock.module('./useCitationsStore', () => ({
     useCitationsStore: {
+      setState: (next: { citations?: TestCitation[] }) => {
+        if (next.citations) citationRecords = next.citations;
+      },
       getState: () => ({
         clearCitations: () => {
           citationRecords = [];
@@ -1512,15 +1538,15 @@ const registerUseChatStoreMocks = async () => {
                 citation.scope === 'source',
             ),
           ),
-        pruneConversationSourceCitations: (conversationId: string, keepMessageIds: string[]) => {
+        pruneConversationCitations: (conversationId: string, keepMessageIds: string[]) => {
           const keepSet = new Set(keepMessageIds);
           citationRecords = citationRecords.filter(
             (citation) =>
               citation.conversationId !== conversationId ||
-              citation.scope !== 'source' ||
               keepSet.has(citation.messageId),
           );
         },
+        pruneConversationSourceCitations: () => undefined,
       }),
     },
   }));
@@ -1681,6 +1707,8 @@ const registerUseChatStoreMocks = async () => {
     deleteConversationToolboxState: deleteConversationToolboxStateMock,
     deleteConversation: deleteConversationMock,
     deleteConversations: deleteConversationsMock,
+    dbGetAppSetting: dbGetAppSettingMock,
+    dbSetAppSetting: dbSetAppSettingMock,
     gitBranchList: gitBranchListMock,
     getChatBootstrapSnapshot: getChatBootstrapSnapshotMock,
     getChatSnapshot: getChatSnapshotMock,
@@ -1718,6 +1746,12 @@ const registerUseChatStoreMocks = async () => {
     fsReadFileWithOptions: fsReadFileWithOptionsMock,
 	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
+    dbTrimConversationReplay: dbTrimConversationReplayMock,
+    dbPrepareConversationReplay: dbPrepareConversationReplayMock,
+    dbRestoreConversationReplay: dbRestoreConversationReplayMock,
+    dbCompleteConversationReplay: dbCompleteConversationReplayMock,
+    dbMarkConversationReplayLaunched: dbMarkConversationReplayLaunchedMock,
+    dbFinalizeConversationReplay: dbFinalizeConversationReplayMock,
     updateConversationDetails: updateConversationDetailsMock,
     updateConversationAISelection: updateConversationAISelectionMock,
     updateConversationScope: updateConversationScopeMock,
@@ -2397,6 +2431,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbMessageCounter = 0;
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
+    appSettingValues.clear();
+    dbGetAppSettingMock.mockClear();
+    dbSetAppSettingMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();
     getArchitectPlanChatTranscriptMock.mockClear();
@@ -2444,6 +2481,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     updateConversationScopeMock.mockClear();
     updateMessageMock.mockClear();
     deleteMessagesAfterMock.mockClear();
+    dbTrimConversationReplayMock.mockClear();
+    dbTrimConversationReplayMock.mockImplementation(async () => undefined);
+    dbPrepareConversationReplayMock.mockClear();
+    dbPrepareConversationReplayMock.mockImplementation(async () => undefined);
+    dbRestoreConversationReplayMock.mockClear();
+    dbRestoreConversationReplayMock.mockImplementation(async () => true);
+    dbCompleteConversationReplayMock.mockClear();
+    dbCompleteConversationReplayMock.mockImplementation(async () => undefined);
+    dbMarkConversationReplayLaunchedMock.mockClear();
+    dbMarkConversationReplayLaunchedMock.mockImplementation(async () => undefined);
+    dbFinalizeConversationReplayMock.mockClear();
+    dbFinalizeConversationReplayMock.mockImplementation(async () => undefined);
     importMessagesMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
@@ -2570,6 +2619,47 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBeNull();
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
     expect(createConversationMock).not.toHaveBeenCalled();
+  });
+
+  it('does not revive the only archived Chat conversation after clearing its selection', async () => {
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    localStorage.setItem(
+      'macro_chatArchivedConversationIds',
+      JSON.stringify(['archived-chat']),
+    );
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(
+      createIdleChatStoreState({
+        conversations: [
+          { ...createConversation('archived-chat'), scope_mode: 'Chat' },
+        ],
+        selectedConversationId: 'archived-chat',
+        selectedConversationIdsByMode: {
+          Chat: 'archived-chat',
+          Architect: 'architect-selection-must-survive',
+        },
+        hydrationStatus: 'ready',
+        restoreStatus: 'ready',
+      }),
+    );
+
+    useChatStore.getState().clearSelectedConversation();
+
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBeNull();
+    expect(
+      useChatStore.getState().selectedConversationIdsByMode.Architect,
+    ).toBe('architect-selection-must-survive');
+
+    const ensuredId = await useChatStore
+      .getState()
+      .ensureConversationForCurrentMode();
+
+    expect(ensuredId).toBeNull();
+    expect(useChatStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBeNull();
   });
 
   it('rejects Architect sends before creating messages when no plan is selected', async () => {
@@ -3946,17 +4036,67 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
       expect(result.createdConversation).toBe(true);
       expect(result.restoredTranscript).toBe(true);
-      expect(result.conversationId).toBe('conv-1773900000000');
-      expect(updateArchitectPlanMock).toHaveBeenCalledWith({
+      expect(result.conversationId).toMatch(/^conv-conversation-session-1773900000000-/);
+      expect(updateArchitectPlanMock).toHaveBeenCalledWith(expect.objectContaining({
         branchName: 'develop',
         planId: plan.id,
-        conversationId: 'conv-1773900000000',
-      });
-      expect(useChatStore.getState().getConversationMessages('conv-1773900000000')).toHaveLength(1);
-      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773900000000');
+        conversationId: result.conversationId,
+      }));
+      expect(useChatStore.getState().getConversationMessages(result.conversationId!)).toHaveLength(1);
+      expect(useChatStore.getState().selectedConversationId).toBe(result.conversationId);
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  it('keeps a durable cleanup guard when plan transcript import fails after creating a conversation', async () => {
+    tauriAvailable = true;
+    const plan = createPlan({
+      id: 'plan-import-cleanup',
+      conversationId: 'shared-plan-import-conv',
+    });
+    architectPlans.set(plan.id, plan);
+    architectPlanMessages.set(plan.id, [{
+      id: 'plan-import-message',
+      role: 'assistant',
+      content: 'This import must either persist or be compensated.',
+      createdAt: '2026-08-12T00:00:00.000Z',
+    }]);
+    importMessagesMock.mockImplementationOnce(async () => {
+      throw new Error('injected transcript import failure');
+    });
+    deleteConversationMock.mockImplementationOnce(async () => {
+      throw new Error('injected conversation cleanup failure');
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('shared-plan-import-conv')],
+    }));
+
+    await expect(
+      useChatStore.getState().ensureArchitectConversationForPlan({
+        plan,
+        targetBranch: 'develop',
+        fallbackProjectId: 'project-1',
+        fallbackGroupId: 'group-1',
+        sharedConversation: true,
+      }),
+    ).rejects.toThrow('nettoyage sera repris automatiquement');
+
+    const pendingSagas = JSON.parse(
+      appSettingValues.get('pendingLinkedTaskDeletions:v1') ?? '[]',
+    );
+    expect(pendingSagas).toEqual([expect.objectContaining({
+      ownerType: 'plan',
+      ownerId: plan.id,
+      phase: 'task_deleted',
+      targetBranch: 'develop',
+    })]);
+
+    await useChatStore.getState().initializeCritical();
+
+    expect(appSettingValues.get('pendingLinkedTaskDeletions:v1')).toBe('[]');
   });
 
   it('prefers the active plan conversation over the project architect conversation fallback', async () => {
@@ -4530,6 +4670,120 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       useChatStore.getState().getConversationMessages('plan-conv').map((message: { id: string }) => message.id)
     ).toEqual(['m-1', 'm-2']);
     expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a conversation hidden while a task-deletion saga is pending at bootstrap', async () => {
+    tauriAvailable = true;
+    appSettingValues.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: 'task-pending-cleanup',
+        conversationId: 'conversation-pending-cleanup',
+        phase: 'task_deleted',
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conversation-pending-cleanup', {
+        message_count: 1,
+      }),
+      createChatSnapshotConversation('conversation-visible', {
+        message_count: 1,
+      }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'message-pending-cleanup',
+        conversation_id: 'conversation-pending-cleanup',
+      }),
+      createChatMessageRecord({
+        id: 'message-visible',
+        conversation_id: 'conversation-visible',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+
+    expect(useChatStore.getState().conversations.map((conversation: { id: string }) => conversation.id)).not.toContain(
+      'conversation-pending-cleanup',
+    );
+    expect(useChatStore.getState().getConversationMessages('conversation-pending-cleanup')).toEqual([]);
+  });
+
+  it('reports a semantically invalid deletion saga instead of silently tombstoning its conversation', async () => {
+    tauriAvailable = true;
+    const invalidSaga = JSON.stringify([{
+      ownerType: 'conversation',
+      ownerId: 'conversation-invalid-saga',
+      conversationId: 'conversation-invalid-saga',
+      phase: 'prepared',
+      createdAt: '2026-08-12T00:00:00.000Z',
+      updatedAt: '2026-08-12T00:00:00.000Z',
+    }]);
+    appSettingValues.set('pendingLinkedTaskDeletions:v1', invalidSaga);
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conversation-invalid-saga'),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+
+    expect(useChatStore.getState().hydrationStatus).toBe('error');
+    expect(useChatStore.getState().lastError).toContain('journal de suppression liée est corrompu');
+    expect(appSettingValues.get('pendingLinkedTaskDeletions:v1')).toBe(invalidSaga);
+  });
+
+  it('retries a failed SQLite replay recovery on the next bootstrap', async () => {
+    tauriAvailable = true;
+    chatSnapshotConversations = [createChatSnapshotConversation('replay-retry')];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'replay-anchor',
+        conversation_id: 'replay-retry',
+        content: 'Edited request',
+      }),
+    ];
+    appSettingValues.set(
+      'conversationReplayRecovery:replay-retry',
+      JSON.stringify({
+        replay_id: 'replay-retry-id',
+        session_id: 'session-retry',
+        turn_id: 'turn-retry',
+        phase: 'launch_ready',
+      }),
+    );
+    dbRestoreConversationReplayMock.mockImplementationOnce(async () => {
+      throw new Error('injected SQLite restore failure');
+    });
+    dbRestoreConversationReplayMock.mockImplementationOnce(async () => {
+      appSettingValues.delete('conversationReplayRecovery:replay-retry');
+      chatSnapshotMessages = [
+        createChatMessageRecord({
+          id: 'replay-anchor',
+          conversation_id: 'replay-retry',
+          content: 'Original request',
+        }),
+        createChatMessageRecord({
+          id: 'replay-tail',
+          conversation_id: 'replay-retry',
+          role: 'assistant',
+          content: 'Restored tail',
+        }),
+      ];
+      return true;
+    });
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().lastError).toContain('Replay recovery is pending');
+
+    await useChatStore.getState().initializeCritical();
+    expect(useChatStore.getState().conversations.map((conversation: { id: string }) => conversation.id))
+      .toContain('replay-retry');
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledTimes(2);
   });
 
   it('repairs stale scope metadata for the active plan conversation during initialize', async () => {
@@ -7980,12 +8234,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
       const conversation = await useChatStore.getState().createConversation('New Conversation', null, null);
 
-      expect(conversation.id).toBe('conv-1773910000000');
+      expect(conversation.id).toMatch(/^conv-conversation-session-1773910000000-/);
       expect(conversation.task_id).toBe('task-1');
       expect(conversation.project_id).toBe('project-1');
       expect(conversation.title).toBe('Task - Implement checkout');
-      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773910000000');
-      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('conv-1773910000000');
+      expect(useChatStore.getState().selectedConversationId).toBe(conversation.id);
+      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe(conversation.id);
     } finally {
       Date.now = originalNow;
     }
@@ -8062,11 +8316,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
       const recreatedId = await useChatStore.getState().ensureConversationForCurrentMode();
 
-      expect(recreatedId).toBe('conv-1773920000000');
+      expect(recreatedId).toMatch(/^conv-conversation-session-1773920000000-/);
       expect(useChatStore.getState().conversations).toHaveLength(1);
       expect(useChatStore.getState().conversations[0]?.task_id).toBe('task-1');
-      expect(useChatStore.getState().selectedConversationId).toBe('conv-1773920000000');
-      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('conv-1773920000000');
+      expect(useChatStore.getState().selectedConversationId).toBe(recreatedId);
+      expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe(recreatedId);
     } finally {
       Date.now = originalNow;
     }
@@ -11682,7 +11936,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         ],
       }),
     );
-    expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'user-questionnaire');
+    expect(dbPrepareConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'chat-conv',
+        messageId: 'user-questionnaire',
+      }),
+    );
     expect(streamChatMock).toHaveBeenCalledTimes(1);
     const streamOptions = ((streamChatMock as unknown as {
       mock: { calls: Array<Array<unknown>> };
@@ -11804,7 +12063,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
     await flushAsyncWork();
 
-    expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'u2');
+    expect(dbPrepareConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv', messageId: 'u2' }),
+    );
     expect(
       useChatStore.getState().sessionCompactionEventsByConversationId[
         'chat-conv'
@@ -11824,6 +12085,342 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         id: 'other-compaction',
       }),
     ]);
+  });
+
+  it('keeps the transcript tail in state when the atomic replay trim fails', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    dbPrepareConversationReplayMock.mockImplementation(async () => {
+      throw new Error('injected replay trim failure');
+    });
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        {
+          id: 'replay-user',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Original request',
+          timestamp: '2026-04-14T10:00:00.000Z',
+        },
+        {
+          id: 'replay-assistant',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: 'Existing answer',
+          timestamp: '2026-04-14T10:01:00.000Z',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      questionnaireDraftsByConversationId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+
+    expect(dbPrepareConversationReplayMock).toHaveBeenCalledTimes(1);
+    expect(
+      useChatStore.getState().getConversationMessages('chat-conv').map((message: { id: string }) => message.id),
+    ).toEqual(['replay-user', 'replay-assistant']);
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().lastError).toContain('injected replay trim failure');
+  });
+
+  it('restores the replay snapshot after a post-trim launch failure', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    createMessageMock.mockImplementationOnce(async () => {
+      throw new Error('injected placeholder persistence failure');
+    });
+    citationRecords = [
+      {
+        id: 'citation-tail',
+        type: 'file',
+        scope: 'context',
+        source: 'tail.md',
+        title: 'Tail',
+        messageId: 'replay-assistant',
+        conversationId: 'chat-conv',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    const { useChatStore } = await loadChatStore();
+    const originalConversation = {
+      ...createConversation('chat-conv', ''),
+      last_message: 'Existing answer',
+      message_count: 2,
+      updated_at: '2026-04-14T10:01:00.000Z',
+    };
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [originalConversation],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: { 'chat-conv': [] },
+      sessionCompactionEventsByConversationId: { 'chat-conv': [] },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv' }),
+    );
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
+    expect(useChatStore.getState().conversations).toContainEqual(originalConversation);
+  });
+
+  it('immediately restores a launched replay when the provider fails before its first token', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as { onError?: (error: Error) => void };
+      options.onError?.(new Error('injected provider failure before first token'));
+      return { usage: null };
+    }) as unknown as typeof streamChatMock);
+    citationRecords = [
+      {
+        id: 'citation-tail',
+        type: 'file',
+        scope: 'context',
+        source: 'tail.md',
+        title: 'Tail',
+        messageId: 'replay-assistant',
+        conversationId: 'chat-conv',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    const { useChatStore } = await loadChatStore();
+    const originalConversation = {
+      ...createConversation('chat-conv', ''),
+      last_message: 'Existing answer',
+      message_count: 2,
+      updated_at: '2026-04-14T10:01:00.000Z',
+    };
+    const originalCheckpoints: AgentCodeCheckpoint[] = [];
+    const originalCompactionEvents: CompactionPass[] = [];
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [originalConversation],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: { 'chat-conv': originalCheckpoints },
+      sessionCompactionEventsByConversationId: { 'chat-conv': originalCompactionEvents },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+    await flushAsyncWork();
+
+    expect(dbMarkConversationReplayLaunchedMock).toHaveBeenCalledTimes(1);
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv' }),
+    );
+    expect(dbFinalizeConversationReplayMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(useChatStore.getState().conversations).toContainEqual(originalConversation);
+    expect(useChatStore.getState().agentCodeCheckpointsByConversationId['chat-conv']).toBe(
+      originalCheckpoints,
+    );
+    expect(useChatStore.getState().sessionCompactionEventsByConversationId['chat-conv']).toBe(
+      originalCompactionEvents,
+    );
+    expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
+  });
+
+  it('restores only the replay conversation when another conversation changes before provider failure', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    const providerFailure = createDeferred<void>();
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as { onError?: (error: Error) => void };
+      await providerFailure.promise;
+      options.onError?.(new Error('injected provider failure after another conversation changed'));
+      return { usage: null };
+    }) as unknown as typeof streamChatMock);
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [
+        { ...createConversation('chat-replay', ''), message_count: 2, last_message: 'Existing answer' },
+        { ...createConversation('chat-other', ''), message_count: 1, last_message: 'Before replay recovery' },
+      ],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-replay', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-replay', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+        { id: 'other-user', task_id: '', conversation_id: 'chat-other', role: 'user', content: 'Before replay recovery', timestamp: '2026-04-14T10:02:00.000Z' },
+      ],
+      selectedConversationId: 'chat-replay',
+      selectedConversationIdsByMode: { Chat: 'chat-replay' },
+      agentCodeCheckpointsByConversationId: { 'chat-replay': [], 'chat-other': [] },
+      sessionCompactionEventsByConversationId: { 'chat-replay': [], 'chat-other': [] },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+    await flushAsyncWork();
+    useChatStore.getState().addMessage({
+      id: 'other-assistant',
+      task_id: '',
+      conversation_id: 'chat-other',
+      role: 'assistant',
+      content: 'Concurrent message must survive.',
+      timestamp: '2026-04-14T10:03:00.000Z',
+    });
+    providerFailure.resolve();
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().getConversationMessages('chat-replay')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(useChatStore.getState().getConversationMessages('chat-other')).toEqual([
+      expect.objectContaining({ id: 'other-user' }),
+      expect.objectContaining({ id: 'other-assistant', content: 'Concurrent message must survive.' }),
+    ]);
+    expect(
+      useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'chat-other'),
+    ).toMatchObject({ message_count: 2, last_message: 'Concurrent message must survive.' });
+  });
+
+  it('immediately restores a launched replay when it is aborted before its first token', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+      const options = (args[0] ?? {}) as { signal?: AbortSignal };
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) {
+          resolve();
+          return;
+        }
+        options.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return { usage: null };
+    }) as unknown as typeof streamChatMock);
+    citationRecords = [
+      {
+        id: 'citation-tail',
+        type: 'file',
+        scope: 'context',
+        source: 'tail.md',
+        title: 'Tail',
+        messageId: 'replay-assistant',
+        conversationId: 'chat-conv',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    const { useChatStore } = await loadChatStore();
+    const originalConversation = {
+      ...createConversation('chat-conv', ''),
+      last_message: 'Existing answer',
+      message_count: 2,
+      updated_at: '2026-04-14T10:01:00.000Z',
+    };
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [originalConversation],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: { 'chat-conv': [] },
+      sessionCompactionEventsByConversationId: { 'chat-conv': [] },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+    await flushAsyncWork();
+    useChatStore.getState().stopConversationStream('chat-conv');
+    await flushAsyncWork();
+
+    expect(dbMarkConversationReplayLaunchedMock).toHaveBeenCalledTimes(1);
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv' }),
+    );
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(useChatStore.getState().conversations).toContainEqual(originalConversation);
+    expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
+  });
+
+  it('does not start the provider when durable replay completion fails', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    dbCompleteConversationReplayMock.mockImplementationOnce(async () => {
+      throw new Error('injected replay completion failure');
+    });
+    citationRecords = [
+      {
+        id: 'citation-tail',
+        type: 'file',
+        scope: 'context',
+        source: 'tail.md',
+        title: 'Tail',
+        messageId: 'replay-assistant',
+        conversationId: 'chat-conv',
+        timestamp: '2026-04-14T10:01:00.000Z',
+      },
+    ];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('chat-conv', '')],
+      messages: [
+        { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+        { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      agentCodeCheckpointsByConversationId: { 'chat-conv': [] },
+      sessionCompactionEventsByConversationId: { 'chat-conv': [] },
+    }));
+
+    await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+      skipAgentCodeReplayCheck: true,
+    });
+
+    expect(createMessageMock).not.toHaveBeenCalled();
+    expect(streamChatMock).not.toHaveBeenCalled();
+    expect(dbMarkConversationReplayLaunchedMock).not.toHaveBeenCalled();
+    expect(dbRestoreConversationReplayMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'chat-conv' }),
+    );
+    expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+      expect.objectContaining({ id: 'replay-user', content: 'Original request' }),
+      expect.objectContaining({ id: 'replay-assistant', content: 'Existing answer' }),
+    ]);
+    expect(citationRecords).toContainEqual(expect.objectContaining({ id: 'citation-tail' }));
   });
 
   it('blocks direct edits that would rewind agent code checkpoints without confirmation', async () => {
@@ -14351,6 +14948,56 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
   });
 
+  it('persists and resumes toolbox cleanup after a conversation deletion commits', async () => {
+    tauriAvailable = true;
+    deleteConversationToolboxStateMock.mockImplementationOnce(async () => {
+      throw new Error('injected toolbox cleanup failure');
+    });
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('chat-toolbox-retry', { message_count: 1 }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'toolbox-retry-message',
+        conversation_id: 'chat-toolbox-retry',
+      }),
+    ];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [{ ...createConversation('chat-toolbox-retry'), scope_mode: 'Chat' }],
+      messages: [{
+        id: 'toolbox-retry-message',
+        task_id: '',
+        conversation_id: 'chat-toolbox-retry',
+        role: 'user',
+        content: 'Delete me safely.',
+        timestamp: '2026-08-12T00:00:00.000Z',
+      }],
+      selectedConversationId: 'chat-toolbox-retry',
+      selectedConversationIdsByMode: { Chat: 'chat-toolbox-retry' },
+    }));
+
+    await expect(
+      useChatStore.getState().deleteConversation('chat-toolbox-retry'),
+    ).rejects.toThrow('certaines ressources');
+
+    expect(JSON.parse(appSettingValues.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        ownerType: 'conversation',
+        ownerId: 'chat-toolbox-retry',
+        conversationId: 'chat-toolbox-retry',
+        phase: 'task_deleted',
+      }),
+    ]);
+    expect(useChatStore.getState().conversations).toEqual([]);
+
+    await useChatStore.getState().initializeCritical();
+
+    expect(deleteConversationToolboxStateMock).toHaveBeenCalledTimes(2);
+    expect(appSettingValues.get('pendingLinkedTaskDeletions:v1')).toBe('[]');
+    expect(useChatStore.getState().conversations).toEqual([]);
+  });
+
   it('refuses a send while a deferred conversation deletion owns its tombstone', async () => {
     tauriAvailable = true;
     appState.mode = 'Chat';
@@ -14385,6 +15032,29 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     expect(useChatStore.getState().conversations).toEqual([]);
     expect(useChatStore.getState().getConversationMessages('chat-1')).toEqual([]);
+  });
+
+  it('does not materialize a ghost conversation when durable creation fails', async () => {
+    tauriAvailable = true;
+    appState.mode = 'Chat';
+    createConversationMock.mockImplementationOnce(async () => {
+      throw new Error('SQLite unavailable');
+    });
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState(createIdleChatStoreState({
+      conversations: [createConversation('existing-chat')],
+      selectedConversationId: 'existing-chat',
+      selectedConversationIdsByMode: { Chat: 'existing-chat' },
+    }));
+
+    await expect(
+      useChatStore.getState().createConversation('Nouvelle conversation', null, null),
+    ).rejects.toThrow('Impossible de créer la conversation de manière durable');
+
+    expect(useChatStore.getState().conversations.map((conversation: Conversation) => conversation.id)).toEqual([
+      'existing-chat',
+    ]);
+    expect(useChatStore.getState().selectedConversationId).toBe('existing-chat');
   });
 
   it('cleans an empty placeholder once before rebuilding a new session', async () => {
