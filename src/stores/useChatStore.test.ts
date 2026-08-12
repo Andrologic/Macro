@@ -4712,6 +4712,29 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('conversation-pending-cleanup')).toEqual([]);
   });
 
+  it('reports a semantically invalid deletion saga instead of silently tombstoning its conversation', async () => {
+    tauriAvailable = true;
+    const invalidSaga = JSON.stringify([{
+      ownerType: 'conversation',
+      ownerId: 'conversation-invalid-saga',
+      conversationId: 'conversation-invalid-saga',
+      phase: 'prepared',
+      createdAt: '2026-08-12T00:00:00.000Z',
+      updatedAt: '2026-08-12T00:00:00.000Z',
+    }]);
+    appSettingValues.set('pendingLinkedTaskDeletions:v1', invalidSaga);
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conversation-invalid-saga'),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+
+    expect(useChatStore.getState().hydrationStatus).toBe('error');
+    expect(useChatStore.getState().lastError).toContain('journal de suppression liée est corrompu');
+    expect(appSettingValues.get('pendingLinkedTaskDeletions:v1')).toBe(invalidSaga);
+  });
+
   it('retries a failed SQLite replay recovery on the next bootstrap', async () => {
     tauriAvailable = true;
     chatSnapshotConversations = [createChatSnapshotConversation('replay-retry')];

@@ -56,6 +56,19 @@ export class LinkedConversationDeletionSagaCorruptionError extends Error {
   }
 }
 
+const isAllowedOwnerPhase = (
+  ownerType: LinkedConversationDeletionOwner,
+  phase: LinkedConversationDeletionPhase,
+): boolean => {
+  if (ownerType === 'task') {
+    return phase === 'prepared' || phase === 'task_deleting' || phase === 'task_deleted';
+  }
+  if (ownerType === 'plan') {
+    return phase === 'task_deleted' || phase === 'plan_conversation_created';
+  }
+  return phase === 'task_deleted';
+};
+
 const parseSagas = (value: string | null | undefined): LinkedConversationDeletionSaga[] => {
   if (!value) return [];
   try {
@@ -76,7 +89,7 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
           candidate.phase !== 'task_deleting' &&
           candidate.phase !== 'task_deleted' &&
           candidate.phase !== 'plan_conversation_created') ||
-        (ownerType === 'task' && candidate.phase === 'plan_conversation_created')
+        !isAllowedOwnerPhase(ownerType, candidate.phase)
       ) {
         throw new LinkedConversationDeletionSagaCorruptionError(value);
       }
