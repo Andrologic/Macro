@@ -25,7 +25,7 @@ const buildPlanRecord = () => ({
 });
 
 describe('planFinalizationRuntime', () => {
-  it('loads plan review with synced base branches before building runtime state', async () => {
+  it('loads plan review without mutating base branches before building runtime state', async () => {
     const loadReview = mock(async () => ({
       plan: buildPlanRecord(),
       tasks: [],
@@ -43,7 +43,7 @@ describe('planFinalizationRuntime', () => {
     expect(loadReview).toHaveBeenCalledWith({
       branchName: 'develop',
       planId: 'plan-1',
-      syncBaseBranches: true,
+      syncBaseBranches: false,
     });
     expect(runtime).toMatchObject({
       planId: 'plan-1',
