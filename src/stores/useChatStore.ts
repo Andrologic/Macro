@@ -251,7 +251,7 @@ import {
 } from "../services/contextCompactionSession";
 import { createChatCompactionRuntime } from "../services/chatCompactionRuntime";
 import {
-  executeConversationReplay,
+  buildConversationReplayPlan,
   type ConversationReplayPlan,
 } from "../services/conversationReplayService";
 import {
@@ -262,6 +262,7 @@ import {
 import {
   appendAgentCodeCheckpoint,
   buildAgentCodeReplayPreview,
+  clearAgentCodeCheckpoints,
   createAgentCodeCheckpoint,
   hydrateAgentCodeReplayPreviewCurrentState,
   loadAgentCodeCheckpoints,
@@ -269,6 +270,12 @@ import {
   restoreAgentCodeReplayPreview,
   saveAgentCodeCheckpoints,
 } from "../services/agentCodeCheckpoints";
+import {
+  LinkedConversationDeletionSagaCorruptionError,
+  loadLinkedConversationDeletionSagas,
+  removeLinkedConversationDeletionSaga,
+  upsertLinkedConversationDeletionSaga,
+} from "../services/linkedTaskDeletionSaga";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
 import {
   filterToolIdsForInternalAgentProfile,
@@ -338,6 +345,8 @@ import {
   type ChatSendState,
 } from "./chat/chatRuntimeState";
 import { buildReplayTrimStatePatch } from "./chat/chatReplayTrimState";
+
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
 
 export type {
   ConversationContextDiagnostics,
@@ -938,6 +947,7 @@ interface ChatStore {
   appendToMessage: (messageId: string, tokenChunk: string) => void;
   clearMessages: () => void;
   selectConversation: (conversationId: string) => Promise<boolean>;
+  clearSelectedConversation: () => void;
   createConversation: (
     title: string,
     taskId: string | null,
@@ -959,6 +969,7 @@ interface ChatStore {
   ensureConversationForCurrentMode: () => Promise<string | null>;
   reapplySelectionForCurrentContext: () => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
+  togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
     conversationId: string,
     confirmation?: {
@@ -967,6 +978,7 @@ interface ChatStore {
     },
   ) => Promise<void>;
   deleteChatConversations: (conversationIds: string[]) => Promise<void>;
+  completeLinkedTaskConversationDeletion: (conversationId: string) => Promise<boolean>;
   markAsRead: (conversationId: string) => void;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
@@ -1371,7 +1383,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
+  const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
+  const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
   const latestConversationSessionIdByConversationId = new Map<string, string>();
   const completionPersistenceOwnersByConversationId = new Map<
@@ -1401,6 +1415,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     (resolution: PendingToolApprovalResolution) => void
   >();
   const pendingToolApprovalQueues = new Map<string, Promise<void>>();
+  const pendingAgentCodeReplayRollbacksByConversationId = new Map<
+    string,
+    () => Promise<void>
+  >();
 
   const serializeToolApproval = async <T>(
     conversationId: string,
@@ -4753,6 +4771,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const serializeAgentCodeCheckpointMutation = async <T>(
+    conversationId: string,
+    mutate: () => Promise<T>,
+  ): Promise<T> => {
+    const previous =
+      checkpointMutationQueuesByConversationId.get(conversationId) ??
+      Promise.resolve();
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => slot);
+    checkpointMutationQueuesByConversationId.set(conversationId, queued);
+    await previous.catch(() => undefined);
+    try {
+      return await mutate();
+    } finally {
+      release();
+      if (checkpointMutationQueuesByConversationId.get(conversationId) === queued) {
+        checkpointMutationQueuesByConversationId.delete(conversationId);
+      }
+    }
+  };
+
   const persistAgentCodeCheckpointsForConversation = async (
     conversationId: string,
     checkpoints: AgentCodeCheckpoint[],
@@ -4800,31 +4842,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
-    if (deletedConversationIds.has(params.conversationId)) {
-      return;
-    }
-    const checkpoint = createAgentCodeCheckpoint(existing, params);
-    await persistAgentCodeCheckpointsForConversation(
-      params.conversationId,
-      appendAgentCodeCheckpoint(existing, checkpoint),
-    );
-  };
-
-  const pruneAgentCodeCheckpointsForConversation = async (
-    conversationId: string,
-    keptMessageIds: Set<string>,
-  ): Promise<void> => {
-    const existing = await getLoadedAgentCodeCheckpoints(conversationId);
-    const pruned = pruneAgentCodeCheckpointsToMessageIds(
-      existing,
-      conversationId,
-      keptMessageIds,
-    );
-    if (pruned.length === existing.length) {
-      return;
-    }
-    await persistAgentCodeCheckpointsForConversation(conversationId, pruned);
+    await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
+      const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+      if (deletedConversationIds.has(params.conversationId)) {
+        return;
+      }
+      const checkpoint = createAgentCodeCheckpoint(existing, params);
+      await persistAgentCodeCheckpointsForConversation(
+        params.conversationId,
+        appendAgentCodeCheckpoint(existing, checkpoint),
+      );
+    });
   };
 
   const shouldChallengeGitStageCommitToolCall = (
@@ -5765,11 +5793,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): Promise<void> => {
     if (!tauriIpc.isTauriAvailable()) return;
     if (typeof tauriIpc.deleteConversationToolboxState !== "function") return;
-    try {
-      await tauriIpc.deleteConversationToolboxState(conversationId);
-    } catch (error) {
-      console.warn("[chat] Failed to delete toolbox state:", error);
-    }
+    await tauriIpc.deleteConversationToolboxState(conversationId);
+  };
+
+  const beginStandaloneConversationDeletionSaga = async (
+    conversationId: string,
+  ): Promise<void> => {
+    await upsertLinkedConversationDeletionSaga({
+      ownerType: "conversation",
+      ownerId: conversationId,
+      conversationId,
+      phase: "task_deleted",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const completeStandaloneConversationDeletionSaga = async (
+    conversationId: string,
+  ): Promise<void> => {
+    await removeLinkedConversationDeletionSaga("conversation", conversationId);
   };
 
   const hydrateConversationToolboxStateIfAvailable = async (
@@ -6762,9 +6805,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectedGroupId: string | null,
     selectedProjectId: string | null,
     selectedTaskId: string | null,
+    excludedConversationIds: ReadonlySet<string> = EMPTY_STRING_SET,
   ): string | null => {
     const scoped = conversations
       .filter((conversation) =>
+        !excludedConversationIds.has(conversation.id) &&
         isConversationAllowedForMode(
           conversation,
           mode,
@@ -6814,31 +6859,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     | "selectedConversationId"
     | "selectedConversationIdsByMode"
   >;
-
-  const buildConversationRemovalSnapshot = (): ConversationRemovalSnapshot => {
-    const state = get();
-    return {
-      conversations: state.conversations,
-      messages: state.messages,
-      messagesByConversationId: state.messagesByConversationId,
-      messageIndexById: state.messageIndexById,
-      messageLoadStatusByConversationId: state.messageLoadStatusByConversationId,
-      contextDiagnosticsByConversationId: state.contextDiagnosticsByConversationId,
-      liveStreamContextEstimatesByConversationId:
-        state.liveStreamContextEstimatesByConversationId,
-      messageImagesByMessageId: state.messageImagesByMessageId,
-      questionnaireDraftsByConversationId:
-        state.questionnaireDraftsByConversationId,
-      pendingToolApprovalByConversationId:
-        state.pendingToolApprovalByConversationId,
-      conversationApprovalGrantsByConversationId:
-        state.conversationApprovalGrantsByConversationId,
-      skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
-      conversationRuntimeById: state.conversationRuntimeById,
-      selectedConversationId: state.selectedConversationId,
-      selectedConversationIdsByMode: state.selectedConversationIdsByMode,
-    };
-  };
 
   const buildConversationRemovalState = (
     state: ConversationRemovalSnapshot,
@@ -6965,21 +6985,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationIds.forEach((conversationId) => {
       clearConversationSecurityState(conversationId);
       cancelLiveContextDiagnosticsRefreshSchedule(conversationId);
+      pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
     });
     set((state) => buildConversationRemovalState(state, conversationIds));
   };
 
-  const restoreConversationRemovalSnapshot = (
-    snapshot: ConversationRemovalSnapshot,
-  ) => {
-    saveMessageImagesToStorage(snapshot.messageImagesByMessageId);
-    saveQuestionnaireDraftsToStorage(snapshot.questionnaireDraftsByConversationId);
-    set({
-      ...snapshot,
-      ...buildLegacyStreamingFlags({
-        conversationRuntimeById: snapshot.conversationRuntimeById,
-        selectedConversationId: snapshot.selectedConversationId,
-      }),
+  const hydrateSelectedConversationAfterRemoval = async (
+    removedConversationIds: string[],
+  ): Promise<void> => {
+    const conversationId = get().selectedConversationId;
+    if (!conversationId || removedConversationIds.includes(conversationId)) {
+      return;
+    }
+    const mode = useAppStore.getState().mode;
+    await ensureMessagesLoadedForConversation(conversationId);
+    await hydrateConversationCitationsIfAvailable(conversationId);
+    await hydrateConversationToolboxStateIfAvailable(conversationId);
+    await getConversationCompactionState(conversationId);
+    await runAiSelectionRestore({
+      mode,
+      conversationId,
+      activeContextKey: get().activeContextKey,
+      shouldShowResolving: true,
     });
   };
 
@@ -8537,6 +8564,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageId: string;
     clearQuestionnaireSession?: boolean;
     updatedMessage?: ChatMessage;
+    replayRecovery?: {
+      sessionId: string;
+      turnId: string;
+      replayId: string;
+      content: string;
+      hiddenContext?: string;
+      providerInputItems?: unknown[];
+    };
   }) => {
     const existingCompactionState = await getConversationCompactionState(
       params.conversationId,
@@ -8583,7 +8618,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     };
 
-    await executeConversationReplay({
+    const plan = buildConversationReplayPlan({
       conversationId: params.conversationId,
       replayMessageId: params.messageId,
       conversationMessages: replayMessages,
@@ -8592,41 +8627,79 @@ export const useChatStore = create<ChatStore>((set, get) => {
         stateBeforeReplay.sessionCompactionEventsByConversationId[
           params.conversationId
         ],
-      adapters: {
-        trimMessages: async (plan) => {
-          try {
-            await deletePersistedMessagesAfter(
-              chatPersistenceAdapters,
-              params.conversationId,
-              params.messageId,
-            );
-          } catch (error) {
-            const normalized = toServiceError(error);
-            set({ lastError: normalized.message, sendState: "error" });
-            throw buildSendError(
-              `Failed to trim the conversation before retrying: ${normalized.message}`,
-            );
-          }
-          applyReplayTrimToState(plan);
-        },
-        pruneCodeCheckpoints: async (plan) => {
-          const keptConversationMessageIds = Array.from(plan.keptMessageIds);
-          await pruneAgentCodeCheckpointsForConversation(
-            params.conversationId,
-            plan.keptMessageIds,
-          );
-          useCitationsStore
-            .getState()
-            .pruneConversationSourceCitations(
-              params.conversationId,
-              keptConversationMessageIds,
-            );
-        },
-        deleteContextCompactionState: async () => {
-          await deleteConversationCompactionState(params.conversationId);
-        },
-      },
     });
+
+    try {
+      await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
+        const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+        const pruned = pruneAgentCodeCheckpointsToMessageIds(
+          existing,
+          params.conversationId,
+          plan.keptMessageIds,
+        );
+        const checkpointsChanged = pruned.length !== existing.length;
+
+        if (tauriIpc.isTauriAvailable()) {
+          if (params.replayRecovery) {
+            await tauriIpc.dbPrepareConversationReplay({
+              conversationId: params.conversationId,
+              messageId: params.messageId,
+              sessionId: params.replayRecovery.sessionId,
+              turnId: params.replayRecovery.turnId,
+              replayId: params.replayRecovery.replayId,
+              content: params.replayRecovery.content,
+              hiddenContext: params.replayRecovery.hiddenContext ?? null,
+              providerInputItemsJson: params.replayRecovery.providerInputItems
+                ? JSON.stringify(params.replayRecovery.providerInputItems)
+                : null,
+              codeCheckpointsJson: checkpointsChanged ? JSON.stringify(pruned) : null,
+              deleteContextCompactionState: plan.shouldDeleteContextCompactionState,
+            });
+          } else {
+            await tauriIpc.dbTrimConversationReplay({
+              conversationId: params.conversationId,
+              afterMessageId: params.messageId,
+              codeCheckpointsJson: checkpointsChanged ? JSON.stringify(pruned) : null,
+              deleteContextCompactionState: plan.shouldDeleteContextCompactionState,
+            });
+          }
+        } else {
+          await deletePersistedMessagesAfter(
+            chatPersistenceAdapters,
+            params.conversationId,
+            params.messageId,
+          );
+          if (checkpointsChanged) {
+            await saveAgentCodeCheckpoints(params.conversationId, pruned);
+          }
+        }
+
+        if (checkpointsChanged) {
+          set((state) => ({
+            agentCodeCheckpointsByConversationId: {
+              ...state.agentCodeCheckpointsByConversationId,
+              [params.conversationId]: pruned,
+            },
+          }));
+        }
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message, sendState: "error" });
+      throw buildSendError(
+        `Failed to trim the conversation before retrying: ${normalized.message}`,
+      );
+    }
+
+    applyReplayTrimToState(plan);
+    useCitationsStore.getState().pruneConversationCitations(
+      params.conversationId,
+      Array.from(plan.keptMessageIds),
+    );
+    if (plan.shouldDeleteContextCompactionState) {
+      conversationCompactionStateCache.delete(params.conversationId);
+      setConversationCompactionStatus(params.conversationId, null);
+    }
   };
 
   const restartAssistantFromEditedMessage = async (params: {
@@ -8648,6 +8721,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController: AbortController;
     manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
     agentTypeAtSend: AgentType | null;
+    replayRecovery?: {
+      replayId: string;
+      onLaunched: () => void;
+      onProgress: () => void;
+      onFailedBeforeProgress: () => Promise<void>;
+    };
   }) => {
     let assistantMessageId: string | null = null;
     const agentTypeAtSend = params.agentTypeAtSend;
@@ -8745,6 +8824,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
 
+      if (params.replayRecovery) {
+        await tauriIpc.dbMarkConversationReplayLaunched({
+          conversationId: params.conversationId,
+          replayId: params.replayRecovery.replayId,
+        });
+        params.replayRecovery.onLaunched();
+      }
+
       startAssistantStream({
         sessionId: params.sessionId,
         assistantMessage,
@@ -8778,6 +8865,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         maxTurns: streamLaunch.maxTurns,
         compactionDecision: streamLaunch.compactionDecision,
         abortController: params.abortController,
+        replayRecovery: params.replayRecovery
+          ? {
+              replayId: params.replayRecovery.replayId,
+              onProgress: params.replayRecovery.onProgress,
+              onFailedBeforeProgress: params.replayRecovery.onFailedBeforeProgress,
+            }
+          : undefined,
       });
     } catch (error) {
       if (params.manualFeatureDraftRecovery) {
@@ -8791,6 +8885,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         assistantMessageId,
         error,
       );
+      throw error;
     }
   };
 
@@ -9323,6 +9418,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController?: AbortController;
     compactionDecision?: ContextCompactionDecision;
     overflowRecoveryAttempted?: boolean;
+    replayRecovery?: {
+      replayId: string;
+      onProgress: () => void;
+      onFailedBeforeProgress: () => Promise<void>;
+    };
   }) => {
     const streamTurnId = getMessageTurnId(params.assistantMessage);
     const abortController = params.abortController ?? new AbortController();
@@ -9409,6 +9509,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
     });
     let pendingToolBoundaryCompaction: PendingToolBoundaryCompaction | null = null;
+    let replayRecoveryFinalized = false;
+    const finalizeReplayRecoveryAfterProgress = () => {
+      if (!params.replayRecovery || replayRecoveryFinalized) return;
+      replayRecoveryFinalized = true;
+      params.replayRecovery.onProgress();
+      void tauriIpc
+        .dbFinalizeConversationReplay({
+          conversationId: params.conversationId,
+          replayId: params.replayRecovery.replayId,
+        })
+        .catch((error) => {
+          console.error("Replay recovery finalization remains pending", error);
+        });
+    };
 
     const maybeMarkImplementTaskFailedAfterStreamError = async () => {
       if (
@@ -10047,6 +10161,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         shouldAcceptStreamUpdate,
         isAbortSignalAborted: () => abortController.signal.aborted,
         appendTokenChunk: (messageId, tokenChunk) => {
+          if (tokenChunk.length > 0) finalizeReplayRecoveryAfterProgress();
           get().appendToMessage(messageId, tokenChunk);
         },
         getAssistantMessage: (messageId) =>
@@ -10181,6 +10296,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
         },
         deleteEmptyAssistantMessageFromDb,
+        recoverReplayBeforeProgress: params.replayRecovery
+          ? params.replayRecovery.onFailedBeforeProgress
+          : undefined,
         setStreamErrorState: ({
           presentation,
           assistantMessageId,
@@ -10253,6 +10371,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
         }
+        if (toolTraces.length > 0) {
+          finalizeReplayRecoveryAfterProgress();
+        }
         get().updateMessageFields(params.assistantMessage.id, {
           tool_traces: toolTraces,
         });
@@ -10279,6 +10400,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       },
       onToolCall: (toolName, args, toolCallId) => {
+        finalizeReplayRecoveryAfterProgress();
         return handleToolCall(
           {
             conversationId: params.conversationId,
@@ -10639,27 +10761,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
-        console.error("Failed to create conversation in DB:", error);
-        newConversation = {
-          id: `conv-${Date.now()}`,
-          title: resolvedTitle,
-          description: "",
-          scope_mode: mode,
-          task_id: resolvedTaskId,
-          group_id: resolvedGroupId,
-          project_id: resolvedProjectId,
-          provider_id: initialAISelection?.providerId ?? null,
-          model_id: initialAISelection?.modelId ?? null,
-          reasoning_effort: initialAISelection?.reasoningEffort ?? null,
-          last_message: "",
-          message_count: 0,
-          updated_at: new Date().toISOString(),
-          is_unread: true,
-        };
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message });
+        throw new Error(
+          `Impossible de créer la conversation de manière durable : ${normalized.message}`,
+        );
       }
     } else {
       newConversation = {
-        id: `conv-${Date.now()}`,
+        id: `conv-${createConversationSessionId()}`,
         title: resolvedTitle,
         description: "",
         scope_mode: mode,
@@ -10913,6 +11023,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return appendImportedMessagesToState(conversationId, imported);
       } catch (error) {
         console.error("Failed to import architect transcript into DB:", error);
+        throw error;
       }
     }
 
@@ -11008,8 +11119,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let conversation =
       existingConversation && !sharedConversation ? existingConversation : null;
     let createdConversation = false;
+    let createdConversationId: string | null = null;
     let restoredTranscript = false;
 
+    try {
     if (!conversation) {
       conversation = await createConversationRecord({
         title: getArchitectPlanConversationTitle(plan),
@@ -11019,6 +11132,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectConversation: false,
       });
       createdConversation = true;
+      createdConversationId = conversation.id;
+      await upsertLinkedConversationDeletionSaga({
+        ownerType: "plan",
+        ownerId: plan.id,
+        conversationId: conversation.id,
+        phase: "plan_conversation_created",
+        targetBranch,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
     }
 
     const repairedConversation = await repairArchitectPlanConversationScope({
@@ -11162,9 +11285,80 @@ export const useChatStore = create<ChatStore>((set, get) => {
           planId: plan.id,
           conversationId: conversation.id,
         });
-      } catch {
-        // Keep local conversation even if metadata cannot be rewritten right now.
+      } catch (error) {
+        const normalized = toServiceError(error);
+        throw new Error(
+          `Impossible d’associer durablement la conversation au plan : ${normalized.message}`,
+        );
       }
+    }
+
+    if (createdConversation) {
+      try {
+        await removeLinkedConversationDeletionSaga("plan", plan.id);
+      } catch (error) {
+        // The persisted guard is safe to leave behind: bootstrap verifies the
+        // plan binding before deciding whether it is a cleanup candidate.
+        console.error("Plan conversation creation guard remains pending", error);
+      }
+    }
+
+    } catch (error) {
+      if (!createdConversation || !createdConversationId) {
+        throw error;
+      }
+      const conversationId = createdConversationId;
+      deletedConversationIds.add(conversationId);
+      const lastError = toServiceError(error).message;
+      try {
+        await upsertLinkedConversationDeletionSaga({
+          ownerType: "plan",
+          ownerId: plan.id,
+          conversationId,
+          phase: "task_deleted",
+          targetBranch,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastError,
+        });
+      } catch (sagaError) {
+        console.error(
+          "Plan conversation cleanup guard could not be updated",
+          sagaError,
+        );
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await deleteConversationToolboxStateIfAvailable(conversationId);
+        applyLocalConversationRemoval([conversationId]);
+        try {
+          await removeLinkedConversationDeletionSaga("plan", plan.id);
+        } catch (sagaError) {
+          console.error("Plan conversation cleanup guard remains pending", sagaError);
+        }
+      } catch (cleanupError) {
+        const cleanupMessage = toServiceError(cleanupError).message;
+        try {
+          await upsertLinkedConversationDeletionSaga({
+            ownerType: "plan",
+            ownerId: plan.id,
+            conversationId,
+            phase: "task_deleted",
+            targetBranch,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastError: cleanupMessage,
+          });
+        } catch (sagaError) {
+          throw new Error(
+            `Impossible d’annuler la conversation créée pour le plan : ${cleanupMessage}; le journal de reprise a aussi échoué : ${toServiceError(sagaError).message}`,
+          );
+        }
+        throw new Error(
+          `Impossible d’annuler la conversation créée pour le plan ; le nettoyage sera repris automatiquement : ${cleanupMessage}`,
+        );
+      }
+      throw error;
     }
 
     return {
@@ -11178,12 +11372,81 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationCompactionStateCache.clear();
     agentCodeCheckpointLoadPromisesByConversationId.clear();
     messageLoadPromisesByConversationId.clear();
-    const {
+    let {
       conversations,
       messages,
       loadedConversationIds,
       bootstrapError,
     } = await loadChatBootstrapSnapshot(chatPersistenceAdapters);
+    let replayRecoveryError: string | null = null;
+
+    if (tauriIpc.isTauriAvailable()) {
+      let restoredAnyReplay = false;
+      for (const conversation of conversations) {
+        const marker = await tauriIpc.dbGetAppSetting(
+          `conversationReplayRecovery:${conversation.id}`,
+        );
+        if (!marker) continue;
+        try {
+          const recovery = JSON.parse(marker.value_json) as {
+            replay_id?: unknown;
+            session_id?: unknown;
+            turn_id?: unknown;
+            phase?: unknown;
+          };
+          const replayId = recovery.replay_id;
+          const sessionId = recovery.session_id;
+          const turnId = recovery.turn_id;
+          if (
+            typeof replayId !== "string" ||
+            !replayId ||
+            typeof sessionId !== "string" ||
+            !sessionId ||
+            typeof turnId !== "string" ||
+            !turnId
+          ) {
+            throw new Error("The replay recovery marker is invalid.");
+          }
+          const restored = await tauriIpc.dbRestoreConversationReplay({
+            conversationId: conversation.id,
+            replayId,
+            sessionId,
+            turnId,
+          });
+          if (!restored) {
+            // A launched replay that has already persisted output (or lost the
+            // race to a later turn) must win over the old snapshot. Finalizing
+            // only removes that exact launched marker; otherwise it remains
+            // fail-closed and is retried at the next bootstrap.
+            if (recovery.phase === "launched") {
+              await tauriIpc.dbFinalizeConversationReplay({
+                conversationId: conversation.id,
+                replayId,
+              });
+              const remaining = await tauriIpc.dbGetAppSetting(
+                `conversationReplayRecovery:${conversation.id}`,
+              );
+              if (!remaining) {
+                replayRecoveryBlockedConversationIds.delete(conversation.id);
+                continue;
+              }
+            }
+            throw new Error("The replay recovery marker could not be applied safely.");
+          }
+          replayRecoveryBlockedConversationIds.delete(conversation.id);
+          restoredAnyReplay = true;
+        } catch (error) {
+          replayRecoveryBlockedConversationIds.add(conversation.id);
+          replayRecoveryError =
+            "Replay recovery is pending for a conversation. Its transcript is preserved and editing is locked; reload Macro to retry.";
+          console.error("Replay recovery is pending for conversation", conversation.id, error);
+        }
+      }
+      if (restoredAnyReplay) {
+        ({ conversations, messages, loadedConversationIds, bootstrapError } =
+          await loadChatBootstrapSnapshot(chatPersistenceAdapters));
+      }
+    }
 
     if (bootstrapError) {
       console.warn(
@@ -11192,15 +11455,98 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    pruneConversationSelections(conversations);
+    let pendingLinkedTaskDeletions;
+    try {
+      pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+    } catch (error) {
+      if (error instanceof LinkedConversationDeletionSagaCorruptionError) {
+        error.recoverableConversationIds.forEach((conversationId) => {
+          deletedConversationIds.add(conversationId);
+        });
+      }
+      throw error;
+    }
+    const completedPendingConversationDeletionIds = new Set<string>();
+    for (const saga of pendingLinkedTaskDeletions) {
+      if (
+        saga.ownerType === "plan" &&
+        saga.phase === "plan_conversation_created"
+      ) {
+        if (!saga.targetBranch) {
+          console.error(
+            "Plan conversation creation guard has no target branch and remains fail-closed",
+            saga.conversationId,
+          );
+          continue;
+        }
+        try {
+          const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (plan?.conversationId === saga.conversationId) {
+            await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+            continue;
+          }
+          await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+          await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+          completedPendingConversationDeletionIds.add(saga.conversationId);
+        } catch (error) {
+          console.error(
+            "Plan conversation creation cleanup remains pending",
+            saga.conversationId,
+            error,
+          );
+        }
+        continue;
+      }
+      if (
+        (saga.ownerType !== "plan" && saga.ownerType !== "conversation") ||
+        saga.phase !== "task_deleted"
+      ) {
+        continue;
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+        await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+        await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+        completedPendingConversationDeletionIds.add(saga.conversationId);
+      } catch (error) {
+        console.error("Plan conversation deletion remains pending", saga.conversationId, error);
+      }
+    }
+    pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+    const pendingConversationIds = new Set(
+      pendingLinkedTaskDeletions
+        .filter((saga) => saga.phase !== "prepared")
+        .map((saga) => saga.conversationId),
+    );
+    completedPendingConversationDeletionIds.forEach((conversationId) => {
+      pendingConversationIds.add(conversationId);
+    });
+    pendingConversationIds.forEach((conversationId) => {
+      deletedConversationIds.add(conversationId);
+    });
+    const visibleConversations = conversations.filter(
+      (conversation) =>
+        !pendingConversationIds.has(conversation.id) &&
+        !replayRecoveryBlockedConversationIds.has(conversation.id),
+    );
+    const visibleMessages = messages.filter(
+      (message) =>
+        !pendingConversationIds.has(message.conversation_id) &&
+        !replayRecoveryBlockedConversationIds.has(message.conversation_id),
+    );
+
+    pruneConversationSelections(visibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
 
     set({
-      conversations,
-      ...buildMessageState(messages),
+      conversations: visibleConversations,
+      ...buildMessageState(visibleMessages),
       messageLoadStatusByConversationId: Object.fromEntries(
-        Array.from(loadedConversationIds).map((conversationId) => [
+        Array.from(loadedConversationIds)
+          .filter((conversationId) => !pendingConversationIds.has(conversationId))
+          .map((conversationId) => [
           conversationId,
           "ready" as const,
         ]),
@@ -11222,7 +11568,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       isLoading: false,
       isStreaming: false,
       sendState: "idle",
-      lastError: null,
+      lastError: replayRecoveryError ?? null,
       abortController: null,
     });
     scheduleImplementAwaitingResponseReconciliation();
@@ -11523,6 +11869,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
+    const archivedChatConversationPreference =
+      mode === "Chat"
+        ? await loadPreference<unknown>(
+            PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
+          )
+        : null;
+    const archivedChatConversationIds = Array.isArray(
+      archivedChatConversationPreference,
+    )
+      ? new Set(
+          archivedChatConversationPreference
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter(Boolean),
+        )
+      : EMPTY_STRING_SET;
     const rememberedConversation = rememberedId
       ? state.conversations.find(
           (conversation) => conversation.id === rememberedId,
@@ -11531,6 +11893,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (
       rememberedConversation &&
+      !archivedChatConversationIds.has(rememberedConversation.id) &&
       isConversationAllowedForMode(
         rememberedConversation,
         mode,
@@ -11548,6 +11911,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedGroupId,
       selectedProjectId,
       selectedTaskId,
+      archivedChatConversationIds,
     );
     if (fallbackConversationId) {
       return modeFallback(fallbackConversationId);
@@ -12564,6 +12928,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
     },
 
+    clearSelectedConversation: () => {
+      const mode = useAppStore.getState().mode;
+      clearConversationSelection(mode);
+      set({ activeContextKey: null, restoreStatus: "idle" });
+    },
+
+    togglePinConversation: async (conversationId) => {
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === conversationId,
+      );
+      if (!conversation || deletedConversationIds.has(conversationId)) {
+        throw new Error("Conversation introuvable.");
+      }
+
+      if (!tauriIpc.isTauriAvailable()) {
+        const isPinned = !conversation.is_pinned;
+        set((state) => ({
+          conversations: state.conversations.map((candidate) =>
+            candidate.id === conversationId
+              ? { ...candidate, is_pinned: isPinned }
+              : candidate,
+          ),
+        }));
+        return isPinned;
+      }
+
+      const isPinned = await tauriIpc.togglePinConversation(conversationId);
+      if (deletedConversationIds.has(conversationId)) {
+        return isPinned;
+      }
+      set((state) => ({
+        conversations: state.conversations.map((candidate) =>
+          candidate.id === conversationId
+            ? { ...candidate, is_pinned: isPinned }
+            : candidate,
+        ),
+      }));
+      return isPinned;
+    },
+
     deleteConversation: async (conversationId, confirmation) => {
       const conversation = get().conversations.find(
         (candidate) => candidate.id === conversationId,
@@ -12621,27 +13025,69 @@ export const useChatStore = create<ChatStore>((set, get) => {
         linkedTask.standalone_kind === "manual_feature" &&
         linkedTask.draft
       ) {
-        await useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id);
+        await useTaskStore.getState().deleteTask(linkedTask.id);
+        if (!get().conversations.some((candidate) => candidate.id === conversationId)) {
+          return;
+        }
       }
 
-      stopConversationRuntimeLocally(conversationId);
       deletedConversationIds.add(conversationId);
       pendingConversationDeletionIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
       try {
-        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await beginStandaloneConversationDeletionSaga(conversationId);
       } catch (error) {
         deletedConversationIds.delete(conversationId);
+        pendingConversationDeletionIds.delete(conversationId);
+        throw error;
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+      } catch (error) {
+        try {
+          await completeStandaloneConversationDeletionSaga(conversationId);
+          deletedConversationIds.delete(conversationId);
+        } catch (sagaError) {
+          set({
+            lastError: `La suppression de la conversation reste en attente : ${toServiceError(sagaError).message}`,
+          });
+        }
         throw error;
       } finally {
         pendingConversationDeletionIds.delete(conversationId);
       }
-      await deleteConversationToolboxStateIfAvailable(conversationId);
+      const cleanupFailures: string[] = [];
+      const runCleanup = async (label: string, cleanup: () => Promise<void>) => {
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupFailures.push(`${label}: ${toServiceError(error).message}`);
+        }
+      };
+      stopConversationRuntimeLocally(conversationId);
+      await runCleanup("toolbox", () =>
+        deleteConversationToolboxStateIfAvailable(conversationId),
+      );
+      if (!cleanupFailures.some((failure) => failure.startsWith("toolbox"))) {
+        await runCleanup("journal de nettoyage", () =>
+          completeStandaloneConversationDeletionSaga(conversationId),
+        );
+      }
       conversationCompactionStateCache.delete(conversationId);
+      clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
       removeConversationSelectionData(conversationId);
       applyLocalConversationRemoval([conversationId]);
+      await runCleanup("sélection", () =>
+        hydrateSelectedConversationAfterRemoval([conversationId]),
+      );
+
+      if (cleanupFailures.length > 0) {
+        const message = `Conversation supprimée, mais certaines ressources n'ont pas pu être nettoyées : ${cleanupFailures.join("; ")}`;
+        set({ lastError: message });
+        throw new Error(message);
+      }
     },
 
     deleteChatConversations: async (conversationIds) => {
@@ -12668,38 +13114,121 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       });
 
-      const snapshot = buildConversationRemovalSnapshot();
       uniqueIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
         pendingConversationDeletionIds.add(conversationId);
         latestConversationSessionIdByConversationId.delete(conversationId);
         completionPersistenceOwnersByConversationId.delete(conversationId);
-        stopConversationRuntimeLocally(conversationId);
       });
-      applyLocalConversationRemoval(uniqueIds);
+      try {
+        for (const conversationId of uniqueIds) {
+          await beginStandaloneConversationDeletionSaga(conversationId);
+        }
+      } catch (error) {
+        uniqueIds.forEach((conversationId) => {
+          deletedConversationIds.delete(conversationId);
+          pendingConversationDeletionIds.delete(conversationId);
+        });
+        throw error;
+      }
 
+      let persistedDeletionCommitted = false;
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
+        persistedDeletionCommitted = true;
+        uniqueIds.forEach((conversationId) => {
+          stopConversationRuntimeLocally(conversationId);
+        });
+        const cleanupFailures: string[] = [];
         await Promise.all(
-          uniqueIds.map((conversationId) =>
-            deleteConversationToolboxStateIfAvailable(conversationId),
-          ),
+          uniqueIds.map(async (conversationId) => {
+            try {
+              await deleteConversationToolboxStateIfAvailable(conversationId);
+            } catch (error) {
+              cleanupFailures.push(
+                `toolbox ${conversationId}: ${toServiceError(error).message}`,
+              );
+            }
+          }),
+        );
+        await Promise.all(
+          uniqueIds
+            .filter(
+              (conversationId) =>
+                !cleanupFailures.some((failure) =>
+                  failure.startsWith(`toolbox ${conversationId}:`),
+                ),
+            )
+            .map(async (conversationId) => {
+              try {
+                await completeStandaloneConversationDeletionSaga(conversationId);
+              } catch (error) {
+                cleanupFailures.push(
+                  `journal de nettoyage ${conversationId}: ${toServiceError(error).message}`,
+                );
+              }
+            }),
         );
         clearConversationCitationsBulkIfAvailable(uniqueIds);
         uniqueIds.forEach((conversationId) => {
           conversationCompactionStateCache.delete(conversationId);
+          clearAgentCodeCheckpoints(conversationId);
           removeConversationSelectionData(conversationId);
         });
+        applyLocalConversationRemoval(uniqueIds);
+        try {
+          await hydrateSelectedConversationAfterRemoval(uniqueIds);
+        } catch (error) {
+          cleanupFailures.push(`sélection: ${toServiceError(error).message}`);
+        }
+        if (cleanupFailures.length > 0) {
+          const message = `Conversations supprimées, mais certaines ressources n'ont pas pu être nettoyées : ${cleanupFailures.join("; ")}`;
+          set({ lastError: message });
+          throw new Error(message);
+        }
       } catch (error) {
-        uniqueIds.forEach((conversationId) => {
-          deletedConversationIds.delete(conversationId);
-        });
-        restoreConversationRemovalSnapshot(snapshot);
+        if (!persistedDeletionCommitted) {
+          await Promise.all(
+            uniqueIds.map(async (conversationId) => {
+              try {
+                await completeStandaloneConversationDeletionSaga(conversationId);
+                deletedConversationIds.delete(conversationId);
+              } catch (sagaError) {
+                set({
+                  lastError: `La suppression de la conversation reste en attente : ${toServiceError(sagaError).message}`,
+                });
+              }
+            }),
+          );
+        }
         throw error;
       } finally {
         uniqueIds.forEach((conversationId) => {
           pendingConversationDeletionIds.delete(conversationId);
         });
+      }
+    },
+
+    completeLinkedTaskConversationDeletion: async (conversationId) => {
+      deletedConversationIds.add(conversationId);
+      latestConversationSessionIdByConversationId.delete(conversationId);
+      completionPersistenceOwnersByConversationId.delete(conversationId);
+      stopConversationRuntimeLocally(conversationId);
+      conversationCompactionStateCache.delete(conversationId);
+      clearAgentCodeCheckpoints(conversationId);
+      clearConversationCitationsIfAvailable(conversationId);
+      removeConversationSelectionData(conversationId);
+      applyLocalConversationRemoval([conversationId]);
+
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await deleteConversationToolboxStateIfAvailable(conversationId);
+        await hydrateSelectedConversationAfterRemoval([conversationId]);
+        return true;
+      } catch (error) {
+        const message = `La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente : ${toServiceError(error).message}`;
+        set({ lastError: message });
+        return false;
       }
     },
 
@@ -13702,7 +14231,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
       try {
-        await restoreAgentCodeReplayPreview(preview);
+        const rollback = await restoreAgentCodeReplayPreview(preview);
+        pendingAgentCodeReplayRollbacksByConversationId.set(
+          preview.conversationId,
+          rollback,
+        );
       } catch (error) {
         const normalized = toServiceError(error);
         set({ lastError: normalized.message, sendState: "error" });
@@ -13725,39 +14258,82 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const agentTypeAtEdit =
         modeAtEdit === "Implement" ? appStateAtEdit.agentType : null;
       if (!selectedProviderId || !selectedModelId) {
-        set({
-          lastError: "Select a provider and model before sending a message.",
-        });
-        return;
+        const message = "Select a provider and model before sending a message.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
       }
 
       const providerConfig = providerConfigs.find(
         (p) => p.id === selectedProviderId,
       );
       if (!providerConfig) {
-        set({ lastError: "Provider configuration not found." });
-        return;
+        const message = "Provider configuration not found.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
       }
       const state = get();
       const target = state.messages.find((message) => message.id === messageId);
-      if (!target) return;
+      if (!target) {
+        const message = "The message to edit is no longer available.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
+      }
       if (!options?.skipAgentCodeReplayCheck) {
         const replayPreview = await get().getAgentCodeReplayPreview(messageId);
         if (replayPreview && replayPreview.affectedFiles.length > 0) {
-          set({
-            lastError:
-              "Replay blocked: confirm the code checkpoint restore before editing this earlier message.",
-          });
+          const message =
+            "Replay blocked: confirm the code checkpoint restore before editing this earlier message.";
+          set({ lastError: message, sendState: "error" });
           return;
         }
       }
 
       const conversationId = target.conversation_id;
+      if (replayRecoveryBlockedConversationIds.has(conversationId)) {
+        const message =
+          "Replay recovery is pending for this conversation. Refresh the workspace to retry the recovery.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
+      }
       const turnId = getMessageTurnId(target);
       const sessionId = createConversationSessionId();
+      const replayId = createConversationSessionId();
+      const replayConversationMessages = getConversationMessagesFromState(
+        state,
+        conversationId,
+      );
+      const replayConversationMessageIds = new Set(
+        replayConversationMessages.map((message) => message.id),
+      );
+      const replayLocalSnapshot = {
+        conversation: state.conversations.find(
+          (conversation) => conversation.id === conversationId,
+        ) ?? null,
+        messages: replayConversationMessages,
+        messageImagesByMessageId: Object.fromEntries(
+          Object.entries(state.messageImagesByMessageId).filter(([messageId]) =>
+            replayConversationMessageIds.has(messageId),
+          ),
+        ),
+        questionnaireDrafts: state.questionnaireDraftsByConversationId[
+          conversationId
+        ],
+        agentCodeCheckpoints: state.agentCodeCheckpointsByConversationId[
+          conversationId
+        ],
+        sessionCompactionEvents: state.sessionCompactionEventsByConversationId[
+          conversationId
+        ],
+        citations: useCitationsStore
+          .getState()
+          .citations.filter((citation) => citation.conversationId === conversationId),
+      };
+      let replayPrepared = false;
+      let replayRecoveryActive = false;
       const abortController = new AbortController();
       const executionContextAtEdit = resolveConversationExecutionContext(conversationId);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
+      let committedCodeReplay = !options?.skipAgentCodeReplayCheck;
       assertConversationRuntimeAvailableForSend(conversationId);
       latestConversationSessionIdByConversationId.set(conversationId, sessionId);
       setConversationRuntime(
@@ -13785,6 +14361,122 @@ export const useChatStore = create<ChatStore>((set, get) => {
           runtime.turnId === turnId &&
           runtime.abortController === abortController
         );
+      };
+      const restoreReplayRecovery = async (): Promise<void> => {
+        if (!replayRecoveryActive) return;
+        const runtime = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          conversationId,
+        );
+        const ownsReplayFence =
+          latestConversationSessionIdByConversationId.get(conversationId) === sessionId &&
+          runtime.sessionId === sessionId &&
+          runtime.turnId === turnId;
+        if (!ownsReplayFence) return;
+        try {
+          const restored = await tauriIpc.dbRestoreConversationReplay({
+            conversationId,
+            replayId,
+            sessionId,
+            turnId,
+          });
+          if (!restored) {
+            throw new Error("The replay recovery marker no longer matches this session.");
+          }
+          const latestRuntime = getConversationRuntimeSnapshot(
+            get().conversationRuntimeById,
+            conversationId,
+          );
+          if (
+            latestConversationSessionIdByConversationId.get(conversationId) !== sessionId ||
+            latestRuntime.sessionId !== sessionId ||
+            latestRuntime.turnId !== turnId
+          ) {
+            throw new Error("A newer replay session won before recovery could update the local transcript.");
+          }
+          set((current) => {
+            const currentConversationMessages = getConversationMessagesFromState(
+              current,
+              conversationId,
+            );
+            const currentConversationMessageIds = new Set(
+              currentConversationMessages.map((message) => message.id),
+            );
+            const nextQuestionnaireDrafts = {
+              ...current.questionnaireDraftsByConversationId,
+            };
+            if (replayLocalSnapshot.questionnaireDrafts) {
+              nextQuestionnaireDrafts[conversationId] =
+                replayLocalSnapshot.questionnaireDrafts;
+            } else {
+              delete nextQuestionnaireDrafts[conversationId];
+            }
+            const nextAgentCodeCheckpoints = {
+              ...current.agentCodeCheckpointsByConversationId,
+            };
+            if (replayLocalSnapshot.agentCodeCheckpoints) {
+              nextAgentCodeCheckpoints[conversationId] =
+                replayLocalSnapshot.agentCodeCheckpoints;
+            } else {
+              delete nextAgentCodeCheckpoints[conversationId];
+            }
+            const nextCompactionEvents = {
+              ...current.sessionCompactionEventsByConversationId,
+            };
+            if (replayLocalSnapshot.sessionCompactionEvents) {
+              nextCompactionEvents[conversationId] =
+                replayLocalSnapshot.sessionCompactionEvents;
+            } else {
+              delete nextCompactionEvents[conversationId];
+            }
+            const nextMessageImages = Object.fromEntries(
+              Object.entries(current.messageImagesByMessageId).filter(
+                ([messageId]) => !currentConversationMessageIds.has(messageId),
+              ),
+            );
+            Object.assign(
+              nextMessageImages,
+              replayLocalSnapshot.messageImagesByMessageId,
+            );
+            return {
+              ...buildMessageState([
+                ...current.messages.filter(
+                  (message) => message.conversation_id !== conversationId,
+                ),
+                ...replayLocalSnapshot.messages,
+              ]),
+              conversations: replayLocalSnapshot.conversation
+                ? current.conversations.map((conversation) =>
+                    conversation.id === conversationId
+                      ? replayLocalSnapshot.conversation!
+                      : conversation,
+                  )
+                : current.conversations,
+              messageImagesByMessageId: nextMessageImages,
+              questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+              agentCodeCheckpointsByConversationId: nextAgentCodeCheckpoints,
+              sessionCompactionEventsByConversationId: nextCompactionEvents,
+            };
+          });
+          const currentCitations = useCitationsStore.getState().citations;
+          useCitationsStore.setState({
+            citations: [
+              ...currentCitations.filter(
+                (citation) => citation.conversationId !== conversationId,
+              ),
+              ...replayLocalSnapshot.citations,
+            ],
+          });
+          conversationCompactionStateCache.delete(conversationId);
+          replayRecoveryActive = false;
+        } catch (recoveryError) {
+          replayRecoveryBlockedConversationIds.add(conversationId);
+          const normalized = toServiceError(recoveryError);
+          set({
+            lastError: `Replay recovery is pending and this conversation is locked: ${normalized.message}`,
+            sendState: "error",
+          });
+        }
       };
 
       try {
@@ -13824,26 +14516,72 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
         }
 
-        await persistEditedUserMessage({
-          messageId,
-          turnId,
-          content: newContent,
-          hiddenContext: options?.hiddenContext,
-          providerInputItems: options?.providerInputItems,
-          replaceStructuredFields: options?.replaceStructuredFields,
-        });
+        const nextHiddenContext = options?.replaceStructuredFields
+          ? options.hiddenContext
+          : target.hidden_context;
+        const nextProviderInputItems = options?.replaceStructuredFields
+          ? cloneProviderInputItems(options.providerInputItems)
+          : target.provider_input_items;
+        if (!tauriIpc.isTauriAvailable()) {
+          await persistEditedUserMessage({
+            messageId,
+            turnId,
+            content: newContent,
+            hiddenContext: options?.hiddenContext,
+            providerInputItems: options?.providerInputItems,
+            replaceStructuredFields: options?.replaceStructuredFields,
+          });
+        }
+        if (!isCurrentPreparation()) return;
+        const updatedTargetMessage: ChatMessage = tauriIpc.isTauriAvailable()
+          ? {
+              ...target,
+              content: newContent,
+              turn_id: turnId,
+              hidden_context: nextHiddenContext,
+              provider_input_items: nextProviderInputItems,
+            }
+          : get().messages.find((message) => message.id === messageId) ?? target;
+
+        try {
+          await trimConversationAfterMessage({
+            conversationId,
+            messageId,
+            clearQuestionnaireSession: options?.clearQuestionnaireSession,
+            updatedMessage: updatedTargetMessage,
+            replayRecovery: tauriIpc.isTauriAvailable()
+              ? {
+                  sessionId,
+                  turnId,
+                  replayId,
+                  content: newContent,
+                  hiddenContext: nextHiddenContext,
+                  providerInputItems: nextProviderInputItems,
+                }
+              : undefined,
+          });
+          replayPrepared = tauriIpc.isTauriAvailable();
+          replayRecoveryActive = replayPrepared;
+        } catch (trimError) {
+          if (!tauriIpc.isTauriAvailable()) {
+            await persistEditedUserMessage({
+              messageId,
+              turnId: getMessageTurnId(target),
+              content: target.content,
+              hiddenContext: target.hidden_context,
+              providerInputItems: target.provider_input_items,
+              replaceStructuredFields: true,
+            });
+          }
+          throw trimError;
+        }
         if (!isCurrentPreparation()) {
           return;
         }
-        const updatedTargetMessage =
-          get().messages.find((message) => message.id === messageId) ?? target;
 
-        await trimConversationAfterMessage({
-          conversationId,
-          messageId,
-          clearQuestionnaireSession: options?.clearQuestionnaireSession,
-          updatedMessage: updatedTargetMessage,
-        });
+        if (replayPrepared) {
+          await tauriIpc.dbCompleteConversationReplay({ conversationId, replayId });
+        }
         if (!isCurrentPreparation()) {
           return;
         }
@@ -13866,8 +14604,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
           abortController,
           manualFeatureDraftRecovery,
           agentTypeAtSend: agentTypeAtEdit,
+          replayRecovery: replayPrepared
+            ? {
+                replayId,
+                onLaunched: () => {
+                  replayPrepared = false;
+                },
+                onProgress: () => {
+                  replayRecoveryActive = false;
+                },
+                onFailedBeforeProgress: restoreReplayRecovery,
+              }
+            : undefined,
         });
+        committedCodeReplay = true;
+        pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
       } catch (error) {
+        await restoreReplayRecovery();
+        if (!committedCodeReplay) {
+          const rollback = pendingAgentCodeReplayRollbacksByConversationId.get(
+            conversationId,
+          );
+          pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
+          if (rollback) {
+            try {
+              await rollback();
+            } catch (rollbackError) {
+              console.error("Failed to roll back replayed code:", rollbackError);
+            }
+          }
+        }
         if (manualFeatureDraftRecovery) {
           await rollbackManualFeatureDraftAfterFailedLaunch(
             manualFeatureDraftRecovery,
@@ -13897,6 +14663,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       cancelAllLiveContextDiagnosticsRefreshSchedules();
       pendingArchitectConversationIdsByPlanKey.clear();
       pendingArchitectConversationDetailsById.clear();
+      pendingAgentCodeReplayRollbacksByConversationId.clear();
       cancelStream();
       set({
         conversationRuntimeById: {},

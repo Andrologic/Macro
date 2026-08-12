@@ -85,6 +85,7 @@ export interface ChatStreamLifecycleRuntimeAdapters {
   ) => Promise<boolean>;
   removeEmptyAssistantPlaceholder: (assistantMessageId: string) => void;
   deleteEmptyAssistantMessageFromDb: () => Promise<void>;
+  recoverReplayBeforeProgress?: () => Promise<void>;
   setStreamErrorState: (params: {
     presentation: ChatErrorPresentation;
     assistantMessageId: string | null;
@@ -330,6 +331,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       } else {
         adapters.removeEmptyAssistantPlaceholder(stream.assistantMessageId);
         await adapters.deleteEmptyAssistantMessageFromDb();
+        await adapters.recoverReplayBeforeProgress?.();
       }
       tokenControls.dispose();
     },
@@ -355,6 +357,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       const assistantMessage = adapters.getAssistantMessage(
         stream.assistantMessageId,
       );
+      const hadAssistantProgressBeforeError = hasAssistantProgress(assistantMessage);
       const errorPresentation = resolveChatErrorPresentation(error, {
         providerId: stream.providerContext.providerId,
         providerType: stream.providerContext.providerType,
@@ -364,6 +367,10 @@ export const createChatStreamLifecycleRuntime = (params: {
         errorPresentation,
         assistantMessage,
       );
+
+      if (!hadAssistantProgressBeforeError) {
+        await adapters.recoverReplayBeforeProgress?.();
+      }
 
       adapters.setStreamErrorState({
         presentation: errorPresentation,

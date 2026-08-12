@@ -19,6 +19,12 @@ import {
 import { getLocalProjectContextState } from '../services/localProjectContext';
 import * as tauriIpc from '../services/tauriIpc';
 import {
+  loadLinkedTaskDeletionSagas,
+  removeLinkedTaskDeletionSaga,
+  upsertLinkedTaskDeletionSaga,
+  type LinkedTaskDeletionSaga,
+} from '../services/linkedTaskDeletionSaga';
+import {
   deriveImplementTasksFromStrategy,
   mapTaskStatusToNodeStatus,
   toBranchWorktreeKey,
@@ -435,6 +441,88 @@ const getExecutionTargetsWithRepoPaths = (
       return repoPath ? { ...target, repoPath } : null;
     })
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
+};
+
+const resumeLinkedTaskGitCleanup = async (
+  saga: LinkedTaskDeletionSaga,
+): Promise<LinkedTaskDeletionSaga> => {
+  if (!Array.isArray(saga.executionTargets)) {
+    throw new Error(
+      "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.",
+    );
+  }
+  let current: LinkedTaskDeletionSaga & {
+    executionTargets: NonNullable<LinkedTaskDeletionSaga['executionTargets']>;
+  } = { ...saga, executionTargets: saga.executionTargets };
+  for (const target of current.executionTargets) {
+    if (!target.worktreeRemoved) {
+      const inspectWorktree = () =>
+        tauriIpc.gitWorktreeInspect({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          branchName: target.branchName,
+        });
+      let inspection = await inspectWorktree();
+      if (inspection.status !== 'absent') {
+        try {
+          await tauriIpc.gitWorktreeRemove({
+            repoPath: target.repoPath,
+            taskId: target.worktreeKey,
+            force: true,
+            branchName: target.branchName,
+          });
+        } catch (error) {
+          inspection = await inspectWorktree();
+          if (inspection.status !== 'absent') {
+            throw error;
+          }
+        }
+      }
+      current = {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        executionTargets: current.executionTargets.map((candidate) =>
+          candidate.worktreeKey === target.worktreeKey
+            ? { ...candidate, worktreeRemoved: true }
+            : candidate,
+        ),
+      };
+      await upsertLinkedTaskDeletionSaga(current);
+    }
+    const updatedTarget = current.executionTargets?.find(
+      (candidate) => candidate.worktreeKey === target.worktreeKey,
+    );
+    if (updatedTarget?.branchExisted && !updatedTarget.branchRemoved) {
+      const branchExists = async () =>
+        (await tauriIpc.gitBranchList(updatedTarget.repoPath)).local.some(
+          (branch) => branch.name === updatedTarget.branchName,
+        );
+      if (await branchExists()) {
+        try {
+          await tauriIpc.gitBranchDelete({
+            repoPath: updatedTarget.repoPath,
+            branchName: updatedTarget.branchName,
+            force: true,
+          });
+        } catch (error) {
+          if (await branchExists()) {
+            throw error;
+          }
+        }
+      }
+      current = {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        executionTargets: current.executionTargets.map((candidate) =>
+          candidate.worktreeKey === updatedTarget.worktreeKey
+            ? { ...candidate, branchRemoved: true }
+            : candidate,
+        ),
+      };
+      await upsertLinkedTaskDeletionSaga(current);
+    }
+  }
+  return current;
 };
 
 const findActiveTasksSharingExecutionBranch = (
@@ -2327,6 +2415,66 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
       const catalog = await services.listTasks();
+      const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
+      for (const pending of pendingLinkedTaskDeletions) {
+        const taskStillExists = catalog.tasks.some((task) => task.id === pending.taskId);
+        if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
+          const message =
+            "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.";
+          await upsertLinkedTaskDeletionSaga({
+            ...pending,
+            updatedAt: new Date().toISOString(),
+            lastError: message,
+          });
+          set({ lastError: message });
+          continue;
+        }
+        if (pending.phase === 'prepared' && taskStillExists) {
+          continue;
+        }
+        if (pending.phase === 'task_deleting') {
+          try {
+            const resumed = await resumeLinkedTaskGitCleanup(pending);
+            if (taskStillExists) {
+              if (pending.draft) {
+                await tauriIpc.workspaceDeleteManualFeatureDraft(pending.taskId);
+              } else {
+                await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
+              }
+            }
+            pending.executionTargets = resumed.executionTargets;
+          } catch (error) {
+            const message = toServiceError(error).message;
+            await upsertLinkedTaskDeletionSaga({
+              ...pending,
+              updatedAt: new Date().toISOString(),
+              lastError: message,
+            });
+            set({
+              lastError: `La suppression de la tâche reste en attente et sera reprise automatiquement : ${message}`,
+            });
+            continue;
+          }
+        }
+        const taskDeletedSaga: LinkedTaskDeletionSaga = {
+          ...pending,
+          phase: 'task_deleted',
+          updatedAt: new Date().toISOString(),
+        };
+        await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
+        const completed = await useChatStore
+          .getState()
+          .completeLinkedTaskConversationDeletion(pending.conversationId);
+        if (completed) {
+          await removeLinkedTaskDeletionSaga(pending.taskId);
+        } else {
+          await upsertLinkedTaskDeletionSaga({
+            ...taskDeletedSaga,
+            lastError: useChatStore.getState().lastError ?? undefined,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
       const nextMergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> =
         {};
       const nextPlanFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState> = {};
@@ -2574,6 +2722,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   createManualFeatureDraft: async (params) => {
     set({ lastError: null });
     assertTaskMutationRuntime('createManualFeatureDraft');
+    let draftCreated = false;
 
     try {
       if (!tauriIpc.isTauriAvailable()) {
@@ -2590,6 +2739,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         title: params.title ?? null,
         description: params.description ?? null,
       });
+      draftCreated = true;
 
       await get().refreshFromPlan();
       await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
@@ -2597,6 +2747,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       });
     } catch (error) {
       const normalized = toServiceError(error);
+      if (draftCreated) {
+        try {
+          await tauriIpc.workspaceDeleteManualFeatureDraft(params.taskId);
+          await get().refreshFromPlan();
+        } catch (rollbackError) {
+          const rollbackMessage = toServiceError(rollbackError).message;
+          normalized.message = `${normalized.message} Le brouillon créé n'a pas pu être annulé : ${rollbackMessage}`;
+        }
+      }
       set({ lastError: normalized.message });
       throw normalized;
     }
@@ -2996,6 +3155,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    let linkedConversationSaga: LinkedTaskDeletionSaga | null = null;
     try {
       if (!task.draft) {
         const published = await hasPublishedStandaloneBranch(task);
@@ -3017,21 +3177,59 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      for (const target of executionTargets) {
-        await tauriIpc.gitWorktreeRemove({
-          repoPath: target.repoPath,
-          taskId: target.worktreeKey,
-          force: true,
-          branchName: target.branchName,
-        });
-
-        const branches = await tauriIpc.gitBranchList(target.repoPath);
-        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
-          await tauriIpc.gitBranchDelete({
+      const branchSnapshots = new Map(
+        await Promise.all(
+          executionTargets.map(async (target) => [
+            target.worktreeKey,
+            await tauriIpc.gitBranchList(target.repoPath),
+          ] as const),
+        ),
+      );
+      linkedConversationSaga = task.conversation_id
+        ? {
+            taskId: task.id,
+            conversationId: task.conversation_id,
+            phase: 'prepared' as const,
+            draft: task.draft,
+            executionTargets: executionTargets.map((target) => ({
+              worktreeKey: target.worktreeKey,
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
+                (branch) => branch.name === target.branchName,
+              ),
+              worktreeRemoved: false,
+              branchRemoved: false,
+            })),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }
+        : null;
+      if (linkedConversationSaga) {
+        await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        linkedConversationSaga = {
+          ...linkedConversationSaga,
+          phase: 'task_deleting',
+          updatedAt: new Date().toISOString(),
+        };
+        await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
+      } else {
+        for (const target of executionTargets) {
+          await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
-            branchName: target.branchName,
+            taskId: target.worktreeKey,
             force: true,
+            branchName: target.branchName,
           });
+          const branches = branchSnapshots.get(target.worktreeKey) ?? { local: [] };
+          if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+            await tauriIpc.gitBranchDelete({
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              force: true,
+            });
+          }
         }
       }
 
@@ -3062,6 +3260,36 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       } else {
         await tauriIpc.workspaceDeleteManualFeature(taskId);
       }
+      let linkedConversationCleanupCompleted = true;
+      if (linkedConversationSaga) {
+        const taskDeletedSaga: LinkedTaskDeletionSaga = {
+          ...linkedConversationSaga,
+          phase: 'task_deleted',
+          updatedAt: new Date().toISOString(),
+        };
+        let sagaPersistenceError: unknown = null;
+        try {
+          await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
+          linkedConversationSaga = taskDeletedSaga;
+        } catch (error) {
+          sagaPersistenceError = error;
+        }
+        linkedConversationCleanupCompleted = await useChatStore
+          .getState()
+          .completeLinkedTaskConversationDeletion(task.conversation_id!);
+        if (linkedConversationCleanupCompleted && !sagaPersistenceError) {
+          await removeLinkedTaskDeletionSaga(task.id);
+        } else if (!linkedConversationCleanupCompleted) {
+          await upsertLinkedTaskDeletionSaga({
+            ...taskDeletedSaga,
+            lastError: useChatStore.getState().lastError ?? undefined,
+            updatedAt: new Date().toISOString(),
+          }).catch(() => undefined);
+        }
+        if (sagaPersistenceError) {
+          throw toServiceError(sagaPersistenceError);
+        }
+      }
 
       try {
         await removeManualFeatureMetadata(task);
@@ -3075,14 +3303,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         useAppStore.getState().setSelectedTask(null);
       }
 
-      if (task.conversation_id) {
-        const chatState = useChatStore.getState();
-        const conversationExists = chatState.conversations.some(
-          (conversation) => conversation.id === task.conversation_id
+      const cleanupStillPending = linkedConversationSaga && !linkedConversationCleanupCompleted
+        ? (await loadLinkedTaskDeletionSagas()).some(
+            (pending) => pending.taskId === linkedConversationSaga?.taskId,
+          )
+        : false;
+      if (cleanupStillPending) {
+        throw new Error(
+          'La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente et sera repris automatiquement.',
         );
-        if (conversationExists) {
-          await chatState.deleteConversation(task.conversation_id, { mode: 'implement' });
-        }
       }
     } catch (error) {
       const normalized = toServiceError(error);

@@ -6,6 +6,69 @@ use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ReplayRecoverySnapshot {
+    replay_id: String,
+    conversation_id: String,
+    message_id: String,
+    session_id: String,
+    turn_id: String,
+    /// Canonical transcript revision before the replay trim. This lets recovery
+    /// distinguish its own empty placeholder from a later transcript write.
+    transcript_revision: String,
+    prepared_message_content: String,
+    phase: String,
+    original_message: Message,
+    tail_messages: Vec<Message>,
+    citations: Vec<ConversationCitation>,
+    checkpoints_json: Option<String>,
+    compaction_state: Option<ConversationCompactionStateRecord>,
+    compaction_events: Vec<ReplayCompactionEvent>,
+}
+
+fn replay_transcript_revision(message: &Message, tail_messages: &[Message]) -> String {
+    let tail = tail_messages
+        .iter()
+        .map(|message| format!("{}:{}", message.id, message.created_at))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}:{}:{}", message.id, message.created_at, tail)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ReplayCompactionEvent {
+    id: String,
+    conversation_id: String,
+    trigger: String,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    model_context_window_tokens: Option<i32>,
+    tokens_before: Option<i32>,
+    tokens_after: Option<i32>,
+    status: String,
+    error_code: Option<String>,
+    reason: Option<String>,
+    metadata_json: Option<String>,
+    created_at: String,
+}
+
+pub struct PrepareConversationReplayInput<'a> {
+    pub conversation_id: &'a str,
+    pub message_id: &'a str,
+    pub session_id: &'a str,
+    pub turn_id: &'a str,
+    pub replay_id: &'a str,
+    pub content: &'a str,
+    pub hidden_context: Option<String>,
+    pub provider_input_items_json: Option<String>,
+    pub code_checkpoints_json: Option<String>,
+    pub delete_context_compaction_state: bool,
+}
+
+fn replay_recovery_key(conversation_id: &str) -> String {
+    format!("conversationReplayRecovery:{conversation_id}")
+}
+
 fn parse_reasoning_efforts(raw: Option<String>) -> Option<Vec<String>> {
     let raw = raw?;
 
@@ -374,13 +437,7 @@ pub async fn update_conversation_ai_selection(
 }
 
 pub async fn delete_conversation(pool: &SqlitePool, id: &str) -> DbResult<()> {
-    // Messages are deleted via CASCADE
-    sqlx::query("DELETE FROM conversations WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-    Ok(())
+    delete_conversations(pool, &[id.to_string()]).await
 }
 
 pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult<()> {
@@ -392,6 +449,15 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     let query = format!("DELETE FROM conversations WHERE id IN ({})", placeholders);
 
     let mut tx = pool.begin().await?;
+    // Checkpoints are intentionally stored as app settings so older databases
+    // can replay them. They have no foreign key, therefore delete them in the
+    // same transaction as their owning conversations.
+    for id in ids {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?")
+            .bind(format!("agentCodeCheckpoints:{}", id))
+            .execute(&mut *tx)
+            .await?;
+    }
     let mut statement = sqlx::query(&query);
     for id in ids {
         statement = statement.bind(id);
@@ -1026,6 +1092,482 @@ pub async fn delete_messages_after(
     .await?;
     transaction.commit().await?;
 
+    Ok(())
+}
+
+pub async fn trim_conversation_replay(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    after_message_id: &str,
+    code_checkpoints_json: Option<&str>,
+    delete_context_compaction_state: bool,
+) -> DbResult<()> {
+    let mut transaction = pool.begin().await?;
+    let row = sqlx::query("SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?")
+        .bind(after_message_id)
+        .bind(conversation_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+    let created_at: String = row.get("created_at");
+
+    sqlx::query(
+        r#"
+        DELETE FROM conversation_citations
+        WHERE conversation_id = ?
+          AND message_id IN (
+              SELECT id FROM messages
+              WHERE conversation_id = ?
+                AND (created_at > ? OR (created_at = ? AND id > ?))
+          )
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(conversation_id)
+    .bind(&created_at)
+    .bind(&created_at)
+    .bind(after_message_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM messages
+        WHERE conversation_id = ?
+          AND (created_at > ? OR (created_at = ? AND id > ?))
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(&created_at)
+    .bind(&created_at)
+    .bind(after_message_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    if let Some(code_checkpoints_json) = code_checkpoints_json {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(format!("agentCodeCheckpoints:{conversation_id}"))
+        .bind(code_checkpoints_json)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+    }
+
+    if delete_context_compaction_state {
+        sqlx::query("DELETE FROM conversation_compactions WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM conversation_compaction_events WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+
+    refresh_conversation_metadata_with_connection(
+        &mut *transaction,
+        conversation_id.to_string(),
+        None,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+fn map_message_row(row: &sqlx::sqlite::SqliteRow) -> Message {
+    Message {
+        id: row.get("id"),
+        conversation_id: row.get("conversation_id"),
+        turn_id: row.get("turn_id"),
+        role: row.get("role"),
+        content: row.get("content"),
+        created_at: row.get("created_at"),
+        token_count: row.get("token_count"),
+        tool_traces_json: row.get("tool_traces_json"),
+        hidden_context: row.get("hidden_context"),
+        provider_input_items_json: row.get("provider_input_items_json"),
+        provider_turn_state_json: row.get("provider_turn_state_json"),
+        context_refs_json: row.get("context_refs_json"),
+        completion_reason: row.get("completion_reason"),
+    }
+}
+
+fn map_compaction_state_row(row: &sqlx::sqlite::SqliteRow) -> ConversationCompactionStateRecord {
+    ConversationCompactionStateRecord {
+        conversation_id: row.get("conversation_id"),
+        up_to_message_id: row.get("up_to_message_id"),
+        summary_text: row.get("summary_text"),
+        tool_digest_json: row.get("tool_digest_json"),
+        used_source_passage_ids_json: row.get("used_source_passage_ids_json"),
+        interesting_source_passage_ids_json: row.get("interesting_source_passage_ids_json"),
+        estimated_tokens_before: row.get("estimated_tokens_before"),
+        estimated_tokens_after: row.get("estimated_tokens_after"),
+        fingerprint: row.get("fingerprint"),
+        version: row.get("version"),
+        pruned_tool_context_message_ids_json: row.get("pruned_tool_context_message_ids_json"),
+        reserved_tokens: row.get("reserved_tokens"),
+        footprint_before_json: row.get("footprint_before_json"),
+        footprint_after_json: row.get("footprint_after_json"),
+        degraded_reason: row.get("degraded_reason"),
+        compaction_kind: row.get("compaction_kind"),
+        compaction_pass: row.get("compaction_pass"),
+        summary_format_version: row.get("summary_format_version"),
+        summary_source: row.get("summary_source"),
+        policy_version: row.get("policy_version"),
+        fingerprint_inputs_json: row.get("fingerprint_inputs_json"),
+        source_hashes_json: row.get("source_hashes_json"),
+        model_context_window_tokens: row.get("model_context_window_tokens"),
+        provider_id: row.get("provider_id"),
+        model_id: row.get("model_id"),
+        checkpoint_health: row.get("checkpoint_health"),
+        last_trigger: row.get("last_trigger"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+async fn restore_compaction_state_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    state: &ConversationCompactionStateRecord,
+) -> DbResult<()> {
+    sqlx::query(r#"INSERT INTO conversation_compactions (conversation_id, up_to_message_id, summary_text, tool_digest_json, used_source_passage_ids_json, interesting_source_passage_ids_json, estimated_tokens_before, estimated_tokens_after, fingerprint, version, pruned_tool_context_message_ids_json, reserved_tokens, footprint_before_json, footprint_after_json, degraded_reason, compaction_kind, compaction_pass, summary_format_version, summary_source, policy_version, fingerprint_inputs_json, source_hashes_json, model_context_window_tokens, provider_id, model_id, checkpoint_health, last_trigger, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversation_id) DO UPDATE SET up_to_message_id=excluded.up_to_message_id, summary_text=excluded.summary_text, tool_digest_json=excluded.tool_digest_json, used_source_passage_ids_json=excluded.used_source_passage_ids_json, interesting_source_passage_ids_json=excluded.interesting_source_passage_ids_json, estimated_tokens_before=excluded.estimated_tokens_before, estimated_tokens_after=excluded.estimated_tokens_after, fingerprint=excluded.fingerprint, version=excluded.version, pruned_tool_context_message_ids_json=excluded.pruned_tool_context_message_ids_json, reserved_tokens=excluded.reserved_tokens, footprint_before_json=excluded.footprint_before_json, footprint_after_json=excluded.footprint_after_json, degraded_reason=excluded.degraded_reason, compaction_kind=excluded.compaction_kind, compaction_pass=excluded.compaction_pass, summary_format_version=excluded.summary_format_version, summary_source=excluded.summary_source, policy_version=excluded.policy_version, fingerprint_inputs_json=excluded.fingerprint_inputs_json, source_hashes_json=excluded.source_hashes_json, model_context_window_tokens=excluded.model_context_window_tokens, provider_id=excluded.provider_id, model_id=excluded.model_id, checkpoint_health=excluded.checkpoint_health, last_trigger=excluded.last_trigger, created_at=excluded.created_at, updated_at=excluded.updated_at"#)
+    .bind(&state.conversation_id).bind(&state.up_to_message_id).bind(&state.summary_text).bind(&state.tool_digest_json).bind(&state.used_source_passage_ids_json).bind(&state.interesting_source_passage_ids_json).bind(state.estimated_tokens_before).bind(state.estimated_tokens_after).bind(&state.fingerprint).bind(state.version).bind(&state.pruned_tool_context_message_ids_json).bind(state.reserved_tokens).bind(&state.footprint_before_json).bind(&state.footprint_after_json).bind(&state.degraded_reason).bind(&state.compaction_kind).bind(&state.compaction_pass).bind(state.summary_format_version).bind(&state.summary_source).bind(state.policy_version).bind(&state.fingerprint_inputs_json).bind(&state.source_hashes_json).bind(state.model_context_window_tokens).bind(&state.provider_id).bind(&state.model_id).bind(&state.checkpoint_health).bind(&state.last_trigger).bind(&state.created_at).bind(&state.updated_at).execute(connection).await?;
+    Ok(())
+}
+
+async fn restore_message_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    message: &Message,
+) -> DbResult<()> {
+    sqlx::query(
+        r#"INSERT INTO messages (id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             conversation_id = excluded.conversation_id, turn_id = excluded.turn_id,
+             role = excluded.role, content = excluded.content, created_at = excluded.created_at,
+             token_count = excluded.token_count, tool_traces_json = excluded.tool_traces_json,
+             hidden_context = excluded.hidden_context, provider_input_items_json = excluded.provider_input_items_json,
+             provider_turn_state_json = excluded.provider_turn_state_json, context_refs_json = excluded.context_refs_json,
+             completion_reason = excluded.completion_reason"#,
+    )
+    .bind(&message.id).bind(&message.conversation_id).bind(&message.turn_id).bind(&message.role)
+    .bind(&message.content).bind(&message.created_at).bind(message.token_count)
+    .bind(&message.tool_traces_json).bind(&message.hidden_context).bind(&message.provider_input_items_json)
+    .bind(&message.provider_turn_state_json).bind(&message.context_refs_json).bind(&message.completion_reason)
+    .execute(connection).await?;
+    Ok(())
+}
+
+async fn restore_citation_with_connection(
+    connection: &mut sqlx::SqliteConnection,
+    citation: &ConversationCitation,
+) -> DbResult<()> {
+    sqlx::query(
+        r#"INSERT INTO conversation_citations (id, conversation_id, message_id, type, scope, source, title, snippet, content, url, favicon, path, language, size_bytes, kind, reason, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             conversation_id=excluded.conversation_id, message_id=excluded.message_id, type=excluded.type,
+             scope=excluded.scope, source=excluded.source, title=excluded.title, snippet=excluded.snippet,
+             content=excluded.content, url=excluded.url, favicon=excluded.favicon, path=excluded.path,
+             language=excluded.language, size_bytes=excluded.size_bytes, kind=excluded.kind, reason=excluded.reason,
+             created_at=excluded.created_at, updated_at=excluded.updated_at"#,
+    )
+    .bind(&citation.id).bind(&citation.conversation_id).bind(&citation.message_id).bind(&citation.r#type)
+    .bind(&citation.scope).bind(&citation.source).bind(&citation.title).bind(&citation.snippet)
+    .bind(&citation.content).bind(&citation.url).bind(&citation.favicon).bind(&citation.path)
+    .bind(&citation.language).bind(citation.size_bytes).bind(&citation.kind).bind(&citation.reason)
+    .bind(&citation.created_at).bind(&citation.updated_at).execute(connection).await?;
+    Ok(())
+}
+
+pub async fn prepare_conversation_replay(
+    pool: &SqlitePool,
+    input: PrepareConversationReplayInput<'_>,
+) -> DbResult<()> {
+    let mut transaction = pool.begin().await?;
+    let row = sqlx::query(
+        "SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason FROM messages WHERE id = ? AND conversation_id = ?",
+    ).bind(input.message_id).bind(input.conversation_id).fetch_one(&mut *transaction).await?;
+    let original_message = map_message_row(&row);
+    let tail_rows = sqlx::query(
+        "SELECT id, conversation_id, turn_id, role, content, created_at, token_count, tool_traces_json, hidden_context, provider_input_items_json, provider_turn_state_json, context_refs_json, completion_reason FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC",
+    ).bind(input.conversation_id).bind(&original_message.created_at).bind(&original_message.created_at).bind(input.message_id).fetch_all(&mut *transaction).await?;
+    let citations = sqlx::query(
+        "SELECT id, conversation_id, message_id, type, scope, source, title, snippet, content, url, favicon, path, language, size_bytes, kind, reason, created_at, updated_at FROM conversation_citations WHERE conversation_id = ?",
+    ).bind(input.conversation_id).fetch_all(&mut *transaction).await?
+      .into_iter().map(map_conversation_citation_row).collect();
+    let checkpoints_json: Option<String> =
+        sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key = ?")
+            .bind(format!("agentCodeCheckpoints:{}", input.conversation_id))
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let compaction_events = sqlx::query(
+        "SELECT id, conversation_id, trigger, provider_id, model_id, model_context_window_tokens, tokens_before, tokens_after, status, error_code, reason, metadata_json, created_at FROM conversation_compaction_events WHERE conversation_id = ?",
+    ).bind(input.conversation_id).fetch_all(&mut *transaction).await?.into_iter().map(|row| ReplayCompactionEvent {
+        id: row.get("id"), conversation_id: row.get("conversation_id"), trigger: row.get("trigger"), provider_id: row.get("provider_id"), model_id: row.get("model_id"), model_context_window_tokens: row.get("model_context_window_tokens"), tokens_before: row.get("tokens_before"), tokens_after: row.get("tokens_after"), status: row.get("status"), error_code: row.get("error_code"), reason: row.get("reason"), metadata_json: row.get("metadata_json"), created_at: row.get("created_at"),
+    }).collect();
+    let compaction_state = sqlx::query("SELECT conversation_id, up_to_message_id, summary_text, tool_digest_json, used_source_passage_ids_json, interesting_source_passage_ids_json, estimated_tokens_before, estimated_tokens_after, fingerprint, version, pruned_tool_context_message_ids_json, reserved_tokens, footprint_before_json, footprint_after_json, degraded_reason, compaction_kind, compaction_pass, summary_format_version, summary_source, policy_version, fingerprint_inputs_json, source_hashes_json, model_context_window_tokens, provider_id, model_id, checkpoint_health, last_trigger, created_at, updated_at FROM conversation_compactions WHERE conversation_id = ?").bind(input.conversation_id).fetch_optional(&mut *transaction).await?.as_ref().map(map_compaction_state_row);
+    let tail_messages = tail_rows.iter().map(map_message_row).collect::<Vec<_>>();
+    let snapshot = ReplayRecoverySnapshot {
+        replay_id: input.replay_id.to_string(),
+        conversation_id: input.conversation_id.to_string(),
+        message_id: input.message_id.to_string(),
+        session_id: input.session_id.to_string(),
+        turn_id: input.turn_id.to_string(),
+        transcript_revision: replay_transcript_revision(&original_message, &tail_messages),
+        prepared_message_content: input.content.to_string(),
+        phase: "prepared".to_string(),
+        original_message,
+        tail_messages,
+        citations,
+        checkpoints_json,
+        compaction_state,
+        compaction_events,
+    };
+    let snapshot_json =
+        serde_json::to_string(&snapshot).map_err(|error| DbError::Validation(error.to_string()))?;
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at")
+      .bind(replay_recovery_key(input.conversation_id)).bind(snapshot_json).bind(&now).execute(&mut *transaction).await?;
+    sqlx::query("UPDATE messages SET content = ?, turn_id = ?, hidden_context = ?, provider_input_items_json = ? WHERE id = ? AND conversation_id = ?")
+      .bind(input.content).bind(input.turn_id).bind(&input.hidden_context).bind(&input.provider_input_items_json).bind(input.message_id).bind(input.conversation_id).execute(&mut *transaction).await?;
+    sqlx::query("DELETE FROM conversation_citations WHERE conversation_id = ? AND message_id IN (SELECT id FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)))")
+      .bind(input.conversation_id).bind(input.conversation_id).bind(&snapshot.original_message.created_at).bind(&snapshot.original_message.created_at).bind(input.message_id).execute(&mut *transaction).await?;
+    sqlx::query("DELETE FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))")
+      .bind(input.conversation_id).bind(&snapshot.original_message.created_at).bind(&snapshot.original_message.created_at).bind(input.message_id).execute(&mut *transaction).await?;
+    if let Some(checkpoints_json) = input.code_checkpoints_json {
+        sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at")
+        .bind(format!("agentCodeCheckpoints:{}", input.conversation_id)).bind(checkpoints_json).bind(&now).execute(&mut *transaction).await?;
+    }
+    if input.delete_context_compaction_state {
+        sqlx::query("DELETE FROM conversation_compactions WHERE conversation_id = ?")
+            .bind(input.conversation_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM conversation_compaction_events WHERE conversation_id = ?")
+            .bind(input.conversation_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    refresh_conversation_metadata_with_connection(
+        &mut *transaction,
+        input.conversation_id.to_string(),
+        None,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+pub async fn restore_conversation_replay(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    replay_id: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> DbResult<bool> {
+    let mut transaction = pool.begin().await?;
+    let key = replay_recovery_key(conversation_id);
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key = ?")
+            .bind(&key)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some(raw) = raw else {
+        transaction.commit().await?;
+        return Ok(false);
+    };
+    let snapshot: ReplayRecoverySnapshot =
+        serde_json::from_str(&raw).map_err(|error| DbError::Validation(error.to_string()))?;
+    if snapshot.replay_id != replay_id
+        || snapshot.conversation_id != conversation_id
+        || session_id.is_some_and(|session_id| snapshot.session_id != session_id)
+        || turn_id.is_some_and(|turn_id| snapshot.turn_id != turn_id)
+    {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    if snapshot.transcript_revision
+        != replay_transcript_revision(&snapshot.original_message, &snapshot.tail_messages)
+    {
+        return Err(DbError::Validation(
+            "Replay recovery transcript revision is invalid".to_string(),
+        ));
+    }
+
+    // A recovery can only undo its own trim. A later turn, an edited anchor,
+    // or streamed content on the launched turn is a definitive fence: preserve
+    // the marker and let the winning transcript remain authoritative.
+    let current_anchor =
+        sqlx::query("SELECT turn_id, content FROM messages WHERE id = ? AND conversation_id = ?")
+            .bind(&snapshot.message_id)
+            .bind(conversation_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some(current_anchor) = current_anchor else {
+        transaction.commit().await?;
+        return Ok(false);
+    };
+    let anchor_turn_id: String = current_anchor.get("turn_id");
+    let anchor_content: String = current_anchor.get("content");
+    if anchor_turn_id != snapshot.turn_id || anchor_content != snapshot.prepared_message_content {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    let later_rows = sqlx::query("SELECT turn_id, content, tool_traces_json FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))")
+        .bind(conversation_id)
+        .bind(&snapshot.original_message.created_at)
+        .bind(&snapshot.original_message.created_at)
+        .bind(&snapshot.message_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+    let has_competing_turn = later_rows.iter().any(|row| {
+        let row_turn_id: String = row.get("turn_id");
+        row_turn_id != snapshot.turn_id
+    });
+    let launched_has_progress = snapshot.phase == "launched"
+        && later_rows.iter().any(|row| {
+            let content: String = row.get("content");
+            let tool_traces_json: Option<String> = row.get("tool_traces_json");
+            !content.is_empty()
+                || tool_traces_json.is_some_and(|traces| traces != "[]" && !traces.is_empty())
+        });
+    if has_competing_turn || launched_has_progress {
+        transaction.commit().await?;
+        return Ok(false);
+    }
+    sqlx::query("DELETE FROM conversation_citations WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM messages WHERE conversation_id = ? AND (created_at > ? OR (created_at = ? AND id > ?))").bind(conversation_id).bind(&snapshot.original_message.created_at).bind(&snapshot.original_message.created_at).bind(&snapshot.message_id).execute(&mut *transaction).await?;
+    restore_message_with_connection(&mut *transaction, &snapshot.original_message).await?;
+    for message in &snapshot.tail_messages {
+        restore_message_with_connection(&mut *transaction, message).await?;
+    }
+    for citation in &snapshot.citations {
+        restore_citation_with_connection(&mut *transaction, citation).await?;
+    }
+    let checkpoint_key = format!("agentCodeCheckpoints:{conversation_id}");
+    match snapshot.checkpoints_json {
+        Some(value) => {
+            sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at").bind(&checkpoint_key).bind(value).bind(chrono::Utc::now().to_rfc3339()).execute(&mut *transaction).await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM app_settings WHERE key = ?")
+                .bind(&checkpoint_key)
+                .execute(&mut *transaction)
+                .await?;
+        }
+    }
+    sqlx::query("DELETE FROM conversation_compactions WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM conversation_compaction_events WHERE conversation_id = ?")
+        .bind(conversation_id)
+        .execute(&mut *transaction)
+        .await?;
+    if let Some(state) = &snapshot.compaction_state {
+        restore_compaction_state_with_connection(&mut *transaction, state).await?;
+    }
+    for event in &snapshot.compaction_events {
+        sqlx::query("INSERT INTO conversation_compaction_events (id, conversation_id, trigger, provider_id, model_id, model_context_window_tokens, tokens_before, tokens_after, status, error_code, reason, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(&event.id).bind(&event.conversation_id).bind(&event.trigger).bind(&event.provider_id).bind(&event.model_id).bind(event.model_context_window_tokens).bind(event.tokens_before).bind(event.tokens_after).bind(&event.status).bind(&event.error_code).bind(&event.reason).bind(&event.metadata_json).bind(&event.created_at).execute(&mut *transaction).await?;
+    }
+    refresh_conversation_metadata_with_connection(
+        &mut *transaction,
+        conversation_id.to_string(),
+        None,
+    )
+    .await?;
+    sqlx::query("DELETE FROM app_settings WHERE key = ?")
+        .bind(&key)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+pub async fn complete_conversation_replay(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    replay_id: &str,
+) -> DbResult<()> {
+    let key = replay_recovery_key(conversation_id);
+    let Some(setting) = get_app_setting(pool, &key).await? else {
+        return Ok(());
+    };
+    let mut snapshot: ReplayRecoverySnapshot = serde_json::from_str(&setting.value_json)
+        .map_err(|error| DbError::Validation(error.to_string()))?;
+    if snapshot.replay_id == replay_id && snapshot.phase == "prepared" {
+        snapshot.phase = "launch_ready".to_string();
+        set_app_setting(
+            pool,
+            &key,
+            &serde_json::to_string(&snapshot)
+                .map_err(|error| DbError::Validation(error.to_string()))?,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn mark_conversation_replay_launched(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    replay_id: &str,
+) -> DbResult<()> {
+    let key = replay_recovery_key(conversation_id);
+    let Some(setting) = get_app_setting(pool, &key).await? else {
+        return Err(DbError::Validation(
+            "Replay recovery marker is missing".to_string(),
+        ));
+    };
+    let mut snapshot: ReplayRecoverySnapshot = serde_json::from_str(&setting.value_json)
+        .map_err(|error| DbError::Validation(error.to_string()))?;
+    if snapshot.replay_id != replay_id || snapshot.phase != "launch_ready" {
+        return Err(DbError::Validation(
+            "Replay recovery marker is no longer launch-ready".to_string(),
+        ));
+    }
+    snapshot.phase = "launched".to_string();
+    set_app_setting(
+        pool,
+        &key,
+        &serde_json::to_string(&snapshot)
+            .map_err(|error| DbError::Validation(error.to_string()))?,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn finalize_conversation_replay(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    replay_id: &str,
+) -> DbResult<()> {
+    let key = replay_recovery_key(conversation_id);
+    let Some(setting) = get_app_setting(pool, &key).await? else {
+        return Ok(());
+    };
+    let snapshot: ReplayRecoverySnapshot = serde_json::from_str(&setting.value_json)
+        .map_err(|error| DbError::Validation(error.to_string()))?;
+    if snapshot.replay_id == replay_id && snapshot.phase == "launched" {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?")
+            .bind(key)
+            .execute(pool)
+            .await?;
+    }
     Ok(())
 }
 
@@ -3093,6 +3635,444 @@ mod tests {
             .expect("conversation");
         assert_eq!(refreshed.message_count, 1);
         assert_eq!(refreshed.last_message.as_deref(), Some("Keep me"));
+    }
+
+    #[tokio::test]
+    async fn trim_conversation_replay_rolls_back_tail_when_checkpoint_write_fails() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Thread").await;
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "replay-keep".to_string(),
+                    turn_id: None,
+                    role: "user".to_string(),
+                    content: "Keep me".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "replay-tail".to_string(),
+                    turn_id: None,
+                    role: "assistant".to_string(),
+                    content: "Do not lose me".to_string(),
+                    created_at: "2026-03-19T00:00:01.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("import messages");
+
+        let checkpoint_key = format!("agentCodeCheckpoints:{}", conversation.id);
+        set_app_setting(&pool, &checkpoint_key, "[\"old\"]")
+            .await
+            .expect("save checkpoints");
+        sqlx::query(&format!(
+            "CREATE TRIGGER fail_replay_checkpoint BEFORE INSERT ON app_settings WHEN NEW.key = 'agentCodeCheckpoints:{}' BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END",
+            conversation.id
+        ))
+        .execute(&pool)
+        .await
+        .expect("install failure trigger");
+
+        let result = trim_conversation_replay(
+            &pool,
+            &conversation.id,
+            "replay-keep",
+            Some("[\"new\"]"),
+            true,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let remaining_ids = list_messages(&pool, &conversation.id)
+            .await
+            .expect("list messages")
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_ids, vec!["replay-keep", "replay-tail"]);
+        assert_eq!(
+            get_app_setting(&pool, &checkpoint_key)
+                .await
+                .expect("load checkpoints")
+                .expect("checkpoint setting")
+                .value_json,
+            "[\"old\"]",
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_recovery_restores_the_committed_trim_idempotently() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Replay recovery").await;
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "replay-user".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "user".to_string(),
+                    content: "Original".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "replay-tail".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: "Tail".to_string(),
+                    created_at: "2026-03-19T00:00:01.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed messages");
+        let checkpoint_key = format!("agentCodeCheckpoints:{}", conversation.id);
+        set_app_setting(&pool, &checkpoint_key, "[\"before\"]")
+            .await
+            .expect("seed checkpoints");
+        upsert_conversation_compaction_state(
+            &pool,
+            UpsertConversationCompactionStateInput {
+                conversation_id: conversation.id.clone(),
+                up_to_message_id: "replay-tail".to_string(),
+                summary_text: "summary".to_string(),
+                tool_digest_json: "[]".to_string(),
+                used_source_passage_ids_json: "[]".to_string(),
+                interesting_source_passage_ids_json: "[]".to_string(),
+                estimated_tokens_before: 10,
+                estimated_tokens_after: 2,
+                fingerprint: "fingerprint".to_string(),
+                version: 1,
+                pruned_tool_context_message_ids_json: None,
+                reserved_tokens: None,
+                footprint_before_json: None,
+                footprint_after_json: None,
+                degraded_reason: None,
+                compaction_kind: None,
+                compaction_pass: None,
+                summary_format_version: None,
+                summary_source: None,
+                policy_version: None,
+                fingerprint_inputs_json: None,
+                source_hashes_json: None,
+                model_context_window_tokens: None,
+                provider_id: None,
+                model_id: None,
+                checkpoint_health: None,
+                last_trigger: None,
+            },
+        )
+        .await
+        .expect("seed compaction");
+
+        prepare_conversation_replay(
+            &pool,
+            PrepareConversationReplayInput {
+                conversation_id: &conversation.id,
+                message_id: "replay-user",
+                session_id: "session-1",
+                turn_id: "turn-1",
+                replay_id: "replay-1",
+                content: "Edited",
+                hidden_context: Some("hidden".to_string()),
+                provider_input_items_json: Some("[]".to_string()),
+                code_checkpoints_json: Some("[\"after\"]".to_string()),
+                delete_context_compaction_state: true,
+            },
+        )
+        .await
+        .expect("prepare replay");
+        assert_eq!(
+            list_messages(&pool, &conversation.id)
+                .await
+                .expect("trimmed")
+                .len(),
+            1
+        );
+
+        assert!(
+            restore_conversation_replay(&pool, &conversation.id, "replay-1", None, None)
+                .await
+                .expect("restore")
+        );
+        assert!(
+            !restore_conversation_replay(&pool, &conversation.id, "replay-1", None, None)
+                .await
+                .expect("idempotent retry")
+        );
+        let messages = list_messages(&pool, &conversation.id)
+            .await
+            .expect("restored messages");
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Original", "Tail"]
+        );
+        assert_eq!(
+            get_app_setting(&pool, &checkpoint_key)
+                .await
+                .expect("checkpoints")
+                .expect("checkpoint value")
+                .value_json,
+            "[\"before\"]"
+        );
+        assert!(get_conversation_compaction_state(&pool, &conversation.id)
+            .await
+            .expect("compaction")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn replay_recovery_handles_crash_phases_without_overwriting_a_newer_turn() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Replay fences").await;
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "anchor".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "user".to_string(),
+                    content: "Original".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "tail".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: "Tail".to_string(),
+                    created_at: "2026-03-19T00:00:01.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed messages");
+
+        let prepare = |replay_id: &'static str| PrepareConversationReplayInput {
+            conversation_id: &conversation.id,
+            message_id: "anchor",
+            session_id: "session-1",
+            turn_id: "turn-1",
+            replay_id,
+            content: "Edited",
+            hidden_context: None,
+            provider_input_items_json: None,
+            code_checkpoints_json: None,
+            delete_context_compaction_state: false,
+        };
+
+        // Crash after trim (prepared) and after dbComplete (launch_ready) both restore.
+        prepare_conversation_replay(&pool, prepare("prepared"))
+            .await
+            .expect("prepare");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "prepared",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("restore prepared"));
+
+        prepare_conversation_replay(&pool, prepare("ready"))
+            .await
+            .expect("prepare ready");
+        complete_conversation_replay(&pool, &conversation.id, "ready")
+            .await
+            .expect("mark ready");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "ready",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("restore ready"));
+
+        // An empty launched placeholder is still safe to compensate after a crash.
+        prepare_conversation_replay(&pool, prepare("empty-launch"))
+            .await
+            .expect("prepare empty launch");
+        complete_conversation_replay(&pool, &conversation.id, "empty-launch")
+            .await
+            .expect("mark empty launch ready");
+        mark_conversation_replay_launched(&pool, &conversation.id, "empty-launch")
+            .await
+            .expect("mark launched");
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![ImportMessageInput {
+                id: "placeholder".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                role: "assistant".to_string(),
+                content: String::new(),
+                created_at: "2026-03-19T00:00:02.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("insert placeholder");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "empty-launch",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("restore empty launch"));
+
+        // A different turn is a durable fence. The old snapshot remains pending
+        // until bootstrap can classify it, but must never overwrite the winner.
+        prepare_conversation_replay(&pool, prepare("fenced"))
+            .await
+            .expect("prepare fenced");
+        complete_conversation_replay(&pool, &conversation.id, "fenced")
+            .await
+            .expect("ready fenced");
+        mark_conversation_replay_launched(&pool, &conversation.id, "fenced")
+            .await
+            .expect("launched fenced");
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![ImportMessageInput {
+                id: "newer-turn".to_string(),
+                turn_id: Some("turn-2".to_string()),
+                role: "user".to_string(),
+                content: "Winning request".to_string(),
+                created_at: "2026-03-19T00:00:03.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("insert newer turn");
+        assert!(!restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "fenced",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("fence recovery"));
+        assert!(list_messages(&pool, &conversation.id)
+            .await
+            .expect("winning transcript")
+            .iter()
+            .any(|message| message.id == "newer-turn"));
+    }
+
+    #[tokio::test]
+    async fn replay_recovery_keeps_the_marker_after_a_sqlite_failure_and_retries() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Replay retry").await;
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "anchor".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "user".to_string(),
+                    content: "Original".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "tail".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    role: "assistant".to_string(),
+                    content: "Tail".to_string(),
+                    created_at: "2026-03-19T00:00:01.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("seed messages");
+        prepare_conversation_replay(
+            &pool,
+            PrepareConversationReplayInput {
+                conversation_id: &conversation.id,
+                message_id: "anchor",
+                session_id: "session-1",
+                turn_id: "turn-1",
+                replay_id: "retry",
+                content: "Edited",
+                hidden_context: None,
+                provider_input_items_json: None,
+                code_checkpoints_json: None,
+                delete_context_compaction_state: false,
+            },
+        )
+        .await
+        .expect("prepare replay");
+        sqlx::query(&format!(
+            "CREATE TRIGGER fail_replay_restore BEFORE UPDATE ON messages WHEN OLD.conversation_id = '{}' BEGIN SELECT RAISE(ABORT, 'injected recovery failure'); END",
+            conversation.id
+        ))
+        .execute(&pool)
+        .await
+        .expect("install failure trigger");
+
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "retry",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .is_err());
+        assert!(
+            get_app_setting(&pool, &replay_recovery_key(&conversation.id))
+                .await
+                .expect("load marker")
+                .is_some()
+        );
+        assert_eq!(
+            list_messages(&pool, &conversation.id)
+                .await
+                .expect("trim remains committed")
+                .len(),
+            1
+        );
+
+        sqlx::query("DROP TRIGGER fail_replay_restore")
+            .execute(&pool)
+            .await
+            .expect("remove failure trigger");
+        assert!(restore_conversation_replay(
+            &pool,
+            &conversation.id,
+            "retry",
+            Some("session-1"),
+            Some("turn-1"),
+        )
+        .await
+        .expect("retry restore"));
+        assert!(
+            get_app_setting(&pool, &replay_recovery_key(&conversation.id))
+                .await
+                .expect("load marker")
+                .is_none()
+        );
     }
 
     #[tokio::test]

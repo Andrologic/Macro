@@ -2670,6 +2670,122 @@ pub async fn db_delete_messages_after(
 }
 
 #[tauri::command]
+pub async fn db_trim_conversation_replay(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    after_message_id: String,
+    code_checkpoints_json: Option<String>,
+    delete_context_compaction_state: bool,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::trim_conversation_replay(
+        &pool,
+        &conversation_id,
+        &after_message_id,
+        code_checkpoints_json.as_deref(),
+        delete_context_compaction_state,
+    )
+    .await
+    .map_err(CommandError::from)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbPrepareConversationReplayParams {
+    conversation_id: String,
+    message_id: String,
+    session_id: String,
+    turn_id: String,
+    replay_id: String,
+    content: String,
+    hidden_context: Option<String>,
+    provider_input_items_json: Option<String>,
+    code_checkpoints_json: Option<String>,
+    delete_context_compaction_state: bool,
+}
+
+#[tauri::command]
+pub async fn db_prepare_conversation_replay(
+    pool: State<'_, DbPool>,
+    params: DbPrepareConversationReplayParams,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::prepare_conversation_replay(
+        &pool,
+        repository::PrepareConversationReplayInput {
+            conversation_id: &params.conversation_id,
+            message_id: &params.message_id,
+            session_id: &params.session_id,
+            turn_id: &params.turn_id,
+            replay_id: &params.replay_id,
+            content: &params.content,
+            hidden_context: params.hidden_context,
+            provider_input_items_json: params.provider_input_items_json,
+            code_checkpoints_json: params.code_checkpoints_json,
+            delete_context_compaction_state: params.delete_context_compaction_state,
+        },
+    )
+    .await
+    .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_restore_conversation_replay(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    replay_id: String,
+    session_id: String,
+    turn_id: String,
+) -> CommandResult<bool> {
+    let pool = get_pool(&pool).await?;
+    repository::restore_conversation_replay(
+        &pool,
+        &conversation_id,
+        &replay_id,
+        Some(&session_id),
+        Some(&turn_id),
+    )
+    .await
+    .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_complete_conversation_replay(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    replay_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::complete_conversation_replay(&pool, &conversation_id, &replay_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_mark_conversation_replay_launched(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    replay_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::mark_conversation_replay_launched(&pool, &conversation_id, &replay_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_finalize_conversation_replay(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    replay_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+    repository::finalize_conversation_replay(&pool, &conversation_id, &replay_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub async fn db_list_conversation_citations(
     pool: State<'_, DbPool>,
     conversation_id: String,
