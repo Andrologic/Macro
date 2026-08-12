@@ -1875,6 +1875,7 @@ const commitArchitectPlanMetadataForTask = async (
   } catch (error) {
     const normalized = toServiceError(error);
     setError?.(normalized.message);
+    throw normalized;
   }
 };
 
@@ -4415,30 +4416,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           setActive: false,
         });
         const archivedPlan = await archiveArchitectPlan(branchName, plan.id);
+        await commitArchitectPlanMetadata({
+          branchName,
+          planId: task.plan_id,
+          commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
+        });
         const cleanup = await cleanupPlanBranches(archivedPlan, undefined, {
           allowRetained: true,
         });
         await get().refreshFromPlan();
-        let metadataCommitSucceeded = true;
-        try {
-          await commitArchitectPlanMetadata({
-            branchName,
-            planId: task.plan_id,
-            commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
-          });
-        } catch (error) {
-          metadataCommitSucceeded = false;
-          set({ lastError: toServiceError(error).message });
-        }
-        if (metadataCommitSucceeded) {
-          await persistRuntime(null);
-          get().clearPlanRuntimeState({
-            planId: archivedPlan.id,
-            deletedWorktreeKeys: cleanup.flatMap((repository) =>
-              repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
-            ),
-          });
-        }
+        await persistRuntime(null);
+        get().clearPlanRuntimeState({
+          planId: archivedPlan.id,
+          deletedWorktreeKeys: cleanup.flatMap((repository) =>
+            repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
+          ),
+        });
         return;
       }
 
@@ -4723,6 +4716,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         } catch (error) {
           const normalized = toServiceError(error);
           set({ lastError: normalized.message });
+          throw normalized;
         }
 
         try {
@@ -4742,6 +4736,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         } catch (error) {
           const normalized = toServiceError(error);
           set({ lastError: normalized.message });
+          throw normalized;
         }
 
         await commitArchitectPlanMetadataForTask(
