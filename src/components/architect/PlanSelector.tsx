@@ -930,6 +930,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setIsLoading(true);
     let releasePlanMutation: (() => void) | null = null;
+    let archivedPlan: ArchitectPlanRecord | null = null;
     try {
       const taskStore = useTaskStore.getState();
       if (!taskStore.reservePlanWorktreeMutation(plan.id)) {
@@ -948,14 +949,14 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
         );
       }
-      const cleanup = await cleanupPlanBranches(latestPlan);
+      archivedPlan = await archiveArchitectPlan(targetBranch, plan.id);
+      const cleanup = await cleanupPlanBranches(archivedPlan);
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
           repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
         ),
       });
-      await archiveArchitectPlan(targetBranch, plan.id);
       const planDisplayName = getArchitectPlanDisplayName(plan);
       notify.success(
         t('architect.planSelector.toastPlanArchived', {
@@ -970,6 +971,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         },
       });
     } catch (archiveError) {
+      if (archivedPlan) {
+        const message = t(
+          'architect.planSelector.errorArchivePlanCleanup',
+          'Plan archived, but Git cleanup failed. Delete the archived plan to retry cleanup.'
+        );
+        setError(`${message} ${resolveOperationMessage(archiveError, '')}`.trim());
+        notify.warning(message);
+        await refreshPlanSelectorAfterMutation({
+          mutation: {
+            type: 'archive',
+            planId: plan.id,
+          },
+        });
+        return;
+      }
       if (openReplicaRepair(archiveError, () => handleArchivePlan(plan))) {
         return;
       }

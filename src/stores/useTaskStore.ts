@@ -4867,14 +4867,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           })
         );
       }
-      const cleanup = await cleanupPlanBranches(plan);
+      const archivedPlan = await archiveArchitectPlan(branchName, planId);
+      const cleanup = await cleanupPlanBranches(archivedPlan);
       get().clearPlanRuntimeState({
         planId,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
           repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
         ),
       });
-      await archiveArchitectPlan(branchName, planId);
       if (useAppStore.getState().selectedTaskId === buildPlanFinalizationTaskId(planId)) {
         useAppStore.getState().setSelectedTask(null);
       }
