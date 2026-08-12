@@ -3,7 +3,7 @@ import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../services/serviceRuntime';
-import type { GitMergeCheckDto } from '../services/tauriIpc';
+import type { GitMergeCheckDto, GitWorktreeInspectionDto } from '../services/tauriIpc';
 import type {
   MergeWorkflowRepositoryResult,
   MergeWorkflowRuntimeState,
@@ -24,6 +24,13 @@ let updateStandaloneTaskStatusImpl: ((params: { taskId: string; status: string }
 const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/repos/web/.macro/worktrees/task-1',
+}));
+const gitWorktreeInspectMock = mock(async (params: { taskId: string; branchName?: string | null }): Promise<GitWorktreeInspectionDto> => ({
+  taskId: params.taskId,
+  worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+  branchName: params.branchName ?? null,
+  status: 'ready' as const,
+  isDirty: false,
 }));
 const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
   worktreeKey: params.worktreeKey,
@@ -247,6 +254,7 @@ mock.module('../services/tauriIpc', () => ({
   gitCompleteMerge: gitCompleteMergeMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeCreate: gitWorktreeCreateMock,
+  gitWorktreeInspect: gitWorktreeInspectMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -275,6 +283,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitCompleteMerge: gitCompleteMergeMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeCreate: gitWorktreeCreateMock,
+  gitWorktreeInspect: gitWorktreeInspectMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -630,6 +639,14 @@ describe('useTaskStore merge workflow review loading', () => {
     gitCompleteMergeMock.mockClear();
     gitBranchWorktreeCreateMock.mockClear();
     gitWorktreeCreateMock.mockClear();
+    gitWorktreeInspectMock.mockClear();
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      branchName: params.branchName ?? null,
+      status: 'ready' as const,
+      isDirty: false,
+    }));
     gitWorktreeRemoveMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchListMock.mockImplementation(async () => ({
@@ -638,6 +655,14 @@ describe('useTaskStore merge workflow review loading', () => {
       current: 'develop',
     }));
     gitBranchDeleteMock.mockClear();
+    dbSetAppSettingMock.mockImplementation(async (params: { key: string; valueJson: string }) => {
+      dbAppSettings.set(params.key, params.valueJson);
+      return {
+        key: params.key,
+        value_json: params.valueJson,
+        updated_at: '2026-08-12T00:00:00.000Z',
+      };
+    });
     workspaceDeleteManualFeatureDraftMock.mockClear();
     workspaceDeleteManualFeatureMock.mockClear();
     workspaceRevertManualFeatureToDraftMock.mockClear();
@@ -905,7 +930,7 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
-  it('finishes an interrupted workspace deletion before cleaning its hidden conversation on restart', async () => {
+  it('keeps a legacy task-deleting tombstone blocked when execution targets are missing', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-interrupted',
       task_source: 'standalone',
@@ -944,9 +969,15 @@ describe('useTaskStore merge workflow review loading', () => {
       services.listTasks = originalListTasks;
     }
 
-    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledWith(task.id);
-    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith('conv-interrupted');
-    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+    expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        taskId: task.id,
+        phase: 'task_deleting',
+        lastError: expect.stringContaining('trop ancien'),
+      }),
+    ]);
   });
 
   it('resumes only the remaining Git cleanup targets after a partial worktree failure', async () => {
@@ -1013,6 +1044,148 @@ describe('useTaskStore merge workflow review loading', () => {
 
     expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith('conv-git-retry');
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('retries a branch already removed before its saga checkpoint was persisted', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-branch-checkpoint',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: 'conv-branch-checkpoint',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'feature/branch-checkpoint',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/branch-checkpoint',
+        repoPath: '/repos/web',
+      }],
+    });
+    let worktreeExists = true;
+    let branchExists = true;
+    let rejectBranchCheckpoint = true;
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      branchName: params.branchName ?? null,
+      status: worktreeExists ? 'ready' as const : 'absent' as const,
+      isDirty: false,
+    }));
+    gitWorktreeRemoveMock.mockImplementation(async () => {
+      worktreeExists = false;
+      return { removed: true, removedPath: '/repos/web/.macro/worktrees/branch-checkpoint' };
+    });
+    gitBranchListMock.mockImplementation(async () => ({
+      local: branchExists
+        ? [{ name: 'feature/branch-checkpoint', is_head: false, commit: 'abc123' }]
+        : [],
+      remote: [],
+      current: 'develop',
+    }));
+    gitBranchDeleteMock.mockImplementation(async () => {
+      branchExists = false;
+    });
+    dbSetAppSettingMock.mockImplementation(async (params: { key: string; valueJson: string }) => {
+      if (rejectBranchCheckpoint && params.valueJson.includes('"branchRemoved":true')) {
+        rejectBranchCheckpoint = false;
+        throw new Error('injected branch checkpoint failure');
+      }
+      dbAppSettings.set(params.key, params.valueJson);
+      return { key: params.key, value_json: params.valueJson, updated_at: '2026-08-12T00:00:00.000Z' };
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+    await expect(useTaskStore.getState().deleteTask(task.id)).rejects.toThrow(
+      'injected branch checkpoint failure',
+    );
+    expect(gitBranchDeleteMock).toHaveBeenCalledTimes(1);
+
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task], plans: [], hasStandaloneTasks: true, source: 'fallback' as const,
+    }));
+    try {
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(gitBranchDeleteMock).toHaveBeenCalledTimes(1);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(task.conversation_id);
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('retries a worktree already removed before its saga checkpoint was persisted', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-worktree-checkpoint',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: 'conv-worktree-checkpoint',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'feature/worktree-checkpoint',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/worktree-checkpoint',
+        repoPath: '/repos/web',
+      }],
+    });
+    let worktreeExists = true;
+    let rejectWorktreeCheckpoint = true;
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      branchName: params.branchName ?? null,
+      status: worktreeExists ? 'ready' as const : 'absent' as const,
+      isDirty: false,
+    }));
+    gitWorktreeRemoveMock.mockImplementation(async () => {
+      worktreeExists = false;
+      return { removed: true, removedPath: '/repos/web/.macro/worktrees/worktree-checkpoint' };
+    });
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/worktree-checkpoint', is_head: false, commit: 'abc123' }],
+      remote: [],
+      current: 'develop',
+    }));
+    dbSetAppSettingMock.mockImplementation(async (params: { key: string; valueJson: string }) => {
+      if (rejectWorktreeCheckpoint && params.valueJson.includes('"worktreeRemoved":true')) {
+        rejectWorktreeCheckpoint = false;
+        throw new Error('injected worktree checkpoint failure');
+      }
+      dbAppSettings.set(params.key, params.valueJson);
+      return { key: params.key, value_json: params.valueJson, updated_at: '2026-08-12T00:00:00.000Z' };
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+    await expect(useTaskStore.getState().deleteTask(task.id)).rejects.toThrow(
+      'injected worktree checkpoint failure',
+    );
+
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task], plans: [], hasStandaloneTasks: true, source: 'fallback' as const,
+    }));
+    try {
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(task.conversation_id);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 

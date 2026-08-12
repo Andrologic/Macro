@@ -446,19 +446,42 @@ const getExecutionTargetsWithRepoPaths = (
 const resumeLinkedTaskGitCleanup = async (
   saga: LinkedTaskDeletionSaga,
 ): Promise<LinkedTaskDeletionSaga> => {
-  let current = saga;
-  for (const target of current.executionTargets ?? []) {
+  if (!Array.isArray(saga.executionTargets)) {
+    throw new Error(
+      "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.",
+    );
+  }
+  let current: LinkedTaskDeletionSaga & {
+    executionTargets: NonNullable<LinkedTaskDeletionSaga['executionTargets']>;
+  } = { ...saga, executionTargets: saga.executionTargets };
+  for (const target of current.executionTargets) {
     if (!target.worktreeRemoved) {
-      await tauriIpc.gitWorktreeRemove({
-        repoPath: target.repoPath,
-        taskId: target.worktreeKey,
-        force: true,
-        branchName: target.branchName,
-      });
+      const inspectWorktree = () =>
+        tauriIpc.gitWorktreeInspect({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          branchName: target.branchName,
+        });
+      let inspection = await inspectWorktree();
+      if (inspection.status !== 'absent') {
+        try {
+          await tauriIpc.gitWorktreeRemove({
+            repoPath: target.repoPath,
+            taskId: target.worktreeKey,
+            force: true,
+            branchName: target.branchName,
+          });
+        } catch (error) {
+          inspection = await inspectWorktree();
+          if (inspection.status !== 'absent') {
+            throw error;
+          }
+        }
+      }
       current = {
         ...current,
         updatedAt: new Date().toISOString(),
-        executionTargets: (current.executionTargets ?? []).map((candidate) =>
+        executionTargets: current.executionTargets.map((candidate) =>
           candidate.worktreeKey === target.worktreeKey
             ? { ...candidate, worktreeRemoved: true }
             : candidate,
@@ -470,15 +493,27 @@ const resumeLinkedTaskGitCleanup = async (
       (candidate) => candidate.worktreeKey === target.worktreeKey,
     );
     if (updatedTarget?.branchExisted && !updatedTarget.branchRemoved) {
-      await tauriIpc.gitBranchDelete({
-        repoPath: updatedTarget.repoPath,
-        branchName: updatedTarget.branchName,
-        force: true,
-      });
+      const branchExists = async () =>
+        (await tauriIpc.gitBranchList(updatedTarget.repoPath)).local.some(
+          (branch) => branch.name === updatedTarget.branchName,
+        );
+      if (await branchExists()) {
+        try {
+          await tauriIpc.gitBranchDelete({
+            repoPath: updatedTarget.repoPath,
+            branchName: updatedTarget.branchName,
+            force: true,
+          });
+        } catch (error) {
+          if (await branchExists()) {
+            throw error;
+          }
+        }
+      }
       current = {
         ...current,
         updatedAt: new Date().toISOString(),
-        executionTargets: (current.executionTargets ?? []).map((candidate) =>
+        executionTargets: current.executionTargets.map((candidate) =>
           candidate.worktreeKey === updatedTarget.worktreeKey
             ? { ...candidate, branchRemoved: true }
             : candidate,
@@ -2383,6 +2418,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
       for (const pending of pendingLinkedTaskDeletions) {
         const taskStillExists = catalog.tasks.some((task) => task.id === pending.taskId);
+        if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
+          const message =
+            "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.";
+          await upsertLinkedTaskDeletionSaga({
+            ...pending,
+            updatedAt: new Date().toISOString(),
+            lastError: message,
+          });
+          set({ lastError: message });
+          continue;
+        }
         if (pending.phase === 'prepared' && taskStillExists) {
           continue;
         }

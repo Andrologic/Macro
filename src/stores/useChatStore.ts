@@ -346,6 +346,8 @@ import {
 } from "./chat/chatRuntimeState";
 import { buildReplayTrimStatePatch } from "./chat/chatReplayTrimState";
 
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
+
 export type {
   ConversationContextDiagnostics,
   ConversationContextDiagnosticsBreakdownItem,
@@ -6788,9 +6790,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectedGroupId: string | null,
     selectedProjectId: string | null,
     selectedTaskId: string | null,
+    excludedConversationIds: ReadonlySet<string> = EMPTY_STRING_SET,
   ): string | null => {
     const scoped = conversations
       .filter((conversation) =>
+        !excludedConversationIds.has(conversation.id) &&
         isConversationAllowedForMode(
           conversation,
           mode,
@@ -8702,7 +8706,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController: AbortController;
     manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
     agentTypeAtSend: AgentType | null;
-    replayRecovery?: { replayId: string; onLaunched: () => void };
+    replayRecovery?: {
+      replayId: string;
+      onLaunched: () => void;
+      onProgress: () => void;
+      onFailedBeforeProgress: () => Promise<void>;
+    };
   }) => {
     let assistantMessageId: string | null = null;
     const agentTypeAtSend = params.agentTypeAtSend;
@@ -8844,6 +8853,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         replayRecovery: params.replayRecovery
           ? {
               replayId: params.replayRecovery.replayId,
+              onProgress: params.replayRecovery.onProgress,
+              onFailedBeforeProgress: params.replayRecovery.onFailedBeforeProgress,
             }
           : undefined,
       });
@@ -9392,7 +9403,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     abortController?: AbortController;
     compactionDecision?: ContextCompactionDecision;
     overflowRecoveryAttempted?: boolean;
-    replayRecovery?: { replayId: string };
+    replayRecovery?: {
+      replayId: string;
+      onProgress: () => void;
+      onFailedBeforeProgress: () => Promise<void>;
+    };
   }) => {
     const streamTurnId = getMessageTurnId(params.assistantMessage);
     const abortController = params.abortController ?? new AbortController();
@@ -9483,6 +9498,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const finalizeReplayRecoveryAfterProgress = () => {
       if (!params.replayRecovery || replayRecoveryFinalized) return;
       replayRecoveryFinalized = true;
+      params.replayRecovery.onProgress();
       void tauriIpc
         .dbFinalizeConversationReplay({
           conversationId: params.conversationId,
@@ -10265,6 +10281,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
         },
         deleteEmptyAssistantMessageFromDb,
+        recoverReplayBeforeProgress: params.replayRecovery
+          ? params.replayRecovery.onFailedBeforeProgress
+          : undefined,
         setStreamErrorState: ({
           presentation,
           assistantMessageId,
@@ -11736,6 +11755,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
+    const archivedChatConversationPreference =
+      mode === "Chat"
+        ? await loadPreference<unknown>(
+            PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
+          )
+        : null;
+    const archivedChatConversationIds = Array.isArray(
+      archivedChatConversationPreference,
+    )
+      ? new Set(
+          archivedChatConversationPreference
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter(Boolean),
+        )
+      : EMPTY_STRING_SET;
     const rememberedConversation = rememberedId
       ? state.conversations.find(
           (conversation) => conversation.id === rememberedId,
@@ -11744,6 +11779,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (
       rememberedConversation &&
+      !archivedChatConversationIds.has(rememberedConversation.id) &&
       isConversationAllowedForMode(
         rememberedConversation,
         mode,
@@ -11761,6 +11797,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedGroupId,
       selectedProjectId,
       selectedTaskId,
+      archivedChatConversationIds,
     );
     if (fallbackConversationId) {
       return modeFallback(fallbackConversationId);
@@ -12778,7 +12815,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     clearSelectedConversation: () => {
-      set({ selectedConversationId: null, activeContextKey: null, restoreStatus: "idle" });
+      const mode = useAppStore.getState().mode;
+      clearConversationSelection(mode);
+      set({ activeContextKey: null, restoreStatus: "idle" });
     },
 
     togglePinConversation: async (conversationId) => {
@@ -14089,6 +14128,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const sessionId = createConversationSessionId();
       const replayId = createConversationSessionId();
       const replayLocalSnapshot = {
+        conversation: state.conversations.find(
+          (conversation) => conversation.id === conversationId,
+        ) ?? null,
         messages: state.messages,
         messageImagesByMessageId: state.messageImagesByMessageId,
         questionnaireDraftsByConversationId: state.questionnaireDraftsByConversationId,
@@ -14098,6 +14140,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         citations: useCitationsStore.getState().citations,
       };
       let replayPrepared = false;
+      let replayRecoveryActive = false;
       const abortController = new AbortController();
       const executionContextAtEdit = resolveConversationExecutionContext(conversationId);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
@@ -14129,6 +14172,67 @@ export const useChatStore = create<ChatStore>((set, get) => {
           runtime.turnId === turnId &&
           runtime.abortController === abortController
         );
+      };
+      const restoreReplayRecovery = async (): Promise<void> => {
+        if (!replayRecoveryActive) return;
+        const runtime = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          conversationId,
+        );
+        const ownsReplayFence =
+          latestConversationSessionIdByConversationId.get(conversationId) === sessionId &&
+          runtime.sessionId === sessionId &&
+          runtime.turnId === turnId;
+        if (!ownsReplayFence) return;
+        try {
+          const restored = await tauriIpc.dbRestoreConversationReplay({
+            conversationId,
+            replayId,
+            sessionId,
+            turnId,
+          });
+          if (!restored) {
+            throw new Error("The replay recovery marker no longer matches this session.");
+          }
+          const latestRuntime = getConversationRuntimeSnapshot(
+            get().conversationRuntimeById,
+            conversationId,
+          );
+          if (
+            latestConversationSessionIdByConversationId.get(conversationId) !== sessionId ||
+            latestRuntime.sessionId !== sessionId ||
+            latestRuntime.turnId !== turnId
+          ) {
+            throw new Error("A newer replay session won before recovery could update the local transcript.");
+          }
+          set((current) => ({
+            ...buildMessageState(replayLocalSnapshot.messages),
+            conversations: replayLocalSnapshot.conversation
+              ? current.conversations.map((conversation) =>
+                  conversation.id === conversationId
+                    ? replayLocalSnapshot.conversation!
+                    : conversation,
+                )
+              : current.conversations,
+            messageImagesByMessageId: replayLocalSnapshot.messageImagesByMessageId,
+            questionnaireDraftsByConversationId:
+              replayLocalSnapshot.questionnaireDraftsByConversationId,
+            agentCodeCheckpointsByConversationId:
+              replayLocalSnapshot.agentCodeCheckpointsByConversationId,
+            sessionCompactionEventsByConversationId:
+              replayLocalSnapshot.sessionCompactionEventsByConversationId,
+          }));
+          useCitationsStore.setState({ citations: replayLocalSnapshot.citations });
+          conversationCompactionStateCache.delete(conversationId);
+          replayRecoveryActive = false;
+        } catch (recoveryError) {
+          replayRecoveryBlockedConversationIds.add(conversationId);
+          const normalized = toServiceError(recoveryError);
+          set({
+            lastError: `Replay recovery is pending and this conversation is locked: ${normalized.message}`,
+            sendState: "error",
+          });
+        }
       };
 
       try {
@@ -14213,6 +14317,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               : undefined,
           });
           replayPrepared = tauriIpc.isTauriAvailable();
+          replayRecoveryActive = replayPrepared;
         } catch (trimError) {
           if (!tauriIpc.isTauriAvailable()) {
             await persistEditedUserMessage({
@@ -14261,62 +14366,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 onLaunched: () => {
                   replayPrepared = false;
                 },
+                onProgress: () => {
+                  replayRecoveryActive = false;
+                },
+                onFailedBeforeProgress: restoreReplayRecovery,
               }
             : undefined,
         });
         committedCodeReplay = true;
         pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
       } catch (error) {
-        const runtime = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          conversationId,
-        );
-        const ownsReplayFence =
-          latestConversationSessionIdByConversationId.get(conversationId) === sessionId &&
-          runtime.sessionId === sessionId &&
-          runtime.turnId === turnId;
-        if (replayPrepared && ownsReplayFence) {
-          try {
-            const restored = await tauriIpc.dbRestoreConversationReplay({
-              conversationId,
-              replayId,
-              sessionId,
-              turnId,
-            });
-            if (!restored) {
-              throw new Error("The replay recovery marker no longer matches this session.");
-            }
-            const latestRuntime = getConversationRuntimeSnapshot(
-              get().conversationRuntimeById,
-              conversationId,
-            );
-            if (
-              latestConversationSessionIdByConversationId.get(conversationId) !== sessionId ||
-              latestRuntime.sessionId !== sessionId ||
-              latestRuntime.turnId !== turnId
-            ) {
-              throw new Error("A newer replay session won before recovery could update the local transcript.");
-            }
-            set({
-              ...buildMessageState(replayLocalSnapshot.messages),
-              messageImagesByMessageId: replayLocalSnapshot.messageImagesByMessageId,
-              questionnaireDraftsByConversationId:
-                replayLocalSnapshot.questionnaireDraftsByConversationId,
-              agentCodeCheckpointsByConversationId:
-                replayLocalSnapshot.agentCodeCheckpointsByConversationId,
-              sessionCompactionEventsByConversationId:
-                replayLocalSnapshot.sessionCompactionEventsByConversationId,
-            });
-            useCitationsStore.setState({ citations: replayLocalSnapshot.citations });
-            conversationCompactionStateCache.delete(conversationId);
-          } catch (recoveryError) {
-            const normalized = toServiceError(recoveryError);
-            set({
-              lastError: `Replay recovery is pending and this conversation is locked: ${normalized.message}`,
-              sendState: "error",
-            });
-          }
-        }
+        await restoreReplayRecovery();
         if (!committedCodeReplay) {
           const rollback = pendingAgentCodeReplayRollbacksByConversationId.get(
             conversationId,
