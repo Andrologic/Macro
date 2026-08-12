@@ -591,6 +591,36 @@ describe('architectGitFlowService', () => {
     ).toBe(false);
   });
 
+  it('rolls back only branches created by a failed multi-repository provision', async () => {
+    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+    let createCount = 0;
+    gitBranchCreateMock.mockImplementation(async () => {
+      createCount += 1;
+      if (createCount === 3) {
+        throw new Error('API repository is unavailable');
+      }
+    });
+
+    await expect(architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('API repository is unavailable');
+
+    expect(gitBranchDeleteMock.mock.calls.map(([params]) => params)).toEqual([
+      {
+        repoPath: '/repos/web',
+        branchName: 'feature/checkout/checkout-web',
+        force: true,
+      },
+      {
+        repoPath: '/repos/web',
+        branchName: 'plan/checkout',
+        force: true,
+      },
+    ]);
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+  });
+
   it('validates legacy shared feature slugs into one provisioned branch per task', async () => {
     projectPaths.set('web', {
       ...projectPaths.get('web')!,
