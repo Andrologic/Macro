@@ -257,6 +257,7 @@
   "archiveTaskDescription": "Archive cette tâche, supprime son worktree et sa branche locale, et conserve l'historique de sa conversation.",
   "deleteTaskDescription": "Supprime cette fonctionnalité autonome, ignore les changements locaux, supprime son worktree et sa branche locale, et efface sa conversation.",
   "planFilterAll": "Tous les plans",
+  "projectFilterAll": "Tous les projets",
   "planFilterStandalone": "Pas de plan / autonome",
   "standaloneBadge": "Indépendant",
   "noTasksForFilter": "Aucune tâche ne correspond à ce filtre.",

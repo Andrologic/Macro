@@ -257,6 +257,7 @@
   "archiveTaskDescription": "Archivieren Sie diese Aufgabe, entfernen Sie ihren Worktree und lokalen Branch und behalten Sie den Gesprächsverlauf.",
   "deleteTaskDescription": "Löschen Sie dieses eigenständige Feature, verwerfen Sie lokale Änderungen, entfernen Sie seinen Worktree und lokalen Branch und löschen Sie das Gespräch.",
   "planFilterAll": "Alle Pläne",
+  "projectFilterAll": "Alle Projekte",
   "planFilterStandalone": "Kein Plan / Standalone",
   "standaloneBadge": "Eigenständig",
   "noTasksForFilter": "Keine Aufgabe entspricht diesem Filter.",
