@@ -3430,6 +3430,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: tTask('implement.errors.taskAlreadyCompleted', 'Task is already completed.') });
       return;
     }
+    if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
+      const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
+      set({ lastError: error.message });
+      throw error;
+    }
 
     if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
       const error = new Error(getTaskCommandMutationBlockedMessage('complete'));

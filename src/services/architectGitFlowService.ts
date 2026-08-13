@@ -1671,9 +1671,10 @@ export const createArchitectGitFlowService = (
       status: 'completed',
       setActive: false,
     });
-    const archivedPlan = await deps.archiveArchitectPlan(params.branchName, plan.id);
-    const cleanup = await cleanupPlanBranchesWithDeps(archivedPlan, params.repoPath, {
-      allowRetained: true,
+    const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranchesWithDeps({
+      branchName: params.branchName,
+      planId: plan.id,
+      repoPath: params.repoPath,
     });
 
     return {
@@ -1698,17 +1699,6 @@ export const createArchitectGitFlowService = (
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
 
-    const now = new Date().toISOString();
-    const saga: PlanLifecycleSaga = {
-      planId: params.planId,
-      branchName: params.branchName,
-      operation: 'delete',
-      phase: 'prepared',
-      conversationId: plan.conversationId ?? null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await upsertPlanLifecycleSaga(saga);
     const crudCapabilities = getArchitectPlanCrudCapabilities(plan);
 
     if (plan.status === 'deleted') {
@@ -1729,6 +1719,13 @@ export const createArchitectGitFlowService = (
     if (!crudCapabilities.canDelete) {
       throw new Error('Archive the plan before deleting it.');
     }
+
+    const now = new Date().toISOString();
+    const saga: PlanLifecycleSaga = {
+      planId: params.planId, branchName: params.branchName, operation: 'delete', phase: 'prepared',
+      conversationId: plan.conversationId ?? null, createdAt: now, updatedAt: now,
+    };
+    await upsertPlanLifecycleSaga(saga);
 
     if (!crudCapabilities.deleteRequiresCleanup) {
       await deps.deleteArchitectPlan({
