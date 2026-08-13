@@ -1138,6 +1138,8 @@ describe('architectGitFlowService', () => {
       setActive: false,
     });
     expect(archiveArchitectPlanMock).toHaveBeenCalledWith('feature/implement', 'plan-1');
+    expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
     expect(gitMergeMock).toHaveBeenCalledTimes(1);
     expect(gitWorktreeRemoveMock.mock.calls.map(([params]) => params)).toEqual([
       {
@@ -1668,6 +1670,68 @@ describe('architectGitFlowService', () => {
 
     expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
     expect(gitWorktreeRemoveMock).toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('resumes metadata_written finalization by cleaning up, committing, then closing the saga', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({ operation: 'archive', phase: 'metadata_written', requiresMetadataCommit: true });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).toHaveBeenCalled();
+    expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('resumes metadata_commit_pending without replaying cleanup', async () => {
+    persistLifecycleSaga({ operation: 'archive', phase: 'metadata_commit_pending', requiresMetadataCommit: true });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('closes metadata_committed without replaying cleanup or commit', async () => {
+    persistLifecycleSaga({ operation: 'archive', phase: 'metadata_committed', requiresMetadataCommit: true });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(commitArchitectPlanMetadataMock).not.toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('keeps historical archives without a commit requirement free of metadata commits', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    // Missing requiresMetadataCommit is the published historical archive format.
+    persistLifecycleSaga({ operation: 'archive', phase: 'metadata_written' });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).toHaveBeenCalled();
+    expect(commitArchitectPlanMetadataMock).not.toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('keeps finalization pending when its metadata commit fails, then retries without cleanup', async () => {
+    commitArchitectPlanMetadataMock.mockImplementationOnce(async () => {
+      throw new Error('metadata commit failed');
+    });
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement', planId: 'plan-1',
+    })).rejects.toThrow('metadata commit failed');
+    const cleanupCalls = gitWorktreeRemoveMock.mock.calls.length;
+    expect(readPersistedLifecycleSagas()).toEqual([expect.objectContaining({ phase: 'metadata_commit_pending' })]);
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(2);
+    expect(gitWorktreeRemoveMock.mock.calls).toHaveLength(cleanupCalls);
     expect(readPersistedLifecycleSagas()).toEqual([]);
   });
 
