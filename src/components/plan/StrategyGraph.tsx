@@ -652,6 +652,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     'Discuss the plan with Architect, then generate the strategy when the scope is clear.'
   );
   const [isValidating, setIsValidating] = useState(false);
+  const [isApplyingStrategyPreview, setIsApplyingStrategyPreview] = useState(false);
   const [isGraphModalOpen, setIsGraphModalOpen] = useState(false);
   const [isPlanArtifactsOpen, setIsPlanArtifactsOpen] = useState(false);
   const [selectedPlanArtifactId, setSelectedPlanArtifactId] = useState<string | null>(null);
@@ -976,7 +977,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   ]);
 
   const handleApplyStrategyPreview = useCallback(async () => {
-    if (!activeStrategyMutationPreview || !activePlanContext) return;
+    if (!activeStrategyMutationPreview || !activePlanContext || isApplyingStrategyPreview) return;
+    setIsApplyingStrategyPreview(true);
     try {
       const updatedPlan = await applyStrategyMutationPreview({
         preview: activeStrategyMutationPreview,
@@ -1011,6 +1013,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       );
     } catch (err) {
       notify.error(err instanceof Error ? err.message : 'Failed to apply strategy preview.');
+    } finally {
+      setIsApplyingStrategyPreview(false);
     }
   }, [
     activePlanContext,
@@ -1020,6 +1024,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPredictedBranches,
     setStrategyMutationPreview,
     targetBranch,
+    isApplyingStrategyPreview,
   ]);
 
   const handleValidatePlan = async () => {
@@ -2464,6 +2469,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
             <button
               type="button"
               onClick={handleDiscardStrategyPreview}
+              disabled={isApplyingStrategyPreview}
               className="h-8 rounded-lg border border-border px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
             >
               {t('common.discard', 'Discard')}
@@ -2472,7 +2478,8 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
               <button
                 type="button"
                 onClick={() => void handleApplyStrategyPreview()}
-                className="h-8 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+                disabled={isApplyingStrategyPreview}
+                className="h-8 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
               >
                 {t('architect.applyStrategyPreview', 'Apply regeneration')}
               </button>

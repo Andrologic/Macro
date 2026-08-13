@@ -1042,6 +1042,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         return;
       }
       await handleResolveAutomatically(action);
+    } catch (error) {
+      notify.error(
+        error instanceof Error
+          ? error.message
+          : t('common.error', 'An error occurred')
+      );
     } finally {
       setPendingBlockerResolutionAction(null);
       setBlockerResolutionAction(null);
@@ -1056,6 +1062,7 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     handleRetryMerge,
     pendingBlockerResolutionAction,
     task.id,
+    t,
   ]);
 
   return (
