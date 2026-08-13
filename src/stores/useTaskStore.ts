@@ -38,7 +38,7 @@ import {
   resolvePreparedTaskWorktreePath,
   resolveTaskRepositoryPath as resolvePreparedTaskRepositoryPath,
 } from '../services/preparedTaskWorktrees';
-import { cleanupPlanBranches } from '../services/architectGitFlowService';
+import { cleanupPlanBranches, resumePlanLifecycleSagas } from '../services/architectGitFlowService';
 import { promoteArchitectTaskContextProjects } from '../services/architectScopePromotionService';
 import {
   resolveProjectGitFlowSettings,
@@ -2462,6 +2462,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const previousSource = get().source;
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
+      await resumePlanLifecycleSagas();
+      if (requestId !== refreshRequestId) return;
       const catalog = await services.listTasks();
       if (requestId !== refreshRequestId) return;
       const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();

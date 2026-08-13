@@ -81,6 +81,10 @@ import {
   removeLinkedConversationDeletionSaga,
   upsertLinkedConversationDeletionSaga,
 } from '../../services/linkedTaskDeletionSaga';
+import {
+  removePlanLifecycleSaga,
+  upsertPlanLifecycleSaga,
+} from '../../services/planLifecycleSaga';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 
@@ -953,8 +957,28 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
         );
       }
+      const archiveSagaNow = new Date().toISOString();
+      await upsertPlanLifecycleSaga({
+        planId: plan.id,
+        branchName: targetBranch,
+        operation: 'archive',
+        phase: 'prepared',
+        conversationId: latestPlan.conversationId ?? null,
+        createdAt: archiveSagaNow,
+        updatedAt: archiveSagaNow,
+      });
       archivedPlan = await archiveArchitectPlan(targetBranch, plan.id);
+      await upsertPlanLifecycleSaga({
+        planId: plan.id,
+        branchName: targetBranch,
+        operation: 'archive',
+        phase: 'metadata_written',
+        conversationId: archivedPlan.conversationId ?? null,
+        createdAt: archiveSagaNow,
+        updatedAt: new Date().toISOString(),
+      });
       const cleanup = await cleanupPlanBranches(archivedPlan);
+      await removePlanLifecycleSaga(plan.id, 'archive');
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
