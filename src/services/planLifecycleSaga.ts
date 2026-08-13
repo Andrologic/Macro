@@ -3,7 +3,7 @@ import * as tauriIpc from './tauriIpc';
 const SAGA_KEY = 'pendingPlanLifecycles:v1';
 
 export type PlanLifecycleOperation = 'archive' | 'delete';
-export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_deleted' | 'conversation_cleanup_complete';
+export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
 
 export interface PlanLifecycleSaga {
   planId: string;
@@ -31,16 +31,17 @@ const parse = (value: string | null | undefined): PlanLifecycleSaga[] => {
     if (!Array.isArray(parsed)) throw new PlanLifecycleSagaCorruptionError();
     return parsed.map((entry) => {
       const saga = entry as Partial<PlanLifecycleSaga>;
+      const allowedPhases: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
+        archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
+        delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+      };
       if (
         !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
         (saga.operation !== 'archive' && saga.operation !== 'delete') ||
-        !['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_deleted', 'conversation_cleanup_complete'].includes(String(saga.phase)) ||
+        !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
-      if (saga.operation === 'delete' && saga.phase === 'metadata_commit_pending') {
-        throw new PlanLifecycleSagaCorruptionError();
-      }
-      if (saga.requiresMetadataCommit !== undefined && typeof saga.requiresMetadataCommit !== 'boolean') {
+      if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
         throw new PlanLifecycleSagaCorruptionError();
       }
       return saga as PlanLifecycleSaga;

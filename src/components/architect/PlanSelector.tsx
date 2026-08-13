@@ -1126,6 +1126,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             planId: planToDelete.id,
             deletedWorktreeKeys: [],
           });
+          const pendingCleanupMessage = t(
+            'architect.planSelector.warningDeletePlanConversationPending',
+            'Plan deleted, but linked conversation cleanup remains pending and will be retried automatically.'
+          );
+          setError(pendingCleanupMessage);
+          notify.warning(pendingCleanupMessage);
           void useTaskStore.getState().refreshFromPlan().catch(() => undefined);
           return;
         }
