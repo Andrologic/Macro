@@ -802,6 +802,7 @@ export const archivePlanAndCleanupBranches = async (params: {
   branchName: string;
   planId: string;
   repoPath?: string;
+  keepSaga?: boolean;
 }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> =>
   getDefaultArchitectGitFlowService().archivePlanAndCleanupBranches(params);
 
@@ -1566,6 +1567,7 @@ export const createArchitectGitFlowService = (
     branchName: string;
     planId: string;
     repoPath?: string;
+    keepSaga?: boolean;
   }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
@@ -1580,7 +1582,7 @@ export const createArchitectGitFlowService = (
     const archived = plan.status === 'archived' ? plan : await deps.archiveArchitectPlan(params.branchName, plan.id);
     await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
     const cleanup = await cleanupPlanBranchesWithDeps(archived, params.repoPath);
-    await removePlanLifecycleSaga(plan.id, 'archive');
+    if (!params.keepSaga) await removePlanLifecycleSaga(plan.id, 'archive');
     return { plan: archived, cleanup };
   };
 

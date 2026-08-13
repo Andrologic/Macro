@@ -3,7 +3,7 @@ import * as tauriIpc from './tauriIpc';
 const SAGA_KEY = 'pendingPlanLifecycles:v1';
 
 export type PlanLifecycleOperation = 'archive' | 'delete';
-export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_deleted' | 'conversation_cleanup_complete';
+export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_deleted' | 'conversation_cleanup_complete';
 
 export interface PlanLifecycleSaga {
   planId: string;
@@ -33,7 +33,7 @@ const parse = (value: string | null | undefined): PlanLifecycleSaga[] => {
       if (
         !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
         (saga.operation !== 'archive' && saga.operation !== 'delete') ||
-        !['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_deleted', 'conversation_cleanup_complete'].includes(String(saga.phase)) ||
+        !['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_deleted', 'conversation_cleanup_complete'].includes(String(saga.phase)) ||
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
       return saga as PlanLifecycleSaga;
