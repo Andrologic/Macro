@@ -30,6 +30,7 @@ export const PREF_KEYS = {
 
   // Panel state
   LEFT_PANEL_WIDTH: "leftPanelWidth",
+  ARCHITECT_LEFT_PANEL_WIDTH: "architectLeftPanelWidth",
   RIGHT_PANEL_WIDTH: "rightPanelWidth",
   IS_LEFT_PANEL_OPEN: "isLeftPanelOpen",
   IS_RIGHT_PANEL_OPEN: "isRightPanelOpen",
@@ -49,6 +50,8 @@ export const PREF_KEYS = {
   AGENT_TYPE: "agentType",
   RECENT_PROJECTS: "recentProjects",
   MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
+  ARCHITECT_PINNED_PLAN_IDS: "architectPinnedPlanIds",
+  ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS: "architectNavigatorExpandedScopeIds",
   AI_CONTEXT_SELECTIONS: "aiContextSelections",
   PROMPT_ARCHITECT: "promptArchitect",
   PROMPT_IMPLEMENT: "promptImplement",
@@ -243,6 +246,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.IS_MAXIMIZED]: false,
   [PREF_KEYS.WINDOW_BOOTSTRAP_VERSION]: 0,
   [PREF_KEYS.LEFT_PANEL_WIDTH]: 280,
+  [PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH]: 320,
   [PREF_KEYS.RIGHT_PANEL_WIDTH]: 320,
   [PREF_KEYS.IS_LEFT_PANEL_OPEN]: true,
   [PREF_KEYS.IS_RIGHT_PANEL_OPEN]: true,
@@ -260,6 +264,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.AGENT_TYPE]: 'build',
   [PREF_KEYS.RECENT_PROJECTS]: [],
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
+  [PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS]: [],
+  [PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS]: [],
   [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {
     version: 2,
     modeSelections: {},

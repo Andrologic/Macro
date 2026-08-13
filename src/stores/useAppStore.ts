@@ -1149,11 +1149,13 @@ interface AppStore {
   projectAddOperation: ProjectAddOperation | null;
   settingsOpen: boolean;
   activeSettingsTab: SettingsTab; // Added
+  projectNavigatorOpen: boolean;
   projectModalOpen: boolean;
   projectModalGroupId: string | null;
   projectGitFlowModalProjectId: string | null;
   activeThemeId: string;
   leftPanelWidth: number;
+  architectLeftPanelWidth: number;
   rightPanelWidth: number;
   isLeftPanelOpen: boolean;
   isRightPanelOpen: boolean;
@@ -1289,6 +1291,8 @@ interface AppStore {
   openSettings: (tab?: SettingsTab) => void;
   closeSettings: () => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  openProjectNavigator: () => void;
+  closeProjectNavigator: () => void;
   openProjectModal: (groupId?: string | null) => void;
   closeProjectModal: () => void;
   openProjectGitFlowModal: (projectId: string) => void;
@@ -1309,6 +1313,7 @@ interface AppStore {
   cancelProjectAddOperation: (requestId: string) => Promise<void>;
   refreshProjectRegistry: () => Promise<void>;
   setLeftPanelWidth: (width: number) => void;
+  setArchitectLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
@@ -1440,6 +1445,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectAddOperation: null,
   settingsOpen: false,
   activeSettingsTab: "general",
+  projectNavigatorOpen: false,
   projectModalOpen: false,
   projectModalGroupId: null,
   projectGitFlowModalProjectId: null,
@@ -1448,6 +1454,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ? window.localStorage.getItem("theme-id")
       : null) || "macro-dark",
   leftPanelWidth: 280,
+  architectLeftPanelWidth: 320,
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
@@ -3629,6 +3636,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   closeSettings: () => set({ settingsOpen: false }),
   setSettingsTab: (tab) => set({ activeSettingsTab: tab }),
 
+  openProjectNavigator: () => set({ projectNavigatorOpen: true }),
+  closeProjectNavigator: () => set({ projectNavigatorOpen: false }),
+
   openProjectModal: (groupId = null) =>
     set({ projectModalOpen: true, projectModalGroupId: groupId }),
 
@@ -4345,6 +4355,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     savePreferenceDebounced(PREF_KEYS.LEFT_PANEL_WIDTH, clampedWidth);
   },
 
+  setArchitectLeftPanelWidth: (width) => {
+    const clampedWidth = Math.max(260, Math.min(420, width));
+    set({ architectLeftPanelWidth: clampedWidth });
+    savePreferenceDebounced(PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH, clampedWidth);
+  },
+
   setRightPanelWidth: (width) => {
     const clampedWidth = Math.max(200, Math.min(600, width));
     set({ rightPanelWidth: clampedWidth });
@@ -4380,6 +4396,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // Load persisted panel preferences
       const [
         leftWidth,
+        architectLeftWidth,
         rightWidth,
         leftOpen,
         rightOpen,
@@ -4401,6 +4418,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         sessionContext,
       ] = await Promise.all([
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
+        loadPreference<number>(PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
         loadPreference<boolean>(PREF_KEYS.IS_LEFT_PANEL_OPEN),
         loadPreference<boolean>(PREF_KEYS.IS_RIGHT_PANEL_OPEN),
@@ -4630,6 +4648,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ),
         metadataRecoveryReport,
         leftPanelWidth: leftWidth,
+        architectLeftPanelWidth: architectLeftWidth,
         rightPanelWidth: rightWidth,
         isLeftPanelOpen: leftOpen,
         isRightPanelOpen: rightOpen,

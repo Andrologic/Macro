@@ -219,6 +219,17 @@ const gitBranchListMock = mock(async () => ({
 const gitBranchDeleteMock = mock(async () => undefined);
 const gitCheckoutMock = mock(async () => undefined);
 const gitBranchCreateMock = mock(async () => undefined);
+const dbAppSettings = new Map<string, string>();
+const dbGetAppSettingMock = mock(async (key: string) => {
+  const valueJson = dbAppSettings.get(key);
+  return valueJson === undefined
+    ? null
+    : { key, value_json: valueJson, updated_at: '2026-08-13T00:00:00.000Z' };
+});
+const dbSetAppSettingMock = mock(async ({ key, valueJson }: { key: string; valueJson: string }) => {
+  dbAppSettings.set(key, valueJson);
+  return { key, value_json: valueJson, updated_at: '2026-08-13T00:00:00.000Z' };
+});
 const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
   taskId: params.taskId,
   worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
@@ -243,7 +254,26 @@ const registerModuleMocks = () => {
   mock.module('./tauriIpc', () => ({
     ...actualTauriIpc,
     isTauriAvailable: () => true,
+    dbGetAppSetting: dbGetAppSettingMock,
+    dbSetAppSetting: dbSetAppSettingMock,
     workspaceGetActiveRoot: async () => '/repos/web',
+    macroBranchCommitIfDirty: async () => ({
+      branch: '@macro',
+      state: 'clean',
+      worktree_path: '/repos/web/.git/macro-metadata-worktree',
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+      output: null,
+      error: null,
+    }),
     fsReadFileWithOptions: async ({
       path,
       workspacePath,
@@ -357,6 +387,7 @@ describe('architectGitFlowService replica integration', () => {
   beforeEach(() => {
     installTauriRuntimeMock();
     workspaceFiles.clear();
+    dbAppSettings.clear();
     seedReplica();
     originalConsoleInfo = console.info;
     console.info = () => undefined;
@@ -369,6 +400,8 @@ describe('architectGitFlowService replica integration', () => {
     gitBranchDeleteMock.mockClear();
     gitCheckoutMock.mockClear();
     gitBranchCreateMock.mockClear();
+    dbGetAppSettingMock.mockClear();
+    dbSetAppSettingMock.mockClear();
     gitWorktreeInspectMock.mockClear();
     gitBranchWorktreeInspectMock.mockClear();
     gitWorktreeRemoveMock.mockClear();

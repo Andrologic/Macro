@@ -186,6 +186,7 @@ type AppStoreState = {
   planNodes: unknown[];
   predictedBranches: unknown[];
   openSettings: ReturnType<typeof mock>;
+  setLeftPanelOpen: ReturnType<typeof mock>;
 };
 
 type ProviderState = {
@@ -738,6 +739,7 @@ const resetState = () => {
     planNodes: [],
     predictedBranches: [],
     openSettings: mock(() => undefined),
+    setLeftPanelOpen: mock(() => undefined),
   };
 
   chatState = {
@@ -2878,6 +2880,7 @@ describe('ChatZone', () => {
     try {
       await act(async () => {
         button?.click();
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
       });
     } finally {
       window.removeEventListener('macro:architect-plan-selector-request', handleRequest);

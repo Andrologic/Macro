@@ -202,7 +202,7 @@ describe('Header', () => {
       />
     );
 
-    expect(render()).not.toContain('data-tour-id="toggle-left-panel"');
+    expect(render()).toContain('data-tour-id="toggle-left-panel"');
     appState.mode = 'Chat';
     expect(render()).toContain('data-tour-id="toggle-left-panel"');
     appState.mode = 'Implement';
@@ -376,6 +376,7 @@ describe('Header', () => {
     const { Header } = await loadHeader();
     appState = {
       ...appState,
+      mode: 'Implement',
       selectedGroupId: null,
       selectedProjectId: 'project-solo',
       getProjectById: (projectId) =>
@@ -397,6 +398,7 @@ describe('Header', () => {
 
   it('uses the group icon for a selected group in the project picker', async () => {
     const { Header } = await loadHeader();
+    appState.mode = 'Implement';
 
     const html = renderToStaticMarkup(
       <Header
@@ -415,6 +417,7 @@ describe('Header', () => {
     const { Header } = await loadHeader();
     appState = {
       ...appState,
+      mode: 'Implement',
       selectedGroupId: null,
       selectedProjectId: 'project-solo',
       getProjectById: (projectId) =>
@@ -445,6 +448,7 @@ describe('Header', () => {
     const { Header } = await loadHeader();
     appState = {
       ...appState,
+      mode: 'Implement',
       selectedGroupId: null,
       selectedProjectId: 'project-folder',
       getProjectById: (projectId) =>

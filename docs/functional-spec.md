@@ -333,8 +333,17 @@ Exemples :
 
 - file de tâches en mode Implement
 - historique ou navigation de conversations en mode Chat
+- navigation directe dans les projets, groupes et plans en mode Architect
 
-Le mode Architect ne possède temporairement aucun panneau gauche : sa conversation occupe le centre et sa stratégie le panneau droit. Aucun espace, séparateur ou bouton d'ouverture n'est rendu pour un emplacement absent.
+En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.
+
+Le clic droit reprend les actions déjà disponibles sans créer une voie parallèle : sur un projet, il ouvre le choix du type de plan, l'action de développement ou de réduction et la gestion des projets ; sur un plan, il ouvre les actions d'épinglage, de renommage, d'archivage, de restauration ou de suppression selon ses capacités. Chaque ligne de plan affiche explicitement son type à la place d'un indicateur de statut non légendé.
+
+Les archives ne constituent pas une section dépliable dans l'arborescence active. Une barre fixe en bas du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, sur le même principe que l'historique du mode Chat. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
+
+Sa largeur est propre au mode Architect afin de conserver une arborescence compacte, même si les panneaux des modes Implement ou Chat ont été agrandis. Le projet sélectionné et le plan actif utilisent des traitements visuels distincts : le premier définit la portée, le second représente le contenu actuellement ouvert.
+
+Le sélecteur de projet du header reste disponible en mode Implement, mais n'est pas dupliqué en mode Architect. De la même façon, le plan actif n'est plus sélectionné depuis un menu dans la zone centrale : celle-ci affiche le contexte courant et laisse la navigation au panneau gauche.
 
 ### 8.4 Zone centrale
 
