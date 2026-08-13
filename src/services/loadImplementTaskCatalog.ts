@@ -8,7 +8,6 @@ import {
   listArchitectPlanTargetBranches,
   resolveTargetBranch,
   type ArchitectPlanRecord,
-  type ArchitectPlanSummary,
 } from './architectPlanService';
 import {
   buildImplementTaskCatalog,
@@ -21,7 +20,6 @@ import { buildPlanFinalizationTaskId } from './planFinalization';
 import {
   collectKnownProjects,
   collectKnownProjectIds,
-  projectRefMatchesExecutionScope,
   retargetPlanForExecution,
   retargetTaskForExecution,
 } from './projectIdentityReconciliation';
@@ -90,19 +88,6 @@ const resolveRelevantProjectIds = (
   }
 
   return null;
-};
-
-const planMatchesRelevantProjects = (
-  plan:
-    | Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'availableProjectIds' | 'replicas'>
-    | Pick<ArchitectPlanSummary, 'projectId' | 'projectIds' | 'availableProjectIds' | 'replicas'>,
-  relevantProjectIds: string[] | null
-): boolean => {
-  if (!relevantProjectIds || relevantProjectIds.length === 0) {
-    return true;
-  }
-
-  return projectRefMatchesExecutionScope(plan, relevantProjectIds);
 };
 
 const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecord | null => {
@@ -219,7 +204,7 @@ export const createLoadImplementTaskCatalog = (
 ) => {
   return async (fallbackTasks: Task[]): Promise<ImplementTaskCatalog> => {
     const appState = await dependencies.getAppState();
-    const relevantProjectIds = resolveRelevantProjectIds(appState);
+    const reconciliationProjectIds = resolveRelevantProjectIds(appState);
     const validProjectIds = collectKnownProjectIds(appState);
     const activeTargetBranch = resolveCandidateTargetBranches(
       [appState.activePlanContext?.targetBranch || null],
@@ -248,7 +233,7 @@ export const createLoadImplementTaskCatalog = (
                   branchName,
                   false,
                   false,
-                  { scopedProjectIdsHint: relevantProjectIds ?? undefined }
+                  { scopedProjectIdsHint: undefined }
                 ),
               };
             } catch {
@@ -261,7 +246,6 @@ export const createLoadImplementTaskCatalog = (
         planIndexes.flatMap(({ branchName, index }) =>
           index.plans
             .filter((plan) => isExecutableImplementPlanStatus(plan.status))
-            .filter((plan) => planMatchesRelevantProjects(plan, relevantProjectIds))
             .map((plan) => ({
               branchName,
               planId: plan.id,
@@ -274,7 +258,7 @@ export const createLoadImplementTaskCatalog = (
             const plan = await dependencies.getArchitectPlan(branchName, planId);
             return plan
               ? retargetPlanForExecution(plan, {
-                  scopedProjectIds: relevantProjectIds,
+                  scopedProjectIds: reconciliationProjectIds,
                   knownProjectIds: validProjectIds,
                 })
               : null;
@@ -289,18 +273,18 @@ export const createLoadImplementTaskCatalog = (
     }
 
     const activePlan = buildExecutableActivePlanRecord(appState);
-    if (activePlan && planMatchesRelevantProjects(activePlan, relevantProjectIds)) {
+    if (activePlan) {
       plans = upsertPlanRecord(
         plans,
         retargetPlanForExecution(activePlan, {
-          scopedProjectIds: relevantProjectIds,
+          scopedProjectIds: reconciliationProjectIds,
           knownProjectIds: validProjectIds,
         })
       );
     }
     const reconciledFallbackTasks = reconcileFallbackTasksForCurrentScope(
       fallbackTasks,
-      relevantProjectIds,
+      reconciliationProjectIds,
       validProjectIds
     );
 

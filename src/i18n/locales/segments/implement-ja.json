@@ -257,6 +257,7 @@
   "archiveTaskDescription": "このタスクをアーカイブし、その worktree とローカルブランチを削除しつつ会話履歴は保持します。",
   "deleteTaskDescription": "この独立した機能を削除し、ローカル変更を破棄し、その worktree とローカルブランチを削除し、会話も削除します。",
   "planFilterAll": "すべてのプラン",
+  "projectFilterAll": "すべてのプロジェクト",
   "planFilterStandalone": "プランなし / スタンドアロン",
   "standaloneBadge": "独立",
   "noTasksForFilter": "このフィルターに一致するタスクはありません。",

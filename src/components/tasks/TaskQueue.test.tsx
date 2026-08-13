@@ -736,6 +736,62 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Archived task');
   });
 
+  it('shows tasks from every project by default and filters them by project', async () => {
+    seedTasks([
+      makeTask('task-project-1', 'Pending', { title: 'First project task' }),
+      makeTask('task-project-2', 'Pending', {
+        title: 'Second project task',
+        project_id: 'project-2',
+        project_ids: ['project-2'],
+        execution_targets: [{
+          projectId: 'project-2',
+          branchName: 'feature/task-project-2',
+          worktreeKey: 'project-2::feature/task-project-2',
+        }],
+      }),
+    ]);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'First group',
+          isOpen: true,
+          projects: [makeProject('project-1', '/tmp/project-1', 'Project One')],
+        },
+        {
+          id: 'group-2',
+          name: 'Second group',
+          isOpen: true,
+          projects: [makeProject('project-2', '/tmp/project-2', 'Project Two')],
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const projectFilter = document.body.querySelector<HTMLSelectElement>(
+      '[data-tour-id="implement-project-filter"]'
+    );
+    expect(projectFilter?.value).toBe('__all_projects__');
+    expect(document.body.textContent).toContain('First project task');
+    expect(document.body.textContent).toContain('Second project task');
+
+    await act(async () => {
+      if (projectFilter) {
+        projectFilter.value = 'project-2';
+        projectFilter.dispatchEvent(new window.Event('change', { bubbles: true }));
+      }
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('First project task');
+    expect(document.body.textContent).toContain('Second project task');
+  });
+
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {
     seedStores('AwaitingResponse');
 

@@ -54,7 +54,7 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
 });
 
 describe('createLoadImplementTaskCatalog', () => {
-  it('aggregates executable plans across multiple target branches within the selected group', async () => {
+  it('aggregates executable plans across every project and target branch', async () => {
     const webPlan = makePlan({
       id: 'plan-web',
       title: 'Web Checkout',
@@ -215,8 +215,10 @@ describe('createLoadImplementTaskCatalog', () => {
     expect(catalog.source).toBe('mixed');
     expect(catalog.tasks.map((task) => task.id)).toEqual([
       'task-api',
+      'task-mobile',
       'task-web',
       'plan-finalization:plan-api',
+      'plan-finalization:plan-mobile',
       'plan-finalization:plan-web',
       'standalone-1',
     ]);
@@ -225,6 +227,7 @@ describe('createLoadImplementTaskCatalog', () => {
       targetBranch: plan.targetBranch,
     }))).toEqual([
       { id: 'plan-api', targetBranch: 'feature/payments' },
+      { id: 'plan-mobile', targetBranch: 'release/mobile' },
       { id: 'plan-web', targetBranch: 'develop' },
     ]);
   });

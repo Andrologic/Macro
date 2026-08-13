@@ -209,6 +209,22 @@ describe('Header', () => {
     expect(render()).toContain('data-tour-id="toggle-left-panel"');
   });
 
+  it('hides the project picker in Implement mode', async () => {
+    const { Header } = await loadHeader();
+    const render = () => renderToStaticMarkup(
+      <Header
+        isLeftOpen
+        isRightOpen
+        onToggleLeft={() => undefined}
+        onToggleRight={() => undefined}
+      />
+    );
+
+    expect(render()).toContain('data-tour-id="project-picker"');
+    appState.mode = 'Implement';
+    expect(render()).not.toContain('data-tour-id="project-picker"');
+  });
+
   it('uses a single native macOS top bar without custom window controls', async () => {
     const { Header } = await loadHeader();
     chromeState = {

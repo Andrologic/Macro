@@ -12,7 +12,6 @@ import {
 } from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import {
-  getArchitectPlanDisplayName,
   getArchitectPlanPrimaryName,
 } from '../../services/architectPlanPresentation';
 import {
@@ -31,6 +30,7 @@ import {
 import { shouldIncludeTaskInImplementationProgress } from '../../services/planFinalization';
 import {
   getProjectGroupByProjectId,
+  getAllProjects,
   getScopedActionableProjectIds,
   getScopedProjectIds,
   getScopedReadOnlyProjectIds,
@@ -103,8 +103,7 @@ type TaskListRow =
       multiRepoPresentation: MultiRepoTaskPresentation | null;
     };
 
-const ALL_PLANS_FILTER = '__all__';
-const STANDALONE_FILTER = '__standalone__';
+const ALL_PROJECTS_FILTER = '__all_projects__';
 
 const statusConfig: Record<TaskStatus, { color: string; bgColor: string }> = {
   Pending: { color: 'text-muted-foreground', bgColor: 'bg-muted' },
@@ -629,7 +628,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const {
     tasks,
     planSummaries,
-    hasStandaloneTasks,
     publishedStandaloneTasks,
     activateTask,
     createManualFeatureDraft,
@@ -650,7 +648,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
     planSummaries: state.planSummaries,
-    hasStandaloneTasks: state.hasStandaloneTasks,
     publishedStandaloneTasks: state.publishedStandaloneTasks,
     activateTask: state.activateTask,
     createManualFeatureDraft: state.createManualFeatureDraft,
@@ -675,7 +672,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const readOnlyScopeToastRef = useRef<string | null>(null);
   const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
-  const [planFilter, setPlanFilter] = useState<string>(ALL_PLANS_FILTER);
+  const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS_FILTER);
   const [showArchived, setShowArchived] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
@@ -1113,31 +1110,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     t,
   ]);
 
-  const scopedTasks = useMemo(() => {
-    if (scopedProjectIds.length === 0) return [];
+  const availableProjects = useMemo(
+    () => getAllProjects(projectGroups, standaloneProjects),
+    [projectGroups, standaloneProjects]
+  );
 
-    return tasks.filter((task) =>
-      scopedProjectIds.some((projectId) => taskMatchesProjectId(task, projectId))
-    );
-  }, [scopedProjectIds, tasks]);
+  const availablePlanSummaries = planSummaries;
 
-  const availablePlanSummaries = useMemo(() => {
-    const scopedPlanIds = new Set(
-      scopedTasks
-        .filter((task) => task.task_source === 'architect')
-        .map((task) => task.plan_id)
-    );
-    return planSummaries.filter((plan) => scopedPlanIds.has(plan.id));
-  }, [planSummaries, scopedTasks]);
-
-  const planLabelsById = useMemo(() => {
-    return new Map(
-      availablePlanSummaries.map((plan) => [
-        plan.id,
-        getArchitectPlanDisplayName(plan),
-      ])
-    );
-  }, [availablePlanSummaries]);
   const planPrimaryNamesById = useMemo(() => {
     return new Map(
       availablePlanSummaries.map((plan) => [
@@ -1155,27 +1134,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     );
   }, [availablePlanSummaries]);
 
-  const hasScopedStandaloneTasks = useMemo(() => {
-    if (!hasStandaloneTasks) return false;
-    return scopedTasks.some((task) => task.task_source === 'standalone');
-  }, [hasStandaloneTasks, scopedTasks]);
-
   useEffect(() => {
-    if (planFilter === ALL_PLANS_FILTER) return;
-    if (planFilter === STANDALONE_FILTER && hasScopedStandaloneTasks) return;
-    if (availablePlanSummaries.some((plan) => plan.id === planFilter)) return;
-    setPlanFilter(ALL_PLANS_FILTER);
-  }, [availablePlanSummaries, hasScopedStandaloneTasks, planFilter]);
+    if (projectFilter === ALL_PROJECTS_FILTER) return;
+    if (availableProjects.some((project) => project.id === projectFilter)) return;
+    setProjectFilter(ALL_PROJECTS_FILTER);
+  }, [availableProjects, projectFilter]);
 
   const filteredTasks = useMemo(() => {
-    if (planFilter === ALL_PLANS_FILTER) {
-      return scopedTasks;
+    if (projectFilter === ALL_PROJECTS_FILTER) {
+      return tasks;
     }
-    if (planFilter === STANDALONE_FILTER) {
-      return scopedTasks.filter((task) => task.task_source === 'standalone');
-    }
-    return scopedTasks.filter((task) => task.plan_id === planFilter);
-  }, [planFilter, scopedTasks]);
+    return tasks.filter((task) => taskMatchesProjectId(task, projectFilter));
+  }, [projectFilter, tasks]);
 
   const getTaskPlanLabel = (task: ImplementTask): string => {
     if (task.task_source === 'standalone') {
@@ -1974,24 +1944,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       <div className="px-4 py-3 border-b border-border">
         <div className="mb-3">
           <Select
-            value={planFilter}
-            onChange={(event) => setPlanFilter(event.target.value)}
+            value={projectFilter}
+            onChange={(event) => setProjectFilter(event.target.value)}
             className="h-9 py-1.5 text-xs"
-            data-tour-id="implement-plan-filter"
+            data-tour-id="implement-project-filter"
           >
-            <option value={ALL_PLANS_FILTER}>
-              {t('implement.planFilterAll', 'All plans')}
+            <option value={ALL_PROJECTS_FILTER}>
+              {t('implement.projectFilterAll', 'All projects')}
             </option>
-            {availablePlanSummaries.map((plan) => (
-              <option key={plan.id} value={plan.id}>
-                {planLabelsById.get(plan.id) || plan.title}
+            {availableProjects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
               </option>
             ))}
-            {hasScopedStandaloneTasks && (
-              <option value={STANDALONE_FILTER}>
-                {t('implement.planFilterStandalone', 'No plan / standalone')}
-              </option>
-            )}
           </Select>
         </div>
         <div className="flex items-center justify-between mb-2">
@@ -2013,7 +1978,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           <div className="flex h-full flex-col items-center justify-center px-2 text-center">
             <Icon name="check-circle" size={32} className="text-muted-foreground/50 mb-3" />
             <p className="text-sm text-muted-foreground">
-              {planFilter === ALL_PLANS_FILTER
+              {projectFilter === ALL_PROJECTS_FILTER
                 ? t('implement.noTasks', 'No tasks yet')
                 : t('implement.noTasksForFilter', 'No task matches this filter.')}
             </p>

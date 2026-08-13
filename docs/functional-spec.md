@@ -273,7 +273,8 @@ Son objectif est de :
 
 Le mode Implement doit supporter :
 - une file de tâches issue de plusieurs plans
-- le filtrage des tâches par plan et par autres critères pertinents
+- une vue agrégée de toutes les tâches de tous les projets
+- le filtrage des tâches par projet et par autres critères pertinents
 - la prise en compte explicite des dépendances et de l'état de disponibilité d'une tâche
 - la consultation des artefacts hérités depuis les tâches parentes et la production d'artefacts pour les tâches dépendantes
 - une review en fin de tâche
@@ -427,7 +428,8 @@ L'interface doit permettre d'identifier clairement :
 - quel ou quels projets elle affecte
 - quel est son état de dépendance
 
-L'interface doit aussi permettre de filtrer les tâches par plan.
+L'interface doit afficher toutes les tâches de tous les projets par défaut et permettre de les filtrer par projet.
+Le mode Implement ne dépend pas du sélecteur de projet global du header.
 
 ---
 

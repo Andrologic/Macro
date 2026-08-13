@@ -257,6 +257,7 @@
   "archiveTaskDescription": "Archive this task, remove its worktree and local branch, and keep its conversation history.",
   "deleteTaskDescription": "Delete this standalone feature, discard local changes, remove its worktree and local branch, and delete its conversation.",
   "planFilterAll": "All plans",
+  "projectFilterAll": "All projects",
   "planFilterStandalone": "No plan / standalone",
   "standaloneBadge": "Standalone",
   "noTasksForFilter": "No task matches this filter.",
