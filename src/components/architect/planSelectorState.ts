@@ -18,10 +18,15 @@ export interface PlanSelectorRefreshState {
 
 export type PlanSelectorEmptyState = 'hidden' | 'empty' | 'outside-scope';
 
-export const shouldWarnForVerifiedPlanDeletion = (params: {
+export type VerifiedPlanDeletionRecovery = 'not_applied' | 'succeeded' | 'conversation_cleanup_pending';
+
+export const resolveVerifiedPlanDeletionRecovery = (params: {
   mutationApplied: boolean;
   linkedConversationCleanupPending: boolean;
-}): boolean => params.mutationApplied && params.linkedConversationCleanupPending;
+}): VerifiedPlanDeletionRecovery => {
+  if (!params.mutationApplied) return 'not_applied';
+  return params.linkedConversationCleanupPending ? 'conversation_cleanup_pending' : 'succeeded';
+};
 
 export const computePlanSelectorEmptyState = (params: {
   hasError: boolean;

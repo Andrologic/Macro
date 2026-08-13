@@ -67,7 +67,7 @@ import {
 import {
   computePlanSelectorRefreshState,
   computePlanSelectorEmptyState,
-  shouldWarnForVerifiedPlanDeletion,
+  resolveVerifiedPlanDeletionRecovery,
   type PlanSelectorMutationCheck,
   type PlanSelectorRefreshState,
 } from './planSelectorState';
@@ -1130,20 +1130,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             planId: planToDelete.id,
           },
         });
-        if (shouldWarnForVerifiedPlanDeletion({
-          mutationApplied: verification.mutationApplied,
-          linkedConversationCleanupPending,
-        })) {
+        if (verification.mutationApplied) {
           useTaskStore.getState().clearPlanRuntimeState({
             planId: planToDelete.id,
             deletedWorktreeKeys: [],
           });
-          const pendingCleanupMessage = t(
-            'architect.planSelector.warningDeletePlanConversationPending',
-            'Plan deleted, but linked conversation cleanup remains pending and will be retried automatically.'
-          );
-          setError(pendingCleanupMessage);
-          notify.warning(pendingCleanupMessage);
+          if (resolveVerifiedPlanDeletionRecovery({
+            mutationApplied: verification.mutationApplied,
+            linkedConversationCleanupPending,
+          }) === 'conversation_cleanup_pending') {
+            const pendingCleanupMessage = t(
+              'architect.planSelector.warningDeletePlanConversationPending',
+              'Plan deleted, but linked conversation cleanup remains pending and will be retried automatically.'
+            );
+            setError(pendingCleanupMessage);
+            notify.warning(pendingCleanupMessage);
+          }
           void useTaskStore.getState().refreshFromPlan().catch(() => undefined);
           return;
         }
