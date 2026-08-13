@@ -11,6 +11,7 @@ export interface PlanLifecycleSaga {
   operation: PlanLifecycleOperation;
   phase: PlanLifecyclePhase;
   conversationId?: string | null;
+  requiresMetadataCommit?: boolean;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -37,6 +38,9 @@ const parse = (value: string | null | undefined): PlanLifecycleSaga[] => {
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
       if (saga.operation === 'delete' && saga.phase === 'metadata_commit_pending') {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
+      if (saga.requiresMetadataCommit !== undefined && typeof saga.requiresMetadataCommit !== 'boolean') {
         throw new PlanLifecycleSagaCorruptionError();
       }
       return saga as PlanLifecycleSaga;

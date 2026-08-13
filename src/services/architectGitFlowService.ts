@@ -1579,16 +1579,17 @@ export const createArchitectGitFlowService = (
     const now = new Date().toISOString();
     const saga: PlanLifecycleSaga = {
       planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'prepared',
-      conversationId: plan.conversationId ?? null, createdAt: now, updatedAt: now,
+      conversationId: plan.conversationId ?? null, requiresMetadataCommit: params.requireMetadataCommit === true, createdAt: now, updatedAt: now,
     };
     await upsertPlanLifecycleSaga(saga);
     const archived = plan.status === 'archived' ? plan : await deps.archiveArchitectPlan(params.branchName, plan.id);
     await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
-    if (params.requireMetadataCommit) {
-      await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
-    }
     const cleanup = await cleanupPlanBranchesWithDeps(archived, params.repoPath);
-    if (!params.keepSaga && !params.requireMetadataCommit) await removePlanLifecycleSaga(plan.id, 'archive');
+    const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
+    await upsertPlanLifecycleSaga(cleanedSaga);
+    if (params.requireMetadataCommit) {
+      await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
+    } else if (!params.keepSaga) await removePlanLifecycleSaga(plan.id, 'archive');
     return { plan: archived, cleanup };
   };
 
@@ -1791,6 +1792,12 @@ export const createArchitectGitFlowService = (
             : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
           await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
           await cleanupPlanBranchesWithDeps(archived);
+          const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(cleanedSaga);
+          if (saga.requiresMetadataCommit) {
+            await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
+            await commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+          }
           await removePlanLifecycleSaga(saga.planId, saga.operation);
           continue;
         }
