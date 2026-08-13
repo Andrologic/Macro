@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 const actualTauriIpc = await import('./tauriIpc');
 
 type MockAppState = {
@@ -236,17 +237,16 @@ const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: st
   prunedRegistration: true,
   alreadyAbsent: false,
 }));
-const gitBranchWorktreeRemoveMock = mock(async (params: {
-  repoPath: string;
-  worktreeKey: string;
-  branchName: string;
-}) => ({
-  worktreeKey: params.worktreeKey,
-  worktreePath: `${params.repoPath}/.macro/worktrees/${params.worktreeKey}`,
-  removedPath: true,
-  prunedRegistration: true,
-  alreadyAbsent: false,
-}));
+const gitBranchWorktreeRemoveMock = mock(
+  async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+    worktreeKey: params.worktreeKey,
+    worktreePath: `${params.repoPath}/.macro/worktrees/${params.worktreeKey}`,
+    branchName: params.branchName,
+    removedPath: true,
+    prunedRegistration: true,
+    alreadyAbsent: false,
+  })
+);
 
 const registerModuleMocks = () => {
   mock.restore();
@@ -385,6 +385,7 @@ const loadIntegrationModules = async () => {
 
 describe('architectGitFlowService replica integration', () => {
   beforeEach(() => {
+    installTauriRuntimeMock();
     workspaceFiles.clear();
     dbAppSettings.clear();
     seedReplica();
@@ -409,6 +410,7 @@ describe('architectGitFlowService replica integration', () => {
 
   afterEach(() => {
     console.info = originalConsoleInfo;
+    removeTauriRuntimeMock();
     mock.restore();
   });
 
@@ -470,6 +472,7 @@ describe('architectGitFlowService replica integration', () => {
     expect(gitMergeMock).toHaveBeenCalledTimes(1);
     expect(gitBranchDeleteMock).toHaveBeenCalled();
     expect(gitWorktreeRemoveMock).toHaveBeenCalled();
+    expect(gitBranchWorktreeRemoveMock).toHaveBeenCalled();
 
     const persistedPlan = JSON.parse(
       readWorkspaceFile('/repos/web', 'branches/develop/plans/plan-1/plan.json') || 'null'

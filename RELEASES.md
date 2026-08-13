@@ -47,10 +47,12 @@ Official releases are prepared by:
 .github/workflows/release.yml
 ```
 
-The workflow runs for stable `vX.Y.Z` tags, or a manual dispatch from `main`.
-It rejects a tag that does not exactly match every version manifest, validates
-the repository, builds desktop packages for macOS, Windows, and Linux, then
-creates a GitHub Release draft named `v<version>`.
+The workflow runs only when a new stable `vX.Y.Z` tag is created. It has no
+manual or scheduled trigger. It rejects updated or deleted tags, tags outside
+the history of `origin/main`, and tags that do not exactly match every version
+manifest. Release tags must be annotated. The workflow validates the repository before requesting approval through the
+protected `release` environment, builds desktop packages for macOS, Windows,
+and Linux, then creates a GitHub Release draft named `v<version>`.
 
 The draft contains:
 
@@ -101,6 +103,7 @@ stapled. The GitHub release workflow requires these secrets:
 - `APPLE_API_KEY`
 - `APPLE_API_ISSUER`
 - `APPLE_API_KEY_P8`
+- `APPLE_TEAM_ID`
 
 Windows release builds are Authenticode-signed with SHA-256 and DigiCert
 timestamping. The workflow refuses to publish Windows without:
@@ -108,8 +111,9 @@ timestamping. The workflow refuses to publish Windows without:
 - `WINDOWS_CERTIFICATE_PFX_BASE64`
 - `WINDOWS_CERTIFICATE_PASSWORD`
 
-The release matrix verifies the signed universal macOS bundle, validates the
-Windows NSIS Authenticode signature, and inspects AppImage/deb/rpm contents.
+The release matrix verifies the signed universal macOS bundle and its expected
+Apple Team ID, validates that the Windows NSIS Authenticode signer matches the
+certificate imported for the release, and inspects AppImage/deb/rpm contents.
 The macOS verification checks the Copilot runtime, manifest, license, and the
 absence of `macro-headless`.
 
@@ -122,7 +126,10 @@ sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 
 1. Finish the feature branch and run the smallest relevant local checks.
 2. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
-3. Merge to `main`, then create and push the matching `vX.Y.Z` tag.
-4. Wait for `.github/workflows/release.yml` to create the draft release.
-5. Check the draft assets, notes, and checksums in GitHub.
-6. Publish the draft manually when it is ready for users.
+3. Merge to `main`, then create and push an annotated matching `vX.Y.Z` tag
+   from that history using an authorized release-maintainer account.
+4. Review the cheap validation job, then approve the protected `release`
+   environment when the tag and version are correct.
+5. Wait for `.github/workflows/release.yml` to create the draft release.
+6. Check the draft assets, signatures, notes, and checksums in GitHub.
+7. Publish the draft manually when it is ready for users.
