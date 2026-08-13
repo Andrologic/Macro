@@ -3,6 +3,7 @@ import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import {
   archiveArchitectPlan,
+  commitArchitectPlanMetadata,
   deleteArchitectPlan,
   getArchitectPlanTargetBranchForProject,
   getArchitectPlanCrudCapabilities,
@@ -803,6 +804,7 @@ export const archivePlanAndCleanupBranches = async (params: {
   planId: string;
   repoPath?: string;
   keepSaga?: boolean;
+  requireMetadataCommit?: boolean;
 }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> =>
   getDefaultArchitectGitFlowService().archivePlanAndCleanupBranches(params);
 
@@ -1568,6 +1570,7 @@ export const createArchitectGitFlowService = (
     planId: string;
     repoPath?: string;
     keepSaga?: boolean;
+    requireMetadataCommit?: boolean;
   }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
@@ -1581,8 +1584,11 @@ export const createArchitectGitFlowService = (
     await upsertPlanLifecycleSaga(saga);
     const archived = plan.status === 'archived' ? plan : await deps.archiveArchitectPlan(params.branchName, plan.id);
     await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
+    if (params.requireMetadataCommit) {
+      await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
+    }
     const cleanup = await cleanupPlanBranchesWithDeps(archived, params.repoPath);
-    if (!params.keepSaga) await removePlanLifecycleSaga(plan.id, 'archive');
+    if (!params.keepSaga && !params.requireMetadataCommit) await removePlanLifecycleSaga(plan.id, 'archive');
     return { plan: archived, cleanup };
   };
 
@@ -1677,6 +1683,7 @@ export const createArchitectGitFlowService = (
       branchName: params.branchName,
       planId: plan.id,
       repoPath: params.repoPath,
+      requireMetadataCommit: true,
     });
 
     return {
@@ -1770,6 +1777,11 @@ export const createArchitectGitFlowService = (
       try {
         const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
         if (saga.operation === 'archive') {
+          if (saga.phase === 'metadata_commit_pending') {
+            await commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+            await removePlanLifecycleSaga(saga.planId, saga.operation);
+            continue;
+          }
           if (!plan) {
             await removePlanLifecycleSaga(saga.planId, saga.operation);
             continue;

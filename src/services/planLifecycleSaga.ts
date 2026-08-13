@@ -36,6 +36,9 @@ const parse = (value: string | null | undefined): PlanLifecycleSaga[] => {
         !['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_deleted', 'conversation_cleanup_complete'].includes(String(saga.phase)) ||
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
+      if (saga.operation === 'delete' && saga.phase === 'metadata_commit_pending') {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
       return saga as PlanLifecycleSaga;
     });
   } catch (error) {
