@@ -536,8 +536,24 @@ const writePlanTaskArtifactIndex = async (params: {
   }
   const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
   const indexContent = `${JSON.stringify(params.index, null, 2)}\n`;
-  await Promise.all(
-    workspacePaths.map(async (workspacePath) => {
+  const paths = [
+    ...(params.contentWrites || []).map((write) => write.path),
+    indexPath,
+    getPlanManifestPath(params.branchName, params.planId),
+  ];
+  const snapshots = await Promise.all(workspacePaths.map(async (workspacePath) => ({
+    workspacePath,
+    files: await Promise.all(paths.map(async (path) => ({
+      path,
+      exists: await tauriIpc.fsExists(path, {
+        workspaceScope: METADATA_WORKSPACE_SCOPE,
+        workspacePath,
+      }),
+      content: await readTextAtWorkspace(workspacePath, path),
+    }))),
+  })));
+  try {
+    for (const workspacePath of workspacePaths) {
       for (const write of params.contentWrites || []) {
         await writeTextAtWorkspace(workspacePath, write.path, write.content);
       }
@@ -555,8 +571,35 @@ const writePlanTaskArtifactIndex = async (params: {
         label: 'task artifacts',
         importance: 'light',
       });
-    }),
-  );
+    }
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    for (const snapshot of [...snapshots].reverse()) {
+      for (const file of [...snapshot.files].reverse()) {
+        try {
+          if (!file.exists) {
+            await tauriIpc.fsDelete({
+              path: file.path,
+              workspaceScope: METADATA_WORKSPACE_SCOPE,
+              workspacePath: snapshot.workspacePath,
+            });
+          } else if (file.content !== null) {
+            await writeTextAtWorkspace(snapshot.workspacePath, file.path, file.content);
+          } else {
+            throw new Error(`Cannot restore ${file.path}: its prior content is unreadable.`);
+          }
+        } catch (rollbackError) {
+          rollbackFailures.push(`${snapshot.workspacePath}:${file.path}: ${toServiceError(rollbackError).message}`);
+        }
+      }
+    }
+    if (rollbackFailures.length > 0) {
+      throw new Error(
+        `Artifact write failed and rollback is incomplete: ${toServiceError(error).message}; ${rollbackFailures.join('; ')}`
+      );
+    }
+    throw error;
+  }
 };
 
 const getRequestedTaskId = (
