@@ -11,6 +11,7 @@ import { isPlanMetadataMissingError, toServiceError } from '../services/contract
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
+import { removePlanLifecycleSaga } from '../services/planLifecycleSaga';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
 import {
@@ -4460,6 +4461,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           planId: task.plan_id,
           commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
         });
+        await removePlanLifecycleSaga(plan.id, 'archive');
         await get().refreshFromPlan();
         await persistRuntime(null);
         get().clearPlanRuntimeState({
