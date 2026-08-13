@@ -36,6 +36,12 @@ import {
   renderArchitectPlanIntegrationBranchName,
 } from './architectPlanKinds';
 import { toServiceError } from './contracts/errors';
+import {
+  loadPlanLifecycleSagas,
+  removePlanLifecycleSaga,
+  upsertPlanLifecycleSaga,
+  type PlanLifecycleSaga,
+} from './planLifecycleSaga';
 import { getPlanNodeBranchIntent, type WorkBranchIntent } from './gitFlowBranchIntents';
 import {
   buildValidProjectRegistrySnapshot,
@@ -802,6 +808,9 @@ export const deletePlanAndCleanupBranches = async (params: {
   deletedWorktreeKeys: string[];
   repositories: CleanupPlanRepositoryResult[];
 }> => getDefaultArchitectGitFlowService().deletePlanAndCleanupBranches(params);
+
+export const resumePlanLifecycleSagas = async (): Promise<void> =>
+  getDefaultArchitectGitFlowService().resumePlanLifecycleSagas();
 
 export const createArchitectGitFlowService = (
   overrides: (Partial<ArchitectGitFlowDependencies> & {
@@ -1650,6 +1659,17 @@ export const createArchitectGitFlowService = (
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
 
+    const now = new Date().toISOString();
+    const saga: PlanLifecycleSaga = {
+      planId: params.planId,
+      branchName: params.branchName,
+      operation: 'delete',
+      phase: 'prepared',
+      conversationId: plan.conversationId ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await upsertPlanLifecycleSaga(saga);
     const crudCapabilities = getArchitectPlanCrudCapabilities(plan);
 
     if (plan.status === 'deleted') {
@@ -1659,6 +1679,7 @@ export const createArchitectGitFlowService = (
         hardDelete: params.hardDelete !== false,
       });
 
+      await removePlanLifecycleSaga(params.planId, 'delete');
       return {
         deletedBranches: [],
         deletedWorktreeKeys: [],
@@ -1677,6 +1698,7 @@ export const createArchitectGitFlowService = (
         hardDelete: params.hardDelete !== false,
       });
 
+      await removePlanLifecycleSaga(params.planId, 'delete');
       return {
         deletedBranches: [],
         deletedWorktreeKeys: [],
@@ -1685,12 +1707,15 @@ export const createArchitectGitFlowService = (
     }
 
     const repositories = await cleanupPlanBranchesWithDeps(plan, params.repoPath);
+    await upsertPlanLifecycleSaga({ ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() });
 
     await deps.deleteArchitectPlan({
       branchName: params.branchName,
       planId: params.planId,
       hardDelete: params.hardDelete ?? true,
     });
+    await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() });
+    await removePlanLifecycleSaga(params.planId, 'delete');
 
     return {
       deletedBranches: repositories.flatMap((repository) => repository.deletedBranches),
@@ -1701,6 +1726,44 @@ export const createArchitectGitFlowService = (
     };
   };
 
+  const resumePlanLifecycleSagasWithDeps = async (): Promise<void> => {
+    const pending = await loadPlanLifecycleSagas();
+    for (const saga of pending) {
+      try {
+        const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
+        if (saga.operation === 'archive') {
+          if (!plan) {
+            await removePlanLifecycleSaga(saga.planId, saga.operation);
+            continue;
+          }
+          const archived = plan.status === 'archived'
+            ? plan
+            : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
+          await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
+          await cleanupPlanBranchesWithDeps(archived, undefined, { allowRetained: true });
+          await removePlanLifecycleSaga(saga.planId, saga.operation);
+          continue;
+        }
+        if (!plan || plan.status === 'deleted') {
+          await removePlanLifecycleSaga(saga.planId, saga.operation);
+          continue;
+        }
+        const capabilities = getArchitectPlanCrudCapabilities(plan);
+        if (!capabilities.canDelete) {
+          throw new Error('Archive the plan before deleting it.');
+        }
+        if (capabilities.deleteRequiresCleanup) {
+          await cleanupPlanBranchesWithDeps(plan);
+          await upsertPlanLifecycleSaga({ ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() });
+        }
+        await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
+        await removePlanLifecycleSaga(saga.planId, saga.operation);
+      } catch (error) {
+        await upsertPlanLifecycleSaga({ ...saga, updatedAt: new Date().toISOString(), lastError: toServiceError(error).message });
+      }
+    }
+  };
+
   return {
     provisionPlanBranches: provisionPlanBranchesWithDeps,
     validatePlanAndProvisionBranches: validatePlanAndProvisionBranchesWithDeps,
@@ -1709,6 +1772,7 @@ export const createArchitectGitFlowService = (
     finalizePlanIntoBaseBranch: finalizePlanIntoBaseBranchWithDeps,
     cleanupPlanBranches: cleanupPlanBranchesWithDeps,
     deletePlanAndCleanupBranches: deletePlanAndCleanupBranchesWithDeps,
+    resumePlanLifecycleSagas: resumePlanLifecycleSagasWithDeps,
   };
 };
 
