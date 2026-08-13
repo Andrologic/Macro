@@ -1740,7 +1740,7 @@ export const createArchitectGitFlowService = (
             ? plan
             : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
           await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
-          await cleanupPlanBranchesWithDeps(archived, undefined, { allowRetained: true });
+          await cleanupPlanBranchesWithDeps(archived);
           await removePlanLifecycleSaga(saga.planId, saga.operation);
           continue;
         }
