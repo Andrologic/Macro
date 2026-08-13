@@ -2,36 +2,185 @@ name: CI
 
 on:
   pull_request:
+    branches:
+      - develop
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
   push:
     branches:
-      - main
       - develop
-      - 'feature/**'
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
+  classify:
+    name: Classify changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      documentation_only: ${{ steps.changes.outputs.documentation_only }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+      native: ${{ steps.changes.outputs.native }}
+      configuration: ${{ steps.changes.outputs.configuration }}
+      linux: ${{ steps.changes.outputs.linux }}
+      windows: ${{ steps.changes.outputs.windows }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Classify changed paths
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DIFF_MODE: ${{ github.event_name == 'pull_request' && 'merge-base' || 'direct' }}
+        run: |
+          CLASSIFIER="$RUNNER_TEMP/macro-classify-changes.mjs"
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            if ! git cat-file -e "${BASE_SHA}:dev/ci/classify-changes.mjs" 2>/dev/null; then
+              # The first pull request introducing the classifier cannot trust
+              # its own implementation. Run every validation conservatively.
+              {
+                echo "documentation_only=false"
+                echo "frontend=true"
+                echo "native=true"
+                echo "configuration=true"
+                echo "linux=true"
+                echo "windows=true"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Pull requests must not control the program deciding which required
+            # checks may be skipped. Always use the target branch's classifier.
+            git show "${BASE_SHA}:dev/ci/classify-changes.mjs" > "$CLASSIFIER"
+          else
+            # Direct develop/main pushes already run trusted merged code.
+            cp dev/ci/classify-changes.mjs "$CLASSIFIER"
+          fi
+
+          node "$CLASSIFIER" --base "$BASE_SHA" --head "$HEAD_SHA" --mode "$DIFF_MODE" --github-output "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux validation
+    needs: classify
+    if: needs.classify.outputs.linux == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
 
-      - name: Install Linux dependencies
+      - name: Verify versions and tracked files
+        run: |
+          bun run version:check
+          bun run repo:check-binaries
+
+      - name: Typecheck frontend
+        run: bun run typecheck
+
+      - name: Lint frontend
+        run: bun run lint
+
+      - name: Audit translations
+        run: bun run i18n:audit
+
+      - name: Run frontend tests
+        run: bun run test
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Check bundle budget
+        run: bun run bundle:check
+
+      - name: Install Linux native dependencies
+        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
 
-      - name: Run repository CI
-        run: bun run ci
+      - name: Set up Rust
+        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action
+        with:
+          toolchain: 1.95.0
+
+      - name: Build AI runtime sidecar
+        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
+        run: bun run build:ai-runtime
+
+      - name: Configure deterministic Git identity
+        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
+        run: |
+          git config --global user.name "Macro CI"
+          git config --global user.email "macro-ci@example.invalid"
+
+      - name: Run Rust tests
+        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
+
+      - name: Check headless example
+        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
+        run: cargo check --manifest-path src-tauri/Cargo.toml --example macro-headless --locked
+
+  windows:
+    name: Windows native check
+    needs: classify
+    if: needs.classify.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action
+        with:
+          toolchain: 1.95.0
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build AI runtime sidecar
+        run: bun run build:ai-runtime
+
+      - name: Check Windows native targets
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets

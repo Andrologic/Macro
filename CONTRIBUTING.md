@@ -32,19 +32,22 @@ cp dev/ai-keys.local.example.json dev/ai-keys.local.json
 
 ## Required Checks
 
-Run these before opening a pull request:
+Use Bun 1.3.14 and the Rust toolchain pinned in `rust-toolchain.toml`. Install dependencies from the committed lockfile, then run the complete local equivalent of CI once the targeted checks are green:
 
 ```bash
-bun run version:check
-bun run repo:check-binaries
-bun run typecheck
-bun run lint
-bun run i18n:audit
-bun run test
-cargo test --manifest-path src-tauri/Cargo.toml
+bun install --frozen-lockfile
+bun run ci
 ```
 
-If a check cannot run on your machine, mention that in the pull request.
+For frontend-only work, the relevant targeted checks are `version:check`, `repo:check-binaries`, `typecheck`, `lint`, `i18n:audit`, `test`, `build`, and `bundle:check`. Native work additionally requires the AI runtime sidecar build, locked Rust tests with one test thread, and the headless example check. Run `cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets` on Windows when native conditional compilation changed.
+
+If a check cannot run on your machine, mention the exact command and reason in the pull request. Do not use GitHub Actions as a development loop: agents and contributors must validate locally, then push one consolidated pull request update after the local checks pass.
+
+## CI Cost Model
+
+The change classifier always reports a check. Draft pull requests and documentation-only changes stop there. Frontend changes add one Linux job; Rust, Tauri, sidecar, workflow, manifest, lockfile, and build-script changes also add a focused Windows native check. macOS and full desktop installers are reserved for authorized release tags.
+
+See [`docs/ci.md`](docs/ci.md) for path classification details, required branch and tag rules, and protected release-environment setup.
 
 ## Development Guidelines
 
