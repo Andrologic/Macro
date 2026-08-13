@@ -3,6 +3,7 @@ import type { ArchitectPlanSummary } from '../../services/architectPlanService';
 import {
   computePlanSelectorEmptyState,
   computePlanSelectorRefreshState,
+  shouldWarnForVerifiedPlanDeletion,
 } from './planSelectorState';
 
 const buildPlanSummary = (
@@ -31,6 +32,21 @@ const buildPlanSummary = (
 });
 
 describe('planSelectorState', () => {
+  it('only treats a verified deletion as partial when linked conversation cleanup is pending', () => {
+    expect(shouldWarnForVerifiedPlanDeletion({
+      mutationApplied: true,
+      linkedConversationCleanupPending: true,
+    })).toBe(true);
+    expect(shouldWarnForVerifiedPlanDeletion({
+      mutationApplied: true,
+      linkedConversationCleanupPending: false,
+    })).toBe(false);
+    expect(shouldWarnForVerifiedPlanDeletion({
+      mutationApplied: false,
+      linkedConversationCleanupPending: true,
+    })).toBe(false);
+  });
+
   it('removes a deleted plan from the visible list and selects the next visible plan', () => {
     const refreshState = computePlanSelectorRefreshState({
       plans: [

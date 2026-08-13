@@ -24,7 +24,7 @@ export class PlanLifecycleSagaCorruptionError extends Error {
   }
 }
 
-const parse = (value: string | null | undefined): PlanLifecycleSaga[] => {
+export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanLifecycleSaga[] => {
   if (!value) return [];
   try {
     const parsed: unknown = JSON.parse(value);
@@ -42,6 +42,13 @@ const parse = (value: string | null | undefined): PlanLifecycleSaga[] => {
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
       if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
+      if (
+        saga.operation === 'archive' &&
+        saga.requiresMetadataCommit === false &&
+        (saga.phase === 'metadata_commit_pending' || saga.phase === 'metadata_committed')
+      ) {
         throw new PlanLifecycleSagaCorruptionError();
       }
       return saga as PlanLifecycleSaga;
@@ -63,7 +70,7 @@ const mutate = async <T>(operation: () => Promise<T>): Promise<T> => {
 
 export const loadPlanLifecycleSagas = async (): Promise<PlanLifecycleSaga[]> => {
   if (!tauriIpc.isTauriAvailable()) return [];
-  return parse((await tauriIpc.dbGetAppSetting(SAGA_KEY))?.value_json);
+  return parsePlanLifecycleSagas((await tauriIpc.dbGetAppSetting(SAGA_KEY))?.value_json);
 };
 
 const save = async (sagas: PlanLifecycleSaga[]): Promise<void> => {
