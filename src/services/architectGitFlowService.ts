@@ -809,8 +809,18 @@ export const deletePlanAndCleanupBranches = async (params: {
   repositories: CleanupPlanRepositoryResult[];
 }> => getDefaultArchitectGitFlowService().deletePlanAndCleanupBranches(params);
 
-export const resumePlanLifecycleSagas = async (): Promise<void> =>
-  getDefaultArchitectGitFlowService().resumePlanLifecycleSagas();
+let pendingPlanLifecycleResume: Promise<void> | null = null;
+
+export const resumePlanLifecycleSagas = async (): Promise<void> => {
+  if (pendingPlanLifecycleResume) return pendingPlanLifecycleResume;
+  const resume = getDefaultArchitectGitFlowService().resumePlanLifecycleSagas();
+  pendingPlanLifecycleResume = resume;
+  try {
+    await resume;
+  } finally {
+    if (pendingPlanLifecycleResume === resume) pendingPlanLifecycleResume = null;
+  }
+};
 
 export const createArchitectGitFlowService = (
   overrides: (Partial<ArchitectGitFlowDependencies> & {
@@ -1744,7 +1754,12 @@ export const createArchitectGitFlowService = (
           await removePlanLifecycleSaga(saga.planId, saga.operation);
           continue;
         }
-        if (!plan || plan.status === 'deleted') {
+        if (!plan) {
+          await removePlanLifecycleSaga(saga.planId, saga.operation);
+          continue;
+        }
+        if (plan.status === 'deleted') {
+          await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
           await removePlanLifecycleSaga(saga.planId, saga.operation);
           continue;
         }
