@@ -360,23 +360,6 @@ const resolveWorkspacePaths = async (params: {
   );
 };
 
-const readJsonAtWorkspace = async <T>(
-  workspacePath: string,
-  path: string,
-): Promise<T | null> => {
-  try {
-    const file = await tauriIpc.fsReadFileWithOptions({
-      path,
-      allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
-      workspacePath,
-    });
-    return JSON.parse(file.content) as T;
-  } catch {
-    return null;
-  }
-};
-
 const readTextAtWorkspace = async (
   workspacePath: string,
   path: string,
@@ -441,12 +424,28 @@ const updateArtifactManifestAtWorkspace = async (params: {
   index: PlanTaskArtifactIndex;
 }): Promise<void> => {
   const manifestPath = getPlanManifestPath(params.branchName, params.planId);
-  const existing = await readJsonAtWorkspace<Record<string, unknown>>(
-    params.workspacePath,
-    manifestPath,
-  );
-  if (!existing) {
+  const exists = await tauriIpc.fsExists(manifestPath, {
+    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspacePath: params.workspacePath,
+  });
+  if (!exists) {
     return;
+  }
+  let existing: Record<string, unknown>;
+  try {
+    const file = await tauriIpc.fsReadFileWithOptions({
+      path: manifestPath,
+      allowOutsideWorkspace: false,
+      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspacePath: params.workspacePath,
+    });
+    const parsed: unknown = JSON.parse(file.content);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Manifest has an invalid schema.');
+    }
+    existing = parsed as Record<string, unknown>;
+  } catch (error) {
+    throw new PlanTaskArtifactIndexReadError(params.planId, manifestPath, error);
   }
   await writeTextAtWorkspace(
     params.workspacePath,
@@ -476,6 +475,7 @@ export const readPlanTaskArtifactIndex = async (params: {
   }
   const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
   const workspacePaths = await resolveWorkspacePaths(params);
+  const validIndexes: PlanTaskArtifactIndex[] = [];
   for (const workspacePath of workspacePaths) {
     let indexExists = false;
     try {
@@ -505,15 +505,25 @@ export const readPlanTaskArtifactIndex = async (params: {
       ) {
         throw new Error('Artifact index has an invalid schema.');
       }
-      return normalizeArtifactIndex(
+      validIndexes.push(normalizeArtifactIndex(
         params.planId,
         parsed as Partial<PlanTaskArtifactIndex>,
-      );
+      ));
     } catch (error) {
       throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, error);
     }
   }
-  return emptyArtifactIndex(params.planId);
+  if (validIndexes.length === 0) return emptyArtifactIndex(params.planId);
+  const canonical = validIndexes[0]!;
+  const canonicalSerialized = stableSerialize(canonical);
+  if (validIndexes.some((index) => stableSerialize(index) !== canonicalSerialized)) {
+    throw new PlanTaskArtifactIndexReadError(
+      params.planId,
+      indexPath,
+      new Error('Artifact index replicas diverge.'),
+    );
+  }
+  return canonical;
 };
 
 const writePlanTaskArtifactIndex = async (params: {
