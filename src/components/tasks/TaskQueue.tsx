@@ -690,6 +690,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       command: string;
       worktreeSetupCommand: string;
       openTerminalOnRun: boolean;
+      requiredForTask: boolean;
     }>;
   } | null>(null);
   const [isSavingTaskCommands, setIsSavingTaskCommands] = useState(false);
@@ -1262,6 +1263,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           getTaskProjectCommand(registry, project.path)?.worktreeSetupCommand || '',
         openTerminalOnRun:
           getTaskProjectCommand(registry, project.path)?.openTerminalOnRun ?? true,
+        requiredForTask: taskProjectIds.includes(project.id),
       })),
     };
   };
