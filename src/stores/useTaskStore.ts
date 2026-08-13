@@ -25,7 +25,6 @@ import {
   upsertLinkedTaskDeletionSaga,
   type LinkedTaskDeletionSaga,
 } from '../services/linkedTaskDeletionSaga';
-import { loadPlanLifecycleSagas, removePlanLifecycleSaga, upsertPlanLifecycleSaga } from '../services/planLifecycleSaga';
 import {
   deriveImplementTasksFromStrategy,
   mapTaskStatusToNodeStatus,
@@ -2465,20 +2464,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const previousSource = get().source;
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
-      for (const saga of await loadPlanLifecycleSagas()) {
-        if (saga.operation !== 'archive' || saga.phase !== 'metadata_commit_pending') continue;
-        try {
-          await commitArchitectPlanMetadata({
-            branchName: saga.branchName,
-            planId: saga.planId,
-            commitMessage: `chore(metadata): finalize architect plan ${saga.planId}`,
-          });
-          await removePlanLifecycleSaga(saga.planId, saga.operation);
-        } catch (error) {
-          await upsertPlanLifecycleSaga({ ...saga, updatedAt: new Date().toISOString(), lastError: toServiceError(error).message });
-          throw error;
-        }
-      }
       await resumePlanLifecycleSagas();
       if (requestId !== refreshRequestId) return;
       const catalog = await services.listTasks();
@@ -3451,12 +3436,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       throw error;
     }
 
-    if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
-      const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
-      set({ lastError: error.message });
-      throw error;
-    }
-
     if (task.status === 'InProgress') {
       return;
     }
@@ -4254,6 +4233,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: null });
       return;
     }
+    if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
+      const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
+      set({ lastError: error.message });
+      throw error;
+    }
 
     if (isTaskCommandRunActive(taskId) || !acquireTaskOperation(taskId, 'merge')) {
       const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
@@ -4470,18 +4454,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           status: 'completed',
           setActive: false,
         });
-        const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranches({ branchName, planId: plan.id, keepSaga: true });
-        const metadataCommitSagaAt = new Date().toISOString();
-        await upsertPlanLifecycleSaga({
-          planId: plan.id, branchName, operation: 'archive', phase: 'metadata_commit_pending',
-          conversationId: plan.conversationId ?? null, createdAt: metadataCommitSagaAt, updatedAt: metadataCommitSagaAt,
-        });
+        const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranches({ branchName, planId: plan.id, requireMetadataCommit: true });
         await commitArchitectPlanMetadata({
           branchName,
           planId: task.plan_id,
           commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
         });
-        await removePlanLifecycleSaga(plan.id, 'archive');
         await get().refreshFromPlan();
         await persistRuntime(null);
         get().clearPlanRuntimeState({
