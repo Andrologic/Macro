@@ -171,6 +171,29 @@ const mergeWorkflowReviewLoads = new Map<string, {
   token: symbol;
   promise: Promise<MergeWorkflowRuntimeState | null>;
 }>();
+const mergeWorkflowRepositoryOperations = new Map<string, Promise<void>>();
+
+const serializeMergeWorkflowRepositoryOperation = async <T>(
+  repository: Pick<MergeWorkflowRepositoryResult, 'repoPath' | 'targetBranchName'>,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  const key = `${repository.repoPath}::${repository.targetBranchName}`;
+  const previous = mergeWorkflowRepositoryOperations.get(key) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mergeWorkflowRepositoryOperations.set(key, current);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (mergeWorkflowRepositoryOperations.get(key) === current) {
+      mergeWorkflowRepositoryOperations.delete(key);
+    }
+  }
+};
 const REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE = REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE;
 
 const canUseTaskMutationRuntime = (): boolean => getServiceRuntimeCapabilities().taskMutation;
@@ -738,38 +761,40 @@ const runRepositoryMergeStrategy = async (
     return undefined;
   }
 
-  if (action === 'fast_forward') {
-    return tauriIpc.gitFastForward({
-      repoPath: repository.repoPath,
-      sourceBranch: repository.sourceBranchName,
-      targetBranch: repository.targetBranchName,
-    });
-  }
+  return serializeMergeWorkflowRepositoryOperation(repository, async () => {
+    if (action === 'fast_forward') {
+      return tauriIpc.gitFastForward({
+        repoPath: repository.repoPath,
+        sourceBranch: repository.sourceBranchName,
+        targetBranch: repository.targetBranchName,
+      });
+    }
 
-  if (action === 'complete_merge') {
-    return tauriIpc.gitCompleteMerge({
-      repoPath: repository.repoPath,
-    });
-  }
+    if (action === 'complete_merge') {
+      return tauriIpc.gitCompleteMerge({
+        repoPath: repository.repoPath,
+      });
+    }
 
-  if (action === 'rebase_then_continue') {
-    await tauriIpc.gitRebaseBranch({
+    if (action === 'rebase_then_continue') {
+      await tauriIpc.gitRebaseBranch({
+        repoPath: repository.repoPath,
+        branchName: repository.sourceBranchName,
+        ontoBranch: repository.targetBranchName,
+        confirm: true,
+      });
+      return tauriIpc.gitFastForward({
+        repoPath: repository.repoPath,
+        sourceBranch: repository.sourceBranchName,
+        targetBranch: repository.targetBranchName,
+      });
+    }
+
+    return tauriIpc.gitMerge({
       repoPath: repository.repoPath,
       branchName: repository.sourceBranchName,
-      ontoBranch: repository.targetBranchName,
-      confirm: true,
+      intoBranch: repository.targetBranchName,
     });
-    return tauriIpc.gitFastForward({
-      repoPath: repository.repoPath,
-      sourceBranch: repository.sourceBranchName,
-      targetBranch: repository.targetBranchName,
-    });
-  }
-
-  return tauriIpc.gitMerge({
-    repoPath: repository.repoPath,
-    branchName: repository.sourceBranchName,
-    intoBranch: repository.targetBranchName,
   });
 };
 
@@ -5001,11 +5026,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       };
     }
 
-    const result = await tauriIpc.gitStartMergeResolution({
-      repoPath: repository.repoPath,
-      branchName: repository.sourceBranchName,
-      intoBranch: repository.targetBranchName,
-    });
+    const result = await serializeMergeWorkflowRepositoryOperation(repository, () =>
+      tauriIpc.gitStartMergeResolution({
+        repoPath: repository.repoPath,
+        branchName: repository.sourceBranchName,
+        intoBranch: repository.targetBranchName,
+      })
+    );
     const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
     if (task && refreshedRuntime && result.status === 'merged') {
       const completedRuntime = evolveMergeWorkflowRuntimeRepository({
@@ -5027,9 +5054,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
-    const output = await tauriIpc.gitCompleteMerge({
-      repoPath: repository.repoPath,
-    });
+    const output = await serializeMergeWorkflowRepositoryOperation(repository, () =>
+      tauriIpc.gitCompleteMerge({
+        repoPath: repository.repoPath,
+      })
+    );
     const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
     if (task && refreshedRuntime) {
       const completedRuntime = evolveMergeWorkflowRuntimeRepository({
@@ -5050,10 +5079,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    await tauriIpc.gitAbortMerge({
-      repoPath: repository.repoPath,
-      confirm: true,
-    });
+    await serializeMergeWorkflowRepositoryOperation(repository, () =>
+      tauriIpc.gitAbortMerge({
+        repoPath: repository.repoPath,
+        confirm: true,
+      })
+    );
     await get().loadMergeWorkflowReview(taskId, { force: true });
   },
 

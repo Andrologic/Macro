@@ -11498,6 +11498,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         continue;
       }
+      if (saga.ownerType === "plan" && saga.phase === "plan_deleting") {
+        if (!saga.targetBranch) {
+          console.error(
+            "Plan deletion guard has no target branch and remains fail-closed",
+            saga.conversationId,
+          );
+          continue;
+        }
+        try {
+          const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (plan && plan.status !== "deleted") {
+            continue;
+          }
+          await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+          await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+          completedPendingConversationDeletionIds.add(saga.conversationId);
+        } catch (error) {
+          console.error("Plan conversation deletion remains pending", saga.conversationId, error);
+        }
+        continue;
+      }
       if (
         (saga.ownerType !== "plan" && saga.ownerType !== "conversation") ||
         saga.phase !== "task_deleted"

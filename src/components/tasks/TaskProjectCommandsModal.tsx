@@ -12,6 +12,7 @@ interface TaskProjectCommandModalProject {
   command: string;
   worktreeSetupCommand: string;
   openTerminalOnRun: boolean;
+  requiredForTask: boolean;
 }
 
 interface TaskProjectCommandsModalProps {
@@ -54,9 +55,12 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
   const hasMissingCommand = useMemo(
     () =>
       requireRunCommand
-        ? drafts.some((project) => !project.command.trim())
+        ? drafts.some((project) => project.requiredForTask && !project.command.trim())
         : drafts.some(
-            (project) => !project.command.trim() && !project.worktreeSetupCommand.trim()
+            (project) =>
+              project.requiredForTask &&
+              !project.command.trim() &&
+              !project.worktreeSetupCommand.trim()
           ),
     [drafts, requireRunCommand]
   );

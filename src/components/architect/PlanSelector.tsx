@@ -77,6 +77,10 @@ import {
   type ArchitectPlanSelectorStateDetail,
 } from './planSelectorEvents';
 import { useChatStore } from '../../stores/useChatStore';
+import {
+  removeLinkedConversationDeletionSaga,
+  upsertLinkedConversationDeletionSaga,
+} from '../../services/linkedTaskDeletionSaga';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 
@@ -1033,6 +1037,24 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         );
       }
       releasePlanMutation = () => taskStore.releasePlanWorktreeMutation(deletedPlanId);
+      const currentPlan = await getArchitectPlan(targetBranch, deletedPlanId);
+      if (!currentPlan) {
+        throw new Error(
+          t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
+        );
+      }
+      if (currentPlan.conversationId) {
+        const now = new Date().toISOString();
+        await upsertLinkedConversationDeletionSaga({
+          ownerType: 'plan',
+          ownerId: deletedPlanId,
+          conversationId: currentPlan.conversationId,
+          phase: 'plan_deleting',
+          targetBranch,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
       const cleanup = await deletePlanAndCleanupBranches({
         branchName: targetBranch,
         planId: deletedPlanId,
@@ -1041,6 +1063,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         planId: deletedPlanId,
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
+      if (currentPlan.conversationId) {
+        const deletedConversation = await useChatStore
+          .getState()
+          .completeLinkedTaskConversationDeletion(currentPlan.conversationId);
+        if (!deletedConversation) {
+          throw new Error(
+            t(
+              'architect.planSelector.errorDeletePlanConversation',
+              'Plan deleted, but its conversation cleanup remains pending.'
+            )
+          );
+        }
+        await removeLinkedConversationDeletionSaga('plan', deletedPlanId);
+      }
       notify.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
       await refreshPlanSelectorAfterMutation({
         mutation: {
