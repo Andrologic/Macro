@@ -1735,6 +1735,37 @@ describe('architectGitFlowService', () => {
     expect(readPersistedLifecycleSagas()).toEqual([]);
   });
 
+  it('retries an uncheckpointed metadata commit without replaying Git cleanup', async () => {
+    let metadataDirty = true;
+    let effectiveCommitCount = 0;
+    let failNextMetadataCommittedCheckpoint = true;
+    commitArchitectPlanMetadataMock.mockImplementation(async () => {
+      if (metadataDirty) {
+        metadataDirty = false;
+        effectiveCommitCount += 1;
+      }
+      if (failNextMetadataCommittedCheckpoint) {
+        failNextMetadataCommittedCheckpoint = false;
+        failPlanLifecycleSave = new Error('metadata committed checkpoint failed');
+      }
+    });
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement', planId: 'plan-1',
+    })).rejects.toThrow('metadata committed checkpoint failed');
+
+    const cleanupCalls = gitWorktreeRemoveMock.mock.calls.length;
+    expect(effectiveCommitCount).toBe(1);
+    expect(readPersistedLifecycleSagas()).toEqual([expect.objectContaining({ phase: 'metadata_commit_pending' })]);
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(2);
+    expect(effectiveCommitCount).toBe(1);
+    expect(gitWorktreeRemoveMock.mock.calls).toHaveLength(cleanupCalls);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
   it('fails closed before Git cleanup when the persisted lifecycle journal is corrupt', async () => {
     persistedPlanLifecycleSagas = '{not-json';
 

@@ -67,6 +67,7 @@ import {
 import {
   computePlanSelectorRefreshState,
   computePlanSelectorEmptyState,
+  shouldWarnForVerifiedPlanDeletion,
   type PlanSelectorMutationCheck,
   type PlanSelectorRefreshState,
 } from './planSelectorState';
@@ -1049,6 +1050,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsDeleting(true);
     let keepDeleteDialogOpen = false;
     let releasePlanMutation: (() => void) | null = null;
+    let linkedConversationCleanupPending = false;
     try {
       const deletedPlanId = planToDelete.id;
       const taskStore = useTaskStore.getState();
@@ -1088,10 +1090,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
       if (currentPlan.conversationId) {
-        const deletedConversation = await useChatStore
-          .getState()
-          .completeLinkedTaskConversationDeletion(currentPlan.conversationId);
+        let deletedConversation = false;
+        try {
+          deletedConversation = await useChatStore
+            .getState()
+            .completeLinkedTaskConversationDeletion(currentPlan.conversationId);
+        } catch (error) {
+          linkedConversationCleanupPending = true;
+          throw error;
+        }
         if (!deletedConversation) {
+          linkedConversationCleanupPending = true;
           throw new Error(
             t(
               'architect.planSelector.errorDeletePlanConversation',
@@ -1121,7 +1130,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             planId: planToDelete.id,
           },
         });
-        if (verification.mutationApplied) {
+        if (shouldWarnForVerifiedPlanDeletion({
+          mutationApplied: verification.mutationApplied,
+          linkedConversationCleanupPending,
+        })) {
           useTaskStore.getState().clearPlanRuntimeState({
             planId: planToDelete.id,
             deletedWorktreeKeys: [],

@@ -18,6 +18,11 @@ export interface PlanSelectorRefreshState {
 
 export type PlanSelectorEmptyState = 'hidden' | 'empty' | 'outside-scope';
 
+export const shouldWarnForVerifiedPlanDeletion = (params: {
+  mutationApplied: boolean;
+  linkedConversationCleanupPending: boolean;
+}): boolean => params.mutationApplied && params.linkedConversationCleanupPending;
+
 export const computePlanSelectorEmptyState = (params: {
   hasError: boolean;
   isLoading: boolean;
