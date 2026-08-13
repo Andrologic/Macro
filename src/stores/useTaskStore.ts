@@ -38,14 +38,13 @@ import {
   resolvePreparedTaskWorktreePath,
   resolveTaskRepositoryPath as resolvePreparedTaskRepositoryPath,
 } from '../services/preparedTaskWorktrees';
-import { cleanupPlanBranches, resumePlanLifecycleSagas } from '../services/architectGitFlowService';
+import { archivePlanAndCleanupBranches, resumePlanLifecycleSagas } from '../services/architectGitFlowService';
 import { promoteArchitectTaskContextProjects } from '../services/architectScopePromotionService';
 import {
   resolveProjectGitFlowSettings,
   shouldSyncTargetBranchBeforeFinish,
 } from '../services/architectGitNaming';
 import {
-  archiveArchitectPlan,
   commitArchitectPlanMetadata,
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
@@ -4451,14 +4450,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           status: 'completed',
           setActive: false,
         });
-        const archivedPlan = await archiveArchitectPlan(branchName, plan.id);
+        const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranches({ branchName, planId: plan.id });
         await commitArchitectPlanMetadata({
           branchName,
           planId: task.plan_id,
           commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
-        });
-        const cleanup = await cleanupPlanBranches(archivedPlan, undefined, {
-          allowRetained: true,
         });
         await get().refreshFromPlan();
         await persistRuntime(null);
@@ -4903,8 +4899,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           })
         );
       }
-      const archivedPlan = await archiveArchitectPlan(branchName, planId);
-      const cleanup = await cleanupPlanBranches(archivedPlan);
+      const { cleanup } = await archivePlanAndCleanupBranches({ branchName, planId });
       get().clearPlanRuntimeState({
         planId,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>

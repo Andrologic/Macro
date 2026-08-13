@@ -798,6 +798,13 @@ export const cleanupPlanBranches = async (
 ): Promise<CleanupPlanRepositoryResult[]> =>
   getDefaultArchitectGitFlowService().cleanupPlanBranches(plan, explicitRepoPath, options);
 
+export const archivePlanAndCleanupBranches = async (params: {
+  branchName: string;
+  planId: string;
+  repoPath?: string;
+}): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> =>
+  getDefaultArchitectGitFlowService().archivePlanAndCleanupBranches(params);
+
 export const deletePlanAndCleanupBranches = async (params: {
   branchName: string;
   planId: string;
@@ -1555,6 +1562,28 @@ export const createArchitectGitFlowService = (
     return cleanupPlanBranchesInternalWithDeps(plan, explicitRepoPath, options);
   };
 
+  const archivePlanAndCleanupBranchesWithDeps = async (params: {
+    branchName: string;
+    planId: string;
+    repoPath?: string;
+  }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> => {
+    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
+      throw new Error(`Plan ${params.planId} cannot be archived.`);
+    }
+    const now = new Date().toISOString();
+    const saga: PlanLifecycleSaga = {
+      planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'prepared',
+      conversationId: plan.conversationId ?? null, createdAt: now, updatedAt: now,
+    };
+    await upsertPlanLifecycleSaga(saga);
+    const archived = plan.status === 'archived' ? plan : await deps.archiveArchitectPlan(params.branchName, plan.id);
+    await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
+    const cleanup = await cleanupPlanBranchesWithDeps(archived, params.repoPath);
+    await removePlanLifecycleSaga(plan.id, 'archive');
+    return { plan: archived, cleanup };
+  };
+
   const finalizePlanIntoBaseBranchWithDeps = async (params: {
     branchName: string;
     planId: string;
@@ -1786,6 +1815,7 @@ export const createArchitectGitFlowService = (
     loadPlanReview: loadPlanReviewWithDeps,
     finalizePlanIntoBaseBranch: finalizePlanIntoBaseBranchWithDeps,
     cleanupPlanBranches: cleanupPlanBranchesWithDeps,
+    archivePlanAndCleanupBranches: archivePlanAndCleanupBranchesWithDeps,
     deletePlanAndCleanupBranches: deletePlanAndCleanupBranchesWithDeps,
     resumePlanLifecycleSagas: resumePlanLifecycleSagasWithDeps,
   };
