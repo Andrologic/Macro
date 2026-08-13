@@ -2,7 +2,7 @@ use super::{get_pool, CommandError, CommandResult, DbPool};
 use crate::ai::AiState;
 use crate::ai::{
     chatgpt::{self, AiChatRequest},
-    copilot, openai_compatible,
+    copilot, macro_ai, openai_compatible,
 };
 use crate::db::repository;
 use tauri::{AppHandle, State};
@@ -24,6 +24,16 @@ async fn get_provider_type(
         .ok_or_else(|| CommandError {
             message: format!("Provider {} not found", provider_id),
         })
+}
+
+#[tauri::command]
+pub async fn ai_provision_macro_ai(
+    pool: State<'_, DbPool>,
+) -> CommandResult<macro_ai::MacroAiProvisioningStatus> {
+    let pool = get_pool(&pool).await?;
+    macro_ai::provision(&pool)
+        .await
+        .map_err(|message| CommandError { message })
 }
 
 #[tauri::command]

@@ -65,6 +65,37 @@ describe('providerApi fetchModelsFromProvider', () => {
     });
   });
 
+  it('keeps the active vLLM model length from OpenAI-compatible metadata', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'ling-3.0-flash-nvfp4',
+            owned_by: 'vllm',
+            max_model_len: 131_072,
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://dgx.example.test/v1',
+      providerId: 'dgx-ling',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]).toMatchObject({
+      id: 'ling-3.0-flash-nvfp4',
+      max_model_len: 131_072,
+    });
+  });
+
   it('returns a timeout message when the request is aborted by the local timeout', async () => {
     tauriFetchMock.mockImplementation(
       async (_input: string, init?: RequestInit) =>

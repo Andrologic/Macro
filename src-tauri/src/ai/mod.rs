@@ -1,5 +1,6 @@
 pub mod chatgpt;
 pub mod copilot;
+pub mod macro_ai;
 pub mod openai_compatible;
 pub mod provider_capabilities;
 pub mod reasoning_catalog;

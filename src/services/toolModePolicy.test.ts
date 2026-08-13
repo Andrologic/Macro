@@ -146,7 +146,7 @@ describe("toolModePolicy", () => {
     expect(policy.enforceMacroOnlyWrites).toBe(false);
   });
 
-  it("detects legacy .macro scoped paths", () => {
+  it("detects virtual .macro scoped paths", () => {
     expect(isMacroScopedPath(".macro")).toBe(true);
     expect(isMacroScopedPath(".macro/branches/main/plan.md")).toBe(true);
     expect(isMacroScopedPath("./.macro/branches/main/plan.md")).toBe(true);
@@ -159,16 +159,30 @@ describe("toolModePolicy", () => {
     expect(isMacroScopedPath("src/App.tsx")).toBe(false);
   });
 
-  it("accepts metadata-root relative paths for architect writes", () => {
-    expect(isMetadataRelativePath("branches/main/plans/index.json")).toBe(true);
-    expect(isMetadataRelativePath("./branches/main/plans/plan-1/plan.md")).toBe(
-      true,
-    );
-    expect(isMetadataRelativePath("workspace.json")).toBe(true);
-    expect(isMetadataRelativePath("src/App.tsx")).toBe(false);
-    expect(isMetadataRelativePath(".macro/branches/main/plan.md")).toBe(false);
-    expect(isMetadataRelativePath(".git/config")).toBe(false);
-    expect(isMetadataRelativePath("../src/App.tsx")).toBe(false);
-    expect(isMetadataRelativePath("C:/repo/branches/main/plan.md")).toBe(false);
+  it.each([
+    "workspace.json",
+    "./workspace.json",
+    "branches/main/plans/index.json",
+    "./branches/main/plans/plan-1/plan.md",
+    "branches/main/../develop/plans/index.json",
+  ])("accepts metadata-root relative architect write path %s", (path) => {
+    expect(isMetadataRelativePath(path)).toBe(true);
+  });
+
+  it.each([
+    ".macro/workspace.json",
+    ".macro/branches/main/plan.md",
+    "workspace.json/neighbor",
+    "workspace.json.bak",
+    "branch/main/plan.md",
+    "branches/../../src/App.tsx",
+    "branches/main/../../../src/App.tsx",
+    ".git/config",
+    "../src/App.tsx",
+    "/branches/main/plan.md",
+    "C:/repo/branches/main/plan.md",
+    "src/App.tsx",
+  ])("rejects non-metadata-root architect write path %s", (path) => {
+    expect(isMetadataRelativePath(path)).toBe(false);
   });
 });

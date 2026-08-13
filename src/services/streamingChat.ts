@@ -2608,6 +2608,12 @@ const streamNativeTurnViaTauri = async (params: {
                     await params.onToolCall(toolName, args, toolCallId)
                   );
 
+                  // A stopped generation must never submit a late tool result
+                  // back to the native provider loop.
+                  if (params.signal?.aborted) {
+                    return;
+                  }
+
                   if (isToolInterruptResolution(resolution)) {
                     toolResult = resolution.result;
                     hiddenContext = resolution.hiddenContext;
@@ -2635,6 +2641,9 @@ const streamNativeTurnViaTauri = async (params: {
                 });
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
+                if (params.signal?.aborted) {
+                  return;
+                }
                 const toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
                 await tauriIpc.aiSubmitToolResult({
                   requestId,
@@ -3053,6 +3062,11 @@ const streamChatViaNativeToolCallingProvider = async (
           const customResult = normalizeToolCallResolution(
             await onToolCall?.(toolName, args, toolCall.id)
           );
+          if (options.signal?.aborted) {
+            streamAccumulator.completeToolTrace(toolCall.id);
+            completeNativeStream();
+            return;
+          }
           if (isToolInterruptResolution(customResult)) {
             interruptResolution = customResult;
             customToolResult = customResult.result;
@@ -3916,6 +3930,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             const customResult = normalizeToolCallResolution(
               await onToolCall?.(toolName, args, toolCall.id)
             );
+            if (options.signal?.aborted) {
+              streamAccumulator.completeToolTrace(toolCall.id);
+              completeGenericStream();
+              emitGenericTimeline('done');
+              return;
+            }
             if (isToolInterruptResolution(customResult)) {
               interruptResolution = customResult;
               customToolResult = customResult.result;

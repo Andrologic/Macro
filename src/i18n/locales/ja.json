@@ -232,15 +232,15 @@
       "pulling": "引っ張っている...",
       "push": "Push",
       "pushing": "押しています...",
-      "fetchComplete": "Fetch complete",
-      "fetchPending": "Fetch complete, action required",
-      "fetchIncomplete": "Fetch incomplete",
-      "pullComplete": "Pull complete",
-      "pullPending": "Pull complete, action required",
-      "pullIncomplete": "Pull incomplete",
-      "pushComplete": "Push complete",
-      "pushPending": "Push complete, action required",
-      "pushIncomplete": "Push incomplete",
+      "fetchComplete": "Fetch 完了",
+      "fetchPending": "Fetch 完了、操作が必要です",
+      "fetchIncomplete": "Fetch 未完了",
+      "pullComplete": "Pull 完了",
+      "pullPending": "Pull 完了、操作が必要です",
+      "pullIncomplete": "Pull 未完了",
+      "pushComplete": "Push 完了",
+      "pushPending": "Push 完了、操作が必要です",
+      "pushIncomplete": "Push 未完了",
       "resolve": "解決する",
       "review": "レビュー",
       "retrySync": "同期を再試行します",
@@ -381,6 +381,7 @@
     "resetZoom": "ズームをリセットする",
     "renderingDiagram": "レンダリング図...",
     "mermaidRenderError": "人魚図をレンダリングできません",
+    "copyFailed": "ダイアグラムのコードをコピーできませんでした。",
     "inputTokens": "入力",
     "contextTokens": "コンテクスト",
     "tokens": "トークン",
@@ -397,6 +398,9 @@
     "selectConversation": "会話を選択",
     "unpinConversation": "固定を解除する",
     "pinConversation": "ピン",
+    "pinConversationFailed": "会話の固定状態を更新できませんでした。",
+    "archiveConversationFailed": "会話のアーカイブ状態を更新できませんでした。",
+    "exportConversationFailed": "会話をエクスポートできませんでした。",
     "renameConversationTitle": "会話の名前を変更する",
     "renameConversationDescription": "この会話の新しいタイトルを選択してください。",
     "conversationName": "会話名",
@@ -526,6 +530,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Unable to load archived conversations.",
+    "archivePreferenceSaveFailed": "Unable to save archived conversations.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1359,6 +1365,9 @@
       "errorArchivePlan": "計画をアーカイブできませんでした。",
       "errorRestorePlan": "計画の復元に失敗しました。",
       "errorDeletePlan": "プランの削除に失敗しました。",
+      "errorArchivePlanCleanup": "プランはアーカイブされましたが、Git のクリーンアップに失敗しました。アーカイブ済みプランを削除して、クリーンアップを再試行してください。",
+      "errorDeletePlanConversation": "プランは削除されましたが、会話のクリーンアップが保留中です。",
+      "warningDeletePlanConversationPending": "プランは削除されましたが、リンクされた会話のクリーンアップは保留中で、自動的に再試行されます。",
       "autoCreateError": "基本タイトルからデフォルト プランを自動作成できません。」{{title}}」。",
       "unarchivePlan": "計画を解凍する",
       "archiveBeforeDelete": "計画を削除する前にアーカイブしてください。",
@@ -1445,7 +1454,7 @@
     "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
     "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
     "frozenNodeLocked": "Locked",
-    "taskTodos": "TODO attaché",
+    "taskTodos": "関連付けられた TODO",
     "expectedArtifacts": "Expected artifacts",
     "artifacts": "Artifacts",
     "openArtifacts": "Open artifacts",
@@ -1467,14 +1476,14 @@
   },
   "git": {
     "gitTree": "Git ツリー",
-    "gitGraph": "Git Graph",
+    "gitGraph": "Git グラフ",
     "branches": "ブランチ",
     "commits": "コミット",
     "changes": "変更点",
     "staged": "ステージ済み",
     "unstaged": "未ステージ",
     "noCommitsInBranch": "このブランチにはまだコミットがありません。",
-    "legend": "伝説",
+    "legend": "凡例",
     "done": "終わり",
     "planned": "計画済み",
     "inProgress": "進行中",
@@ -1483,6 +1492,11 @@
     "totalChanges": "合計の変更"
   },
   "providers": {
+    "macroAi": {
+      "included": "Macro ベータに AI が含まれます",
+      "dropdownNotice": "ベータ版に AI が含まれます",
+      "loggingNotice": "この共有ベータサービスの運用と改善のため、Macro AI に送信された会話とトークン使用量の指標は推論サーバーに記録されます。"
+    },
     "add": "プロバイダーを追加",
     "edit": "プロバイダーを編集",
     "created": "プロバイダーを作成しました",
@@ -1563,25 +1577,25 @@
       "secret_persist_failed": "ChatGPT ログインは成功しましたが、セッションを保存できませんでした。"
     },
     "copilot": {
-      "downloadRuntime": "Download Copilot",
-      "runtimeDownloaded": "GitHub Copilot runtime is ready",
-      "runtimeDownloadFailed": "Failed to download GitHub Copilot runtime",
-      "downloadHint": "Download the official GitHub Copilot runtime to continue.",
-      "updateHint": "Download a Macro-managed GitHub Copilot runtime to continue.",
-      "troubleshootHint": "GitHub Copilot needs attention before it can be used.",
-      "connectHint": "Connect GitHub Copilot to finish setup.",
-      "troubleshoot": "Troubleshoot",
-      "recheckStatus": "Re-check status",
-      "oauthConnectedHint": "Use Copilot CLI on this machine to switch accounts.",
-      "ghCliConnectedHint": "Using the GitHub CLI session available on this machine.",
-      "envConnectedHint": "Using a Copilot token provided by this machine environment.",
-      "connectedInTerminalHint": "Connected in this machine terminal session.",
-      "finishLoginTitle": "Finish login in your browser",
-      "deviceCode": "Device code",
-      "browserUrl": "Browser URL",
-      "copyCode": "Copy code",
-      "codeCopied": "Device code copied",
-      "openBrowser": "Open browser"
+      "downloadRuntime": "Copilot をダウンロード",
+      "runtimeDownloaded": "GitHub Copilot ランタイムの準備ができました",
+      "runtimeDownloadFailed": "GitHub Copilot ランタイムをダウンロードできませんでした",
+      "downloadHint": "続行するには、公式の GitHub Copilot ランタイムをダウンロードしてください。",
+      "updateHint": "続行するには、Macro が管理する GitHub Copilot ランタイムをダウンロードしてください。",
+      "troubleshootHint": "GitHub Copilot を使用するには対応が必要です。",
+      "connectHint": "GitHub Copilot に接続してセットアップを完了してください。",
+      "troubleshoot": "トラブルシューティング",
+      "recheckStatus": "ステータスを再確認",
+      "oauthConnectedHint": "このマシンで Copilot CLI を使用してアカウントを切り替えてください。",
+      "ghCliConnectedHint": "このマシンで利用可能な GitHub CLI セッションを使用しています。",
+      "envConnectedHint": "このマシンの環境から提供された Copilot トークンを使用しています。",
+      "connectedInTerminalHint": "このマシンのターミナルセッションで接続済みです。",
+      "finishLoginTitle": "ブラウザでログインを完了してください",
+      "deviceCode": "デバイスコード",
+      "browserUrl": "ブラウザ URL",
+      "copyCode": "コードをコピー",
+      "codeCopied": "デバイスコードをコピーしました",
+      "openBrowser": "ブラウザを開く"
     }
   },
   "tools": {
@@ -1679,7 +1693,11 @@
       "serverAdded": "MCP サーバーを追加しました。",
       "toolsRefreshed": "MCP ツールを更新しました。",
       "refreshFailed": "MCP ツールを更新できませんでした。",
-      "serverDeleted": "MCP サーバーを削除しました。"
+      "serverDeleted": "MCP サーバーを削除しました。",
+      "identifierCollision": "この識別子の MCP サーバーは既に存在します。",
+      "saveFailed": "MCP サーバーを保存できませんでした。",
+      "deleteFailed": "MCP サーバーを削除できませんでした。",
+      "toggleFailed": "MCP サーバーを更新できませんでした。"
     }
   },
   "account": {
@@ -1711,6 +1729,45 @@
     "nextStep": "次のステップ",
     "hideDetails": "詳細を非表示",
     "showDetails": "詳細を表示",
+    "degraded": {
+      "fallback": { "title": "確認が必要です", "body": "Macro はこの操作を安全に完了できませんでした。", "nextStep": "詳細を確認し、妨げになっている状態を解消してから再試行してください。", "dynamic": "{{message}}" },
+      "worktree": {
+        "checkedOut": { "title": "Macro はタスクの作業領域を準備できませんでした", "body": "このタスクに必要なブランチが、ローカル変更を含んだままメインリポジトリで開かれています。", "nextStep": "ローカル変更をコミット、スタッシュ、または破棄してから、タスクを再試行してください。" },
+        "missingBase": { "title": "Macro はベースブランチを見つけられませんでした", "body": "このタスクのワークツリーを作成するには、ベースブランチが必要です。", "nextStep": "ブランチを作成するか、プロジェクトの Git ワークフロー設定を更新してから再試行してください。" },
+        "fallback": { "title": "Macro はタスクの作業領域を準備できませんでした", "body": "タスクの作業領域がまだ準備できていないため、Macro はファイルを安全に確認または編集できません。", "nextStep": "タスクを再試行してください。失敗が続く場合は、プロジェクトの Git 設定を開いてリポジトリの状態を確認してください。" }
+      },
+      "readOnly": { "title": "このプロジェクトは読み取り専用です", "body": "このプロジェクトはコンテキストとして使用できますが、Macro はまだブランチ、ワークツリー、コミット、マージを作成できません。", "namedBody": "{{projectName}} はコンテキストとして使用できますが、Macro はまだブランチ、ワークツリー、コミット、マージを作成できません。", "missingGitNextStep": "このプロジェクトで Git を初期化してから、編集可能な作業を有効にしてください。", "settingsNextStep": "プロジェクト設定を開き、Git ワークフローが準備できていることを確認してください。" },
+      "replica": {
+        "missing": { "titleSingular": "{{count}} 件のリポジトリにプランのメタデータがありません", "titlePlural": "{{count}} 件のリポジトリにプランのメタデータがありません", "body": "Macro がこのプランを安全に更新するには、想定されるすべてのメタデータレプリカが必要です。", "nextStep": "プランのメタデータを修復してから再試行してください。" },
+        "diverged": { "title": "リポジトリ間でプランのメタデータが異なります", "body": "Macro はこのプランのメタデータに複数の版を検出したため、続行する前に正規のコピーを選択する必要があります。", "nextStep": "古いコピーが意図的に必要な場合を除き、最新のレプリカから修復してください。" }
+      },
+      "gitFlow": {
+        "repositoryDirty": { "title": "リポジトリにローカル変更があります", "body": "対象リポジトリに無関係な未コミット変更がある間は、このマージを完了できません。", "nextStep": "ローカル変更をコミット、スタッシュ、または破棄してから、マージを再試行してください。" },
+        "mergeInProgress": { "title": "すでにマージが進行中です", "body": "Macro はこのリポジトリに未完了のマージを検出しました。", "nextStep": "既存のマージを完了または中止してから再試行してください。" },
+        "conflict": { "title": "完了する前に競合を解決してください", "body": "このプランはまだ正常にマージできません。", "filesNextStep": "一覧のファイルを解決してから、マージを再試行してください。", "blockersNextStep": "マージを妨げている問題を解消してから再試行してください。" }
+      },
+      "metadata": {
+        "clean": { "title": "@macro メタデータは最新です", "body": "操作は必要ありません。" },
+        "dirty": { "title": "@macro メタデータにローカル変更があります", "body": "同期する前に、Macro はメタデータの変更を保存する必要があります。", "nextStep": "@macro メタデータを保存してから同期を再試行してください。" },
+        "ahead": { "title": "@macro メタデータを公開できます", "body": "ローカルのメタデータブランチに、まだリモートにない変更があります。", "nextStep": "準備ができたら @macro をプッシュしてください。" },
+        "behind": { "title": "@macro メタデータがリモートより遅れています", "body": "リモートのメタデータに、まだローカルにない更新があります。", "nextStep": "@macro をプルしてから操作を再試行してください。" },
+        "diverged": { "title": "@macro メタデータが分岐しています", "body": "ローカルとリモートの両方でメタデータが変更されています。", "nextStep": "@macro をプルし、競合を解決してからプッシュしてください。" },
+        "mergeConflict": { "title": "@macro メタデータに競合があります", "body": "メタデータブランチに未解決の競合ファイルがあります。", "nextStep": "競合しているメタデータファイルを解決してから、同じ同期手順を再試行してください。" },
+        "missingOrigin": { "title": "@macro のリモートが設定されていません", "body": "リポジトリに origin リモートがないため、Macro はメタデータを同期できません。", "nextStep": "Git リモートを設定してから再試行してください。" },
+        "missingUpstream": { "title": "@macro にアップストリームブランチがありません", "body": "メタデータブランチはローカルにありますが、まだリモートブランチに関連付けられていません。", "nextStep": "@macro をプッシュして公開するか、この警告を無視してメタデータをローカルに保持してください。" },
+        "authRequired": { "title": "Git の認証が必要です", "body": "現在の認証情報では、Macro はメタデータのリモートにアクセスできません。", "nextStep": "Git 認証を設定してから再試行してください。" },
+        "networkError": { "title": "メタデータ同期でリモートに接続できませんでした", "body": "ネットワークまたはリモートサービスは現在利用できません。", "nextStep": "接続を確認してから再試行してください。" },
+        "unknownError": { "title": "Macro のメタデータ同期に失敗しました", "body": "Macro はメタデータ同期を安全に完了できませんでした。", "nextStep": "同期を再試行してください。再び失敗する場合は、技術的な詳細を確認してください。" }
+      },
+      "service": {
+        "resourcePressure": { "title": "Macro は一時的に過負荷です", "body": "開いているファイルが多すぎるため、Macro は再試行前にリポジトリの自動更新を一時停止しました。", "nextStep": "少し待ってから再試行してください。問題が続く場合は、余分なプロジェクトウィンドウやターミナルを閉じてください。" },
+        "replicaRepair": { "title": "プランのメタデータを修復する必要があります", "body": "Macro は不整合なプランのメタデータを検出したため、続行する前に正規のコピーを修復する必要があります。", "nextStep": "プランのメタデータを修復してから再試行してください。" },
+        "metadataMissing": { "title": "プランのメタデータが不完全です", "body": "Macro は、欠落または一部のみ保存されたプランのメタデータを参照するタスクまたは会話を検出しました。", "nextStep": "メタデータのリンクを修復してから再試行してください。" },
+        "workspaceUnavailable": { "title": "作業領域の状態を一時的に取得できません", "body": "Macro はこの操作に必要な作業領域の状態を読み取れませんでした。", "nextStep": "作業領域の更新が終わってから再試行してください。問題が続く場合は、プロジェクトを開き直してください。" },
+        "gitNotReady": { "title": "このプロジェクトはまだ編集できません", "body": "Macro はこのプロジェクトをコンテキストとして使用できますが、Git の準備が整うまで書き込めません。", "nextStep": "プロジェクト設定を開き、Git の設定を完了してください。" },
+        "fallback": { "title": "確認が必要です", "nextStep": "詳細を確認し、妨げになっている状態を解消してから再試行してください。" }
+      }
+    },
     "logoutFailed": "ログアウトに失敗しました",
     "saveFailed": "プロバイダーの保存に失敗しました"
   },
@@ -1786,6 +1843,8 @@
     "commitUseConversationModel": "会話モデルを使用",
     "commitUseDedicatedModel": "専用モデルを使用",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Failed to load metadata model preference",
+    "metadataPreferenceSaveFailed": "Failed to save metadata model preference",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -1997,6 +2056,12 @@
     "searchPlaceholder": "ターミナルを検索",
     "searchPrevious": "前の一致",
     "searchNext": "次の一致"
+  },
+  "codeViewer": {
+    "title": "コードファイル",
+    "copied": "コピーしました",
+    "copyCode": "コードをコピー",
+    "copyFailed": "コードをコピーできませんでした。"
   },
   "notify": {
     "connectionFailed": "Connection failed",

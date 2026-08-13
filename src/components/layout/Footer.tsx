@@ -18,7 +18,10 @@ import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
 import { getGlobalProjectById, getSubProjectsForGroup } from '../../services/globalProjects';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
-import { presentMetadataSyncIssue } from '../../services/degradedErrorPresentation';
+import {
+  presentMetadataSyncIssue,
+  resolveDegradedErrorPresentation,
+} from '../../services/degradedErrorPresentation';
 import { cn } from '../../utils/cn';
 
 type FooterSyncAction = 'fetch' | 'pull' | 'push';
@@ -1443,14 +1446,16 @@ export const Footer: React.FC = () => {
     return toMacroConflictResolutionEntries(repositories);
   }, [footerMetadataSync, macroSnapshot, scopeProjects]);
   const metadataSyncPresentation = useMemo(
-    () =>
+    () => resolveDegradedErrorPresentation(
       presentMetadataSyncIssue({
         reason: footerMetadataSync.reason,
         nextAction: footerMetadataSync.nextAction,
         error: footerMetadataSync.error,
         repoPath: macroSnapshot?.worktree_path || null,
       }),
-    [footerMetadataSync.error, footerMetadataSync.nextAction, footerMetadataSync.reason, macroSnapshot?.worktree_path]
+      (key, options) => String(t(key, options))
+    ),
+    [footerMetadataSync.error, footerMetadataSync.nextAction, footerMetadataSync.reason, macroSnapshot?.worktree_path, t]
   );
 
   const openAiConflictAssistant = async () => {

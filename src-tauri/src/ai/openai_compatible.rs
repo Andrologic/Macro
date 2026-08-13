@@ -329,6 +329,16 @@ async fn send_chat_completions_request(
     if !api_key.trim().is_empty() {
         builder = builder.header(AUTHORIZATION, format!("Bearer {}", api_key.trim()));
     }
+    if provider.id == super::macro_ai::PROVIDER_ID {
+        if let Some(conversation_id) = request
+            .conversation_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            builder = builder.header("X-Macro-Conversation-Id", conversation_id);
+        }
+    }
     if provider.provider_type.eq_ignore_ascii_case("openrouter") {
         builder = builder
             .header("HTTP-Referer", "https://macro.local")

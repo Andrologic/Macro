@@ -30,6 +30,7 @@ import {
   providerHasUsableCredentials,
 } from '../services/providerCredentials';
 import { devLogger } from '../utils/devLogger';
+import { MACRO_AI_MODEL_ID, MACRO_AI_PROVIDER_ID } from '../config/macroAi';
 
 export { isLinkedProviderType, providerHasAuthSession };
 
@@ -88,6 +89,7 @@ const startProviderSettingsRequest = (providerId: string): number => {
 };
 
 const NATIVE_TOOL_CALLING_PROVIDER_TYPES = new Set(['chatgpt', 'copilot', 'openai', 'openrouter']);
+const LOCAL_PROVIDER_TYPES = new Set(['ollama', 'lmstudio']);
 const PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC =
   'Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.';
 
@@ -99,6 +101,9 @@ const requireProviderConfigurationIpc = (): void => {
 
 const supportsNativeToolCallingForProviderType = (providerType?: string | null): boolean =>
   !!providerType && NATIVE_TOOL_CALLING_PROVIDER_TYPES.has(providerType);
+
+const inferIsLocalProvider = (providerType: string, requestedIsLocal: boolean): boolean =>
+  requestedIsLocal || LOCAL_PROVIDER_TYPES.has(providerType);
 
 const applyNativeToolCallingToProviderConfig = (config: ProviderConfig): ProviderConfig => ({
   ...config,
@@ -951,6 +956,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   initialize: async () => {
     const { loadProviderConfigs, loadProviderModels, testConnection } = get();
+    if (ipcIsTauriAvailable()) {
+      try {
+        await tauriIpc.aiProvisionMacroAi();
+      } catch (error) {
+        devLogger.warn('[macro-ai] automatic activation is unavailable', {
+          error: getErrorMessage(error, 'Unknown activation error'),
+        });
+      }
+    }
     await loadProviderConfigs();
 
     const { providerConfigs, selectedProviderId } = get();
@@ -988,6 +1002,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     await Promise.allSettled(connectivityChecks);
+
+    if (!get().selectedProviderId) {
+      await get().commitRestoredSelection({
+        providerId: MACRO_AI_PROVIDER_ID,
+        modelId: MACRO_AI_MODEL_ID,
+        reasoningEffort: null,
+      });
+    }
   },
 
   resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {
@@ -2342,13 +2364,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           updates.apiKey !== undefined && nextApiKey !== currentApiKey ||
           updates.isEnabled === false
         );
-      const persistedUpdates = isLinkedProviderType(providerType)
+      const persistedUpdates: Partial<ProviderConfig> = isLinkedProviderType(providerType)
         ? {
             ...updates,
             baseUrl: undefined,
             apiKey: undefined,
           }
-        : updates;
+        : {
+            ...updates,
+            isLocal:
+              updates.providerType === undefined
+                ? updates.isLocal
+                : inferIsLocalProvider(providerType ?? '', updates.isLocal ?? false),
+          };
 
       await ipcUpdateProviderConfig({
         id,
@@ -2412,7 +2440,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         providerType: config.providerType,
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
-        isLocal: config.isLocal,
+        isLocal: inferIsLocalProvider(config.providerType, config.isLocal),
+        isEnabled: config.isEnabled,
       });
 
       const newConfig = normalizeCreatedProviderConfig(created, config.apiKey);
@@ -2506,6 +2535,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       throw new Error('ChatGPT auth requires the desktop app.');
     }
 
+    if (get().authRequestIdsByProvider[providerId]) {
+      throw new Error('ChatGPT login is already in progress for this provider.');
+    }
     const requestId = createRequestId();
 
     set((state) => ({

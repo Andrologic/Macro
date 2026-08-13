@@ -10,6 +10,8 @@ import {
 import { isPlanMetadataMissingError, toServiceError } from '../services/contracts/errors';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
+import { isConversationRuntimeActive } from './chat/chatRuntimeState';
+import { removePlanLifecycleSaga, upsertPlanLifecycleSaga } from '../services/planLifecycleSaga';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
 import {
@@ -18,6 +20,12 @@ import {
 } from './planRuntimeState';
 import { getLocalProjectContextState } from '../services/localProjectContext';
 import * as tauriIpc from '../services/tauriIpc';
+import {
+  loadLinkedTaskDeletionSagas,
+  removeLinkedTaskDeletionSaga,
+  upsertLinkedTaskDeletionSaga,
+  type LinkedTaskDeletionSaga,
+} from '../services/linkedTaskDeletionSaga';
 import {
   deriveImplementTasksFromStrategy,
   mapTaskStatusToNodeStatus,
@@ -31,14 +39,13 @@ import {
   resolvePreparedTaskWorktreePath,
   resolveTaskRepositoryPath as resolvePreparedTaskRepositoryPath,
 } from '../services/preparedTaskWorktrees';
-import { cleanupPlanBranches } from '../services/architectGitFlowService';
+import { archivePlanAndCleanupBranches, resumePlanLifecycleSagas } from '../services/architectGitFlowService';
 import { promoteArchitectTaskContextProjects } from '../services/architectScopePromotionService';
 import {
   resolveProjectGitFlowSettings,
   shouldSyncTargetBranchBeforeFinish,
 } from '../services/architectGitNaming';
 import {
-  archiveArchitectPlan,
   commitArchitectPlanMetadata,
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
@@ -164,6 +171,29 @@ const mergeWorkflowReviewLoads = new Map<string, {
   token: symbol;
   promise: Promise<MergeWorkflowRuntimeState | null>;
 }>();
+const mergeWorkflowRepositoryOperations = new Map<string, Promise<void>>();
+
+const serializeMergeWorkflowRepositoryOperation = async <T>(
+  repository: Pick<MergeWorkflowRepositoryResult, 'repoPath' | 'targetBranchName'>,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  const key = `${repository.repoPath}::${repository.targetBranchName}`;
+  const previous = mergeWorkflowRepositoryOperations.get(key) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mergeWorkflowRepositoryOperations.set(key, current);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (mergeWorkflowRepositoryOperations.get(key) === current) {
+      mergeWorkflowRepositoryOperations.delete(key);
+    }
+  }
+};
 const REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE = REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE;
 
 const canUseTaskMutationRuntime = (): boolean => getServiceRuntimeCapabilities().taskMutation;
@@ -437,6 +467,88 @@ const getExecutionTargetsWithRepoPaths = (
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
 };
 
+const resumeLinkedTaskGitCleanup = async (
+  saga: LinkedTaskDeletionSaga,
+): Promise<LinkedTaskDeletionSaga> => {
+  if (!Array.isArray(saga.executionTargets)) {
+    throw new Error(
+      "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.",
+    );
+  }
+  let current: LinkedTaskDeletionSaga & {
+    executionTargets: NonNullable<LinkedTaskDeletionSaga['executionTargets']>;
+  } = { ...saga, executionTargets: saga.executionTargets };
+  for (const target of current.executionTargets) {
+    if (!target.worktreeRemoved) {
+      const inspectWorktree = () =>
+        tauriIpc.gitWorktreeInspect({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          branchName: target.branchName,
+        });
+      let inspection = await inspectWorktree();
+      if (inspection.status !== 'absent') {
+        try {
+          await tauriIpc.gitWorktreeRemove({
+            repoPath: target.repoPath,
+            taskId: target.worktreeKey,
+            force: true,
+            branchName: target.branchName,
+          });
+        } catch (error) {
+          inspection = await inspectWorktree();
+          if (inspection.status !== 'absent') {
+            throw error;
+          }
+        }
+      }
+      current = {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        executionTargets: current.executionTargets.map((candidate) =>
+          candidate.worktreeKey === target.worktreeKey
+            ? { ...candidate, worktreeRemoved: true }
+            : candidate,
+        ),
+      };
+      await upsertLinkedTaskDeletionSaga(current);
+    }
+    const updatedTarget = current.executionTargets?.find(
+      (candidate) => candidate.worktreeKey === target.worktreeKey,
+    );
+    if (updatedTarget?.branchExisted && !updatedTarget.branchRemoved) {
+      const branchExists = async () =>
+        (await tauriIpc.gitBranchList(updatedTarget.repoPath)).local.some(
+          (branch) => branch.name === updatedTarget.branchName,
+        );
+      if (await branchExists()) {
+        try {
+          await tauriIpc.gitBranchDelete({
+            repoPath: updatedTarget.repoPath,
+            branchName: updatedTarget.branchName,
+            force: true,
+          });
+        } catch (error) {
+          if (await branchExists()) {
+            throw error;
+          }
+        }
+      }
+      current = {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        executionTargets: current.executionTargets.map((candidate) =>
+          candidate.worktreeKey === updatedTarget.worktreeKey
+            ? { ...candidate, branchRemoved: true }
+            : candidate,
+        ),
+      };
+      await upsertLinkedTaskDeletionSaga(current);
+    }
+  }
+  return current;
+};
+
 const findActiveTasksSharingExecutionBranch = (
   task: CatalogedImplementTask,
   tasks: CatalogedImplementTask[]
@@ -649,38 +761,40 @@ const runRepositoryMergeStrategy = async (
     return undefined;
   }
 
-  if (action === 'fast_forward') {
-    return tauriIpc.gitFastForward({
-      repoPath: repository.repoPath,
-      sourceBranch: repository.sourceBranchName,
-      targetBranch: repository.targetBranchName,
-    });
-  }
+  return serializeMergeWorkflowRepositoryOperation(repository, async () => {
+    if (action === 'fast_forward') {
+      return tauriIpc.gitFastForward({
+        repoPath: repository.repoPath,
+        sourceBranch: repository.sourceBranchName,
+        targetBranch: repository.targetBranchName,
+      });
+    }
 
-  if (action === 'complete_merge') {
-    return tauriIpc.gitCompleteMerge({
-      repoPath: repository.repoPath,
-    });
-  }
+    if (action === 'complete_merge') {
+      return tauriIpc.gitCompleteMerge({
+        repoPath: repository.repoPath,
+      });
+    }
 
-  if (action === 'rebase_then_continue') {
-    await tauriIpc.gitRebaseBranch({
+    if (action === 'rebase_then_continue') {
+      await tauriIpc.gitRebaseBranch({
+        repoPath: repository.repoPath,
+        branchName: repository.sourceBranchName,
+        ontoBranch: repository.targetBranchName,
+        confirm: true,
+      });
+      return tauriIpc.gitFastForward({
+        repoPath: repository.repoPath,
+        sourceBranch: repository.sourceBranchName,
+        targetBranch: repository.targetBranchName,
+      });
+    }
+
+    return tauriIpc.gitMerge({
       repoPath: repository.repoPath,
       branchName: repository.sourceBranchName,
-      ontoBranch: repository.targetBranchName,
-      confirm: true,
+      intoBranch: repository.targetBranchName,
     });
-    return tauriIpc.gitFastForward({
-      repoPath: repository.repoPath,
-      sourceBranch: repository.sourceBranchName,
-      targetBranch: repository.targetBranchName,
-    });
-  }
-
-  return tauriIpc.gitMerge({
-    repoPath: repository.repoPath,
-    branchName: repository.sourceBranchName,
-    intoBranch: repository.targetBranchName,
   });
 };
 
@@ -1786,6 +1900,7 @@ const commitArchitectPlanMetadataForTask = async (
   } catch (error) {
     const normalized = toServiceError(error);
     setError?.(normalized.message);
+    throw normalized;
   }
 };
 
@@ -2139,16 +2254,36 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   const activePlanWorktreeMutations = new Set<string>();
   const taskCommandRunCompletions = new Map<string, TaskCommandRunCompletion>();
   const taskCommandCancellationPromises = new Map<string, Promise<void>>();
+  // Catalog loads and task activation await metadata/filesystem work. Keep their
+  // effects scoped to the latest request so a stale context cannot win a race.
+  let refreshRequestId = 0;
+  let taskActivationRequestId = 0;
 
   const getTaskCommandMutationBlockedMessage = (action: 'archive' | 'delete' | 'complete'): string =>
     tTask(
       'implement.taskCommandsActiveMutationBlocked',
-      'Stop the active command run before {{action}} this task.',
+      'Wait for the active task operation before {{action}} this task.',
       { action }
     );
 
   const isTaskCommandRunActive = (taskId: string): boolean =>
     Boolean(get().taskCommandRuns[taskId]) || activeTaskOperations.get(taskId) === 'commands';
+
+  const isTaskConversationRuntimeActive = (taskId: string): boolean => {
+    const task = get().getTaskById(taskId);
+    const chatState = useChatStore.getState();
+    const conversationIds = new Set<string>();
+    if (task?.conversation_id) conversationIds.add(task.conversation_id);
+    for (const conversation of chatState.conversations) {
+      if (conversation.task_id === taskId) conversationIds.add(conversation.id);
+    }
+    return [...conversationIds].some((conversationId) =>
+      isConversationRuntimeActive(chatState.conversationRuntimeById[conversationId]),
+    );
+  };
+
+  const isTaskRuntimeActive = (taskId: string): boolean =>
+    isTaskCommandRunActive(taskId) || isTaskConversationRuntimeActive(taskId);
 
   const acquireTaskOperation = (taskId: string, operation: TaskOperationKind): boolean => {
     if (activeTaskOperations.has(taskId)) {
@@ -2274,10 +2409,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return false;
     }
 
-    const hasActiveTaskCommand = get().tasks.some(
-      (task) => task.plan_id === safePlanId && isTaskCommandRunActive(task.id)
+    const hasActiveTaskRuntime = get().tasks.some(
+      (task) => task.plan_id === safePlanId && isTaskRuntimeActive(task.id)
     );
-    if (hasActiveTaskCommand) {
+    const hasActivePlanFinalization = get().tasks.some(
+      (task) => task.plan_id === safePlanId && activeTaskOperations.has(task.id)
+    );
+    if (hasActiveTaskRuntime || hasActivePlanFinalization) {
       return false;
     }
 
@@ -2319,6 +2457,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   refreshFromPlan: async (options) => {
+    const requestId = ++refreshRequestId;
     const restoreSelection = options?.restoreSelection !== false;
     const activateSelectedTask = options?.activateSelectedTask !== false;
     try {
@@ -2326,7 +2465,72 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const previousSource = get().source;
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
+      await resumePlanLifecycleSagas();
+      if (requestId !== refreshRequestId) return;
       const catalog = await services.listTasks();
+      if (requestId !== refreshRequestId) return;
+      const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
+      if (requestId !== refreshRequestId) return;
+      for (const pending of pendingLinkedTaskDeletions) {
+        if (requestId !== refreshRequestId) return;
+        const taskStillExists = catalog.tasks.some((task) => task.id === pending.taskId);
+        if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
+          const message =
+            "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.";
+          await upsertLinkedTaskDeletionSaga({
+            ...pending,
+            updatedAt: new Date().toISOString(),
+            lastError: message,
+          });
+          set({ lastError: message });
+          continue;
+        }
+        if (pending.phase === 'prepared' && taskStillExists) {
+          continue;
+        }
+        if (pending.phase === 'task_deleting') {
+          try {
+            const resumed = await resumeLinkedTaskGitCleanup(pending);
+            if (taskStillExists) {
+              if (pending.draft) {
+                await tauriIpc.workspaceDeleteManualFeatureDraft(pending.taskId);
+              } else {
+                await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
+              }
+            }
+            pending.executionTargets = resumed.executionTargets;
+          } catch (error) {
+            const message = toServiceError(error).message;
+            await upsertLinkedTaskDeletionSaga({
+              ...pending,
+              updatedAt: new Date().toISOString(),
+              lastError: message,
+            });
+            set({
+              lastError: `La suppression de la tâche reste en attente et sera reprise automatiquement : ${message}`,
+            });
+            continue;
+          }
+        }
+        const taskDeletedSaga: LinkedTaskDeletionSaga = {
+          ...pending,
+          phase: 'task_deleted',
+          updatedAt: new Date().toISOString(),
+        };
+        await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
+        const completed = await useChatStore
+          .getState()
+          .completeLinkedTaskConversationDeletion(pending.conversationId);
+        if (completed) {
+          await removeLinkedTaskDeletionSaga(pending.taskId);
+        } else {
+          await upsertLinkedTaskDeletionSaga({
+            ...taskDeletedSaga,
+            lastError: useChatStore.getState().lastError ?? undefined,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
       const nextMergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> =
         {};
       const nextPlanFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState> = {};
@@ -2395,6 +2599,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         };
       });
       const publishedStandaloneTasks = await buildStandalonePublicationMap(tasks);
+      if (requestId !== refreshRequestId) return;
       set({
         tasks,
         planSummaries: catalog.plans,
@@ -2425,6 +2630,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           try {
             const contextKey = selectedGroupId || selectedProjectId;
             const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
+            if (requestId !== refreshRequestId) return;
             const candidateTaskId = context?.lastTaskId;
             if (candidateTaskId) {
               const candidateTask = tasks.find((task) => task.id === candidateTaskId);
@@ -2455,8 +2661,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         });
       }
       if (activateSelectedTask && selectedTaskAfterRestore) {
-        void get().activateTask(selectedTaskAfterRestore);
-        void useChatStore.getState().ensureConversationForCurrentMode();
+        if (requestId === refreshRequestId) {
+          void get().activateTask(selectedTaskAfterRestore);
+          void useChatStore.getState().ensureConversationForCurrentMode();
+        }
       } else if (
         restoreSelection &&
         useAppStore.getState().mode === 'Implement' &&
@@ -2466,12 +2674,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         await useChatStore.getState().reapplySelectionForCurrentContext();
       }
     } catch (error) {
+      if (requestId !== refreshRequestId) return;
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message, publishedStandaloneTasks: {} });
     }
   },
 
   activateTask: async (taskId) => {
+    const requestId = ++taskActivationRequestId;
     const appState = useAppStore.getState();
     const task = get().tasks.find((candidate) => candidate.id === taskId);
     const mergeRuntime = task ? get().mergeWorkflowRuntimeByTaskId[task.id] ?? null : null;
@@ -2497,6 +2707,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           .map((projectId) => appState.getProjectById(projectId)?.path ?? null)
           .find((path): path is string => typeof path === 'string' && path.trim().length > 0) ?? null;
 
+      if (requestId !== taskActivationRequestId) return;
       set({
         activeBranchName: null,
         activeRepositoryPath: projectPath,
@@ -2518,6 +2729,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         appState.selectedProjectId
       );
 
+      if (requestId !== taskActivationRequestId) return;
       set({
         activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
         activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
@@ -2535,6 +2747,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const knownWorktree = primaryTarget
       ? await inspectTargetWorktreePath(primaryTarget, get().branchWorktrees)
       : null;
+    if (requestId !== taskActivationRequestId) return;
     if (knownWorktree) {
       if (primaryTarget) {
         set((state) => ({
@@ -2563,6 +2776,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ? appState.getProjectById(executionTask.project_id)?.path ?? null
       : null;
 
+    if (requestId !== taskActivationRequestId) return;
     set({
       activeBranchName: branchName,
       activeRepositoryPath: projectPath,
@@ -2574,6 +2788,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   createManualFeatureDraft: async (params) => {
     set({ lastError: null });
     assertTaskMutationRuntime('createManualFeatureDraft');
+    let draftCreated = false;
 
     try {
       if (!tauriIpc.isTauriAvailable()) {
@@ -2590,6 +2805,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         title: params.title ?? null,
         description: params.description ?? null,
       });
+      draftCreated = true;
 
       await get().refreshFromPlan();
       await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
@@ -2597,6 +2813,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       });
     } catch (error) {
       const normalized = toServiceError(error);
+      if (draftCreated) {
+        try {
+          await tauriIpc.workspaceDeleteManualFeatureDraft(params.taskId);
+          await get().refreshFromPlan();
+        } catch (rollbackError) {
+          const rollbackMessage = toServiceError(rollbackError).message;
+          normalized.message = `${normalized.message} Le brouillon créé n'a pas pu être annulé : ${rollbackMessage}`;
+        }
+      }
       set({ lastError: normalized.message });
       throw normalized;
     }
@@ -2850,7 +3075,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    if (isTaskCommandRunActive(taskId)) {
+    if (isTaskRuntimeActive(taskId)) {
       set({ lastError: getTaskCommandMutationBlockedMessage('archive') });
       return;
     }
@@ -2987,7 +3212,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    if (isTaskCommandRunActive(taskId)) {
+    if (isTaskRuntimeActive(taskId)) {
       set({ lastError: getTaskCommandMutationBlockedMessage('delete') });
       return;
     }
@@ -2996,6 +3221,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    let linkedConversationSaga: LinkedTaskDeletionSaga | null = null;
     try {
       if (!task.draft) {
         const published = await hasPublishedStandaloneBranch(task);
@@ -3017,21 +3243,59 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      for (const target of executionTargets) {
-        await tauriIpc.gitWorktreeRemove({
-          repoPath: target.repoPath,
-          taskId: target.worktreeKey,
-          force: true,
-          branchName: target.branchName,
-        });
-
-        const branches = await tauriIpc.gitBranchList(target.repoPath);
-        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
-          await tauriIpc.gitBranchDelete({
+      const branchSnapshots = new Map(
+        await Promise.all(
+          executionTargets.map(async (target) => [
+            target.worktreeKey,
+            await tauriIpc.gitBranchList(target.repoPath),
+          ] as const),
+        ),
+      );
+      linkedConversationSaga = task.conversation_id
+        ? {
+            taskId: task.id,
+            conversationId: task.conversation_id,
+            phase: 'prepared' as const,
+            draft: task.draft,
+            executionTargets: executionTargets.map((target) => ({
+              worktreeKey: target.worktreeKey,
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
+                (branch) => branch.name === target.branchName,
+              ),
+              worktreeRemoved: false,
+              branchRemoved: false,
+            })),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }
+        : null;
+      if (linkedConversationSaga) {
+        await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        linkedConversationSaga = {
+          ...linkedConversationSaga,
+          phase: 'task_deleting',
+          updatedAt: new Date().toISOString(),
+        };
+        await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
+      } else {
+        for (const target of executionTargets) {
+          await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
-            branchName: target.branchName,
+            taskId: target.worktreeKey,
             force: true,
+            branchName: target.branchName,
           });
+          const branches = branchSnapshots.get(target.worktreeKey) ?? { local: [] };
+          if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+            await tauriIpc.gitBranchDelete({
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              force: true,
+            });
+          }
         }
       }
 
@@ -3062,6 +3326,36 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       } else {
         await tauriIpc.workspaceDeleteManualFeature(taskId);
       }
+      let linkedConversationCleanupCompleted = true;
+      if (linkedConversationSaga) {
+        const taskDeletedSaga: LinkedTaskDeletionSaga = {
+          ...linkedConversationSaga,
+          phase: 'task_deleted',
+          updatedAt: new Date().toISOString(),
+        };
+        let sagaPersistenceError: unknown = null;
+        try {
+          await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
+          linkedConversationSaga = taskDeletedSaga;
+        } catch (error) {
+          sagaPersistenceError = error;
+        }
+        linkedConversationCleanupCompleted = await useChatStore
+          .getState()
+          .completeLinkedTaskConversationDeletion(task.conversation_id!);
+        if (linkedConversationCleanupCompleted && !sagaPersistenceError) {
+          await removeLinkedTaskDeletionSaga(task.id);
+        } else if (!linkedConversationCleanupCompleted) {
+          await upsertLinkedTaskDeletionSaga({
+            ...taskDeletedSaga,
+            lastError: useChatStore.getState().lastError ?? undefined,
+            updatedAt: new Date().toISOString(),
+          }).catch(() => undefined);
+        }
+        if (sagaPersistenceError) {
+          throw toServiceError(sagaPersistenceError);
+        }
+      }
 
       try {
         await removeManualFeatureMetadata(task);
@@ -3075,14 +3369,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         useAppStore.getState().setSelectedTask(null);
       }
 
-      if (task.conversation_id) {
-        const chatState = useChatStore.getState();
-        const conversationExists = chatState.conversations.some(
-          (conversation) => conversation.id === task.conversation_id
+      const cleanupStillPending = linkedConversationSaga && !linkedConversationCleanupCompleted
+        ? (await loadLinkedTaskDeletionSagas()).some(
+            (pending) => pending.taskId === linkedConversationSaga?.taskId,
+          )
+        : false;
+      if (cleanupStillPending) {
+        throw new Error(
+          'La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente et sera repris automatiquement.',
         );
-        if (conversationExists) {
-          await chatState.deleteConversation(task.conversation_id, { mode: 'implement' });
-        }
       }
     } catch (error) {
       const normalized = toServiceError(error);
@@ -3135,6 +3430,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     if (task.status === 'Completed') {
       set({ lastError: tTask('implement.errors.taskAlreadyCompleted', 'Task is already completed.') });
       return;
+    }
+    if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
+      const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
+      set({ lastError: error.message });
+      throw error;
     }
 
     if (task.status === 'InProgress') {
@@ -3934,6 +4234,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: null });
       return;
     }
+    if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
+      const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
+      set({ lastError: error.message });
+      throw error;
+    }
 
     if (isTaskCommandRunActive(taskId) || !acquireTaskOperation(taskId, 'merge')) {
       const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
@@ -4150,31 +4455,26 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           status: 'completed',
           setActive: false,
         });
-        const archivedPlan = await archiveArchitectPlan(branchName, plan.id);
-        const cleanup = await cleanupPlanBranches(archivedPlan, undefined, {
-          allowRetained: true,
+        const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranches({ branchName, planId: plan.id, requireMetadataCommit: true });
+        await commitArchitectPlanMetadata({
+          branchName,
+          planId: task.plan_id,
+          commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
         });
+        await upsertPlanLifecycleSaga({
+          planId: plan.id, branchName, operation: 'archive', phase: 'metadata_committed',
+          conversationId: plan.conversationId ?? null, requiresMetadataCommit: true,
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        });
+        await removePlanLifecycleSaga(plan.id, 'archive');
         await get().refreshFromPlan();
-        let metadataCommitSucceeded = true;
-        try {
-          await commitArchitectPlanMetadata({
-            branchName,
-            planId: task.plan_id,
-            commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
-          });
-        } catch (error) {
-          metadataCommitSucceeded = false;
-          set({ lastError: toServiceError(error).message });
-        }
-        if (metadataCommitSucceeded) {
-          await persistRuntime(null);
-          get().clearPlanRuntimeState({
-            planId: archivedPlan.id,
-            deletedWorktreeKeys: cleanup.flatMap((repository) =>
-              repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
-            ),
-          });
-        }
+        await persistRuntime(null);
+        get().clearPlanRuntimeState({
+          planId: archivedPlan.id,
+          deletedWorktreeKeys: cleanup.flatMap((repository) =>
+            repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
+          ),
+        });
         return;
       }
 
@@ -4459,6 +4759,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         } catch (error) {
           const normalized = toServiceError(error);
           set({ lastError: normalized.message });
+          throw normalized;
         }
 
         try {
@@ -4478,6 +4779,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         } catch (error) {
           const normalized = toServiceError(error);
           set({ lastError: normalized.message });
+          throw normalized;
         }
 
         await commitArchitectPlanMetadataForTask(
@@ -4608,14 +4910,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           })
         );
       }
-      const cleanup = await cleanupPlanBranches(plan);
+      const { cleanup } = await archivePlanAndCleanupBranches({ branchName, planId });
       get().clearPlanRuntimeState({
         planId,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
           repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
         ),
       });
-      await archiveArchitectPlan(branchName, planId);
       if (useAppStore.getState().selectedTaskId === buildPlanFinalizationTaskId(planId)) {
         useAppStore.getState().setSelectedTask(null);
       }
@@ -4742,11 +5043,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       };
     }
 
-    const result = await tauriIpc.gitStartMergeResolution({
-      repoPath: repository.repoPath,
-      branchName: repository.sourceBranchName,
-      intoBranch: repository.targetBranchName,
-    });
+    const result = await serializeMergeWorkflowRepositoryOperation(repository, () =>
+      tauriIpc.gitStartMergeResolution({
+        repoPath: repository.repoPath,
+        branchName: repository.sourceBranchName,
+        intoBranch: repository.targetBranchName,
+      })
+    );
     const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
     if (task && refreshedRuntime && result.status === 'merged') {
       const completedRuntime = evolveMergeWorkflowRuntimeRepository({
@@ -4768,9 +5071,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
-    const output = await tauriIpc.gitCompleteMerge({
-      repoPath: repository.repoPath,
-    });
+    const output = await serializeMergeWorkflowRepositoryOperation(repository, () =>
+      tauriIpc.gitCompleteMerge({
+        repoPath: repository.repoPath,
+      })
+    );
     const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
     if (task && refreshedRuntime) {
       const completedRuntime = evolveMergeWorkflowRuntimeRepository({
@@ -4791,10 +5096,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    await tauriIpc.gitAbortMerge({
-      repoPath: repository.repoPath,
-      confirm: true,
-    });
+    await serializeMergeWorkflowRepositoryOperation(repository, () =>
+      tauriIpc.gitAbortMerge({
+        repoPath: repository.repoPath,
+        confirm: true,
+      })
+    );
     await get().loadMergeWorkflowReview(taskId, { force: true });
   },
 

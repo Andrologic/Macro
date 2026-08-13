@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, transformWithEsbuild } from "vite";
 import react from "@vitejs/plugin-react";
@@ -9,6 +9,16 @@ const host = process.env.TAURI_DEV_HOST;
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 const ALLOWED_PUBLIC_SECRET_FILES = new Set(["ai-keys.local.example.json"]);
 const MERMAID_PARSER_VIRTUAL_PREFIX = "\0macro-mermaid-parser-source:";
+
+export const isPathInside = (parentPath: string, candidatePath: string): boolean => {
+  const relativePath = relative(parentPath, candidatePath);
+  return (
+    relativePath !== "" &&
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+};
 
 const createMermaidParserSourcePlugin = () => {
   const parserPackageRoot = resolve(projectRoot, "node_modules/@mermaid-js/parser");
@@ -33,7 +43,7 @@ const createMermaidParserSourcePlugin = () => {
         const absoluteSourcePath = resolve(dirname(entryPath), sourcePath);
         const source = sourceMap.sourcesContent?.[index];
         if (
-          absoluteSourcePath.startsWith(`${parserSourceRoot}${sep}`) &&
+          isPathInside(parserSourceRoot, absoluteSourcePath) &&
           typeof source === "string"
         ) {
           sourceByAbsolutePath.set(absoluteSourcePath, source);

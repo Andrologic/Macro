@@ -110,7 +110,7 @@ describe('taskTodoToolService', () => {
     expect(target.node.id).toBe('task-1');
   });
 
-  it('refuses to target a task outside the current Implement plan', async () => {
+  it('refuses to target another task, including one in the current Implement plan', async () => {
     await expect(
       resolveTaskTodoTarget({
         args: { task_id: 'task-2' },
@@ -118,11 +118,11 @@ describe('taskTodoToolService', () => {
         selectedTaskId: 'task-1',
         tasks: [
           createTask(),
-          createTask({ id: 'task-2', plan_id: 'plan-2', title: 'Task 2' }),
+          createTask({ id: 'task-2', title: 'Task 2' }),
         ],
         getArchitectPlan: mock(async () => createPlan()),
       }),
-    ).rejects.toThrow('outside the current Implement plan');
+    ).rejects.toThrow('current Implement task context');
   });
 
   it('refuses updates to archived Architect tasks', async () => {

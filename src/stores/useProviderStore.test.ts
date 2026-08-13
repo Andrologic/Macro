@@ -94,6 +94,12 @@ const aiGetCopilotStatusMock = mock(async (): Promise<CopilotStatusDto> => ({
   error_message: 'GitHub Copilot runtime is not installed.',
 }));
 const aiSyncProviderModelsMock = mock(async () => []);
+const aiProvisionMacroAiMock = mock(async () => ({
+  providerId: 'macro-ai',
+  modelId: 'macro-ai',
+  contextWindowTokens: 131_072,
+  activatedNow: false,
+}));
 const fetchModelsFromProviderMock = mock(async () => ({
   success: true,
   models: [],
@@ -241,6 +247,7 @@ const loadProviderStore = async () => {
     aiCancelCopilotRuntimeDownload: aiCancelCopilotRuntimeDownloadMock,
     aiGetCopilotStatus: aiGetCopilotStatusMock,
     aiSyncProviderModels: aiSyncProviderModelsMock,
+    aiProvisionMacroAi: aiProvisionMacroAiMock,
     getChatSnapshot: mock(async () => ({ conversations: [], messages: [] })),
     listConversations: mock(async () => []),
     importMessages: mock(async () => []),
@@ -293,6 +300,7 @@ describe('useProviderStore secret resolution', () => {
     aiCancelCopilotRuntimeDownloadMock.mockClear();
     aiGetCopilotStatusMock.mockClear();
     aiSyncProviderModelsMock.mockClear();
+    aiProvisionMacroAiMock.mockClear();
     aiDownloadCopilotRuntimeMock.mockImplementation(
       async (_params: { requestId: string; providerId?: string }) => undefined
     );
@@ -370,10 +378,51 @@ describe('useProviderStore secret resolution', () => {
     await providerStore.useProviderStore.getState().initialize();
 
     expect(loadPreferenceMock).not.toHaveBeenCalled();
+    expect(aiProvisionMacroAiMock).toHaveBeenCalledTimes(1);
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
     expect(providerStore.useProviderStore.getState().selectedProviderId).toBeNull();
     expect(providerStore.useProviderStore.getState().selectedModelId).toBeNull();
+  });
+
+  it('selects the managed Macro AI model by default after activation', async () => {
+    listProviderConfigsMock.mockImplementationOnce(async () => [
+      {
+        id: 'macro-ai',
+        name: 'Andrologic',
+        provider_type: 'openai',
+        base_url: 'https://lmstudio.andrologic.ai/v1',
+        api_key: null,
+        has_stored_api_key: true,
+        is_enabled: true,
+        is_local: false,
+        auth_status: null,
+        auth_source: null,
+        plan_type: null,
+        account_label: null,
+        token_expires_at: null,
+        created_at: '2026-08-10T00:00:00.000Z',
+        updated_at: '2026-08-10T00:00:00.000Z',
+      },
+    ]);
+    listProviderModelsMock.mockImplementationOnce(
+      async () =>
+        [
+          dbModel('macro-ai', 'macro-ai', {
+            name: 'Macro AI',
+            context_window_tokens: 131_072,
+            input_limit_tokens: 120_000,
+            output_limit_tokens: 11_072,
+            context_window_source: 'provider_metadata',
+          }),
+        ] as never[]
+    );
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().initialize();
+
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBe('macro-ai');
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('macro-ai');
   });
 
   it('clears cached secret metadata when the key is removed', async () => {
@@ -464,9 +513,40 @@ describe('useProviderStore secret resolution', () => {
     });
 
     expect(createProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(createProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: true })
+    );
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves enabled state and infers local custom Ollama providers', async () => {
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().createProviderConfig({
+      name: 'Custom Ollama',
+      providerType: 'ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: '',
+      isEnabled: false,
+      isLocal: false,
+    });
+
+    expect(createProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: false, isLocal: true })
+    );
+  });
+
+  it('rejects a second ChatGPT OAuth start while one is active', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      authRequestIdsByProvider: { chatgpt: 'already-started' },
+    });
+
+    await expect(
+      providerStore.useProviderStore.getState().startChatGptAuth('chatgpt')
+    ).rejects.toThrow('ChatGPT login is already in progress');
   });
 
   it('rejects provider mutations outside desktop IPC', async () => {

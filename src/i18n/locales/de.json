@@ -232,15 +232,15 @@
       "pulling": "Ziehen...",
       "push": "Push",
       "pushing": "Schieben...",
-      "fetchComplete": "Fetch complete",
-      "fetchPending": "Fetch complete, action required",
-      "fetchIncomplete": "Fetch incomplete",
-      "pullComplete": "Pull complete",
-      "pullPending": "Pull complete, action required",
-      "pullIncomplete": "Pull incomplete",
-      "pushComplete": "Push complete",
-      "pushPending": "Push complete, action required",
-      "pushIncomplete": "Push incomplete",
+      "fetchComplete": "Fetch abgeschlossen",
+      "fetchPending": "Fetch abgeschlossen, Aktion erforderlich",
+      "fetchIncomplete": "Fetch unvollständig",
+      "pullComplete": "Pull abgeschlossen",
+      "pullPending": "Pull abgeschlossen, Aktion erforderlich",
+      "pullIncomplete": "Pull unvollständig",
+      "pushComplete": "Push abgeschlossen",
+      "pushPending": "Push abgeschlossen, Aktion erforderlich",
+      "pushIncomplete": "Push unvollständig",
       "resolve": "Lösen",
       "review": "Prüfen",
       "retrySync": "Versuchen Sie die Synchronisierung erneut",
@@ -381,6 +381,7 @@
     "resetZoom": "Zoom zurücksetzen",
     "renderingDiagram": "Rendering-Diagramm...",
     "mermaidRenderError": "Das Meerjungfrau-Diagramm kann nicht gerendert werden",
+    "copyFailed": "Der Diagrammcode konnte nicht kopiert werden.",
     "inputTokens": "Eingabe",
     "contextTokens": "Kontext",
     "tokens": "Token",
@@ -397,6 +398,9 @@
     "selectConversation": "Konversation auswählen",
     "unpinConversation": "Lösen",
     "pinConversation": "Pin",
+    "pinConversationFailed": "Die angeheftete Konversation konnte nicht aktualisiert werden.",
+    "archiveConversationFailed": "Die archivierte Konversation konnte nicht aktualisiert werden.",
+    "exportConversationFailed": "Die Konversation konnte nicht exportiert werden.",
     "renameConversationTitle": "Konversation umbenennen",
     "renameConversationDescription": "Wählen Sie einen neuen Titel für dieses Gespräch.",
     "conversationName": "Gesprächsname",
@@ -526,6 +530,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Archivierte Unterhaltungen konnten nicht geladen werden.",
+    "archivePreferenceSaveFailed": "Archivierte Unterhaltungen konnten nicht gespeichert werden.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1359,6 +1365,9 @@
       "errorArchivePlan": "Der Plan konnte nicht archiviert werden.",
       "errorRestorePlan": "Der Plan konnte nicht wiederhergestellt werden.",
       "errorDeletePlan": "Der Plan konnte nicht gelöscht werden.",
+      "errorArchivePlanCleanup": "Der Plan wurde archiviert, aber die Git-Bereinigung ist fehlgeschlagen. Löschen Sie den archivierten Plan, um die Bereinigung erneut zu versuchen.",
+      "errorDeletePlanConversation": "Der Plan wurde gelöscht, aber die Bereinigung seiner Konversation steht noch aus.",
+      "warningDeletePlanConversationPending": "Der Plan wurde gelöscht, aber die Bereinigung der verknüpften Konversation steht noch aus und wird automatisch erneut versucht.",
       "autoCreateError": "Der Standardplan kann nicht automatisch aus dem Basistitel erstellt werden.{{title}}\".",
       "unarchivePlan": "Plan dearchivieren",
       "archiveBeforeDelete": "Archivieren Sie den Plan, bevor Sie ihn löschen.",
@@ -1445,7 +1454,7 @@
     "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
     "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
     "frozenNodeLocked": "Locked",
-    "taskTodos": "TODO attaché",
+    "taskTodos": "Verknüpftes TODO",
     "expectedArtifacts": "Expected artifacts",
     "artifacts": "Artifacts",
     "openArtifacts": "Open artifacts",
@@ -1467,13 +1476,13 @@
   },
   "git": {
     "gitTree": "Git-Baum",
-    "gitGraph": "Git Graph",
-    "branches": "Branches",
+    "gitGraph": "Git-Diagramm",
+    "branches": "Zweige",
     "commits": "Commits",
     "changes": "Änderungen",
-    "staged": "Staged",
-    "unstaged": "Unstaged",
-    "noCommitsInBranch": "Noch keine Commits in dieser Branch.",
+    "staged": "Vorgemerkt",
+    "unstaged": "Nicht vorgemerkt",
+    "noCommitsInBranch": "Noch keine Commits in diesem Zweig.",
     "legend": "Legende",
     "done": "Fertig",
     "planned": "Geplant",
@@ -1483,6 +1492,11 @@
     "totalChanges": "totale Veränderungen"
   },
   "providers": {
+    "macroAi": {
+      "included": "KI in der Macro-Beta enthalten",
+      "dropdownNotice": "KI in der Beta enthalten",
+      "loggingNotice": "Für den Betrieb und die Verbesserung dieses gemeinsam genutzten Beta-Dienstes werden an Macro AI gesendete Gespräche und Token-Nutzungsmetriken auf dem Inferenzserver protokolliert."
+    },
     "add": "Provider hinzufügen",
     "edit": "Provider bearbeiten",
     "created": "Provider erstellt",
@@ -1563,25 +1577,25 @@
       "secret_persist_failed": "Die ChatGPT-Anmeldung war erfolgreich, die Sitzung konnte jedoch nicht gespeichert werden."
     },
     "copilot": {
-      "downloadRuntime": "Download Copilot",
-      "runtimeDownloaded": "GitHub Copilot runtime is ready",
-      "runtimeDownloadFailed": "Failed to download GitHub Copilot runtime",
-      "downloadHint": "Download the official GitHub Copilot runtime to continue.",
-      "updateHint": "Download a Macro-managed GitHub Copilot runtime to continue.",
-      "troubleshootHint": "GitHub Copilot needs attention before it can be used.",
-      "connectHint": "Connect GitHub Copilot to finish setup.",
-      "troubleshoot": "Troubleshoot",
-      "recheckStatus": "Re-check status",
-      "oauthConnectedHint": "Use Copilot CLI on this machine to switch accounts.",
-      "ghCliConnectedHint": "Using the GitHub CLI session available on this machine.",
-      "envConnectedHint": "Using a Copilot token provided by this machine environment.",
-      "connectedInTerminalHint": "Connected in this machine terminal session.",
-      "finishLoginTitle": "Finish login in your browser",
-      "deviceCode": "Device code",
-      "browserUrl": "Browser URL",
-      "copyCode": "Copy code",
-      "codeCopied": "Device code copied",
-      "openBrowser": "Open browser"
+      "downloadRuntime": "Copilot herunterladen",
+      "runtimeDownloaded": "Die GitHub-Copilot-Laufzeit ist bereit",
+      "runtimeDownloadFailed": "Die GitHub-Copilot-Laufzeit konnte nicht heruntergeladen werden",
+      "downloadHint": "Laden Sie die offizielle GitHub-Copilot-Laufzeit herunter, um fortzufahren.",
+      "updateHint": "Laden Sie eine von Macro verwaltete GitHub-Copilot-Laufzeit herunter, um fortzufahren.",
+      "troubleshootHint": "GitHub Copilot erfordert Ihre Aufmerksamkeit, bevor es verwendet werden kann.",
+      "connectHint": "Verbinden Sie GitHub Copilot, um die Einrichtung abzuschließen.",
+      "troubleshoot": "Problembehandlung",
+      "recheckStatus": "Status erneut prüfen",
+      "oauthConnectedHint": "Verwenden Sie Copilot CLI auf diesem Computer, um das Konto zu wechseln.",
+      "ghCliConnectedHint": "Die auf diesem Computer verfügbare GitHub-CLI-Sitzung wird verwendet.",
+      "envConnectedHint": "Ein von der Umgebung dieses Computers bereitgestelltes Copilot-Token wird verwendet.",
+      "connectedInTerminalHint": "In der Terminalsitzung dieses Computers verbunden.",
+      "finishLoginTitle": "Anmeldung im Browser abschließen",
+      "deviceCode": "Gerätecode",
+      "browserUrl": "Browser-URL",
+      "copyCode": "Code kopieren",
+      "codeCopied": "Gerätecode kopiert",
+      "openBrowser": "Browser öffnen"
     }
   },
   "tools": {
@@ -1679,7 +1693,11 @@
       "serverAdded": "MCP-Server hinzugefügt.",
       "toolsRefreshed": "MCP-Tools aktualisiert.",
       "refreshFailed": "MCP-Tools konnten nicht aktualisiert werden.",
-      "serverDeleted": "MCP-Server gelöscht."
+      "serverDeleted": "MCP-Server gelöscht.",
+      "identifierCollision": "Ein MCP-Server mit dieser Kennung ist bereits vorhanden.",
+      "saveFailed": "Der MCP-Server konnte nicht gespeichert werden.",
+      "deleteFailed": "Der MCP-Server konnte nicht gelöscht werden.",
+      "toggleFailed": "Der MCP-Server konnte nicht aktualisiert werden."
     }
   },
   "account": {
@@ -1712,7 +1730,46 @@
     "saveFailed": "Anbieter konnte nicht gespeichert werden",
     "nextStep": "Nächster Schritt",
     "hideDetails": "Details ausblenden",
-    "showDetails": "Details anzeigen"
+    "showDetails": "Details anzeigen",
+    "degraded": {
+      "fallback": { "title": "Hier ist Ihre Aufmerksamkeit erforderlich", "body": "Macro konnte diese Aktion nicht sicher abschließen.", "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut.", "dynamic": "{{message}}" },
+      "worktree": {
+        "checkedOut": { "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten", "body": "Der für diese Aufgabe benötigte Branch ist im Haupt-Repository noch mit lokalen Änderungen geöffnet.", "nextStep": "Committen, stashen oder verwerfen Sie diese lokalen Änderungen und starten Sie die Aufgabe erneut." },
+        "missingBase": { "title": "Macro konnte den Basis-Branch nicht finden", "body": "Diese Aufgabe benötigt einen Basis-Branch, bevor ihr Worktree erstellt werden kann.", "nextStep": "Erstellen Sie den Branch oder aktualisieren Sie die Git-Workflow-Einstellungen des Projekts und versuchen Sie es erneut." },
+        "fallback": { "title": "Macro konnte den Aufgabenarbeitsbereich nicht vorbereiten", "body": "Der Aufgabenarbeitsbereich ist noch nicht bereit. Macro kann Dateien daher nicht sicher prüfen oder bearbeiten.", "nextStep": "Starten Sie die Aufgabe erneut. Falls sie weiterhin fehlschlägt, öffnen Sie die Git-Einstellungen des Projekts und prüfen Sie den Repository-Status." }
+      },
+      "readOnly": { "title": "Dieses Projekt ist nur zum Lesen verfügbar", "body": "Dieses Projekt kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.", "namedBody": "{{projectName}} kann als Kontext verwendet werden, Macro kann dort aber noch keine Branches, Worktrees, Commits oder Merges erstellen.", "missingGitNextStep": "Initialisieren Sie Git für dieses Projekt und aktivieren Sie anschließend die Bearbeitung.", "settingsNextStep": "Öffnen Sie die Projekteinstellungen und stellen Sie sicher, dass der Git-Workflow bereit ist." },
+      "replica": {
+        "missing": { "titleSingular": "Planmetadaten fehlen in {{count}} Repository", "titlePlural": "Planmetadaten fehlen in {{count}} Repositories", "body": "Macro benötigt alle erwarteten Replikate der Planmetadaten, bevor der Plan sicher aktualisiert werden kann.", "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut." },
+        "diverged": { "title": "Planmetadaten unterscheiden sich zwischen Repositories", "body": "Macro hat mehrere Versionen dieser Planmetadaten gefunden und muss vor dem Fortfahren eine kanonische Kopie auswählen.", "nextStep": "Reparieren Sie anhand des neuesten Replikats, sofern Sie nicht absichtlich eine ältere Kopie benötigen." }
+      },
+      "gitFlow": {
+        "repositoryDirty": { "title": "Das Repository enthält lokale Änderungen", "body": "Macro kann diesen Merge nicht abschließen, solange das Ziel-Repository nicht zugehörige, uncommittete Änderungen enthält.", "nextStep": "Committen, stashen oder verwerfen Sie die lokalen Änderungen und versuchen Sie den Merge erneut." },
+        "mergeInProgress": { "title": "Ein Merge läuft bereits", "body": "Macro hat in diesem Repository einen unvollständigen Merge gefunden.", "nextStep": "Schließen Sie den vorhandenen Merge ab oder brechen Sie ihn ab und versuchen Sie es erneut." },
+        "conflict": { "title": "Lösen Sie diese Konflikte vor dem Abschluss", "body": "Der Plan kann noch nicht sauber zusammengeführt werden.", "filesNextStep": "Lösen Sie die aufgeführten Dateien und versuchen Sie den Merge erneut.", "blockersNextStep": "Beheben Sie die Merge-Blockaden und versuchen Sie es erneut." }
+      },
+      "metadata": {
+        "clean": { "title": "Die @macro-Metadaten sind aktuell", "body": "Es ist keine Aktion erforderlich." },
+        "dirty": { "title": "Die @macro-Metadaten enthalten lokale Änderungen", "body": "Macro muss Metadatenänderungen vor der Synchronisierung speichern.", "nextStep": "Speichern Sie die @macro-Metadaten und versuchen Sie die Synchronisierung erneut." },
+        "ahead": { "title": "Die @macro-Metadaten können veröffentlicht werden", "body": "Ihr lokaler Metadaten-Branch enthält Änderungen, die noch nicht im Remote-Repository liegen.", "nextStep": "Pushen Sie @macro, sobald Sie bereit sind." },
+        "behind": { "title": "Die @macro-Metadaten liegen hinter dem Remote-Stand", "body": "Die Remote-Metadaten enthalten Aktualisierungen, die lokal noch fehlen.", "nextStep": "Pullen Sie @macro und versuchen Sie die Aktion erneut." },
+        "diverged": { "title": "Die @macro-Metadaten sind divergiert", "body": "Sowohl lokale als auch Remote-Metadaten wurden geändert.", "nextStep": "Pullen Sie @macro, lösen Sie mögliche Konflikte und pushen Sie anschließend." },
+        "mergeConflict": { "title": "Die @macro-Metadaten enthalten Konflikte", "body": "Der Metadaten-Branch enthält nicht aufgelöste Konfliktdateien.", "nextStep": "Lösen Sie die Konflikte in den Metadatendateien und wiederholen Sie denselben Synchronisierungsschritt." },
+        "missingOrigin": { "title": "Das Remote-Repository für @macro ist nicht konfiguriert", "body": "Macro kann die Metadaten nicht synchronisieren, weil das Repository kein origin-Remote besitzt.", "nextStep": "Konfigurieren Sie das Git-Remote und versuchen Sie es erneut." },
+        "missingUpstream": { "title": "@macro besitzt keinen Upstream-Branch", "body": "Der Metadaten-Branch ist lokal vorhanden, aber noch nicht mit einem Remote-Branch verknüpft.", "nextStep": "Pushen Sie @macro zur Veröffentlichung oder ignorieren Sie diese Warnung, um die Metadaten lokal zu behalten." },
+        "authRequired": { "title": "Git-Authentifizierung ist erforderlich", "body": "Macro kann mit den aktuellen Anmeldedaten nicht auf das Metadaten-Remote zugreifen.", "nextStep": "Konfigurieren Sie die Git-Authentifizierung und versuchen Sie es erneut." },
+        "networkError": { "title": "Die Metadatensynchronisierung konnte das Remote-Repository nicht erreichen", "body": "Das Netzwerk oder der Remote-Dienst ist derzeit nicht verfügbar.", "nextStep": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut." },
+        "unknownError": { "title": "Die Macro-Metadatensynchronisierung ist fehlgeschlagen", "body": "Macro konnte die Metadatensynchronisierung nicht sicher abschließen.", "nextStep": "Versuchen Sie die Synchronisierung erneut. Prüfen Sie bei einem weiteren Fehler die technischen Details." }
+      },
+      "service": {
+        "resourcePressure": { "title": "Macro ist vorübergehend überlastet", "body": "Im System sind zu viele Dateien geöffnet. Macro hat daher automatische Repository-Aktualisierungen vor dem erneuten Versuch pausiert.", "nextStep": "Warten Sie einen Moment und versuchen Sie es erneut. Falls das Problem bestehen bleibt, schließen Sie zusätzliche Projektfenster oder Terminals." },
+        "replicaRepair": { "title": "Die Planmetadaten müssen repariert werden", "body": "Macro hat inkonsistente Planmetadaten gefunden und muss die kanonische Kopie vor dem Fortfahren reparieren.", "nextStep": "Reparieren Sie die Planmetadaten und versuchen Sie es erneut." },
+        "metadataMissing": { "title": "Die Planmetadaten sind unvollständig", "body": "Macro hat eine Aufgabe oder Unterhaltung gefunden, die auf fehlende oder nur teilweise gespeicherte Planmetadaten verweist.", "nextStep": "Reparieren Sie die Metadatenverknüpfungen und versuchen Sie es erneut." },
+        "workspaceUnavailable": { "title": "Der Arbeitsbereichsstatus ist vorübergehend nicht verfügbar", "body": "Macro konnte den für diese Aktion erforderlichen Arbeitsbereichsstatus nicht lesen.", "nextStep": "Versuchen Sie es nach Abschluss der Arbeitsbereichsaktualisierung erneut. Öffnen Sie das Projekt neu, falls das Problem bestehen bleibt." },
+        "gitNotReady": { "title": "Dieses Projekt ist noch nicht zur Bearbeitung bereit", "body": "Macro kann dieses Projekt weiterhin als Kontext verwenden, aber erst darin schreiben, wenn Git bereit ist.", "nextStep": "Öffnen Sie die Projekteinstellungen und schließen Sie die Git-Einrichtung ab." },
+        "fallback": { "title": "Hier ist Ihre Aufmerksamkeit erforderlich", "nextStep": "Prüfen Sie die Details, beheben Sie den blockierenden Zustand und versuchen Sie es erneut." }
+      }
+    }
   },
   "toast": {
     "languageChanged": "Sprache geändert zu {{language}}",
@@ -1786,6 +1843,8 @@
     "commitUseConversationModel": "Konversationsmodell verwenden",
     "commitUseDedicatedModel": "Dediziertes Modell verwenden",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Die Metadaten-Modellpräferenz konnte nicht geladen werden.",
+    "metadataPreferenceSaveFailed": "Die Metadaten-Modellpräferenz konnte nicht gespeichert werden.",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -1997,6 +2056,12 @@
     "searchPlaceholder": "Terminal durchsuchen",
     "searchPrevious": "Vorheriger Treffer",
     "searchNext": "Nächster Treffer"
+  },
+  "codeViewer": {
+    "title": "Code-Datei",
+    "copied": "Kopiert",
+    "copyCode": "Code kopieren",
+    "copyFailed": "Der Code konnte nicht kopiert werden."
   },
   "notify": {
     "connectionFailed": "Connection failed",

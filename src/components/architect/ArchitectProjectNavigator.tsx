@@ -99,7 +99,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [creatingScopeId, setCreatingScopeId] = useState<string | null>(null);
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
   const [activatingPlanId, setActivatingPlanId] = useState<string | null>(null);
-  const [openPlanMenuId, setOpenPlanMenuId] = useState<string | null>(null);
+  const [openPlanMenuKey, setOpenPlanMenuKey] = useState<string | null>(null);
   const [openScopeMenuId, setOpenScopeMenuId] = useState<string | null>(null);
   const [planToEdit, setPlanToEdit] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [planToDelete, setPlanToDelete] = useState<ArchitectNavigatorPlanEntry | null>(null);
@@ -278,7 +278,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [applyScopeSelection, expandedScopeIds, persistExpandedScopes]);
 
   const selectAndToggleScope = useCallback((scope: ArchitectNavigatorScope) => {
-    setOpenPlanMenuId(null);
+    setOpenPlanMenuKey(null);
     setOpenScopeMenuId(null);
     applyScopeSelection(scope);
     persistExpandedScopes(toggleArchitectNavigatorScope(expandedScopeIds, scope.id));
@@ -355,7 +355,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
 
   const archivePlan = async (entry: ArchitectNavigatorPlanEntry) => {
     if (mutatingPlanId) return;
-    setOpenPlanMenuId(null);
+    setOpenPlanMenuKey(null);
     setMutatingPlanId(entry.plan.id);
     let releaseMutation: (() => void) | null = null;
     try {
@@ -483,7 +483,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         const selectedPlans = entriesByScope.get(selectedScope.id) ?? [];
         if (selectedPlans.length === 0) {
           setLeftPanelOpen(true);
-          setOpenPlanMenuId(null);
+          setOpenPlanMenuKey(null);
           setOpenScopeMenuId(selectedScope.id);
         }
       } else {
@@ -495,19 +495,19 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [entriesByScope, expandedScopeIds, openProjectNavigator, persistExpandedScopes, selectedScope, setLeftPanelOpen]);
 
   useEffect(() => {
-    if (!openPlanMenuId && !openScopeMenuId) return;
+    if (!openPlanMenuKey && !openScopeMenuId) return;
 
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (
         event.target instanceof Element
         && event.target.closest('[data-architect-plan-menu], [data-architect-scope-menu]')
       ) return;
-      setOpenPlanMenuId(null);
+      setOpenPlanMenuKey(null);
       setOpenScopeMenuId(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setOpenPlanMenuId(null);
+        setOpenPlanMenuKey(null);
         setOpenScopeMenuId(null);
       }
     };
@@ -518,7 +518,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
       document.removeEventListener('keydown', closeOnEscape);
     };
-  }, [openPlanMenuId, openScopeMenuId]);
+  }, [openPlanMenuKey, openScopeMenuId]);
 
   const renderPlanRow = (entry: ArchitectNavigatorPlanEntry, showScope = false) => {
     const isActive = entry.plan.id === activeArchitectPlanId;
@@ -527,9 +527,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     const kind = getArchitectPlanKind(entry.plan);
     const capabilities = getArchitectPlanCrudCapabilities(entry.plan);
     const isMutating = mutatingPlanId === entry.plan.id;
+    const planMenuKey = `${showScope ? 'overview' : entry.scopeId}:${entry.plan.id}`;
     return (
       <div
-        key={`${showScope ? 'pinned' : entry.scopeId}:${entry.plan.id}`}
+        key={planMenuKey}
         className={cn(
           'group/plan relative flex min-w-0 items-center rounded-md pr-1 transition-colors',
           isActive
@@ -541,7 +542,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           event.stopPropagation();
           if (isBusy) return;
           setOpenScopeMenuId(null);
-          setOpenPlanMenuId(entry.plan.id);
+          setOpenPlanMenuKey(planMenuKey);
         }}
       >
         <button
@@ -590,7 +591,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             type="button"
             onClick={() => {
               setOpenScopeMenuId(null);
-              setOpenPlanMenuId((current) => current === entry.plan.id ? null : entry.plan.id);
+              setOpenPlanMenuKey((current) => current === planMenuKey ? null : planMenuKey);
             }}
             className={cn(
               'flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 group-hover/plan:opacity-100 group-focus-within/plan:opacity-100',
@@ -598,17 +599,17 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             )}
             title={t('architect.projectNavigator.planActions', 'Actions du plan')}
             aria-label={t('architect.projectNavigator.planActions', 'Actions du plan')}
-            aria-expanded={openPlanMenuId === entry.plan.id}
+            aria-expanded={openPlanMenuKey === planMenuKey}
           >
             <Icon name="more-horizontal" size={12} />
           </button>
-          {openPlanMenuId === entry.plan.id && (
+          {openPlanMenuKey === planMenuKey && (
             <div className="absolute right-0 top-8 z-30 w-44 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-xl">
               {entry.plan.status !== 'archived' && (
                 <button
                   type="button"
                   onClick={() => {
-                    setOpenPlanMenuId(null);
+                    setOpenPlanMenuKey(null);
                     togglePin(entry.plan.id);
                   }}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"
@@ -623,7 +624,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 <button
                   type="button"
                   onClick={() => {
-                    setOpenPlanMenuId(null);
+                    setOpenPlanMenuKey(null);
                     setFormError(null);
                     setPlanToEdit(entry);
                   }}
@@ -649,7 +650,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                 <button
                   type="button"
                   onClick={() => {
-                    setOpenPlanMenuId(null);
+                    setOpenPlanMenuKey(null);
                     setPlanToDelete(entry);
                   }}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-red-400 hover:bg-red-500/10"
@@ -769,7 +770,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     event.preventDefault();
                     if (isBusy) return;
                     applyScopeSelection(scope);
-                    setOpenPlanMenuId(null);
+                    setOpenPlanMenuKey(null);
                     setOpenScopeMenuId(scope.id);
                   }}
                 >
@@ -809,7 +810,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                     <button
                       type="button"
                       onClick={() => {
-                        setOpenPlanMenuId(null);
+                    setOpenPlanMenuKey(null);
                         setOpenScopeMenuId((current) => current === scope.id ? null : scope.id);
                       }}
                       disabled={isBusy || creatingScopeId === scope.id || !canCreatePlan}
@@ -891,7 +892,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                         <button
                           type="button"
                           onClick={() => {
-                            setOpenPlanMenuId(null);
+                            setOpenPlanMenuKey(null);
                             setOpenScopeMenuId(scope.id);
                           }}
                           disabled={!canCreatePlan || isBusy}
@@ -954,7 +955,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         <button
           type="button"
           onClick={() => {
-            setOpenPlanMenuId(null);
+            setOpenPlanMenuKey(null);
             setOpenScopeMenuId(null);
             setShowArchived((current) => !current);
           }}

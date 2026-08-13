@@ -37,6 +37,7 @@ const GENERIC_CONVENTIONAL_COMMIT_MESSAGE: &str =
 const MAX_CONFLICT_FILE_BYTES: usize = 1_000_000;
 const WSL_GIT_TIMEOUT: Duration = Duration::from_secs(8);
 const WSL_GIT_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
+const NATIVE_GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
@@ -393,6 +394,63 @@ fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn run_git_command_with_timeout(
+    cwd: &Path,
+    args: &[String],
+    timeout_duration: Duration,
+) -> Result<GitCommandOutput> {
+    let repo = Repository::discover(cwd)?;
+    ensure_safe_config(&repo)?;
+
+    let mut command = background_command("git");
+    command
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())))
+        // Network commands must not wait forever for an interactive credential prompt.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(cwd)
+        .args(args);
+    let mut child = command.spawn().map_err(|error| BackendError::Git {
+        message: format!("Failed to run git command '{}': {}", args.join(" "), error),
+    })?;
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed while waiting for git command '{}': {}",
+                args.join(" "),
+                error
+            ),
+        })? {
+            let output = child
+                .wait_with_output()
+                .map_err(|error| BackendError::Git {
+                    message: format!(
+                        "Failed to collect git command '{}': {}",
+                        args.join(" "),
+                        error
+                    ),
+                })?;
+            return Ok(GitCommandOutput {
+                success: status.success(),
+                code: status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            });
+        }
+        if started.elapsed() >= timeout_duration {
+            // Reap the child after killing it so Git lock files and handles are
+            // not retained by the launcher process.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(BackendError::Git {
+                message: format!("Git command '{}' timed out.", args.join(" ")),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn is_git_environment_variable(key: &OsStr) -> bool {
@@ -1131,6 +1189,7 @@ async fn wsl_git_sync(
     remote: Option<String>,
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
+    let use_tracking_upstream = remote.is_none() && branch.is_none();
     let remote_name = remote
         .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
         .trim()
@@ -1149,6 +1208,7 @@ async fn wsl_git_sync(
             remote_name.clone(),
             branch_name.clone(),
         ],
+        "pull" if use_tracking_upstream => vec!["pull".to_string(), "--no-rebase".to_string()],
         "pull" => vec![
             "pull".to_string(),
             "--no-rebase".to_string(),
@@ -5220,7 +5280,7 @@ pub async fn git_fetch(
         if !branch_name.trim().is_empty() {
             args.push(branch_name.clone());
         }
-        let output = run_git_command(&root, &args)?;
+        let output = run_git_command_with_timeout(&root, &args, NATIVE_GIT_NETWORK_TIMEOUT)?;
         if !output.success {
             let details = command_output_text(&output);
             let message = if details.is_empty() {
@@ -5279,7 +5339,7 @@ pub async fn git_push(
             remote_name.clone(),
             branch_name.clone(),
         ];
-        let output = run_git_command(&root, &args)?;
+        let output = run_git_command_with_timeout(&root, &args, NATIVE_GIT_NETWORK_TIMEOUT)?;
         if !output.success {
             let details = command_output_text(&output);
             let message = if details.is_empty() {
@@ -5349,6 +5409,7 @@ pub async fn git_pull(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        let use_tracking_upstream = remote.is_none() && branch.is_none();
         let remote_name = remote
             .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
             .trim()
@@ -5358,13 +5419,17 @@ pub async fn git_pull(
         let root = repo_root(&repo)?;
         drop(repo);
 
-        let args = vec![
-            "pull".to_string(),
-            "--no-rebase".to_string(),
-            remote_name.clone(),
-            branch_name.clone(),
-        ];
-        let output = run_git_command(&root, &args)?;
+        let args = if use_tracking_upstream {
+            vec!["pull".to_string(), "--no-rebase".to_string()]
+        } else {
+            vec![
+                "pull".to_string(),
+                "--no-rebase".to_string(),
+                remote_name.clone(),
+                branch_name.clone(),
+            ]
+        };
+        let output = run_git_command_with_timeout(&root, &args, NATIVE_GIT_NETWORK_TIMEOUT)?;
         if !output.success {
             let details = command_output_text(&output);
             let message = if details.is_empty() {
