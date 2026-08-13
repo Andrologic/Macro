@@ -730,6 +730,7 @@ export const Footer: React.FC = () => {
   const [isConfiguringRemote, setIsConfiguringRemote] = useState(false);
 
   const refreshRef = useRef<Promise<void> | null>(null);
+  const focusedBranchRequestIdRef = useRef(0);
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
@@ -771,7 +772,7 @@ export const Footer: React.FC = () => {
   const selectedProjectLabel = useMemo(
     () => (gitScopeProjectId
       ? focusProjects.find((project) => project.id === gitScopeProjectId)?.name ?? ''
-      : t('footer.scope.allProjects', 'Tout le projet')),
+      : t('footer.scope.allRepositories', 'Tous les dépôts')),
     [focusProjects, gitScopeProjectId, t]
   );
   const setFooterMetadataSyncStatus = useCallback((params: {
@@ -893,8 +894,9 @@ export const Footer: React.FC = () => {
   const focusedProjectPath = focusedProject?.path ?? null;
 
   const refreshFocusedProjectBranch = useCallback(async () => {
+    const requestId = ++focusedBranchRequestIdRef.current;
     if (!isTauriRuntime || !focusedProjectPath) {
-      setFocusedProjectBranch(null);
+      if (requestId === focusedBranchRequestIdRef.current) setFocusedProjectBranch(null);
       return;
     }
 
@@ -902,9 +904,13 @@ export const Footer: React.FC = () => {
     const detachedLabel = t('footer.sync.branchDetached', 'detached');
     try {
       const status = await tauriIpc.gitStatus(focusedProjectPath);
-      setFocusedProjectBranch(status.branch || detachedLabel);
+      if (requestId === focusedBranchRequestIdRef.current) {
+        setFocusedProjectBranch(status.branch || detachedLabel);
+      }
     } catch {
-      setFocusedProjectBranch(unavailableLabel);
+      if (requestId === focusedBranchRequestIdRef.current) {
+        setFocusedProjectBranch(unavailableLabel);
+      }
     }
   }, [focusedProjectPath, isTauriRuntime, t]);
 
@@ -1050,7 +1056,15 @@ export const Footer: React.FC = () => {
   }, [refreshCodeStatus, refreshMacroStatus]);
 
   useEffect(() => {
-    void refreshFooterStatus({ ensureMacro: true });
+    let cancelled = false;
+    const refreshCurrentScope = async () => {
+      if (refreshRef.current) await refreshRef.current;
+      if (!cancelled) await refreshFooterStatus({ ensureMacro: true });
+    };
+    void refreshCurrentScope();
+    return () => {
+      cancelled = true;
+    };
   }, [refreshFooterStatus]);
 
   useEffect(() => {
@@ -1961,7 +1975,7 @@ export const Footer: React.FC = () => {
               <div className="flex min-w-0 items-center overflow-hidden">
                 <span aria-hidden="true" className="mx-2 h-4 w-px shrink-0 bg-border/70" />
                 <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-                {focusProjects.length > 0 && (
+                {focusProjects.length > 1 && (
                   <div className="ml-1 grid shrink-0">
                     <span
                       aria-hidden="true"
@@ -1973,11 +1987,13 @@ export const Footer: React.FC = () => {
                       className="col-start-1 row-start-1 h-6 min-w-0 rounded border border-border bg-card px-2 pr-6 text-[11px] leading-6 text-foreground"
                       value={gitScopeProjectId ?? ALL_PROJECTS_OPTION}
                       data-tour-id="footer-project-scope"
+                      aria-label={t('footer.scope.gitScope', 'Portée Git')}
+                      title={t('footer.scope.gitScope', 'Portée Git')}
                       onChange={(event) => setGitScopeProjectId(
                         event.target.value === ALL_PROJECTS_OPTION ? null : event.target.value
                       )}
                     >
-                      <option value={ALL_PROJECTS_OPTION}>{t('footer.scope.allProjects', 'Tout le projet')}</option>
+                      <option value={ALL_PROJECTS_OPTION}>{t('footer.scope.allRepositories', 'Tous les dépôts')}</option>
                       {focusProjects.map((project) => (
                         <option key={project.id} value={project.id}>{project.name}</option>
                       ))}

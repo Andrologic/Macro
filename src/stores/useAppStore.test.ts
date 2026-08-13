@@ -86,6 +86,7 @@ type RegistryReconcileReportRecord = {
 
 const DEFAULT_UI_PREFS = {
   leftPanelWidth: 280,
+  architectLeftPanelWidth: 320,
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,

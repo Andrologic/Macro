@@ -152,8 +152,10 @@ const App: React.FC = () => {
     setLeftOpen,
     setRightOpen,
     leftPanelWidth,
+    architectLeftPanelWidth,
     rightPanelWidth,
     setLeftPanelWidth,
+    setArchitectLeftPanelWidth,
     setRightPanelWidth,
     metadataRecoveryReport,
     mode,
@@ -164,8 +166,10 @@ const App: React.FC = () => {
       state.setLeftPanelOpen,
       state.setRightPanelOpen,
       state.leftPanelWidth,
+      state.architectLeftPanelWidth,
       state.rightPanelWidth,
       state.setLeftPanelWidth,
+      state.setArchitectLeftPanelWidth,
       state.setRightPanelWidth,
       state.metadataRecoveryReport,
       state.mode,
@@ -173,6 +177,8 @@ const App: React.FC = () => {
   );
   const hasLeftPanel = hasModePanel(mode, "left");
   const hasRightPanel = hasModePanel(mode, "right");
+  const activeLeftPanelWidth = mode === "Architect" ? architectLeftPanelWidth : leftPanelWidth;
+  const resizeActiveLeftPanel = mode === "Architect" ? setArchitectLeftPanelWidth : setLeftPanelWidth;
 
   // Ref to track panels that were auto-collapsed during resize
   const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({
@@ -441,13 +447,14 @@ const App: React.FC = () => {
             <div
               className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"
               data-tour-id="left-panel"
-              style={{ width: leftPanelWidth }}
+              style={{ width: activeLeftPanelWidth }}
             >
               <ModeRouter panel="left" />
             </div>
             <PanelResizer
-              onResize={(delta) => setLeftPanelWidth(leftPanelWidth + delta)}
+              onResize={(delta) => resizeActiveLeftPanel(activeLeftPanelWidth + delta)}
               className="hidden sm:flex"
+              ariaLabel="Resize left panel"
             />
           </>
         )}
@@ -463,6 +470,7 @@ const App: React.FC = () => {
             <PanelResizer
               onResize={(delta) => setRightPanelWidth(rightPanelWidth - delta)}
               className="hidden sm:flex"
+              ariaLabel="Resize right panel"
             />
             <div
               className="hidden h-full min-h-0 min-w-0 shrink-0 overflow-hidden sm:flex sm:flex-col"

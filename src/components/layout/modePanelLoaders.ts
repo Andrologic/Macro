@@ -80,6 +80,15 @@ const strategyGraphLoader = createModePanelLoader({
   importComponent: async () => (await import('../plan/StrategyGraph')).default,
 });
 
+const architectProjectNavigatorLoader = createModePanelLoader({
+  id: 'architect:left:project-navigator',
+  label: 'Project navigator',
+  mode: 'Architect',
+  panel: 'left',
+  importComponent: async () =>
+    (await import('../architect/ArchitectProjectNavigator')).default,
+});
+
 const taskQueueLoader = createModePanelLoader({
   id: 'implement:left:task-queue',
   label: 'Task queue',
@@ -132,6 +141,7 @@ export type ModePanelConfiguration = Partial<Record<ModePanelSlot, ModePanelLoad
 
 export const modePanelLoaders: Record<AppMode, ModePanelConfiguration> = {
   Architect: {
+    left: architectProjectNavigatorLoader,
     center: chatZoneLoader,
     right: strategyGraphLoader,
   },

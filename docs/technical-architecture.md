@@ -148,7 +148,7 @@ Une fondation HTTP distante existe dans le code à titre expérimental, mais ell
 
 ### 5.1 Organisation
 
-Le frontend est organise autour de :
+Le frontend est organisé autour de :
 
 - `components/` pour les surfaces UI
 - `stores/` pour l'état global
@@ -162,7 +162,11 @@ L'application n'utilise pas un routage classique basé sur des pages.
 
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
-Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise actuellement le centre pour la conversation et la droite pour la stratégie, sans panneau gauche.
+Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et stratégie à droite.
+
+Le navigateur Architect charge un catalogue transverse des plans, mais délègue toute activation à `useAppStore.activateArchitectPlan`. La sélection canonique reste `selectedGroupId`/`selectedProjectId` pour le contexte et `activeArchitectPlanId`/`activePlanContext` pour le plan. Les épingles et les groupes visuellement développés sont de simples préférences d'interface ; ils ne créent pas un nouvel état métier. Le basculement entre plans actifs et archivés reste également un état de vue local : il filtre le catalogue déjà chargé et ne modifie ni la portée projet ni le plan actif. Les menus contextuels réutilisent les mêmes mutations et les mêmes restrictions de types de plans que les actions primaires ; ils ne contournent ni `getCreatableArchitectPlanKinds` ni les capacités CRUD du plan.
+
+Le shell persiste une largeur dédiée au panneau gauche Architect. Elle est bornée séparément de la largeur générique des panneaux gauche afin qu'une préférence héritée d'un autre mode ne dégrade pas la lisibilité de l'arborescence projets/plans.
 
 ### 5.3 Découpage des panneaux
 
