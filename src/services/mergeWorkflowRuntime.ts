@@ -27,7 +27,7 @@ export const loadPlanFinalizationMergeWorkflowRuntime = async (params: {
   const review = await reviewLoader({
     branchName: params.summary.storageBranch,
     planId: params.summary.id,
-    syncBaseBranches: true,
+    syncBaseBranches: false,
   });
 
   return toPlanFinalizationMergeWorkflowRuntimeState({

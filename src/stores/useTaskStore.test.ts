@@ -200,7 +200,8 @@ const completeLinkedTaskConversationDeletionMock = mock(async (conversationId: s
   }
   return true;
 });
-let chatStoreConversations: Array<{ id: string }> = [];
+let chatStoreConversations: Array<{ id: string; task_id?: string | null }> = [];
+let chatStoreRuntimeById: Record<string, { phase: string }> = {};
 const appStoreState = {
   mode: 'Implement' as const,
   selectedTaskId: null as string | null,
@@ -341,6 +342,7 @@ mock.module('./useChatStore', () => ({
       completeLinkedTaskConversationDeletion: completeLinkedTaskConversationDeletionMock,
       lastError: null,
       conversations: chatStoreConversations,
+      conversationRuntimeById: chatStoreRuntimeById,
     }),
   },
 }));
@@ -379,6 +381,8 @@ const flushPromises = async () => {
 beforeEach(() => {
   installTauriRuntimeMock();
   dbAppSettings.clear();
+  chatStoreConversations = [];
+  chatStoreRuntimeById = {};
   dbGetAppSettingMock.mockClear();
   dbSetAppSettingMock.mockClear();
   completeLinkedTaskConversationDeletionMock.mockClear();
@@ -581,6 +585,66 @@ describe('getPlanActivationCandidateTask', () => {
 });
 
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('does not let a slow task activation restore its worktree after a newer selection', async () => {
+    let resolveSlow!: (value: GitWorktreeInspectionDto) => void;
+    let resolveFast!: (value: GitWorktreeInspectionDto) => void;
+    gitWorktreeInspectMock
+      .mockImplementationOnce(async () => await new Promise<GitWorktreeInspectionDto>((resolve) => {
+        resolveSlow = resolve;
+      }))
+      .mockImplementationOnce(async () => await new Promise<GitWorktreeInspectionDto>((resolve) => {
+        resolveFast = resolve;
+      }));
+    const slowTask = buildTask({
+      id: 'task-slow',
+      assigned_branch: 'feature/slow',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'feature/slow',
+        worktreeKey: 'project-1::feature/slow',
+        executionKind: 'worktree',
+        repoPath: '/repos/web',
+      }],
+    });
+    const fastTask = buildTask({
+      id: 'task-fast',
+      assigned_branch: 'feature/fast',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'feature/fast',
+        worktreeKey: 'project-1::feature/fast',
+        executionKind: 'worktree',
+        repoPath: '/repos/web',
+      }],
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [slowTask, fastTask], branchWorktrees: {} });
+
+    const slowActivation = useTaskStore.getState().activateTask(slowTask.id);
+    const fastActivation = useTaskStore.getState().activateTask(fastTask.id);
+    await flushPromises();
+
+    resolveFast({
+      taskId: 'project-1::feature/fast',
+      worktreePath: '/repos/web/.macro/worktrees/fast',
+      branchName: 'feature/fast',
+      status: 'ready',
+      isDirty: false,
+    });
+    await fastActivation;
+    resolveSlow({
+      taskId: 'project-1::feature/slow',
+      worktreePath: '/repos/web/.macro/worktrees/slow',
+      branchName: 'feature/slow',
+      status: 'ready',
+      isDirty: false,
+    });
+    await slowActivation;
+
+    expect(useTaskStore.getState().activeBranchName).toBe('feature/fast');
+    expect(useTaskStore.getState().activeRepositoryPath).toBe('/repos/web/.macro/worktrees/fast');
+  });
+
   it('clears a missing selected task and reapplies chat selection when the catalog becomes empty', async () => {
     const originalListTasks = services.listTasks;
     services.listTasks = mock(async () => ({
@@ -808,6 +872,29 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(useTaskStore.getState().tasks).toEqual([]);
     expect(useTaskStore.getState().lastError).toBeNull();
     expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
+  });
+
+  it('blocks deletion while the linked conversation is still running', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-running-conversation',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: true,
+      conversation_id: 'conversation-running',
+      execution_targets: [],
+    });
+    chatStoreConversations = [{ id: 'conversation-running', task_id: task.id }];
+    chatStoreRuntimeById = {
+      'conversation-running': { phase: 'streaming' },
+    };
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+
+    await useTaskStore.getState().deleteTask(task.id);
+
+    expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('active task operation');
   });
 
   it('does not start linked deletion when its complete preflight fails', async () => {
@@ -1574,7 +1661,7 @@ describe('useTaskStore merge workflow review loading', () => {
     ).toBe('merged');
   });
 
-  it('completes a materialized merge when conflicts are already resolved', async () => {
+  it('does not report a materialized merge complete when its plan metadata is missing', async () => {
     let statusCallCount = 0;
     gitStatusMock.mockImplementation(async () => {
       statusCallCount += 1;
@@ -1608,14 +1695,17 @@ describe('useTaskStore merge workflow review loading', () => {
       lastError: null,
     });
 
-    await useTaskStore.getState().runMergeWorkflow('task-1');
+    await expect(useTaskStore.getState().runMergeWorkflow('task-1')).rejects.toThrow(
+      'Plan not found: plan-1'
+    );
 
     expect(gitCompleteMergeMock).toHaveBeenCalledWith({
       repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
     });
     expect(gitFastForwardMock).not.toHaveBeenCalled();
     expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
-    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']).toBeUndefined();
+    expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']).toBeDefined();
+    expect(useTaskStore.getState().lastError).toContain('Plan not found: plan-1');
   });
 
   it('does not start a second manual merge resolution when conflicts are already materialized', async () => {

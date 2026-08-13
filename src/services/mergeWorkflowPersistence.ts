@@ -300,6 +300,13 @@ export const overlayPersistedMergeWorkflowSession = (params: {
       };
     }
 
+    // A persisted terminal state is only a recovery hint. The freshly loaded
+    // repository review is authoritative after restart: adopting a stale
+    // "merged" or "no_changes" marker could silently skip new branch work.
+    if (repository.progressState !== persisted.state) {
+      return repository;
+    }
+
     return {
       ...repository,
       progressState: persisted.state,

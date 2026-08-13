@@ -130,6 +130,7 @@ const gitPullMock = mock(async () => undefined);
 const fsReadFileWithOptionsMock = mock(async (_params?: { path?: string }): Promise<{ content: string }> => {
   throw new Error('not found');
 });
+const fsExistsMock = mock(async (_path?: string): Promise<boolean> => false);
 const fsWriteFileMock = mock(async () => ({ bytesWritten: 0 }));
 const workspaceGetActiveRootMock = mock(async () => '/repos/web');
 const workspaceArchiveManualFeatureMock = mock(async () => undefined);
@@ -238,6 +239,7 @@ mock.module('../services/tauriIpc', () => ({
   gitBranchDelete: gitBranchDeleteMock,
   gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
   gitPull: gitPullMock,
+  fsExists: fsExistsMock,
   fsReadFileWithOptions: fsReadFileWithOptionsMock,
   fsWriteFile: fsWriteFileMock,
   workspaceGetActiveRoot: workspaceGetActiveRootMock,
@@ -263,6 +265,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitBranchDelete: gitBranchDeleteMock,
   gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
   gitPull: gitPullMock,
+  fsExists: fsExistsMock,
   fsReadFileWithOptions: fsReadFileWithOptionsMock,
   fsWriteFile: fsWriteFileMock,
   workspaceGetActiveRoot: workspaceGetActiveRootMock,
@@ -468,6 +471,8 @@ describe('useTaskStore.finishTask', () => {
     fsReadFileWithOptionsMock.mockImplementation(async () => {
       throw new Error('not found');
     });
+    fsExistsMock.mockClear();
+    fsExistsMock.mockImplementation(async () => false);
     fsWriteFileMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
@@ -687,6 +692,9 @@ describe('useTaskStore.finishTask', () => {
   });
 
   it('blocks architect task completion while produced artifacts remain unvalidated', async () => {
+    fsExistsMock.mockImplementation(async (path?: string) =>
+      path?.endsWith('/artifacts/index.json') === true
+    );
     fsReadFileWithOptionsMock.mockImplementation(async (params?: { path?: string }) => {
       if (params?.path?.endsWith('/artifacts/index.json')) {
         return {
