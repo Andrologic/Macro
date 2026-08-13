@@ -6,12 +6,8 @@ import { getEffectiveUiZoomScale } from '../utils/uiZoom';
 
 let lastAppliedBrowserZoom: number | null = null;
 let lastAppliedTauriZoom: number | null = null;
-let inflightTauriZoom:
-  | {
-      scale: number;
-      promise: Promise<void>;
-    }
-  | null = null;
+let requestedTauriZoom: number | null = null;
+let tauriZoomDrain: Promise<void> | null = null;
 
 function isTauri(): boolean {
   return isTauriEnvironment();
@@ -19,6 +15,33 @@ function isTauri(): boolean {
 
 function applyBrowserZoom(scale: number): void {
   document.documentElement.style.fontSize = `${16 * scale}px`;
+}
+
+async function applyLatestTauriZoom(scale: number): Promise<void> {
+  requestedTauriZoom = scale;
+  if (tauriZoomDrain) return tauriZoomDrain;
+
+  tauriZoomDrain = (async () => {
+    while (requestedTauriZoom !== null) {
+      const nextScale = requestedTauriZoom;
+      requestedTauriZoom = null;
+      if (lastAppliedTauriZoom === nextScale) continue;
+      try {
+        await windowSetZoom(nextScale);
+      } catch (error) {
+        if (requestedTauriZoom !== null) {
+          continue;
+        }
+        throw error;
+      }
+      if (requestedTauriZoom === null) {
+        lastAppliedTauriZoom = nextScale;
+      }
+    }
+  })().finally(() => {
+    tauriZoomDrain = null;
+  });
+  return tauriZoomDrain;
 }
 
 export function useUiZoom() {
@@ -52,27 +75,7 @@ export function useUiZoom() {
           return;
         }
 
-        if (inflightTauriZoom?.scale === effectiveScale) {
-          await inflightTauriZoom.promise;
-          return;
-        }
-
-        const zoomPromise = windowSetZoom(effectiveScale)
-          .then(() => {
-            lastAppliedTauriZoom = effectiveScale;
-          })
-          .finally(() => {
-            if (inflightTauriZoom?.scale === effectiveScale) {
-              inflightTauriZoom = null;
-            }
-          });
-
-        inflightTauriZoom = {
-          scale: effectiveScale,
-          promise: zoomPromise,
-        };
-
-        await zoomPromise;
+        await applyLatestTauriZoom(effectiveScale);
       } catch (error) {
         if (cancelled || isPageShuttingDown()) {
           return;

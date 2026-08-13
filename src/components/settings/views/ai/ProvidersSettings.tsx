@@ -13,6 +13,8 @@ import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import type { ProviderConfig } from '../../../../types';
+import { isMacroAiProvider } from '../../../../config/macroAi';
+import { AndrologicProviderIcon } from '../../../ai/AndrologicProviderIcon';
 
 interface EditingProvider {
   id: string;
@@ -80,6 +82,9 @@ const providerTypeOptions = [
   { value: 'lmstudio', labelKey: 'providers.types.lmstudio', fallback: 'LM Studio' },
   { value: 'openrouter', labelKey: 'providers.types.openrouter', fallback: 'OpenRouter' },
 ];
+
+const isLocalProviderType = (providerType: string): boolean =>
+  providerType === 'ollama' || providerType === 'lmstudio';
 
 export const ProvidersSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -669,9 +674,14 @@ export const ProvidersSettings: React.FC = () => {
                 className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
                 value={editingProvider.providerType}
                 disabled={isLinkedProviderType(editingProvider.providerType)}
-                onChange={(event) =>
-                  setEditingProvider({ ...editingProvider, providerType: event.target.value })
-                }
+                onChange={(event) => {
+                  const providerType = event.target.value;
+                  setEditingProvider({
+                    ...editingProvider,
+                    providerType,
+                    isLocal: isLocalProviderType(providerType),
+                  });
+                }}
               >
                 {isLinkedProviderType(editingProvider.providerType) && (
                   <option value={editingProvider.providerType}>
@@ -913,6 +923,7 @@ export const ProvidersSettings: React.FC = () => {
       <div className="grid grid-cols-1 gap-3">
         {filteredProviders.map((provider) => {
           const status = getProviderStatus(provider);
+          const isManagedMacroAi = isMacroAiProvider(provider.id);
           const authError = authErrorsByProvider[provider.id];
           const hasLinkedSession = providerHasAuthSession(provider);
 
@@ -1159,6 +1170,7 @@ export const ProvidersSettings: React.FC = () => {
                       <Button
                         variant="secondary"
                         size="sm"
+                        disabled={provider.authStatus === 'authorizing'}
                         onClick={async () => {
                           try {
                             await startChatGptAuth(provider.id);
@@ -1341,15 +1353,35 @@ export const ProvidersSettings: React.FC = () => {
                         : 'bg-muted text-muted-foreground'
                     )}
                   >
-                    <Icon name="cpu" size={20} />
+                    {isManagedMacroAi ? (
+                      <AndrologicProviderIcon className="h-7 w-7" />
+                    ) : (
+                      <Icon name="cpu" size={20} />
+                    )}
                   </div>
                   <div>
                     <h4 className="font-medium text-foreground">{provider.name}</h4>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span className="capitalize">{provider.providerType}</span>
-                      <span>•</span>
-                      <span>{provider.baseUrl}</span>
+                      {isManagedMacroAi ? (
+                        <span>
+                          {t('providers.macroAi.included', 'AI included with the Macro beta')}
+                        </span>
+                      ) : (
+                        <>
+                          <span className="capitalize">{provider.providerType}</span>
+                          <span>•</span>
+                          <span>{provider.baseUrl}</span>
+                        </>
+                      )}
                     </div>
+                    {isManagedMacroAi && (
+                      <div className="mt-1 max-w-2xl text-xs text-muted-foreground">
+                        {t(
+                          'providers.macroAi.loggingNotice',
+                          'To operate and improve this shared beta service, conversations sent to Macro AI and token-usage metrics are logged on the inference server.'
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1358,9 +1390,11 @@ export const ProvidersSettings: React.FC = () => {
                     <div className={cn('h-2 w-2 rounded-full', status.dot)} />
                     <span className={cn('text-xs font-medium', status.text)}>{status.label}</span>
                   </div>
-                  <Button variant="ghost" size="sm" onClick={() => handleEdit(provider)}>
-                    {t('common.edit', 'Edit')}
-                  </Button>
+                  {!isManagedMacroAi && (
+                    <Button variant="ghost" size="sm" onClick={() => handleEdit(provider)}>
+                      {t('common.edit', 'Edit')}
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>

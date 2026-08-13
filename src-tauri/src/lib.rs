@@ -74,23 +74,17 @@ fn normalize_frontend_log_level(level: &str) -> &'static str {
 
 // Command to show the main window explicitly from frontend
 #[tauri::command]
-async fn show_main_window(window: tauri::WebviewWindow) {
+async fn show_main_window(window: tauri::WebviewWindow) -> Result<(), String> {
     let app_quit_state = window.state::<AppQuitState>();
     if app_quit_state.is_quitting() {
         tracing::info!(
             window = %window.label(),
             "Ignoring show_main_window because app quit is in progress"
         );
-        return;
+        return Ok(());
     }
 
-    if let Err(error) = window.show() {
-        tracing::warn!(
-            window = %window.label(),
-            error = %error,
-            "Failed to show main window"
-        );
-    }
+    window.show().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -388,6 +382,12 @@ pub fn run() {
             commands::db_import_messages,
             commands::db_update_message,
             commands::db_delete_messages_after,
+            commands::db_trim_conversation_replay,
+            commands::db_prepare_conversation_replay,
+            commands::db_restore_conversation_replay,
+            commands::db_complete_conversation_replay,
+            commands::db_mark_conversation_replay_launched,
+            commands::db_finalize_conversation_replay,
             commands::db_list_conversation_citations,
             commands::db_get_conversation_citation_content,
             commands::db_upsert_conversation_citation,
@@ -408,6 +408,7 @@ pub fn run() {
             commands::db_delete_provider_config,
             commands::ai_get_dev_provider_overrides,
             commands::ai::ai_start_chatgpt_auth,
+            commands::ai::ai_provision_macro_ai,
             commands::ai::ai_get_copilot_status,
             commands::ai::ai_download_copilot_runtime,
             commands::ai::ai_cancel_copilot_runtime_download,

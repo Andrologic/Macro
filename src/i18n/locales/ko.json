@@ -232,15 +232,15 @@
       "pulling": "당기는 중...",
       "push": "Push",
       "pushing": "미는...",
-      "fetchComplete": "Fetch complete",
-      "fetchPending": "Fetch complete, action required",
-      "fetchIncomplete": "Fetch incomplete",
-      "pullComplete": "Pull complete",
-      "pullPending": "Pull complete, action required",
-      "pullIncomplete": "Pull incomplete",
-      "pushComplete": "Push complete",
-      "pushPending": "Push complete, action required",
-      "pushIncomplete": "Push incomplete",
+      "fetchComplete": "Fetch 완료",
+      "fetchPending": "Fetch 완료, 작업 필요",
+      "fetchIncomplete": "Fetch 미완료",
+      "pullComplete": "Pull 완료",
+      "pullPending": "Pull 완료, 작업 필요",
+      "pullIncomplete": "Pull 미완료",
+      "pushComplete": "Push 완료",
+      "pushPending": "Push 완료, 작업 필요",
+      "pushIncomplete": "Push 미완료",
       "resolve": "해결하다",
       "review": "검토",
       "retrySync": "동기화 재시도",
@@ -381,6 +381,7 @@
     "resetZoom": "확대/축소 재설정",
     "renderingDiagram": "렌더링 다이어그램...",
     "mermaidRenderError": "인어 다이어그램을 렌더링할 수 없습니다.",
+    "copyFailed": "다이어그램 코드를 복사할 수 없습니다.",
     "inputTokens": "입력",
     "contextTokens": "문맥",
     "tokens": "토큰",
@@ -397,6 +398,9 @@
     "selectConversation": "대화 선택",
     "unpinConversation": "고정 해제",
     "pinConversation": "핀",
+    "pinConversationFailed": "대화 고정 상태를 업데이트하지 못했습니다.",
+    "archiveConversationFailed": "대화 보관 상태를 업데이트하지 못했습니다.",
+    "exportConversationFailed": "대화를 내보내지 못했습니다.",
     "renameConversationTitle": "대화 이름 바꾸기",
     "renameConversationDescription": "이 대화의 새 제목을 선택하세요.",
     "conversationName": "대화 이름",
@@ -526,6 +530,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Unable to load archived conversations.",
+    "archivePreferenceSaveFailed": "Unable to save archived conversations.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1359,6 +1365,9 @@
       "errorArchivePlan": "계획을 보관하지 못했습니다.",
       "errorRestorePlan": "계획을 복원하지 못했습니다.",
       "errorDeletePlan": "계획을 삭제하지 못했습니다.",
+      "errorArchivePlanCleanup": "계획은 보관되었지만 Git 정리에 실패했습니다. 보관된 계획을 삭제하여 정리를 다시 시도하세요.",
+      "errorDeletePlanConversation": "계획은 삭제되었지만 대화 정리가 아직 대기 중입니다.",
+      "warningDeletePlanConversationPending": "계획은 삭제되었지만 연결된 대화 정리가 대기 중이며 자동으로 다시 시도됩니다.",
       "autoCreateError": "기본 제목에서 기본 계획을 자동 생성할 수 없습니다.{{title}}\".",
       "unarchivePlan": "보관 취소 계획",
       "archiveBeforeDelete": "계획을 삭제하기 전에 보관하세요.",
@@ -1445,7 +1454,7 @@
     "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
     "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
     "frozenNodeLocked": "Locked",
-    "taskTodos": "TODO attaché",
+    "taskTodos": "연결된 TODO",
     "expectedArtifacts": "Expected artifacts",
     "artifacts": "Artifacts",
     "openArtifacts": "Open artifacts",
@@ -1467,14 +1476,14 @@
   },
   "git": {
     "gitTree": "Git 트리",
-    "gitGraph": "Git Graph",
+    "gitGraph": "Git 그래프",
     "branches": "브랜치",
     "commits": "커밋",
     "changes": "변경 사항",
-    "staged": "staged",
-    "unstaged": "unstaged",
+    "staged": "스테이징됨",
+    "unstaged": "스테이징되지 않음",
     "noCommitsInBranch": "이 브랜치에는 아직 커밋이 없습니다.",
-    "legend": "전설",
+    "legend": "범례",
     "done": "완료",
     "planned": "예정",
     "inProgress": "진행 중",
@@ -1483,6 +1492,11 @@
     "totalChanges": "총 변경사항"
   },
   "providers": {
+    "macroAi": {
+      "included": "Macro 베타에 AI 포함",
+      "dropdownNotice": "베타에 AI 포함",
+      "loggingNotice": "이 공유 베타 서비스를 운영하고 개선하기 위해 Macro AI로 전송된 대화와 토큰 사용량 지표가 추론 서버에 기록됩니다."
+    },
     "add": "프로바이더 추가",
     "edit": "프로바이더 편집",
     "created": "프로바이더가 생성되었습니다",
@@ -1563,25 +1577,25 @@
       "secret_persist_failed": "ChatGPT 로그인에 성공했지만 세션을 저장할 수 없습니다."
     },
     "copilot": {
-      "downloadRuntime": "Download Copilot",
-      "runtimeDownloaded": "GitHub Copilot runtime is ready",
-      "runtimeDownloadFailed": "Failed to download GitHub Copilot runtime",
-      "downloadHint": "Download the official GitHub Copilot runtime to continue.",
-      "updateHint": "Download a Macro-managed GitHub Copilot runtime to continue.",
-      "troubleshootHint": "GitHub Copilot needs attention before it can be used.",
-      "connectHint": "Connect GitHub Copilot to finish setup.",
-      "troubleshoot": "Troubleshoot",
-      "recheckStatus": "Re-check status",
-      "oauthConnectedHint": "Use Copilot CLI on this machine to switch accounts.",
-      "ghCliConnectedHint": "Using the GitHub CLI session available on this machine.",
-      "envConnectedHint": "Using a Copilot token provided by this machine environment.",
-      "connectedInTerminalHint": "Connected in this machine terminal session.",
-      "finishLoginTitle": "Finish login in your browser",
-      "deviceCode": "Device code",
-      "browserUrl": "Browser URL",
-      "copyCode": "Copy code",
-      "codeCopied": "Device code copied",
-      "openBrowser": "Open browser"
+      "downloadRuntime": "Copilot 다운로드",
+      "runtimeDownloaded": "GitHub Copilot 런타임이 준비되었습니다",
+      "runtimeDownloadFailed": "GitHub Copilot 런타임을 다운로드하지 못했습니다",
+      "downloadHint": "계속하려면 공식 GitHub Copilot 런타임을 다운로드하세요.",
+      "updateHint": "계속하려면 Macro에서 관리하는 GitHub Copilot 런타임을 다운로드하세요.",
+      "troubleshootHint": "GitHub Copilot을 사용하려면 조치가 필요합니다.",
+      "connectHint": "설정을 완료하려면 GitHub Copilot에 연결하세요.",
+      "troubleshoot": "문제 해결",
+      "recheckStatus": "상태 다시 확인",
+      "oauthConnectedHint": "이 컴퓨터에서 Copilot CLI를 사용하여 계정을 전환하세요.",
+      "ghCliConnectedHint": "이 컴퓨터에서 사용할 수 있는 GitHub CLI 세션을 사용하고 있습니다.",
+      "envConnectedHint": "이 컴퓨터 환경에서 제공한 Copilot 토큰을 사용하고 있습니다.",
+      "connectedInTerminalHint": "이 컴퓨터의 터미널 세션에 연결되었습니다.",
+      "finishLoginTitle": "브라우저에서 로그인을 완료하세요",
+      "deviceCode": "장치 코드",
+      "browserUrl": "브라우저 URL",
+      "copyCode": "코드 복사",
+      "codeCopied": "장치 코드가 복사되었습니다",
+      "openBrowser": "브라우저 열기"
     }
   },
   "tools": {
@@ -1679,7 +1693,11 @@
       "serverAdded": "MCP 서버가 추가되었습니다.",
       "toolsRefreshed": "MCP 도구가 새로 고쳐졌습니다.",
       "refreshFailed": "MCP 도구를 새로 고치지 못했습니다.",
-      "serverDeleted": "MCP 서버가 삭제되었습니다."
+      "serverDeleted": "MCP 서버가 삭제되었습니다.",
+      "identifierCollision": "이 식별자를 사용하는 MCP 서버가 이미 있습니다.",
+      "saveFailed": "MCP 서버를 저장하지 못했습니다.",
+      "deleteFailed": "MCP 서버를 삭제하지 못했습니다.",
+      "toggleFailed": "MCP 서버를 업데이트하지 못했습니다."
     }
   },
   "account": {
@@ -1711,6 +1729,45 @@
     "nextStep": "다음 단계",
     "hideDetails": "세부 정보 숨기기",
     "showDetails": "세부 정보 표시",
+    "degraded": {
+      "fallback": { "title": "확인이 필요합니다", "body": "Macro가 이 작업을 안전하게 완료하지 못했습니다.", "nextStep": "세부 정보를 확인하고 차단 상태를 해결한 후 다시 시도하세요.", "dynamic": "{{message}}" },
+      "worktree": {
+        "checkedOut": { "title": "Macro가 작업 공간을 준비하지 못했습니다", "body": "이 작업에 필요한 브랜치가 로컬 변경 사항과 함께 기본 저장소에 열려 있습니다.", "nextStep": "로컬 변경 사항을 커밋하거나 스태시 또는 폐기한 후 작업을 다시 시도하세요." },
+        "missingBase": { "title": "Macro가 기준 브랜치를 찾지 못했습니다", "body": "이 작업의 작업 트리를 만들려면 기준 브랜치가 필요합니다.", "nextStep": "브랜치를 만들거나 프로젝트의 Git 워크플로 설정을 업데이트한 후 다시 시도하세요." },
+        "fallback": { "title": "Macro가 작업 공간을 준비하지 못했습니다", "body": "작업 공간이 아직 준비되지 않아 Macro가 파일을 안전하게 검토하거나 편집할 수 없습니다.", "nextStep": "작업을 다시 시도하세요. 계속 실패하면 프로젝트 Git 설정을 열어 저장소 상태를 확인하세요." }
+      },
+      "readOnly": { "title": "이 프로젝트는 읽기 전용입니다", "body": "이 프로젝트를 컨텍스트로 사용할 수 있지만 Macro는 아직 여기서 브랜치, 작업 트리, 커밋 또는 병합을 만들 수 없습니다.", "namedBody": "{{projectName}}을(를) 컨텍스트로 사용할 수 있지만 Macro는 아직 여기서 브랜치, 작업 트리, 커밋 또는 병합을 만들 수 없습니다.", "missingGitNextStep": "이 프로젝트에서 Git을 초기화한 후 편집 작업을 활성화하세요.", "settingsNextStep": "프로젝트 설정을 열고 Git 워크플로가 준비되었는지 확인하세요." },
+      "replica": {
+        "missing": { "titleSingular": "{{count}}개 저장소에 계획 메타데이터가 없습니다", "titlePlural": "{{count}}개 저장소에 계획 메타데이터가 없습니다", "body": "Macro가 이 계획을 안전하게 업데이트하려면 예상되는 모든 계획 메타데이터 복제본이 필요합니다.", "nextStep": "계획 메타데이터를 복구한 후 다시 시도하세요." },
+        "diverged": { "title": "저장소 간 계획 메타데이터가 다릅니다", "body": "Macro가 이 계획 메타데이터의 여러 버전을 발견했으므로 계속하기 전에 기준 복사본을 선택해야 합니다.", "nextStep": "이전 복사본이 의도적으로 필요한 경우가 아니라면 최신 복제본에서 복구하세요." }
+      },
+      "gitFlow": {
+        "repositoryDirty": { "title": "저장소에 로컬 변경 사항이 있습니다", "body": "대상 저장소에 관련 없는 커밋되지 않은 변경 사항이 있는 동안 Macro는 이 병합을 완료할 수 없습니다.", "nextStep": "로컬 변경 사항을 커밋하거나 스태시 또는 폐기한 후 병합을 다시 시도하세요." },
+        "mergeInProgress": { "title": "이미 병합이 진행 중입니다", "body": "Macro가 이 저장소에서 완료되지 않은 병합을 발견했습니다.", "nextStep": "기존 병합을 완료하거나 중단한 후 다시 시도하세요." },
+        "conflict": { "title": "완료하기 전에 충돌을 해결하세요", "body": "아직 계획을 정상적으로 병합할 수 없습니다.", "filesNextStep": "목록의 파일을 해결한 후 병합을 다시 시도하세요.", "blockersNextStep": "병합 차단 요소를 해결한 후 다시 시도하세요." }
+      },
+      "metadata": {
+        "clean": { "title": "@macro 메타데이터가 최신 상태입니다", "body": "필요한 작업이 없습니다." },
+        "dirty": { "title": "@macro 메타데이터에 로컬 변경 사항이 있습니다", "body": "동기화하기 전에 Macro가 메타데이터 변경 사항을 저장해야 합니다.", "nextStep": "@macro 메타데이터를 저장한 후 동기화를 다시 시도하세요." },
+        "ahead": { "title": "@macro 메타데이터를 게시할 준비가 되었습니다", "body": "로컬 메타데이터 브랜치에 아직 원격에 없는 변경 사항이 있습니다.", "nextStep": "준비되면 @macro를 푸시하세요." },
+        "behind": { "title": "@macro 메타데이터가 원격보다 뒤처져 있습니다", "body": "원격 메타데이터에 아직 로컬에 없는 업데이트가 있습니다.", "nextStep": "@macro를 풀한 후 작업을 다시 시도하세요." },
+        "diverged": { "title": "@macro 메타데이터가 분기되었습니다", "body": "로컬 및 원격 메타데이터가 모두 변경되었습니다.", "nextStep": "@macro를 풀하고 충돌을 해결한 후 푸시하세요." },
+        "mergeConflict": { "title": "@macro 메타데이터에 충돌이 있습니다", "body": "메타데이터 브랜치에 해결되지 않은 충돌 파일이 있습니다.", "nextStep": "충돌한 메타데이터 파일을 해결한 후 같은 동기화 단계를 다시 시도하세요." },
+        "missingOrigin": { "title": "@macro 원격이 설정되지 않았습니다", "body": "저장소에 origin 원격이 없어 Macro가 메타데이터를 동기화할 수 없습니다.", "nextStep": "Git 원격을 설정한 후 다시 시도하세요." },
+        "missingUpstream": { "title": "@macro에 업스트림 브랜치가 없습니다", "body": "메타데이터 브랜치가 로컬에 있지만 아직 원격 브랜치에 연결되지 않았습니다.", "nextStep": "@macro를 푸시해 게시하거나 이 경고를 무시하고 메타데이터를 로컬에 유지하세요." },
+        "authRequired": { "title": "Git 인증이 필요합니다", "body": "현재 자격 증명으로 Macro가 메타데이터 원격에 접근할 수 없습니다.", "nextStep": "Git 인증을 설정한 후 다시 시도하세요." },
+        "networkError": { "title": "메타데이터 동기화가 원격에 연결되지 못했습니다", "body": "현재 네트워크 또는 원격 서비스를 사용할 수 없습니다.", "nextStep": "연결을 확인한 후 다시 시도하세요." },
+        "unknownError": { "title": "Macro 메타데이터 동기화에 실패했습니다", "body": "Macro가 메타데이터 동기화를 안전하게 완료하지 못했습니다.", "nextStep": "동기화를 다시 시도하세요. 다시 실패하면 기술 세부 정보를 확인하세요." }
+      },
+      "service": {
+        "resourcePressure": { "title": "Macro가 일시적으로 과부하 상태입니다", "body": "시스템에 열린 파일이 너무 많아 Macro가 다시 시도하기 전에 자동 저장소 새로 고침을 일시 중지했습니다.", "nextStep": "잠시 기다린 후 다시 시도하세요. 문제가 계속되면 추가 프로젝트 창이나 터미널을 닫으세요." },
+        "replicaRepair": { "title": "계획 메타데이터를 복구해야 합니다", "body": "Macro가 일관되지 않은 계획 메타데이터를 발견했으므로 계속하기 전에 기준 복사본을 복구해야 합니다.", "nextStep": "계획 메타데이터를 복구한 후 다시 시도하세요." },
+        "metadataMissing": { "title": "계획 메타데이터가 불완전합니다", "body": "Macro가 누락되었거나 일부만 저장된 계획 메타데이터를 가리키는 작업 또는 대화를 발견했습니다.", "nextStep": "메타데이터 연결을 복구한 후 다시 시도하세요." },
+        "workspaceUnavailable": { "title": "작업 공간 상태를 일시적으로 사용할 수 없습니다", "body": "Macro가 이 작업에 필요한 작업 공간 상태를 읽지 못했습니다.", "nextStep": "작업 공간 업데이트가 끝난 후 다시 시도하세요. 문제가 지속되면 프로젝트를 다시 여세요." },
+        "gitNotReady": { "title": "이 프로젝트는 아직 편집할 준비가 되지 않았습니다", "body": "Macro는 이 프로젝트를 컨텍스트로 사용할 수 있지만 Git이 준비될 때까지 쓸 수 없습니다.", "nextStep": "프로젝트 설정을 열고 Git 설정을 완료하세요." },
+        "fallback": { "title": "확인이 필요합니다", "nextStep": "세부 정보를 확인하고 차단 상태를 해결한 후 다시 시도하세요." }
+      }
+    },
     "logoutFailed": "로그아웃하지 못했습니다.",
     "saveFailed": "제공업체를 저장하지 못했습니다."
   },
@@ -1786,6 +1843,8 @@
     "commitUseConversationModel": "대화 모델 사용",
     "commitUseDedicatedModel": "전용 모델 사용",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Failed to load metadata model preference",
+    "metadataPreferenceSaveFailed": "Failed to save metadata model preference",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -1997,6 +2056,12 @@
     "searchPlaceholder": "터미널 검색",
     "searchPrevious": "이전 일치 항목",
     "searchNext": "다음 일치 항목"
+  },
+  "codeViewer": {
+    "title": "코드 파일",
+    "copied": "복사됨",
+    "copyCode": "코드 복사",
+    "copyFailed": "코드를 복사할 수 없습니다."
   },
   "notify": {
     "connectionFailed": "Connection failed",

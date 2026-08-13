@@ -343,7 +343,9 @@ const getArchitectPlanActivationPayloadMock = mock(
     };
   }
 );
-const persistActiveArchitectPlanMock = mock(async () => undefined);
+const persistActiveArchitectPlanMock = mock(
+  async (_targetBranch: string, _planId: string) => undefined
+);
 const getAppBootstrapMock = mock(async () => ({
   plan: bootstrapPlan,
   standaloneProjects: bootstrapStandaloneProjects,
@@ -1432,6 +1434,22 @@ describe('useAppStore architect plan resolution', () => {
 
     let resolveSlow!: (value: ActivationPayloadRecord) => void;
     let resolveFast!: (value: ActivationPayloadRecord) => void;
+    let resolveSlowPersistence!: () => void;
+    let persistedPlanId: string | null = null;
+    persistActiveArchitectPlanMock
+      .mockImplementationOnce(
+        async (_targetBranch: string, planId: string) =>
+          await new Promise<void>((resolve) => {
+            resolveSlowPersistence = () => {
+              persistedPlanId = planId;
+              resolve();
+            };
+          }).then(() => undefined)
+      )
+      .mockImplementationOnce(async (_targetBranch: string, planId: string) => {
+        persistedPlanId = planId;
+        return undefined;
+      });
     getArchitectPlanActivationPayloadMock
       .mockImplementationOnce(
         async () =>
@@ -1488,6 +1506,13 @@ describe('useAppStore architect plan resolution', () => {
       resolutionMode: 'blank_fast_path',
     });
     expect(await fastActivation).toBe(true);
+
+    resolveSlowPersistence();
+    for (let index = 0; index < 20; index += 1) {
+      await Promise.resolve();
+    }
+    expect(persistActiveArchitectPlanMock).toHaveBeenCalledTimes(2);
+    expect(String(persistedPlanId)).toBe(fastPlan.id);
 
     resolveSlow({
       plan: slowPlan,

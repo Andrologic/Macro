@@ -180,6 +180,18 @@ export interface ProjectAddOperation {
 const MAX_REMEMBERED_PROJECTS = 50;
 let projectSwitchRequestId = 0;
 let architectPlanSwitchRequestId = 0;
+let activeArchitectPlanPersistenceQueue: Promise<void> = Promise.resolve();
+
+const enqueueActiveArchitectPlanPersistence = (
+  targetBranch: string,
+  planId: string,
+): Promise<void> => {
+  const persistence = activeArchitectPlanPersistenceQueue.then(async () => {
+    await persistActiveArchitectPlan(targetBranch, planId);
+  });
+  activeArchitectPlanPersistenceQueue = persistence.catch(() => undefined);
+  return persistence;
+};
 
 export interface ArchitectPlanContext {
   id: string;
@@ -892,10 +904,6 @@ const activateArchitectPlanInStore = async (input: {
       getGitFlowBaseBranch(),
   );
 
-  if (input.options?.persistActiveSelection !== false) {
-    await persistActiveArchitectPlan(targetBranch, input.planId);
-  }
-
   const switchingArchitectPlan =
     appStore.mode === "Architect" &&
     (appStore.activeArchitectPlanId !== input.planId ||
@@ -910,6 +918,27 @@ const activateArchitectPlanInStore = async (input: {
       planId: input.planId,
       targetBranch,
       summaryHint: input.options?.planSummaryHint ?? null,
+    });
+  }
+
+  if (input.options?.persistActiveSelection !== false) {
+    void enqueueActiveArchitectPlanPersistence(targetBranch, input.planId).catch((error) => {
+      if (
+        !switchingArchitectPlan ||
+        isCurrentArchitectPlanSwitchRequest({
+          requestId,
+          planId: input.planId,
+          targetBranch,
+        })
+      ) {
+        useAppStore.setState((state) => ({
+          architectPlanSwitch: {
+            ...state.architectPlanSwitch,
+            status: 'error',
+            errorMessage: toServiceError(error).message,
+          },
+        }));
+      }
     });
   }
 

@@ -1024,6 +1024,7 @@ export interface Conversation {
   message_count: number;
   updated_at: string;
   is_unread: boolean;
+  is_pinned?: boolean;
 }
 
 export interface AIChoice {

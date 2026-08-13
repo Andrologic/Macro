@@ -2021,8 +2021,36 @@ mod tests {
         repo
     }
 
+    #[test]
+    fn test_metadata_path_mapping_preserves_addressing_boundary() {
+        for (path, expected) in [
+            (".macro", "."),
+            ("./.macro/workspace.json", "workspace.json"),
+            (
+                ".macro/branches/main/plans/index.json",
+                "branches/main/plans/index.json",
+            ),
+        ] {
+            assert!(is_macro_scoped_path(path), "virtual metadata path: {path}");
+            assert_eq!(map_macro_virtual_path(path), expected, "path: {path}");
+        }
+
+        for path in [
+            "workspace.json",
+            "branches/main/plans/index.json",
+            ".macro/../workspace.json",
+            ".macro/../../outside.json",
+            ".macro-neighbor/workspace.json",
+        ] {
+            assert!(
+                !is_macro_scoped_path(path),
+                "non-virtual or escaping path: {path}"
+            );
+        }
+    }
+
     #[tokio::test]
-    async fn test_resolve_workspace_for_path_uses_explicit_repo_for_metadata_scope() {
+    async fn test_metadata_path_resolution_aligns_explicit_and_virtual_scopes() {
         let default_workspace = setup_empty_workspace();
         let explicit_repo = setup_empty_workspace();
         let _repo = init_git_repo(explicit_repo.path());
@@ -2030,7 +2058,7 @@ mod tests {
 
         let resolved = resolve_workspace_for_path(
             default_workspace.path().to_path_buf(),
-            git_state,
+            git_state.clone(),
             Some(explicit_repo.path().to_path_buf()),
             "branches/develop/plans/index.json",
             None,
@@ -2040,13 +2068,28 @@ mod tests {
         .expect("resolve metadata workspace");
 
         let resolved = resolved.canonicalize().expect("canonical resolved path");
-        let explicit_repo = explicit_repo
+        let explicit_repo_canonical = explicit_repo
             .path()
             .canonicalize()
             .expect("canonical explicit repo");
 
-        assert!(resolved.starts_with(&explicit_repo));
+        assert!(resolved.starts_with(&explicit_repo_canonical));
         assert!(resolved.ends_with(Path::new("macro-metadata-worktree")));
+
+        let virtual_resolved = resolve_workspace_for_path(
+            default_workspace.path().to_path_buf(),
+            git_state,
+            Some(explicit_repo.path().to_path_buf()),
+            ".macro/workspace.json",
+            None,
+            None,
+        )
+        .await
+        .expect("resolve virtual metadata workspace")
+        .canonicalize()
+        .expect("canonical virtual metadata workspace");
+
+        assert_eq!(virtual_resolved, resolved);
     }
 
     #[tokio::test]

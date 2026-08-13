@@ -73,7 +73,10 @@ import type { TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getDependencyBlockedMessage } from '../implement/TaskBlockedState';
-import { presentServiceError } from '../../services/degradedErrorPresentation';
+import {
+  presentServiceError,
+  resolveDegradedErrorPresentation,
+} from '../../services/degradedErrorPresentation';
 import {
   getTooManyOpenFilesNotificationKey,
   isTooManyOpenFilesMessage,
@@ -613,6 +616,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationRuntimeById,
     conversationCompactionStatusById,
     selectConversation,
+    deleteConversation,
   } = useChatStore(useShallow((state) => ({
     createConversation: state.createConversation,
     conversations: state.conversations,
@@ -620,6 +624,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationRuntimeById: state.conversationRuntimeById,
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectConversation: state.selectConversation,
+    deleteConversation: state.deleteConversation,
   })));
   const {
     tasks,
@@ -685,6 +690,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       command: string;
       worktreeSetupCommand: string;
       openTerminalOnRun: boolean;
+      requiredForTask: boolean;
     }>;
   } | null>(null);
   const [isSavingTaskCommands, setIsSavingTaskCommands] = useState(false);
@@ -825,6 +831,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
     const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setPendingTaskId(taskId);
+    let conversationId: string | null = null;
 
     try {
       setSelectedTask(taskId);
@@ -834,6 +841,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         conversationProjectId,
         selectedGroupId
       );
+      conversationId = conversation.id;
       await createManualFeatureDraft({
         taskId,
         conversationId: conversation.id,
@@ -845,11 +853,25 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         description: '',
       });
       await activateTask(taskId);
-      selectConversation(conversation.id);
+      if (!(await selectConversation(conversation.id))) {
+        throw new Error('Impossible de sélectionner la nouvelle conversation.');
+      }
     } catch (error) {
+      let cleanupError: unknown = null;
+      if (conversationId) {
+        try {
+          await deleteConversation(conversationId, { mode: 'implement' });
+        } catch (cleanupFailure) {
+          cleanupError = cleanupFailure;
+        }
+      }
       setSelectedTask(null);
       const message = error instanceof Error ? error.message : t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
-      notify.error(message);
+      notify.error(message, {
+        description: cleanupError instanceof Error
+          ? `La conversation créée n'a pas pu être nettoyée : ${cleanupError.message}`
+          : undefined,
+      });
     } finally {
       setPendingTaskId((current) => (current === taskId ? null : current));
     }
@@ -1241,6 +1263,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           getTaskProjectCommand(registry, project.path)?.worktreeSetupCommand || '',
         openTerminalOnRun:
           getTaskProjectCommand(registry, project.path)?.openTerminalOnRun ?? true,
+        requiredForTask: taskProjectIds.includes(project.id),
       })),
     };
   };
@@ -1718,6 +1741,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         : null,
     [selectedProjectId, selectedTaskForErrorScope?.project_id, taskError]
   );
+  const resolvedTaskErrorPresentation = useMemo(
+    () => taskErrorPresentation
+      ? resolveDegradedErrorPresentation(
+          taskErrorPresentation,
+          (key, options) => String(t(key, options))
+        )
+      : null,
+    [taskErrorPresentation, t]
+  );
   const taskErrorActionLabel =
     taskErrorPresentation?.primaryAction === 'open_project_settings' ||
     taskErrorPresentation?.primaryAction === 'configure_git'
@@ -1751,7 +1783,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   ]);
 
   useEffect(() => {
-    if (!taskError || !taskErrorPresentation) {
+    if (!taskError || !taskErrorPresentation || !resolvedTaskErrorPresentation) {
       lastErrorToastRef.current = null;
       return;
     }
@@ -1767,10 +1799,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     if (dedupeKey === lastErrorToastRef.current) return;
 
     lastErrorToastRef.current = dedupeKey;
-    const nextStep = taskErrorPresentation.nextStep
-      ? `${t('errors.nextStep', 'Next step')}: ${taskErrorPresentation.nextStep}`
+    const nextStep = resolvedTaskErrorPresentation.nextStep
+      ? `${t('errors.nextStep', 'Next step')}: ${resolvedTaskErrorPresentation.nextStep}`
       : null;
-    const description = [taskErrorPresentation.body, nextStep]
+    const description = [resolvedTaskErrorPresentation.body, nextStep]
       .filter((value): value is string => Boolean(value?.trim()))
       .join('\n\n');
     const targetProjectId = selectedTaskForErrorScope?.project_id || selectedProjectId;
@@ -1796,7 +1828,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       : `implement-task-error:${selectedTaskForError?.id ?? 'no-task'}:${taskError}`;
 
     if (canOpenProjectSettings || canRetry || canRepairMetadata) {
-      notify.actionRequired(taskErrorPresentation.title, {
+      notify.actionRequired(resolvedTaskErrorPresentation.title, {
         notificationKey,
         tone,
         description,
@@ -1831,11 +1863,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       category: 'task_attention_required' as const,
     };
     if (taskErrorPresentation.severity === 'warning') {
-      notify.warning(taskErrorPresentation.title, notifyOptions);
+      notify.warning(resolvedTaskErrorPresentation.title, notifyOptions);
       return;
     }
 
-    notify.error(taskErrorPresentation.title, notifyOptions);
+    notify.error(resolvedTaskErrorPresentation.title, notifyOptions);
   }, [
     activateTask,
     openProjectGitFlowModal,
@@ -1847,6 +1879,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskError,
     taskErrorActionLabel,
     taskErrorPresentation,
+    resolvedTaskErrorPresentation,
     handleTaskErrorAction,
     missingBaseBranchIssue?.message,
     refreshFromPlan,

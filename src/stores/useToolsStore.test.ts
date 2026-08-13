@@ -152,4 +152,22 @@ describe('useToolsStore chat toolbox policy', () => {
       useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
     ).resolves.toBe('ok');
   });
+
+  it('propagates MCP tool protocol errors instead of returning a successful-looking result', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    await useToolsStore.getState().refreshMCPServerTools('github');
+
+    const { services } = await import('../services');
+    (services.mcpCallTool as unknown as {
+      mockResolvedValueOnce: (value: { content: string; isError: boolean }) => void;
+    }).mockResolvedValueOnce({
+      content: 'Access denied by MCP server',
+      isError: true,
+    });
+
+    await expect(
+      useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
+    ).rejects.toThrow('Access denied by MCP server');
+  });
 });

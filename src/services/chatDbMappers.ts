@@ -46,6 +46,7 @@ export const mapDbConversationToConversation = (
   message_count: conversation.message_count,
   updated_at: conversation.updated_at,
   is_unread: false,
+  is_pinned: conversation.is_pinned,
 });
 
 export const parseDbProviderTurnState = (

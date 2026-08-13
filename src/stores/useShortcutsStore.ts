@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { shortcutDefaults, shortcutDefinitions, ShortcutId } from '../shortcuts/catalog';
 import { normalizeBinding } from '../shortcuts/utils';
+import { shortcutsCanConflict } from '../shortcuts/runtime';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
 
 type ShortcutBindings = Record<ShortcutId, string | null>;
@@ -30,6 +31,13 @@ const buildNormalizedDefaults = (): ShortcutBindings => {
 const persistBindings = async (bindings: ShortcutBindings) => {
   await savePreference(PREF_KEYS.SHORTCUT_BINDINGS, bindings);
 };
+
+const hasBindingConflict = (bindings: ShortcutBindings, id: ShortcutId, binding: string | null): boolean =>
+  Boolean(binding) && shortcutDefinitions.some((other) =>
+    other.id !== id &&
+    bindings[other.id] === binding &&
+    shortcutsCanConflict(id, other.id)
+  );
 
 export const useShortcutsStore = create<ShortcutsStore>((set) => {
   let mutationVersion = 0;
@@ -79,6 +87,9 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
       mutationVersion += 1;
       set((state) => {
         const normalized = binding ? normalizeBinding(binding) : null;
+        if (hasBindingConflict(state.bindings, id, normalized)) {
+          return state;
+        }
         const nextBindings = {
           ...state.bindings,
           [id]: normalized,
@@ -97,9 +108,15 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
     resetBinding: (id) => {
       mutationVersion += 1;
       set((state) => {
+        const nextBinding = shortcutDefaults[id]
+          ? normalizeBinding(shortcutDefaults[id] as string)
+          : null;
+        if (hasBindingConflict(state.bindings, id, nextBinding)) {
+          return state;
+        }
         const nextBindings = {
           ...state.bindings,
-          [id]: shortcutDefaults[id] ? normalizeBinding(shortcutDefaults[id] as string) : null,
+          [id]: nextBinding,
         };
         void persistBindings(nextBindings);
         return { bindings: nextBindings };

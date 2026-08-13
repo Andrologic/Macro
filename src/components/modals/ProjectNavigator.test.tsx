@@ -8,6 +8,7 @@ import type { Project, ProjectGroup } from '../../types';
 let latestDndContextProps: {
   onDragStart?: (event: unknown) => void;
   onDragEnd?: (event: unknown) => void;
+  onDragCancel?: () => void;
 } | null = null;
 let shouldRenderProjectOpenActionMock = mock(() => false);
 
@@ -28,6 +29,7 @@ mock.module('@dnd-kit/core', () => ({
     children: React.ReactNode;
     onDragStart?: (event: unknown) => void;
     onDragEnd?: (event: unknown) => void;
+    onDragCancel?: () => void;
   }) => {
     latestDndContextProps = props;
     return <div>{props.children}</div>;
@@ -341,6 +343,26 @@ describe('ProjectNavigator', () => {
       'project-solo',
       'project-docs',
     ]);
+  });
+
+  it('clears the drag overlay when a drag is cancelled', async () => {
+    await renderNavigator();
+
+    await act(async () => {
+      latestDndContextProps?.onDragStart?.({
+        active: {
+          id: 'project:project-solo',
+          data: { current: { type: 'project', projectId: 'project-solo', groupId: null } },
+        },
+      });
+    });
+    expect(document.body.querySelector('[data-drag-overlay="true"]')).not.toBeNull();
+
+    await act(async () => {
+      latestDndContextProps?.onDragCancel?.();
+    });
+
+    expect(document.body.querySelector('[data-drag-overlay="true"]')).toBeNull();
   });
 
   it('hides draft projects and edits the draft by drag and drop before confirming', async () => {

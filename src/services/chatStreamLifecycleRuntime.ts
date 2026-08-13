@@ -72,6 +72,12 @@ export interface ChatStreamLifecycleRuntimeAdapters {
     assistantMessageId: string;
     message: string;
   }) => void;
+  clearCompletionPersistenceOwnership: (params: {
+    conversationId: string;
+    sessionId: string;
+    turnId: string | null;
+    assistantMessageId: string;
+  }) => void;
   maybeMarkImplementTaskFailedAfterStreamError: () => Promise<void>;
   tryRecoverFromOverflow: (
     error: Error,
@@ -79,6 +85,7 @@ export interface ChatStreamLifecycleRuntimeAdapters {
   ) => Promise<boolean>;
   removeEmptyAssistantPlaceholder: (assistantMessageId: string) => void;
   deleteEmptyAssistantMessageFromDb: () => Promise<void>;
+  recoverReplayBeforeProgress?: () => Promise<void>;
   setStreamErrorState: (params: {
     presentation: ChatErrorPresentation;
     assistantMessageId: string | null;
@@ -179,6 +186,13 @@ export const createChatStreamLifecycleRuntime = (params: {
       handleCompletionPersistenceFailure(error);
       return;
     }
+
+    adapters.clearCompletionPersistenceOwnership({
+      conversationId: stream.conversationId,
+      sessionId: stream.sessionId,
+      turnId: stream.turnId,
+      assistantMessageId: stream.assistantMessageId,
+    });
 
     try {
       await adapters.consolidatePendingToolBoundaryCompactionAfterPersistence();
@@ -304,6 +318,24 @@ export const createChatStreamLifecycleRuntime = (params: {
       tokenControls.dispose();
     },
 
+    onAbort: async (tokenControls: ChatStreamTokenControls) => {
+      tokenControls.flushNow();
+      const assistantMessage = adapters.getAssistantMessage(
+        stream.assistantMessageId,
+      );
+      if (assistantMessage && hasAssistantProgress(assistantMessage)) {
+        await persistPartialAssistantSafely(
+          assistantMessage,
+          "Failed to persist partial assistant response after abort:",
+        );
+      } else {
+        adapters.removeEmptyAssistantPlaceholder(stream.assistantMessageId);
+        await adapters.deleteEmptyAssistantMessageFromDb();
+        await adapters.recoverReplayBeforeProgress?.();
+      }
+      tokenControls.dispose();
+    },
+
     onError: async (error: Error, tokenControls: ChatStreamTokenControls) => {
       if (
         adapters.isAbortSignalAborted() ||
@@ -325,6 +357,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       const assistantMessage = adapters.getAssistantMessage(
         stream.assistantMessageId,
       );
+      const hadAssistantProgressBeforeError = hasAssistantProgress(assistantMessage);
       const errorPresentation = resolveChatErrorPresentation(error, {
         providerId: stream.providerContext.providerId,
         providerType: stream.providerContext.providerType,
@@ -334,6 +367,10 @@ export const createChatStreamLifecycleRuntime = (params: {
         errorPresentation,
         assistantMessage,
       );
+
+      if (!hadAssistantProgressBeforeError) {
+        await adapters.recoverReplayBeforeProgress?.();
+      }
 
       adapters.setStreamErrorState({
         presentation: errorPresentation,

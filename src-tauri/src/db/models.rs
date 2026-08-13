@@ -204,6 +204,7 @@ pub struct TerminalTabRecord {
     pub snapshot: String,
     pub last_command: Option<String>,
     pub last_exit_code: Option<i32>,
+    pub generation: i64,
     pub created_at: String,
     pub updated_at: String,
 }
