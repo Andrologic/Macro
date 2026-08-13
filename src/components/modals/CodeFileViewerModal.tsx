@@ -1,16 +1,35 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useCodeFileStore } from '../../stores/useCodeFileStore';
 import { CodeViewer } from '../ui/CodeViewer';
 import { Icon } from '../ui/Icon';
 import { Button } from '../ui/Button';
+import { Dialog } from '../ui/Dialog';
 
 export const CodeFileViewerModal: React.FC = () => {
+  const { t } = useTranslation();
   const { isOpen, filePath, content, language, closeFileViewer } = useCodeFileStore();
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
 
-  if (!isOpen || !content) return null;
+  useEffect(() => {
+    if (isOpen) {
+      setCopyStatus('idle');
+    }
+  }, [filePath, isOpen]);
+
+  if (!isOpen || content === null) return null;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopyStatus('copied');
+    } catch {
+      setCopyStatus('error');
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <Dialog title={filePath || t('codeViewer.title', 'Code file')} onClose={closeFileViewer}>
       <div className="flex h-[min(80vh,calc(100vh-2rem))] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
         <header className="h-12 px-4 border-b border-border flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
@@ -20,6 +39,8 @@ export const CodeFileViewerModal: React.FC = () => {
             </span>
           </div>
           <button
+            type="button"
+            aria-label={t('common.close', 'Close')}
             onClick={closeFileViewer}
             className="p-1.5 rounded-lg hover:bg-accent transition-colors"
           >
@@ -37,14 +58,21 @@ export const CodeFileViewerModal: React.FC = () => {
 
         <footer className="h-12 border-t border-border px-4 flex items-center justify-end gap-2 shrink-0">
           <Button variant="ghost" size="sm" onClick={closeFileViewer}>
-            Fermer
+            {t('common.close', 'Close')}
           </Button>
-          <Button variant="primary" size="sm">
-            Copier le code
+          <Button variant="primary" size="sm" onClick={() => void handleCopy()}>
+            {copyStatus === 'copied'
+              ? t('codeViewer.copied', 'Copied')
+              : t('codeViewer.copyCode', 'Copy code')}
           </Button>
+          {copyStatus === 'error' && (
+            <span className="text-sm text-destructive" role="alert">
+              {t('codeViewer.copyFailed', 'Unable to copy the code.')}
+            </span>
+          )}
         </footer>
       </div>
-    </div>
+    </Dialog>
   );
 };
 

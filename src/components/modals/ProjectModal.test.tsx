@@ -289,7 +289,7 @@ describe('ProjectModal', () => {
     expect(createProjectMock).not.toHaveBeenCalled();
   });
 
-  it('cancels the in-flight add operation when closing during Git preview', async () => {
+  it('keeps the modal open while a Git preview is running', async () => {
     previewProjectGitSetupMock = mock(
       (_data: { path: string; requestId?: string }) =>
         new Promise<ProjectGitFlowDetection>(() => undefined)
@@ -303,15 +303,16 @@ describe('ProjectModal', () => {
       findButton('Add existing project').click();
       await Promise.resolve();
     });
+    const cancel = findButton('Cancel');
+    expect(cancel.disabled).toBe(true);
     await act(async () => {
-      findButton('Cancel').click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       await Promise.resolve();
     });
 
-    const requestId = previewProjectGitSetupMock.mock.calls[0]?.[0]?.requestId;
-    expect(requestId).toEqual(expect.any(String));
-    expect(cancelProjectAddOperationMock).toHaveBeenCalledWith(requestId);
-    expect(closeProjectModalMock).toHaveBeenCalled();
+    expect(cancelProjectAddOperationMock).not.toHaveBeenCalled();
+    expect(closeProjectModalMock).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   it('requires an existing group selection before using an existing destination', async () => {

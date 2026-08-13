@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { toast as sonnerToast, type ExternalToast } from 'sonner';
 import i18n from '../../i18n';
 import {
+  getDesktopNotificationStatus,
   isDesktopNotificationRuntimeSupported,
   maybeSendDesktopNotification,
 } from '../../services/desktopNotifications';
@@ -320,7 +321,7 @@ const getNotificationChannelMode = (options?: NotificationOptions) => {
   );
 
   if (
-    !isDesktopNotificationRuntimeSupported() &&
+    (!isDesktopNotificationRuntimeSupported() || getDesktopNotificationStatus() === 'denied') &&
     (configuredMode === 'desktop' || configuredMode === 'both')
   ) {
     return 'toast';

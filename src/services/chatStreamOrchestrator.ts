@@ -114,6 +114,12 @@ export interface ChatStreamLifecycleCallbacks {
     error: Error,
     controls: ChatStreamTokenControls,
   ) => void | Promise<void>;
+  /**
+   * Flushes and persists visible progress when the owning conversation stops.
+   * This runs synchronously from AbortController.abort(), before the store
+   * releases the runtime ownership fence.
+   */
+  onAbort?: (controls: ChatStreamTokenControls) => void | Promise<void>;
 }
 
 export interface RunAssistantStreamParams
@@ -134,6 +140,8 @@ export const runAssistantStream = async ({
   };
   let handledError = false;
   let handledComplete = false;
+  let handledAbort = false;
+  let abortPromise: Promise<void> | null = null;
   let completionPromise: Promise<void> | null = null;
   let errorPromise: Promise<void> | null = null;
   const handleErrorOnce = async (error: Error): Promise<void> => {
@@ -146,7 +154,7 @@ export const runAssistantStream = async ({
   const handleCompleteOnce = async (
     result: StreamCompletionResult,
   ): Promise<void> => {
-    if (handledError || handledComplete) {
+    if (handledAbort || handledError || handledComplete) {
       return;
     }
     handledComplete = true;
@@ -158,6 +166,18 @@ export const runAssistantStream = async ({
       await handleErrorOnce(normalized);
     }
   };
+
+  const handleAbort = () => {
+    if (handledAbort) {
+      return;
+    }
+    handledAbort = true;
+    controls.flushNow();
+    abortPromise = Promise.resolve(lifecycle.onAbort?.(controls)).catch(
+      () => undefined,
+    );
+  };
+  streamOptions.signal?.addEventListener("abort", handleAbort, { once: true });
 
   try {
     await streamChatImpl({
@@ -178,6 +198,9 @@ export const runAssistantStream = async ({
     if (errorPromise) {
       await errorPromise;
     }
+    if (abortPromise) {
+      await abortPromise;
+    }
   } catch (error) {
     if (completionPromise) {
       await completionPromise;
@@ -186,5 +209,10 @@ export const runAssistantStream = async ({
     const normalized =
       error instanceof Error ? error : new Error(String(error));
     await handleErrorOnce(normalized);
+  } finally {
+    if (abortPromise) {
+      await abortPromise;
+    }
+    streamOptions.signal?.removeEventListener("abort", handleAbort);
   }
 };

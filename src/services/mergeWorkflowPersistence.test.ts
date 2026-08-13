@@ -97,16 +97,30 @@ describe('overlayPersistedMergeWorkflowSession', () => {
     expect(runtime.repositories[0]?.conflictFiles).toEqual([]);
   });
 
-  it('preserves completed repository state across fresh reviews', () => {
+  it('does not let a persisted merged marker hide fresh branch changes', () => {
     const runtime = overlayPersistedMergeWorkflowSession({
       runtime: buildRuntime(),
       session: buildSession('merged'),
     });
 
     expect(runtime.phase).toBe('ready');
+    expect(runtime.repositories[0]?.progressState).toBe('pending');
+    expect(runtime.repositories[0]?.mergeAppliedAt).toBeNull();
+    expect(runtime.repositories[0]?.blockingReason).toBeNull();
+  });
+
+  it('retains a completed marker only when the fresh Git review agrees', () => {
+    const runtime = overlayPersistedMergeWorkflowSession({
+      runtime: buildRuntime({
+        progressState: 'merged',
+        hasChanges: false,
+        mergeAppliedAt: '2026-04-27T00:00:30.000Z',
+      }),
+      session: buildSession('merged'),
+    });
+
     expect(runtime.repositories[0]?.progressState).toBe('merged');
     expect(runtime.repositories[0]?.mergeAppliedAt).toBe('2026-04-27T00:01:00.000Z');
-    expect(runtime.repositories[0]?.blockingReason).toBeNull();
   });
 });
 

@@ -97,4 +97,39 @@ describe('MermaidRenderer security', () => {
     expect(sanitized).not.toContain('javascript:');
     expect(sanitized).not.toContain('onclick');
   });
+
+  it('reports a clipboard error without showing a false copied state', async () => {
+    const notifyError = mock(() => undefined);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: mock(async () => { throw new Error('blocked'); }) },
+    });
+    installReactI18nextMock(translationMock);
+    globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+    mock.module('../theme/ThemeProvider', () => ({ useTheme: () => ({ isDark: false }) }));
+    mock.module('../ui/toastService', () => ({ notify: { error: notifyError } }));
+    mock.module('mermaid', () => ({
+      default: { initialize: mock(() => undefined), parse: mock(async () => true), render: mock(async () => ({ svg: '<svg />' })) },
+    }));
+    const { MermaidRenderer } = await import(`./MermaidRenderer.tsx?copy-error-test=${Date.now()}`);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<MermaidRenderer code={'graph TD\nA-->B'} blockKey={2} />);
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 32));
+    });
+    const copyButton = document.body.querySelector<HTMLButtonElement>('[title="Copy code"]');
+    await act(async () => {
+      copyButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(notifyError).toHaveBeenCalledWith('Unable to copy the diagram code.');
+    expect(copyButton?.getAttribute('title')).toBe('Copy code');
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+  });
 });

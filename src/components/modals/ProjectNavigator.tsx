@@ -1271,6 +1271,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           collisionDetection={closestCenter}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
+          onDragCancel={() => setDraggedProject(null)}
         >
           <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-2">
             {visibleStandaloneProjects.length === 0 && filteredGroups.length === 0 && !inlineGroupDraft ? (
@@ -1477,7 +1478,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
 
           <DragOverlay>
             {draggedProject && (
-              <div className="px-3 py-2 rounded-lg bg-card border border-primary shadow-lg">
+              <div data-drag-overlay="true" className="px-3 py-2 rounded-lg bg-card border border-primary shadow-lg">
                 <div className="flex items-center gap-2">
                   <Icon
                     name={projectHasGitIntegration(draggedProject) ? 'folder-git-2' : 'folder'}

@@ -9,6 +9,7 @@ import * as tauriIpc from "./tauriIpc";
 
 const STORAGE_KEY_PREFIX = "agentCodeCheckpoints:";
 const MAX_CHECKPOINTS_PER_CONVERSATION = 200;
+const checkpointWriteQueues = new Map<string, Promise<void>>();
 
 const getStorageKey = (conversationId: string): string =>
   `${STORAGE_KEY_PREFIX}${conversationId}`;
@@ -203,19 +204,34 @@ export const saveAgentCodeCheckpoints = async (
     .sort((left, right) => left.sequence - right.sequence)
     .slice(-MAX_CHECKPOINTS_PER_CONVERSATION);
 
-  if (tauriIpc.isTauriAvailable()) {
-    try {
+  const previous = checkpointWriteQueues.get(conversationId) ?? Promise.resolve();
+  const write = previous.catch(() => undefined).then(async () => {
+    if (tauriIpc.isTauriAvailable()) {
+      // A desktop checkpoint is part of the durable replay record. Falling back
+      // to browser storage here would make a successful replay impossible after
+      // a restart, so surface the database failure to the caller instead.
       await tauriIpc.dbSetAppSetting({
         key: getStorageKey(conversationId),
         valueJson: JSON.stringify(trimmed),
       });
       return;
-    } catch {
-      // Fall through to localStorage for browser/test resilience.
+    }
+
+    writeLocalStorage(conversationId, trimmed);
+  });
+  checkpointWriteQueues.set(conversationId, write);
+  try {
+    await write;
+  } finally {
+    if (checkpointWriteQueues.get(conversationId) === write) {
+      checkpointWriteQueues.delete(conversationId);
     }
   }
+};
 
-  writeLocalStorage(conversationId, trimmed);
+export const clearAgentCodeCheckpoints = (conversationId: string): void => {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  window.localStorage.removeItem(getStorageKey(conversationId));
 };
 
 const getConversationMessageIndex = (
@@ -480,8 +496,29 @@ export const hydrateAgentCodeReplayPreviewCurrentState = async (
 
 export const restoreAgentCodeReplayPreview = async (
   preview: AgentCodeReplayPreview,
-): Promise<void> => {
-  for (const file of preview.affectedFiles) {
+): Promise<() => Promise<void>> => {
+  // Re-read immediately before writing: the confirmation dialog may have been
+  // open while another process changed the workspace.
+  const currentSnapshots = await Promise.all(
+    preview.affectedFiles.map(async (file) => ({
+      file,
+      current: await readCurrentSnapshot(file),
+    })),
+  );
+  const externallyModified = currentSnapshots.find(
+    ({ file, current }) =>
+      file.expectedCurrent && !snapshotsEqual(current, file.expectedCurrent),
+  );
+  if (externallyModified) {
+    throw new Error(
+      `Cannot restore ${externallyModified.file.path}: the file changed after the replay preview was created.`,
+    );
+  }
+
+  const restoreSnapshot = async (
+    file: AgentCodeReplayPreviewFile,
+    snapshot: AgentCodeCheckpointFileSnapshot,
+  ): Promise<void> => {
     const commonOptions = {
       workspaceScope: (file.workspaceScope || undefined) as
         | tauriIpc.WorkspaceScope
@@ -489,7 +526,7 @@ export const restoreAgentCodeReplayPreview = async (
       workspacePath: file.workspacePath ?? undefined,
     };
 
-    if (!file.target.exists) {
+    if (!snapshot.exists) {
       const exists = await tauriIpc.fsExists(file.realPath, commonOptions);
       if (exists) {
         await tauriIpc.fsDelete({
@@ -497,21 +534,63 @@ export const restoreAgentCodeReplayPreview = async (
           ...commonOptions,
         });
       }
-      continue;
+      return;
     }
 
-    if (file.target.content === null) {
+    if (snapshot.content === null) {
       throw new Error(`Cannot restore ${file.path}: checkpoint content is missing.`);
     }
 
     await tauriIpc.fsWriteFile({
       path: file.realPath,
-      content: file.target.content,
+      content: snapshot.content,
       createDirs: true,
       allowOutsideWorkspace: file.allowOutsideWorkspace,
       ...commonOptions,
     });
+  };
+
+  const restored: Array<{
+    file: AgentCodeReplayPreviewFile;
+    current: AgentCodeCheckpointFileSnapshot;
+  }> = [];
+  try {
+    for (const { file, current } of currentSnapshots) {
+      await restoreSnapshot(file, file.target);
+      restored.push({ file, current });
+    }
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    for (const { file, current } of restored.reverse()) {
+      try {
+        await restoreSnapshot(file, current);
+      } catch (rollbackError) {
+        rollbackFailures.push(`${file.path}: ${String(rollbackError)}`);
+      }
+    }
+    if (rollbackFailures.length > 0) {
+      throw new Error(
+        `Checkpoint restoration failed and rollback was incomplete: ${String(error)}; ${rollbackFailures.join("; ")}`,
+      );
+    }
+    throw error;
   }
+
+  return async () => {
+    const rollbackFailures: string[] = [];
+    for (const { file, current } of restored.slice().reverse()) {
+      try {
+        await restoreSnapshot(file, current);
+      } catch (error) {
+        rollbackFailures.push(`${file.path}: ${String(error)}`);
+      }
+    }
+    if (rollbackFailures.length > 0) {
+      throw new Error(
+        `Unable to roll back the code checkpoint restoration: ${rollbackFailures.join("; ")}`,
+      );
+    }
+  };
 };
 
 export const pruneAgentCodeCheckpointsToMessageIds = (

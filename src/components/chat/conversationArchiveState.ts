@@ -13,6 +13,40 @@ export const normalizeConversationIdList = (value: unknown): string[] => {
   return Array.from(new Set(normalizedIds));
 };
 
+export const canApplyArchivedConversationHydration = (
+  hydrationVersion: number,
+  currentVersion: number
+): boolean => hydrationVersion === currentVersion;
+
+export const resolveArchivedConversationHydration = async (
+  load: () => Promise<unknown>
+): Promise<{ ok: true; ids: string[] } | { ok: false; error: unknown }> => {
+  try {
+    return { ok: true, ids: normalizeConversationIdList(await load()) };
+  } catch (error) {
+    return { ok: false, error };
+  }
+};
+
+export const commitArchivedConversationMutation = async ({
+  write,
+  onCommitted,
+  onFailure,
+}: {
+  write: () => Promise<void>;
+  onCommitted: () => Promise<void> | void;
+  onFailure: (error: unknown) => Promise<void> | void;
+}): Promise<boolean> => {
+  try {
+    await write();
+    await onCommitted();
+    return true;
+  } catch (error) {
+    await onFailure(error);
+    return false;
+  }
+};
+
 export const areConversationIdSetsEqual = (
   left: ReadonlySet<string>,
   right: ReadonlySet<string>

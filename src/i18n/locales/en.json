@@ -379,6 +379,7 @@
     "resetZoom": "Reset zoom",
     "renderingDiagram": "Rendering diagram...",
     "mermaidRenderError": "Unable to render Mermaid diagram",
+    "copyFailed": "Unable to copy the diagram code.",
     "inputTokens": "Input",
     "contextTokens": "Context",
     "tokens": "tokens",
@@ -524,6 +525,8 @@
     },
     "conversationActions": "Conversation actions",
     "conversationArchived": "Conversation archived",
+    "archivePreferenceLoadFailed": "Unable to load archived conversations.",
+    "archivePreferenceSaveFailed": "Unable to save archived conversations.",
     "conversationsArchived": "Conversations archived",
     "conversationRestored": "Conversation restored",
     "conversationsRestored": "Conversations restored",
@@ -1393,7 +1396,7 @@
     "frozenReasonDependencyLockedTooltip": "This dependency is locked because started or completed work already depends on it.",
     "frozenReasonStartedTooltip": "This task has already been started and can no longer be modified automatically.",
     "frozenNodeLocked": "Locked",
-    "taskTodos": "TODO attaché",
+    "taskTodos": "Attached TODO",
     "expectedArtifacts": "Expected artifacts",
     "artifacts": "Artifacts",
     "openArtifacts": "Open artifacts",
@@ -1632,7 +1635,11 @@
       "serverAdded": "MCP server added.",
       "toolsRefreshed": "MCP tools refreshed.",
       "refreshFailed": "Failed to refresh MCP tools.",
-      "serverDeleted": "MCP server deleted."
+      "serverDeleted": "MCP server deleted.",
+      "identifierCollision": "An MCP server with this identifier already exists.",
+      "saveFailed": "Failed to save MCP server.",
+      "deleteFailed": "Failed to delete MCP server.",
+      "toggleFailed": "Failed to update MCP server."
     }
   },
   "account": {
@@ -1665,7 +1672,91 @@
     "saveFailed": "Failed to save provider",
     "nextStep": "Next step",
     "hideDetails": "Hide details",
-    "showDetails": "Show details"
+    "showDetails": "Show details",
+    "degraded": {
+      "fallback": {
+        "title": "Something needs attention",
+        "body": "Macro could not complete this action safely.",
+        "nextStep": "Review the details, fix the blocking state, then retry.",
+        "dynamic": "{{message}}"
+      },
+      "worktree": {
+        "checkedOut": {
+          "title": "Macro could not prepare the task workspace",
+          "body": "The branch needed for this task is still open in the main repository with local changes.",
+          "nextStep": "Commit, stash, or discard those local changes, then retry the task."
+        },
+        "missingBase": {
+          "title": "Macro could not find the base branch",
+          "body": "This task needs a base branch before its worktree can be created.",
+          "nextStep": "Create the branch or update the project Git workflow settings, then retry."
+        },
+        "fallback": {
+          "title": "Macro could not prepare the task workspace",
+          "body": "The task workspace is not ready yet, so Macro cannot safely review or edit files.",
+          "nextStep": "Retry the task. If it still fails, open the project Git settings and check the repository state."
+        }
+      },
+      "readOnly": {
+        "title": "This project is available for reading only",
+        "body": "This project can be used as context, but Macro cannot create branches, worktrees, commits, or merges there yet.",
+        "namedBody": "{{projectName}} can be used as context, but Macro cannot create branches, worktrees, commits, or merges there yet.",
+        "missingGitNextStep": "Initialize Git for this project, then enable editable work.",
+        "settingsNextStep": "Open project settings and make sure the Git workflow is ready."
+      },
+      "replica": {
+        "missing": {
+          "titleSingular": "Plan metadata is missing in {{count}} repository",
+          "titlePlural": "Plan metadata is missing in {{count}} repositories",
+          "body": "Macro needs every expected plan metadata replica before it can safely update this plan.",
+          "nextStep": "Repair the plan metadata, then retry the action."
+        },
+        "diverged": {
+          "title": "Plan metadata differs between repositories",
+          "body": "Macro found more than one version of this plan metadata and must choose a canonical copy before continuing.",
+          "nextStep": "Repair from the newest replica unless you intentionally need an older copy."
+        }
+      },
+      "gitFlow": {
+        "repositoryDirty": {
+          "title": "Repository has local changes",
+          "body": "Macro cannot finish this merge while the target repository has unrelated uncommitted changes.",
+          "nextStep": "Commit, stash, or discard the local changes, then retry the merge."
+        },
+        "mergeInProgress": {
+          "title": "A merge is already in progress",
+          "body": "Macro found an unfinished merge in this repository.",
+          "nextStep": "Finish or abort the existing merge, then retry."
+        },
+        "conflict": {
+          "title": "Resolve these conflicts before finishing",
+          "body": "The plan cannot be merged cleanly yet.",
+          "filesNextStep": "Resolve the listed files, then retry the merge.",
+          "blockersNextStep": "Resolve the merge blockers, then retry."
+        }
+      },
+      "metadata": {
+        "clean": { "title": "@macro metadata is up to date", "body": "No action is needed." },
+        "dirty": { "title": "@macro metadata has local changes", "body": "Macro needs to save metadata changes before syncing.", "nextStep": "Save @macro metadata, then retry the sync." },
+        "ahead": { "title": "@macro metadata is ready to publish", "body": "Your local metadata branch has changes that are not on the remote yet.", "nextStep": "Push @macro when you are ready." },
+        "behind": { "title": "@macro metadata is behind remote", "body": "Remote metadata has updates that are not local yet.", "nextStep": "Pull @macro, then retry your action." },
+        "diverged": { "title": "@macro metadata has diverged", "body": "Local and remote metadata both changed.", "nextStep": "Pull @macro, resolve any conflicts, then push." },
+        "mergeConflict": { "title": "@macro metadata has conflicts", "body": "The metadata branch has unresolved conflict files.", "nextStep": "Resolve the conflicted metadata files, then retry the same sync step." },
+        "missingOrigin": { "title": "@macro remote is not configured", "body": "Macro cannot sync metadata because the repository has no origin remote.", "nextStep": "Configure the Git remote, then retry." },
+        "missingUpstream": { "title": "@macro has no upstream branch", "body": "The metadata branch exists locally but is not linked to a remote branch yet.", "nextStep": "Push @macro to publish it, or ignore this warning to keep metadata local." },
+        "authRequired": { "title": "Git authentication is required", "body": "Macro cannot reach the metadata remote with the current credentials.", "nextStep": "Configure Git authentication, then retry." },
+        "networkError": { "title": "Metadata sync could not reach the remote", "body": "The network or remote service is unavailable right now.", "nextStep": "Check your connection, then retry." },
+        "unknownError": { "title": "Macro metadata sync failed", "body": "Macro could not complete the metadata sync safely.", "nextStep": "Retry the sync. If it fails again, inspect the technical details." }
+      },
+      "service": {
+        "resourcePressure": { "title": "Macro is temporarily overloaded", "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.", "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals." },
+        "replicaRepair": { "title": "Plan metadata needs repair", "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.", "nextStep": "Repair the plan metadata, then retry the action." },
+        "metadataMissing": { "title": "Plan metadata is incomplete", "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.", "nextStep": "Repair the metadata links, then retry the action." },
+        "workspaceUnavailable": { "title": "Workspace state is temporarily unavailable", "body": "Macro could not read the workspace state needed for this action.", "nextStep": "Retry after the workspace finishes updating. If it persists, reopen the project." },
+        "gitNotReady": { "title": "This project is not ready for editable work", "body": "Macro can still use this project for context, but it cannot write to it until Git is ready.", "nextStep": "Open project settings and finish the Git setup." },
+        "fallback": { "title": "Something needs attention", "nextStep": "Review the details, fix the blocking state, then retry." }
+      }
+    }
   },
   "toast": {
     "languageChanged": "Language changed to {{language}}",
@@ -1739,6 +1830,8 @@
     "commitUseConversationModel": "Use conversation model",
     "commitUseDedicatedModel": "Use dedicated model",
     "metadataGenerationTitle": "Metadata generation",
+    "metadataPreferenceLoadFailed": "Failed to load metadata model preference",
+    "metadataPreferenceSaveFailed": "Failed to save metadata model preference",
     "metadataGenerationDescription": "Choose which model Macro uses for generated commit messages, plan names, conversation titles, summaries, and feature slugs.",
     "metadataUseConversationModel": "Use conversation model",
     "metadataUseDedicatedModel": "Use dedicated model",
@@ -1950,6 +2043,12 @@
     "searchPlaceholder": "Search terminal",
     "searchPrevious": "Previous match",
     "searchNext": "Next match"
+  },
+  "codeViewer": {
+    "title": "Code file",
+    "copied": "Copied",
+    "copyCode": "Copy code",
+    "copyFailed": "Unable to copy the code."
   },
   "notify": {
     "connectionFailed": "Connection failed",

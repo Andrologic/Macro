@@ -351,8 +351,17 @@ describe("workspaceToolExecutor helpers", () => {
     const { assertPathAllowed } = await loadWorkspaceToolExecutor();
 
     expect(() =>
+      assertPathAllowed("Architect", "workspace.json"),
+    ).not.toThrow();
+    expect(() =>
       assertPathAllowed("Architect", "branches/main/plans/plan-1/plan.md"),
     ).not.toThrow();
+    expect(() =>
+      assertPathAllowed("Architect", ".macro/workspace.json"),
+    ).toThrow();
+    expect(() =>
+      assertPathAllowed("Architect", "branches/../../src/App.tsx"),
+    ).toThrow();
     expect(() => assertPathAllowed("Architect", "src/App.tsx")).toThrow();
     expect(() => assertPathAllowed("Chat", "src/App.tsx")).not.toThrow();
   });

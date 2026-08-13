@@ -174,6 +174,9 @@ pub fn is_macro_scoped_path(raw_path: &str) -> bool {
 }
 
 fn is_metadata_relative_path(raw_path: &str) -> bool {
+    // Architect mutations select the metadata workspace before FS resolution,
+    // so this contract is root-relative. `.macro/...` is reserved for the
+    // virtual project-root addressing used by reads/listings and FS callers.
     normalize_relative_path_parts(raw_path)
         .map(
             |resolved| match resolved.first().map(|part| part.as_str()) {
@@ -277,7 +280,7 @@ pub fn validate_tool_execution(
 
 #[cfg(test)]
 mod tests {
-    use super::get_mode_policy;
+    use super::{get_mode_policy, validate_tool_execution};
 
     #[test]
     fn chat_policy_exposes_question_tool() {
@@ -337,5 +340,43 @@ mod tests {
     fn implement_policy_exposes_question_tool() {
         let policy = get_mode_policy("Implement");
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+    }
+
+    #[test]
+    fn metadata_path_policy_accepts_only_root_relative_architect_writes() {
+        for tool_id in ["write", "edit", "delete", "apply_patch"] {
+            for path in [
+                "workspace.json",
+                "./workspace.json",
+                "branches/main/plans/index.json",
+                "./branches/main/plans/plan-1/plan.md",
+                "branches/main/../develop/plans/index.json",
+            ] {
+                assert!(
+                    validate_tool_execution("Architect", tool_id, Some(path)).allowed,
+                    "expected metadata path to be allowed for {tool_id}: {path}"
+                );
+            }
+
+            for path in [
+                ".macro/workspace.json",
+                ".macro/branches/main/plan.md",
+                "workspace.json/neighbor",
+                "workspace.json.bak",
+                "branch/main/plan.md",
+                "branches/../../src/App.tsx",
+                "branches/main/../../../src/App.tsx",
+                ".git/config",
+                "../src/App.tsx",
+                "/branches/main/plan.md",
+                "C:/repo/branches/main/plan.md",
+                "src/App.tsx",
+            ] {
+                assert!(
+                    !validate_tool_execution("Architect", tool_id, Some(path)).allowed,
+                    "expected non-metadata path to be rejected for {tool_id}: {path}"
+                );
+            }
+        }
     }
 }

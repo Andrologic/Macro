@@ -20,7 +20,6 @@ import {
     normalizeChatMaxTurns,
 } from '../../../services/chatTurnLimits';
 import { loadPreference, PREF_KEYS, savePreference } from '../../../services/preferences';
-// @ts-ignore
 import { Select } from '../../ui/Select';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';

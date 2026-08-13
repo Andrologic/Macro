@@ -69,12 +69,7 @@ const assertSameImplementPlanContext = (params: {
   if (!currentTask || currentTask.id === requestedTask.id) {
     return;
   }
-  if (currentTask.task_source !== 'architect' || !currentTask.plan_id) {
-    throw toServiceError('task_todo_* can only target the current Architect task context.');
-  }
-  if (currentTask.plan_id !== requestedTask.plan_id) {
-    throw toServiceError('task_todo_* cannot target tasks outside the current Implement plan.');
-  }
+  throw toServiceError('task_todo_* can only target the current Implement task context.');
 };
 
 export const resolveTaskTodoTarget = async (

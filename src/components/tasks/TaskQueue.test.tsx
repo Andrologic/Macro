@@ -6,6 +6,10 @@ import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
 import type { TaskStatus } from '../../types';
+import {
+  createTranslationMock,
+  installReactI18nextMock,
+} from '../../test-utils/reactI18nextMock';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 
 let useAppStore!: typeof UseAppStoreHook;
@@ -23,6 +27,19 @@ let notifyMock!: {
   actionRequired: ReturnType<typeof mock>;
   dismiss: ReturnType<typeof mock>;
 };
+
+const translationMock = createTranslationMock({
+  'errors.degraded.worktree.checkedOut.title': 'Macro could not prepare the task workspace',
+  'errors.degraded.worktree.checkedOut.body':
+    'The branch needed for this task is still open in the main repository with local changes.',
+  'errors.degraded.worktree.checkedOut.nextStep':
+    'Commit, stash, or discard those local changes, then retry the task.',
+  'errors.degraded.worktree.missingBase.title': 'Macro could not find the base branch',
+  'errors.degraded.worktree.missingBase.body':
+    'This task needs a base branch before its worktree can be created.',
+  'errors.degraded.worktree.missingBase.nextStep':
+    'Create the branch or update the project Git workflow settings, then retry.',
+});
 
 const createNotifyMock = () => ({
   info: mock(() => 'toast-info'),
@@ -83,6 +100,7 @@ const loadTaskQueueModules = async () => {
   mock.restore();
   virtualListRowKeys = [];
   notifyMock = createNotifyMock();
+  installReactI18nextMock(translationMock);
   registerVirtualListMock();
   mock.module('../ui/toastService', () => ({
     notify: notifyMock,

@@ -4,6 +4,7 @@ import {
   buildMCPToolId,
   collectMCPEnvSecretRefs,
   formatMCPEnvForEdit,
+  formatMCPArgsForEdit,
   normalizeMCPServer,
   parseMCPArgs,
   parseMCPEnv,
@@ -46,6 +47,16 @@ describe('MCP domain helpers', () => {
   it('parses args and preserves masked env secret refs', () => {
     expect(parseMCPArgs('["-y","server","."]')).toEqual(['-y', 'server', '.']);
     expect(parseMCPArgs('-y server .')).toEqual(['-y', 'server', '.']);
+    const windowsArgs = [
+      '--root',
+      'C:\\Users\\Macro User\\My "Quoted" Project',
+      '--label=hello world',
+      'C:\\Program Files\\MCP\\server.exe',
+    ];
+    expect(parseMCPArgs(formatMCPArgsForEdit(windowsArgs))).toEqual(windowsArgs);
+    expect(
+      parseMCPArgs('--root "C:\\Program Files\\MCP\\server.exe" --label "hello world"')
+    ).toEqual(['--root', 'C:\\Program Files\\MCP\\server.exe', '--label', 'hello world']);
 
     const previousEnv = {
       API_TOKEN: 'macro-secret://mcp-env/github/API_TOKEN',
