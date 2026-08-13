@@ -95,6 +95,15 @@ describe('preferences legacy cleanup', () => {
     expect(value).toBeNull();
   });
 
+  it('falls back to the default speech recording duration when the stored value is invalid', async () => {
+    localStorage.setItem('macro_speech.maxDurationSeconds', JSON.stringify(2));
+    const { loadPreference, PREF_KEYS } = await loadPreferencesModule();
+
+    const value = await loadPreference(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS);
+
+    expect(value).toBe(120);
+  });
+
   it('keeps the Architect prompt aligned with the conversation-first strategy workflow', async () => {
     const { getDefaultPromptForPreferenceKey, PREF_KEYS } = await loadPreferencesModule();
 

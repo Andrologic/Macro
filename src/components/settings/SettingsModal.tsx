@@ -8,6 +8,7 @@ import { NotificationsView } from './views/NotificationsView';
 import { AppearanceView } from './views/AppearanceView';
 import { ProvidersSettings } from './views/ai/ProvidersSettings';
 import { ModelsSettings } from './views/ai/ModelsSettings';
+import { SpeechSettings } from './views/ai/SpeechSettings';
 import { ToolsView } from './views/ToolsView';
 import { SkillsView } from './views/SkillsView';
 import { ShortcutsView } from './views/ShortcutsView';
@@ -24,7 +25,9 @@ export const SettingsModal: React.FC = () => {
   if (!settingsOpen) return null;
 
   const activeTabDescription =
-    activeSettingsTab === 'notifications'
+    activeSettingsTab === 'speech'
+      ? t('settings.desc.speech', 'Configure microphone dictation and speech-to-text providers')
+      : activeSettingsTab === 'notifications'
       ? t(
           'settings.desc.notifications',
           'Configure in-app and desktop notification delivery'
@@ -41,6 +44,7 @@ export const SettingsModal: React.FC = () => {
     { id: 'appearance', icon: 'palette', label: t('settings.appearance') || 'Appearance' },
     { id: 'providers', icon: 'server', label: t('settings.providers') || 'AI Providers' },
     { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
+    { id: 'speech', icon: 'mic', label: t('settings.speech', 'Dictation') },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
     { id: 'skills', icon: 'sparkles', label: t('settings.skills', 'Skills') },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
@@ -123,6 +127,7 @@ export const SettingsModal: React.FC = () => {
               {activeSettingsTab === 'appearance' && <AppearanceView />}
               {activeSettingsTab === 'providers' && <ProvidersSettings />}
               {activeSettingsTab === 'models' && <ModelsSettings />}
+              {activeSettingsTab === 'speech' && <SpeechSettings />}
               {activeSettingsTab === 'tools' && <ToolsView />}
               {activeSettingsTab === 'skills' && <SkillsView />}
               {activeSettingsTab === 'prompts' && <PromptsView />}

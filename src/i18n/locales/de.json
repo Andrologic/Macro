@@ -1,4 +1,21 @@
 {
+  "speech": {
+    "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Wird transkribiert" },
+    "errors": { "title": "Diktat nicht verfügbar" },
+    "settings": {
+      "validation": "Name, Endpunkt und Modell sind erforderlich.", "saved": "Sprachanbieter gespeichert.",
+      "saveFailed": "Der Sprachanbieter konnte nicht gespeichert werden.", "title": "Mikrofondiktat",
+      "description": "Nehmen Sie im Composer auf, transkribieren Sie mit dem gewählten Anbieter und prüfen Sie den Text vor dem Senden.",
+      "activeProvider": "Aktiver Anbieter", "noProvider": "Kein Anbieter", "language": "Sprache", "autoLanguage": "Automatisch",
+      "maxDuration": "Maximale Aufnahmedauer", "localPrivacy": "Lokaler Anbieter: Audio bleibt auf dem konfigurierten Rechner.",
+      "remotePrivacy": "Remote-Anbieter: Die Aufnahme wird an den konfigurierten Endpunkt gesendet.", "providers": "Sprachanbieter",
+      "compatibility": "Unterstützt OpenAI-kompatible und Deepgram-Transkriptionsendpunkte.", "addProvider": "Anbieter hinzufügen",
+      "keyStored": "API-Schlüssel lokal gespeichert", "noKeyRequired": "Kein API-Schlüssel erforderlich", "keyMissing": "API-Schlüssel erforderlich",
+      "editProvider": "Anbieter bearbeiten", "newProvider": "Neuer Anbieter", "protocol": "Protokoll", "model": "Transkriptionsmodell",
+      "endpoint": "Basis-URL", "apiKey": "API-Schlüssel", "keepKey": "Leer lassen, um den gespeicherten Schlüssel beizubehalten",
+      "localProvider": "Lokaler Anbieter", "removeKey": "Gespeicherten API-Schlüssel entfernen"
+    }
+  },
   "startup": {
     "interrupted": "Start unterbrochen",
     "failedTitle": "Macro konnte den Start nicht abschließen.",
@@ -755,6 +772,7 @@
     "general": "Allgemein",
     "appearance": "Aussehen",
     "ai": "KI & Modelle",
+    "speech": "Diktat",
     "tools": "Werkzeuge und MCP",
     "skills": "Skills",
     "architect": "Git-Workflow",
@@ -768,7 +786,8 @@
       "shortcuts": "Konfigurieren Sie Tastaturkürzel und Tastenkombinationen",
       "providers": "Konfigurieren Sie API-Schlüssel und Endpunkte",
       "models": "Verwalten Sie verfügbare Modellparameter",
-      "notifications": "Benachrichtigungskanäle für wichtige Workflow-Ereignisse konfigurieren"
+      "notifications": "Benachrichtigungskanäle für wichtige Workflow-Ereignisse konfigurieren",
+      "speech": "Mikrofondiktat und Sprachanbieter konfigurieren"
     },
     "language_region": "Sprache und Region",
     "language": "Sprache",

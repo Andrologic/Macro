@@ -1125,6 +1125,27 @@ export interface ProviderSettings {
   copilotSendTimeoutMs?: number | null;
 }
 
+export type SpeechProviderType = 'openai-compatible' | 'deepgram';
+
+export interface SpeechProviderConfig {
+  id: string;
+  name: string;
+  providerType: SpeechProviderType;
+  baseUrl: string;
+  model: string;
+  hasStoredApiKey: boolean;
+  isEnabled: boolean;
+  isLocal: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SpeechTranscriptionResult {
+  text: string;
+  language?: string | null;
+  durationSeconds?: number | null;
+}
+
 export interface GitCommit {
   id: string;
   hash: string;

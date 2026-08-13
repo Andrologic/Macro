@@ -1,4 +1,37 @@
 {
+  "speech": {
+    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Transcribing" },
+    "errors": { "title": "Dictation unavailable" },
+    "settings": {
+      "validation": "Name, endpoint and model are required.",
+      "saved": "Speech provider saved.",
+      "saveFailed": "Unable to save the speech provider.",
+      "title": "Microphone dictation",
+      "description": "Record from the composer, transcribe with the selected provider, then review the text before sending.",
+      "activeProvider": "Active provider",
+      "noProvider": "No provider",
+      "language": "Language",
+      "autoLanguage": "Automatic",
+      "maxDuration": "Maximum recording duration",
+      "localPrivacy": "Local provider: audio stays on the configured machine.",
+      "remotePrivacy": "Remote provider: recorded audio is sent to its configured endpoint.",
+      "providers": "Speech providers",
+      "compatibility": "Supports OpenAI-compatible and Deepgram transcription endpoints.",
+      "addProvider": "Add provider",
+      "keyStored": "API key stored locally",
+      "noKeyRequired": "No API key required",
+      "keyMissing": "API key required",
+      "editProvider": "Edit provider",
+      "newProvider": "New provider",
+      "protocol": "Protocol",
+      "model": "Transcription model",
+      "endpoint": "Base URL",
+      "apiKey": "API key",
+      "keepKey": "Leave empty to keep the stored key",
+      "localProvider": "Local provider",
+      "removeKey": "Remove stored API key"
+    }
+  },
   "startup": {
     "interrupted": "Startup interrupted",
     "failedTitle": "Macro could not finish booting.",
@@ -756,6 +789,7 @@
     "notifications": "Notifications",
     "appearance": "Appearance",
     "ai": "AI & Models",
+    "speech": "Dictation",
     "tools": "Tools & MCP",
     "skills": "Skills",
     "architect": "Git workflow",
@@ -769,7 +803,8 @@
       "architect": "Configure Architect target and branch naming patterns",
       "shortcuts": "Configure keyboard shortcuts and key bindings",
       "providers": "Configure API keys and endpoints",
-      "models": "Manage available models parameters"
+      "models": "Manage available models parameters",
+      "speech": "Configure microphone dictation and speech-to-text providers"
     },
     "language_region": "Language & Region",
     "language": "Language",

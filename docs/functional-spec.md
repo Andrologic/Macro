@@ -81,7 +81,7 @@ Macro s'adresse principalement à des développeurs qui :
 - travaillent sur un ou plusieurs dépôts reliés
 - peuvent avoir besoin de continuer la supervision loin de leur machine principale
 
-Macro suppose que l'utilisateur agit comme un decideur technique, même lorsqu'il travaille seul.
+Macro suppose que l'utilisateur agit comme un décideur technique, même lorsqu'il travaille seul.
 
 ---
 
@@ -122,7 +122,7 @@ Ces unités sont définies dans la section suivante.
 
 ### 6.1 Workspace
 
-Le workspace est l'environnement actif dans lequel Macro opere.
+Le workspace est l'environnement actif dans lequel Macro opère.
 
 Il contient :
 - un ou plusieurs groupes de projets
@@ -175,7 +175,7 @@ Un plan archivé reste consultable pour l'audit et l'historique, mais n'est plus
 
 Un nœud de stratégie est une unité de la stratégie d'un plan générée par l'IA.
 
-Un nœud peut representer :
+Un nœud peut représenter :
 - une tranche fonctionnelle
 - une étape technique
 - un jalon de dépendance
@@ -400,7 +400,7 @@ Exemples :
 - création de projet
 - navigation projet
 - visualisation de diff
-- reglage de l'application
+- réglage de l'application
 
 ---
 
@@ -953,6 +953,19 @@ Macro doit exposer un contrôle utilisateur sur au moins les dimensions suivante
 - préférences d'apparence et d'interaction
 - raccourcis
 - prompts et cadrage du comportement système
+
+La dictée vocale est une action propre du composer, placée immédiatement à
+gauche du bouton d'envoi. Un premier clic démarre l'enregistrement, un second
+l'arrête et lance la transcription. Le texte reconnu est inséré dans le brouillon
+à la position d'édition courante et n'est jamais envoyé automatiquement, afin que
+l'utilisateur puisse le relire et le corriger.
+
+Les réglages de dictée doivent permettre de choisir la langue, la durée maximale
+d'enregistrement et un fournisseur activé. Les fournisseurs de reconnaissance
+vocale sont distincts des fournisseurs de chat. Macro prend en charge les
+protocoles OpenAI-compatible et Deepgram, y compris les endpoints locaux
+configurables. L'interface doit indiquer clairement si l'audio reste local ou est
+envoyé à un service distant.
 
 Andrologic est le fournisseur sélectionné par défaut lorsqu'il a pu être activé
 et qu'aucune sélection de conversation existante ne doit être restaurée. Il

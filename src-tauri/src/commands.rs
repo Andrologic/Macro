@@ -10,6 +10,8 @@ pub mod git;
 pub mod mcp;
 #[path = "commands/skills/mod.rs"]
 pub mod skills;
+#[path = "commands/speech.rs"]
+pub mod speech;
 #[path = "commands/terminal.rs"]
 pub mod terminal;
 #[path = "commands/workspace.rs"]

@@ -1,4 +1,37 @@
 {
+  "speech": {
+    "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Transcription en cours" },
+    "errors": { "title": "Dictée indisponible" },
+    "settings": {
+      "validation": "Le nom, le point de terminaison et le modèle sont obligatoires.",
+      "saved": "Fournisseur vocal enregistré.",
+      "saveFailed": "Impossible d’enregistrer le fournisseur vocal.",
+      "title": "Dictée au microphone",
+      "description": "Enregistrez depuis le composer, transcrivez avec le fournisseur sélectionné, puis relisez le texte avant l’envoi.",
+      "activeProvider": "Fournisseur actif",
+      "noProvider": "Aucun fournisseur",
+      "language": "Langue",
+      "autoLanguage": "Automatique",
+      "maxDuration": "Durée maximale d’enregistrement",
+      "localPrivacy": "Fournisseur local : l’audio reste sur la machine configurée.",
+      "remotePrivacy": "Fournisseur distant : l’audio enregistré est envoyé au point de terminaison configuré.",
+      "providers": "Fournisseurs de reconnaissance vocale",
+      "compatibility": "Prend en charge les points de terminaison de transcription compatibles OpenAI et Deepgram.",
+      "addProvider": "Ajouter un fournisseur",
+      "keyStored": "Clé API enregistrée localement",
+      "noKeyRequired": "Aucune clé API requise",
+      "keyMissing": "Clé API requise",
+      "editProvider": "Modifier le fournisseur",
+      "newProvider": "Nouveau fournisseur",
+      "protocol": "Protocole",
+      "model": "Modèle de transcription",
+      "endpoint": "URL de base",
+      "apiKey": "Clé API",
+      "keepKey": "Laisser vide pour conserver la clé enregistrée",
+      "localProvider": "Fournisseur local",
+      "removeKey": "Supprimer la clé API enregistrée"
+    }
+  },
   "startup": {
     "interrupted": "Démarrage interrompu",
     "failedTitle": "Macro n’a pas pu terminer son démarrage.",
@@ -754,6 +787,7 @@
     "general": "Général",
     "appearance": "Apparence",
     "ai": "IA et modèles",
+    "speech": "Dictée",
     "tools": "Outils et MCP",
     "skills": "Skills",
     "architect": "Workflow Git",
@@ -767,7 +801,8 @@
       "shortcuts": "Configurer les raccourcis clavier et les raccourcis clavier",
       "providers": "Configurer les clés API et les points de terminaison",
       "models": "Gérer les paramètres des modèles disponibles",
-      "notifications": "Configurer les canaux de notification pour les événements clés des workflows"
+      "notifications": "Configurer les canaux de notification pour les événements clés des workflows",
+      "speech": "Configurer la dictée au microphone et les fournisseurs de reconnaissance vocale"
     },
     "language_region": "Langue et région",
     "language": "Langue",

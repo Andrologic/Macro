@@ -254,6 +254,7 @@ D'autres stores portent des responsabilités ciblées :
 - `useGitStore` pour arbres et commits Git
 - `useFileChangesStore` pour la review de changements
 - `useProviderStore` pour les providers et modèles IA
+- `useSpeechToTextStore` pour les fournisseurs vocaux et les préférences de dictée
 - `useToolsStore` pour les outils internes et MCP
 - `useSkillsStore` pour la découverte, les préférences et les activations de skills
 
@@ -302,6 +303,7 @@ Exemples principaux :
 - `toolModePolicy`
 - `projectExecutionContext`
 - `skills` via le contrat provider et les commandes IPC dédiées
+- `speech/microphoneRecorder` pour la capture audio différée côté WebView
 
 ### 7.3 Contrats et DTO
 
@@ -338,6 +340,7 @@ Le backend expose de nombreuses commandes Tauri, regroupées par domaine :
 - skills
 - système de fichiers
 - Git
+- reconnaissance vocale
 
 Ces commandes sont centralisées dans le point d'entrée du backend.
 
@@ -356,7 +359,7 @@ Le runtime embarque des plugins Tauri pour :
 
 ### 9.1 Modules principaux
 
-Le backend Rust est organise en modules de domaine.
+Le backend Rust est organisé en modules de domaine.
 
 Les blocs principaux sont :
 
@@ -367,6 +370,7 @@ Les blocs principaux sont :
 - `workspace/`
 - `commands/`
 - `ai/`
+- `speech/`
 
 ### 9.2 `core`
 
@@ -422,6 +426,14 @@ Le module `ai` porte :
 
 Cette couche est encore partiellement utilisée selon les flux, mais fait partie de l'architecture cible.
 
+### 9.8 `speech`
+
+Le module `speech` valide la taille et la configuration des enregistrements, puis
+sélectionne un adaptateur de protocole. L'adaptateur OpenAI-compatible envoie un
+multipart vers `/audio/transcriptions`; l'adaptateur Deepgram envoie les octets
+audio vers `/v1/listen`. Les commandes Tauri reçoivent le contenu audio dans un
+corps IPC binaire afin d'éviter une sérialisation JSON ou base64 inutile.
+
 ---
 
 ## 10. Persistance
@@ -437,12 +449,14 @@ Elle stocke notamment :
 - settings
 - cache local de workspace
 - références de dépôts Git et worktrees
+- configurations des fournisseurs de reconnaissance vocale, sans les clés API
 
 ### 10.2 Persistance locale frontend
 
 Le frontend utilise aussi de la persistence locale légère pour :
 
 - certaines préférences
+- le fournisseur vocal actif, la langue et la durée maximale de dictée
 - les sélections de modèle par contexte
 - l'état de session local
 - certains fallback de plans
@@ -821,8 +835,15 @@ Les préférences utilisateur sont réparties entre :
 - persistence locale frontend
 - settings backend
 - configurations providers et modèles
+- configurations des fournisseurs vocaux
 - règles de workflow Git et d'automatisation
 - préférences de skills activées, trusted et scripts
+
+Les clés API de reconnaissance vocale sont conservées dans le stockage natif des
+secrets sous un namespace dédié. SQLite ne stocke qu'un booléen indiquant qu'une
+clé est présente. La suppression ou la modification d'un fournisseur sérialise
+les mutations et compense les écritures partielles entre SQLite et le stockage
+de secrets.
 ### 17.4 Provider géré Andrologic
 
 Le provider `macro-ai`, affiché sous le nom Andrologic, est créé par le backend
