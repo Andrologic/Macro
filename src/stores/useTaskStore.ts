@@ -2412,7 +2412,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const hasActiveTaskRuntime = get().tasks.some(
       (task) => task.plan_id === safePlanId && isTaskRuntimeActive(task.id)
     );
-    if (hasActiveTaskRuntime) {
+    const hasActivePlanFinalization = get().tasks.some(
+      (task) => task.plan_id === safePlanId && activeTaskOperations.has(task.id)
+    );
+    if (hasActiveTaskRuntime || hasActivePlanFinalization) {
       return false;
     }
 
@@ -3427,6 +3430,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     if (task.status === 'Completed') {
       set({ lastError: tTask('implement.errors.taskAlreadyCompleted', 'Task is already completed.') });
       return;
+    }
+
+    if (task.plan_id && activePlanWorktreeMutations.has(task.plan_id)) {
+      const error = new Error(getTaskCommandMutationBlockedMessage('complete'));
+      set({ lastError: error.message });
+      throw error;
     }
 
     if (task.status === 'InProgress') {
