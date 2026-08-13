@@ -9,6 +9,7 @@ mod macos_traffic_lights;
 #[cfg(target_os = "macos")]
 mod macos_window_menu;
 mod secrets;
+mod speech;
 
 // Placeholder modules for critical manual implementation
 mod fs;
@@ -406,6 +407,11 @@ pub fn run() {
             commands::db_update_provider_config,
             commands::db_create_provider_config,
             commands::db_delete_provider_config,
+            commands::speech::speech_list_provider_configs,
+            commands::speech::speech_create_provider_config,
+            commands::speech::speech_update_provider_config,
+            commands::speech::speech_delete_provider_config,
+            commands::speech::speech_transcribe,
             commands::ai_get_dev_provider_overrides,
             commands::ai::ai_start_chatgpt_auth,
             commands::ai::ai_provision_macro_ai,

@@ -43,6 +43,7 @@ import { ComposerHistoryPlugin } from './ComposerHistoryPlugin';
 export interface ComposerEditorHandle {
   clear: () => void;
   setText: (text: string, contextRefs?: readonly ContextReference[]) => void;
+  insertTextAtSelection: (text: string) => void;
   getTextContent: () => string;
   focus: () => void;
 }
@@ -291,6 +292,20 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           deferMentionRefRemovalResume();
         }
         textRef.current = text;
+      },
+      insertTextAtSelection: (text: string) => {
+        if (!text) return;
+        editor.update(() => {
+          let selection = $getSelection();
+          if (!$isRangeSelection(selection)) {
+            $getRoot().selectEnd();
+            selection = $getSelection();
+          }
+          if ($isRangeSelection(selection)) {
+            selection.insertText(text);
+          }
+        });
+        editor.focus();
       },
       getTextContent: () => textRef.current,
       focus: () => editor.focus(),

@@ -144,6 +144,20 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         }
         onTextChange(text);
       },
+      insertTextAtSelection: (text: string) => {
+        if (loadedEditorRef.current) {
+          loadedEditorRef.current.insertTextAtSelection(text);
+          return;
+        }
+        const textarea = fallbackTextareaRef.current;
+        if (!textarea) return;
+        const start = textarea.selectionStart ?? textarea.value.length;
+        const end = textarea.selectionEnd ?? start;
+        textarea.setRangeText(text, start, end, 'end');
+        fallbackTextRef.current = textarea.value;
+        onTextChange(textarea.value);
+        textarea.focus();
+      },
       getTextContent: () => {
         if (loadedEditorRef.current) {
           return loadedEditorRef.current.getTextContent();

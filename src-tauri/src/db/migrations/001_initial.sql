@@ -111,6 +111,19 @@ CREATE TABLE IF NOT EXISTS provider_settings (
     FOREIGN KEY (provider_id) REFERENCES provider_configs(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS speech_provider_configs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    model TEXT NOT NULL,
+    has_stored_api_key INTEGER NOT NULL DEFAULT 0,
+    is_enabled INTEGER DEFAULT 1,
+    is_local INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value_json TEXT NOT NULL,

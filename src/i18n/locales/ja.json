@@ -1,4 +1,20 @@
 {
+  "speech": {
+    "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "文字起こし中" },
+    "errors": { "title": "音声入力を利用できません" },
+    "settings": {
+      "validation": "名前、エンドポイント、モデルは必須です。", "saved": "音声プロバイダーを保存しました。", "saveFailed": "音声プロバイダーを保存できませんでした。",
+      "title": "マイク音声入力", "description": "コンポーザーから録音し、選択したプロバイダーで文字起こしして、送信前に内容を確認します。",
+      "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
+      "maxDuration": "最大録音時間", "localPrivacy": "ローカルプロバイダー：音声は設定したマシン内に保持されます。",
+      "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",
+      "compatibility": "OpenAI互換およびDeepgramの文字起こしエンドポイントに対応します。", "addProvider": "プロバイダーを追加",
+      "keyStored": "APIキーはローカルに保存済み", "noKeyRequired": "APIキー不要", "keyMissing": "APIキーが必要",
+      "editProvider": "プロバイダーを編集", "newProvider": "新しいプロバイダー", "protocol": "プロトコル", "model": "文字起こしモデル",
+      "endpoint": "ベースURL", "apiKey": "APIキー", "keepKey": "保存済みのキーを保持するには空のままにします",
+      "localProvider": "ローカルプロバイダー", "removeKey": "保存済みのAPIキーを削除"
+    }
+  },
   "startup": {
     "interrupted": "起動が中断されました",
     "failedTitle": "Macro は起動を完了できませんでした。",
@@ -755,6 +771,7 @@
     "general": "一般的な",
     "appearance": "外観",
     "ai": "AI とモデル",
+    "speech": "音声入力",
     "tools": "ツールとMCP",
     "skills": "Skills",
     "architect": "Git ワークフロー",
@@ -768,7 +785,8 @@
       "shortcuts": "キーボード ショートカットとキー バインドを構成する",
       "providers": "API キーとエンドポイントを構成する",
       "models": "利用可能なモデルパラメータを管理する",
-      "notifications": "主要なワークフローイベントの通知チャネルを設定する"
+      "notifications": "主要なワークフローイベントの通知チャネルを設定する",
+      "speech": "マイク音声入力と音声プロバイダーを設定する"
     },
     "language_region": "言語と地域",
     "language": "言語",

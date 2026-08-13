@@ -2240,6 +2240,167 @@ pub async fn delete_provider_config(pool: &SqlitePool, id: &str) -> DbResult<()>
     Ok(())
 }
 
+// ============ SPEECH PROVIDER CONFIGS ============
+
+pub async fn list_speech_provider_configs(
+    pool: &SqlitePool,
+) -> DbResult<Vec<SpeechProviderConfig>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, name, provider_type, base_url, model, has_stored_api_key,
+               is_enabled, is_local, created_at, updated_at
+        FROM speech_provider_configs
+        ORDER BY is_local ASC, name ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| SpeechProviderConfig {
+            id: row.get("id"),
+            name: row.get("name"),
+            provider_type: row.get("provider_type"),
+            base_url: row.get("base_url"),
+            model: row.get("model"),
+            has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
+            is_enabled: row.get::<i32, _>("is_enabled") != 0,
+            is_local: row.get::<i32, _>("is_local") != 0,
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect())
+}
+
+pub async fn get_speech_provider_config(
+    pool: &SqlitePool,
+    id: &str,
+) -> DbResult<Option<SpeechProviderConfig>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, name, provider_type, base_url, model, has_stored_api_key,
+               is_enabled, is_local, created_at, updated_at
+        FROM speech_provider_configs
+        WHERE id = ?
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| SpeechProviderConfig {
+        id: row.get("id"),
+        name: row.get("name"),
+        provider_type: row.get("provider_type"),
+        base_url: row.get("base_url"),
+        model: row.get("model"),
+        has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
+        is_enabled: row.get::<i32, _>("is_enabled") != 0,
+        is_local: row.get::<i32, _>("is_local") != 0,
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+pub async fn create_speech_provider_config(
+    pool: &SqlitePool,
+    name: &str,
+    provider_type: &str,
+    base_url: &str,
+    model: &str,
+    is_local: bool,
+    is_enabled: bool,
+) -> DbResult<SpeechProviderConfig> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        INSERT INTO speech_provider_configs (
+            id, name, provider_type, base_url, model, has_stored_api_key,
+            is_enabled, is_local, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(provider_type)
+    .bind(base_url)
+    .bind(model)
+    .bind(is_enabled as i32)
+    .bind(is_local as i32)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(SpeechProviderConfig {
+        id,
+        name: name.to_string(),
+        provider_type: provider_type.to_string(),
+        base_url: base_url.to_string(),
+        model: model.to_string(),
+        has_stored_api_key: false,
+        is_enabled,
+        is_local,
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
+pub async fn update_speech_provider_config(
+    pool: &SqlitePool,
+    input: UpdateSpeechProviderConfigInput,
+) -> DbResult<()> {
+    let current = get_speech_provider_config(pool, &input.id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        UPDATE speech_provider_configs
+        SET name = ?, provider_type = ?, base_url = ?, model = ?,
+            is_local = ?, is_enabled = ?, updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(input.name.unwrap_or(current.name))
+    .bind(input.provider_type.unwrap_or(current.provider_type))
+    .bind(input.base_url.unwrap_or(current.base_url))
+    .bind(input.model.unwrap_or(current.model))
+    .bind(input.is_local.unwrap_or(current.is_local) as i32)
+    .bind(input.is_enabled.unwrap_or(current.is_enabled) as i32)
+    .bind(now)
+    .bind(input.id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_speech_provider_has_stored_api_key(
+    pool: &SqlitePool,
+    id: &str,
+    has_key: bool,
+) -> DbResult<()> {
+    sqlx::query(
+        "UPDATE speech_provider_configs SET has_stored_api_key = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(has_key as i32)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_speech_provider_config(pool: &SqlitePool, id: &str) -> DbResult<()> {
+    sqlx::query("DELETE FROM speech_provider_configs WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // ============ AI MODELS ============
 
 pub async fn list_models_by_provider(

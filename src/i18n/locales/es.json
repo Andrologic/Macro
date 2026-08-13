@@ -1,4 +1,23 @@
 {
+  "speech": {
+    "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Transcribiendo" },
+    "errors": { "title": "Dictado no disponible" },
+    "settings": {
+      "validation": "El nombre, el endpoint y el modelo son obligatorios.",
+      "saved": "Proveedor de voz guardado.",
+      "saveFailed": "No se pudo guardar el proveedor de voz.",
+      "title": "Dictado por micrófono",
+      "description": "Graba desde el compositor, transcribe con el proveedor seleccionado y revisa el texto antes de enviarlo.",
+      "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
+      "maxDuration": "Duración máxima de grabación", "localPrivacy": "Proveedor local: el audio permanece en el equipo configurado.",
+      "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
+      "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",
+      "keyStored": "Clave API guardada localmente", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
+      "editProvider": "Editar proveedor", "newProvider": "Nuevo proveedor", "protocol": "Protocolo", "model": "Modelo de transcripción",
+      "endpoint": "URL base", "apiKey": "Clave API", "keepKey": "Déjalo vacío para conservar la clave guardada",
+      "localProvider": "Proveedor local", "removeKey": "Eliminar la clave API guardada"
+    }
+  },
   "startup": {
     "interrupted": "Inicio interrumpido",
     "failedTitle": "Macro no pudo completar el inicio.",
@@ -755,6 +774,7 @@
     "general": "generales",
     "appearance": "Apariencia",
     "ai": "IA y modelos",
+    "speech": "Dictado",
     "tools": "Herramientas y MCP",
     "skills": "Skills",
     "architect": "Workflow Git",
@@ -768,7 +788,8 @@
       "shortcuts": "Configurar atajos de teclado y combinaciones de teclas",
       "providers": "Configurar claves API y puntos finales",
       "models": "Administrar los parámetros de los modelos disponibles.",
-      "notifications": "Configura los canales de notificación para los eventos clave del flujo de trabajo"
+      "notifications": "Configura los canales de notificación para los eventos clave del flujo de trabajo",
+      "speech": "Configurar el dictado por micrófono y los proveedores de voz"
     },
     "language_region": "Idioma y región",
     "language": "Idioma",
