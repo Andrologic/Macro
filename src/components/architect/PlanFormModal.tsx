@@ -46,11 +46,11 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
   // Close on Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !isLoading) onClose();
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [isLoading, onClose]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,7 +73,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 animate-in fade-in duration-200"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && !isLoading) onClose();
       }}
     >
       <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[420px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl animate-in zoom-in-95 duration-200">
@@ -91,6 +91,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
           <button
             type="button"
             onClick={onClose}
+            disabled={isLoading}
             className="w-7 h-7 rounded-lg hover:bg-accent flex items-center justify-center transition-colors"
           >
             <Icon name="x" size={14} className="text-muted-foreground" />
@@ -152,6 +153,7 @@ export const PlanFormModal: React.FC<PlanFormModalProps> = ({
           <button
             type="button"
             onClick={onClose}
+            disabled={isLoading}
             className="h-8 px-4 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
           >
             {cancelLabel || t('common.cancel', 'Cancel')}

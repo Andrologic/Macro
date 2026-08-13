@@ -7,7 +7,8 @@ export type LinkedConversationDeletionPhase =
   | 'prepared'
   | 'task_deleting'
   | 'task_deleted'
-  | 'plan_conversation_created';
+  | 'plan_conversation_created'
+  | 'plan_deleting';
 
 export interface LinkedTaskDeletionTarget {
   worktreeKey: string;
@@ -64,7 +65,7 @@ const isAllowedOwnerPhase = (
     return phase === 'prepared' || phase === 'task_deleting' || phase === 'task_deleted';
   }
   if (ownerType === 'plan') {
-    return phase === 'task_deleted' || phase === 'plan_conversation_created';
+    return phase === 'task_deleted' || phase === 'plan_conversation_created' || phase === 'plan_deleting';
   }
   return phase === 'task_deleted';
 };
@@ -88,7 +89,8 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
         (candidate.phase !== 'prepared' &&
           candidate.phase !== 'task_deleting' &&
           candidate.phase !== 'task_deleted' &&
-          candidate.phase !== 'plan_conversation_created') ||
+          candidate.phase !== 'plan_conversation_created' &&
+          candidate.phase !== 'plan_deleting') ||
         !isAllowedOwnerPhase(ownerType, candidate.phase)
       ) {
         throw new LinkedConversationDeletionSagaCorruptionError(value);
