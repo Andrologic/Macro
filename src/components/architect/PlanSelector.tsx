@@ -67,6 +67,7 @@ import {
 import {
   computePlanSelectorRefreshState,
   computePlanSelectorEmptyState,
+  resolveVerifiedPlanDeletionRecovery,
   type PlanSelectorMutationCheck,
   type PlanSelectorRefreshState,
 } from './planSelectorState';
@@ -77,6 +78,14 @@ import {
   type ArchitectPlanSelectorStateDetail,
 } from './planSelectorEvents';
 import { useChatStore } from '../../stores/useChatStore';
+import {
+  removeLinkedConversationDeletionSaga,
+  upsertLinkedConversationDeletionSaga,
+} from '../../services/linkedTaskDeletionSaga';
+import {
+  removePlanLifecycleSaga,
+  upsertPlanLifecycleSaga,
+} from '../../services/planLifecycleSaga';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 
@@ -930,6 +939,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setIsLoading(true);
     let releasePlanMutation: (() => void) | null = null;
+    let archivedPlan: ArchitectPlanRecord | null = null;
     try {
       const taskStore = useTaskStore.getState();
       if (!taskStore.reservePlanWorktreeMutation(plan.id)) {
@@ -948,14 +958,34 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
         );
       }
-      const cleanup = await cleanupPlanBranches(latestPlan);
+      const archiveSagaNow = new Date().toISOString();
+      await upsertPlanLifecycleSaga({
+        planId: plan.id,
+        branchName: targetBranch,
+        operation: 'archive',
+        phase: 'prepared',
+        conversationId: latestPlan.conversationId ?? null,
+        createdAt: archiveSagaNow,
+        updatedAt: archiveSagaNow,
+      });
+      archivedPlan = await archiveArchitectPlan(targetBranch, plan.id);
+      await upsertPlanLifecycleSaga({
+        planId: plan.id,
+        branchName: targetBranch,
+        operation: 'archive',
+        phase: 'metadata_written',
+        conversationId: archivedPlan.conversationId ?? null,
+        createdAt: archiveSagaNow,
+        updatedAt: new Date().toISOString(),
+      });
+      const cleanup = await cleanupPlanBranches(archivedPlan);
+      await removePlanLifecycleSaga(plan.id, 'archive');
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
           repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
         ),
       });
-      await archiveArchitectPlan(targetBranch, plan.id);
       const planDisplayName = getArchitectPlanDisplayName(plan);
       notify.success(
         t('architect.planSelector.toastPlanArchived', {
@@ -970,6 +1000,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         },
       });
     } catch (archiveError) {
+      if (archivedPlan) {
+        const message = t(
+          'architect.planSelector.errorArchivePlanCleanup',
+          'Plan archived, but Git cleanup failed. Delete the archived plan to retry cleanup.'
+        );
+        setError(`${message} ${resolveOperationMessage(archiveError, '')}`.trim());
+        notify.warning(message);
+        await refreshPlanSelectorAfterMutation({
+          mutation: {
+            type: 'archive',
+            planId: plan.id,
+          },
+        });
+        return;
+      }
       if (openReplicaRepair(archiveError, () => handleArchivePlan(plan))) {
         return;
       }
@@ -1005,6 +1050,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setIsDeleting(true);
     let keepDeleteDialogOpen = false;
     let releasePlanMutation: (() => void) | null = null;
+    let linkedConversationCleanupPending = false;
     try {
       const deletedPlanId = planToDelete.id;
       const taskStore = useTaskStore.getState();
@@ -1017,6 +1063,24 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         );
       }
       releasePlanMutation = () => taskStore.releasePlanWorktreeMutation(deletedPlanId);
+      const currentPlan = await getArchitectPlan(targetBranch, deletedPlanId);
+      if (!currentPlan) {
+        throw new Error(
+          t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
+        );
+      }
+      if (currentPlan.conversationId) {
+        const now = new Date().toISOString();
+        await upsertLinkedConversationDeletionSaga({
+          ownerType: 'plan',
+          ownerId: deletedPlanId,
+          conversationId: currentPlan.conversationId,
+          phase: 'plan_deleting',
+          targetBranch,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
       const cleanup = await deletePlanAndCleanupBranches({
         branchName: targetBranch,
         planId: deletedPlanId,
@@ -1025,6 +1089,27 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         planId: deletedPlanId,
         deletedWorktreeKeys: cleanup.deletedWorktreeKeys,
       });
+      if (currentPlan.conversationId) {
+        let deletedConversation = false;
+        try {
+          deletedConversation = await useChatStore
+            .getState()
+            .completeLinkedTaskConversationDeletion(currentPlan.conversationId);
+        } catch (error) {
+          linkedConversationCleanupPending = true;
+          throw error;
+        }
+        if (!deletedConversation) {
+          linkedConversationCleanupPending = true;
+          throw new Error(
+            t(
+              'architect.planSelector.errorDeletePlanConversation',
+              'Plan deleted, but its conversation cleanup remains pending.'
+            )
+          );
+        }
+        await removeLinkedConversationDeletionSaga('plan', deletedPlanId);
+      }
       notify.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
       await refreshPlanSelectorAfterMutation({
         mutation: {
@@ -1050,6 +1135,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             planId: planToDelete.id,
             deletedWorktreeKeys: [],
           });
+          if (resolveVerifiedPlanDeletionRecovery({
+            mutationApplied: verification.mutationApplied,
+            linkedConversationCleanupPending,
+          }) === 'conversation_cleanup_pending') {
+            const pendingCleanupMessage = t(
+              'architect.planSelector.warningDeletePlanConversationPending',
+              'Plan deleted, but linked conversation cleanup remains pending and will be retried automatically.'
+            );
+            setError(pendingCleanupMessage);
+            notify.warning(pendingCleanupMessage);
+          }
           void useTaskStore.getState().refreshFromPlan().catch(() => undefined);
           return;
         }

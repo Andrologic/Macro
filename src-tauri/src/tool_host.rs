@@ -3,6 +3,7 @@ use crate::commands::terminal::{
     run_legacy_session_internal, TerminalSessionStore,
 };
 use crate::commands::{execute_workspace_tool, CommandError, WorkspaceProjectMount};
+use crate::core::http_auth::BearerTokenDigest;
 use crate::core::tool_policy::{get_mode_policy, validate_tool_execution};
 use crate::git::GitState;
 use crate::WorkspaceMetadataRoot;
@@ -24,7 +25,7 @@ pub struct ToolHostConfig {
 
 #[derive(Clone)]
 struct ToolHostState {
-    bearer_token: String,
+    bearer_token: BearerTokenDigest,
     workspace_metadata_root: WorkspaceMetadataRoot,
     git_state: GitState,
     terminal_store: TerminalSessionStore,
@@ -80,8 +81,7 @@ fn authorized(headers: &HeaderMap, state: &ToolHostState) -> bool {
         return false;
     };
 
-    let provided = auth_str.strip_prefix("Bearer ").unwrap_or_default();
-    provided == state.bearer_token
+    state.bearer_token.authorizes(Some(auth_str))
 }
 
 fn unauthorized_response() -> impl IntoResponse {
@@ -313,7 +313,7 @@ pub fn start(
 
     let bearer_token = Uuid::new_v4().to_string();
     let state = Arc::new(ToolHostState {
-        bearer_token: bearer_token.clone(),
+        bearer_token: BearerTokenDigest::new(&bearer_token),
         workspace_metadata_root,
         git_state,
         terminal_store,

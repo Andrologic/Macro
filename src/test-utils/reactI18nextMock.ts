@@ -19,7 +19,11 @@ export const createTranslationMock = (
 ): TranslationMock => ({
   t: (key, fallbackOrOptions, maybeOptions) => {
     if (key in explicitTranslations) {
-      return interpolate(explicitTranslations[key]!, maybeOptions as InterpolationValues);
+      const values =
+        typeof fallbackOrOptions === 'object' && fallbackOrOptions !== null
+          ? fallbackOrOptions
+          : maybeOptions;
+      return interpolate(explicitTranslations[key]!, values as InterpolationValues);
     }
     if (typeof fallbackOrOptions === 'string') {
       return interpolate(fallbackOrOptions, maybeOptions as InterpolationValues);

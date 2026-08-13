@@ -138,6 +138,8 @@ export const NotificationsView: React.FC = () => {
   }, [t]);
 
   const desktopRuntimeSupported = isDesktopNotificationRuntimeSupported();
+  const desktopDeliveryAvailable =
+    desktopRuntimeSupported && desktopNotificationStatus !== 'denied';
   const desktopRuntimeLabel = desktopNotificationStatus === 'granted'
     ? t('settings.desktopNotificationsStatusAllowed', 'Allowed')
     : desktopNotificationStatus === 'denied'
@@ -162,16 +164,16 @@ export const NotificationsView: React.FC = () => {
         description: t(NOTIFICATION_CATEGORY_DEFINITIONS[category].descriptionKey),
         mode: notificationChannelModes[category],
         allowedModes: getAllowedNotificationChannelModes(category).filter(
-          (mode) => desktopRuntimeSupported || (mode !== 'desktop' && mode !== 'both')
+          (mode) => desktopDeliveryAvailable || (mode !== 'desktop' && mode !== 'both')
         ),
         displayedMode:
-          !desktopRuntimeSupported &&
+          !desktopDeliveryAvailable &&
           (notificationChannelModes[category] === 'desktop' ||
             notificationChannelModes[category] === 'both')
             ? 'toast'
             : notificationChannelModes[category],
       })),
-    [desktopRuntimeSupported, notificationChannelModes, t]
+    [desktopDeliveryAvailable, notificationChannelModes, t]
   );
 
   const runDebugAction = useCallback(

@@ -251,7 +251,7 @@ import {
 } from "../services/contextCompactionSession";
 import { createChatCompactionRuntime } from "../services/chatCompactionRuntime";
 import {
-  executeConversationReplay,
+  buildConversationReplayPlan,
   type ConversationReplayPlan,
 } from "../services/conversationReplayService";
 import {
@@ -262,6 +262,7 @@ import {
 import {
   appendAgentCodeCheckpoint,
   buildAgentCodeReplayPreview,
+  clearAgentCodeCheckpoints,
   createAgentCodeCheckpoint,
   hydrateAgentCodeReplayPreviewCurrentState,
   loadAgentCodeCheckpoints,
@@ -269,6 +270,12 @@ import {
   restoreAgentCodeReplayPreview,
   saveAgentCodeCheckpoints,
 } from "../services/agentCodeCheckpoints";
+import {
+  LinkedConversationDeletionSagaCorruptionError,
+  loadLinkedConversationDeletionSagas,
+  removeLinkedConversationDeletionSaga,
+  upsertLinkedConversationDeletionSaga,
+} from "../services/linkedTaskDeletionSaga";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
 import {
   filterToolIdsForInternalAgentProfile,
@@ -297,8 +304,18 @@ import {
   buildUserMessagePresentation,
   mapDbConversationToConversation,
   mapDbMessageToChatMessage,
-  normalizeReasoningEffort,
 } from "./chat/chatDbMappers";
+import {
+  EMPTY_AI_CONTEXT_SELECTIONS,
+  buildAISelectionRestorePlan,
+  cloneAIContextSelections,
+  normalizeAIContextSelections,
+  pruneAIContextSelections,
+  removeConversationSelectionData as removeConversationSelectionDataFromState,
+  upsertSelectionForContext,
+  type PersistedAIContextSelections,
+  type PersistedAISelection,
+} from "./chat/chatAISelectionState";
 import {
   buildMessageState,
   findChatMessageInState,
@@ -328,6 +345,8 @@ import {
   type ChatSendState,
 } from "./chat/chatRuntimeState";
 import { buildReplayTrimStatePatch } from "./chat/chatReplayTrimState";
+
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
 
 export type {
   ConversationContextDiagnostics,
@@ -426,6 +445,7 @@ const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
 const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
 const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
   "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
+const TOOL_EXECUTION_ABORTED_RESULT = "Tool execution aborted";
 const IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE =
   "Plan mode is read-only. This assistant turn cannot edit files, update todos, run terminal commands, stage, commit, checkout, merge, reset, or stash. Inspect the repo and produce a concrete implementation plan instead.";
 const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
@@ -762,231 +782,6 @@ const branchNameMatchesCandidate = (
   );
 };
 
-type AISelectionModeKey = "Chat" | "Architect" | "Implement";
-
-interface PersistedAISelection {
-  providerId: string | null;
-  modelId: string | null;
-  reasoningEffort?: ReasoningEffort | null;
-  updatedAt: string;
-}
-
-interface PersistedAIProviderSelection {
-  modelId: string;
-  reasoningEffort?: ReasoningEffort | null;
-  updatedAt: string;
-}
-
-interface PersistedAIContextSelections {
-  version: 2;
-  modeSelections: Partial<Record<AISelectionModeKey, PersistedAISelection>>;
-  conversationSelections: Record<string, PersistedAISelection>;
-  providerSelectionsByConversationId: Record<
-    string,
-    Record<string, PersistedAIProviderSelection>
-  >;
-  providerSelectionsByMode: Partial<
-    Record<AISelectionModeKey, Record<string, PersistedAIProviderSelection>>
-  >;
-}
-
-const EMPTY_AI_CONTEXT_SELECTIONS: PersistedAIContextSelections = {
-  version: 2,
-  modeSelections: {},
-  conversationSelections: {},
-  providerSelectionsByConversationId: {},
-  providerSelectionsByMode: {},
-};
-
-const getSelectionModeKey = (mode: AppMode): AISelectionModeKey => {
-  if (mode === "Chat") {
-    return "Chat";
-  }
-  if (mode === "Architect") {
-    return "Architect";
-  }
-  return "Implement";
-};
-
-const normalizePersistedSelection = (
-  value: unknown,
-): PersistedAISelection | null => {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as {
-    providerId?: unknown;
-    modelId?: unknown;
-    reasoningEffort?: unknown;
-    updatedAt?: unknown;
-  };
-
-  const providerId =
-    candidate.providerId === null || typeof candidate.providerId === "string"
-      ? candidate.providerId
-      : null;
-  const modelId =
-    candidate.modelId === null || typeof candidate.modelId === "string"
-      ? candidate.modelId
-      : null;
-
-  if (!providerId || !modelId) {
-    return null;
-  }
-
-  return {
-    providerId,
-    modelId,
-    reasoningEffort: normalizeReasoningEffort(candidate.reasoningEffort),
-    updatedAt:
-      typeof candidate.updatedAt === "string" &&
-      candidate.updatedAt.trim().length > 0
-        ? candidate.updatedAt
-        : new Date().toISOString(),
-  };
-};
-
-const normalizePersistedProviderSelection = (
-  value: unknown,
-): PersistedAIProviderSelection | null => {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as {
-    modelId?: unknown;
-    reasoningEffort?: unknown;
-    updatedAt?: unknown;
-  };
-
-  if (typeof candidate.modelId !== "string" || !candidate.modelId.trim()) {
-    return null;
-  }
-
-  return {
-    modelId: candidate.modelId,
-    reasoningEffort: normalizeReasoningEffort(candidate.reasoningEffort),
-    updatedAt:
-      typeof candidate.updatedAt === "string" &&
-      candidate.updatedAt.trim().length > 0
-        ? candidate.updatedAt
-        : new Date().toISOString(),
-  };
-};
-
-const normalizePersistedProviderSelectionMap = (
-  value: unknown,
-): Record<string, PersistedAIProviderSelection> => {
-  if (!value || typeof value !== "object") {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .map(([providerId, selection]) => [
-        providerId,
-        normalizePersistedProviderSelection(selection),
-      ])
-      .filter((entry): entry is [string, PersistedAIProviderSelection] =>
-        Boolean(entry[1]),
-      ),
-  );
-};
-
-const normalizeAIContextSelections = (
-  value: unknown,
-): PersistedAIContextSelections => {
-  if (!value || typeof value !== "object") {
-    return { ...EMPTY_AI_CONTEXT_SELECTIONS };
-  }
-
-  const raw = value as {
-    version?: unknown;
-    modeSelections?: unknown;
-    conversationSelections?: unknown;
-    providerSelectionsByConversationId?: unknown;
-    providerSelectionsByMode?: unknown;
-  };
-
-  const modeSelections: Partial<
-    Record<AISelectionModeKey, PersistedAISelection>
-  > = {};
-  if (raw.modeSelections && typeof raw.modeSelections === "object") {
-    const modeMap = raw.modeSelections as Record<string, unknown>;
-    for (const key of ["Chat", "Architect", "Implement"] as AISelectionModeKey[]) {
-      const normalized = normalizePersistedSelection(modeMap[key]);
-      if (normalized) {
-        modeSelections[key] = normalized;
-      }
-    }
-    if (!modeSelections.Chat) {
-      const legacyChatSelection = normalizePersistedSelection(modeMap.ChatDebug);
-      if (legacyChatSelection) {
-        modeSelections.Chat = legacyChatSelection;
-      }
-    }
-  }
-
-  const conversationSelections: Record<string, PersistedAISelection> = {};
-  if (
-    raw.conversationSelections &&
-    typeof raw.conversationSelections === "object"
-  ) {
-    for (const [conversationId, selection] of Object.entries(
-      raw.conversationSelections as Record<string, unknown>,
-    )) {
-      const normalized = normalizePersistedSelection(selection);
-      if (normalized) {
-        conversationSelections[conversationId] = normalized;
-      }
-    }
-  }
-
-  const providerSelectionsByConversationId: Record<
-    string,
-    Record<string, PersistedAIProviderSelection>
-  > = {};
-  if (
-    raw.providerSelectionsByConversationId &&
-    typeof raw.providerSelectionsByConversationId === "object"
-  ) {
-    for (const [conversationId, selectionMap] of Object.entries(
-      raw.providerSelectionsByConversationId as Record<string, unknown>,
-    )) {
-      const normalizedSelectionMap =
-        normalizePersistedProviderSelectionMap(selectionMap);
-      if (Object.keys(normalizedSelectionMap).length > 0) {
-        providerSelectionsByConversationId[conversationId] =
-          normalizedSelectionMap;
-      }
-    }
-  }
-
-  const providerSelectionsByMode: Partial<
-    Record<AISelectionModeKey, Record<string, PersistedAIProviderSelection>>
-  > = {};
-  if (
-    raw.providerSelectionsByMode &&
-    typeof raw.providerSelectionsByMode === "object"
-  ) {
-    const rawModeSelections = raw.providerSelectionsByMode as Record<
-      string,
-      unknown
-    >;
-    for (const key of ["Chat", "Architect", "Implement"] as AISelectionModeKey[]) {
-      const normalizedSelectionMap = normalizePersistedProviderSelectionMap(
-        rawModeSelections[key],
-      );
-      if (Object.keys(normalizedSelectionMap).length > 0) {
-        providerSelectionsByMode[key] = normalizedSelectionMap;
-      }
-    }
-  }
-
-  return {
-    version: 2,
-    modeSelections,
-    conversationSelections,
-    providerSelectionsByConversationId,
-    providerSelectionsByMode,
-  };
-};
-
 type ChatHydrationStatus = "idle" | "hydrating" | "ready" | "error";
 type ChatRestoreStatus = "idle" | "resolving" | "ready" | "error";
 type ChatContextKey = string;
@@ -997,6 +792,31 @@ interface ChatSendResult {
   turnId: string;
   userMessageId: string;
   assistantMessageId: string | null;
+}
+
+interface ChatSendCancelledResult {
+  status: "cancelled";
+  conversationId: string;
+  turnId: string;
+  userMessageId: null;
+  assistantMessageId: null;
+}
+
+/**
+ * Values captured for one assistant generation.  Tool calls must not infer
+ * their target from whichever conversation, task, or project happens to be
+ * selected when the provider responds.
+ */
+interface FrozenToolCallContext {
+  conversationId: string;
+  sessionId: string;
+  turnId: string;
+  assistantMessageId: string;
+  mode: AppMode;
+  agentType: AgentType | null;
+  taskId: string;
+  executionContext: ProjectExecutionContext;
+  signal: AbortSignal;
 }
 
 interface ArchitectTranscriptState {
@@ -1127,6 +947,7 @@ interface ChatStore {
   appendToMessage: (messageId: string, tokenChunk: string) => void;
   clearMessages: () => void;
   selectConversation: (conversationId: string) => Promise<boolean>;
+  clearSelectedConversation: () => void;
   createConversation: (
     title: string,
     taskId: string | null,
@@ -1148,6 +969,7 @@ interface ChatStore {
   ensureConversationForCurrentMode: () => Promise<string | null>;
   reapplySelectionForCurrentContext: () => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
+  togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
     conversationId: string,
     confirmation?: {
@@ -1156,6 +978,7 @@ interface ChatStore {
     },
   ) => Promise<void>;
   deleteChatConversations: (conversationIds: string[]) => Promise<void>;
+  completeLinkedTaskConversationDeletion: (conversationId: string) => Promise<boolean>;
   markAsRead: (conversationId: string) => void;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
@@ -1200,7 +1023,7 @@ interface ChatStore {
   ) => { completed: boolean; state: ConversationQuestionnaireState | null } | null;
   submitActiveQuestionnaire: (
     conversationId: string,
-  ) => Promise<ChatSendResult | null>;
+  ) => Promise<ChatSendResult | ChatSendCancelledResult | null>;
   sendMessage: (payload: {
     conversationId: string;
     content: string;
@@ -1209,7 +1032,7 @@ interface ChatStore {
     internalAgentProfile?: InternalAgentProfile | null;
     hiddenContext?: string;
     providerInputItems?: unknown[];
-  }) => Promise<ChatSendResult>;
+  }) => Promise<ChatSendResult | ChatSendCancelledResult>;
   stopConversationStream: (conversationId: string) => void;
   clearConversationRuntimeError: (conversationId: string) => void;
   stopStreaming: () => void;
@@ -1554,11 +1377,21 @@ const compareArchitectTranscriptState = (
 export const useChatStore = create<ChatStore>((set, get) => {
   let aiSelections = { ...EMPTY_AI_CONTEXT_SELECTIONS };
   let aiSelectionsLoaded = false;
+  let composerContextRefsRevision = 0;
   let providerSelectionUnsubscribe: (() => void) | null = null;
   let contextSelectionUnsubscribe: (() => void) | null = null;
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
+  const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
+  const deletedConversationIds = new Set<string>();
+  const replayRecoveryBlockedConversationIds = new Set<string>();
+  const pendingConversationDeletionIds = new Set<string>();
+  const latestConversationSessionIdByConversationId = new Map<string, string>();
+  const completionPersistenceOwnersByConversationId = new Map<
+    string,
+    { sessionId: string; turnId: string | null; assistantMessageId: string }
+  >();
   const contextDiagnosticsRequestIds = new Map<string, number>();
   const liveContextDiagnosticsRefreshByConversationId = new Map<
     string,
@@ -1581,6 +1414,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
     string,
     (resolution: PendingToolApprovalResolution) => void
   >();
+  const pendingToolApprovalQueues = new Map<string, Promise<void>>();
+  const pendingAgentCodeReplayRollbacksByConversationId = new Map<
+    string,
+    () => Promise<void>
+  >();
+
+  const serializeToolApproval = async <T>(
+    conversationId: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    const previous = pendingToolApprovalQueues.get(conversationId) ?? Promise.resolve();
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => slot);
+    pendingToolApprovalQueues.set(conversationId, queued);
+    await previous.catch(() => undefined);
+    try {
+      return await run();
+    } finally {
+      release();
+      if (pendingToolApprovalQueues.get(conversationId) === queued) {
+        pendingToolApprovalQueues.delete(conversationId);
+      }
+    }
+  };
 
   const getPendingToolApprovalResolverKey = (
     conversationId: string,
@@ -2105,30 +1965,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const toPersistedProviderSelection = (
-    selection: PersistedAISelection,
-  ): PersistedAIProviderSelection => ({
-    modelId: selection.modelId!,
-    reasoningEffort: selection.reasoningEffort ?? null,
-    updatedAt: selection.updatedAt,
-  });
-
-  const toPersistedSelectionFromProvider = (
-    providerId: string,
-    selection: PersistedAIProviderSelection | null,
-  ): PersistedAISelection | null => {
-    if (!selection) {
-      return null;
-    }
-
-    return {
-      providerId,
-      modelId: selection.modelId,
-      reasoningEffort: selection.reasoningEffort ?? null,
-      updatedAt: selection.updatedAt,
-    };
-  };
-
   const providerHasAuthSession = (provider: {
     providerType: string;
     authStatus?: string;
@@ -2215,161 +2051,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const getConversationProviderSelection = (
-    conversationId: string | null,
-    providerId: string,
-  ): PersistedAISelection | null => {
-    if (!conversationId) {
-      return null;
-    }
-
-    return toPersistedSelectionFromProvider(
-      providerId,
-      aiSelections.providerSelectionsByConversationId[conversationId]?.[
-        providerId
-      ] ?? null,
-    );
-  };
-
-  const getModeProviderSelection = (
-    mode: AppMode,
-    providerId: string,
-  ): PersistedAISelection | null =>
-    toPersistedSelectionFromProvider(
-      providerId,
-      aiSelections.providerSelectionsByMode[getSelectionModeKey(mode)]?.[
-        providerId
-      ] ?? null,
-    );
-
-  const cloneAiSelections = (
-    source: PersistedAIContextSelections = aiSelections,
-  ): PersistedAIContextSelections => ({
-    version: source.version,
-    modeSelections: { ...source.modeSelections },
-    conversationSelections: { ...source.conversationSelections },
-    providerSelectionsByConversationId: Object.fromEntries(
-      Object.entries(source.providerSelectionsByConversationId).map(
-        ([conversationId, selectionMap]) => [
-          conversationId,
-          { ...selectionMap },
-        ],
-      ),
-    ),
-    providerSelectionsByMode: Object.fromEntries(
-      Object.entries(source.providerSelectionsByMode).map(
-        ([modeKey, selectionMap]) => [modeKey, { ...selectionMap }],
-      ),
-    ) as PersistedAIContextSelections["providerSelectionsByMode"],
-  });
-
   const commitAiSelections = (nextSelections: PersistedAIContextSelections) => {
     aiSelections = nextSelections;
     persistAiSelections();
-  };
-
-  const upsertSelectionForContext = (
-    target: PersistedAIContextSelections,
-    mode: AppMode,
-    conversationId: string | null,
-    selection: PersistedAISelection | null,
-  ): boolean => {
-    if (!selection?.providerId || !selection.modelId) {
-      return false;
-    }
-
-    const providerId = selection.providerId;
-    const modeKey = getSelectionModeKey(mode);
-    target.modeSelections[modeKey] = selection;
-    target.providerSelectionsByMode[modeKey] = {
-      ...(target.providerSelectionsByMode[modeKey] ?? {}),
-      [providerId]: toPersistedProviderSelection(selection),
-    };
-
-    if (conversationId) {
-      target.conversationSelections[conversationId] = selection;
-      target.providerSelectionsByConversationId[conversationId] = {
-        ...(target.providerSelectionsByConversationId[conversationId] ?? {}),
-        [providerId]: toPersistedProviderSelection(selection),
-      };
-    }
-
-    return true;
-  };
-
-  const removeConversationSelectionInTarget = (
-    target: PersistedAIContextSelections,
-    conversationId: string,
-  ): boolean => {
-    if (!target.conversationSelections[conversationId]) {
-      return false;
-    }
-
-    delete target.conversationSelections[conversationId];
-    return true;
-  };
-
-  const removeConversationProviderSelectionInTarget = (
-    target: PersistedAIContextSelections,
-    conversationId: string,
-    providerId: string,
-  ): boolean => {
-    const conversationSelections =
-      target.providerSelectionsByConversationId[conversationId];
-    if (!conversationSelections?.[providerId]) {
-      return false;
-    }
-
-    delete conversationSelections[providerId];
-    if (Object.keys(conversationSelections).length === 0) {
-      delete target.providerSelectionsByConversationId[conversationId];
-    }
-    return true;
-  };
-
-  const removeConversationSelectionDataInTarget = (
-    target: PersistedAIContextSelections,
-    conversationId: string,
-  ): boolean => {
-    const removedConversationSelection =
-      removeConversationSelectionInTarget(target, conversationId);
-    const hadProviderSelections =
-      !!target.providerSelectionsByConversationId[conversationId];
-    if (hadProviderSelections) {
-      delete target.providerSelectionsByConversationId[conversationId];
-    }
-    return removedConversationSelection || hadProviderSelections;
-  };
-
-  const removeModeSelectionInTarget = (
-    target: PersistedAIContextSelections,
-    mode: AppMode,
-  ): boolean => {
-    const modeKey = getSelectionModeKey(mode);
-    if (!target.modeSelections[modeKey]) {
-      return false;
-    }
-
-    delete target.modeSelections[modeKey];
-    return true;
-  };
-
-  const removeModeProviderSelectionInTarget = (
-    target: PersistedAIContextSelections,
-    mode: AppMode,
-    providerId: string,
-  ): boolean => {
-    const modeKey = getSelectionModeKey(mode);
-    const modeSelections = target.providerSelectionsByMode[modeKey];
-    if (!modeSelections?.[providerId]) {
-      return false;
-    }
-
-    delete modeSelections[providerId];
-    if (Object.keys(modeSelections).length === 0) {
-      delete target.providerSelectionsByMode[modeKey];
-    }
-    return true;
   };
 
   const persistSelectionForContext = (
@@ -2379,7 +2063,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const selection = getCurrentSelection();
     if (!selection) return;
 
-    const nextSelections = cloneAiSelections();
+    const nextSelections = cloneAIContextSelections(aiSelections);
     if (!upsertSelectionForContext(nextSelections, mode, conversationId, selection)) {
       return;
     }
@@ -2400,133 +2084,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const removeConversationSelectionData = (conversationId: string) => {
-    const nextSelections = cloneAiSelections();
-    if (!removeConversationSelectionDataInTarget(nextSelections, conversationId)) {
+    const nextSelections = cloneAIContextSelections(aiSelections);
+    if (
+      !removeConversationSelectionDataFromState(nextSelections, conversationId)
+    ) {
       return;
     }
 
     commitAiSelections(nextSelections);
-  };
-
-  type AiSelectionResolutionStep =
-    | {
-        kind: "candidate";
-        selection: PersistedAISelection;
-        invalidate: (target: PersistedAIContextSelections) => boolean;
-      }
-    | { kind: "provider_fallback"; providerId: string }
-    | { kind: "global_fallback"; excludedProviderIds: string[] };
-
-  const buildAiSelectionRestorePlan = (params: {
-    mode: AppMode;
-    conversationId: string | null;
-    preferredProviderId?: string | null;
-    currentSelection: PersistedAISelection | null;
-  }): AiSelectionResolutionStep[] => {
-    const { mode, conversationId, preferredProviderId, currentSelection } =
-      params;
-    const steps: AiSelectionResolutionStep[] = [];
-    const seenSelectionKeys = new Set<string>();
-    const seenFallbackProviders = new Set<string>();
-    const modeKey = getSelectionModeKey(mode);
-    const conversationSelection = conversationId
-      ? aiSelections.conversationSelections[conversationId] ?? null
-      : null;
-    const persistedConversationSelection =
-      getConversationPersistedSelection(conversationId);
-    const modeSelection = aiSelections.modeSelections[modeKey] ?? null;
-    const conversationProviderId =
-      preferredProviderId ??
-      persistedConversationSelection?.providerId ??
-      conversationSelection?.providerId ??
-      currentSelection?.providerId ??
-      modeSelection?.providerId ??
-      null;
-    const modeProviderId =
-      preferredProviderId ??
-      modeSelection?.providerId ??
-      currentSelection?.providerId ??
-      persistedConversationSelection?.providerId ??
-      conversationSelection?.providerId ??
-      null;
-    const fallbackProviderId =
-      preferredProviderId ??
-      persistedConversationSelection?.providerId ??
-      currentSelection?.providerId ??
-      conversationSelection?.providerId ??
-      modeSelection?.providerId ??
-      null;
-
-    const pushCandidate = (
-      selection: PersistedAISelection | null,
-      invalidate: (target: PersistedAIContextSelections) => boolean,
-    ) => {
-      if (!selection?.providerId || !selection.modelId) {
-        return;
-      }
-      if (preferredProviderId && selection.providerId !== preferredProviderId) {
-        return;
-      }
-
-      const key = `${selection.providerId}::${selection.modelId}::${
-        selection.reasoningEffort ?? ""
-      }`;
-      if (seenSelectionKeys.has(key)) {
-        return;
-      }
-
-      seenSelectionKeys.add(key);
-      seenFallbackProviders.add(selection.providerId);
-      steps.push({
-        kind: "candidate",
-        selection,
-        invalidate,
-      });
-    };
-
-    pushCandidate(persistedConversationSelection, () => false);
-
-    pushCandidate(conversationSelection, (target) =>
-      conversationId
-        ? removeConversationSelectionInTarget(target, conversationId)
-        : false,
-    );
-
-    if (conversationProviderId) {
-      pushCandidate(
-        getConversationProviderSelection(conversationId, conversationProviderId),
-        (target) =>
-          conversationId
-            ? removeConversationProviderSelectionInTarget(
-                target,
-                conversationId,
-                conversationProviderId,
-              )
-            : false,
-      );
-    }
-
-    pushCandidate(modeSelection, (target) =>
-      removeModeSelectionInTarget(target, mode),
-    );
-
-    if (modeProviderId) {
-      pushCandidate(getModeProviderSelection(mode, modeProviderId), (target) =>
-        removeModeProviderSelectionInTarget(target, mode, modeProviderId),
-      );
-    }
-
-    if (fallbackProviderId) {
-      seenFallbackProviders.add(fallbackProviderId);
-      steps.push({ kind: "provider_fallback", providerId: fallbackProviderId });
-    }
-
-    steps.push({
-      kind: "global_fallback",
-      excludedProviderIds: Array.from(seenFallbackProviders),
-    });
-
-    return steps;
   };
 
   const runAiSelectionRestore = async (params: {
@@ -2576,16 +2141,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
 
     try {
-      const nextSelections = cloneAiSelections();
+      const nextSelections = cloneAIContextSelections(aiSelections);
       let selectionsChanged = false;
       let appliedSelection: PersistedAISelection | null = null;
       let restoreMessage: string | null = null;
       const currentSelection = getCurrentSelection();
-      const resolutionPlan = buildAiSelectionRestorePlan({
+      const resolutionPlan = buildAISelectionRestorePlan({
+        selections: aiSelections,
         mode: params.mode,
         conversationId: params.conversationId,
         preferredProviderId: params.preferredProviderId ?? null,
         currentSelection,
+        persistedConversationSelection: getConversationPersistedSelection(
+          params.conversationId,
+        ),
       });
 
       await withSuppressedSelectionPersistence(async () => {
@@ -2767,38 +2336,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const pruneConversationSelections = (conversations: Conversation[]) => {
-    const existingConversationIds = new Set(
+    const nextSelections = pruneAIContextSelections(
+      aiSelections,
       conversations.map((conversation) => conversation.id),
     );
-    const nextConversationSelections: Record<string, PersistedAISelection> = {};
-
-    Object.entries(aiSelections.conversationSelections).forEach(
-      ([conversationId, selection]) => {
-        if (existingConversationIds.has(conversationId)) {
-          nextConversationSelections[conversationId] = selection;
-        }
-      },
-    );
-
-    const nextProviderSelectionsByConversationId = Object.fromEntries(
-      Object.entries(aiSelections.providerSelectionsByConversationId).filter(
-        ([conversationId]) => existingConversationIds.has(conversationId),
-      ),
-    );
-
-    const conversationSelectionsChanged =
-      Object.keys(nextConversationSelections).length !==
-      Object.keys(aiSelections.conversationSelections).length;
-    const providerSelectionsChanged =
-      Object.keys(nextProviderSelectionsByConversationId).length !==
-      Object.keys(aiSelections.providerSelectionsByConversationId).length;
-
-    if (conversationSelectionsChanged || providerSelectionsChanged) {
-      aiSelections = {
-        ...aiSelections,
-        conversationSelections: nextConversationSelections,
-        providerSelectionsByConversationId: nextProviderSelectionsByConversationId,
-      };
+    if (nextSelections !== aiSelections) {
+      aiSelections = nextSelections;
       persistAiSelections();
     }
   };
@@ -2848,7 +2391,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const ensureMessagesLoadedForConversation = async (
     conversationId: string,
   ): Promise<void> => {
-    if (!conversationId) {
+    if (!conversationId || deletedConversationIds.has(conversationId)) {
       return;
     }
     if (get().hydrationStatus === "hydrating") {
@@ -2905,6 +2448,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversations: get().conversations,
           },
         );
+        if (deletedConversationIds.has(conversationId)) {
+          return;
+        }
         replaceLoadedConversationMessages(
           conversationId,
           loadedMessages,
@@ -2962,6 +2508,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const buildSendError = (message: string): Error => new Error(message);
 
   const assertConversationRuntimeAvailableForSend = (conversationId: string) => {
+    if (
+      deletedConversationIds.has(conversationId) ||
+      !get().conversations.some((conversation) => conversation.id === conversationId)
+    ) {
+      throw buildSendError("This conversation is no longer available.");
+    }
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
       conversationId,
@@ -2971,6 +2523,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "This conversation is already running. Wait for it to finish before sending again.",
       );
     }
+  };
+
+  const transferConversationSessionOwnership = (
+    previousConversationId: string,
+    materializedConversationId: string,
+    sessionId: string,
+  ): boolean => {
+    if (deletedConversationIds.has(materializedConversationId)) {
+      return false;
+    }
+    if (
+      latestConversationSessionIdByConversationId.get(previousConversationId) !==
+      sessionId
+    ) {
+      return false;
+    }
+    const materializedOwner = latestConversationSessionIdByConversationId.get(
+      materializedConversationId,
+    );
+    if (materializedOwner && materializedOwner !== sessionId) {
+      return false;
+    }
+    latestConversationSessionIdByConversationId.set(
+      materializedConversationId,
+      sessionId,
+    );
+    latestConversationSessionIdByConversationId.delete(previousConversationId);
+    return true;
   };
 
   const setConversationRuntime = (
@@ -3009,6 +2589,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     });
     return didMatch;
+  };
+
+  const abortAndClearPreparingRuntimeIfSessionMatches = (
+    conversationId: string,
+    sessionId: string,
+    turnId: string,
+    abortController: AbortController,
+  ): void => {
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
+    if (
+      runtime.phase !== "preparing" ||
+      runtime.sessionId !== sessionId ||
+      runtime.turnId !== turnId ||
+      runtime.abortController !== abortController
+    ) {
+      return;
+    }
+    abortController.abort();
+    if (latestConversationSessionIdByConversationId.get(conversationId) === sessionId) {
+      latestConversationSessionIdByConversationId.delete(conversationId);
+    }
+    updateConversationRuntimeIfSessionMatches(
+      conversationId,
+      sessionId,
+      () => null,
+    );
   };
 
   const getLiveContextDiagnosticsRefreshState = (
@@ -5127,6 +4736,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
   ): Promise<AgentCodeCheckpoint[]> => {
     const cached = get().agentCodeCheckpointsByConversationId[conversationId];
+    if (deletedConversationIds.has(conversationId)) {
+      return [];
+    }
     if (cached) {
       return cached;
     }
@@ -5144,6 +4756,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
     try {
       const checkpoints = await loadPromise;
+      if (deletedConversationIds.has(conversationId)) {
+        return [];
+      }
       set((state) => ({
         agentCodeCheckpointsByConversationId: {
           ...state.agentCodeCheckpointsByConversationId,
@@ -5156,17 +4771,59 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const serializeAgentCodeCheckpointMutation = async <T>(
+    conversationId: string,
+    mutate: () => Promise<T>,
+  ): Promise<T> => {
+    const previous =
+      checkpointMutationQueuesByConversationId.get(conversationId) ??
+      Promise.resolve();
+    let release!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => slot);
+    checkpointMutationQueuesByConversationId.set(conversationId, queued);
+    await previous.catch(() => undefined);
+    try {
+      return await mutate();
+    } finally {
+      release();
+      if (checkpointMutationQueuesByConversationId.get(conversationId) === queued) {
+        checkpointMutationQueuesByConversationId.delete(conversationId);
+      }
+    }
+  };
+
   const persistAgentCodeCheckpointsForConversation = async (
     conversationId: string,
     checkpoints: AgentCodeCheckpoint[],
   ): Promise<void> => {
+    if (deletedConversationIds.has(conversationId)) {
+      return;
+    }
     set((state) => ({
       agentCodeCheckpointsByConversationId: {
         ...state.agentCodeCheckpointsByConversationId,
         [conversationId]: checkpoints,
       },
     }));
+    if (deletedConversationIds.has(conversationId)) {
+      set((state) => {
+        const next = { ...state.agentCodeCheckpointsByConversationId };
+        delete next[conversationId];
+        return { agentCodeCheckpointsByConversationId: next };
+      });
+      return;
+    }
     await saveAgentCodeCheckpoints(conversationId, checkpoints);
+    if (deletedConversationIds.has(conversationId)) {
+      set((state) => {
+        const next = { ...state.agentCodeCheckpointsByConversationId };
+        delete next[conversationId];
+        return { agentCodeCheckpointsByConversationId: next };
+      });
+    }
   };
 
   const recordAgentCodeCheckpoint = async (params: {
@@ -5181,28 +4838,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
-    const checkpoint = createAgentCodeCheckpoint(existing, params);
-    await persistAgentCodeCheckpointsForConversation(
-      params.conversationId,
-      appendAgentCodeCheckpoint(existing, checkpoint),
-    );
-  };
-
-  const pruneAgentCodeCheckpointsForConversation = async (
-    conversationId: string,
-    keptMessageIds: Set<string>,
-  ): Promise<void> => {
-    const existing = await getLoadedAgentCodeCheckpoints(conversationId);
-    const pruned = pruneAgentCodeCheckpointsToMessageIds(
-      existing,
-      conversationId,
-      keptMessageIds,
-    );
-    if (pruned.length === existing.length) {
+    if (deletedConversationIds.has(params.conversationId)) {
       return;
     }
-    await persistAgentCodeCheckpointsForConversation(conversationId, pruned);
+
+    await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
+      const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+      if (deletedConversationIds.has(params.conversationId)) {
+        return;
+      }
+      const checkpoint = createAgentCodeCheckpoint(existing, params);
+      await persistAgentCodeCheckpointsForConversation(
+        params.conversationId,
+        appendAgentCodeCheckpoint(existing, checkpoint),
+      );
+    });
   };
 
   const shouldChallengeGitStageCommitToolCall = (
@@ -5238,41 +4888,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const resolveAssistantTurnContext = (
-    assistantMessageId: string,
-  ): { mode: AppMode; agentType: AgentType | null } => {
-    const remembered = assistantTurnContextByMessageId.get(assistantMessageId);
-    if (remembered) {
-      return {
-        mode: remembered.mode,
-        agentType: remembered.agentType,
-      };
-    }
-
-    const appState = useAppStore.getState();
-    return {
-      mode: appState.mode,
-      agentType: appState.mode === "Implement" ? appState.agentType : null,
-    };
-  };
-
   const handleToolCall = async (
-    conversationId: string,
-    assistantMessageId: string,
+    operation: FrozenToolCallContext,
     toolName: string,
     args: Record<string, unknown>,
     toolCallId?: string,
   ): Promise<ToolCallResolution | string | void> => {
+    const {
+      conversationId,
+      assistantMessageId,
+      mode: modeAtSend,
+      agentType: agentTypeAtSend,
+      taskId: taskIdAtSend,
+      signal,
+    } = operation;
+    const isCurrentOperation = () => {
+      const runtime = getConversationRuntimeSnapshot(
+        get().conversationRuntimeById,
+        conversationId,
+      );
+      return !signal.aborted &&
+        runtime.sessionId === operation.sessionId &&
+        runtime.turnId === operation.turnId &&
+        runtime.assistantMessageId === assistantMessageId &&
+        runtime.phase === "streaming";
+    };
+    if (!isCurrentOperation()) {
+      return TOOL_EXECUTION_ABORTED_RESULT;
+    }
     const normalizedToolName = normalizeArchitectToolId(toolName);
-    const assistantTurnId =
-      get().messages.find((message) => message.id === assistantMessageId)
-        ?.turn_id ?? null;
-    const assistantTurnContext =
-      resolveAssistantTurnContext(assistantMessageId);
+    const assistantTurnId = operation.turnId;
 
     if (
-      assistantTurnContext.mode === "Implement" &&
-      assistantTurnContext.agentType === "plan" &&
+      modeAtSend === "Implement" &&
+      agentTypeAtSend === "plan" &&
       !isToolAllowedForImplementAgent("plan", normalizedToolName)
     ) {
       if (toolCallId) {
@@ -5288,17 +4937,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (
       !(await isSourceToolEnabled(
         normalizedToolName,
-        assistantTurnContext.mode,
-        assistantTurnContext.agentType,
+        modeAtSend,
+        agentTypeAtSend,
       ))
     ) {
+      if (!isCurrentOperation()) {
+        return TOOL_EXECUTION_ABORTED_RESULT;
+      }
       return `Tool ${normalizedToolName} is disabled for the current mode.`;
     }
 
-    let executionContext = resolveConversationExecutionContext(conversationId);
+    let executionContext = operation.executionContext;
     const riskLevel = await loadToolRiskLevelPreference();
+    if (!isCurrentOperation()) {
+      return TOOL_EXECUTION_ABORTED_RESULT;
+    }
     const securityEvaluation = evaluateToolSecurity(normalizedToolName, args, {
-      mode: assistantTurnContext.mode,
+      mode: modeAtSend,
       riskLevel,
       workspacePath: executionContext.workspacePath,
       defaultWorkspacePath: executionContext.defaultWorkspacePath,
@@ -5354,8 +5009,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         rememberKey: securityEvaluation.normalizedCall.rememberKey,
       };
 
-      const resolution = await new Promise<PendingToolApprovalResolution>(
-        (resolve) => {
+      const resolution = await serializeToolApproval(
+        conversationId,
+        () => {
+          if (!isCurrentOperation()) {
+            return Promise.resolve<PendingToolApprovalResolution>({ kind: "deny" });
+          }
+          return new Promise<PendingToolApprovalResolution>((resolve) => {
           pendingToolApprovalResolvers.set(
             getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
             resolve,
@@ -5373,6 +5033,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               "pending_approval",
             );
           }
+          });
         },
       );
 
@@ -5404,6 +5065,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return resolution.reason?.trim()
           ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
           : denialPrefix;
+      }
+
+      if (!isCurrentOperation()) {
+        if (toolCallId) {
+          updateAssistantToolTraceStatus(
+            assistantMessageId,
+            resolvedToolCallId,
+            "denied",
+          );
+        }
+        return TOOL_EXECUTION_ABORTED_RESULT;
       }
 
       if (resolution.kind === "allow_conversation") {
@@ -5466,6 +5138,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return "Web search is not configured for this provider.";
       }
       const results = await webSearch(query, webSearchOptions);
+      if (!isCurrentOperation()) {
+        return TOOL_EXECUTION_ABORTED_RESULT;
+      }
       if (results.length > 0) {
         useCitationsStore
           .getState()
@@ -5482,6 +5157,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return "Web fetch is disabled for this provider.";
       }
       const fetched = await fetchWebPage(url);
+      if (!isCurrentOperation()) {
+        return TOOL_EXECUTION_ABORTED_RESULT;
+      }
       useCitationsStore.getState().addCitation({
         type: "web",
         scope: "context",
@@ -5506,12 +5184,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       args,
       conversationId,
     );
+    if (!isCurrentOperation()) {
+      return TOOL_EXECUTION_ABORTED_RESULT;
+    }
     if (skillToolResult !== undefined) {
       return skillToolResult;
     }
 
     if (isMCPToolId(normalizedToolName)) {
-      return useToolsStore.getState().callMCPTool(normalizedToolName, args);
+      const result = await useToolsStore.getState().callMCPTool(normalizedToolName, args);
+      return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
     }
 
     if (normalizedToolName === "mark_source_passage") {
@@ -5522,6 +5204,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       if (!(await isSourcePassagePresentInConversationContext(conversationId, passage))) {
         return "Error executing tool mark_source_passage: passage is not present in any read source content.";
+      }
+      if (!isCurrentOperation()) {
+        return TOOL_EXECUTION_ABORTED_RESULT;
       }
       const kind = normalizeSourcePassageKind(args.kind) || "used";
       const citationId = useCitationsStore.getState().addSourcePassage({
@@ -5632,15 +5317,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === "terminal_kill" ||
       normalizedToolName.startsWith("git_")
     ) {
-      const mode = assistantTurnContext.mode;
-      let appState = useAppStore.getState();
+      const mode = modeAtSend;
       let promotedProjectIdsForTool: string[] = [];
 
       if (mode === "Implement") {
         const promotionRequest = resolveContextPromotionRequest({
           conversationId,
           executionContext,
-          selectedTaskId: appState.selectedTaskId,
+          selectedTaskId: taskIdAtSend,
           toolName: normalizedToolName,
           args,
         });
@@ -5656,8 +5340,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
               triggerTool: normalizedToolName,
             });
           promotedProjectIdsForTool = promotion?.promotedProjectIds || [];
-          executionContext = resolveConversationExecutionContext(conversationId);
-          appState = useAppStore.getState();
+          // The promotion result is the only permitted scope change during an
+          // operation. Derive it from the frozen snapshot, never from the
+          // current project selection.
+          executionContext = {
+            ...operation.executionContext,
+            actionableProjectIds: Array.from(
+              new Set([
+                ...operation.executionContext.actionableProjectIds,
+                ...promotedProjectIdsForTool,
+              ]),
+            ),
+            contextProjectIds: operation.executionContext.contextProjectIds.filter(
+              (projectId) => !promotedProjectIdsForTool.includes(projectId),
+            ),
+            projectMounts: operation.executionContext.projectMounts.map(
+              (mount) =>
+                promotedProjectIdsForTool.includes(mount.projectId)
+                  ? { ...mount, isReadOnly: false }
+                  : mount,
+            ),
+          };
+          if (!isCurrentOperation()) {
+            return TOOL_EXECUTION_ABORTED_RESULT;
+          }
         }
       }
 
@@ -5688,9 +5394,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         if (explicitProjectId) {
-          const explicitProject = appState.getProjectById(explicitProjectId);
+          const explicitProject = executionContext.projectMounts.find(
+            (mount) => mount.projectId === explicitProjectId,
+          );
           if (explicitProject?.isReadOnly) {
-            return `Error executing terminal_create_session: project "${explicitProject.name}" is read-only.`;
+            return `Error executing terminal_create_session: project "${explicitProject.displayName}" is read-only.`;
           }
         }
 
@@ -5743,6 +5451,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       const result = await executeWorkspaceTool(normalizedToolName, args, mode, {
+        signal,
         workspacePath: executionContext.workspacePath,
         defaultWorkspacePath: executionContext.defaultWorkspacePath,
         projectId: executionContext.projectId,
@@ -5762,6 +5471,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           });
         },
       });
+      if (!isCurrentOperation()) {
+        return TOOL_EXECUTION_ABORTED_RESULT;
+      }
       return result === undefined ? result : withPromotionNotice(result);
     }
   };
@@ -6059,16 +5771,48 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
+  const clearComposerContextRefsIfRevisionMatches = (
+    conversationId: string,
+    expectedRevision: number,
+  ): void => {
+    if (composerContextRefsRevision !== expectedRevision) {
+      return;
+    }
+    composerContextRefsRevision += 1;
+    if (get().selectedConversationId === conversationId) {
+      set({ composerContextRefs: [] });
+    }
+    persistComposerContextRefsForConversation(
+      conversationId,
+      [],
+    );
+  };
+
   const deleteConversationToolboxStateIfAvailable = async (
     conversationId: string,
   ): Promise<void> => {
     if (!tauriIpc.isTauriAvailable()) return;
     if (typeof tauriIpc.deleteConversationToolboxState !== "function") return;
-    try {
-      await tauriIpc.deleteConversationToolboxState(conversationId);
-    } catch (error) {
-      console.warn("[chat] Failed to delete toolbox state:", error);
-    }
+    await tauriIpc.deleteConversationToolboxState(conversationId);
+  };
+
+  const beginStandaloneConversationDeletionSaga = async (
+    conversationId: string,
+  ): Promise<void> => {
+    await upsertLinkedConversationDeletionSaga({
+      ownerType: "conversation",
+      ownerId: conversationId,
+      conversationId,
+      phase: "task_deleted",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const completeStandaloneConversationDeletionSaga = async (
+    conversationId: string,
+  ): Promise<void> => {
+    await removeLinkedConversationDeletionSaga("conversation", conversationId);
   };
 
   const hydrateConversationToolboxStateIfAvailable = async (
@@ -6092,6 +5836,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversationId,
         persistedRefs,
       );
+      composerContextRefsRevision += 1;
       set({ composerContextRefs });
     } catch (error) {
       console.warn("[chat] Failed to hydrate toolbox state:", error);
@@ -6183,9 +5928,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     agentTypeAtSend?: AgentType | null,
     messageWithImagesId?: string,
     skillPermissionSnapshot?: SkillPermissionSnapshot | null,
+    executionContextOverride?: ProjectExecutionContext,
   ) => {
     const appState = useAppStore.getState();
-    const executionContext = resolveConversationExecutionContext(conversationId);
+    const executionContext =
+      executionContextOverride ?? resolveConversationExecutionContext(conversationId);
     const riskLevel = await loadToolRiskLevelPreference();
     const contextCitations = useCitationsStore
       .getState()
@@ -7058,9 +6805,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectedGroupId: string | null,
     selectedProjectId: string | null,
     selectedTaskId: string | null,
+    excludedConversationIds: ReadonlySet<string> = EMPTY_STRING_SET,
   ): string | null => {
     const scoped = conversations
       .filter((conversation) =>
+        !excludedConversationIds.has(conversation.id) &&
         isConversationAllowedForMode(
           conversation,
           mode,
@@ -7110,31 +6859,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     | "selectedConversationId"
     | "selectedConversationIdsByMode"
   >;
-
-  const buildConversationRemovalSnapshot = (): ConversationRemovalSnapshot => {
-    const state = get();
-    return {
-      conversations: state.conversations,
-      messages: state.messages,
-      messagesByConversationId: state.messagesByConversationId,
-      messageIndexById: state.messageIndexById,
-      messageLoadStatusByConversationId: state.messageLoadStatusByConversationId,
-      contextDiagnosticsByConversationId: state.contextDiagnosticsByConversationId,
-      liveStreamContextEstimatesByConversationId:
-        state.liveStreamContextEstimatesByConversationId,
-      messageImagesByMessageId: state.messageImagesByMessageId,
-      questionnaireDraftsByConversationId:
-        state.questionnaireDraftsByConversationId,
-      pendingToolApprovalByConversationId:
-        state.pendingToolApprovalByConversationId,
-      conversationApprovalGrantsByConversationId:
-        state.conversationApprovalGrantsByConversationId,
-      skillTurnFeedbackByMessageId: state.skillTurnFeedbackByMessageId,
-      conversationRuntimeById: state.conversationRuntimeById,
-      selectedConversationId: state.selectedConversationId,
-      selectedConversationIdsByMode: state.selectedConversationIdsByMode,
-    };
-  };
 
   const buildConversationRemovalState = (
     state: ConversationRemovalSnapshot,
@@ -7261,21 +6985,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationIds.forEach((conversationId) => {
       clearConversationSecurityState(conversationId);
       cancelLiveContextDiagnosticsRefreshSchedule(conversationId);
+      pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
     });
     set((state) => buildConversationRemovalState(state, conversationIds));
   };
 
-  const restoreConversationRemovalSnapshot = (
-    snapshot: ConversationRemovalSnapshot,
-  ) => {
-    saveMessageImagesToStorage(snapshot.messageImagesByMessageId);
-    saveQuestionnaireDraftsToStorage(snapshot.questionnaireDraftsByConversationId);
-    set({
-      ...snapshot,
-      ...buildLegacyStreamingFlags({
-        conversationRuntimeById: snapshot.conversationRuntimeById,
-        selectedConversationId: snapshot.selectedConversationId,
-      }),
+  const hydrateSelectedConversationAfterRemoval = async (
+    removedConversationIds: string[],
+  ): Promise<void> => {
+    const conversationId = get().selectedConversationId;
+    if (!conversationId || removedConversationIds.includes(conversationId)) {
+      return;
+    }
+    const mode = useAppStore.getState().mode;
+    await ensureMessagesLoadedForConversation(conversationId);
+    await hydrateConversationCitationsIfAvailable(conversationId);
+    await hydrateConversationToolboxStateIfAvailable(conversationId);
+    await getConversationCompactionState(conversationId);
+    await runAiSelectionRestore({
+      mode,
+      conversationId,
+      activeContextKey: get().activeContextKey,
+      shouldShowResolving: true,
     });
   };
 
@@ -7283,21 +7014,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
     internalAgentProfile?: InternalAgentProfile | null,
     modeOverride?: AppMode,
     agentTypeOverride?: AgentType | null,
+    providerSnapshot?: {
+      supportsNativeToolCalling: boolean;
+      providerConfig: NonNullable<
+        ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
+      >;
+      modelId: string;
+    },
   ): Promise<string[]> => {
-    if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
+    if (
+      providerSnapshot
+        ? !providerSnapshot.supportsNativeToolCalling
+        : !useProviderStore.getState().selectedSupportsNativeToolCalling()
+    ) {
       return [];
     }
 
     const riskLevel = await loadToolRiskLevelPreference();
     const providerState = useProviderStore.getState();
-    const selectedProvider = providerState.providerConfigs.find(
-      (provider) => provider.id === providerState.selectedProviderId,
-    );
+    const selectedProvider =
+      providerSnapshot?.providerConfig ??
+      providerState.providerConfigs.find(
+        (provider) => provider.id === providerState.selectedProviderId,
+      );
+    const selectedModelId =
+      providerSnapshot?.modelId ?? providerState.selectedModelId;
     const strategyFilterForSelectedProvider = (toolIds: string[]): string[] =>
       applyEditingStrategyToToolIds(
         toolIds,
         selectedProvider?.providerType,
-        providerState.selectedModelId,
+        selectedModelId,
       );
     const filterForSelectedProvider = (toolIds: string[]): string[] =>
       selectedProvider?.providerType === "copilot"
@@ -7399,6 +7145,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const buildGuidedToolRetryPolicy = (params: {
     userContent: string;
     allowedToolIds: string[];
+    supportsNativeToolCalling?: boolean;
     fileToolContext: Array<{
       title: string;
       source: string;
@@ -7407,7 +7154,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       content?: string;
     }>;
   }) => {
-    if (!useProviderStore.getState().selectedSupportsNativeToolCalling()) {
+    if (
+      !(
+        params.supportsNativeToolCalling ??
+        useProviderStore.getState().selectedSupportsNativeToolCalling()
+      )
+    ) {
       return undefined;
     }
 
@@ -8251,6 +8003,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
     >;
     internalAgentProfile?: InternalAgentProfile | null;
+    executionContext?: ProjectExecutionContext;
+    providerSupportsNativeToolCalling?: boolean;
     compactionMode?: ContextCompactionKind;
     forceCompaction?: boolean;
     forcePrune?: boolean;
@@ -8288,6 +8042,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       internalAgentProfile,
       params.modeAtSend,
       params.agentTypeAtSend,
+      {
+        supportsNativeToolCalling:
+          params.providerSupportsNativeToolCalling ??
+          useProviderStore.getState().selectedSupportsNativeToolCalling(),
+        providerConfig: params.providerConfig,
+        modelId: params.modelId,
+      },
     );
     const allowedToolIds =
       params.modeAtSend === "Implement"
@@ -8305,6 +8066,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.agentTypeAtSend,
       params.replyToMessageId,
       skillPermissionSnapshot,
+      params.executionContext,
     );
     set((state) => {
       const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
@@ -8533,6 +8295,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const guidedToolRetry = buildGuidedToolRetryPolicy({
       userContent: params.userContent,
       allowedToolIds,
+      supportsNativeToolCalling: params.providerSupportsNativeToolCalling,
       fileToolContext,
     });
     const maxTurns = normalizeChatMaxTurns(
@@ -8645,28 +8408,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
     options?: { setSendState?: boolean },
   ) => {
     const normalized = toServiceError(error);
-    const previousRuntime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
-    set((state) => ({
-      ...(assistantMessageId
-        ? removeEmptyAssistantPlaceholderFromState(state, assistantMessageId)
-        : {}),
-      ...buildConversationRuntimePatch(state, conversationId, {
-        phase: "error",
-        sessionId,
-        turnId: previousRuntime.turnId ?? null,
-        assistantMessageId: null,
-        abortController: null,
+    let applied = false;
+    set((state) => {
+      const currentRuntime = state.conversationRuntimeById[conversationId];
+      if (
+        !currentRuntime ||
+        currentRuntime.sessionId !== sessionId ||
+        !isConversationRuntimeActive(currentRuntime)
+      ) {
+        return state;
+      }
+      applied = true;
+      return {
+        ...(assistantMessageId
+          ? removeEmptyAssistantPlaceholderFromState(state, assistantMessageId)
+          : {}),
+        ...buildConversationRuntimePatch(state, conversationId, {
+          phase: "error",
+          sessionId,
+          turnId: currentRuntime.turnId ?? null,
+          assistantMessageId: null,
+          abortController: null,
+          lastError: normalized.message,
+          lastErrorOrigin: "macro",
+          lastErrorDisplayTarget: "composer",
+        }),
         lastError: normalized.message,
-        lastErrorOrigin: "macro",
-        lastErrorDisplayTarget: "composer",
-      }),
-      lastError: normalized.message,
-      ...(options?.setSendState ? { sendState: "error" as const } : {}),
-    }));
-    return normalized;
+        ...(options?.setSendState ? { sendState: "error" as const } : {}),
+      };
+    });
+    return { error: normalized, applied };
   };
 
   const replaceUserMessagePresentationLocally = (params: {
@@ -8793,6 +8564,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageId: string;
     clearQuestionnaireSession?: boolean;
     updatedMessage?: ChatMessage;
+    replayRecovery?: {
+      sessionId: string;
+      turnId: string;
+      replayId: string;
+      content: string;
+      hiddenContext?: string;
+      providerInputItems?: unknown[];
+    };
   }) => {
     const existingCompactionState = await getConversationCompactionState(
       params.conversationId,
@@ -8839,7 +8618,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     };
 
-    await executeConversationReplay({
+    const plan = buildConversationReplayPlan({
       conversationId: params.conversationId,
       replayMessageId: params.messageId,
       conversationMessages: replayMessages,
@@ -8848,41 +8627,79 @@ export const useChatStore = create<ChatStore>((set, get) => {
         stateBeforeReplay.sessionCompactionEventsByConversationId[
           params.conversationId
         ],
-      adapters: {
-        trimMessages: async (plan) => {
-          try {
-            await deletePersistedMessagesAfter(
-              chatPersistenceAdapters,
-              params.conversationId,
-              params.messageId,
-            );
-          } catch (error) {
-            const normalized = toServiceError(error);
-            set({ lastError: normalized.message, sendState: "error" });
-            throw buildSendError(
-              `Failed to trim the conversation before retrying: ${normalized.message}`,
-            );
-          }
-          applyReplayTrimToState(plan);
-        },
-        pruneCodeCheckpoints: async (plan) => {
-          const keptConversationMessageIds = Array.from(plan.keptMessageIds);
-          await pruneAgentCodeCheckpointsForConversation(
-            params.conversationId,
-            plan.keptMessageIds,
-          );
-          useCitationsStore
-            .getState()
-            .pruneConversationSourceCitations(
-              params.conversationId,
-              keptConversationMessageIds,
-            );
-        },
-        deleteContextCompactionState: async () => {
-          await deleteConversationCompactionState(params.conversationId);
-        },
-      },
     });
+
+    try {
+      await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
+        const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+        const pruned = pruneAgentCodeCheckpointsToMessageIds(
+          existing,
+          params.conversationId,
+          plan.keptMessageIds,
+        );
+        const checkpointsChanged = pruned.length !== existing.length;
+
+        if (tauriIpc.isTauriAvailable()) {
+          if (params.replayRecovery) {
+            await tauriIpc.dbPrepareConversationReplay({
+              conversationId: params.conversationId,
+              messageId: params.messageId,
+              sessionId: params.replayRecovery.sessionId,
+              turnId: params.replayRecovery.turnId,
+              replayId: params.replayRecovery.replayId,
+              content: params.replayRecovery.content,
+              hiddenContext: params.replayRecovery.hiddenContext ?? null,
+              providerInputItemsJson: params.replayRecovery.providerInputItems
+                ? JSON.stringify(params.replayRecovery.providerInputItems)
+                : null,
+              codeCheckpointsJson: checkpointsChanged ? JSON.stringify(pruned) : null,
+              deleteContextCompactionState: plan.shouldDeleteContextCompactionState,
+            });
+          } else {
+            await tauriIpc.dbTrimConversationReplay({
+              conversationId: params.conversationId,
+              afterMessageId: params.messageId,
+              codeCheckpointsJson: checkpointsChanged ? JSON.stringify(pruned) : null,
+              deleteContextCompactionState: plan.shouldDeleteContextCompactionState,
+            });
+          }
+        } else {
+          await deletePersistedMessagesAfter(
+            chatPersistenceAdapters,
+            params.conversationId,
+            params.messageId,
+          );
+          if (checkpointsChanged) {
+            await saveAgentCodeCheckpoints(params.conversationId, pruned);
+          }
+        }
+
+        if (checkpointsChanged) {
+          set((state) => ({
+            agentCodeCheckpointsByConversationId: {
+              ...state.agentCodeCheckpointsByConversationId,
+              [params.conversationId]: pruned,
+            },
+          }));
+        }
+      });
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ lastError: normalized.message, sendState: "error" });
+      throw buildSendError(
+        `Failed to trim the conversation before retrying: ${normalized.message}`,
+      );
+    }
+
+    applyReplayTrimToState(plan);
+    useCitationsStore.getState().pruneConversationCitations(
+      params.conversationId,
+      Array.from(plan.keptMessageIds),
+    );
+    if (plan.shouldDeleteContextCompactionState) {
+      conversationCompactionStateCache.delete(params.conversationId);
+      setConversationCompactionStatus(params.conversationId, null);
+    }
   };
 
   const restartAssistantFromEditedMessage = async (params: {
@@ -8899,25 +8716,59 @@ export const useChatStore = create<ChatStore>((set, get) => {
     providerConfig: NonNullable<
       ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
     >;
+    executionContext: ProjectExecutionContext;
+    providerSupportsNativeToolCalling: boolean;
+    abortController: AbortController;
     manualFeatureDraftRecovery?: ManualFeatureDraftRecovery | null;
+    agentTypeAtSend: AgentType | null;
+    replayRecovery?: {
+      replayId: string;
+      onLaunched: () => void;
+      onProgress: () => void;
+      onFailedBeforeProgress: () => Promise<void>;
+    };
   }) => {
     let assistantMessageId: string | null = null;
-    const agentTypeAtSend =
-      params.modeAtSend === "Implement"
-        ? useAppStore.getState().agentType
-        : null;
-    setConversationRuntime(
-      params.conversationId,
-      {
-        phase: "preparing",
-        sessionId: params.sessionId,
-        turnId: params.turnId,
-        assistantMessageId: null,
-        abortController: null,
-        lastError: null,
-      },
-      { globalLastError: null },
-    );
+    const agentTypeAtSend = params.agentTypeAtSend;
+    const cleanupCancelledAssistantPlaceholder = async (
+      placeholderMessageId: string,
+    ): Promise<void> => {
+      set((state) =>
+        removeEmptyAssistantPlaceholderFromState(state, placeholderMessageId),
+      );
+      if (
+        latestConversationSessionIdByConversationId.get(
+          params.conversationId,
+        ) !== params.sessionId
+      ) {
+        return;
+      }
+      try {
+        await deletePersistedMessagesAfter(
+          chatPersistenceAdapters,
+          params.conversationId,
+          params.messageId,
+        );
+      } catch (error) {
+        console.warn(
+          "Failed to delete cancelled assistant placeholder after edit:",
+          error,
+        );
+      }
+    };
+    const isCurrentPreparation = () => {
+      const runtime = getConversationRuntimeSnapshot(
+        get().conversationRuntimeById,
+        params.conversationId,
+      );
+      return (
+        !params.abortController.signal.aborted &&
+        runtime.phase === "preparing" &&
+        runtime.sessionId === params.sessionId &&
+        runtime.turnId === params.turnId &&
+        runtime.abortController === params.abortController
+      );
+    };
 
     try {
       const streamLaunch = await prepareAssistantStreamLaunch({
@@ -8931,13 +8782,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: params.modelId,
         reasoningEffort: params.reasoningEffort,
         providerConfig: params.providerConfig,
+        executionContext: params.executionContext,
+        providerSupportsNativeToolCalling:
+          params.providerSupportsNativeToolCalling,
       });
+      if (!isCurrentPreparation()) {
+        return;
+      }
 
       const assistantMessage = await buildAssistantMessageForSend({
         conversationId: params.conversationId,
         turnId: params.turnId,
         taskId: params.taskId,
       });
+      if (!isCurrentPreparation()) {
+        await cleanupCancelledAssistantPlaceholder(assistantMessage.id);
+        return;
+      }
       rememberAssistantTurnContext(
         assistantMessage.id,
         params.conversationId,
@@ -8946,18 +8807,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       assistantMessageId = assistantMessage.id;
       get().addMessage(assistantMessage);
-      setConversationRuntime(
+      updateConversationRuntimeIfSessionMatches(
         params.conversationId,
-        {
-          phase: "preparing",
-          sessionId: params.sessionId,
-          turnId: params.turnId,
-          assistantMessageId: assistantMessage.id,
-          abortController: null,
-          lastError: null,
-        },
-        { globalLastError: null },
+        params.sessionId,
+        (runtime) =>
+          runtime.phase === "preparing" &&
+          runtime.turnId === params.turnId &&
+          runtime.abortController === params.abortController
+            ? {
+                ...runtime,
+                assistantMessageId: assistantMessage.id,
+              }
+            : runtime,
       );
+      if (!isCurrentPreparation()) {
+        return;
+      }
+
+      if (params.replayRecovery) {
+        await tauriIpc.dbMarkConversationReplayLaunched({
+          conversationId: params.conversationId,
+          replayId: params.replayRecovery.replayId,
+        });
+        params.replayRecovery.onLaunched();
+      }
 
       startAssistantStream({
         sessionId: params.sessionId,
@@ -8966,6 +8839,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         replyToMessageId: params.messageId,
         userContent: params.userContent,
         modeAtSend: params.modeAtSend,
+        agentTypeAtSend,
         resolvedTaskId: params.taskId ?? "",
         selectedProviderId: params.providerId,
         selectedModelId: params.modelId,
@@ -8976,6 +8850,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         contextDiagnosticsBaselineSeed:
           streamLaunch.contextDiagnosticsBaselineSeed,
         executionContext: streamLaunch.executionContext,
+        providerSupportsNativeToolCalling:
+          params.providerSupportsNativeToolCalling,
         fileToolContext: streamLaunch.fileToolContext,
         allowedToolIds: streamLaunch.allowedToolIds,
         skillToolIds: streamLaunch.skillToolIds,
@@ -8988,6 +8864,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mcpTools: streamLaunch.mcpTools,
         maxTurns: streamLaunch.maxTurns,
         compactionDecision: streamLaunch.compactionDecision,
+        abortController: params.abortController,
+        replayRecovery: params.replayRecovery
+          ? {
+              replayId: params.replayRecovery.replayId,
+              onProgress: params.replayRecovery.onProgress,
+              onFailedBeforeProgress: params.replayRecovery.onFailedBeforeProgress,
+            }
+          : undefined,
       });
     } catch (error) {
       if (params.manualFeatureDraftRecovery) {
@@ -9001,6 +8885,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         assistantMessageId,
         error,
       );
+      throw error;
     }
   };
 
@@ -9494,6 +9379,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     replyToMessageId: string;
     userContent: string;
     modeAtSend: AppMode;
+    agentTypeAtSend?: AgentType | null;
     resolvedTaskId: string;
     selectedProviderId: string;
     selectedModelId: string;
@@ -9504,15 +9390,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     internalAgentProfile?: InternalAgentProfile | null;
     messagesForRequest: StreamMessage[];
     contextDiagnosticsBaselineSeed: StreamContextDiagnosticsBaselineSeed;
-    executionContext: {
-      workspacePath: string | null;
-      defaultWorkspacePath: string | null;
-      projectMounts: ReturnType<
-        typeof resolveProjectExecutionContext
-      >["projectMounts"];
-      virtualRootEnabled: boolean;
-      focusedProjectId: string | null;
-    };
+    executionContext: ProjectExecutionContext;
+    providerSupportsNativeToolCalling?: boolean;
     fileToolContext: Array<{
       title: string;
       source: string;
@@ -9536,11 +9415,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
     skillToolIds: string[];
     runnableSkillToolIds: string[];
     maxTurns: ChatMaxTurnsPreference;
+    abortController?: AbortController;
     compactionDecision?: ContextCompactionDecision;
     overflowRecoveryAttempted?: boolean;
+    replayRecovery?: {
+      replayId: string;
+      onProgress: () => void;
+      onFailedBeforeProgress: () => Promise<void>;
+    };
   }) => {
     const streamTurnId = getMessageTurnId(params.assistantMessage);
-    const abortController = new AbortController();
+    const abortController = params.abortController ?? new AbortController();
+    if (abortController.signal.aborted) {
+      return;
+    }
+    const preparationRuntime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      params.conversationId,
+    );
+    if (
+      preparationRuntime.phase !== "preparing" ||
+      preparationRuntime.sessionId !== params.sessionId ||
+      preparationRuntime.turnId !== streamTurnId ||
+      preparationRuntime.assistantMessageId !== params.assistantMessage.id ||
+      preparationRuntime.abortController !== abortController
+    ) {
+      return;
+    }
     const shouldAcceptStreamUpdate = (): boolean => {
       const runtime = getConversationRuntimeSnapshot(
         get().conversationRuntimeById,
@@ -9566,6 +9467,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       { globalLastError: null },
     );
     const deleteEmptyAssistantMessageFromDb = async () => {
+      if (
+        latestConversationSessionIdByConversationId.get(
+          params.conversationId,
+        ) !== params.sessionId
+      ) {
+        return;
+      }
       try {
         await deletePersistedMessagesAfter(
           chatPersistenceAdapters,
@@ -9601,6 +9509,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
     });
     let pendingToolBoundaryCompaction: PendingToolBoundaryCompaction | null = null;
+    let replayRecoveryFinalized = false;
+    const finalizeReplayRecoveryAfterProgress = () => {
+      if (!params.replayRecovery || replayRecoveryFinalized) return;
+      replayRecoveryFinalized = true;
+      params.replayRecovery.onProgress();
+      void tauriIpc
+        .dbFinalizeConversationReplay({
+          conversationId: params.conversationId,
+          replayId: params.replayRecovery.replayId,
+        })
+        .catch((error) => {
+          console.error("Replay recovery finalization remains pending", error);
+        });
+    };
 
     const maybeMarkImplementTaskFailedAfterStreamError = async () => {
       if (
@@ -9664,6 +9586,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       await recordProviderContextOverflowLimit(error);
+      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
+        return true;
+      }
       tokenControls.flushNow();
       const assistantMessage = get().messages.find(
         (message) => message.id === params.assistantMessage.id,
@@ -9693,7 +9618,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           sessionId: params.sessionId,
           turnId: streamTurnId,
           assistantMessageId: params.assistantMessage.id,
-          abortController: null,
+          abortController,
           lastError: null,
         }),
       );
@@ -9710,6 +9635,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           reasoningEffort: params.selectedReasoningEffort,
           providerConfig: params.providerConfig,
           internalAgentProfile: params.internalAgentProfile,
+          executionContext: params.executionContext,
+          providerSupportsNativeToolCalling:
+            params.providerSupportsNativeToolCalling,
           compactionMode: "stream_overflow",
           forceCompaction: true,
           forcePrune: true,
@@ -9724,7 +9652,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           runtimeAfterCompaction.phase !== "overflow_recovery" ||
           runtimeAfterCompaction.sessionId !== params.sessionId ||
           runtimeAfterCompaction.turnId !== streamTurnId ||
-          runtimeAfterCompaction.assistantMessageId !== params.assistantMessage.id
+          runtimeAfterCompaction.assistantMessageId !== params.assistantMessage.id ||
+          runtimeAfterCompaction.abortController !== abortController ||
+          abortController.signal.aborted
         ) {
           return true;
         }
@@ -9739,12 +9669,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
           recoveredFromOverflow: true,
         });
 
+        updateConversationRuntimeIfSessionMatches(
+          params.conversationId,
+          params.sessionId,
+          (runtime) =>
+            runtime.phase === "overflow_recovery" &&
+            runtime.turnId === streamTurnId &&
+            runtime.assistantMessageId === params.assistantMessage.id
+              ? {
+                  phase: "preparing",
+                  sessionId: params.sessionId,
+                  turnId: streamTurnId,
+                  assistantMessageId: params.assistantMessage.id,
+                  abortController,
+                  lastError: null,
+                }
+              : runtime,
+        );
         startAssistantStream({
           ...params,
           messagesForRequest: streamLaunch.messagesForRequest,
           contextDiagnosticsBaselineSeed:
             streamLaunch.contextDiagnosticsBaselineSeed,
           executionContext: streamLaunch.executionContext,
+          providerSupportsNativeToolCalling:
+            params.providerSupportsNativeToolCalling,
           fileToolContext: streamLaunch.fileToolContext,
           allowedToolIds: streamLaunch.allowedToolIds,
           skillToolIds: streamLaunch.skillToolIds,
@@ -10212,6 +10161,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         shouldAcceptStreamUpdate,
         isAbortSignalAborted: () => abortController.signal.aborted,
         appendTokenChunk: (messageId, tokenChunk) => {
+          if (tokenChunk.length > 0) finalizeReplayRecoveryAfterProgress();
           get().appendToMessage(messageId, tokenChunk);
         },
         getAssistantMessage: (messageId) =>
@@ -10233,6 +10183,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           useTaskStore.getState().markTaskAwaitingResponse(taskId),
         assistantTurnRequiresUserReply,
         updateConversationAfterCompletion: (conversationId, visibleContent) => {
+          completionPersistenceOwnersByConversationId.set(conversationId, {
+            sessionId: params.sessionId,
+            turnId: streamTurnId,
+            assistantMessageId: params.assistantMessage.id,
+          });
           set((state) => ({
             conversations: state.conversations.map((conv) =>
               conv.id === conversationId
@@ -10287,9 +10242,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             get().conversationRuntimeById,
             conversationId,
           );
-          if (currentRuntime.sessionId && currentRuntime.sessionId !== sessionId) {
+          const completionOwner =
+            completionPersistenceOwnersByConversationId.get(conversationId);
+          if (
+            completionOwner?.sessionId !== sessionId ||
+            completionOwner.turnId !== turnId ||
+            completionOwner.assistantMessageId !== assistantMessageId ||
+            currentRuntime.phase !== "idle"
+          ) {
             return;
           }
+          completionPersistenceOwnersByConversationId.delete(conversationId);
           setConversationRuntime(
             conversationId,
             {
@@ -10306,6 +10269,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
           set({ sendState: "error" });
         },
+        clearCompletionPersistenceOwnership: ({
+          conversationId,
+          sessionId,
+          turnId,
+          assistantMessageId,
+        }) => {
+          const completionOwner =
+            completionPersistenceOwnersByConversationId.get(conversationId);
+          if (
+            completionOwner?.sessionId === sessionId &&
+            completionOwner.turnId === turnId &&
+            completionOwner.assistantMessageId === assistantMessageId
+          ) {
+            completionPersistenceOwnersByConversationId.delete(conversationId);
+          }
+        },
         maybeMarkImplementTaskFailedAfterStreamError,
         tryRecoverFromOverflow,
         removeEmptyAssistantPlaceholder: (assistantMessageId) => {
@@ -10317,6 +10296,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
         },
         deleteEmptyAssistantMessageFromDb,
+        recoverReplayBeforeProgress: params.replayRecovery
+          ? params.replayRecovery.onFailedBeforeProgress
+          : undefined,
         setStreamErrorState: ({
           presentation,
           assistantMessageId,
@@ -10389,6 +10371,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
         }
+        if (toolTraces.length > 0) {
+          finalizeReplayRecoveryAfterProgress();
+        }
         get().updateMessageFields(params.assistantMessage.id, {
           tool_traces: toolTraces,
         });
@@ -10415,9 +10400,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
       },
       onToolCall: (toolName, args, toolCallId) => {
+        finalizeReplayRecoveryAfterProgress();
         return handleToolCall(
-          params.conversationId,
-          params.assistantMessage.id,
+          {
+            conversationId: params.conversationId,
+            sessionId: params.sessionId,
+            turnId: streamTurnId,
+            assistantMessageId: params.assistantMessage.id,
+            mode: params.modeAtSend,
+            agentType: params.agentTypeAtSend ?? null,
+            taskId: params.resolvedTaskId,
+            executionContext: params.executionContext,
+            signal: abortController.signal,
+          },
           toolName,
           args,
           toolCallId,
@@ -10766,27 +10761,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
-        console.error("Failed to create conversation in DB:", error);
-        newConversation = {
-          id: `conv-${Date.now()}`,
-          title: resolvedTitle,
-          description: "",
-          scope_mode: mode,
-          task_id: resolvedTaskId,
-          group_id: resolvedGroupId,
-          project_id: resolvedProjectId,
-          provider_id: initialAISelection?.providerId ?? null,
-          model_id: initialAISelection?.modelId ?? null,
-          reasoning_effort: initialAISelection?.reasoningEffort ?? null,
-          last_message: "",
-          message_count: 0,
-          updated_at: new Date().toISOString(),
-          is_unread: true,
-        };
+        const normalized = toServiceError(error);
+        set({ lastError: normalized.message });
+        throw new Error(
+          `Impossible de créer la conversation de manière durable : ${normalized.message}`,
+        );
       }
     } else {
       newConversation = {
-        id: `conv-${Date.now()}`,
+        id: `conv-${createConversationSessionId()}`,
         title: resolvedTitle,
         description: "",
         scope_mode: mode,
@@ -11040,6 +11023,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return appendImportedMessagesToState(conversationId, imported);
       } catch (error) {
         console.error("Failed to import architect transcript into DB:", error);
+        throw error;
       }
     }
 
@@ -11135,8 +11119,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let conversation =
       existingConversation && !sharedConversation ? existingConversation : null;
     let createdConversation = false;
+    let createdConversationId: string | null = null;
     let restoredTranscript = false;
 
+    try {
     if (!conversation) {
       conversation = await createConversationRecord({
         title: getArchitectPlanConversationTitle(plan),
@@ -11146,6 +11132,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectConversation: false,
       });
       createdConversation = true;
+      createdConversationId = conversation.id;
+      await upsertLinkedConversationDeletionSaga({
+        ownerType: "plan",
+        ownerId: plan.id,
+        conversationId: conversation.id,
+        phase: "plan_conversation_created",
+        targetBranch,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
     }
 
     const repairedConversation = await repairArchitectPlanConversationScope({
@@ -11289,9 +11285,80 @@ export const useChatStore = create<ChatStore>((set, get) => {
           planId: plan.id,
           conversationId: conversation.id,
         });
-      } catch {
-        // Keep local conversation even if metadata cannot be rewritten right now.
+      } catch (error) {
+        const normalized = toServiceError(error);
+        throw new Error(
+          `Impossible d’associer durablement la conversation au plan : ${normalized.message}`,
+        );
       }
+    }
+
+    if (createdConversation) {
+      try {
+        await removeLinkedConversationDeletionSaga("plan", plan.id);
+      } catch (error) {
+        // The persisted guard is safe to leave behind: bootstrap verifies the
+        // plan binding before deciding whether it is a cleanup candidate.
+        console.error("Plan conversation creation guard remains pending", error);
+      }
+    }
+
+    } catch (error) {
+      if (!createdConversation || !createdConversationId) {
+        throw error;
+      }
+      const conversationId = createdConversationId;
+      deletedConversationIds.add(conversationId);
+      const lastError = toServiceError(error).message;
+      try {
+        await upsertLinkedConversationDeletionSaga({
+          ownerType: "plan",
+          ownerId: plan.id,
+          conversationId,
+          phase: "task_deleted",
+          targetBranch,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastError,
+        });
+      } catch (sagaError) {
+        console.error(
+          "Plan conversation cleanup guard could not be updated",
+          sagaError,
+        );
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await deleteConversationToolboxStateIfAvailable(conversationId);
+        applyLocalConversationRemoval([conversationId]);
+        try {
+          await removeLinkedConversationDeletionSaga("plan", plan.id);
+        } catch (sagaError) {
+          console.error("Plan conversation cleanup guard remains pending", sagaError);
+        }
+      } catch (cleanupError) {
+        const cleanupMessage = toServiceError(cleanupError).message;
+        try {
+          await upsertLinkedConversationDeletionSaga({
+            ownerType: "plan",
+            ownerId: plan.id,
+            conversationId,
+            phase: "task_deleted",
+            targetBranch,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastError: cleanupMessage,
+          });
+        } catch (sagaError) {
+          throw new Error(
+            `Impossible d’annuler la conversation créée pour le plan : ${cleanupMessage}; le journal de reprise a aussi échoué : ${toServiceError(sagaError).message}`,
+          );
+        }
+        throw new Error(
+          `Impossible d’annuler la conversation créée pour le plan ; le nettoyage sera repris automatiquement : ${cleanupMessage}`,
+        );
+      }
+      throw error;
     }
 
     return {
@@ -11305,12 +11372,81 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationCompactionStateCache.clear();
     agentCodeCheckpointLoadPromisesByConversationId.clear();
     messageLoadPromisesByConversationId.clear();
-    const {
+    let {
       conversations,
       messages,
       loadedConversationIds,
       bootstrapError,
     } = await loadChatBootstrapSnapshot(chatPersistenceAdapters);
+    let replayRecoveryError: string | null = null;
+
+    if (tauriIpc.isTauriAvailable()) {
+      let restoredAnyReplay = false;
+      for (const conversation of conversations) {
+        const marker = await tauriIpc.dbGetAppSetting(
+          `conversationReplayRecovery:${conversation.id}`,
+        );
+        if (!marker) continue;
+        try {
+          const recovery = JSON.parse(marker.value_json) as {
+            replay_id?: unknown;
+            session_id?: unknown;
+            turn_id?: unknown;
+            phase?: unknown;
+          };
+          const replayId = recovery.replay_id;
+          const sessionId = recovery.session_id;
+          const turnId = recovery.turn_id;
+          if (
+            typeof replayId !== "string" ||
+            !replayId ||
+            typeof sessionId !== "string" ||
+            !sessionId ||
+            typeof turnId !== "string" ||
+            !turnId
+          ) {
+            throw new Error("The replay recovery marker is invalid.");
+          }
+          const restored = await tauriIpc.dbRestoreConversationReplay({
+            conversationId: conversation.id,
+            replayId,
+            sessionId,
+            turnId,
+          });
+          if (!restored) {
+            // A launched replay that has already persisted output (or lost the
+            // race to a later turn) must win over the old snapshot. Finalizing
+            // only removes that exact launched marker; otherwise it remains
+            // fail-closed and is retried at the next bootstrap.
+            if (recovery.phase === "launched") {
+              await tauriIpc.dbFinalizeConversationReplay({
+                conversationId: conversation.id,
+                replayId,
+              });
+              const remaining = await tauriIpc.dbGetAppSetting(
+                `conversationReplayRecovery:${conversation.id}`,
+              );
+              if (!remaining) {
+                replayRecoveryBlockedConversationIds.delete(conversation.id);
+                continue;
+              }
+            }
+            throw new Error("The replay recovery marker could not be applied safely.");
+          }
+          replayRecoveryBlockedConversationIds.delete(conversation.id);
+          restoredAnyReplay = true;
+        } catch (error) {
+          replayRecoveryBlockedConversationIds.add(conversation.id);
+          replayRecoveryError =
+            "Replay recovery is pending for a conversation. Its transcript is preserved and editing is locked; reload Macro to retry.";
+          console.error("Replay recovery is pending for conversation", conversation.id, error);
+        }
+      }
+      if (restoredAnyReplay) {
+        ({ conversations, messages, loadedConversationIds, bootstrapError } =
+          await loadChatBootstrapSnapshot(chatPersistenceAdapters));
+      }
+    }
 
     if (bootstrapError) {
       console.warn(
@@ -11319,15 +11455,120 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
 
-    pruneConversationSelections(conversations);
+    let pendingLinkedTaskDeletions;
+    try {
+      pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+    } catch (error) {
+      if (error instanceof LinkedConversationDeletionSagaCorruptionError) {
+        error.recoverableConversationIds.forEach((conversationId) => {
+          deletedConversationIds.add(conversationId);
+        });
+      }
+      throw error;
+    }
+    const completedPendingConversationDeletionIds = new Set<string>();
+    for (const saga of pendingLinkedTaskDeletions) {
+      if (
+        saga.ownerType === "plan" &&
+        saga.phase === "plan_conversation_created"
+      ) {
+        if (!saga.targetBranch) {
+          console.error(
+            "Plan conversation creation guard has no target branch and remains fail-closed",
+            saga.conversationId,
+          );
+          continue;
+        }
+        try {
+          const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (plan?.conversationId === saga.conversationId) {
+            await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+            continue;
+          }
+          await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+          await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+          completedPendingConversationDeletionIds.add(saga.conversationId);
+        } catch (error) {
+          console.error(
+            "Plan conversation creation cleanup remains pending",
+            saga.conversationId,
+            error,
+          );
+        }
+        continue;
+      }
+      if (saga.ownerType === "plan" && saga.phase === "plan_deleting") {
+        if (!saga.targetBranch) {
+          console.error(
+            "Plan deletion guard has no target branch and remains fail-closed",
+            saga.conversationId,
+          );
+          continue;
+        }
+        try {
+          const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (plan && plan.status !== "deleted") {
+            continue;
+          }
+          await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+          await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+          completedPendingConversationDeletionIds.add(saga.conversationId);
+        } catch (error) {
+          console.error("Plan conversation deletion remains pending", saga.conversationId, error);
+        }
+        continue;
+      }
+      if (
+        (saga.ownerType !== "plan" && saga.ownerType !== "conversation") ||
+        saga.phase !== "task_deleted"
+      ) {
+        continue;
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+        await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+        await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+        completedPendingConversationDeletionIds.add(saga.conversationId);
+      } catch (error) {
+        console.error("Plan conversation deletion remains pending", saga.conversationId, error);
+      }
+    }
+    pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+    const pendingConversationIds = new Set(
+      pendingLinkedTaskDeletions
+        .filter((saga) => saga.phase !== "prepared")
+        .map((saga) => saga.conversationId),
+    );
+    completedPendingConversationDeletionIds.forEach((conversationId) => {
+      pendingConversationIds.add(conversationId);
+    });
+    pendingConversationIds.forEach((conversationId) => {
+      deletedConversationIds.add(conversationId);
+    });
+    const visibleConversations = conversations.filter(
+      (conversation) =>
+        !pendingConversationIds.has(conversation.id) &&
+        !replayRecoveryBlockedConversationIds.has(conversation.id),
+    );
+    const visibleMessages = messages.filter(
+      (message) =>
+        !pendingConversationIds.has(message.conversation_id) &&
+        !replayRecoveryBlockedConversationIds.has(message.conversation_id),
+    );
+
+    pruneConversationSelections(visibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
 
     set({
-      conversations,
-      ...buildMessageState(messages),
+      conversations: visibleConversations,
+      ...buildMessageState(visibleMessages),
       messageLoadStatusByConversationId: Object.fromEntries(
-        Array.from(loadedConversationIds).map((conversationId) => [
+        Array.from(loadedConversationIds)
+          .filter((conversationId) => !pendingConversationIds.has(conversationId))
+          .map((conversationId) => [
           conversationId,
           "ready" as const,
         ]),
@@ -11349,7 +11590,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       isLoading: false,
       isStreaming: false,
       sendState: "idle",
-      lastError: null,
+      lastError: replayRecoveryError ?? null,
       abortController: null,
     });
     scheduleImplementAwaitingResponseReconciliation();
@@ -11650,6 +11891,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const rememberedId = state.selectedConversationIdsByMode[mode] ?? null;
+    const archivedChatConversationPreference =
+      mode === "Chat"
+        ? await loadPreference<unknown>(
+            PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
+          )
+        : null;
+    const archivedChatConversationIds = Array.isArray(
+      archivedChatConversationPreference,
+    )
+      ? new Set(
+          archivedChatConversationPreference
+            .filter((value): value is string => typeof value === "string")
+            .map((value) => value.trim())
+            .filter(Boolean),
+        )
+      : EMPTY_STRING_SET;
     const rememberedConversation = rememberedId
       ? state.conversations.find(
           (conversation) => conversation.id === rememberedId,
@@ -11658,6 +11915,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (
       rememberedConversation &&
+      !archivedChatConversationIds.has(rememberedConversation.id) &&
       isConversationAllowedForMode(
         rememberedConversation,
         mode,
@@ -11675,6 +11933,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedGroupId,
       selectedProjectId,
       selectedTaskId,
+      archivedChatConversationIds,
     );
     if (fallbackConversationId) {
       return modeFallback(fallbackConversationId);
@@ -12114,6 +12373,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       Object.keys(get().conversationRuntimeById).forEach((conversationId) => {
         stopConversationRuntimeLocally(conversationId);
       });
+      latestConversationSessionIdByConversationId.clear();
+      completionPersistenceOwnersByConversationId.clear();
       set({
         ...buildMessageState([]),
         messageLoadStatusByConversationId: {},
@@ -12318,6 +12579,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     replaceComposerContextRefs: (refs, conversationId) => {
       const nextRefs = refs.map((ref) => ({ ...ref }));
+      composerContextRefsRevision += 1;
       set({ composerContextRefs: nextRefs });
       if (conversationId) {
         persistComposerContextRefsForConversation(conversationId, nextRefs);
@@ -12331,6 +12593,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           (r) => r.id === ref.id && r.kind === ref.kind,
         );
         if (exists) return state;
+        composerContextRefsRevision += 1;
         nextRefs = [...state.composerContextRefs, ref];
         return { composerContextRefs: nextRefs };
       });
@@ -12345,6 +12608,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     removeComposerContextRef: (id, kind) => {
       let nextRefs: ContextReference[] | null = null;
       set((state) => {
+        composerContextRefsRevision += 1;
         nextRefs = state.composerContextRefs.filter(
           (r) => !(r.id === id && r.kind === kind),
         );
@@ -12359,6 +12623,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     clearComposerContextRefs: () => {
+      composerContextRefsRevision += 1;
       set({ composerContextRefs: [] });
       persistComposerContextRefsForConversation(
         get().selectedConversationId,
@@ -12685,6 +12950,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
     },
 
+    clearSelectedConversation: () => {
+      const mode = useAppStore.getState().mode;
+      clearConversationSelection(mode);
+      set({ activeContextKey: null, restoreStatus: "idle" });
+    },
+
+    togglePinConversation: async (conversationId) => {
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === conversationId,
+      );
+      if (!conversation || deletedConversationIds.has(conversationId)) {
+        throw new Error("Conversation introuvable.");
+      }
+
+      if (!tauriIpc.isTauriAvailable()) {
+        const isPinned = !conversation.is_pinned;
+        set((state) => ({
+          conversations: state.conversations.map((candidate) =>
+            candidate.id === conversationId
+              ? { ...candidate, is_pinned: isPinned }
+              : candidate,
+          ),
+        }));
+        return isPinned;
+      }
+
+      const isPinned = await tauriIpc.togglePinConversation(conversationId);
+      if (deletedConversationIds.has(conversationId)) {
+        return isPinned;
+      }
+      set((state) => ({
+        conversations: state.conversations.map((candidate) =>
+          candidate.id === conversationId
+            ? { ...candidate, is_pinned: isPinned }
+            : candidate,
+        ),
+      }));
+      return isPinned;
+    },
+
     deleteConversation: async (conversationId, confirmation) => {
       const conversation = get().conversations.find(
         (candidate) => candidate.id === conversationId,
@@ -12742,16 +13047,69 @@ export const useChatStore = create<ChatStore>((set, get) => {
         linkedTask.standalone_kind === "manual_feature" &&
         linkedTask.draft
       ) {
-        await useTaskStore.getState().deleteManualFeatureDraft(linkedTask.id);
+        await useTaskStore.getState().deleteTask(linkedTask.id);
+        if (!get().conversations.some((candidate) => candidate.id === conversationId)) {
+          return;
+        }
       }
 
+      deletedConversationIds.add(conversationId);
+      pendingConversationDeletionIds.add(conversationId);
+      latestConversationSessionIdByConversationId.delete(conversationId);
+      completionPersistenceOwnersByConversationId.delete(conversationId);
+      try {
+        await beginStandaloneConversationDeletionSaga(conversationId);
+      } catch (error) {
+        deletedConversationIds.delete(conversationId);
+        pendingConversationDeletionIds.delete(conversationId);
+        throw error;
+      }
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+      } catch (error) {
+        try {
+          await completeStandaloneConversationDeletionSaga(conversationId);
+          deletedConversationIds.delete(conversationId);
+        } catch (sagaError) {
+          set({
+            lastError: `La suppression de la conversation reste en attente : ${toServiceError(sagaError).message}`,
+          });
+        }
+        throw error;
+      } finally {
+        pendingConversationDeletionIds.delete(conversationId);
+      }
+      const cleanupFailures: string[] = [];
+      const runCleanup = async (label: string, cleanup: () => Promise<void>) => {
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupFailures.push(`${label}: ${toServiceError(error).message}`);
+        }
+      };
       stopConversationRuntimeLocally(conversationId);
-      await deletePersistedConversation(chatPersistenceAdapters, conversationId);
-      await deleteConversationToolboxStateIfAvailable(conversationId);
+      await runCleanup("toolbox", () =>
+        deleteConversationToolboxStateIfAvailable(conversationId),
+      );
+      if (!cleanupFailures.some((failure) => failure.startsWith("toolbox"))) {
+        await runCleanup("journal de nettoyage", () =>
+          completeStandaloneConversationDeletionSaga(conversationId),
+        );
+      }
       conversationCompactionStateCache.delete(conversationId);
+      clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);
       removeConversationSelectionData(conversationId);
       applyLocalConversationRemoval([conversationId]);
+      await runCleanup("sélection", () =>
+        hydrateSelectedConversationAfterRemoval([conversationId]),
+      );
+
+      if (cleanupFailures.length > 0) {
+        const message = `Conversation supprimée, mais certaines ressources n'ont pas pu être nettoyées : ${cleanupFailures.join("; ")}`;
+        set({ lastError: message });
+        throw new Error(message);
+      }
     },
 
     deleteChatConversations: async (conversationIds) => {
@@ -12778,27 +13136,121 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       });
 
-      const snapshot = buildConversationRemovalSnapshot();
       uniqueIds.forEach((conversationId) => {
-        stopConversationRuntimeLocally(conversationId);
+        deletedConversationIds.add(conversationId);
+        pendingConversationDeletionIds.add(conversationId);
+        latestConversationSessionIdByConversationId.delete(conversationId);
+        completionPersistenceOwnersByConversationId.delete(conversationId);
       });
-      applyLocalConversationRemoval(uniqueIds);
+      try {
+        for (const conversationId of uniqueIds) {
+          await beginStandaloneConversationDeletionSaga(conversationId);
+        }
+      } catch (error) {
+        uniqueIds.forEach((conversationId) => {
+          deletedConversationIds.delete(conversationId);
+          pendingConversationDeletionIds.delete(conversationId);
+        });
+        throw error;
+      }
 
+      let persistedDeletionCommitted = false;
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
+        persistedDeletionCommitted = true;
+        uniqueIds.forEach((conversationId) => {
+          stopConversationRuntimeLocally(conversationId);
+        });
+        const cleanupFailures: string[] = [];
         await Promise.all(
-          uniqueIds.map((conversationId) =>
-            deleteConversationToolboxStateIfAvailable(conversationId),
-          ),
+          uniqueIds.map(async (conversationId) => {
+            try {
+              await deleteConversationToolboxStateIfAvailable(conversationId);
+            } catch (error) {
+              cleanupFailures.push(
+                `toolbox ${conversationId}: ${toServiceError(error).message}`,
+              );
+            }
+          }),
+        );
+        await Promise.all(
+          uniqueIds
+            .filter(
+              (conversationId) =>
+                !cleanupFailures.some((failure) =>
+                  failure.startsWith(`toolbox ${conversationId}:`),
+                ),
+            )
+            .map(async (conversationId) => {
+              try {
+                await completeStandaloneConversationDeletionSaga(conversationId);
+              } catch (error) {
+                cleanupFailures.push(
+                  `journal de nettoyage ${conversationId}: ${toServiceError(error).message}`,
+                );
+              }
+            }),
         );
         clearConversationCitationsBulkIfAvailable(uniqueIds);
         uniqueIds.forEach((conversationId) => {
           conversationCompactionStateCache.delete(conversationId);
+          clearAgentCodeCheckpoints(conversationId);
           removeConversationSelectionData(conversationId);
         });
+        applyLocalConversationRemoval(uniqueIds);
+        try {
+          await hydrateSelectedConversationAfterRemoval(uniqueIds);
+        } catch (error) {
+          cleanupFailures.push(`sélection: ${toServiceError(error).message}`);
+        }
+        if (cleanupFailures.length > 0) {
+          const message = `Conversations supprimées, mais certaines ressources n'ont pas pu être nettoyées : ${cleanupFailures.join("; ")}`;
+          set({ lastError: message });
+          throw new Error(message);
+        }
       } catch (error) {
-        restoreConversationRemovalSnapshot(snapshot);
+        if (!persistedDeletionCommitted) {
+          await Promise.all(
+            uniqueIds.map(async (conversationId) => {
+              try {
+                await completeStandaloneConversationDeletionSaga(conversationId);
+                deletedConversationIds.delete(conversationId);
+              } catch (sagaError) {
+                set({
+                  lastError: `La suppression de la conversation reste en attente : ${toServiceError(sagaError).message}`,
+                });
+              }
+            }),
+          );
+        }
         throw error;
+      } finally {
+        uniqueIds.forEach((conversationId) => {
+          pendingConversationDeletionIds.delete(conversationId);
+        });
+      }
+    },
+
+    completeLinkedTaskConversationDeletion: async (conversationId) => {
+      deletedConversationIds.add(conversationId);
+      latestConversationSessionIdByConversationId.delete(conversationId);
+      completionPersistenceOwnersByConversationId.delete(conversationId);
+      stopConversationRuntimeLocally(conversationId);
+      conversationCompactionStateCache.delete(conversationId);
+      clearAgentCodeCheckpoints(conversationId);
+      clearConversationCitationsIfAvailable(conversationId);
+      removeConversationSelectionData(conversationId);
+      applyLocalConversationRemoval([conversationId]);
+
+      try {
+        await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await deleteConversationToolboxStateIfAvailable(conversationId);
+        await hydrateSelectedConversationAfterRemoval([conversationId]);
+        return true;
+      } catch (error) {
+        const message = `La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente : ${toServiceError(error).message}`;
+        set({ lastError: message });
+        return false;
       }
     },
 
@@ -13246,6 +13698,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerInputItems,
       });
 
+      if (result.status === "cancelled") {
+        return result;
+      }
+
       set((state) => {
         const nextDrafts = clearQuestionnaireDraftsForConversations(
           state.questionnaireDraftsByConversationId,
@@ -13271,9 +13727,70 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerInputItems,
       } = payload;
       const contextRefsForMessage = persistableContextRefs(get().composerContextRefs);
+      const composerContextRefsRevisionAtSend = composerContextRefsRevision;
       let activeSessionId: string | null = null;
       let activeTurnId: string | null = null;
       let assistantMessageId: string | null = null;
+      let launchError: unknown = null;
+      // Capture every mutable selection before the first await.  This is the
+      // operation boundary; later continuations are fenced by its session and
+      // controller instead of consulting the current UI selection.
+      const appStateAtSend = useAppStore.getState();
+      const providerState = useProviderStore.getState();
+      const modeAtSend = appStateAtSend.mode;
+      const agentTypeAtSend =
+        modeAtSend === "Implement" ? appStateAtSend.agentType : null;
+      const activeArchitectPlanIdAtSend = appStateAtSend.activeArchitectPlanId;
+      const architectPlanAtSend =
+        modeAtSend === "Architect" && activeArchitectPlanIdAtSend
+          ? {
+              planId: activeArchitectPlanIdAtSend,
+              targetBranch: resolveTargetBranch(
+                appStateAtSend.activePlanContext?.targetBranch,
+              ),
+            }
+          : undefined;
+      const providerSelectionAtSend = {
+        selectedProviderId: providerState.selectedProviderId,
+        selectedModelId: providerState.selectedModelId,
+        selectedReasoningEffort: providerState.selectedReasoningEffort,
+        isLoading: providerState.isLoading,
+        providerConfigs: providerState.providerConfigs.map((provider) => ({
+          ...provider,
+        })),
+        resolveProviderApiKey: providerState.resolveProviderApiKey,
+        supportsNativeToolCalling: providerState.selectedSupportsNativeToolCalling(),
+      };
+      const conversationAtSend = get().conversations.find(
+        (conversation) => conversation.id === conversationId,
+      );
+      const conversationTaskIdAtSend = conversationAtSend?.task_id ?? null;
+      const selectedTaskIdAtSend =
+        modeAtSend === "Implement" ? (appStateAtSend.selectedTaskId ?? "") : "";
+      const resolvedTaskIdAtSend =
+        modeAtSend === "Chat"
+          ? ""
+          : (taskId ?? conversationTaskIdAtSend ?? selectedTaskIdAtSend);
+      const executionContextAtSend = resolveConversationExecutionContext(conversationId);
+      const preparationAbortController = new AbortController();
+      const cancelledResult = (): ChatSendCancelledResult => ({
+        status: "cancelled",
+        conversationId,
+        turnId: activeTurnId ?? "",
+        userMessageId: null,
+        assistantMessageId: null,
+      });
+      const isCurrentPreparation = () => {
+        const runtime = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          conversationId,
+        );
+        return !deletedConversationIds.has(conversationId) &&
+          !preparationAbortController.signal.aborted &&
+          runtime.sessionId === activeSessionId &&
+          runtime.turnId === activeTurnId &&
+          runtime.phase === "preparing";
+      };
       const sendTimelineStartedAt = Date.now();
       const emitSendTimeline = (phase: StreamTimelinePhase | string, context?: Record<string, unknown>) => {
         devLogger.info("Provider stream timeline", {
@@ -13288,6 +13805,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         assertConversationRuntimeAvailableForSend(conversationId);
         activeSessionId = createConversationSessionId();
         activeTurnId = createConversationTurnId();
+        latestConversationSessionIdByConversationId.set(
+          conversationId,
+          activeSessionId,
+        );
         emitSendTimeline("send_requested", { conversationId });
         setConversationRuntime(
           conversationId,
@@ -13296,16 +13817,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
             sessionId: activeSessionId,
             turnId: activeTurnId,
             assistantMessageId: null,
-            abortController: null,
+            abortController: preparationAbortController,
             lastError: null,
           },
           { globalLastError: null },
         );
         await ensureMessagesLoadedForConversation(conversationId);
+        const currentPreparingRuntime = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          conversationId,
+        );
+        if (
+          preparationAbortController.signal.aborted ||
+          deletedConversationIds.has(conversationId) ||
+          currentPreparingRuntime.sessionId !== activeSessionId ||
+          currentPreparingRuntime.turnId !== activeTurnId
+        ) {
+          return cancelledResult();
+        }
         emitSendTimeline("messages_ready", { conversationId });
-        const appStateAtSend = useAppStore.getState();
-        const modeAtSend = appStateAtSend.mode;
-        if (modeAtSend === "Architect" && !appStateAtSend.activeArchitectPlanId) {
+        if (modeAtSend === "Architect" && !architectPlanAtSend) {
           throw buildSendError("Select a plan before sending an Architect message.");
         }
 
@@ -13316,7 +13847,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId =
             await materializePendingArchitectConversationIfNeeded(conversationId);
         }
+        if (
+          preparationAbortController.signal.aborted ||
+          deletedConversationIds.has(previousConversationId)
+        ) {
+          return cancelledResult();
+        }
         if (hasPendingArchitectConversation && conversationId !== previousConversationId) {
+          if (
+            !transferConversationSessionOwnership(
+              previousConversationId,
+              conversationId,
+              activeSessionId,
+            )
+          ) {
+            abortAndClearPreparingRuntimeIfSessionMatches(
+              previousConversationId,
+              activeSessionId,
+              activeTurnId,
+              preparationAbortController,
+            );
+            return cancelledResult();
+          }
           setConversationRuntime(previousConversationId, null);
           setConversationRuntime(
             conversationId,
@@ -13325,24 +13877,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
               sessionId: activeSessionId,
               turnId: activeTurnId,
               assistantMessageId: null,
-              abortController: null,
+              abortController: preparationAbortController,
               lastError: null,
             },
             { globalLastError: null },
           );
         }
-        const providerState = useProviderStore.getState();
         const {
           selectedProviderId,
           selectedModelId,
           selectedReasoningEffort,
           providerConfigs,
-        } = providerState;
-        const agentTypeAtSend =
-          modeAtSend === "Implement" ? appStateAtSend.agentType : null;
+        } = providerSelectionAtSend;
         persistSelectionForContext(modeAtSend, conversationId);
 
-        if (providerState.isLoading) {
+        if (providerSelectionAtSend.isLoading) {
           throw buildSendError("Provider settings are still loading.");
         }
 
@@ -13361,7 +13910,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const resolvedApiKey =
           providerConfig.isLocal || providerHasAuthSession(providerConfig)
             ? providerConfig.apiKey
-            : await providerState.resolveProviderApiKey(selectedProviderId);
+            : await providerSelectionAtSend.resolveProviderApiKey(selectedProviderId);
+        if (!isCurrentPreparation()) {
+          return cancelledResult();
+        }
         const providerConfigForUse = {
           ...providerConfig,
           apiKey: resolvedApiKey,
@@ -13369,19 +13921,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
         };
 
-        const conversationTaskId =
-          get().conversations.find(
-            (conversation) => conversation.id === conversationId,
-          )?.task_id ?? null;
-        const selectedTaskIdForMode =
-          modeAtSend === "Implement"
-            ? (useAppStore.getState().selectedTaskId ?? "")
-            : "";
-        const resolvedTaskId =
-          modeAtSend === "Chat"
-            ? ""
-            : (taskId ?? conversationTaskId ?? selectedTaskIdForMode);
-        let taskForSend = resolvedTaskId
+        const resolvedTaskId = resolvedTaskIdAtSend;
+        let taskForSend = resolvedTaskIdAtSend
           ? useTaskStore.getState().getTaskById(resolvedTaskId)
           : undefined;
         let finalizedManualFeatureDraft = false;
@@ -13405,12 +13946,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 modelId: selectedModelId,
                 reasoningEffort: selectedReasoningEffort,
               });
+            if (!isCurrentPreparation()) {
+              return cancelledResult();
+            }
             finalizedManualFeatureDraft = manualFeatureDraftRecovery !== null;
           }
 
           taskForSend =
             (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
             taskForSend;
+          if (!isCurrentPreparation()) {
+            return cancelledResult();
+          }
           assertStandaloneTaskExecutionContextReady(taskForSend);
         }
 
@@ -13427,37 +13974,49 @@ export const useChatStore = create<ChatStore>((set, get) => {
           providerInputItems,
           contextRefs: contextRefsForMessage,
         });
-
-        get().addMessage(userMessage);
-        if (images && images.length > 0) {
-          get().setMessageImages(userMessage.id, images);
-        }
-        for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
-          const path = getFileRefPath(ref);
-          useCitationsStore.getState().addCitation({
-            type: "file",
-            scope: "context",
-            source: path,
-            title: ref.title,
-            path,
-            messageId: userMessage.id,
+        const publishUserMessage = () => {
+          get().addMessage(userMessage);
+          if (images && images.length > 0) {
+            get().setMessageImages(userMessage.id, images);
+          }
+          for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
+            const path = getFileRefPath(ref);
+            useCitationsStore.getState().addCitation({
+              type: "file",
+              scope: "context",
+              source: path,
+              title: ref.title,
+              path,
+              messageId: userMessage.id,
+              conversationId,
+            });
+          }
+        };
+        const sentWithoutAssistantResult = () => ({
+          status: "sent" as const,
+          conversationId,
+          turnId: activeTurnId ?? "",
+          userMessageId: userMessage.id,
+          assistantMessageId: null,
+        });
+        if (!isCurrentPreparation()) {
+          publishUserMessage();
+          clearComposerContextRefsIfRevisionMatches(
             conversationId,
-          });
+            composerContextRefsRevisionAtSend,
+          );
+          return sentWithoutAssistantResult();
         }
-        get().clearComposerContextRefs();
+
+        publishUserMessage();
+        clearComposerContextRefsIfRevisionMatches(
+          conversationId,
+          composerContextRefsRevisionAtSend,
+        );
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
-          const appState = useAppStore.getState();
           let skipMetadataGeneration = false;
-          let architectPlan =
-            modeAtSend === "Architect" && appState.activeArchitectPlanId
-              ? {
-                  planId: appState.activeArchitectPlanId,
-                  targetBranch: resolveTargetBranch(
-                    appState.activePlanContext?.targetBranch,
-                  ),
-                }
-              : undefined;
+          const architectPlan = architectPlanAtSend;
           if (architectPlan) {
             const bindingSucceeded =
               await bindPendingArchitectConversationIfNeeded({
@@ -13504,7 +14063,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             reasoningEffort: selectedReasoningEffort,
             providerConfig: providerConfigForUse,
             internalAgentProfile,
+            executionContext: executionContextAtSend,
+            providerSupportsNativeToolCalling:
+              providerSelectionAtSend.supportsNativeToolCalling,
           });
+          if (!isCurrentPreparation()) {
+            return sentWithoutAssistantResult();
+          }
           emitSendTimeline("compaction_done", {
             conversationId,
             providerId: selectedProviderId,
@@ -13516,6 +14081,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
             turnId: activeTurnId,
             taskId: resolvedTaskId,
           });
+          if (!isCurrentPreparation()) {
+            if (
+              latestConversationSessionIdByConversationId.get(
+                conversationId,
+              ) === activeSessionId
+            ) {
+              await deletePersistedMessagesAfter(
+                chatPersistenceAdapters,
+                conversationId,
+                userMessage.id,
+              ).catch(() => undefined);
+            }
+            return sentWithoutAssistantResult();
+          }
           rememberAssistantTurnContext(
             assistantMessage.id,
             conversationId,
@@ -13531,7 +14110,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               sessionId: activeSessionId,
               turnId: activeTurnId,
               assistantMessageId: assistantMessage.id,
-              abortController: null,
+              abortController: preparationAbortController,
               lastError: null,
             },
             { globalLastError: null },
@@ -13549,6 +14128,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             replyToMessageId: userMessage.id,
             userContent: content,
             modeAtSend,
+            agentTypeAtSend,
             resolvedTaskId,
             selectedProviderId,
             selectedModelId,
@@ -13558,7 +14138,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             messagesForRequest: streamLaunch.messagesForRequest,
             contextDiagnosticsBaselineSeed:
               streamLaunch.contextDiagnosticsBaselineSeed,
-            executionContext: streamLaunch.executionContext,
+            executionContext: executionContextAtSend,
+            providerSupportsNativeToolCalling:
+              providerSelectionAtSend.supportsNativeToolCalling,
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
             skillToolIds: streamLaunch.skillToolIds,
@@ -13571,22 +14153,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             mcpTools: streamLaunch.mcpTools,
             maxTurns: streamLaunch.maxTurns,
             compactionDecision: streamLaunch.compactionDecision,
+            abortController: preparationAbortController,
           });
         } catch (error) {
+          launchError = error;
           if (manualFeatureDraftRecovery) {
             await rollbackManualFeatureDraftAfterFailedLaunch(
               manualFeatureDraftRecovery,
             );
           }
-          applyAssistantLaunchError(
-            conversationId,
-            activeSessionId,
-            assistantMessageId,
-            error,
-            {
-              setSendState: true,
-            },
-          );
+          throw error;
         }
 
         if (!activeTurnId) {
@@ -13602,24 +14178,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         };
       } catch (error) {
         const normalized = toServiceError(error);
+        if (preparationAbortController.signal.aborted) {
+          return cancelledResult();
+        }
         if (activeSessionId) {
-          const runtime = getConversationRuntimeSnapshot(
-            get().conversationRuntimeById,
+          const result = applyAssistantLaunchError(
             conversationId,
+            activeSessionId,
+            assistantMessageId,
+            normalized,
+            { setSendState: true },
           );
-          if (!(runtime.phase === "error" && runtime.sessionId === activeSessionId)) {
-            setConversationRuntime(
-              conversationId,
-              {
-                phase: "error",
-                sessionId: activeSessionId,
-                turnId: activeTurnId,
-                assistantMessageId,
-                abortController: null,
-                lastError: normalized.message,
-              },
-              { globalLastError: normalized.message },
-            );
+          if (!result.applied) {
+            if (launchError) {
+              throw normalized;
+            }
+            return cancelledResult();
           }
         } else {
           set({ sendState: "error", lastError: normalized.message });
@@ -13679,7 +14253,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return;
       }
       try {
-        await restoreAgentCodeReplayPreview(preview);
+        const rollback = await restoreAgentCodeReplayPreview(preview);
+        pendingAgentCodeReplayRollbacksByConversationId.set(
+          preview.conversationId,
+          rollback,
+        );
       } catch (error) {
         const normalized = toServiceError(error);
         set({ lastError: normalized.message, sendState: "error" });
@@ -13690,60 +14268,255 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     editMessage: async (messageId, newContent, options) => {
+      const providerStateAtEdit = useProviderStore.getState();
       const {
         selectedProviderId,
         selectedModelId,
         selectedReasoningEffort,
         providerConfigs,
-      } = useProviderStore.getState();
-      const modeAtEdit = useAppStore.getState().mode;
+      } = providerStateAtEdit;
+      const appStateAtEdit = useAppStore.getState();
+      const modeAtEdit = appStateAtEdit.mode;
+      const agentTypeAtEdit =
+        modeAtEdit === "Implement" ? appStateAtEdit.agentType : null;
       if (!selectedProviderId || !selectedModelId) {
-        set({
-          lastError: "Select a provider and model before sending a message.",
-        });
-        return;
+        const message = "Select a provider and model before sending a message.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
       }
 
       const providerConfig = providerConfigs.find(
         (p) => p.id === selectedProviderId,
       );
       if (!providerConfig) {
-        set({ lastError: "Provider configuration not found." });
-        return;
+        const message = "Provider configuration not found.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
       }
-      const resolvedApiKey =
-        providerConfig.isLocal || providerHasAuthSession(providerConfig)
-          ? providerConfig.apiKey
-          : await useProviderStore
-              .getState()
-              .resolveProviderApiKey(selectedProviderId);
-      const providerConfigForUse = {
-        ...providerConfig,
-        apiKey: resolvedApiKey,
-        apiKeyLoaded:
-          providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
-      };
-
       const state = get();
       const target = state.messages.find((message) => message.id === messageId);
-      if (!target) return;
+      if (!target) {
+        const message = "The message to edit is no longer available.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
+      }
       if (!options?.skipAgentCodeReplayCheck) {
         const replayPreview = await get().getAgentCodeReplayPreview(messageId);
         if (replayPreview && replayPreview.affectedFiles.length > 0) {
-          set({
-            lastError:
-              "Replay blocked: confirm the code checkpoint restore before editing this earlier message.",
-          });
+          const message =
+            "Replay blocked: confirm the code checkpoint restore before editing this earlier message.";
+          set({ lastError: message, sendState: "error" });
           return;
         }
       }
 
       const conversationId = target.conversation_id;
+      if (replayRecoveryBlockedConversationIds.has(conversationId)) {
+        const message =
+          "Replay recovery is pending for this conversation. Refresh the workspace to retry the recovery.";
+        set({ lastError: message, sendState: "error" });
+        throw buildSendError(message);
+      }
       const turnId = getMessageTurnId(target);
+      const sessionId = createConversationSessionId();
+      const replayId = createConversationSessionId();
+      const replayConversationMessages = getConversationMessagesFromState(
+        state,
+        conversationId,
+      );
+      const replayConversationMessageIds = new Set(
+        replayConversationMessages.map((message) => message.id),
+      );
+      const replayLocalSnapshot = {
+        conversation: state.conversations.find(
+          (conversation) => conversation.id === conversationId,
+        ) ?? null,
+        messages: replayConversationMessages,
+        messageImagesByMessageId: Object.fromEntries(
+          Object.entries(state.messageImagesByMessageId).filter(([messageId]) =>
+            replayConversationMessageIds.has(messageId),
+          ),
+        ),
+        questionnaireDrafts: state.questionnaireDraftsByConversationId[
+          conversationId
+        ],
+        agentCodeCheckpoints: state.agentCodeCheckpointsByConversationId[
+          conversationId
+        ],
+        sessionCompactionEvents: state.sessionCompactionEventsByConversationId[
+          conversationId
+        ],
+        citations: useCitationsStore
+          .getState()
+          .citations.filter((citation) => citation.conversationId === conversationId),
+      };
+      let replayPrepared = false;
+      let replayRecoveryActive = false;
+      const abortController = new AbortController();
+      const executionContextAtEdit = resolveConversationExecutionContext(conversationId);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
+      let committedCodeReplay = !options?.skipAgentCodeReplayCheck;
       assertConversationRuntimeAvailableForSend(conversationId);
-      if (modeAtEdit === "Implement" && target.task_id) {
+      latestConversationSessionIdByConversationId.set(conversationId, sessionId);
+      setConversationRuntime(
+        conversationId,
+        {
+          phase: "preparing",
+          sessionId,
+          turnId,
+          assistantMessageId: null,
+          abortController,
+          lastError: null,
+        },
+        { globalLastError: null },
+      );
+      const isCurrentPreparation = () => {
+        const runtime = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          conversationId,
+        );
+        return (
+          !deletedConversationIds.has(conversationId) &&
+          !abortController.signal.aborted &&
+          runtime.phase === "preparing" &&
+          runtime.sessionId === sessionId &&
+          runtime.turnId === turnId &&
+          runtime.abortController === abortController
+        );
+      };
+      const restoreReplayRecovery = async (): Promise<void> => {
+        if (!replayRecoveryActive) return;
+        const runtime = getConversationRuntimeSnapshot(
+          get().conversationRuntimeById,
+          conversationId,
+        );
+        const ownsReplayFence =
+          latestConversationSessionIdByConversationId.get(conversationId) === sessionId &&
+          runtime.sessionId === sessionId &&
+          runtime.turnId === turnId;
+        if (!ownsReplayFence) return;
         try {
+          const restored = await tauriIpc.dbRestoreConversationReplay({
+            conversationId,
+            replayId,
+            sessionId,
+            turnId,
+          });
+          if (!restored) {
+            throw new Error("The replay recovery marker no longer matches this session.");
+          }
+          const latestRuntime = getConversationRuntimeSnapshot(
+            get().conversationRuntimeById,
+            conversationId,
+          );
+          if (
+            latestConversationSessionIdByConversationId.get(conversationId) !== sessionId ||
+            latestRuntime.sessionId !== sessionId ||
+            latestRuntime.turnId !== turnId
+          ) {
+            throw new Error("A newer replay session won before recovery could update the local transcript.");
+          }
+          set((current) => {
+            const currentConversationMessages = getConversationMessagesFromState(
+              current,
+              conversationId,
+            );
+            const currentConversationMessageIds = new Set(
+              currentConversationMessages.map((message) => message.id),
+            );
+            const nextQuestionnaireDrafts = {
+              ...current.questionnaireDraftsByConversationId,
+            };
+            if (replayLocalSnapshot.questionnaireDrafts) {
+              nextQuestionnaireDrafts[conversationId] =
+                replayLocalSnapshot.questionnaireDrafts;
+            } else {
+              delete nextQuestionnaireDrafts[conversationId];
+            }
+            const nextAgentCodeCheckpoints = {
+              ...current.agentCodeCheckpointsByConversationId,
+            };
+            if (replayLocalSnapshot.agentCodeCheckpoints) {
+              nextAgentCodeCheckpoints[conversationId] =
+                replayLocalSnapshot.agentCodeCheckpoints;
+            } else {
+              delete nextAgentCodeCheckpoints[conversationId];
+            }
+            const nextCompactionEvents = {
+              ...current.sessionCompactionEventsByConversationId,
+            };
+            if (replayLocalSnapshot.sessionCompactionEvents) {
+              nextCompactionEvents[conversationId] =
+                replayLocalSnapshot.sessionCompactionEvents;
+            } else {
+              delete nextCompactionEvents[conversationId];
+            }
+            const nextMessageImages = Object.fromEntries(
+              Object.entries(current.messageImagesByMessageId).filter(
+                ([messageId]) => !currentConversationMessageIds.has(messageId),
+              ),
+            );
+            Object.assign(
+              nextMessageImages,
+              replayLocalSnapshot.messageImagesByMessageId,
+            );
+            return {
+              ...buildMessageState([
+                ...current.messages.filter(
+                  (message) => message.conversation_id !== conversationId,
+                ),
+                ...replayLocalSnapshot.messages,
+              ]),
+              conversations: replayLocalSnapshot.conversation
+                ? current.conversations.map((conversation) =>
+                    conversation.id === conversationId
+                      ? replayLocalSnapshot.conversation!
+                      : conversation,
+                  )
+                : current.conversations,
+              messageImagesByMessageId: nextMessageImages,
+              questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+              agentCodeCheckpointsByConversationId: nextAgentCodeCheckpoints,
+              sessionCompactionEventsByConversationId: nextCompactionEvents,
+            };
+          });
+          const currentCitations = useCitationsStore.getState().citations;
+          useCitationsStore.setState({
+            citations: [
+              ...currentCitations.filter(
+                (citation) => citation.conversationId !== conversationId,
+              ),
+              ...replayLocalSnapshot.citations,
+            ],
+          });
+          conversationCompactionStateCache.delete(conversationId);
+          replayRecoveryActive = false;
+        } catch (recoveryError) {
+          replayRecoveryBlockedConversationIds.add(conversationId);
+          const normalized = toServiceError(recoveryError);
+          set({
+            lastError: `Replay recovery is pending and this conversation is locked: ${normalized.message}`,
+            sendState: "error",
+          });
+        }
+      };
+
+      try {
+        const resolvedApiKey =
+          providerConfig.isLocal || providerHasAuthSession(providerConfig)
+            ? providerConfig.apiKey
+            : await providerStateAtEdit.resolveProviderApiKey(selectedProviderId);
+        if (!isCurrentPreparation()) {
+          return;
+        }
+        const providerConfigForUse = {
+          ...providerConfig,
+          apiKey: resolvedApiKey,
+          apiKeyLoaded:
+            providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
+        };
+
+        if (modeAtEdit === "Implement" && target.task_id) {
           manualFeatureDraftRecovery =
             await maybeFinalizeManualFeatureDraftForAssistantRequest({
               conversationId,
@@ -13756,65 +14529,155 @@ export const useChatStore = create<ChatStore>((set, get) => {
               modelId: selectedModelId,
               reasoningEffort: selectedReasoningEffort,
             });
+          if (!isCurrentPreparation()) {
+            return;
+          }
           await assertImplementTaskReadyForSend(target.task_id);
-        } catch (error) {
-          const normalized = toServiceError(error);
-          set({ lastError: normalized.message });
+          if (!isCurrentPreparation()) {
+            return;
+          }
+        }
+
+        const nextHiddenContext = options?.replaceStructuredFields
+          ? options.hiddenContext
+          : target.hidden_context;
+        const nextProviderInputItems = options?.replaceStructuredFields
+          ? cloneProviderInputItems(options.providerInputItems)
+          : target.provider_input_items;
+        if (!tauriIpc.isTauriAvailable()) {
+          await persistEditedUserMessage({
+            messageId,
+            turnId,
+            content: newContent,
+            hiddenContext: options?.hiddenContext,
+            providerInputItems: options?.providerInputItems,
+            replaceStructuredFields: options?.replaceStructuredFields,
+          });
+        }
+        if (!isCurrentPreparation()) return;
+        const updatedTargetMessage: ChatMessage = tauriIpc.isTauriAvailable()
+          ? {
+              ...target,
+              content: newContent,
+              turn_id: turnId,
+              hidden_context: nextHiddenContext,
+              provider_input_items: nextProviderInputItems,
+            }
+          : get().messages.find((message) => message.id === messageId) ?? target;
+
+        try {
+          await trimConversationAfterMessage({
+            conversationId,
+            messageId,
+            clearQuestionnaireSession: options?.clearQuestionnaireSession,
+            updatedMessage: updatedTargetMessage,
+            replayRecovery: tauriIpc.isTauriAvailable()
+              ? {
+                  sessionId,
+                  turnId,
+                  replayId,
+                  content: newContent,
+                  hiddenContext: nextHiddenContext,
+                  providerInputItems: nextProviderInputItems,
+                }
+              : undefined,
+          });
+          replayPrepared = tauriIpc.isTauriAvailable();
+          replayRecoveryActive = replayPrepared;
+        } catch (trimError) {
+          if (!tauriIpc.isTauriAvailable()) {
+            await persistEditedUserMessage({
+              messageId,
+              turnId: getMessageTurnId(target),
+              content: target.content,
+              hiddenContext: target.hidden_context,
+              providerInputItems: target.provider_input_items,
+              replaceStructuredFields: true,
+            });
+          }
+          throw trimError;
+        }
+        if (!isCurrentPreparation()) {
           return;
         }
-      }
 
-      await persistEditedUserMessage({
-        messageId,
-        turnId,
-        content: newContent,
-        hiddenContext: options?.hiddenContext,
-        providerInputItems: options?.providerInputItems,
-        replaceStructuredFields: options?.replaceStructuredFields,
-      });
-      const updatedTargetMessage =
-        get().messages.find((message) => message.id === messageId) ?? target;
+        if (replayPrepared) {
+          await tauriIpc.dbCompleteConversationReplay({ conversationId, replayId });
+        }
+        if (!isCurrentPreparation()) {
+          return;
+        }
 
-      await trimConversationAfterMessage({
-        conversationId,
-        messageId,
-        clearQuestionnaireSession: options?.clearQuestionnaireSession,
-        updatedMessage: updatedTargetMessage,
-      });
-
-      const sessionId = createConversationSessionId();
-      setConversationRuntime(
-        conversationId,
-        {
-          phase: "preparing",
+        await restartAssistantFromEditedMessage({
           sessionId,
           turnId,
-          assistantMessageId: null,
-          abortController: null,
-          lastError: null,
-        },
-        { globalLastError: null },
-      );
-
-      await restartAssistantFromEditedMessage({
-        sessionId,
-        turnId,
-        messageId,
-        conversationId,
-        taskId: target.task_id ?? "",
-        userContent: newContent,
-        modeAtSend: modeAtEdit,
-        providerId: selectedProviderId,
-        modelId: selectedModelId,
-        reasoningEffort: selectedReasoningEffort,
-        providerConfig: providerConfigForUse,
-        manualFeatureDraftRecovery,
-      });
+          messageId,
+          conversationId,
+          taskId: target.task_id ?? "",
+          userContent: newContent,
+          modeAtSend: modeAtEdit,
+          providerId: selectedProviderId,
+          modelId: selectedModelId,
+          reasoningEffort: selectedReasoningEffort,
+          providerConfig: providerConfigForUse,
+          executionContext: executionContextAtEdit,
+          providerSupportsNativeToolCalling:
+            providerStateAtEdit.selectedSupportsNativeToolCalling(),
+          abortController,
+          manualFeatureDraftRecovery,
+          agentTypeAtSend: agentTypeAtEdit,
+          replayRecovery: replayPrepared
+            ? {
+                replayId,
+                onLaunched: () => {
+                  replayPrepared = false;
+                },
+                onProgress: () => {
+                  replayRecoveryActive = false;
+                },
+                onFailedBeforeProgress: restoreReplayRecovery,
+              }
+            : undefined,
+        });
+        committedCodeReplay = true;
+        pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
+      } catch (error) {
+        await restoreReplayRecovery();
+        if (!committedCodeReplay) {
+          const rollback = pendingAgentCodeReplayRollbacksByConversationId.get(
+            conversationId,
+          );
+          pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
+          if (rollback) {
+            try {
+              await rollback();
+            } catch (rollbackError) {
+              console.error("Failed to roll back replayed code:", rollbackError);
+            }
+          }
+        }
+        if (manualFeatureDraftRecovery) {
+          await rollbackManualFeatureDraftAfterFailedLaunch(
+            manualFeatureDraftRecovery,
+          );
+        }
+        if (isCurrentPreparation()) {
+          applyAssistantLaunchError(conversationId, sessionId, null, error, {
+            setSendState: true,
+          });
+        }
+      }
     },
 
     initializeCritical: async () => {
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
+      });
+      latestConversationSessionIdByConversationId.clear();
+      completionPersistenceOwnersByConversationId.clear();
+      deletedConversationIds.clear();
+      pendingConversationDeletionIds.forEach((conversationId) => {
+        deletedConversationIds.add(conversationId);
       });
       messageLoadPromisesByConversationId.clear();
       agentCodeCheckpointLoadPromisesByConversationId.clear();
@@ -13822,6 +14685,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       cancelAllLiveContextDiagnosticsRefreshSchedules();
       pendingArchitectConversationIdsByPlanKey.clear();
       pendingArchitectConversationDetailsById.clear();
+      pendingAgentCodeReplayRollbacksByConversationId.clear();
       cancelStream();
       set({
         conversationRuntimeById: {},

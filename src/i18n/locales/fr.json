@@ -378,6 +378,7 @@
     "resetZoom": "Réinitialiser le zoom",
     "renderingDiagram": "Schéma de rendu...",
     "mermaidRenderError": "Impossible de restituer le diagramme Sirène",
+    "copyFailed": "Impossible de copier le code du diagramme.",
     "inputTokens": "Entrée",
     "contextTokens": "Contexte",
     "tokens": "jetons",
@@ -523,6 +524,8 @@
     },
     "conversationActions": "Actions de conversation",
     "conversationArchived": "Conversation archivée",
+    "archivePreferenceLoadFailed": "Impossible de charger les conversations archivées.",
+    "archivePreferenceSaveFailed": "Impossible d’enregistrer les conversations archivées.",
     "conversationsArchived": "Conversations archivées",
     "conversationRestored": "Conversation restaurée",
     "conversationsRestored": "Conversations restaurées",
@@ -1631,7 +1634,11 @@
       "serverAdded": "Serveur MCP ajouté.",
       "toolsRefreshed": "Outils MCP actualisés.",
       "refreshFailed": "Impossible d’actualiser les outils MCP.",
-      "serverDeleted": "Serveur MCP supprimé."
+      "serverDeleted": "Serveur MCP supprimé.",
+      "identifierCollision": "Un serveur MCP avec cet identifiant existe déjà.",
+      "saveFailed": "Impossible d’enregistrer le serveur MCP.",
+      "deleteFailed": "Impossible de supprimer le serveur MCP.",
+      "toggleFailed": "Impossible de mettre à jour le serveur MCP."
     }
   },
   "account": {
@@ -1664,7 +1671,46 @@
     "saveFailed": "Échec de l'enregistrement du fournisseur",
     "nextStep": "Étape suivante",
     "hideDetails": "Masquer les détails",
-    "showDetails": "Afficher les détails"
+    "showDetails": "Afficher les détails",
+    "degraded": {
+      "fallback": { "title": "Une intervention est nécessaire", "body": "Macro n’a pas pu terminer cette action de manière sûre.", "nextStep": "Consultez les détails, corrigez la situation bloquante, puis réessayez.", "dynamic": "{{message}}" },
+      "worktree": {
+        "checkedOut": { "title": "Macro n’a pas pu préparer l’espace de travail de la tâche", "body": "La branche nécessaire à cette tâche est encore ouverte dans le dépôt principal avec des modifications locales.", "nextStep": "Validez, remisez ou abandonnez ces modifications locales, puis relancez la tâche." },
+        "missingBase": { "title": "Macro n’a pas trouvé la branche de base", "body": "Cette tâche nécessite une branche de base avant la création de son worktree.", "nextStep": "Créez la branche ou mettez à jour les réglages du flux Git du projet, puis réessayez." },
+        "fallback": { "title": "Macro n’a pas pu préparer l’espace de travail de la tâche", "body": "L’espace de travail de la tâche n’est pas encore prêt ; Macro ne peut donc pas consulter ni modifier les fichiers de manière sûre.", "nextStep": "Relancez la tâche. Si l’échec persiste, ouvrez les réglages Git du projet et vérifiez l’état du dépôt." }
+      },
+      "readOnly": { "title": "Ce projet est disponible en lecture seule", "body": "Ce projet peut servir de contexte, mais Macro ne peut pas encore y créer de branches, de worktrees, de commits ni de fusions.", "namedBody": "{{projectName}} peut servir de contexte, mais Macro ne peut pas encore y créer de branches, de worktrees, de commits ni de fusions.", "missingGitNextStep": "Initialisez Git pour ce projet, puis activez le travail modifiable.", "settingsNextStep": "Ouvrez les réglages du projet et vérifiez que le flux Git est prêt." },
+      "replica": {
+        "missing": { "titleSingular": "Les métadonnées du plan manquent dans {{count}} dépôt", "titlePlural": "Les métadonnées du plan manquent dans {{count}} dépôts", "body": "Macro a besoin de toutes les répliques attendues des métadonnées du plan avant de pouvoir le mettre à jour de manière sûre.", "nextStep": "Réparez les métadonnées du plan, puis réessayez." },
+        "diverged": { "title": "Les métadonnées du plan diffèrent entre les dépôts", "body": "Macro a trouvé plusieurs versions de ces métadonnées et doit choisir une copie canonique avant de continuer.", "nextStep": "Effectuez la réparation à partir de la réplique la plus récente, sauf si vous avez volontairement besoin d’une copie plus ancienne." }
+      },
+      "gitFlow": {
+        "repositoryDirty": { "title": "Le dépôt contient des modifications locales", "body": "Macro ne peut pas terminer cette fusion tant que le dépôt cible contient des modifications non validées sans rapport.", "nextStep": "Validez, remisez ou abandonnez les modifications locales, puis relancez la fusion." },
+        "mergeInProgress": { "title": "Une fusion est déjà en cours", "body": "Macro a trouvé une fusion inachevée dans ce dépôt.", "nextStep": "Terminez ou annulez la fusion existante, puis réessayez." },
+        "conflict": { "title": "Résolvez ces conflits avant de terminer", "body": "Le plan ne peut pas encore être fusionné proprement.", "filesNextStep": "Résolvez les fichiers indiqués, puis relancez la fusion.", "blockersNextStep": "Résolvez les blocages de fusion, puis réessayez." }
+      },
+      "metadata": {
+        "clean": { "title": "Les métadonnées @macro sont à jour", "body": "Aucune action n’est nécessaire." },
+        "dirty": { "title": "Les métadonnées @macro comportent des modifications locales", "body": "Macro doit enregistrer les modifications des métadonnées avant la synchronisation.", "nextStep": "Enregistrez les métadonnées @macro, puis relancez la synchronisation." },
+        "ahead": { "title": "Les métadonnées @macro sont prêtes à être publiées", "body": "Votre branche locale de métadonnées contient des changements absents du dépôt distant.", "nextStep": "Poussez @macro lorsque vous êtes prêt." },
+        "behind": { "title": "Les métadonnées @macro sont en retard sur le dépôt distant", "body": "Les métadonnées distantes contiennent des mises à jour absentes localement.", "nextStep": "Récupérez @macro, puis relancez votre action." },
+        "diverged": { "title": "Les métadonnées @macro ont divergé", "body": "Les métadonnées locales et distantes ont toutes deux changé.", "nextStep": "Récupérez @macro, résolvez les éventuels conflits, puis poussez les changements." },
+        "mergeConflict": { "title": "Les métadonnées @macro comportent des conflits", "body": "La branche de métadonnées contient des fichiers en conflit non résolus.", "nextStep": "Résolvez les fichiers de métadonnées en conflit, puis relancez la même étape de synchronisation." },
+        "missingOrigin": { "title": "Le dépôt distant de @macro n’est pas configuré", "body": "Macro ne peut pas synchroniser les métadonnées, car le dépôt n’a pas de remote origin.", "nextStep": "Configurez le dépôt Git distant, puis réessayez." },
+        "missingUpstream": { "title": "@macro n’a pas de branche de suivi distante", "body": "La branche de métadonnées existe localement, mais n’est pas encore liée à une branche distante.", "nextStep": "Poussez @macro pour la publier, ou ignorez cet avertissement pour conserver les métadonnées localement." },
+        "authRequired": { "title": "Une authentification Git est requise", "body": "Macro ne peut pas joindre le dépôt distant de métadonnées avec les identifiants actuels.", "nextStep": "Configurez l’authentification Git, puis réessayez." },
+        "networkError": { "title": "La synchronisation des métadonnées n’a pas pu joindre le dépôt distant", "body": "Le réseau ou le service distant est actuellement indisponible.", "nextStep": "Vérifiez votre connexion, puis réessayez." },
+        "unknownError": { "title": "La synchronisation des métadonnées Macro a échoué", "body": "Macro n’a pas pu terminer la synchronisation des métadonnées de manière sûre.", "nextStep": "Relancez la synchronisation. Si elle échoue encore, consultez les détails techniques." }
+      },
+      "service": {
+        "resourcePressure": { "title": "Macro est temporairement surchargé", "body": "Le système a trop de fichiers ouverts ; Macro a donc suspendu les actualisations automatiques des dépôts avant de réessayer.", "nextStep": "Patientez un instant, puis réessayez. Si le problème persiste, fermez des fenêtres de projet ou des terminaux supplémentaires." },
+        "replicaRepair": { "title": "Les métadonnées du plan doivent être réparées", "body": "Macro a trouvé des métadonnées de plan incohérentes et doit réparer la copie canonique avant de continuer.", "nextStep": "Réparez les métadonnées du plan, puis réessayez." },
+        "metadataMissing": { "title": "Les métadonnées du plan sont incomplètes", "body": "Macro a trouvé une tâche ou une conversation qui pointe vers des métadonnées de plan manquantes ou seulement partiellement enregistrées.", "nextStep": "Réparez les liens des métadonnées, puis réessayez." },
+        "workspaceUnavailable": { "title": "L’état de l’espace de travail est temporairement indisponible", "body": "Macro n’a pas pu lire l’état de l’espace de travail nécessaire à cette action.", "nextStep": "Réessayez après la fin de la mise à jour de l’espace de travail. Si le problème persiste, rouvrez le projet." },
+        "gitNotReady": { "title": "Ce projet n’est pas prêt pour les modifications", "body": "Macro peut toujours utiliser ce projet comme contexte, mais ne peut pas y écrire tant que Git n’est pas prêt.", "nextStep": "Ouvrez les réglages du projet et terminez la configuration de Git." },
+        "fallback": { "title": "Une intervention est nécessaire", "nextStep": "Consultez les détails, corrigez la situation bloquante, puis réessayez." }
+      }
+    }
   },
   "toast": {
     "languageChanged": "La langue a été modifiée en {{language}}",
@@ -1738,6 +1784,8 @@
     "commitUseConversationModel": "Utiliser le modèle de la conversation",
     "commitUseDedicatedModel": "Utiliser un modèle dédié",
     "metadataGenerationTitle": "Génération des métadonnées",
+    "metadataPreferenceLoadFailed": "Impossible de charger la préférence du modèle de métadonnées.",
+    "metadataPreferenceSaveFailed": "Impossible d’enregistrer la préférence du modèle de métadonnées.",
     "metadataGenerationDescription": "Choisissez quel modèle Macro utilise pour les messages de commit, noms de plan, titres de conversation, résumés et slugs de feature générés.",
     "metadataUseConversationModel": "Utiliser le modèle de la conversation",
     "metadataUseDedicatedModel": "Utiliser un modèle dédié",
@@ -1949,6 +1997,12 @@
     "searchPlaceholder": "Rechercher dans le terminal",
     "searchPrevious": "Correspondance précédente",
     "searchNext": "Correspondance suivante"
+  },
+  "codeViewer": {
+    "title": "Fichier de code",
+    "copied": "Copié",
+    "copyCode": "Copier le code",
+    "copyFailed": "Impossible de copier le code."
   },
   "notify": {
     "connectionFailed": "Connection failed",

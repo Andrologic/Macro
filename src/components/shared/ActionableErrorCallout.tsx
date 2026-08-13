@@ -3,7 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { Icon, type IconName } from '../ui/Icon';
 import { Button } from '../ui/Button';
 import { cn } from '../../utils/cn';
-import type { DegradedErrorPresentation } from '../../services/degradedErrorPresentation';
+import {
+  resolveDegradedErrorPresentation,
+  type DegradedErrorPresentation,
+} from '../../services/degradedErrorPresentation';
 
 interface ActionableErrorCalloutProps {
   presentation: DegradedErrorPresentation;
@@ -38,6 +41,10 @@ export const ActionableErrorCallout: React.FC<ActionableErrorCalloutProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showDetails, setShowDetails] = useState(false);
+  const resolvedPresentation = resolveDegradedErrorPresentation(
+    presentation,
+    (key, options) => String(t(key, options))
+  );
   const hasTechnicalDetails = Boolean(presentation.technicalDetails?.trim());
   const buttonVariant = presentation.severity === 'danger' ? 'error' : 'secondary';
   const resolvedDetails = presentation.technicalDetails?.trim() || null;
@@ -49,13 +56,13 @@ export const ActionableErrorCallout: React.FC<ActionableErrorCalloutProps> = ({
           <Icon name={iconBySeverity[presentation.severity]} size={compact ? 14 : 16} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-foreground">{presentation.title}</div>
+          <div className="text-sm font-semibold text-foreground">{resolvedPresentation.title}</div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {presentation.body}
+            {resolvedPresentation.body}
           </p>
-          {presentation.nextStep && (
+          {resolvedPresentation.nextStep && (
             <p className="mt-2 text-xs leading-relaxed text-foreground/85">
-              <span className="font-medium">{t('errors.nextStep', 'Next step')}:</span> {presentation.nextStep}
+              <span className="font-medium">{t('errors.nextStep', 'Next step')}:</span> {resolvedPresentation.nextStep}
             </p>
           )}
           {(presentation.repoPath || presentation.projectId) && (

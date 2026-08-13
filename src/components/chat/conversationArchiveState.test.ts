@@ -2,12 +2,15 @@ import { describe, expect, it } from 'bun:test';
 import type { Conversation } from '../../types';
 import {
   areConversationIdSetsEqual,
+  canApplyArchivedConversationHydration,
+  commitArchivedConversationMutation,
   filterConversationsByQuery,
   getArchiveViewConversations,
   getChatOnlyConversations,
   normalizeConversationIdList,
   partitionPinnedConversations,
   pruneConversationIdSet,
+  resolveArchivedConversationHydration,
   toggleAllConversationIds,
   toggleConversationIdInSet,
 } from './conversationArchiveState';
@@ -39,6 +42,40 @@ describe('conversationArchiveState', () => {
       'beta',
     ]);
     expect(normalizeConversationIdList('invalid')).toEqual([]);
+  });
+
+  it('does not let a late hydration overwrite a newer archive interaction', () => {
+    expect(canApplyArchivedConversationHydration(3, 3)).toBe(true);
+    expect(canApplyArchivedConversationHydration(3, 4)).toBe(false);
+  });
+
+  it('keeps archive persistence unready when hydration fails', async () => {
+    const result = await resolveArchivedConversationHydration(async () => {
+      throw new Error('temporary read failure');
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('does not report an archive mutation as committed when its write fails', async () => {
+    let committed = false;
+    let failure: unknown = null;
+
+    const result = await commitArchivedConversationMutation({
+      write: async () => {
+        throw new Error('write failed');
+      },
+      onCommitted: () => {
+        committed = true;
+      },
+      onFailure: (error) => {
+        failure = error;
+      },
+    });
+
+    expect(result).toBe(false);
+    expect(committed).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
   });
 
   it('filters to chat-only conversations sorted by most recent update', () => {

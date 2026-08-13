@@ -83,6 +83,9 @@ const providerTypeOptions = [
   { value: 'openrouter', labelKey: 'providers.types.openrouter', fallback: 'OpenRouter' },
 ];
 
+const isLocalProviderType = (providerType: string): boolean =>
+  providerType === 'ollama' || providerType === 'lmstudio';
+
 export const ProvidersSettings: React.FC = () => {
   const { t } = useTranslation();
   const {
@@ -671,9 +674,14 @@ export const ProvidersSettings: React.FC = () => {
                 className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
                 value={editingProvider.providerType}
                 disabled={isLinkedProviderType(editingProvider.providerType)}
-                onChange={(event) =>
-                  setEditingProvider({ ...editingProvider, providerType: event.target.value })
-                }
+                onChange={(event) => {
+                  const providerType = event.target.value;
+                  setEditingProvider({
+                    ...editingProvider,
+                    providerType,
+                    isLocal: isLocalProviderType(providerType),
+                  });
+                }}
               >
                 {isLinkedProviderType(editingProvider.providerType) && (
                   <option value={editingProvider.providerType}>
@@ -1162,6 +1170,7 @@ export const ProvidersSettings: React.FC = () => {
                       <Button
                         variant="secondary"
                         size="sm"
+                        disabled={provider.authStatus === 'authorizing'}
                         onClick={async () => {
                           try {
                             await startChatGptAuth(provider.id);

@@ -169,6 +169,9 @@ export const isMacroScopedPath = (rawPath: string): boolean => {
   return resolved[0] === ".macro";
 };
 
+// Architect mutations already select the metadata workspace explicitly. Their
+// paths are therefore relative to that root, unlike read/list paths where
+// `.macro/...` is the virtual project-root address of the same metadata.
 export const isMetadataRelativePath = (rawPath: string): boolean => {
   const resolved = normalizeRelativePathParts(rawPath);
   if (!resolved) return false;

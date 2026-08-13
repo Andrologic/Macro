@@ -4,6 +4,8 @@ import mermaid from 'mermaid';
 import { Icon } from '../ui/Icon';
 import { cn } from '../../utils/cn';
 import { useTheme } from '../theme/ThemeProvider';
+import { Dialog } from '../ui/Dialog';
+import { notify } from '../ui/toastService';
 
 interface MermaidRendererProps {
   code: string;
@@ -103,6 +105,13 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
   const cleanCode = code.replace(/^```(?:mermaid|mmd)?\n?/, '').replace(/```$/, '').trim();
   const cacheKey = `${isDark ? 'dark' : 'light'}:${cleanCode}`;
   const diagramIdRef = useRef(`mermaid-${blockKey}-${renderCount++}`);
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (copyResetTimerRef.current !== null) {
+      clearTimeout(copyResetTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const node = containerRef.current;
@@ -192,10 +201,21 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     };
   }, [cacheKey, cleanCode, isDark, isExpanded, isVisible]);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = setTimeout(() => {
+        setCopied(false);
+        copyResetTimerRef.current = null;
+      }, 2000);
+    } catch {
+      setCopied(false);
+      notify.error(t('chat.copyFailed', 'Unable to copy the diagram code.'));
+    }
   };
 
   const renderContent = () => {
@@ -238,7 +258,11 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     if (!isExpanded) return null;
 
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4">
+      <Dialog
+        title={t('chat.mermaidDiagram')}
+        onClose={() => setIsExpanded(false)}
+        backdropClassName="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4"
+      >
         <div className="flex h-[min(86vh,calc(100vh-2rem))] w-full max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
@@ -250,7 +274,8 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
             </div>
             <div className="flex items-center gap-1">
               <button
-                onClick={handleCopy}
+                type="button"
+                onClick={() => void handleCopy()}
                 className={cn(
                   'w-8 h-8 flex items-center justify-center rounded-md hover:bg-accent transition-colors',
                   copied ? 'text-green-500' : 'text-muted-foreground'
@@ -260,6 +285,8 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
                 <Icon name={copied ? 'check' : 'copy'} size={13} />
               </button>
               <button
+                type="button"
+                aria-label={t('common.close', 'Close')}
                 onClick={() => setIsExpanded(false)}
                 className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
                 title={t('common.close')}
@@ -283,7 +310,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
             )}
           </div>
         </div>
-      </div>
+      </Dialog>
     );
   };
 
@@ -299,7 +326,8 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={handleCopy}
+            type="button"
+            onClick={() => void handleCopy()}
             className={cn(
               'w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors',
               copied ? 'text-green-500' : 'text-muted-foreground'
@@ -309,6 +337,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
             <Icon name={copied ? 'check' : 'copy'} size={12} />
           </button>
           <button
+            type="button"
             onClick={() => setShowCode((v) => !v)}
             className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
             title={showCode ? t('chat.hideCode') : t('chat.showCode')}
@@ -316,6 +345,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
             <Icon name="code" size={12} />
           </button>
           <button
+            type="button"
             onClick={() => setIsExpanded(true)}
             className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors text-muted-foreground"
             title={t('chat.expand')}

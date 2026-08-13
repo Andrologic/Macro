@@ -42,6 +42,7 @@ export interface TerminalTab {
   hasLiveSession: boolean;
   isRestored: boolean;
   outputSequence: number;
+  generation?: number;
   hasUnreadOutput: boolean;
   createdAt: string;
   updatedAt: string;
@@ -158,9 +159,15 @@ const mapTabDto = (
   dto: tauriIpc.TerminalTabDto,
   existing?: TerminalTab | null
 ): TerminalTab => {
+  const generation = dto.generation ?? 0;
+  if (existing && generation < (existing.generation ?? 0)) {
+    return existing;
+  }
+  const isNewerGeneration = Boolean(existing) && generation > (existing!.generation ?? 0);
   const outputSequence = dto.output_sequence ?? 0;
   const existingSequence = existing?.outputSequence ?? 0;
-  const keepExistingSnapshot = Boolean(existing) && outputSequence < existingSequence;
+  const keepExistingSnapshot =
+    Boolean(existing) && !isNewerGeneration && outputSequence < existingSequence;
 
   return {
     id: dto.id,
@@ -184,7 +191,8 @@ const mapTabDto = (
     lastExitCode: dto.last_exit_code ?? null,
     hasLiveSession: dto.has_live_session,
     isRestored: dto.is_restored,
-    outputSequence: Math.max(outputSequence, existingSequence),
+    outputSequence: isNewerGeneration ? outputSequence : Math.max(outputSequence, existingSequence),
+    generation,
     hasUnreadOutput: existing?.hasUnreadOutput ?? false,
     createdAt: dto.created_at,
     updatedAt: keepExistingSnapshot ? existing!.updatedAt : dto.updated_at,
@@ -829,7 +837,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           if (!existing) {
             return;
           }
-          if ((payload.sequence ?? 0) < existing.outputSequence) {
+          const payloadGeneration = payload.generation ?? (existing.generation ?? 0);
+          const isNewerGeneration = payloadGeneration > (existing.generation ?? 0);
+          if (payloadGeneration < (existing.generation ?? 0)) {
+            return;
+          }
+          if (!isNewerGeneration && (payload.sequence ?? 0) < existing.outputSequence) {
             return;
           }
 
@@ -841,7 +854,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           tabs[existing.id] = {
             ...existing,
             snapshot: payload.snapshot,
-            outputSequence: Math.max(payload.sequence ?? 0, existing.outputSequence),
+            generation: payloadGeneration,
+            outputSequence: isNewerGeneration
+              ? payload.sequence ?? 0
+              : Math.max(payload.sequence ?? 0, existing.outputSequence),
             updatedAt: payload.updated_at,
             hasUnreadOutput: state.panelOpen && activeVisibleTabId === existing.id ? false : true,
           };

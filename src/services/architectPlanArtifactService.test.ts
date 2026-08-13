@@ -7,6 +7,7 @@ import {
   listPlanArtifactOverview,
   listVisibleTaskArtifactReviewEntries,
   normalizeArtifactContracts,
+  PlanTaskArtifactIndexReadError,
   putTaskArtifact,
   readPlanTaskArtifactIndex,
   readVisibleTaskArtifactDiff,
@@ -183,6 +184,12 @@ describe('architectPlanArtifactService reviews and versions', () => {
     dependencies: ['audit'],
     execution_targets: [],
   } as unknown as CatalogedImplementTask;
+  const uiTask = {
+    ...apiTask,
+    id: 'ui',
+    title: 'UI',
+    dependencies: ['audit'],
+  } as CatalogedImplementTask;
   const files = new Map<string, string>();
 
   beforeEach(() => {
@@ -190,6 +197,11 @@ describe('architectPlanArtifactService reviews and versions', () => {
     installTauriRuntimeMock(mock(async (command, payload) => {
       if (command === 'workspace_get_active_root') {
         return '/workspace';
+      }
+      if (command === 'fs_exists') {
+        const path = String(payload?.path || '');
+        const workspacePath = String(payload?.workspacePath || '');
+        return files.has(`${workspacePath}::${path}`) || files.has(path);
       }
       if (command === 'fs_read_file') {
         const path = String(payload?.path || '');
@@ -254,6 +266,50 @@ describe('architectPlanArtifactService reviews and versions', () => {
       reviews: [],
     }, null, 2)}\n`);
   };
+
+  it('refuses to treat a corrupt existing index as an empty index', async () => {
+    const indexPath = getPlanArtifactIndexPath(branchName, plan.id);
+    files.set(indexPath, '{not valid json');
+
+    await expect(readPlanTaskArtifactIndex({
+      branchName,
+      planId: plan.id,
+      projectIds: plan.projectIds,
+    })).rejects.toBeInstanceOf(PlanTaskArtifactIndexReadError);
+
+    expect(files.get(indexPath)).toBe('{not valid json');
+
+    files.set(indexPath, JSON.stringify({ planId: plan.id, artifacts: 'not an array' }));
+    await expect(readPlanTaskArtifactIndex({
+      branchName,
+      planId: plan.id,
+      projectIds: plan.projectIds,
+    })).rejects.toBeInstanceOf(PlanTaskArtifactIndexReadError);
+  });
+
+  it('serializes concurrent task artifact writes without id collisions or lost updates', async () => {
+    const [apiArtifact, uiArtifact] = await Promise.all([
+      putTaskArtifact({
+        target: { branchName, plan, task: apiTask, currentTask: apiTask },
+        args: { title: 'Notes', kind: 'note', content: 'API notes' },
+      }),
+      putTaskArtifact({
+        target: { branchName, plan, task: uiTask, currentTask: uiTask },
+        args: { title: 'Notes', kind: 'note', content: 'UI notes' },
+      }),
+    ]);
+
+    expect([apiArtifact.id, uiArtifact.id].sort()).toEqual(['api-notes', 'ui-notes']);
+    const index = await readPlanTaskArtifactIndex({
+      branchName,
+      planId: plan.id,
+      projectIds: plan.projectIds,
+    });
+    expect(index.artifacts.map((artifact) => artifact.id).sort()).toEqual([
+      'api-notes',
+      'ui-notes',
+    ]);
+  });
 
   it('stores descendant edits as a new artifact that supersedes the visible parent', async () => {
     seedParentArtifact();
