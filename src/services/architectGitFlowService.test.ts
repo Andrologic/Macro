@@ -242,6 +242,7 @@ const archiveArchitectPlanMock = mock(async (_branchName: string, _planId: strin
   return currentPlan;
 });
 const deleteArchitectPlanMock = mock(async () => undefined);
+const commitArchitectPlanMetadataMock = mock(async () => undefined);
 
 const buildPlan = () => ({
   id: 'plan-1',
@@ -508,6 +509,7 @@ describe('architectGitFlowService', () => {
     updateArchitectPlanMock.mockClear();
     archiveArchitectPlanMock.mockClear();
     deleteArchitectPlanMock.mockClear();
+    commitArchitectPlanMetadataMock.mockClear();
 
     architectGitFlowService = createArchitectGitFlowService({
       tauri: {
@@ -539,6 +541,7 @@ describe('architectGitFlowService', () => {
       updateArchitectPlan: updateArchitectPlanMock,
       archiveArchitectPlan: archiveArchitectPlanMock,
       deleteArchitectPlan: deleteArchitectPlanMock,
+      commitArchitectPlanMetadata: commitArchitectPlanMetadataMock,
       getGitFlowBaseBranch: () => 'develop',
     });
   });

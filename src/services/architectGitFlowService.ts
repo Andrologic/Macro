@@ -449,6 +449,7 @@ export interface ArchitectGitFlowDependencies {
   updateArchitectPlan: typeof updateArchitectPlan;
   archiveArchitectPlan: typeof archiveArchitectPlan;
   deleteArchitectPlan: typeof deleteArchitectPlan;
+  commitArchitectPlanMetadata: typeof commitArchitectPlanMetadata;
   getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
 }
 
@@ -459,6 +460,7 @@ const getDefaultArchitectGitFlowDependencies = (): ArchitectGitFlowDependencies 
   updateArchitectPlan,
   archiveArchitectPlan,
   deleteArchitectPlan,
+  commitArchitectPlanMetadata,
   getGitFlowBaseBranch,
 });
 
@@ -1686,6 +1688,17 @@ export const createArchitectGitFlowService = (
       repoPath: params.repoPath,
       requireMetadataCommit: true,
     });
+    await deps.commitArchitectPlanMetadata({
+      branchName: params.branchName,
+      planId: plan.id,
+      commitMessage: `chore(metadata): finalize architect plan ${plan.id}`,
+    });
+    await upsertPlanLifecycleSaga({
+      planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'metadata_committed',
+      conversationId: plan.conversationId ?? null, requiresMetadataCommit: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    });
+    await removePlanLifecycleSaga(plan.id, 'archive');
 
     return {
       plan: archivedPlan,
@@ -1779,7 +1792,12 @@ export const createArchitectGitFlowService = (
         const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
         if (saga.operation === 'archive') {
           if (saga.phase === 'metadata_commit_pending') {
-            await commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+            await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_committed', updatedAt: new Date().toISOString() });
+            await removePlanLifecycleSaga(saga.planId, saga.operation);
+            continue;
+          }
+          if (saga.phase === 'metadata_committed') {
             await removePlanLifecycleSaga(saga.planId, saga.operation);
             continue;
           }
@@ -1796,7 +1814,8 @@ export const createArchitectGitFlowService = (
           await upsertPlanLifecycleSaga(cleanedSaga);
           if (saga.requiresMetadataCommit) {
             await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
-            await commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+            await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() });
           }
           await removePlanLifecycleSaga(saga.planId, saga.operation);
           continue;

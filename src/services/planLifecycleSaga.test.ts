@@ -7,7 +7,7 @@ mock.module('./tauriIpc', () => ({
   isTauriAvailable: () => true,
   dbGetAppSetting: async () => ({
     key: 'pendingPlanLifecycles:v1',
-    value_json: JSON.stringify([{ planId: 'plan-1', branchName: 'develop', operation: 'delete', phase: 'impossible' }]),
+    value_json: JSON.stringify([{ planId: 'plan-1', branchName: 'develop', operation: 'delete', phase: 'metadata_commit_pending', requiresMetadataCommit: true, createdAt: '2026-08-13T00:00:00.000Z', updatedAt: '2026-08-13T00:00:00.000Z' }]),
     updated_at: '2026-08-13T00:00:00.000Z',
   }),
 }));
@@ -15,7 +15,7 @@ mock.module('./tauriIpc', () => ({
 const saga = await import('./planLifecycleSaga');
 
 describe('planLifecycleSaga', () => {
-  it('fails closed when a persisted lifecycle phase is invalid', async () => {
+  it('fails closed for a semantically impossible delete phase', async () => {
     await expect(saga.loadPlanLifecycleSagas()).rejects.toMatchObject({
       name: 'PlanLifecycleSagaCorruptionError',
     });
