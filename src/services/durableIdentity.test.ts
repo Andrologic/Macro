@@ -18,5 +18,13 @@ describe('durable identity', () => {
       { id: 'qualified-b', node_id: 'shared' },
     ];
     expect(resolveTaskReference(ambiguous, 'shared')).toBeUndefined();
+
+    const standaloneCollision = [
+      { id: 'shared' },
+      { id: 'task:v1:develop:plan-a:shared', node_id: 'shared' },
+    ];
+    expect(resolveTaskReference(standaloneCollision, 'shared')).toBeUndefined();
+    expect(resolveTaskReference(standaloneCollision, standaloneCollision[1].id))
+      .toBe(standaloneCollision[1]);
   });
 });

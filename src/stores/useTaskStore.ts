@@ -12,7 +12,7 @@ import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
 import { removePlanLifecycleSaga, upsertPlanLifecycleSaga } from '../services/planLifecycleSaga';
-import { getTaskBusinessId, resolveTaskReference } from '../services/durableIdentity';
+import { getTaskBusinessId, resolveTaskReference, toPlanLocatorKey } from '../services/durableIdentity';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
 import {
@@ -363,6 +363,17 @@ const createTaskArtifactsBlockedErrorFromPlan = async (
 const getTaskPlanStorageBranch = (
   task: Pick<CatalogedImplementTask, 'plan_storage_branch' | 'plan_target_branch'>
 ): string => resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
+
+const findPlanSummaryForTask = (
+  summaries: ImplementTaskPlanSummary[],
+  task: Pick<CatalogedImplementTask, 'plan_id' | 'plan_storage_branch' | 'plan_target_branch'>,
+): ImplementTaskPlanSummary | undefined => {
+  const locatorKey = toPlanLocatorKey({
+    branchName: getTaskPlanStorageBranch(task),
+    planId: task.plan_id,
+  });
+  return summaries.find((summary) => summary.locatorKey === locatorKey);
+};
 
 const createInitialMergeWorkflowStateForTask = (
   task: Pick<CatalogedImplementTask, 'id' | 'task_source'>
@@ -4073,7 +4084,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       try {
         let nextRuntime: MergeWorkflowRuntimeState | null = null;
         if (kind === 'plan_finalization') {
-          const summary = get().planSummaries.find((plan) => plan.id === task.plan_id);
+          const summary = findPlanSummaryForTask(get().planSummaries, task);
           if (!summary) {
             return null;
           }
@@ -4295,7 +4306,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       if (kind === 'plan_finalization') {
-        const summary = get().planSummaries.find((plan) => plan.id === task.plan_id);
+        const summary = findPlanSummaryForTask(get().planSummaries, task);
         if (!summary) {
           throw new Error(
             tTask(

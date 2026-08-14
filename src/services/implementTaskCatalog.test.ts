@@ -84,6 +84,8 @@ describe('buildImplementTaskCatalog', () => {
             type: 'task',
             status: 'pending',
             dependencies: [],
+            todos: [{ id: 'todo-a1', title: 'Verify UI', status: 'pending' }],
+            artifactContracts: [{ id: 'artifact-a1', title: 'Screenshot', kind: 'image', required: true }],
             assignedBranch: 'checkout-ui',
             projectId: 'web',
           },
@@ -186,6 +188,7 @@ describe('buildImplementTaskCatalog', () => {
       ['plan-a', 1],
       ['plan-b', 1],
     ]);
+    expect(new Set(catalog.plans.map((plan) => plan.locatorKey)).size).toBe(2);
     expect(catalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'task-a1',
       'task-b1',
@@ -195,6 +198,10 @@ describe('buildImplementTaskCatalog', () => {
       'legacy-1',
     ]);
     expect(catalog.tasks.find((task) => task.node_id === 'task-a1')?.context_project_ids).toEqual(['docs']);
+    expect(catalog.tasks.find((task) => task.node_id === 'task-a1')).toMatchObject({
+      todos: [{ id: 'todo-a1', title: 'Verify UI', status: 'pending' }],
+      artifact_contracts: [{ id: 'artifact-a1', title: 'Screenshot', kind: 'image', required: true }],
+    });
 
     const architectTask = catalog.tasks.find((task) => task.node_id === 'task-b1');
     expect(architectTask?.task_source).toBe('architect');

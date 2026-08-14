@@ -21,6 +21,7 @@ export interface ArchitectNavigatorScope {
 export interface ArchitectNavigatorPlanEntry {
   plan: ArchitectPlanSummary;
   branchName: string;
+  locatorKey: string;
   scopeId: string;
   scopeLabel: string;
   projectCount: number;
@@ -119,6 +120,7 @@ export const buildArchitectNavigatorPlanEntries = (params: {
       return {
         plan,
         branchName,
+        locatorKey: toPlanLocatorKey({ branchName, planId: plan.id }),
         scopeId: scope.id,
         scopeLabel: scope.label,
         projectCount: getArchitectPlanVisibleProjectIds(plan).length,

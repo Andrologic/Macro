@@ -36,6 +36,7 @@ export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'e
 
 export interface ImplementTaskPlanSummary {
   id: string;
+  locatorKey: string;
   slug: string;
   title: string;
   label?: string;
@@ -374,7 +375,7 @@ export const deriveImplementTasksFromArchitectPlan = (
   const nodeById = new Map(strategy.nodes.map((node) => [node.id, node]));
 
   return strategy.tasks.map((task) => {
-    const planNode = nodeById.get(task.id);
+    const planNode = nodeById.get(getTaskBusinessId(task));
     return {
       ...task,
       task_source: 'architect' as const,
@@ -510,6 +511,7 @@ export const buildImplementTaskCatalog = (params: {
 
       return {
         id: plan.id,
+        locatorKey: planLocatorKey,
         slug: plan.slug,
         title: plan.title,
         label: plan.label,
