@@ -1883,6 +1883,7 @@ pub async fn create_manual_feature_draft(
     base_branch: Option<&str>,
     title: Option<&str>,
     description: Option<&str>,
+    task_kind: &str,
 ) -> Result<ManualFeatureDto> {
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -1920,6 +1921,7 @@ pub async fn create_manual_feature_draft(
             "Manual feature draft requires a conversation id".to_string(),
         ));
     }
+    let normalized_task_kind = normalize_manual_task_kind(task_kind)?;
 
     let now = Utc::now().to_rfc3339();
     let feature = ManualFeatureDto {
@@ -1938,7 +1940,7 @@ pub async fn create_manual_feature_draft(
             .to_string(),
         status: "Pending".to_string(),
         feature_slug: None,
-        task_kind: None,
+        task_kind: Some(normalized_task_kind.to_string()),
         branch_name: None,
         archived_at: None,
         archive_reason: None,
@@ -2156,7 +2158,6 @@ pub async fn revert_manual_feature_to_draft(
     feature.description = description.map(str::trim).unwrap_or("").to_string();
     feature.status = "Pending".to_string();
     feature.feature_slug = None;
-    feature.task_kind = None;
     feature.branch_name = None;
     feature.archived_at = None;
     feature.archive_reason = None;
@@ -9363,7 +9364,7 @@ mod tests {
             .await
             .expect("seed workspace state");
 
-        create_manual_feature_draft(
+        let draft = create_manual_feature_draft(
             temp.path(),
             &metadata_root,
             "manual-task-1",
@@ -9373,9 +9374,11 @@ mod tests {
             Some("develop"),
             None,
             None,
+            "feature",
         )
         .await
         .expect("create draft");
+        assert_eq!(draft.task_kind.as_deref(), Some("feature"));
 
         let finalized = finalize_manual_feature(
             temp.path(),
@@ -9407,7 +9410,7 @@ mod tests {
         assert_eq!(reverted.description, "");
         assert_eq!(reverted.status, "Pending");
         assert!(reverted.feature_slug.is_none());
-        assert!(reverted.task_kind.is_none());
+        assert_eq!(reverted.task_kind.as_deref(), Some("feature"));
         assert!(reverted.branch_name.is_none());
         assert!(reverted.execution_targets.is_empty());
 

@@ -7225,6 +7225,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     taskTitle: string,
     firstUserContent: string,
     unavailableBranchNames: string[] = [],
+    selectedTaskKind?: StandaloneTaskKind | null,
   ) => {
     const unavailableBranchSummary =
       unavailableBranchNames.length > 0
@@ -7235,11 +7236,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       {
         role: "system" as const,
         content:
-          "Classify and generate concise metadata for a standalone implementation task. Return ONLY valid JSON with keys: title, description, featureSlug, taskKind. " +
+          "Generate concise metadata for a standalone implementation task. Return ONLY valid JSON with keys: title, description, featureSlug, taskKind. " +
           "title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters. " +
           "featureSlug: lowercase kebab-case branch slug without any branch prefix. " +
-          "taskKind must be exactly feature, bugfix, or hotfix. Use bugfix for correcting existing behavior, hotfix only for an urgent production incident, and feature for new behavior, improvements, refactors, maintenance, or anything else. " +
-          "The user must not be asked to choose this classification. The concrete branch name is rendered later from the selected project's Git Flow template." +
+          (selectedTaskKind
+            ? `taskKind must be exactly ${selectedTaskKind}, as selected by the user. Do not change it. `
+            : "taskKind must be exactly feature, bugfix, or hotfix. ") +
+          "The concrete branch name is rendered later from the selected project's Git Flow template." +
           unavailableBranchSummary,
       },
       {
@@ -7501,6 +7504,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: params.modelId,
         reasoningEffort: params.reasoningEffort,
       });
+    const selectedTaskKind = task.task_kind ?? null;
+    const keepSelectedTaskKind = (
+      metadata: ReturnType<typeof buildManualFeatureFallbackMetadata>,
+    ): ReturnType<typeof buildManualFeatureFallbackMetadata> =>
+      selectedTaskKind ? { ...metadata, taskKind: selectedTaskKind } : metadata;
 
     const appState = useAppStore.getState();
     const executionTask = retargetImplementTaskForSelection(task, {
@@ -7604,11 +7612,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           task.title,
           params.firstUserContent,
           unavailableBranchNames,
+          selectedTaskKind,
         ),
         onComplete: () => {},
         onError: () => {},
       });
-      return extractManualFeatureMetadataFromModelOutput(output);
+      return keepSelectedTaskKind(extractManualFeatureMetadataFromModelOutput(output));
     };
 
     const resolveAvailableFallbackSlug = async (
@@ -7633,7 +7642,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `work-${Date.now().toString(36)}`;
     };
 
-    let metadata = buildManualFeatureFallbackMetadata(params.firstUserContent, task.title);
+    let metadata = keepSelectedTaskKind(
+      buildManualFeatureFallbackMetadata(params.firstUserContent, task.title),
+    );
     let unavailableBranchNames: string[] = [];
 
     for (
@@ -7645,9 +7656,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         try {
           metadata = await requestManualFeatureMetadata(unavailableBranchNames);
         } catch {
-          metadata = buildManualFeatureFallbackMetadata(
-            params.firstUserContent,
-            task.title,
+          metadata = keepSelectedTaskKind(
+            buildManualFeatureFallbackMetadata(params.firstUserContent, task.title),
           );
         }
       } else {

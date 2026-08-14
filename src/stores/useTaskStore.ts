@@ -1674,6 +1674,7 @@ interface TaskStore {
     baseBranch?: string | null;
     title?: string | null;
     description?: string | null;
+    taskKind: import('../types').StandaloneTaskKind;
   }) => Promise<void>;
   finalizeManualFeatureDraft: (params: {
     taskId: string;
@@ -2805,6 +2806,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         baseBranch: params.baseBranch ?? null,
         title: params.title ?? null,
         description: params.description ?? null,
+        taskKind: params.taskKind,
       });
       draftCreated = true;
 
