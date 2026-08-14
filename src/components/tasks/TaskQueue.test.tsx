@@ -801,6 +801,22 @@ describe('TaskQueue', () => {
 
   it('requires an explicit project when creating from the all-projects view', async () => {
     seedTasks([makeTask('task-1', 'Pending')]);
+    const createConversation = mock(async () => ({ id: 'conversation-created' }));
+    const selectConversation = mock(async () => true);
+    const sendMessage = mock(async () => ({ status: 'completed' }));
+    const createManualFeatureDraft = mock(async () => undefined);
+    const activateTask = mock(async () => undefined);
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      createConversation: createConversation as never,
+      selectConversation: selectConversation as never,
+      sendMessage: sendMessage as never,
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      createManualFeatureDraft: createManualFeatureDraft as never,
+      activateTask: activateTask as never,
+    });
     useAppStore.setState({
       ...useAppStore.getState(),
       projectGroups: [
@@ -832,7 +848,7 @@ describe('TaskQueue', () => {
     const dialog = document.body.querySelector('[role="dialog"]');
     const confirmButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
-    ).find((button) => button.textContent?.includes('Create task'));
+    ).find((button) => button.textContent?.includes('Analyze and create task'));
     expect(dialog?.textContent).toContain('A project is required');
     expect(confirmButton?.disabled).toBe(true);
     expect(dialog?.querySelector('[aria-pressed="true"]')).toBeNull();
@@ -840,22 +856,40 @@ describe('TaskQueue', () => {
     const projectTwoButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
     ).find((button) => button.textContent?.includes('Project Two'));
-    const titleInput = dialog?.querySelector<HTMLInputElement>('input[maxlength="160"]');
+    const requestInput = dialog?.querySelector<HTMLTextAreaElement>('textarea[maxlength="4000"]');
     await act(async () => {
       projectTwoButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      if (titleInput) {
+      if (requestInput) {
         const valueSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype,
+          window.HTMLTextAreaElement.prototype,
           'value'
         )?.set;
-        valueSetter?.call(titleInput, 'Explicitly targeted task');
-        titleInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+        valueSetter?.call(requestInput, 'Fix the crash when the project is opened');
+        requestInput.dispatchEvent(new window.Event('input', { bubbles: true }));
       }
       await flushRender();
     });
 
     expect(dialog?.querySelector('[aria-pressed="true"]')?.textContent).toContain('Project Two');
     expect(confirmButton?.disabled).toBe(false);
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(createConversation).toHaveBeenCalledWith(
+      'Fix the crash when the project is opened',
+      expect.stringContaining('manual-feature-'),
+      'project-2',
+      'group-1'
+    );
+    expect(sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conversation-created',
+      content: 'Fix the crash when the project is opened',
+      taskId: expect.stringContaining('manual-feature-'),
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {

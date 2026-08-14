@@ -4,7 +4,7 @@ import { cn } from '../../utils/cn';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
-import { Input } from '../ui/Input';
+import { Textarea } from '../ui/Textarea';
 import type { TaskProjectFilterOption } from './TaskProjectFilter';
 
 interface CreateImplementTaskDialogProps {
@@ -12,7 +12,7 @@ interface CreateImplementTaskDialogProps {
   initialProjectId: string | null;
   isCreating: boolean;
   onClose: () => void;
-  onCreate: (input: { projectId: string; title: string }) => void;
+  onCreate: (input: { projectId: string; request: string }) => void;
 }
 
 export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps> = ({
@@ -24,9 +24,9 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
 }) => {
   const { t } = useTranslation();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialProjectId);
-  const [title, setTitle] = useState('');
+  const [request, setRequest] = useState('');
   const [query, setQuery] = useState('');
-  const titleInputRef = useRef<HTMLInputElement>(null);
+  const requestInputRef = useRef<HTMLTextAreaElement>(null);
   const editableProjects = projects.filter((project) => !project.isReadOnly);
   const filteredProjects = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -37,14 +37,14 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         .some((value) => value?.toLocaleLowerCase().includes(normalized))
     );
   }, [editableProjects, query]);
-  const canCreate = Boolean(selectedProjectId && title.trim()) && !isCreating;
+  const canCreate = Boolean(selectedProjectId && request.trim()) && !isCreating;
 
   return (
     <Dialog
       title={t('implement.createTaskDialogTitle', 'Create a task')}
       onClose={onClose}
       panelClassName="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
-      initialFocusRef={titleInputRef}
+      initialFocusRef={requestInputRef}
     >
       <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
         <div>
@@ -71,15 +71,29 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       <div className="space-y-5 px-5 py-4">
         <label className="block space-y-2">
           <span className="text-xs font-medium text-foreground">
-            {t('implement.taskTitle', 'Task title')}
+            {t('implement.taskRequest', 'Request for the agent')}
           </span>
-          <Input
-            ref={titleInputRef}
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder={t('implement.taskTitlePlaceholder', 'What needs to be implemented?')}
-            maxLength={160}
+          <Textarea
+            ref={requestInputRef}
+            value={request}
+            onChange={(event) => setRequest(event.target.value)}
+            placeholder={t(
+              'implement.taskRequestPlaceholder',
+              'Describe what the agent should implement or fix...'
+            )}
+            rows={4}
+            maxLength={4000}
+            className="min-h-24 resize-y"
           />
+          <span className="flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] text-muted-foreground">
+            <Icon name="sparkles" size={13} className="mt-0.5 shrink-0 text-primary" />
+            <span>
+              {t(
+                'implement.taskKindAutomaticHelp',
+                'The agent will analyze this request and classify it as a feature, bugfix, or hotfix.'
+              )}
+            </span>
+          </span>
         </label>
 
         <div className="space-y-2">
@@ -143,12 +157,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           disabled={!canCreate}
           isLoading={isCreating}
           onClick={() => {
-            if (selectedProjectId && title.trim()) {
-              onCreate({ projectId: selectedProjectId, title: title.trim() });
+            if (selectedProjectId && request.trim()) {
+              onCreate({ projectId: selectedProjectId, request: request.trim() });
             }
           }}
         >
-          {t('implement.createTaskAction', 'Create task')}
+          {t('implement.analyzeAndCreateTaskAction', 'Analyze and create task')}
         </Button>
       </div>
     </Dialog>

@@ -285,7 +285,7 @@ Le mode Implement doit supporter :
 
 Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
-Lors du premier message d'une tâche indépendante, l'agent détermine son type avant la préparation de l'environnement d'exécution. Macro utilise cette classification pour choisir le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`.
+Lors de la création d'une tâche indépendante, l'utilisateur choisit le projet et décrit directement sa demande. Macro envoie cette demande comme premier message : l'agent détermine alors le type de tâche avant la préparation de l'environnement d'exécution. Cette classification choisit le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`.
 
 ### 7.3 Mode Chat
 
