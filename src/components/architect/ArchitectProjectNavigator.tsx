@@ -293,7 +293,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   };
 
   const activatePlan = async (entry: ArchitectNavigatorPlanEntry) => {
-    if (isBusy || entry.plan.status === 'archived') return;
+    if (isBusy) return;
     setActivatingPlanId(entry.plan.id);
     setError(null);
     try {
@@ -302,6 +302,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         targetBranch: entry.branchName,
         planSummaryHint: entry.plan,
         scopedProjectIdsHint: scope?.projectIds ?? [],
+        persistActiveSelection: entry.plan.status !== 'archived',
       });
       if (!activated) throw new Error(t('architect.projectNavigator.activateError', 'Ce plan n’est plus disponible.'));
     } catch (activationError) {
@@ -547,7 +548,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       >
         <button
           type="button"
-          disabled={isBusy || entry.plan.status === 'archived'}
+          disabled={isBusy}
           onClick={() => void activatePlan(entry)}
           className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70 disabled:cursor-default disabled:opacity-60"
           aria-current={isActive ? 'page' : undefined}

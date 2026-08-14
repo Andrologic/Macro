@@ -212,8 +212,12 @@ export const createLoadImplementTaskCatalog = (
     )[0] || null;
     let plans: ArchitectPlanRecord[] = [];
 
+    let discoveredTargetBranches: string[] = [];
     try {
-      const discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
+      discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
+    } catch {
+      // Discovery is advisory; the active and Git-flow base branches remain valid fallbacks.
+    }
       const candidateTargetBranches = resolveCandidateTargetBranches(
         [
           activeTargetBranch,
@@ -242,6 +246,9 @@ export const createLoadImplementTaskCatalog = (
           })
         )
       ).filter((entry): entry is { branchName: string; index: Awaited<ReturnType<typeof listArchitectPlans>> } => Boolean(entry));
+      if (candidateTargetBranches.length > 0 && planIndexes.length === 0) {
+        throw new Error('Unable to load the Implement task catalog from any metadata branch.');
+      }
       const executablePlanRefs = dedupePlanRefs(
         planIndexes.flatMap(({ branchName, index }) =>
           index.plans
@@ -267,10 +274,13 @@ export const createLoadImplementTaskCatalog = (
           }
         })
       );
-      plans = loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted'));
-    } catch {
-      plans = [];
-    }
+      if (
+        executablePlanRefs.length > 0 &&
+        loadedPlans.every((plan) => plan === null)
+      ) {
+        throw new Error('Unable to load any referenced Architect plan for the Implement task catalog.');
+      }
+    plans = loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted'));
 
     const activePlan = buildExecutableActivePlanRecord(appState);
     if (activePlan) {

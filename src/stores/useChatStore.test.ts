@@ -7995,6 +7995,55 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().selectedConversationIdsByMode.Implement).toBe('implement-latest');
   });
 
+  it('keeps an explicitly selected task outside the header project scope', async () => {
+    appState.mode = 'Implement';
+    appState.selectedProjectId = 'project-1';
+    appState.selectedTaskId = 'task-b';
+    taskStoreState.tasks = [createImplementTask({
+      id: 'task-b',
+      title: 'Implement project B',
+      project_id: 'project-2',
+      project_ids: ['project-2'],
+    })];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({ conversations: [], selectedConversationId: null });
+    const ensuredId = await useChatStore.getState().ensureConversationForCurrentMode();
+    const conversation = useChatStore.getState().conversations.find(
+      (candidate: Conversation) => candidate.id === ensuredId,
+    );
+
+    expect(appState.selectedTaskId).toBe('task-b');
+    expect(conversation).toMatchObject({
+      task_id: 'task-b',
+      project_id: 'project-2',
+    });
+  });
+
+  it('keeps an archived selected task readable without replacing its conversation', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-archived';
+    taskStoreState.tasks = [createImplementTask({
+      id: 'task-archived',
+      archived_at: '2026-08-14T10:00:00.000Z',
+    })];
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [{
+        ...createConversation('archived-conversation'),
+        scope_mode: 'Implement',
+        task_id: 'task-archived',
+      }],
+      selectedConversationId: null,
+      selectedConversationIdsByMode: {},
+    });
+
+    expect(await useChatStore.getState().ensureConversationForCurrentMode()).toBe(
+      'archived-conversation',
+    );
+    expect(appState.selectedTaskId).toBe('task-archived');
+  });
+
   it('restores an implement task from local project context before selecting its conversation', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = null;
