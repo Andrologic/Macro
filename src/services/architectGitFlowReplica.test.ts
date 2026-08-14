@@ -230,6 +230,11 @@ const dbSetAppSettingMock = mock(async ({ key, valueJson }: { key: string; value
   dbAppSettings.set(key, valueJson);
   return { key, value_json: valueJson, updated_at: '2026-08-13T00:00:00.000Z' };
 });
+const dbCompareAndSwapAppSettingMock = mock(async ({ key, expectedValueJson, valueJson }: { key: string; expectedValueJson: string | null; valueJson: string }) => {
+  if ((dbAppSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+  dbAppSettings.set(key, valueJson);
+  return { applied: true };
+});
 const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
   taskId: params.taskId,
   worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
@@ -256,6 +261,7 @@ const registerModuleMocks = () => {
     isTauriAvailable: () => true,
     dbGetAppSetting: dbGetAppSettingMock,
     dbSetAppSetting: dbSetAppSettingMock,
+    dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
     workspaceGetActiveRoot: async () => '/repos/web',
     macroBranchCommitIfDirty: async () => ({
       branch: '@macro',
