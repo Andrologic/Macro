@@ -17,6 +17,7 @@ import {
 import { readArchitectPlanRuntime } from './architectPlanRuntimeService';
 import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 import { buildPlanFinalizationTaskId } from './planFinalization';
+import { getTaskBusinessId, toPlanLocatorKey } from './durableIdentity';
 import {
   collectKnownProjects,
   collectKnownProjectIds,
@@ -151,7 +152,10 @@ const upsertPlanRecord = (
   plans: ArchitectPlanRecord[],
   nextPlan: ArchitectPlanRecord
 ): ArchitectPlanRecord[] => {
-  const filteredPlans = plans.filter((plan) => plan.id !== nextPlan.id);
+  const filteredPlans = plans.filter((plan) =>
+    toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id }) !==
+    toPlanLocatorKey({ branchName: nextPlan.targetBranch, planId: nextPlan.id })
+  );
   return [nextPlan, ...filteredPlans];
 };
 
@@ -160,14 +164,24 @@ const dedupePlanRefs = (items: Array<{ branchName: string; planId: string }>): A
   const uniqueItems: Array<{ branchName: string; planId: string }> = [];
 
   for (const item of items) {
-    if (seenPlanIds.has(item.planId)) {
+    const locatorKey = toPlanLocatorKey(item);
+    if (seenPlanIds.has(locatorKey)) {
       continue;
     }
-    seenPlanIds.add(item.planId);
+    seenPlanIds.add(locatorKey);
     uniqueItems.push(item);
   }
 
   return uniqueItems;
+};
+
+const dedupeLoadedPlans = (plans: ArchitectPlanRecord[]): ArchitectPlanRecord[] => {
+  const byLocator = new Map<string, ArchitectPlanRecord>();
+  for (const plan of plans) {
+    const key = toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id });
+    if (!byLocator.has(key)) byLocator.set(key, plan);
+  }
+  return Array.from(byLocator.values());
 };
 
 const resolveCandidateTargetBranches = (
@@ -212,8 +226,12 @@ export const createLoadImplementTaskCatalog = (
     )[0] || null;
     let plans: ArchitectPlanRecord[] = [];
 
+    let discoveredTargetBranches: string[] = [];
     try {
-      const discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
+      discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
+    } catch {
+      // Discovery is advisory; the active and Git-flow base branches remain valid fallbacks.
+    }
       const candidateTargetBranches = resolveCandidateTargetBranches(
         [
           activeTargetBranch,
@@ -242,6 +260,9 @@ export const createLoadImplementTaskCatalog = (
           })
         )
       ).filter((entry): entry is { branchName: string; index: Awaited<ReturnType<typeof listArchitectPlans>> } => Boolean(entry));
+      if (candidateTargetBranches.length > 0 && planIndexes.length === 0) {
+        throw new Error('Unable to load the Implement task catalog from any metadata branch.');
+      }
       const executablePlanRefs = dedupePlanRefs(
         planIndexes.flatMap(({ branchName, index }) =>
           index.plans
@@ -267,10 +288,15 @@ export const createLoadImplementTaskCatalog = (
           }
         })
       );
-      plans = loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted'));
-    } catch {
-      plans = [];
-    }
+      if (
+        executablePlanRefs.length > 0 &&
+        loadedPlans.every((plan) => plan === null)
+      ) {
+        throw new Error('Unable to load any referenced Architect plan for the Implement task catalog.');
+      }
+      plans = dedupeLoadedPlans(
+        loadedPlans.filter((plan): plan is ArchitectPlanRecord => Boolean(plan && plan.status !== 'deleted')),
+      );
 
     const activePlan = buildExecutableActivePlanRecord(appState);
     if (activePlan) {
@@ -301,7 +327,7 @@ export const createLoadImplementTaskCatalog = (
             planId: plan.id,
             projectIds: plan.projectIds,
           });
-          return runtime ? ([plan.id, runtime] as const) : null;
+          return runtime ? ([toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id }), runtime] as const) : null;
         }),
       )
     ).filter(
@@ -320,7 +346,10 @@ export const createLoadImplementTaskCatalog = (
         if (!task.plan_id) {
           return task;
         }
-        const runtime = runtimeByPlanId.get(task.plan_id);
+        const runtime = runtimeByPlanId.get(toPlanLocatorKey({
+          branchName: task.plan_storage_branch || task.plan_target_branch || '',
+          planId: task.plan_id,
+        }));
         if (!runtime) {
           return task;
         }
@@ -328,7 +357,7 @@ export const createLoadImplementTaskCatalog = (
           runtime.mergeWorkflows[
             task.task_source === 'plan_finalization'
               ? buildPlanFinalizationTaskId(task.plan_id)
-              : task.id
+              : getTaskBusinessId(task)
           ] || null;
         if (!session) {
           return task;

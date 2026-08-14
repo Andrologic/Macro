@@ -204,6 +204,7 @@ import {
   getScopedProjectIds,
 } from "../services/globalProjects";
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
+import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
 import {
   isProjectWorkspaceMissing,
   resolveProjectWorkspaceState,
@@ -1196,13 +1197,22 @@ const retargetImplementTaskForSelection = (
     selectedGroupId?: string | null;
     selectedProjectId?: string | null;
   },
-): ImplementTask =>
-  retargetTaskForProjectSelection(task, {
+): ImplementTask => {
+  const knownProjectIds = new Set([
+    ...(params.standaloneProjects ?? []).map((project) => project.id),
+    ...params.projectGroups.flatMap((group) => group.projects.map((project) => project.id)),
+  ]);
+  const taskProjectIds = [...(task.project_ids ?? []), task.project_id].filter(Boolean);
+  if (taskProjectIds.some((projectId) => knownProjectIds.has(projectId))) {
+    return task;
+  }
+  return retargetTaskForProjectSelection(task, {
     standaloneProjects: params.standaloneProjects ?? [],
     projectGroups: params.projectGroups,
     selectedGroupId: params.selectedGroupId,
     selectedProjectId: params.selectedProjectId,
   });
+};
 
 export const resolveImplementTaskForContext = ({
   selectedTaskId,
@@ -1213,6 +1223,10 @@ export const resolveImplementTaskForContext = ({
   selectedProjectId,
   localContext,
 }: ResolveImplementTaskForContextInput): ImplementTask | null => {
+  const selectedTask = selectedTaskId
+    ? tasks.find((task) => task.id === selectedTaskId) ?? null
+    : null;
+  if (selectedTask) return selectedTask;
   const scopedProjectIds = getScopedProjectIds(
     {
       standaloneProjects: standaloneProjects ?? [],
@@ -1222,13 +1236,12 @@ export const resolveImplementTaskForContext = ({
     selectedProjectId,
   );
   const eligibleTasks = tasks.filter((task) => {
-    if (task.archived_at) {
-      return false;
-    }
+    if (task.archived_at) return task.id === selectedTaskId;
+    if (task.id === selectedTaskId) return true;
     if (taskMatchesScopedProjectIds(task, scopedProjectIds)) {
       return true;
     }
-    if (task.task_source !== "standalone" && task.id !== selectedTaskId) {
+    if (task.task_source !== "standalone" && !taskReferenceMatches(tasks, task, selectedTaskId)) {
       return false;
     }
     const executionTask = retargetImplementTaskForSelection(task, {
@@ -1241,7 +1254,7 @@ export const resolveImplementTaskForContext = ({
   });
   const findEligibleTask = (taskId?: string | null): ImplementTask | null =>
     taskId
-      ? eligibleTasks.find((task) => task.id === taskId) ?? null
+      ? resolveTaskReference(eligibleTasks, taskId) ?? null
       : null;
 
   return (
@@ -6816,7 +6829,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!selectedTaskId) {
         return !conversation.task_id;
       }
-      return conversation.task_id === selectedTaskId;
+      const tasks = useTaskStore.getState().tasks;
+      const selectedTask = resolveTaskReference(tasks, selectedTaskId);
+      return Boolean(selectedTask && taskReferenceMatches(tasks, selectedTask, conversation.task_id));
     }
 
     return false;
@@ -6852,17 +6867,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const getLatestConversationForTask = (
     taskId: string,
     conversations: Conversation[] = get().conversations,
-  ): Conversation | null =>
-    conversations
+  ): Conversation | null => {
+    const tasks = useTaskStore.getState().tasks;
+    const task = resolveTaskReference(tasks, taskId);
+    if (!task) return null;
+    return conversations
       .filter(
         (conversation) =>
           getConversationScopeMode(conversation) === "Implement" &&
-          conversation.task_id === taskId,
+          taskReferenceMatches(tasks, task, conversation.task_id),
       )
       .sort(
         (a, b) =>
           new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       )[0] ?? null;
+  };
 
   type ConversationRemovalSnapshot = Pick<
     ChatStore,
@@ -10576,8 +10595,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedProjectId: appState.selectedProjectId,
         localContext: null,
       });
-      if (resolvedTask?.id === conversation.task_id) {
-        appState.setSelectedTask(conversation.task_id);
+      if (resolvedTask) {
+        appState.setSelectedTask(resolvedTask.id);
         appState = useAppStore.getState();
       }
     }
@@ -12012,16 +12031,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (mode === "Implement" && selectedTaskId) {
       const task = useTaskStore.getState().getTaskById(selectedTaskId);
-      const executionTask = task
-        ? retargetImplementTaskForSelection(task, {
-            standaloneProjects: appState.standaloneProjects,
-            projectGroups: appState.projectGroups,
-            selectedGroupId,
-            selectedProjectId,
-          })
-        : null;
       const projectId =
-        executionTask?.project_id ??
+        task?.project_id ??
+        task?.project_ids?.[0] ??
         getFocusedProjectForGroup(
           appState.projectGroups,
           selectedGroupId,

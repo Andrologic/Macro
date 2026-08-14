@@ -597,6 +597,46 @@ describe('architectGitFlowService', () => {
     expect(gitWorktreeInspectMock.mock.invocationCallOrder.every((order) => order < firstRestoreCallOrder)).toBe(true);
   });
 
+  it('cancels the branch-qualified pending archive saga after a successful restore', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      status: 'archived',
+      archivedFromStatus: 'in_progress',
+    };
+    const now = new Date().toISOString();
+    persistedPlanLifecycleSagas = JSON.stringify([
+      {
+        planId: currentPlan.id,
+        branchName: 'feature/storage',
+        operation: 'archive',
+        phase: 'metadata_written',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        planId: currentPlan.id,
+        branchName: 'develop',
+        operation: 'archive',
+        phase: 'metadata_written',
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    await architectGitFlowService.restorePlanAndProvisionBranches({
+      branchName: 'feature/storage',
+      planId: currentPlan.id,
+    });
+
+    expect(readPersistedLifecycleSagas()).toEqual([
+      expect.objectContaining({
+        planId: currentPlan.id,
+        branchName: 'develop',
+        operation: 'archive',
+      }),
+    ]);
+  });
+
   it('renders and provisions repo-specific branch names when projects use different Git workflow templates', async () => {
     projectPaths.set('web', {
       ...projectPaths.get('web')!,
@@ -1951,12 +1991,10 @@ describe('architectGitFlowService', () => {
     expect(readPersistedLifecycleSagas()).toEqual([]);
   });
 
-  it('fails closed before Git cleanup when the persisted lifecycle journal is corrupt', async () => {
+  it('quarantines a corrupt persisted lifecycle journal without running Git cleanup', async () => {
     persistedPlanLifecycleSagas = '{not-json';
 
-    await expect(architectGitFlowService.resumePlanLifecycleSagas()).rejects.toMatchObject({
-      name: 'PlanLifecycleSagaCorruptionError',
-    });
+    await architectGitFlowService.resumePlanLifecycleSagas();
 
     expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
     expect(gitBranchDeleteMock).not.toHaveBeenCalled();

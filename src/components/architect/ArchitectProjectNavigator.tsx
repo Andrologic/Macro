@@ -143,7 +143,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [activeEntries]);
   const pinnedEntries = useMemo(() => {
     const pinned = new Set(pinnedPlanIds);
-    return activeEntries.filter((entry) => pinned.has(entry.plan.id));
+    const countsByPlanId = new Map<string, number>();
+    activeEntries.forEach((entry) => countsByPlanId.set(
+      entry.plan.id,
+      (countsByPlanId.get(entry.plan.id) || 0) + 1,
+    ));
+    return activeEntries.filter((entry) =>
+      pinned.has(entry.locatorKey) ||
+      (countsByPlanId.get(entry.plan.id) === 1 && pinned.has(entry.plan.id))
+    );
   }, [activeEntries, pinnedPlanIds]);
   const selectedScope = useMemo(
     () => scopes.find((scope) => scopeIsSelected(scope, selectedGroupId, selectedProjectId)) ?? null,
@@ -295,8 +303,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   };
 
   const activatePlan = async (entry: ArchitectNavigatorPlanEntry) => {
-    if (isBusy || entry.plan.status === 'archived') return;
-    setActivatingPlanId(entry.plan.id);
+    if (isBusy) return;
+    setActivatingPlanId(entry.locatorKey);
     setError(null);
     try {
       const scope = scopesById.get(entry.scopeId);
@@ -304,6 +312,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         targetBranch: entry.branchName,
         planSummaryHint: entry.plan,
         scopedProjectIdsHint: scope?.projectIds ?? [],
+        persistActiveSelection: entry.plan.status !== 'archived',
       });
       if (!activated) throw new Error(t('architect.projectNavigator.activateError', 'Ce plan n’est plus disponible.'));
     } catch (activationError) {
@@ -358,7 +367,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const archivePlan = async (entry: ArchitectNavigatorPlanEntry) => {
     if (mutatingPlanId) return;
     setOpenPlanMenuKey(null);
-    setMutatingPlanId(entry.plan.id);
+    setMutatingPlanId(entry.locatorKey);
     let releaseMutation: (() => void) | null = null;
     try {
       if (entry.plan.status === 'archived') {
@@ -525,13 +534,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [openPlanMenuKey, openScopeMenuId]);
 
   const renderPlanRow = (entry: ArchitectNavigatorPlanEntry, showScope = false) => {
-    const isActive = entry.plan.id === activeArchitectPlanId;
-    const isPinned = pinnedPlanIds.includes(entry.plan.id);
-    const isActivating = activatingPlanId === entry.plan.id;
+    const isActive = entry.plan.id === activeArchitectPlanId &&
+      (!activePlanContext?.targetBranch || entry.branchName === activePlanContext.targetBranch);
+    const isPinned = pinnedPlanIds.includes(entry.locatorKey) ||
+      (entries.filter((candidate) => candidate.plan.id === entry.plan.id).length === 1 &&
+        pinnedPlanIds.includes(entry.plan.id));
+    const isActivating = activatingPlanId === entry.locatorKey;
     const kind = getArchitectPlanKind(entry.plan);
     const capabilities = getArchitectPlanCrudCapabilities(entry.plan);
-    const isMutating = mutatingPlanId === entry.plan.id;
-    const planMenuKey = `${showScope ? 'overview' : entry.scopeId}:${entry.plan.id}`;
+    const isMutating = mutatingPlanId === entry.locatorKey;
+    const planMenuKey = `${showScope ? 'overview' : entry.scopeId}:${entry.locatorKey}`;
     return (
       <div
         key={planMenuKey}
@@ -551,7 +563,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       >
         <button
           type="button"
-          disabled={isBusy || entry.plan.status === 'archived'}
+          disabled={isBusy}
           onClick={() => void activatePlan(entry)}
           className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70 disabled:cursor-default disabled:opacity-60"
           aria-current={isActive ? 'page' : undefined}
@@ -576,7 +588,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         </button>
         <button
           type="button"
-          onClick={() => togglePin(entry.plan.id)}
+          onClick={() => togglePin(entry.locatorKey)}
           className={cn(
             'flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
             isPinned ? 'opacity-100 text-primary' : 'opacity-0 group-hover/plan:opacity-100 group-focus-within/plan:opacity-100',
@@ -614,7 +626,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                   type="button"
                   onClick={() => {
                     setOpenPlanMenuKey(null);
-                    togglePin(entry.plan.id);
+                    togglePin(entry.locatorKey);
                   }}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"
                 >

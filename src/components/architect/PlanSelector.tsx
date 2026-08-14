@@ -66,6 +66,7 @@ import {
 } from '../../services/architectAutoPlan';
 import {
   computePlanSelectorRefreshState,
+  getPlanSelectorNullLoadDisposition,
   computePlanSelectorEmptyState,
   resolveVerifiedPlanDeletionRecovery,
   type PlanSelectorMutationCheck,
@@ -88,6 +89,7 @@ import {
 } from '../../services/planLifecycleSaga';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
+import { toPlanLocatorKey } from '../../services/durableIdentity';
 
 interface PlanSelectorProps {
   className?: string;
@@ -263,8 +265,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
   const activePlan = useMemo(() => {
     if (!activePlanId) return null;
-    return plans.find((plan) => plan.id === activePlanId) || null;
-  }, [plans, activePlanId]);
+    const activeBranch = activePlanContext?.targetBranch;
+    return plans.find((plan) =>
+      plan.id === activePlanId && (!activeBranch || plan.targetBranch === activeBranch)
+    ) || null;
+  }, [plans, activePlanContext?.targetBranch, activePlanId]);
   const projectRegistry = useMemo(
     () => ({ standaloneProjects: standaloneProjects ?? [], projectGroups }),
     [projectGroups, standaloneProjects]
@@ -561,6 +566,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!isCurrentLoadRequest(requestId, requestContext)) {
         return;
       }
+      if (!result) {
+        const catalogState = useAppStore.getState();
+        const disposition = getPlanSelectorNullLoadDisposition({
+          catalogStatus: catalogState.architectPlanCatalogStatus,
+          isCatalogForCurrentScope:
+            catalogState.architectPlanCatalogScopeKey === currentCatalogScopeKey,
+        });
+        if (catalogState.architectPlanCatalogStatus === 'error') {
+          setError(
+            catalogState.architectPlanCatalogError ??
+              t('architect.planSelector.errorLoadPlans', 'Failed to load plans.'),
+          );
+        }
+        if (disposition === 'preserve') return;
+      }
       const visiblePlans = result?.snapshot.visiblePlans ?? [];
       const nextActivePlanId = result?.selectedPlan?.id ?? null;
       setPlans(visiblePlans);
@@ -597,14 +617,36 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     planId: string,
     planSummaryHint?: ArchitectPlanSummary | null
   ) => {
+    const planBranch = planSummaryHint?.targetBranch || targetBranch;
+    const locatorKey = toPlanLocatorKey({ branchName: planBranch, planId });
     const requestId = ++activationRequestIdRef.current;
     const requestContext = selectorAsyncContextRef.current ?? selectorAsyncContext;
-    setIsActivating(planId);
+    setIsActivating(locatorKey);
     setError(null);
     setActivePlanId(planId);
     try {
+      const catalogBranches = Object.values(
+        useAppStore.getState().architectPlanCatalogByBranch,
+      );
+      const exactCatalogBranch = (
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) => plan === planSummaryHint),
+        ) ??
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) =>
+            plan.id === planId &&
+            plan.targetBranch === planSummaryHint?.targetBranch,
+          ),
+        )
+      )?.branchName;
+      const idOnlyBranches = catalogBranches.filter((branch) =>
+        branch.plans.some((plan) => plan.id === planId),
+      );
+      const unambiguousLegacyBranch = idOnlyBranches.length === 1
+        ? idOnlyBranches[0]?.branchName
+        : null;
       const activated = await activateArchitectPlan(planId, {
-        targetBranch,
+        targetBranch: exactCatalogBranch ?? unambiguousLegacyBranch ?? planBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
       if (!isCurrentActivationRequest(requestId, requestContext)) {
@@ -873,11 +915,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     plans.length,
   ]);
 
-  const handleRenamePlan = (planId: string) => {
-    const plan = plans.find((p) => p.id === planId);
-    if (!plan) {
-      return;
-    }
+  const handleRenamePlan = (plan: ArchitectPlanSummary) => {
     if (!getArchitectPlanCrudCapabilities(plan).canEditDetails) {
       return;
     }
@@ -887,10 +925,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
   const handleFormConfirm = async (value: string) => {
     if (!planFormModal) return;
+    const storageBranch = planFormModal.targetBranch || targetBranch;
     setFormLoading(true);
     setFormError(null);
     try {
-      const latestPlan = await getArchitectPlan(targetBranch, planFormModal.id);
+      const latestPlan = await getArchitectPlan(storageBranch, planFormModal.id);
       if (!latestPlan || !getArchitectPlanCrudCapabilities(latestPlan).canEditDetails) {
         throw new Error(
           t(
@@ -905,7 +944,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         return;
       }
       const updatedPlan = await updateArchitectPlan({
-        branchName: targetBranch,
+        branchName: storageBranch,
         planId: planFormModal.id,
         ...(isCanonicalArchitectPlan(planFormModal) ? { label: value } : { title: value }),
       });
@@ -936,6 +975,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   };
 
   const handleArchivePlan = async (plan: ArchitectPlanSummary) => {
+    const storageBranch = plan.targetBranch || targetBranch;
     setError(null);
     setIsLoading(true);
     let releasePlanMutation: (() => void) | null = null;
@@ -952,7 +992,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       releasePlanMutation = () => taskStore.releasePlanWorktreeMutation(plan.id);
 
-      const latestPlan = await getArchitectPlan(targetBranch, plan.id);
+      const latestPlan = await getArchitectPlan(storageBranch, plan.id);
       if (!latestPlan || !getArchitectPlanCrudCapabilities(latestPlan).canArchive) {
         throw new Error(
           t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
@@ -961,17 +1001,17 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const archiveSagaNow = new Date().toISOString();
       await upsertPlanLifecycleSaga({
         planId: plan.id,
-        branchName: targetBranch,
+        branchName: storageBranch,
         operation: 'archive',
         phase: 'prepared',
         conversationId: latestPlan.conversationId ?? null,
         createdAt: archiveSagaNow,
         updatedAt: archiveSagaNow,
       });
-      archivedPlan = await archiveArchitectPlan(targetBranch, plan.id);
+      archivedPlan = await archiveArchitectPlan(storageBranch, plan.id);
       await upsertPlanLifecycleSaga({
         planId: plan.id,
-        branchName: targetBranch,
+        branchName: storageBranch,
         operation: 'archive',
         phase: 'metadata_written',
         conversationId: archivedPlan.conversationId ?? null,
@@ -979,7 +1019,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         updatedAt: new Date().toISOString(),
       });
       const cleanup = await cleanupPlanBranches(archivedPlan);
-      await removePlanLifecycleSaga(plan.id, 'archive');
+      await removePlanLifecycleSaga(plan.id, 'archive', storageBranch);
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
@@ -1045,6 +1085,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
   const handleConfirmDeletePlan = async () => {
     if (!planToDelete) return;
+    const storageBranch = planToDelete.targetBranch || targetBranch;
 
     setError(null);
     setIsDeleting(true);
@@ -1063,7 +1104,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         );
       }
       releasePlanMutation = () => taskStore.releasePlanWorktreeMutation(deletedPlanId);
-      const currentPlan = await getArchitectPlan(targetBranch, deletedPlanId);
+      const currentPlan = await getArchitectPlan(storageBranch, deletedPlanId);
       if (!currentPlan) {
         throw new Error(
           t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
@@ -1076,13 +1117,13 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           ownerId: deletedPlanId,
           conversationId: currentPlan.conversationId,
           phase: 'plan_deleting',
-          targetBranch,
+          targetBranch: storageBranch,
           createdAt: now,
           updatedAt: now,
         });
       }
       const cleanup = await deletePlanAndCleanupBranches({
-        branchName: targetBranch,
+        branchName: storageBranch,
         planId: deletedPlanId,
       });
       useTaskStore.getState().clearPlanRuntimeState({
@@ -1108,7 +1149,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             )
           );
         }
-        await removeLinkedConversationDeletionSaga('plan', deletedPlanId);
+        await removeLinkedConversationDeletionSaga('plan', deletedPlanId, storageBranch);
       }
       notify.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
       await refreshPlanSelectorAfterMutation({
@@ -1171,7 +1212,10 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setIsLoading(true);
     try {
-      await restorePlanAndProvisionBranches({ branchName: targetBranch, planId: plan.id });
+      await restorePlanAndProvisionBranches({
+        branchName: plan.targetBranch || targetBranch,
+        planId: plan.id,
+      });
       const planDisplayName = getArchitectPlanDisplayName(plan);
       notify.success(
         t('architect.planSelector.toastPlanRestored', {
@@ -1492,10 +1536,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             )}
 
             {plans.map((plan) => {
-              const isActive = plan.id === activePlanId;
+              const locatorKey = toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id });
+              const isActive = plan.id === activePlanId &&
+                (!activePlanContext?.targetBranch || plan.targetBranch === activePlanContext.targetBranch);
               const planPhase = getArchitectPlanLifecyclePhase(plan);
               const statusClass = statusClassName[planPhase] || statusClassName.draft;
-              const isBusy = isActivating === plan.id;
+              const isBusy = isActivating === locatorKey;
               const isUnavailable = plan.status === 'deleted';
               const isMissingProjects = plan.replicationState === 'missing_projects';
               const missingCount = plan.missingProjectIds?.length ?? 0;
@@ -1542,7 +1588,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
               return (
                 <div
-                  key={plan.id}
+                  key={locatorKey}
                   role="button"
                   tabIndex={canActivatePlan ? 0 : -1}
                   aria-disabled={!canActivatePlan}
@@ -1594,7 +1640,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          handleRenamePlan(plan.id);
+                          handleRenamePlan(plan);
                         }}
                         disabled={!canRenamePlan}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
