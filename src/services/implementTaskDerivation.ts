@@ -1,5 +1,6 @@
 import type {
   PlanNode,
+  PlanNodeArtifactContract,
   PlanNodeTodo,
   PlanNodeStatus,
   PredictedBranch,
@@ -121,6 +122,7 @@ export const applyTaskStatusToPlanNodes = (
 
 export interface DerivedImplementTask extends Task {
   node_id?: string;
+  artifact_contracts?: PlanNodeArtifactContract[];
   assigned_branch: string;
   branch_name: string;
   branch_id: string | null;
@@ -629,6 +631,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       sequence_index: sequenceOrder.get(node.id) ?? Number.MAX_SAFE_INTEGER,
       execution_targets: executionTargets,
       todos: normalizePlanNodeTodos(node.todos),
+      artifact_contracts: (node.artifactContracts || []).map((contract) => ({ ...contract })),
     };
   });
 

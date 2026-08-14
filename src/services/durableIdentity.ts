@@ -19,11 +19,12 @@ export const resolveTaskReference = <T extends { id: string; node_id?: string | 
   tasks: readonly T[],
   reference: string,
 ): T | undefined => {
-  const exact = tasks.find((task) => task.id === reference);
-  if (exact) return exact;
+  if (reference.startsWith('task:v1:')) {
+    return tasks.find((task) => task.id === reference);
+  }
 
-  const legacyMatches = tasks.filter((task) => task.node_id === reference);
-  return legacyMatches.length === 1 ? legacyMatches[0] : undefined;
+  const matches = tasks.filter((task) => task.id === reference || task.node_id === reference);
+  return matches.length === 1 ? matches[0] : undefined;
 };
 
 export const getTaskBusinessId = (task: { id: string; node_id?: string | null }): string =>
