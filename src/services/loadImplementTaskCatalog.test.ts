@@ -213,7 +213,7 @@ describe('createLoadImplementTaskCatalog', () => {
     ]);
 
     expect(catalog.source).toBe('mixed');
-    expect(catalog.tasks.map((task) => task.id)).toEqual([
+    expect(catalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'task-api',
       'task-mobile',
       'task-web',
@@ -323,16 +323,16 @@ describe('createLoadImplementTaskCatalog', () => {
 
     const catalog = await loadImplementTaskCatalog([]);
 
-    expect(catalog.tasks.map((task) => task.id)).toEqual([
+    expect(catalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'live-task',
+      'stale-task',
+      'plan-finalization:plan-live',
       'plan-finalization:plan-live',
     ]);
     expect(catalog.tasks[0]?.plan_target_branch).toBe('feature/live-checkout');
-    expect(catalog.plans).toEqual([
-      expect.objectContaining({
-        id: 'plan-live',
-        targetBranch: 'feature/live-checkout',
-      }),
+    expect(catalog.plans.map((plan) => [plan.id, plan.targetBranch])).toEqual([
+      ['plan-live', 'develop'],
+      ['plan-live', 'feature/live-checkout'],
     ]);
   });
 
@@ -413,9 +413,9 @@ describe('createLoadImplementTaskCatalog', () => {
     });
 
     const catalog = await loadImplementTaskCatalog([]);
-    const task = catalog.tasks.find((candidate) => candidate.id === 'standalone-task');
+    const task = catalog.tasks.find((candidate) => (candidate.node_id || candidate.id) === 'standalone-task');
     const finalizationTask = catalog.tasks.find(
-      (candidate) => candidate.id === 'plan-finalization:plan-standalone-active',
+      (candidate) => candidate.node_id === 'plan-finalization:plan-standalone-active',
     );
 
     expect(task?.plan_target_branch).toBe('develop');
@@ -506,7 +506,7 @@ describe('createLoadImplementTaskCatalog', () => {
     });
 
     const catalog = await loadImplementTaskCatalog([]);
-    const task = catalog.tasks.find((candidate) => candidate.id === 'task-catalogue');
+    const task = catalog.tasks.find((candidate) => candidate.node_id === 'task-catalogue');
 
     expect(task?.project_id).toBe('project-lplr-current');
     expect(task?.project_ids).toEqual(['project-lplr-current']);
@@ -738,7 +738,7 @@ describe('createLoadImplementTaskCatalog', () => {
       }),
     ]);
 
-    expect(catalog.tasks.map((task) => task.id)).toEqual([
+    expect(catalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'task-web',
       'plan-finalization:plan-web',
       'standalone-1',
@@ -749,5 +749,70 @@ describe('createLoadImplementTaskCatalog', () => {
         targetBranch: 'develop',
       }),
     ]);
+  });
+
+  it('rejects when plan refs exist but every referenced plan fails to load', async () => {
+    const summary = toSummary(makePlan({
+      id: 'plan-unavailable',
+      title: 'Unavailable',
+      status: 'validated',
+      targetBranch: 'develop',
+    }));
+    const loadCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'web',
+        projectGroups: [],
+        standaloneProjects: [],
+      }),
+      listArchitectPlans: async () => ({ activePlanId: null, plans: [summary] }),
+      getArchitectPlan: async () => { throw new Error('replicas unavailable'); },
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value),
+      buildImplementTaskCatalog,
+    });
+
+    await expect(loadCatalog([])).rejects.toThrow(
+      'Unable to load any referenced Architect plan',
+    );
+  });
+
+  it('still scans the Git-flow base branch when branch discovery fails', async () => {
+    const plan = makePlan({
+      id: 'plan-base',
+      title: 'Base plan',
+      status: 'validated',
+      targetBranch: 'develop',
+    });
+    const attemptedBranches: string[] = [];
+    const loadCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'web',
+        projectGroups: [],
+        standaloneProjects: [],
+      }),
+      listArchitectPlans: async (branchName) => {
+        attemptedBranches.push(branchName);
+        return { activePlanId: null, plans: [toSummary(plan)] };
+      },
+      getArchitectPlan: async () => plan,
+      listArchitectPlanTargetBranches: async () => { throw new Error('discovery unavailable'); },
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value),
+      buildImplementTaskCatalog,
+    });
+
+    await loadCatalog([]);
+    expect(attemptedBranches).toEqual(['develop']);
   });
 });

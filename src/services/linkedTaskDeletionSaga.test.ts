@@ -26,6 +26,10 @@ mock.module('./tauriIpc', () => ({
 const sagaService = await import('./linkedTaskDeletionSaga');
 
 describe('linkedTaskDeletionSaga', () => {
+  it('includes the target branch in task deletion identity', () => {
+    expect(sagaService.getLinkedDeletionSagaKey({ ownerType: 'task', ownerId: 'node-1', targetBranch: 'develop' }))
+      .not.toBe(sagaService.getLinkedDeletionSagaKey({ ownerType: 'task', ownerId: 'node-1', targetBranch: 'release/next' }));
+  });
   it('fails closed for syntactically valid but semantically impossible owner-phase pairs', async () => {
     await expect(
       sagaService.loadLinkedConversationDeletionSagas(),
