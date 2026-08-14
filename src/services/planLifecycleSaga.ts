@@ -61,8 +61,28 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
 export const parsePlanLifecycleSagaJournal = (value: string | null | undefined): PlanLifecycleSagaJournal => {
   if (!value) return { sagas: [], quarantined: [] };
   let parsed: unknown;
-  try { parsed = JSON.parse(value); } catch { throw new PlanLifecycleSagaCorruptionError(); }
-  if (!Array.isArray(parsed)) throw new PlanLifecycleSagaCorruptionError();
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return {
+      sagas: [],
+      quarantined: [{
+        entry: value,
+        reason: 'Journal de saga JSON illisible : valeur brute conservée, aucune reprise automatique exécutée.',
+        quarantinedAt: new Date().toISOString(),
+      }],
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return {
+      sagas: [],
+      quarantined: [{
+        entry: parsed,
+        reason: 'Racine du journal de saga invalide : un tableau était attendu, aucune reprise automatique exécutée.',
+        quarantinedAt: new Date().toISOString(),
+      }],
+    };
+  }
   const journal: PlanLifecycleSagaJournal = { sagas: [], quarantined: [] };
   for (const entry of parsed) {
     try {
