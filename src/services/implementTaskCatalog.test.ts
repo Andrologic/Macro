@@ -7,6 +7,7 @@ import {
   taskMatchesProjectId,
 } from './implementTaskCatalog';
 import { buildPlanFinalizationTaskId } from './planFinalization';
+import { resolveActiveTaskIds } from './taskStatusPresentation';
 
 const makePlan = (
   overrides: Partial<ArchitectPlanRecord> & Pick<ArchitectPlanRecord, 'id' | 'title' | 'status'>
@@ -42,6 +43,31 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
 });
 
 describe('buildImplementTaskCatalog', () => {
+  it('maps legacy conversations only when a catalog node id is unambiguous', () => {
+    const node = {
+      id: 'shared-node', title: 'Shared', type: 'task' as const, status: 'pending' as const,
+      dependencies: [], assignedBranch: 'shared', projectId: 'web',
+    };
+    const develop = makePlan({
+      id: 'plan-a', title: 'A', status: 'validated', targetBranch: 'develop', nodes: [node],
+    });
+    const release = makePlan({
+      id: 'plan-b', title: 'B', status: 'validated', targetBranch: 'release/next', nodes: [node],
+    });
+    const singleTasks = buildImplementTaskCatalog({ plans: [develop], fallbackTasks: [] }).tasks;
+    expect(Array.from(resolveActiveTaskIds({
+      tasks: singleTasks,
+      conversations: [{ id: 'legacy', task_id: 'shared-node' }],
+      conversationRuntimeById: { legacy: { phase: 'streaming', sessionId: 's1' } },
+    }))).toEqual([singleTasks.find((task) => task.node_id === 'shared-node')!.id]);
+
+    const ambiguousTasks = buildImplementTaskCatalog({ plans: [develop, release], fallbackTasks: [] }).tasks;
+    expect(resolveActiveTaskIds({
+      tasks: ambiguousTasks,
+      conversations: [{ id: 'legacy', task_id: 'shared-node' }],
+      conversationRuntimeById: { legacy: { phase: 'streaming', sessionId: 's1' } },
+    }).size).toBe(0);
+  });
   it('aggregates executable architect plans and preserves standalone fallback tasks', () => {
     const plans = [
       makePlan({
@@ -160,7 +186,7 @@ describe('buildImplementTaskCatalog', () => {
       ['plan-a', 1],
       ['plan-b', 1],
     ]);
-    expect(catalog.tasks.map((task) => task.id)).toEqual([
+    expect(catalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'task-a1',
       'task-b1',
       buildPlanFinalizationTaskId('plan-a'),
@@ -168,9 +194,9 @@ describe('buildImplementTaskCatalog', () => {
       'standalone-1',
       'legacy-1',
     ]);
-    expect(catalog.tasks.find((task) => task.id === 'task-a1')?.context_project_ids).toEqual(['docs']);
+    expect(catalog.tasks.find((task) => task.node_id === 'task-a1')?.context_project_ids).toEqual(['docs']);
 
-    const architectTask = catalog.tasks.find((task) => task.id === 'task-b1');
+    const architectTask = catalog.tasks.find((task) => task.node_id === 'task-b1');
     expect(architectTask?.task_source).toBe('architect');
     expect(architectTask?.plan_title).toBe('Payments');
     expect(architectTask?.plan_status).toBe('in_progress');
@@ -267,7 +293,7 @@ describe('buildImplementTaskCatalog', () => {
 
     const catalog = buildImplementTaskCatalog({ plans, fallbackTasks: [] });
 
-    expect(catalog.tasks.map((task) => task.id)).toEqual([
+    expect(catalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'task-a1',
       'task-a2',
       'task-b1',
@@ -323,7 +349,7 @@ describe('buildImplementTaskCatalog', () => {
     });
 
     expect(readyCatalog.plans).toHaveLength(1);
-    expect(readyCatalog.tasks.map((task) => task.id)).toEqual([
+    expect(readyCatalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'task-ready-1',
       buildPlanFinalizationTaskId('plan-ready'),
     ]);
@@ -332,7 +358,7 @@ describe('buildImplementTaskCatalog', () => {
     expect(finalizationTask?.task_source).toBe('plan_finalization');
     expect(finalizationTask?.plan_id).toBe('plan-ready');
     expect(finalizationTask?.status).toBe('Pending');
-    expect(finalizationTask?.dependencies).toEqual(['task-ready-1']);
+    expect(finalizationTask?.dependencies).toEqual([readyCatalog.tasks[0].id]);
     expect(finalizationTask?.is_blocked).toBe(false);
     expect(finalizationTask?.assigned_branch).toBe('');
     expect(finalizationTask?.plan_target_branch).toBeNull();
@@ -368,15 +394,15 @@ describe('buildImplementTaskCatalog', () => {
       fallbackTasks: [],
     });
 
-    expect(reopenedCatalog.tasks.map((task) => task.id)).toEqual([
+    expect(reopenedCatalog.tasks.map((task) => task.node_id || task.id)).toEqual([
       'task-ready-1',
       buildPlanFinalizationTaskId('plan-ready'),
     ]);
     expect(reopenedCatalog.tasks[1]).toMatchObject({
       task_source: 'plan_finalization',
       status: 'Blocked',
-      dependencies: ['task-ready-1'],
-      blocked_by_task_ids: ['task-ready-1'],
+      dependencies: [reopenedCatalog.tasks[0].id],
+      blocked_by_task_ids: [reopenedCatalog.tasks[0].id],
       blocked_by: ['Finish checkout UI'],
       is_blocked: true,
       is_ready: false,
@@ -410,13 +436,13 @@ describe('buildImplementTaskCatalog', () => {
       fallbackTasks: [],
     });
 
-    const architectTask = catalog.tasks.find((task) => task.id === 'task-web');
+    const architectTask = catalog.tasks.find((task) => task.node_id === 'task-web');
     expect(architectTask?.plan_storage_branch).toBe('main');
     expect(architectTask?.plan_target_branch).toBe('develop');
     expect(architectTask?.plan_target_branches_by_project_id).toEqual({ web: 'develop' });
     expect(architectTask?.execution_targets[0]?.targetBranchName).toBe('develop');
 
-    const finalizationTask = catalog.tasks.find((task) => task.id === buildPlanFinalizationTaskId('plan-storage-main'));
+    const finalizationTask = catalog.tasks.find((task) => task.node_id === buildPlanFinalizationTaskId('plan-storage-main'));
     expect(finalizationTask?.plan_storage_branch).toBe('main');
     expect(finalizationTask?.plan_target_branch).toBe('develop');
     expect(finalizationTask?.assigned_branch).toBe('develop');
@@ -458,7 +484,7 @@ describe('buildImplementTaskCatalog', () => {
       fallbackTasks: [],
     });
 
-    const architectTask = catalog.tasks.find((task) => task.id === 'task-web-api');
+    const architectTask = catalog.tasks.find((task) => task.node_id === 'task-web-api');
     expect(architectTask?.plan_storage_branch).toBe('main');
     expect(architectTask?.plan_target_branch).toBeNull();
     expect(architectTask?.plan_target_branches_by_project_id).toEqual({
@@ -473,7 +499,7 @@ describe('buildImplementTaskCatalog', () => {
       ['api', 'integration'],
     ]);
 
-    const finalizationTask = catalog.tasks.find((task) => task.id === buildPlanFinalizationTaskId('plan-mixed'));
+    const finalizationTask = catalog.tasks.find((task) => task.node_id === buildPlanFinalizationTaskId('plan-mixed'));
     expect(finalizationTask?.plan_target_branch).toBeNull();
     expect(finalizationTask?.assigned_branch).toBe('');
     expect(catalog.plans[0]).toMatchObject({

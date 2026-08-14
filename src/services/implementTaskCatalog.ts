@@ -29,6 +29,7 @@ import type {
   PersistedMergeWorkflowSession,
 } from './mergeWorkflowPersistence';
 import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
+import { getTaskBusinessId, toPlanLocatorKey, toTaskRuntimeId } from './durableIdentity';
 
 export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
 export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'empty';
@@ -146,15 +147,22 @@ const buildPlanFinalizationTask = (
   }
 
   const isBlocked = !dependencyState.isComplete;
-  const blockedByTaskIds = isBlocked ? dependencyState.incompleteNodeIds : [];
+  const qualifyNodeId = (nodeId: string) => toTaskRuntimeId({
+    branchName: plan.targetBranch,
+    planId: plan.id,
+    nodeId,
+  });
+  const blockedByTaskIds = isBlocked ? dependencyState.incompleteNodeIds.map(qualifyNodeId) : [];
   const blockedBy = blockedByTaskIds
     .map((taskId) => blockingTasks.find((task) => task.id === taskId)?.title)
     .filter((title): title is string => Boolean(title));
   const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
   const effectiveTargetBranch = getUniqueTargetBranch(targetBranchesByProjectId, plan.targetBranch);
 
+  const nodeId = buildPlanFinalizationTaskId(plan.id);
   return {
-    id: buildPlanFinalizationTaskId(plan.id),
+    id: toTaskRuntimeId({ branchName: plan.targetBranch, planId: plan.id, nodeId }),
+    node_id: nodeId,
     plan_id: plan.id,
     project_id: projectId,
     project_ids: projectIds,
@@ -162,7 +170,7 @@ const buildPlanFinalizationTask = (
     title: buildPlanFinalizationTaskTitle(plan),
     description: PLAN_FINALIZATION_TASK_DESCRIPTION,
     status: isBlocked ? 'Blocked' : 'Pending',
-    dependencies: dependencyState.terminalNodeIds,
+    dependencies: dependencyState.terminalNodeIds.map(qualifyNodeId),
     estimated_changes: [],
     assigned_branch: effectiveTargetBranch || '',
     branch_name: effectiveTargetBranch || '',
@@ -357,6 +365,7 @@ export const deriveImplementTasksFromArchitectPlan = (
   const effectiveTargetBranch = getUniqueTargetBranch(targetBranchesByProjectId, plan.targetBranch);
   const strategy = deriveImplementTasksFromStrategy({
     planId: plan.id,
+    runtimeBranchName: plan.targetBranch,
     planSlug: plan.slug,
     nodes: plan.nodes || [],
     predictedBranches: plan.predictedBranches || [],
@@ -437,13 +446,20 @@ export const buildImplementTaskCatalog = (params: {
   const architectTasks = executablePlans.flatMap((plan) => deriveImplementTasksFromArchitectPlan(plan));
   const architectTasksByPlanId = new Map<string, CatalogedImplementTask[]>();
   architectTasks.forEach((task) => {
-    const planTasks = architectTasksByPlanId.get(task.plan_id) || [];
+    const locatorKey = toPlanLocatorKey({
+      branchName: task.plan_storage_branch || task.plan_target_branch || '',
+      planId: task.plan_id,
+    });
+    const planTasks = architectTasksByPlanId.get(locatorKey) || [];
     planTasks.push(task);
-    architectTasksByPlanId.set(task.plan_id, planTasks);
+    architectTasksByPlanId.set(locatorKey, planTasks);
   });
   const planFinalizationTasks = executablePlans
     .map((plan) => {
-      const planTasks = architectTasksByPlanId.get(plan.id) || [];
+      const planTasks = architectTasksByPlanId.get(toPlanLocatorKey({
+        branchName: plan.targetBranch,
+        planId: plan.id,
+      })) || [];
       const actionablePlanTasks = planTasks.filter((task) => !task.archived_at);
       const dependencyState = derivePlanFinalizationDependencyState(plan.nodes || []);
       if (!shouldCreatePlanFinalizationTask({
@@ -465,7 +481,7 @@ export const buildImplementTaskCatalog = (params: {
       );
     })
     .filter((task): task is CatalogedImplementTask => Boolean(task));
-  const architectTaskIds = new Set(architectTasks.map((task) => task.id));
+  const architectTaskIds = new Set(architectTasks.map(getTaskBusinessId));
   const allKnownPlanIds = new Set(params.plans.map((plan) => plan.id));
 
   const standaloneFallbackTasks = params.fallbackTasks.filter((task) => {
@@ -478,7 +494,13 @@ export const buildImplementTaskCatalog = (params: {
 
   const plans = executablePlans
     .map((plan) => {
-      const planTasks = architectTasks.filter((task) => task.plan_id === plan.id);
+      const planLocatorKey = toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id });
+      const planTasks = architectTasks.filter((task) =>
+        toPlanLocatorKey({
+          branchName: task.plan_storage_branch || task.plan_target_branch || '',
+          planId: task.plan_id,
+        }) === planLocatorKey
+      );
       const actionablePlanTasks = planTasks.filter((task) => !task.archived_at);
       const taskCount = actionablePlanTasks.length;
       const completedTaskCount = actionablePlanTasks.filter((task) => task.status === 'Completed').length;

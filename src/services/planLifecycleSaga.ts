@@ -1,4 +1,5 @@
 import * as tauriIpc from './tauriIpc';
+import { toPlanLocatorKey } from './durableIdentity';
 
 const SAGA_KEY = 'pendingPlanLifecycles:v1';
 
@@ -16,6 +17,10 @@ export interface PlanLifecycleSaga {
   updatedAt: string;
   lastError?: string;
 }
+
+export const getPlanLifecycleSagaKey = (
+  saga: Pick<PlanLifecycleSaga, 'branchName' | 'planId' | 'operation'>,
+): string => `${toPlanLocatorKey(saga)}:${saga.operation}`;
 
 export class PlanLifecycleSagaCorruptionError extends Error {
   constructor() {
@@ -80,10 +85,22 @@ const save = async (sagas: PlanLifecycleSaga[]): Promise<void> => {
 
 export const upsertPlanLifecycleSaga = async (saga: PlanLifecycleSaga): Promise<void> => mutate(async () => {
   const current = await loadPlanLifecycleSagas();
-  await save([...current.filter((entry) => entry.planId !== saga.planId || entry.operation !== saga.operation), saga]);
+  const sagaKey = getPlanLifecycleSagaKey(saga);
+  await save([...current.filter((entry) =>
+    getPlanLifecycleSagaKey(entry) !== sagaKey
+  ), saga]);
 });
 
-export const removePlanLifecycleSaga = async (planId: string, operation: PlanLifecycleOperation): Promise<void> => mutate(async () => {
+export const removePlanLifecycleSaga = async (
+  planId: string,
+  operation: PlanLifecycleOperation,
+  branchName?: string,
+): Promise<void> => mutate(async () => {
   const current = await loadPlanLifecycleSagas();
-  await save(current.filter((entry) => entry.planId !== planId || entry.operation !== operation));
+  const matches = current.filter((entry) => entry.planId === planId && entry.operation === operation);
+  if (!branchName && matches.length > 1) return;
+  await save(current.filter((entry) =>
+    entry.planId !== planId || entry.operation !== operation ||
+    (branchName !== undefined && entry.branchName !== branchName)
+  ));
 });
