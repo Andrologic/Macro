@@ -750,4 +750,69 @@ describe('createLoadImplementTaskCatalog', () => {
       }),
     ]);
   });
+
+  it('rejects when plan refs exist but every referenced plan fails to load', async () => {
+    const summary = toSummary(makePlan({
+      id: 'plan-unavailable',
+      title: 'Unavailable',
+      status: 'validated',
+      targetBranch: 'develop',
+    }));
+    const loadCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'web',
+        projectGroups: [],
+        standaloneProjects: [],
+      }),
+      listArchitectPlans: async () => ({ activePlanId: null, plans: [summary] }),
+      getArchitectPlan: async () => { throw new Error('replicas unavailable'); },
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value),
+      buildImplementTaskCatalog,
+    });
+
+    await expect(loadCatalog([])).rejects.toThrow(
+      'Unable to load any referenced Architect plan',
+    );
+  });
+
+  it('still scans the Git-flow base branch when branch discovery fails', async () => {
+    const plan = makePlan({
+      id: 'plan-base',
+      title: 'Base plan',
+      status: 'validated',
+      targetBranch: 'develop',
+    });
+    const attemptedBranches: string[] = [];
+    const loadCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'web',
+        projectGroups: [],
+        standaloneProjects: [],
+      }),
+      listArchitectPlans: async (branchName) => {
+        attemptedBranches.push(branchName);
+        return { activePlanId: null, plans: [toSummary(plan)] };
+      },
+      getArchitectPlan: async () => plan,
+      listArchitectPlanTargetBranches: async () => { throw new Error('discovery unavailable'); },
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value),
+      buildImplementTaskCatalog,
+    });
+
+    await loadCatalog([]);
+    expect(attemptedBranches).toEqual(['develop']);
+  });
 });

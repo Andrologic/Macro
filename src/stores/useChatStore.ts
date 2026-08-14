@@ -1197,13 +1197,22 @@ const retargetImplementTaskForSelection = (
     selectedGroupId?: string | null;
     selectedProjectId?: string | null;
   },
-): ImplementTask =>
-  retargetTaskForProjectSelection(task, {
+): ImplementTask => {
+  const knownProjectIds = new Set([
+    ...(params.standaloneProjects ?? []).map((project) => project.id),
+    ...params.projectGroups.flatMap((group) => group.projects.map((project) => project.id)),
+  ]);
+  const taskProjectIds = [...(task.project_ids ?? []), task.project_id].filter(Boolean);
+  if (taskProjectIds.some((projectId) => knownProjectIds.has(projectId))) {
+    return task;
+  }
+  return retargetTaskForProjectSelection(task, {
     standaloneProjects: params.standaloneProjects ?? [],
     projectGroups: params.projectGroups,
     selectedGroupId: params.selectedGroupId,
     selectedProjectId: params.selectedProjectId,
   });
+};
 
 export const resolveImplementTaskForContext = ({
   selectedTaskId,
@@ -1214,6 +1223,10 @@ export const resolveImplementTaskForContext = ({
   selectedProjectId,
   localContext,
 }: ResolveImplementTaskForContextInput): ImplementTask | null => {
+  const selectedTask = selectedTaskId
+    ? tasks.find((task) => task.id === selectedTaskId) ?? null
+    : null;
+  if (selectedTask) return selectedTask;
   const scopedProjectIds = getScopedProjectIds(
     {
       standaloneProjects: standaloneProjects ?? [],
@@ -1223,9 +1236,8 @@ export const resolveImplementTaskForContext = ({
     selectedProjectId,
   );
   const eligibleTasks = tasks.filter((task) => {
-    if (task.archived_at) {
-      return false;
-    }
+    if (task.archived_at) return task.id === selectedTaskId;
+    if (task.id === selectedTaskId) return true;
     if (taskMatchesScopedProjectIds(task, scopedProjectIds)) {
       return true;
     }
@@ -12019,16 +12031,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (mode === "Implement" && selectedTaskId) {
       const task = useTaskStore.getState().getTaskById(selectedTaskId);
-      const executionTask = task
-        ? retargetImplementTaskForSelection(task, {
-            standaloneProjects: appState.standaloneProjects,
-            projectGroups: appState.projectGroups,
-            selectedGroupId,
-            selectedProjectId,
-          })
-        : null;
       const projectId =
-        executionTask?.project_id ??
+        task?.project_id ??
+        task?.project_ids?.[0] ??
         getFocusedProjectForGroup(
           appState.projectGroups,
           selectedGroupId,

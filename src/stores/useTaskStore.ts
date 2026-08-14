@@ -2664,6 +2664,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    if (task.archived_at) {
+      set({
+        activeBranchName: null,
+        activeRepositoryPath: null,
+        activeWorkspacePathOverridesByProjectId: {},
+        lastError: null,
+      });
+      await syncWorkspaceRoot(null);
+      return;
+    }
+
     if (isManualDraftPendingInitialization(task)) {
       const draftProjectIds = [
         appState.selectedProjectId,

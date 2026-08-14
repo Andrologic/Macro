@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { computePlanSelectorRefreshState } from '../components/architect/planSelectorState';
+import {
+  computePlanSelectorRefreshState,
+  getPlanSelectorNullLoadDisposition,
+} from '../components/architect/planSelectorState';
 import type {
   ArchitectPlanReplica,
   ArchitectPlanSummary,
@@ -576,6 +579,20 @@ const loadIsolatedUseAppStore = async () => {
 };
 
 describe('useAppStore architect plan resolution', () => {
+  it('preserves selector state when a null load represents a catalog error or stale scope', () => {
+    expect(getPlanSelectorNullLoadDisposition({
+      catalogStatus: 'error',
+      isCatalogForCurrentScope: true,
+    })).toBe('preserve');
+    expect(getPlanSelectorNullLoadDisposition({
+      catalogStatus: 'ready',
+      isCatalogForCurrentScope: false,
+    })).toBe('preserve');
+    expect(getPlanSelectorNullLoadDisposition({
+      catalogStatus: 'ready',
+      isCatalogForCurrentScope: true,
+    })).toBe('clear');
+  });
   beforeEach(async () => {
     preferenceValues = { ...DEFAULT_UI_PREFS };
     projectSwitchPolicy = 'resume_per_project';

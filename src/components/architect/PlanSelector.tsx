@@ -66,6 +66,7 @@ import {
 } from '../../services/architectAutoPlan';
 import {
   computePlanSelectorRefreshState,
+  getPlanSelectorNullLoadDisposition,
   computePlanSelectorEmptyState,
   resolveVerifiedPlanDeletionRecovery,
   type PlanSelectorMutationCheck,
@@ -565,6 +566,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!isCurrentLoadRequest(requestId, requestContext)) {
         return;
       }
+      if (!result) {
+        const catalogState = useAppStore.getState();
+        const disposition = getPlanSelectorNullLoadDisposition({
+          catalogStatus: catalogState.architectPlanCatalogStatus,
+          isCatalogForCurrentScope:
+            catalogState.architectPlanCatalogScopeKey === currentCatalogScopeKey,
+        });
+        if (catalogState.architectPlanCatalogStatus === 'error') {
+          setError(
+            catalogState.architectPlanCatalogError ??
+              t('architect.planSelector.errorLoadPlans', 'Failed to load plans.'),
+          );
+        }
+        if (disposition === 'preserve') return;
+      }
       const visiblePlans = result?.snapshot.visiblePlans ?? [];
       const nextActivePlanId = result?.selectedPlan?.id ?? null;
       setPlans(visiblePlans);
@@ -609,8 +625,28 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setActivePlanId(planId);
     try {
+      const catalogBranches = Object.values(
+        useAppStore.getState().architectPlanCatalogByBranch,
+      );
+      const exactCatalogBranch = (
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) => plan === planSummaryHint),
+        ) ??
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) =>
+            plan.id === planId &&
+            plan.targetBranch === planSummaryHint?.targetBranch,
+          ),
+        )
+      )?.branchName;
+      const idOnlyBranches = catalogBranches.filter((branch) =>
+        branch.plans.some((plan) => plan.id === planId),
+      );
+      const unambiguousLegacyBranch = idOnlyBranches.length === 1
+        ? idOnlyBranches[0]?.branchName
+        : null;
       const activated = await activateArchitectPlan(planId, {
-        targetBranch: planBranch,
+        targetBranch: exactCatalogBranch ?? unambiguousLegacyBranch ?? planBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
       if (!isCurrentActivationRequest(requestId, requestContext)) {
