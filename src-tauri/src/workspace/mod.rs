@@ -4566,7 +4566,7 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
 
 fn latest_valid_workspace_temp_sync(
     metadata_root: &Path,
-) -> Option<(PathBuf, std::time::SystemTime, WorkspaceState)> {
+) -> Option<(PathBuf, WorkspaceState)> {
     let prefix = format!(".{WORKSPACE_STATE_FILE}.macro-tmp-");
     let mut candidates = std::fs::read_dir(metadata_root)
         .ok()?
@@ -4593,29 +4593,20 @@ fn latest_valid_workspace_temp_sync(
     candidates
         .into_iter()
         .next()
-        .map(|(modified, _, path, state)| (path, modified, state))
+        .map(|(_, _, path, state)| (path, state))
 }
 
 fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
     let backup_path = workspace_state_backup_path(metadata_root);
-    if let Some((temp_path, temp_modified, state)) =
-        latest_valid_workspace_temp_sync(metadata_root)
-    {
+    if let Some((temp_path, state)) = latest_valid_workspace_temp_sync(metadata_root) {
         let primary_candidate = std::fs::read_to_string(&primary_path)
             .ok()
             .and_then(|content| serde_json::from_str::<WorkspaceState>(&content).ok());
-        let primary_modified = std::fs::metadata(&primary_path)
-            .and_then(|value| value.modified())
-            .ok();
         let should_promote = match primary_candidate {
             None => true,
-            Some(primary) => {
-                state.workspace_revision > primary.workspace_revision
-                    || (state.workspace_revision == primary.workspace_revision
-                        && Some(temp_modified) > primary_modified)
-            }
+            Some(primary) => state.workspace_revision > primary.workspace_revision,
         };
         if should_promote {
             persist_state_sync(metadata_root, &state)?;
@@ -9749,6 +9740,40 @@ mod tests {
         assert_eq!(loaded.workspace_revision, 8);
         assert_eq!(loaded.standalone_projects[0].id, "project-current");
         assert!(temp_path.exists(), "an unselected temp remains available for diagnostics");
+    }
+
+    #[test]
+    fn load_raw_state_keeps_valid_primary_when_temp_revision_is_equal() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let primary = WorkspaceState {
+            workspace_revision: 12,
+            standalone_projects: vec![make_project("project-primary", "/tmp/primary")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &primary).expect("primary");
+        std::thread::sleep(Duration::from_millis(20));
+        let divergent_temp = WorkspaceState {
+            workspace_revision: 12,
+            standalone_projects: vec![make_project("project-divergent", "/tmp/divergent")],
+            ..WorkspaceState::default()
+        };
+        let temp_path = metadata_root.join(format!(
+            ".{}.macro-tmp-equal-revision-divergent",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(
+            &temp_path,
+            serde_json::to_string(&divergent_temp).expect("json"),
+        )
+        .expect("equal revision temp");
+
+        let loaded = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("workspace state");
+        assert_eq!(loaded.workspace_revision, 12);
+        assert_eq!(loaded.standalone_projects[0].id, "project-primary");
+        assert!(temp_path.exists());
     }
 
     #[test]
