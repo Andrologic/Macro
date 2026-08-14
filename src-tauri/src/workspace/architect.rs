@@ -2,10 +2,10 @@ use super::load_or_default_state;
 use super::metadata::{
     WorkspaceArchitectActivatePlanChatRequestDto, WorkspaceArchitectActivatePlanHeadRequestDto,
     WorkspaceArchitectChatMessageDto, WorkspaceArchitectListPlansRequestDto,
-    WorkspaceArchitectPlanActivationHeadDto,
-    WorkspaceArchitectPlanListDto, WorkspaceArchitectPlanRecordDto,
-    WorkspaceArchitectPlanReplicaDto, WorkspaceArchitectPlanRuntimeStatusDto,
-    WorkspaceArchitectPlanSummaryDto, WorkspaceArchitectPlanTranscriptDto,
+    WorkspaceArchitectPlanActivationHeadDto, WorkspaceArchitectPlanListDto,
+    WorkspaceArchitectPlanRecordDto, WorkspaceArchitectPlanReplicaDto,
+    WorkspaceArchitectPlanRuntimeStatusDto, WorkspaceArchitectPlanSummaryDto,
+    WorkspaceArchitectPlanTranscriptDto,
 };
 use crate::core::error::{BackendError, Result};
 use crate::git::GitState;
@@ -618,9 +618,12 @@ async fn resolve_project_scopes(
                 .map_err(|error| BackendError::Internal {
                     message: format!("Architect metadata root join error: {}", error),
                 })?;
-                Ok::<_, BackendError>(metadata_root_result.ok().map(|project_metadata_root| {
-                    (project_id, resolved_repo_path, project_metadata_root)
-                }))
+                let project_metadata_root = metadata_root_result?;
+                Ok::<_, BackendError>(Some((
+                    project_id,
+                    resolved_repo_path,
+                    project_metadata_root,
+                )))
             }
         }))
         .await?;
@@ -695,15 +698,225 @@ async fn read_index_at_scope(
     branch_name: &str,
 ) -> Result<ArchitectPlanIndexFile> {
     let path = architect_plan_index_path(&scope.metadata_root, branch_name);
-    let index = read_json_file::<ArchitectPlanIndexFile>(&path)
-        .await?
-        .unwrap_or_default();
+    let index = match read_json_file::<ArchitectPlanIndexFile>(&path).await {
+        Ok(Some(index)) => index,
+        Ok(None) => rebuild_index_from_plan_directories(scope, branch_name, &path).await?,
+        Err(index_error) => {
+            tracing::warn!(action = "architect_index_rebuild_started", scope = %scope.scope_key, reason = %index_error);
+            rebuild_index_from_plan_directories(scope, branch_name, &path)
+                .await
+                .map_err(|rebuild_error| BackendError::Filesystem {
+                    message: format!(
+                        "Architect index {} is corrupt and rebuild failed: {}; {}",
+                        path.display(),
+                        index_error,
+                        rebuild_error
+                    ),
+                })?
+        }
+    };
     let plans = index
         .plans
         .into_iter()
         .map(|summary| normalize_summary(branch_name, summary))
         .collect::<Vec<_>>();
     Ok(ArchitectPlanIndexFile { plans, ..index })
+}
+
+fn summary_from_plan_record(
+    branch_name: &str,
+    plan: WorkspaceArchitectPlanRecordDto,
+    chat_message_count: Option<usize>,
+) -> WorkspaceArchitectPlanSummaryDto {
+    normalize_summary(
+        branch_name,
+        WorkspaceArchitectPlanSummaryDto {
+            id: plan.id,
+            slug: plan.slug,
+            title: plan.title,
+            label: plan.label,
+            description: plan.description,
+            plan_kind: plan.plan_kind,
+            git_flow_plan: plan.git_flow_plan,
+            status: plan.status,
+            archived_at: plan.archived_at,
+            archived_from_status: plan.archived_from_status,
+            deleted_at: plan.deleted_at,
+            target_branch: plan.target_branch,
+            target_branches_by_project_id: plan.target_branches_by_project_id,
+            conversation_id: plan.conversation_id,
+            project_id: plan.project_id,
+            project_ids: plan.project_ids,
+            context_project_ids: plan.context_project_ids,
+            created_at: plan.created_at,
+            updated_at: plan.updated_at,
+            node_count: plan.nodes.len(),
+            predicted_branch_count: Some(plan.predicted_branches.len()),
+            chat_message_count,
+            expected_project_ids: plan.expected_project_ids,
+            available_project_ids: plan.available_project_ids,
+            missing_project_ids: plan.missing_project_ids,
+            replication_state: plan.replication_state,
+            revision: plan.revision,
+            replicas: plan.replicas,
+            has_replica_divergence: plan.has_replica_divergence,
+        },
+    )
+}
+
+async fn rebuild_index_from_plan_directories(
+    scope: &ArchitectRuntimeScope,
+    branch_name: &str,
+    index_path: &Path,
+) -> Result<ArchitectPlanIndexFile> {
+    let plans_root = index_path
+        .parent()
+        .ok_or_else(|| BackendError::Filesystem {
+            message: format!("Invalid architect index path {}", index_path.display()),
+        })?;
+    let mut entries = match fs::read_dir(plans_root).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ArchitectPlanIndexFile::default())
+        }
+        Err(error) => {
+            return Err(BackendError::Filesystem {
+                message: format!("Failed to scan {}: {}", plans_root.display(), error),
+            })
+        }
+    };
+    let mut plans = Vec::new();
+    let mut invalid = Vec::new();
+    while let Some(entry) =
+        entries
+            .next_entry()
+            .await
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to scan {}: {}", plans_root.display(), error),
+            })?
+    {
+        if !entry
+            .file_type()
+            .await
+            .map(|kind| kind.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let plan_path = entry.path().join("plan.json");
+        match read_json_file::<WorkspaceArchitectPlanRecordDto>(&plan_path).await {
+            Ok(Some(plan)) if !plan.id.trim().is_empty() => {
+                let manifest_path = entry.path().join("manifest.json");
+                let manifest =
+                    match read_json_file::<ArchitectPlanManifestDto>(&manifest_path).await {
+                        Ok(manifest) => manifest,
+                        Err(error) => {
+                            invalid.push(format!("{} (summary rebuilt from plan.json)", error));
+                            None
+                        }
+                    };
+                plans.push(summary_from_plan_record(
+                    branch_name,
+                    plan,
+                    manifest.map(|value| value.conversation.message_count),
+                ));
+            }
+            Ok(None) => invalid.push(format!("missing {}", plan_path.display())),
+            Ok(Some(_)) => invalid.push(format!("empty plan id in {}", plan_path.display())),
+            Err(error) => invalid.push(error.to_string()),
+        }
+    }
+    if plans.is_empty() && !invalid.is_empty() {
+        return Err(BackendError::Filesystem {
+            message: format!(
+                "No valid plan content found while rebuilding {}: {}",
+                index_path.display(),
+                invalid.join("; ")
+            ),
+        });
+    }
+    if !invalid.is_empty() {
+        tracing::warn!(
+            action = "architect_index_rebuild_partial_corruption",
+            scope = %scope.scope_key,
+            diagnostics = %invalid.join("; ")
+        );
+    }
+    plans.sort_by(|left, right| left.id.cmp(&right.id));
+    let active_plan_id = plans
+        .iter()
+        .filter(|plan| plan.status != "deleted" && plan.status != "archived")
+        .max_by(|left, right| {
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        })
+        .map(|plan| plan.id.clone());
+    let rebuilt = ArchitectPlanIndexFile {
+        version: 3,
+        active_plan_id,
+        plans,
+        ..ArchitectPlanIndexFile::default()
+    };
+    if !rebuilt.plans.is_empty() {
+        let temporary_path = index_path.with_extension("json.rebuild.tmp");
+        let serialized =
+            serde_json::to_vec_pretty(&rebuilt).map_err(|error| BackendError::Filesystem {
+                message: error.to_string(),
+            })?;
+        fs::write(&temporary_path, serialized)
+            .await
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to write {}: {}", temporary_path.display(), error),
+            })?;
+        replace_file_with_backup(&temporary_path, index_path).await?;
+        tracing::warn!(action = "architect_index_rebuilt", scope = %scope.scope_key, plan_count = rebuilt.plans.len());
+    }
+    Ok(rebuilt)
+}
+
+async fn replace_file_with_backup(temporary_path: &Path, destination: &Path) -> Result<()> {
+    let backup_path = destination.with_extension("json.rebuild.backup");
+    let destination_existed = fs::metadata(destination).await.is_ok();
+    if destination_existed {
+        let _ = fs::remove_file(&backup_path).await;
+        fs::rename(destination, &backup_path)
+            .await
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to back up {}: {}", destination.display(), error),
+            })?;
+    }
+    if let Err(error) = fs::rename(temporary_path, destination).await {
+        if destination_existed {
+            if let Err(rollback_error) = fs::rename(&backup_path, destination).await {
+                return Err(BackendError::Filesystem {
+                    message: format!(
+                        "Failed to replace {}: {}; rollback also failed: {}. Backup remains at {}",
+                        destination.display(),
+                        error,
+                        rollback_error,
+                        backup_path.display()
+                    ),
+                });
+            }
+        }
+        return Err(BackendError::Filesystem {
+            message: format!("Failed to replace {}: {}", destination.display(), error),
+        });
+    }
+    if destination_existed {
+        fs::remove_file(&backup_path)
+            .await
+            .map_err(|error| BackendError::Filesystem {
+                message: format!(
+                    "Rebuilt {} but failed to remove backup {}: {}",
+                    destination.display(),
+                    backup_path.display(),
+                    error
+                ),
+            })?;
+    }
+    Ok(())
 }
 
 async fn build_branch_index(
@@ -717,7 +930,7 @@ async fn build_branch_index(
     let workspace_state_stamp = file_stamp(&metadata_root.join("workspace.json")).await;
     let scopes =
         resolve_project_scopes(workspace_path, metadata_root, scoped_project_ids_hint).await?;
-    let index_results = try_join_all(scopes.iter().cloned().map(|scope| {
+    let index_results = futures::future::join_all(scopes.iter().cloned().map(|scope| {
         let normalized_branch = normalized_branch.clone();
         async move {
             let index = read_index_at_scope(&scope, &normalized_branch).await?;
@@ -729,12 +942,27 @@ async fn build_branch_index(
             Ok::<_, BackendError>((scope, index, stamp))
         }
     }))
-    .await?;
+    .await;
 
     let mut plan_entries_by_id: HashMap<String, Vec<ArchitectPlanScopeSummaryEntry>> =
         HashMap::new();
     let mut active_plan_ids = HashSet::new();
     let mut index_stamps_by_scope_key = HashMap::new();
+    let index_results = index_results
+        .into_iter()
+        .filter_map(|result| match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::warn!(action = "architect_index_replica_quarantined", reason = %error);
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if index_results.is_empty() && !scopes.is_empty() {
+        return Err(BackendError::Filesystem {
+            message: format!("All architect plan indexes for branch '{}' are unreadable; refusing to return an empty successful result", normalized_branch),
+        });
+    }
     for (scope, index, stamp) in &index_results {
         index_stamps_by_scope_key.insert(scope.scope_key.clone(), stamp.clone());
         if let Some(active_plan_id) = trim_to_option(index.active_plan_id.as_deref()) {
@@ -1053,14 +1281,21 @@ async fn load_head_snapshots_for_locators(
     branch_name: &str,
 ) -> Result<Vec<ArchitectPlanHeadSnapshot>> {
     let normalized_branch = branch_name.to_string();
-    Ok(try_join_all(locators.iter().cloned().map(|locator| {
+    let results = futures::future::join_all(locators.iter().cloned().map(|locator| {
         let normalized_branch = normalized_branch.clone();
         async move { load_head_snapshot(&locator, &normalized_branch).await }
     }))
-    .await?
-    .into_iter()
-    .flatten()
-    .collect())
+    .await;
+    Ok(results
+        .into_iter()
+        .filter_map(|result| match result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(action = "architect_head_replica_quarantined", reason = %error);
+                None
+            }
+        })
+        .collect())
 }
 
 fn pick_canonical_snapshot(
@@ -1240,32 +1475,67 @@ pub async fn activate_plan_chat(
     let Some(locators) = index.plan_locators_by_id.get(&effective_plan_id) else {
         return Ok(None);
     };
-    let chosen_locator = pick_canonical_entry(locators).cloned();
-    let Some(chosen_locator) = chosen_locator else {
-        return Ok(None);
-    };
     let plan_id = sanitize_id(&effective_plan_id);
-    let manifest_path = architect_plan_dir(
-        &chosen_locator.scope.metadata_root,
-        &normalized_branch,
-        &plan_id,
-    )
-    .join("manifest.json");
-    let manifest = read_json_file::<ArchitectPlanManifestDto>(&manifest_path)
-        .await?
-        .unwrap_or_default();
-    let messages = if manifest.conversation.message_count == 0 {
-        Vec::new()
-    } else {
-        read_transcript_for_scope(&chosen_locator.scope, &normalized_branch, &plan_id).await?
-    };
-    Ok(Some(WorkspaceArchitectPlanTranscriptDto {
-        plan_id,
-        target_branch: normalized_branch,
-        transcript_revision: trim_to_option(Some(manifest.content_hashes.chat.as_str())),
-        message_count: manifest.conversation.message_count,
-        messages,
-    }))
+    let mut candidates = locators.clone();
+    candidates.sort_by(|left, right| {
+        compare_scope_recency(
+            Some(&right.summary.updated_at),
+            right.scope.repo_path.as_deref(),
+            Some(&left.summary.updated_at),
+            left.scope.repo_path.as_deref(),
+        )
+    });
+    let mut failures = Vec::new();
+    for locator in candidates {
+        let manifest_path =
+            architect_plan_dir(&locator.scope.metadata_root, &normalized_branch, &plan_id)
+                .join("manifest.json");
+        let attempt = async {
+            let manifest = read_json_file::<ArchitectPlanManifestDto>(&manifest_path)
+                .await?
+                .ok_or_else(|| BackendError::Filesystem {
+                    message: format!("Missing {}", manifest_path.display()),
+                })?;
+            let messages = if manifest.conversation.message_count == 0 {
+                Vec::new()
+            } else {
+                read_transcript_for_scope(&locator.scope, &normalized_branch, &plan_id).await?
+            };
+            if messages.len() != manifest.conversation.message_count {
+                return Err(BackendError::Filesystem {
+                    message: format!(
+                        "Transcript count mismatch in {}: manifest={}, actual={}",
+                        locator.scope.scope_key,
+                        manifest.conversation.message_count,
+                        messages.len()
+                    ),
+                });
+            }
+            Ok::<_, BackendError>((manifest, messages))
+        }
+        .await;
+        match attempt {
+            Ok((manifest, messages)) => {
+                return Ok(Some(WorkspaceArchitectPlanTranscriptDto {
+                    plan_id,
+                    target_branch: normalized_branch,
+                    transcript_revision: trim_to_option(Some(
+                        manifest.content_hashes.chat.as_str(),
+                    )),
+                    message_count: manifest.conversation.message_count,
+                    messages,
+                }))
+            }
+            Err(error) => failures.push(format!("{}: {}", locator.scope.scope_key, error)),
+        }
+    }
+    Err(BackendError::Filesystem {
+        message: format!(
+            "No healthy transcript replica for plan '{}': {}",
+            plan_id,
+            failures.join("; ")
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -1383,6 +1653,53 @@ mod tests {
             revision: Some(2),
             ..WorkspaceArchitectPlanRecordDto::default()
         }
+    }
+
+    #[tokio::test]
+    async fn rebuilds_a_corrupt_index_from_plan_content_with_deterministic_active_plan() {
+        let metadata = TempDir::new().expect("metadata temp dir");
+        let scope = ArchitectRuntimeScope {
+            scope_key: "workspace:test".to_string(),
+            project_id: None,
+            repo_path: None,
+            workspace_path: None,
+            metadata_root: metadata.path().to_path_buf(),
+            source: "workspace".to_string(),
+        };
+        let older_id = "older-plan";
+        let newer_id = "newer-plan";
+        write_json(
+            &architect_plan_dir(metadata.path(), "main", older_id).join("plan.json"),
+            &plan_record(older_id, "project-1"),
+        );
+        let mut newer = plan_record(newer_id, "project-1");
+        newer.updated_at = "2026-06-02T08:00:00.000Z".to_string();
+        write_json(
+            &architect_plan_dir(metadata.path(), "main", newer_id).join("plan.json"),
+            &newer,
+        );
+        let index_path = architect_plan_index_path(metadata.path(), "main");
+        std_fs::write(&index_path, "{corrupt").expect("write corrupt index");
+
+        let rebuilt = read_index_at_scope(&scope, "main")
+            .await
+            .expect("rebuild index");
+
+        assert_eq!(rebuilt.active_plan_id.as_deref(), Some(newer_id));
+        assert_eq!(
+            rebuilt
+                .plans
+                .iter()
+                .map(|plan| plan.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![newer_id, older_id]
+        );
+        let persisted = read_json_file::<ArchitectPlanIndexFile>(&index_path)
+            .await
+            .expect("read rebuilt index")
+            .expect("persisted rebuilt index");
+        assert_eq!(persisted.active_plan_id.as_deref(), Some(newer_id));
+        assert!(!index_path.with_extension("json.rebuild.backup").exists());
     }
 
     #[test]

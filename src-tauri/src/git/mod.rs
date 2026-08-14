@@ -699,23 +699,41 @@ fn migrate_legacy_metadata_layout(worktree_path: &Path) -> Result<()> {
         let source = entry.path();
         let target = worktree_path.join(entry.file_name());
 
-        if target.exists() {
-            continue;
-        }
-
-        fs::rename(&source, &target).map_err(|e| BackendError::Io {
-            message: format!(
-                "Failed to migrate legacy metadata item {} to {}: {}",
-                source.display(),
-                target.display(),
-                e
-            ),
-            source: e,
-        })?;
+        merge_legacy_metadata_item(&source, &target)?;
     }
 
     let _ = fs::remove_dir(&legacy_root);
     Ok(())
+}
+
+fn merge_legacy_metadata_item(source: &Path, target: &Path) -> Result<()> {
+    if target.is_dir() && source.is_dir() {
+        for entry in fs::read_dir(source).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })? {
+            let entry = entry.map_err(|e| BackendError::Io {
+                message: e.to_string(),
+                source: e,
+            })?;
+            merge_legacy_metadata_item(&entry.path(), &target.join(entry.file_name()))?;
+        }
+        let _ = fs::remove_dir(source);
+        return Ok(());
+    }
+    if target.exists() {
+        tracing::warn!(action = "legacy_metadata_conflict_preserved", source = %source.display(), target = %target.display());
+        return Ok(());
+    }
+    fs::rename(source, target).map_err(|e| BackendError::Io {
+        message: format!(
+            "Failed to migrate legacy metadata item {} to {}: {}",
+            source.display(),
+            target.display(),
+            e
+        ),
+        source: e,
+    })
 }
 
 fn ensure_metadata_gitignore_override(worktree_path: &Path) -> Result<()> {
@@ -986,7 +1004,11 @@ impl GitState {
                     message: "Failed to lock git metadata root cache".to_string(),
                 })?;
         if let Some(cached) = metadata_roots.get(&cache_key).cloned() {
-            return Ok(cached);
+            if cached.worktree_path.exists() {
+                return Ok(cached);
+            }
+            metadata_roots.remove(&cache_key);
+            tracing::warn!(action = "macro_metadata_root_cache_evicted", workspace_path = %workspace_path.display(), missing_path = %cached.worktree_path.display());
         }
 
         let repo = match self.open_repo(workspace_path) {
@@ -1455,6 +1477,34 @@ mod tests {
             fs::read_to_string(ensured.worktree_path.join(".git")).expect("read repaired gitfile");
         assert!(!gitfile.contains("lplr-app"));
         assert!(!gitfile.contains(&original_path.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_migrate_legacy_metadata_layout_merges_existing_directories() {
+        let temp = TempDir::new().expect("temp dir");
+        let legacy_plans = temp
+            .path()
+            .join(".macro")
+            .join("branches")
+            .join("develop")
+            .join("plans");
+        let current_plans = temp.path().join("branches").join("develop").join("plans");
+        fs::create_dir_all(&legacy_plans).expect("legacy plans");
+        fs::create_dir_all(&current_plans).expect("current plans");
+        fs::write(legacy_plans.join("legacy-plan.json"), "legacy").expect("legacy plan");
+        fs::write(current_plans.join("current-plan.json"), "current").expect("current plan");
+
+        migrate_legacy_metadata_layout(temp.path()).expect("merge migration");
+
+        assert_eq!(
+            fs::read_to_string(current_plans.join("legacy-plan.json")).unwrap(),
+            "legacy"
+        );
+        assert_eq!(
+            fs::read_to_string(current_plans.join("current-plan.json")).unwrap(),
+            "current"
+        );
+        assert!(!temp.path().join(".macro").exists());
     }
 
     #[test]
