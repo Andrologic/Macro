@@ -66,6 +66,7 @@ import {
 } from '../../services/architectAutoPlan';
 import {
   computePlanSelectorRefreshState,
+  getPlanSelectorNullLoadDisposition,
   computePlanSelectorEmptyState,
   resolveVerifiedPlanDeletionRecovery,
   type PlanSelectorMutationCheck,
@@ -560,6 +561,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       });
       if (!isCurrentLoadRequest(requestId, requestContext)) {
         return;
+      }
+      if (!result) {
+        const catalogState = useAppStore.getState();
+        const disposition = getPlanSelectorNullLoadDisposition({
+          catalogStatus: catalogState.architectPlanCatalogStatus,
+          isCatalogForCurrentScope:
+            catalogState.architectPlanCatalogScopeKey === currentCatalogScopeKey,
+        });
+        if (catalogState.architectPlanCatalogStatus === 'error') {
+          setError(
+            catalogState.architectPlanCatalogError ??
+              t('architect.planSelector.errorLoadPlans', 'Failed to load plans.'),
+          );
+        }
+        if (disposition === 'preserve') return;
       }
       const visiblePlans = result?.snapshot.visiblePlans ?? [];
       const nextActivePlanId = result?.selectedPlan?.id ?? null;

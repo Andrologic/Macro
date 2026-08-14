@@ -212,7 +212,12 @@ export const createLoadImplementTaskCatalog = (
     )[0] || null;
     let plans: ArchitectPlanRecord[] = [];
 
-    const discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
+    let discoveredTargetBranches: string[] = [];
+    try {
+      discoveredTargetBranches = await dependencies.listArchitectPlanTargetBranches();
+    } catch {
+      // Discovery is advisory; the active and Git-flow base branches remain valid fallbacks.
+    }
       const candidateTargetBranches = resolveCandidateTargetBranches(
         [
           activeTargetBranch,
