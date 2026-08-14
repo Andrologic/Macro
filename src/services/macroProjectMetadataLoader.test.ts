@@ -236,4 +236,16 @@ describe('loadMacroProjectMetadataForSelection', () => {
       { branchName: 'bugfix/missing', message: 'missing branch index' },
     ]);
   });
+
+  it('rejects the catalog when every candidate branch fails', async () => {
+    const deps = createDeps({ develop: { activePlanId: null, plans: [] } });
+    deps.listArchitectPlans.mockImplementation(async () => {
+      throw new Error('metadata unavailable');
+    });
+
+    await expect(loadMacroProjectMetadataForSelection({
+      scopedProjectIds: ['project-1'],
+      deps,
+    })).rejects.toThrow('develop: metadata unavailable');
+  });
 });

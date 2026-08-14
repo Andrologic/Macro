@@ -66,6 +66,7 @@ import {
 } from '../../services/architectAutoPlan';
 import {
   computePlanSelectorRefreshState,
+  getPlanSelectorNullLoadDisposition,
   computePlanSelectorEmptyState,
   resolveVerifiedPlanDeletionRecovery,
   type PlanSelectorMutationCheck,
@@ -561,6 +562,21 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!isCurrentLoadRequest(requestId, requestContext)) {
         return;
       }
+      if (!result) {
+        const catalogState = useAppStore.getState();
+        const disposition = getPlanSelectorNullLoadDisposition({
+          catalogStatus: catalogState.architectPlanCatalogStatus,
+          isCatalogForCurrentScope:
+            catalogState.architectPlanCatalogScopeKey === currentCatalogScopeKey,
+        });
+        if (catalogState.architectPlanCatalogStatus === 'error') {
+          setError(
+            catalogState.architectPlanCatalogError ??
+              t('architect.planSelector.errorLoadPlans', 'Failed to load plans.'),
+          );
+        }
+        if (disposition === 'preserve') return;
+      }
       const visiblePlans = result?.snapshot.visiblePlans ?? [];
       const nextActivePlanId = result?.selectedPlan?.id ?? null;
       setPlans(visiblePlans);
@@ -603,8 +619,25 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setActivePlanId(planId);
     try {
+      const catalogBranches = Object.values(
+        useAppStore.getState().architectPlanCatalogByBranch,
+      );
+      const catalogBranch = (
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) => plan === planSummaryHint),
+        ) ??
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) =>
+            plan.id === planId &&
+            plan.targetBranch === planSummaryHint?.targetBranch,
+          ),
+        ) ??
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) => plan.id === planId),
+        )
+      )?.branchName;
       const activated = await activateArchitectPlan(planId, {
-        targetBranch,
+        targetBranch: catalogBranch ?? planSummaryHint?.targetBranch ?? targetBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
       if (!isCurrentActivationRequest(requestId, requestContext)) {

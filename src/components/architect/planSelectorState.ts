@@ -17,6 +17,15 @@ export interface PlanSelectorRefreshState {
 }
 
 export type PlanSelectorEmptyState = 'hidden' | 'empty' | 'outside-scope';
+export type PlanSelectorNullLoadDisposition = 'preserve' | 'clear';
+
+export const getPlanSelectorNullLoadDisposition = (params: {
+  catalogStatus: 'idle' | 'loading' | 'ready' | 'error';
+  isCatalogForCurrentScope: boolean;
+}): PlanSelectorNullLoadDisposition =>
+  params.catalogStatus === 'ready' && params.isCatalogForCurrentScope
+    ? 'clear'
+    : 'preserve';
 
 export type VerifiedPlanDeletionRecovery = 'not_applied' | 'succeeded' | 'conversation_cleanup_pending';
 
