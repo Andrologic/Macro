@@ -38,6 +38,7 @@ const appState: MockAppState = {
 };
 
 const workspaceFiles = new Map<string, Map<string, string>>();
+const appSettings = new Map<string, string>();
 let importCounter = 0;
 let originalConsoleInfo: typeof console.info;
 const gitWorktreeInspectMock = mock(
@@ -225,6 +226,15 @@ const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: st
   prunedRegistration: true,
   alreadyAbsent: false,
 }));
+const gitBranchWorktreeRemoveMock = mock(
+  async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
+    worktreeKey: params.worktreeKey,
+    worktreePath: `${params.repoPath}/.macro/worktrees/${params.worktreeKey}`,
+    removedPath: true,
+    prunedRegistration: true,
+    alreadyAbsent: false,
+  })
+);
 
 const registerModuleMocks = () => {
   mock.restore();
@@ -233,6 +243,28 @@ const registerModuleMocks = () => {
     ...actualTauriIpc,
     isTauriAvailable: () => true,
     workspaceGetActiveRoot: async () => '/repos/web',
+    dbGetAppSetting: async (key: string) => {
+      const valueJson = appSettings.get(key);
+      return valueJson === undefined ? null : { key, value_json: valueJson };
+    },
+    dbSetAppSetting: async ({ key, valueJson }: { key: string; valueJson: string }) => {
+      appSettings.set(key, valueJson);
+    },
+    macroBranchCommitIfDirty: async () => ({
+      branch: '@macro',
+      state: 'clean' as const,
+      worktree_path: '/repos/web/.git/macro-metadata-worktree',
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+    }),
     fsReadFileWithOptions: async ({
       path,
       workspacePath,
@@ -295,6 +327,7 @@ const registerModuleMocks = () => {
     gitBranchCreate: gitBranchCreateMock,
     gitWorktreeInspect: gitWorktreeInspectMock,
     gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
+    gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
     gitWorktreeRemove: gitWorktreeRemoveMock,
   }));
 
@@ -344,6 +377,7 @@ const loadIntegrationModules = async () => {
 describe('architectGitFlowService replica integration', () => {
   beforeEach(() => {
     workspaceFiles.clear();
+    appSettings.clear();
     seedReplica();
     originalConsoleInfo = console.info;
     console.info = () => undefined;
@@ -358,6 +392,7 @@ describe('architectGitFlowService replica integration', () => {
     gitBranchCreateMock.mockClear();
     gitWorktreeInspectMock.mockClear();
     gitBranchWorktreeInspectMock.mockClear();
+    gitBranchWorktreeRemoveMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
   });
 
@@ -382,6 +417,7 @@ describe('architectGitFlowService replica integration', () => {
         gitBranchCreate: gitBranchCreateMock,
         gitWorktreeInspect: gitWorktreeInspectMock,
         gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
+        gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
       },
       getAppState: () => ({

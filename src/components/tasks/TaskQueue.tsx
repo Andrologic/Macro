@@ -1156,6 +1156,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
     return tasks.filter((task) => taskMatchesProjectId(task, projectFilter));
   }, [projectFilter, tasks]);
+  const totalActiveTaskCount = useMemo(
+    () => tasks.filter((task) => !task.archived_at && task.status !== 'Completed').length,
+    [tasks]
+  );
 
   const statusCounts = useMemo(() => {
     const activeTasks = projectFilteredTasks.filter((task) => !task.archived_at && !task.draft);
@@ -1980,9 +1984,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         <TaskProjectFilter
           projects={projectFilterOptions}
           selectedProjectId={projectFilter === ALL_PROJECTS_FILTER ? null : projectFilter}
-          totalTaskCount={projectFilteredTasks.filter((task) =>
-            !task.archived_at && task.status !== 'Completed'
-          ).length}
+          totalTaskCount={totalActiveTaskCount}
           onSelect={(projectId) => {
             setProjectFilter(projectId || ALL_PROJECTS_FILTER);
             setStatusFilter('all');
