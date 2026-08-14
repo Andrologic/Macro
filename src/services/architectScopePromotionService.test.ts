@@ -170,4 +170,53 @@ describe('architectScopePromotionService', () => {
       projectIds: ['web'],
     })).rejects.toThrow('read-only');
   });
+
+  it('retries provisioning after the promoted scope was already persisted', async () => {
+    let plan = buildPlan();
+    const updateArchitectPlan = mock(async (input: Partial<ArchitectPlanRecord> & { planId: string }) => {
+      plan = { ...plan, ...input, id: plan.id };
+      return plan;
+    });
+    let provisionAttempt = 0;
+    const provisionPlanBranches = mock(async () => {
+      provisionAttempt += 1;
+      if (provisionAttempt === 1) throw new Error('Git provisioning failed');
+      return {
+        planBranchName: 'plan/game',
+        repositories: [],
+        createdPlanBranch: false,
+        createdFeatureBranches: [],
+        existingFeatureBranches: ['feature/game/backend'],
+      };
+    });
+    const service = createArchitectScopePromotionService({
+      getAppState: () => ({
+        projectGroups: [{
+          id: 'group',
+          name: 'Group',
+          isOpen: true,
+          projects: [buildProject('api'), buildProject('web')],
+        }],
+        getProjectById: (projectId) => buildProject(projectId),
+      }),
+      getArchitectPlan: mock(async () => plan),
+      updateArchitectPlan: updateArchitectPlan as any,
+      provisionPlanBranches: provisionPlanBranches as any,
+    });
+    const params = {
+      branchName: 'develop',
+      planId: 'plan-1',
+      taskId: 'task-1',
+      projectIds: ['web'],
+    };
+
+    await expect(service.promoteTaskContextProjects(params)).rejects.toThrow('Git provisioning failed');
+    const resumed = await service.promoteTaskContextProjects(params);
+
+    expect(updateArchitectPlan).toHaveBeenCalledTimes(1);
+    expect(provisionPlanBranches).toHaveBeenCalledTimes(2);
+    expect(resumed.promotedProjectIds).toEqual([]);
+    expect(resumed.provision).not.toBeNull();
+    expect(resumed.plan.projectIds).toEqual(['api', 'web']);
+  });
 });

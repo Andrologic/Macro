@@ -413,6 +413,7 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'gitCheckout'
   | 'gitBranchCreate'
   | 'gitWorktreeInspect'
+  | 'gitWorktreeCreate'
   | 'gitWorktreeRemove'
   | 'gitBranchWorktreeInspect'
   | 'gitBranchWorktreeCreate'
@@ -847,6 +848,15 @@ export const createArchitectGitFlowService = (
       ...defaultArchitectGitFlowDependencies.tauri,
       ...(overrides.tauri || {}),
     },
+  };
+  const provisionRollbacks = new WeakMap<ProvisionPlanBranchesResult, () => Promise<void>>();
+  const rollbackProvisionResultWithDeps = async (
+    provision: ProvisionPlanBranchesResult,
+  ): Promise<void> => {
+    const rollback = provisionRollbacks.get(provision);
+    if (!rollback) return;
+    provisionRollbacks.delete(provision);
+    await rollback();
   };
 
   const resolveProjectRepoPathsWithDeps = (
@@ -1352,6 +1362,19 @@ export const createArchitectGitFlowService = (
 
     const results: ProvisionedPlanRepositoryResult[] = [];
     const createdBranches: Array<{ repoPath: string; branchName: string }> = [];
+    const createdWorktrees: Array<{ repoPath: string; taskId: string; branchName: string }> = [];
+    const rollbackCreatedGitResources = async (): Promise<void> => {
+      await Promise.allSettled(
+        [...createdWorktrees].reverse().map(({ repoPath, taskId, branchName }) =>
+          deps.tauri.gitWorktreeRemove({ repoPath, taskId, branchName, force: true })
+        )
+      );
+      await Promise.allSettled(
+        [...createdBranches].reverse().map(({ repoPath, branchName }) =>
+          deps.tauri.gitBranchDelete({ repoPath, branchName, force: true })
+        )
+      );
+    };
     try {
       for (const repository of repositories) {
         const branches = await deps.tauri.gitBranchList(repository.repoPath);
@@ -1402,6 +1425,39 @@ export const createArchitectGitFlowService = (
           createdFeatureBranches.push(featureBranch);
         }
 
+        for (const featureBranch of featureBranchesByProject.get(repository.projectId) || []) {
+          const worktreeKey = toBranchWorktreeKey(repository.projectId, featureBranch);
+          const inspection = await deps.tauri.gitWorktreeInspect({
+            repoPath: repository.repoPath,
+            taskId: worktreeKey,
+            branchName: featureBranch,
+          });
+          if (inspection.status === 'ready') {
+            continue;
+          }
+
+          const ensuredWorktree = await deps.tauri.gitWorktreeCreate({
+            repoPath: repository.repoPath,
+            taskId: worktreeKey,
+            branchName: featureBranch,
+            fromRef: repositoryPlanBranchName,
+            preferredCommitBranch: null,
+            fallbackBranches: resolveStableFallbackBranchesForProject({
+              projectId: repository.projectId,
+              getProjectById: deps.getAppState().getProjectById,
+              getGitFlowBaseBranch: deps.getGitFlowBaseBranch,
+              extraBranches: [repositoryPlanBranchName],
+            }),
+          });
+          if (ensuredWorktree.status === 'created' || ensuredWorktree.status === 'repaired') {
+            createdWorktrees.push({
+              repoPath: repository.repoPath,
+              taskId: worktreeKey,
+              branchName: featureBranch,
+            });
+          }
+        }
+
         results.push({
           projectId: repository.projectId,
           repoPath: repository.repoPath,
@@ -1412,15 +1468,11 @@ export const createArchitectGitFlowService = (
         });
       }
     } catch (error) {
-      await Promise.allSettled(
-        createdBranches.reverse().map(async ({ repoPath, branchName }) => {
-          await deps.tauri.gitBranchDelete({ repoPath, branchName, force: true });
-        })
-      );
+      await rollbackCreatedGitResources();
       throw error;
     }
 
-    return {
+    const result: ProvisionPlanBranchesResult = {
       planBranchName: results[0]?.planBranchName || renderPlanBranchNameForProject({
         plan,
         projectId: plan.projectId || plan.projectIds?.[0] || 'project',
@@ -1431,6 +1483,8 @@ export const createArchitectGitFlowService = (
       createdFeatureBranches: results.flatMap((result) => result.createdFeatureBranches),
       existingFeatureBranches: results.flatMap((result) => result.existingFeatureBranches),
     };
+    provisionRollbacks.set(result, rollbackCreatedGitResources);
+    return result;
   };
 
   const validatePlanAndProvisionBranchesWithDeps = async (params: {
@@ -1478,16 +1532,22 @@ export const createArchitectGitFlowService = (
 
     const provision = await provisionPlanBranchesWithDeps(normalizedPlan, params.repoPath);
 
-    const validatedPlan = await deps.updateArchitectPlan({
-      branchName: params.branchName,
-      planId: plan.id,
-      status: 'validated',
-      nodes: normalizedPlan.nodes,
-      predictedBranches: normalizedPlan.predictedBranches,
-      projectId: normalizedPlan.projectId,
-      projectIds: normalizedPlan.projectIds,
-      setActive: params.setActive !== false,
-    });
+    let validatedPlan: ArchitectPlanRecord;
+    try {
+      validatedPlan = await deps.updateArchitectPlan({
+        branchName: params.branchName,
+        planId: plan.id,
+        status: 'validated',
+        nodes: normalizedPlan.nodes,
+        predictedBranches: normalizedPlan.predictedBranches,
+        projectId: normalizedPlan.projectId,
+        projectIds: normalizedPlan.projectIds,
+        setActive: params.setActive !== false,
+      });
+    } catch (error) {
+      await rollbackProvisionResultWithDeps(provision);
+      throw error;
+    }
 
     return {
       plan: {

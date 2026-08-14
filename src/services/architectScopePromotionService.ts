@@ -171,7 +171,8 @@ export const createArchitectScopePromotionService = (
     }
 
     if (promotedProjectIds.length === 0) {
-      return { plan, promotedProjectIds: [], provision: null };
+      const provision = await deps.provisionPlanBranches(plan);
+      return { plan, promotedProjectIds: [], provision };
     }
 
     let updatedTaskFound = false;
