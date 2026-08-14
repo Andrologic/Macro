@@ -36,34 +36,65 @@ const locked = async <T>(callback: () => Promise<T>): Promise<T> => {
   try { return await callback(); } finally { release(); }
 };
 
-type JournalTransport = Pick<typeof tauriIpc, 'isTauriAvailable' | 'dbGetAppSetting' | 'dbSetAppSetting'>;
+type JournalTransport = Pick<typeof tauriIpc, 'isTauriAvailable' | 'dbGetAppSetting' | 'dbCompareAndSwapAppSetting'>;
+const MAX_CAS_ATTEMPTS = 12;
 
-const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanMutationJournalEntry[]> => {
-  if (!transport.isTauriAvailable()) return [];
-  const raw = (await transport.dbGetAppSetting(JOURNAL_KEY))?.value_json;
+const parseArray = (raw: string | null): unknown[] => {
   if (!raw) return [];
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { parsed = raw; }
-  const values = Array.isArray(parsed) ? parsed : [parsed];
-  const valid = values.filter(isEntry);
-  const invalid = values.filter((entry) => !isEntry(entry));
-  if (invalid.length > 0) {
-    await transport.dbSetAppSetting({
-      key: QUARANTINE_KEY,
-      valueJson: JSON.stringify(invalid.map((entry) => ({
-        entry,
-        quarantinedAt: new Date().toISOString(),
-        reason: 'Entrée de transaction de réplication invalide ; aucune mutation n’a été déduite depuis cette entrée.',
-      }))),
-    });
-    await transport.dbSetAppSetting({ key: JOURNAL_KEY, valueJson: JSON.stringify(valid) });
-  }
-  return valid;
+  return Array.isArray(parsed) ? parsed : [parsed];
 };
 
-const saveUnlocked = async (entries: ArchitectPlanMutationJournalEntry[], transport: JournalTransport): Promise<void> => {
-  if (!transport.isTauriAvailable()) return;
-  await transport.dbSetAppSetting({ key: JOURNAL_KEY, valueJson: JSON.stringify(entries) });
+const updateSetting = async (
+  key: string,
+  update: (values: unknown[]) => unknown[],
+  transport: JournalTransport,
+): Promise<unknown[]> => {
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const expectedValueJson = (await transport.dbGetAppSetting(key))?.value_json ?? null;
+    const next = update(parseArray(expectedValueJson));
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key,
+      expectedValueJson,
+      valueJson: JSON.stringify(next),
+    });
+    if (result.applied) return next;
+  }
+  throw new Error(`Conflit persistant lors de la mise à jour atomique du réglage ${key}.`);
+};
+
+const appendQuarantine = async (entries: unknown[], reason: string, transport: JournalTransport): Promise<void> => {
+  if (entries.length === 0) return;
+  const quarantinedAt = new Date().toISOString();
+  await updateSetting(QUARANTINE_KEY, (existing) => [
+    ...existing,
+    ...entries.map((entry) => ({ entry, quarantinedAt, reason })),
+  ], transport);
+};
+
+const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanMutationJournalEntry[]> => {
+  if (!transport.isTauriAvailable()) return [];
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const expectedValueJson = (await transport.dbGetAppSetting(JOURNAL_KEY))?.value_json ?? null;
+    const values = parseArray(expectedValueJson);
+    const valid = values.filter(isEntry);
+    const invalid = values.filter((entry) => !isEntry(entry));
+    if (invalid.length === 0) return valid;
+
+    await appendQuarantine(
+      invalid,
+      'Entrée de transaction de réplication invalide ; aucune mutation n’a été déduite depuis cette entrée.',
+      transport,
+    );
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key: JOURNAL_KEY,
+      expectedValueJson,
+      valueJson: JSON.stringify(valid),
+    });
+    if (result.applied) return valid;
+  }
+  throw new Error('Conflit persistant lors de la normalisation du journal des mutations de plans.');
 };
 
 export const createArchitectPlanMutationId = (entry: Pick<ArchitectPlanMutationJournalEntry, 'branchName' | 'planId' | 'operation'>): string =>
@@ -74,14 +105,19 @@ export const loadArchitectPlanMutationJournal = async (transport: JournalTranspo
 
 export const upsertArchitectPlanMutationJournal = async (entry: ArchitectPlanMutationJournalEntry, transport: JournalTransport = tauriIpc): Promise<void> =>
   locked(async () => {
-    const entries = await loadUnlocked(transport);
-    await saveUnlocked([...entries.filter((candidate) => candidate.id !== entry.id), entry], transport);
+    if (!transport.isTauriAvailable()) return;
+    await loadUnlocked(transport);
+    await updateSetting(JOURNAL_KEY, (values) => [
+      ...values.filter((candidate) => !isEntry(candidate) || candidate.id !== entry.id),
+      entry,
+    ], transport);
   });
 
 export const removeArchitectPlanMutationJournal = async (id: string, transport: JournalTransport = tauriIpc): Promise<void> =>
   locked(async () => {
-    const entries = await loadUnlocked(transport);
-    await saveUnlocked(entries.filter((entry) => entry.id !== id), transport);
+    if (!transport.isTauriAvailable()) return;
+    await loadUnlocked(transport);
+    await updateSetting(JOURNAL_KEY, (values) => values.filter((entry) => !isEntry(entry) || entry.id !== id), transport);
   });
 
 export const quarantineArchitectPlanMutationJournal = async (
@@ -89,14 +125,8 @@ export const quarantineArchitectPlanMutationJournal = async (
   reason: string,
   transport: JournalTransport = tauriIpc,
 ): Promise<void> => locked(async () => {
-  const existingRaw = (await transport.dbGetAppSetting(QUARANTINE_KEY))?.value_json;
-  let existing: unknown = [];
-  try { existing = existingRaw ? JSON.parse(existingRaw) : []; } catch { existing = []; }
-  const quarantine = Array.isArray(existing) ? existing : [];
-  await transport.dbSetAppSetting({
-    key: QUARANTINE_KEY,
-    valueJson: JSON.stringify([...quarantine, { entry, reason, quarantinedAt: new Date().toISOString() }]),
-  });
-  const entries = await loadUnlocked(transport);
-  await saveUnlocked(entries.filter((candidate) => candidate.id !== entry.id), transport);
+  if (!transport.isTauriAvailable()) return;
+  await appendQuarantine([entry], reason, transport);
+  await loadUnlocked(transport);
+  await updateSetting(JOURNAL_KEY, (values) => values.filter((candidate) => !isEntry(candidate) || candidate.id !== entry.id), transport);
 });
