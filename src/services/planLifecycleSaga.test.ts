@@ -44,9 +44,25 @@ describe('planLifecycleSaga', () => {
     expect(journal.quarantined[0]?.reason).toContain('invalide');
   });
 
-  it('still fails closed when the journal container itself is unreadable', () => {
-    expect(() => parsePlanLifecycleSagaJournal('{not-json')).toThrow(
-      'journal du cycle de vie des plans est corrompu',
-    );
+  it('quarantines a syntactically invalid journal without blocking bootstrap', () => {
+    const rawJournal = '{not-json';
+
+    const journal = parsePlanLifecycleSagaJournal(rawJournal);
+
+    expect(journal.sagas).toEqual([]);
+    expect(journal.quarantined).toHaveLength(1);
+    expect(journal.quarantined[0]?.entry).toBe(rawJournal);
+    expect(journal.quarantined[0]?.reason).toContain('JSON illisible');
+  });
+
+  it('quarantines a non-array root without treating it as an empty valid journal', () => {
+    const invalidRoot = { planId: 'plan-1', operation: 'archive' };
+
+    const journal = parsePlanLifecycleSagaJournal(JSON.stringify(invalidRoot));
+
+    expect(journal.sagas).toEqual([]);
+    expect(journal.quarantined).toHaveLength(1);
+    expect(journal.quarantined[0]?.entry).toEqual(invalidRoot);
+    expect(journal.quarantined[0]?.reason).toContain('tableau était attendu');
   });
 });
