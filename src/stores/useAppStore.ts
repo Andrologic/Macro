@@ -180,6 +180,52 @@ export interface ProjectAddOperation {
 const MAX_REMEMBERED_PROJECTS = 50;
 let projectSwitchRequestId = 0;
 let architectPlanSwitchRequestId = 0;
+let architectPlanCatalogRequestId = 0;
+const architectPlanCatalogRequestIdsByKind = new Map<string, number>();
+let selectedTaskPersistenceTimer: ReturnType<typeof setTimeout> | null = null;
+let selectedTaskPersistenceQueue = Promise.resolve();
+let lastQueuedTaskSelectionKey: string | null = null;
+
+const scheduleSelectedTaskPersistence = (taskId: string | null): void => {
+  if (!taskId) return;
+  const task = useTaskStore.getState().getTaskById(taskId);
+  if (!task) return;
+  const state = useAppStore.getState();
+  const taskProjectIds = Array.from(new Set([
+    ...(task.project_ids ?? []),
+    task.project_id,
+  ].filter((value): value is string => Boolean(value))));
+  const group = state.projectGroups.find((candidate) =>
+    candidate.projects.some((project) => taskProjectIds.includes(project.id)),
+  );
+  const contextId = group?.id ?? taskProjectIds[0] ?? null;
+  if (!contextId) return;
+  const focusProjectId = taskProjectIds.find((projectId) =>
+    group?.projects.some((project) => project.id === projectId),
+  ) ?? taskProjectIds[0] ?? null;
+  const persistenceKey = `${contextId}::${taskId}::${focusProjectId ?? 'none'}`;
+  if (lastQueuedTaskSelectionKey === persistenceKey) return;
+  lastQueuedTaskSelectionKey = persistenceKey;
+  if (selectedTaskPersistenceTimer) clearTimeout(selectedTaskPersistenceTimer);
+  selectedTaskPersistenceTimer = setTimeout(() => {
+    selectedTaskPersistenceTimer = null;
+    selectedTaskPersistenceQueue = selectedTaskPersistenceQueue.then(async () => {
+      const current = await localProjectContext.getLocalProjectContextState(contextId);
+      await localProjectContext.upsertLocalProjectContextState({
+        projectId: contextId,
+        groupId: group?.id ?? current?.groupId ?? null,
+        focusProjectId: focusProjectId ?? current?.focusProjectId ?? null,
+        lastPlanId: current?.lastPlanId ?? null,
+        lastTaskId: taskId,
+        architectConversationId: current?.architectConversationId ?? null,
+        implementConversationId: current?.implementConversationId ?? null,
+      });
+    }).catch((error) => {
+      lastQueuedTaskSelectionKey = null;
+      devLogger.warn('[tasks] Failed to persist the selected task context.', error);
+    });
+  }, 120);
+};
 let activeArchitectPlanPersistenceQueue: Promise<void> = Promise.resolve();
 
 const enqueueActiveArchitectPlanPersistence = (
@@ -959,14 +1005,32 @@ const activateArchitectPlanInStore = async (input: {
         ? getArchitectPlanVisibleProjectIds(input.options.planSummaryHint)
         : undefined;
 
-  const activationPayload = await getArchitectPlanActivationPayload(
-    targetBranch,
-    input.planId,
-    {
-      summaryHint: input.options?.planSummaryHint ?? null,
-      scopedProjectIdsHint: activationScopedProjectIdsHint,
+  let activationPayload: ArchitectPlanActivationPayload | null;
+  try {
+    activationPayload = await getArchitectPlanActivationPayload(
+      targetBranch,
+      input.planId,
+      {
+        summaryHint: input.options?.planSummaryHint ?? null,
+        scopedProjectIdsHint: activationScopedProjectIdsHint,
+      }
+    );
+  } catch (error) {
+    if (
+      switchingArchitectPlan &&
+      isCurrentArchitectPlanSwitchRequest({ requestId, planId: input.planId, targetBranch })
+    ) {
+      useAppStore.setState((state) => ({
+        pendingArchitectPlanActivationPayload: null,
+        architectPlanSwitch: {
+          ...state.architectPlanSwitch,
+          status: 'error',
+          errorMessage: toServiceError(error).message,
+        },
+      }));
     }
-  );
+    return null;
+  }
   if (
     switchingArchitectPlan &&
     !isCurrentArchitectPlanSwitchRequest({
@@ -1838,10 +1902,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  setSelectedTask: (taskId) =>
-    set({
-      selectedTaskId: taskId,
-    }),
+  setSelectedTask: (taskId) => {
+    set({ selectedTaskId: taskId });
+    scheduleSelectedTaskPersistence(taskId);
+  },
 
   setEnabledModes: (modes) => set({ enabledModes: modes }),
 
@@ -1908,6 +1972,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   loadMacroProjectMetadataForSelection: async (options = {}) => {
+    const requestId = ++architectPlanCatalogRequestId;
     const state = get();
     const registry = {
       standaloneProjects: state.standaloneProjects,
@@ -1924,6 +1989,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedProjectId: state.selectedProjectId,
       scopedProjectIds,
     });
+    const requestKind = `${catalogScopeKey}::${options.hydrateActivePlan !== false ? 'hydrate' : 'catalog'}`;
+    architectPlanCatalogRequestIdsByKind.set(requestKind, requestId);
 
     if (!contextId || scopedProjectIds.length === 0) {
       if (options.hydrateActivePlan !== false) {
@@ -1971,6 +2038,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }),
         includeArchivedInVisible: options.includeArchivedInVisible === true,
       });
+      const isCurrentScope = () => {
+        if (architectPlanCatalogRequestIdsByKind.get(requestKind) !== requestId) return false;
+        const latest = get();
+        return buildArchitectPlanCatalogScopeKey({
+          selectedGroupId: latest.selectedGroupId,
+          selectedProjectId: latest.selectedProjectId,
+          scopedProjectIds: getScopedProjectIds(
+            { standaloneProjects: latest.standaloneProjects, projectGroups: latest.projectGroups },
+            latest.selectedGroupId,
+            latest.selectedProjectId,
+          ),
+        }) === catalogScopeKey;
+      };
+      if (!isCurrentScope()) return null;
       const catalogModernPlanCount = result.snapshot.branches.reduce(
         (count, branch) =>
           count + branch.plans.filter((plan) => plan.status !== "deleted").length,
@@ -2001,6 +2082,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
               scopedProjectIdsHint: scopedProjectIds,
             },
           });
+          if (!isCurrentScope()) return null;
           if (activatedPlan) {
             await persistResolvedArchitectPlanContext({
               contextId,
@@ -2041,14 +2123,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       return result;
     } catch (error) {
+      if (architectPlanCatalogRequestIdsByKind.get(requestKind) !== requestId) return null;
       const normalized = toServiceError(error);
       set({
-        architectPlanCatalogByBranch: {},
-        architectPlanCatalogScopeKey: catalogScopeKey,
-        architectPlanCatalogScopedProjectIds: scopedProjectIds,
-        architectPlanCatalogModernPlanCount: 0,
-        architectPlanCatalogVisiblePlanCount: 0,
-        visibleArchitectPlans: [],
         architectPlanCatalogStatus: "error",
         architectPlanCatalogError: normalized.message,
       });
