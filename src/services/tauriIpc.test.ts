@@ -323,6 +323,11 @@ describe("tauriIpc executeWorkspaceTool", () => {
     const tauriIpc = await loadTauriIpc();
 
     await tauriIpc.dbSetAppSetting({ key: "panel", valueJson: '{"open":true}' });
+    await tauriIpc.dbCompareAndSwapAppSetting({
+      key: "panel",
+      expectedValueJson: '{"open":true}',
+      valueJson: '{"open":false}',
+    });
     await tauriIpc.dbGetProjectContextState("project-1");
     await tauriIpc.dbDeleteProjectContextState("project-1");
     await tauriIpc.dbUpsertProjectContextState({
@@ -336,6 +341,14 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           key: "panel",
           valueJson: '{"open":true}',
+        },
+      },
+      {
+        command: "db_compare_and_swap_app_setting",
+        payload: {
+          key: "panel",
+          expectedValueJson: '{"open":true}',
+          valueJson: '{"open":false}',
         },
       },
       {

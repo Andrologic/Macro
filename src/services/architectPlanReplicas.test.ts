@@ -270,6 +270,13 @@ const registerArchitectPlanMocks = () => {
       for (const hook of appSettingWriteHooks) await hook({ key, valueJson });
       appSettings.set(key, valueJson);
     },
+    dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }: { key: string; expectedValueJson: string | null; valueJson: string }) => {
+      const current = appSettings.get(key) ?? null;
+      if (current !== expectedValueJson) return { applied: false };
+      for (const hook of appSettingWriteHooks) await hook({ key, valueJson });
+      appSettings.set(key, valueJson);
+      return { applied: true };
+    },
     listMessages: async (conversationId: string) => conversationMessages.get(conversationId) ?? [],
     macroBranchCommitIfDirty: async ({
       workspacePath,

@@ -189,6 +189,11 @@ pub struct AppSettingRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompareAndSwapAppSettingResult {
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalTabRecord {
     pub id: String,
     pub kind: String,

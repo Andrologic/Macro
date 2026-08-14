@@ -473,6 +473,9 @@ l'application active d'une transaction et ne peut donc pas rejouer une intention
 encore en cours. Les entrées d'un autre workspace restent en attente et
 les entrées invalides sont mises en quarantaine sans être interprétées comme un
 catalogue vide.
+Les mises à jour du journal et de sa quarantaine emploient un compare-and-swap
+atomique dans SQLite avec reprises bornées, afin que plusieurs processus Macro
+ne puissent pas écraser leurs intentions concurrentes.
 
 ---
 

@@ -532,6 +532,10 @@ export interface DbAppSetting {
   updated_at: string;
 }
 
+export interface DbCompareAndSwapAppSettingResult {
+  applied: boolean;
+}
+
 export type ExternalOpenAction = "editor" | "terminal" | "files";
 export type ExternalAppKind = "none" | "builtin" | "detected";
 
@@ -3202,6 +3206,18 @@ export async function dbSetAppSetting(params: {
 }): Promise<DbAppSetting> {
   return invoke<DbAppSetting>("db_set_app_setting", {
     key: params.key,
+    valueJson: params.valueJson,
+  });
+}
+
+export async function dbCompareAndSwapAppSetting(params: {
+  key: string;
+  expectedValueJson: string | null;
+  valueJson: string;
+}): Promise<DbCompareAndSwapAppSettingResult> {
+  return invoke<DbCompareAndSwapAppSettingResult>("db_compare_and_swap_app_setting", {
+    key: params.key,
+    expectedValueJson: params.expectedValueJson,
     valueJson: params.valueJson,
   });
 }

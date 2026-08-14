@@ -4083,6 +4083,25 @@ pub async fn db_set_app_setting(
 }
 
 #[tauri::command]
+pub async fn db_compare_and_swap_app_setting(
+    pool: State<'_, DbPool>,
+    key: String,
+    expected_value_json: Option<String>,
+    value_json: String,
+) -> CommandResult<CompareAndSwapAppSettingResult> {
+    let pool = get_pool(&pool).await?;
+
+    repository::compare_and_swap_app_setting(
+        &pool,
+        &key,
+        expected_value_json.as_deref(),
+        &value_json,
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_get_project_context_state(
     pool: State<'_, DbPool>,
     project_id: String,
