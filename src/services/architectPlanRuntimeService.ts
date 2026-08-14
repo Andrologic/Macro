@@ -6,6 +6,21 @@ import type { PersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 import { filterNonWslProjectPaths } from './wslPaths';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
+const runtimeMutationQueues = new Map<string, Promise<void>>();
+
+const serializeRuntimeMutation = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
+  const previous = runtimeMutationQueues.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  runtimeMutationQueues.set(key, current);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (runtimeMutationQueues.get(key) === current) runtimeMutationQueues.delete(key);
+  }
+};
 
 export interface ArchitectPlanRuntimeRecord {
   schemaVersion: 1;
@@ -192,7 +207,9 @@ export const updateArchitectPlanRuntime = async (params: {
   plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId'>;
   repoPaths?: Array<string | null | undefined>;
   update: (record: ArchitectPlanRuntimeRecord) => ArchitectPlanRuntimeRecord | null;
-}): Promise<ArchitectPlanRuntimeRecord | null> => {
+}): Promise<ArchitectPlanRuntimeRecord | null> => serializeRuntimeMutation(
+  `${normalizeBranchName(params.branchName)}:${sanitizeId(params.plan.id)}`,
+  async () => {
   const projectIds = [
     ...(params.plan.projectIds || []),
     ...(params.plan.projectId ? [params.plan.projectId] : []),
@@ -227,8 +244,9 @@ export const updateArchitectPlanRuntime = async (params: {
     record: normalized,
   });
 
-  return normalized;
-};
+    return normalized;
+  },
+);
 
 export const persistArchitectPlanMergeWorkflowSession = async (params: {
   branchName: string;

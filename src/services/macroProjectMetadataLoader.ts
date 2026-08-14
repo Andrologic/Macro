@@ -46,6 +46,16 @@ export interface MacroProjectMetadataLoadResult {
   selectionReason: ArchitectPlanCatalogSelectionReason;
 }
 
+export class ArchitectPlanCatalogUnavailableError extends Error {
+  readonly errors: ArchitectPlanCatalogSnapshot['errors'];
+
+  constructor(errors: ArchitectPlanCatalogSnapshot['errors']) {
+    super(errors.map(({ branchName, message }) => `${branchName}: ${message}`).join('; '));
+    this.name = 'ArchitectPlanCatalogUnavailableError';
+    this.errors = errors;
+  }
+}
+
 export const buildArchitectPlanCatalogScopeKey = (params: {
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
@@ -272,6 +282,10 @@ export const loadMacroProjectMetadataForSelection = async (
       }),
     )
   );
+
+  if (candidateBranches.length > 0 && branches.every((branch) => branch.error !== null)) {
+    throw new ArchitectPlanCatalogUnavailableError(errors);
+  }
 
   const includeArchived = params.includeArchivedInVisible === true;
   const includeDeleted = params.includeDeletedInVisible === true;
