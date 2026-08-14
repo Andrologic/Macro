@@ -623,6 +623,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationCompactionStatusById,
     selectConversation,
     deleteConversation,
+    sendMessage,
   } = useChatStore(useShallow((state) => ({
     createConversation: state.createConversation,
     conversations: state.conversations,
@@ -631,6 +632,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectConversation: state.selectConversation,
     deleteConversation: state.deleteConversation,
+    sendMessage: state.sendMessage,
   })));
   const {
     tasks,
@@ -804,10 +806,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const handleCreateManualFeature = async ({
     projectId,
-    title,
+    request,
   }: {
     projectId: string;
-    title: string;
+    request: string;
   }) => {
     if (taskMutationDisabled || taskExecutionDisabled) {
       notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
@@ -837,13 +839,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const targetGroupId = getProjectGroupByProjectId(projectGroups, projectId)?.id ?? null;
 
     const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const provisionalTitle = request.replace(/\s+/g, ' ').trim().slice(0, 80);
     setPendingTaskId(taskId);
     let conversationId: string | null = null;
+    let taskCreated = false;
 
     try {
       setSelectedTask(taskId);
       const conversation = await createConversation(
-        title,
+        provisionalTitle,
         taskId,
         projectId,
         targetGroupId
@@ -856,24 +860,32 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         projectIds: [projectId],
         contextProjectIds: [],
         baseBranch: getGitFlowBaseBranch(),
-        title,
+        title: provisionalTitle,
         description: '',
       });
       await activateTask(taskId);
       if (!(await selectConversation(conversation.id))) {
         throw new Error('Impossible de sélectionner la nouvelle conversation.');
       }
+      taskCreated = true;
       setShowCreateTaskDialog(false);
+      await sendMessage({
+        conversationId: conversation.id,
+        content: request,
+        taskId,
+      });
     } catch (error) {
       let cleanupError: unknown = null;
-      if (conversationId) {
+      if (conversationId && !taskCreated) {
         try {
           await deleteConversation(conversationId, { mode: 'implement' });
         } catch (cleanupFailure) {
           cleanupError = cleanupFailure;
         }
       }
-      setSelectedTask(null);
+      if (!taskCreated) {
+        setSelectedTask(null);
+      }
       const message = error instanceof Error ? error.message : t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
       notify.error(message, {
         description: cleanupError instanceof Error
