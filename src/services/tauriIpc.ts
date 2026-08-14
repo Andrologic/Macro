@@ -1135,6 +1135,7 @@ export interface WorkspaceManualFeatureDto {
   description: string;
   status: string;
   featureSlug: string | null;
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | null;
   branchName: string | null;
   archivedAt: string | null;
   archiveReason: string | null;
@@ -2973,6 +2974,7 @@ export async function workspaceFinalizeManualFeature(params: {
   title: string;
   description: string;
   featureSlug: string;
+  taskKind: 'feature' | 'bugfix' | 'hotfix';
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_finalize_manual_feature",
@@ -2982,6 +2984,7 @@ export async function workspaceFinalizeManualFeature(params: {
       title: params.title,
       description: params.description,
       featureSlug: params.featureSlug,
+      taskKind: params.taskKind,
     },
   );
 }

@@ -860,6 +860,7 @@ pub async fn workspace_finalize_manual_feature(
     title: String,
     description: String,
     feature_slug: String,
+    task_kind: String,
 ) -> Result<ManualFeatureDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
@@ -872,6 +873,7 @@ pub async fn workspace_finalize_manual_feature(
         &title,
         &description,
         &feature_slug,
+        &task_kind,
     )
     .await
 }

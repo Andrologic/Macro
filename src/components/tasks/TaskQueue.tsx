@@ -270,10 +270,19 @@ const TaskItem: React.FC<TaskItemProps> = ({
     });
   }
   if (task.task_source === 'standalone') {
+    const taskKindLabel = task.task_kind === 'bugfix'
+      ? t('implement.taskKindBugfix', 'Bugfix')
+      : task.task_kind === 'hotfix'
+        ? t('implement.taskKindHotfix', 'Hotfix')
+        : task.task_kind === 'feature'
+          ? t('implement.taskKindFeature', 'Feature')
+          : task.draft
+            ? t('implement.taskKindPending', 'Agent classification')
+            : t('implement.standaloneBadge', 'Standalone');
     contextBadges.push({
       key: 'standalone',
-      label: t('implement.standaloneBadge', 'Standalone'),
-      icon: 'layers',
+      label: taskKindLabel,
+      icon: task.task_kind ? getPlanKindIconName(task.task_kind) : 'sparkles',
     });
   }
   if (task.draft) {

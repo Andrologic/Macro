@@ -1,4 +1,4 @@
-import type { Task, TaskExecutionTarget } from '../types';
+import type { StandaloneTaskKind, Task, TaskExecutionTarget } from '../types';
 import {
   deriveImplementTasksFromStrategy,
   toBranchWorktreeKey,
@@ -60,6 +60,7 @@ export interface CatalogedImplementTask extends DerivedImplementTask {
   has_mixed_target_branches?: boolean;
   draft: boolean;
   standalone_kind: 'legacy' | 'manual_feature';
+  task_kind?: StandaloneTaskKind | null;
   base_branch: string | null;
   feature_slug: string | null;
   conversation_id: string | null;
@@ -184,6 +185,7 @@ const buildPlanFinalizationTask = (
     has_mixed_target_branches: planHasMixedTargetBranches(plan),
     draft: false,
     standalone_kind: 'legacy',
+    task_kind: null,
     base_branch: effectiveTargetBranch,
     feature_slug: null,
     conversation_id: null,
@@ -238,6 +240,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       execution_targets?: TaskExecutionTarget[];
       draft?: boolean;
       standalone_kind?: 'legacy' | 'manual_feature';
+      task_kind?: StandaloneTaskKind | null;
       base_branch?: string | null;
       feature_slug?: string | null;
       conversation_id?: string | null;
@@ -277,6 +280,10 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       todos: [],
       draft: isDraft,
       standalone_kind: raw.standalone_kind === 'manual_feature' ? 'manual_feature' : 'legacy',
+      task_kind:
+        raw.task_kind === 'feature' || raw.task_kind === 'bugfix' || raw.task_kind === 'hotfix'
+          ? raw.task_kind
+          : null,
       base_branch: typeof raw.base_branch === 'string' ? raw.base_branch : null,
       feature_slug: typeof raw.feature_slug === 'string' ? raw.feature_slug : null,
       conversation_id: typeof raw.conversation_id === 'string' ? raw.conversation_id : null,
@@ -371,6 +378,7 @@ export const deriveImplementTasksFromArchitectPlan = (
       has_mixed_target_branches: planHasMixedTargetBranches(plan),
       draft: false,
       standalone_kind: 'legacy' as const,
+      task_kind: null,
       base_branch: null,
       feature_slug: null,
       conversation_id: null,

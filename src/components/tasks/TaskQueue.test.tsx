@@ -1250,7 +1250,7 @@ describe('TaskQueue', () => {
     expect(taskCard?.className).toContain('h-[96px]');
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
-      { key: 'standalone', text: 'Standalone' },
+      { key: 'standalone', text: 'Agent classification' },
       { key: 'draft', text: 'Draft' },
     ]);
   });
