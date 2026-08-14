@@ -468,6 +468,27 @@ const getExecutionTargetsWithRepoPaths = (
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
 };
 
+const assertLifecycleGitTargetsSafe = async (
+  targets: Array<TaskExecutionTarget & { repoPath: string }>,
+  worktreePaths: Record<string, string>,
+): Promise<void> => {
+  for (const target of targets) {
+    const worktreePath = worktreePaths[target.worktreeKey];
+    if (!worktreePath) continue;
+    const status = await tauriIpc.gitStatus(worktreePath);
+    if (!status.is_clean) {
+      throw new Error(
+        `Impossible de supprimer ${target.branchName} : le worktree contient des changements locaux. Validez-les ou mettez-les de côté, puis réessayez.`,
+      );
+    }
+    if (status.ahead > 0) {
+      throw new Error(
+        `Impossible de supprimer ${target.branchName} : la branche contient ${status.ahead} commit(s) local(aux) non publié(s). Publiez ou fusionnez-les, puis réessayez.`,
+      );
+    }
+  }
+};
+
 const resumeLinkedTaskGitCleanup = async (
   saga: LinkedTaskDeletionSaga,
 ): Promise<LinkedTaskDeletionSaga> => {
@@ -493,7 +514,7 @@ const resumeLinkedTaskGitCleanup = async (
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
-            force: true,
+            force: false,
             branchName: target.branchName,
           });
         } catch (error) {
@@ -527,7 +548,7 @@ const resumeLinkedTaskGitCleanup = async (
           await tauriIpc.gitBranchDelete({
             repoPath: updatedTarget.repoPath,
             branchName: updatedTarget.branchName,
-            force: true,
+            force: false,
           });
         } catch (error) {
           if (await branchExists()) {
@@ -2845,11 +2866,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
+      await assertLifecycleGitTargetsSafe(executionTargets, get().branchWorktrees);
+      await tauriIpc.workspaceRevertManualFeatureToDraft({
+        taskId: params.taskId,
+        conversationId: params.conversationId ?? null,
+        title: params.title ?? null,
+        description: params.description ?? null,
+      });
       for (const target of executionTargets) {
         await tauriIpc.gitWorktreeRemove({
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
-          force: true,
+          force: false,
           branchName: target.branchName,
         });
 
@@ -2858,7 +2886,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           await tauriIpc.gitBranchDelete({
             repoPath: target.repoPath,
             branchName: target.branchName,
-            force: true,
+            force: false,
           });
         }
       }
@@ -2868,13 +2896,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ...updateTaskRuntimeAfterCleanup(state, existingTask, removedWorktreeKeys),
         missingBaseBranchIssue: null,
       }));
-
-      await tauriIpc.workspaceRevertManualFeatureToDraft({
-        taskId: params.taskId,
-        conversationId: params.conversationId ?? null,
-        title: params.title ?? null,
-        description: params.description ?? null,
-      });
 
       await get().refreshFromPlan();
       await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId: params.taskId });
@@ -3045,11 +3066,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
+      await assertLifecycleGitTargetsSafe(executionTargets, get().branchWorktrees);
+      await tauriIpc.workspaceArchiveManualFeature({
+        taskId,
+        reason: options?.reason ?? null,
+        mergedAt: options?.mergedAt ?? null,
+      });
       for (const target of executionTargets) {
         await tauriIpc.gitWorktreeRemove({
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
-          force: true,
+          force: false,
           branchName: target.branchName,
         });
 
@@ -3058,7 +3085,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           await tauriIpc.gitBranchDelete({
             repoPath: target.repoPath,
             branchName: target.branchName,
-            force: true,
+            force: false,
           });
         }
       }
@@ -3093,11 +3120,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         useAppStore.getState().setSelectedTask(null);
       }
 
-      await tauriIpc.workspaceArchiveManualFeature({
-        taskId,
-        reason: options?.reason ?? null,
-        mergedAt: options?.mergedAt ?? null,
-      });
       await get().refreshFromPlan();
       await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
         set({ lastError: message });
@@ -3202,6 +3224,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
+      await assertLifecycleGitTargetsSafe(executionTargets, get().branchWorktrees);
       const branchSnapshots = new Map(
         await Promise.all(
           executionTargets.map(async (target) => [
@@ -3238,13 +3261,23 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           updatedAt: new Date().toISOString(),
         };
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        if (task.draft) {
+          await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+        } else {
+          await tauriIpc.workspaceDeleteManualFeature(taskId);
+        }
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
       } else {
+        if (task.draft) {
+          await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+        } else {
+          await tauriIpc.workspaceDeleteManualFeature(taskId);
+        }
         for (const target of executionTargets) {
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
-            force: true,
+            force: false,
             branchName: target.branchName,
           });
           const branches = branchSnapshots.get(target.worktreeKey) ?? { local: [] };
@@ -3252,7 +3285,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             await tauriIpc.gitBranchDelete({
               repoPath: target.repoPath,
               branchName: target.branchName,
-              force: true,
+              force: false,
             });
           }
         }
@@ -3280,11 +3313,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         await syncWorkspaceRoot(null);
       }
 
-      if (task.draft) {
-        await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
-      } else {
-        await tauriIpc.workspaceDeleteManualFeature(taskId);
-      }
       let linkedConversationCleanupCompleted = true;
       if (linkedConversationSaga) {
         const taskDeletedSaga: LinkedTaskDeletionSaga = {
