@@ -4564,7 +4564,9 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
         .join(WORKSPACE_STATE_FILE)
 }
 
-fn latest_valid_workspace_temp_sync(metadata_root: &Path) -> Option<(PathBuf, WorkspaceState)> {
+fn latest_valid_workspace_temp_sync(
+    metadata_root: &Path,
+) -> Option<(PathBuf, std::time::SystemTime, WorkspaceState)> {
     let prefix = format!(".{WORKSPACE_STATE_FILE}.macro-tmp-");
     let mut candidates = std::fs::read_dir(metadata_root)
         .ok()?
@@ -4580,21 +4582,42 @@ fn latest_valid_workspace_temp_sync(metadata_root: &Path) -> Option<(PathBuf, Wo
             Some((modified, name, entry.path(), state))
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    candidates.sort_by(|left, right| {
+        right
+            .3
+            .workspace_revision
+            .cmp(&left.3.workspace_revision)
+            .then_with(|| right.0.cmp(&left.0))
+            .then_with(|| right.1.cmp(&left.1))
+    });
     candidates
         .into_iter()
         .next()
-        .map(|(_, _, path, state)| (path, state))
+        .map(|(modified, _, path, state)| (path, modified, state))
 }
 
 fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
     let backup_path = workspace_state_backup_path(metadata_root);
-    if let Some((temp_path, state)) = latest_valid_workspace_temp_sync(metadata_root) {
-        let temp_modified = std::fs::metadata(&temp_path).and_then(|value| value.modified()).ok();
-        let primary_modified = std::fs::metadata(&primary_path).and_then(|value| value.modified()).ok();
-        if !primary_path.exists() || temp_modified > primary_modified {
+    if let Some((temp_path, temp_modified, state)) =
+        latest_valid_workspace_temp_sync(metadata_root)
+    {
+        let primary_candidate = std::fs::read_to_string(&primary_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<WorkspaceState>(&content).ok());
+        let primary_modified = std::fs::metadata(&primary_path)
+            .and_then(|value| value.modified())
+            .ok();
+        let should_promote = match primary_candidate {
+            None => true,
+            Some(primary) => {
+                state.workspace_revision > primary.workspace_revision
+                    || (state.workspace_revision == primary.workspace_revision
+                        && Some(temp_modified) > primary_modified)
+            }
+        };
+        if should_promote {
             persist_state_sync(metadata_root, &state)?;
             let _ = std::fs::remove_file(&temp_path);
             tracing::warn!(
@@ -9695,6 +9718,81 @@ mod tests {
             .expect("workspace state");
         assert_eq!(loaded.workspace_revision, 2);
         assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn load_raw_state_never_downgrades_a_valid_primary_to_a_newer_touched_temp() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let primary = WorkspaceState {
+            workspace_revision: 8,
+            standalone_projects: vec![make_project("project-current", "/tmp/current")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &primary).expect("primary");
+        std::thread::sleep(Duration::from_millis(20));
+        let stale_temp = WorkspaceState {
+            workspace_revision: 7,
+            standalone_projects: vec![make_project("project-stale", "/tmp/stale")],
+            ..WorkspaceState::default()
+        };
+        let temp_path = metadata_root.join(format!(
+            ".{}.macro-tmp-newer-mtime-stale-revision",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(&temp_path, serde_json::to_string(&stale_temp).expect("json"))
+            .expect("stale temp");
+
+        let loaded = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("workspace state");
+        assert_eq!(loaded.workspace_revision, 8);
+        assert_eq!(loaded.standalone_projects[0].id, "project-current");
+        assert!(temp_path.exists(), "an unselected temp remains available for diagnostics");
+    }
+
+    #[test]
+    fn load_raw_state_prefers_temp_revision_over_temp_mtime() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        stdfs::create_dir_all(&metadata_root).expect("metadata root");
+        let newest_revision = WorkspaceState {
+            workspace_revision: 11,
+            standalone_projects: vec![make_project("project-revision-11", "/tmp/revision-11")],
+            ..WorkspaceState::default()
+        };
+        let revision_11_path = metadata_root.join(format!(
+            ".{}.macro-tmp-revision-11",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(
+            &revision_11_path,
+            serde_json::to_string(&newest_revision).expect("json"),
+        )
+        .expect("revision 11 temp");
+        std::thread::sleep(Duration::from_millis(20));
+        let newer_mtime = WorkspaceState {
+            workspace_revision: 10,
+            standalone_projects: vec![make_project("project-revision-10", "/tmp/revision-10")],
+            ..WorkspaceState::default()
+        };
+        let revision_10_path = metadata_root.join(format!(
+            ".{}.macro-tmp-revision-10-newer-mtime",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(
+            &revision_10_path,
+            serde_json::to_string(&newer_mtime).expect("json"),
+        )
+        .expect("revision 10 temp");
+
+        let loaded = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("workspace state");
+        assert_eq!(loaded.workspace_revision, 11);
+        assert_eq!(loaded.standalone_projects[0].id, "project-revision-11");
+        assert!(!revision_11_path.exists());
+        assert!(revision_10_path.exists());
     }
 
     #[test]
