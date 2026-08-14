@@ -979,7 +979,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         updatedAt: new Date().toISOString(),
       });
       const cleanup = await cleanupPlanBranches(archivedPlan);
-      await removePlanLifecycleSaga(plan.id, 'archive');
+      await removePlanLifecycleSaga(plan.id, 'archive', targetBranch);
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>

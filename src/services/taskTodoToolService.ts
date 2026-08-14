@@ -6,6 +6,7 @@ import {
 } from './architectPlanService';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
 import { isPlanFinalizationTask } from './implementTaskCatalog';
+import { getTaskBusinessId, resolveTaskReference } from './durableIdentity';
 import { toServiceError } from './contracts/errors';
 import type { PlanNodeTodo, PlanNodeTodoStatus } from '../types';
 import {
@@ -84,13 +85,13 @@ export const resolveTaskTodoTarget = async (
     throw toServiceError('task_todo_* requires an Implement task context or task_id.');
   }
 
-  const task = params.tasks.find((candidate) => candidate.id === requestedTaskId);
+  const task = resolveTaskReference(params.tasks, requestedTaskId);
   if (!task) {
     throw toServiceError(`Unknown task: ${requestedTaskId}`);
   }
   const currentTaskId = params.executionContext.taskId || params.selectedTaskId || '';
   const currentTask =
-    currentTaskId ? params.tasks.find((candidate) => candidate.id === currentTaskId) || null : null;
+    currentTaskId ? resolveTaskReference(params.tasks, currentTaskId) || null : null;
   if (!currentTask) {
     throw toServiceError('task_todo_* requires a current Implement task context.');
   }
@@ -113,7 +114,7 @@ export const resolveTaskTodoTarget = async (
   if (!plan || plan.status === 'deleted') {
     throw toServiceError(`Cannot load plan metadata for task ${task.id}.`);
   }
-  const node = (plan.nodes || []).find((candidate) => candidate.id === task.id);
+  const node = (plan.nodes || []).find((candidate) => candidate.id === getTaskBusinessId(task));
   if (!node) {
     throw toServiceError(`Cannot find Architect node for task ${task.id}.`);
   }
@@ -309,7 +310,7 @@ export const loadOpenTaskTodosForCompletion = async (
     task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch(),
   );
   const plan = await getArchitectPlan(branchName, task.plan_id);
-  const node = plan?.nodes?.find((candidate) => candidate.id === task.id);
+  const node = plan?.nodes?.find((candidate) => candidate.id === getTaskBusinessId(task));
   const todoState = node ? getPlanNodeTodoState(node) : getPlanNodeTodoState(task);
   const todos = todoState.kind === 'stored' ? todoState.todos : [];
   return todos.filter((todo) => todo.status !== 'done');

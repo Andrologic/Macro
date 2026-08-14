@@ -70,6 +70,18 @@ const isAllowedOwnerPhase = (
   return phase === 'task_deleted';
 };
 
+const hasSameOwnerIdentity = (
+  left: Pick<LinkedConversationDeletionSaga, 'ownerType' | 'ownerId' | 'targetBranch'>,
+  right: Pick<LinkedConversationDeletionSaga, 'ownerType' | 'ownerId' | 'targetBranch'>,
+): boolean => left.ownerType === right.ownerType && left.ownerId === right.ownerId &&
+  (left.ownerType === 'conversation' || left.targetBranch === right.targetBranch);
+
+export const getLinkedDeletionSagaKey = (
+  saga: Pick<LinkedConversationDeletionSaga, 'ownerType' | 'ownerId' | 'targetBranch'>,
+): string => saga.ownerType === 'conversation'
+  ? `conversation:${encodeURIComponent(saga.ownerId)}`
+  : `${saga.ownerType}:${encodeURIComponent(saga.targetBranch || '')}:${encodeURIComponent(saga.ownerId)}`;
+
 const parseSagas = (value: string | null | undefined): LinkedConversationDeletionSaga[] => {
   if (!value) return [];
   try {
@@ -141,7 +153,7 @@ export const upsertLinkedConversationDeletionSaga = async (
     const current = await loadLinkedConversationDeletionSagas();
     await saveLinkedConversationDeletionSagas([
       ...current.filter(
-        (entry) => entry.ownerType !== saga.ownerType || entry.ownerId !== saga.ownerId,
+        (entry) => !hasSameOwnerIdentity(entry, saga),
       ),
       saga,
     ]);
@@ -151,12 +163,16 @@ export const upsertLinkedConversationDeletionSaga = async (
 export const removeLinkedConversationDeletionSaga = async (
   ownerType: LinkedConversationDeletionOwner,
   ownerId: string,
+  targetBranch?: string,
 ): Promise<void> => {
   await serializeMutation(async () => {
     const current = await loadLinkedConversationDeletionSagas();
-    await saveLinkedConversationDeletionSagas(
-      current.filter((entry) => entry.ownerType !== ownerType || entry.ownerId !== ownerId),
-    );
+    const matches = current.filter((entry) => entry.ownerType === ownerType && entry.ownerId === ownerId);
+    if (ownerType !== 'conversation' && targetBranch === undefined && matches.length > 1) return;
+    await saveLinkedConversationDeletionSagas(current.filter((entry) =>
+      entry.ownerType !== ownerType || entry.ownerId !== ownerId ||
+      (ownerType !== 'conversation' && targetBranch !== undefined && entry.targetBranch !== targetBranch)
+    ));
   });
 };
 
@@ -186,5 +202,5 @@ export const upsertLinkedTaskDeletionSaga = async (
     ownerId: saga.taskId,
   });
 
-export const removeLinkedTaskDeletionSaga = async (taskId: string): Promise<void> =>
-  removeLinkedConversationDeletionSaga('task', taskId);
+export const removeLinkedTaskDeletionSaga = async (taskId: string, targetBranch?: string): Promise<void> =>
+  removeLinkedConversationDeletionSaga('task', taskId, targetBranch);

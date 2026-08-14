@@ -4,6 +4,7 @@ import {
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 import type { ArchitectPlanCatalogBranch } from '../../services/macroProjectMetadataLoader';
+import { toPlanLocatorKey } from '../../services/durableIdentity';
 
 export type ArchitectNavigatorScopeKind = 'group' | 'project';
 
@@ -101,9 +102,10 @@ export const buildArchitectNavigatorPlanEntries = (params: {
       if (plan.status === 'deleted') {
         continue;
       }
-      const current = plansById.get(plan.id);
+      const locatorKey = toPlanLocatorKey({ branchName: branch.branchName, planId: plan.id });
+      const current = plansById.get(locatorKey);
       if (!current || compareUpdatedAtDesc(plan, current.plan) < 0) {
-        plansById.set(plan.id, { plan, branchName: branch.branchName });
+        plansById.set(locatorKey, { plan, branchName: branch.branchName });
       }
     }
   }

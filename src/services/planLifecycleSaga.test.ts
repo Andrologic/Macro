@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parsePlanLifecycleSagas } from './planLifecycleSaga';
+import { getPlanLifecycleSagaKey, parsePlanLifecycleSagas } from './planLifecycleSaga';
 
 const serializeSaga = (overrides: Record<string, unknown> = {}) => JSON.stringify([{
   planId: 'plan-1',
@@ -30,5 +30,11 @@ describe('planLifecycleSaga', () => {
 
     expect(historicalSaga).toMatchObject({ phase: 'metadata_commit_pending' });
     expect(historicalSaga).not.toHaveProperty('requiresMetadataCommit');
+  });
+
+  it('keeps identical plan ids on distinct branches as separate sagas', () => {
+    const common = { planId: 'shared', operation: 'archive' as const };
+    expect(getPlanLifecycleSagaKey({ ...common, branchName: 'develop' }))
+      .not.toBe(getPlanLifecycleSagaKey({ ...common, branchName: 'release/next' }));
   });
 });
