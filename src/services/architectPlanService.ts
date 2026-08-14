@@ -2963,16 +2963,17 @@ const removePlanAtScope = async (scope: ArchitectMetadataScope, branchName: stri
     return;
   }
 
-  try {
-    await tauriIpc.fsDelete({
-      path: getPlanDir(normalized, safeId),
-      recursive: true,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
-      workspacePath: scope.workspacePath,
-    });
-  } catch {
-    // Ignore missing path errors.
-  }
+  const path = getPlanDir(normalized, safeId);
+  if (!await tauriIpc.fsExists(path, {
+    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspacePath: scope.workspacePath,
+  })) return;
+  await tauriIpc.fsDelete({
+    path,
+    recursive: true,
+    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspacePath: scope.workspacePath,
+  });
 };
 
 interface ArchitectPlanReplicaMutationTarget {
@@ -2980,6 +2981,9 @@ interface ArchitectPlanReplicaMutationTarget {
   action: 'upsert' | 'remove' | 'index';
   plan: ArchitectPlanRecord | null;
   index: ArchitectPlanIndex;
+  chatMessages?: ArchitectPlanChatMessage[];
+  replacePlanDirectory?: boolean;
+  extraFiles?: Record<string, string>;
 }
 
 interface ArchitectPlanReplicaMutationPayload {
@@ -3014,7 +3018,16 @@ const isReplicaMutationPayload = (
       : target.action === 'index'
         ? target.plan === null
         : !!target.plan && target.plan.id === entry.planId && target.plan.targetBranch === entry.branchName &&
-          target.index.plans.some((summary) => summary.id === entry.planId));
+          target.index.plans.some((summary) => summary.id === entry.planId)) &&
+    (target.chatMessages === undefined || (Array.isArray(target.chatMessages) && target.chatMessages.every((message) =>
+      !!message && typeof message.id === 'string' && (message.role === 'user' || message.role === 'assistant') &&
+      typeof message.content === 'string' && typeof message.createdAt === 'string'
+    ))) && (target.replacePlanDirectory === undefined || typeof target.replacePlanDirectory === 'boolean') &&
+    (target.extraFiles === undefined || (target.extraFiles !== null && typeof target.extraFiles === 'object' &&
+      Object.entries(target.extraFiles).every(([path, content]) =>
+        path.startsWith('artifacts/') && !path.includes('..') && !path.includes('\\') &&
+        typeof content === 'string'
+      )));
   });
 };
 
@@ -3040,7 +3053,34 @@ const applyArchitectPlanReplicaMutation = async (
 ): Promise<void> => {
   for (const target of entry.payload.targets) {
     if (target.action === 'upsert' && target.plan) {
-      await writePlanAtScope(target.scope, entry.branchName, target.plan, registrySnapshot);
+      if (target.replacePlanDirectory) {
+        await removePlanAtScope(target.scope, entry.branchName, entry.planId);
+      }
+      await writePlanAtScope(target.scope, entry.branchName, target.plan, registrySnapshot, {
+        chatMessages: target.chatMessages,
+      });
+      if (target.chatMessages) {
+        await writePlanChatAtScope(
+          target.scope,
+          entry.branchName,
+          entry.planId,
+          target.chatMessages,
+          registrySnapshot,
+          { skipManifest: true },
+        );
+      }
+      if (target.extraFiles && target.scope.source !== 'local') {
+        for (const [relativePath, content] of Object.entries(target.extraFiles)) {
+          await tauriIpc.fsWriteFile({
+            path: `${getPlanDir(entry.branchName, entry.planId)}/${relativePath}`,
+            content,
+            createDirs: true,
+            allowOutsideWorkspace: false,
+            workspaceScope: METADATA_WORKSPACE_SCOPE,
+            workspacePath: target.scope.workspacePath,
+          });
+        }
+      }
     } else if (target.action === 'remove') {
       await removePlanAtScope(target.scope, entry.branchName, entry.planId);
     }
@@ -3048,24 +3088,38 @@ const applyArchitectPlanReplicaMutation = async (
   }
 };
 
-const pendingReplicaMutationRecoveries = new Map<string, Promise<void>>();
-const recoverArchitectPlanReplicaMutations = async (
-  deps: ResolvedArchitectPlanServiceDependencies,
-): Promise<void> => {
-  if (!deps.tauri.isTauriAvailable()) return;
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  let currentWorkspaceKey = getRegistryWorkspaceKey(registrySnapshot, []);
-  if (!currentWorkspaceKey && typeof deps.tauri.workspaceGetActiveRoot === 'function') {
-    const activeRoot = normalizeProjectRegistryPath(await deps.tauri.workspaceGetActiveRoot());
-    currentWorkspaceKey = activeRoot || '';
+const replicaTransactionQueues = new Map<string, Promise<void>>();
+const withReplicaTransactionLock = async <T>(workspaceKey: string, operation: () => Promise<T>): Promise<T> => {
+  const previous = replicaTransactionQueues.get(workspaceKey) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(operation);
+  const stored = run.then(() => undefined, () => undefined);
+  replicaTransactionQueues.set(workspaceKey, stored);
+  try { return await run; } finally {
+    if (replicaTransactionQueues.get(workspaceKey) === stored) replicaTransactionQueues.delete(workspaceKey);
   }
-  const pending = pendingReplicaMutationRecoveries.get(currentWorkspaceKey);
-  if (pending) return pending;
-  const recovery = (async () => {
-    const entries = await loadArchitectPlanMutationJournal(deps.tauri);
-    if (entries.length === 0) return;
-    const allowedWorkspaceRoots = new Set(currentWorkspaceKey.split('|').filter(Boolean));
-    for (const entry of entries.filter((candidate) => candidate.workspaceKey === currentWorkspaceKey)) {
+};
+
+const resolveReplicaWorkspaceKey = async (
+  deps: ResolvedArchitectPlanServiceDependencies,
+  registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  targets: ArchitectPlanReplicaMutationTarget[] = [],
+): Promise<string> => {
+  let workspaceKey = getRegistryWorkspaceKey(registrySnapshot, targets);
+  if (!workspaceKey && typeof deps.tauri.workspaceGetActiveRoot === 'function') {
+    workspaceKey = normalizeProjectRegistryPath(await deps.tauri.workspaceGetActiveRoot()) || '';
+  }
+  return workspaceKey;
+};
+
+const recoverArchitectPlanReplicaMutationsUnlocked = async (
+  deps: ResolvedArchitectPlanServiceDependencies,
+  registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  currentWorkspaceKey: string,
+): Promise<void> => {
+  const entries = await loadArchitectPlanMutationJournal(deps.tauri);
+  if (entries.length === 0) return;
+  const allowedWorkspaceRoots = new Set(currentWorkspaceKey.split('|').filter(Boolean));
+  for (const entry of entries.filter((candidate) => candidate.workspaceKey === currentWorkspaceKey)) {
       if (!isReplicaMutationPayload(entry)) {
         await quarantineArchitectPlanMutationJournal(
           entry,
@@ -3106,14 +3160,18 @@ const recoverArchitectPlanReplicaMutations = async (
         }, deps.tauri);
         throw error;
       }
-    }
-  })();
-  pendingReplicaMutationRecoveries.set(currentWorkspaceKey, recovery);
-  try { await recovery; } finally {
-    if (pendingReplicaMutationRecoveries.get(currentWorkspaceKey) === recovery) {
-      pendingReplicaMutationRecoveries.delete(currentWorkspaceKey);
-    }
   }
+};
+
+const recoverArchitectPlanReplicaMutations = async (
+  deps: ResolvedArchitectPlanServiceDependencies,
+): Promise<void> => {
+  if (!deps.tauri.isTauriAvailable()) return;
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const workspaceKey = await resolveReplicaWorkspaceKey(deps, registrySnapshot);
+  await withReplicaTransactionLock(workspaceKey, () =>
+    recoverArchitectPlanReplicaMutationsUnlocked(deps, registrySnapshot, workspaceKey)
+  );
 };
 
 const runArchitectPlanReplicaMutation = async (params: {
@@ -3125,11 +3183,13 @@ const runArchitectPlanReplicaMutation = async (params: {
   deps: ResolvedArchitectPlanServiceDependencies;
   commitMessage: string;
 }): Promise<void> => {
-  await recoverArchitectPlanReplicaMutations(params.deps);
-  const now = new Date().toISOString();
-  const entry: ArchitectPlanMutationJournalEntry<ArchitectPlanReplicaMutationPayload> = {
+  const workspaceKey = await resolveReplicaWorkspaceKey(params.deps, params.registrySnapshot, params.targets);
+  await withReplicaTransactionLock(workspaceKey, async () => {
+    await recoverArchitectPlanReplicaMutationsUnlocked(params.deps, params.registrySnapshot, workspaceKey);
+    const now = new Date().toISOString();
+    const entry: ArchitectPlanMutationJournalEntry<ArchitectPlanReplicaMutationPayload> = {
     id: createArchitectPlanMutationId(params),
-    workspaceKey: getRegistryWorkspaceKey(params.registrySnapshot, params.targets),
+    workspaceKey,
     branchName: params.branchName,
     planId: params.planId,
     operation: params.operation,
@@ -3138,9 +3198,9 @@ const runArchitectPlanReplicaMutation = async (params: {
     createdAt: now,
     updatedAt: now,
   };
-  let currentEntry = entry;
-  await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
-  try {
+    let currentEntry = entry;
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    try {
     currentEntry = { ...currentEntry, phase: 'applying', updatedAt: new Date().toISOString() };
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
     await applyArchitectPlanReplicaMutation(currentEntry, params.registrySnapshot);
@@ -3150,14 +3210,15 @@ const runArchitectPlanReplicaMutation = async (params: {
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
     await commitMetadataScopes(params.targets.map((target) => target.scope), params.commitMessage, { commit: true }, params.deps);
     await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri);
-  } catch (error) {
-    await upsertArchitectPlanMutationJournal({
-      ...currentEntry,
-      updatedAt: new Date().toISOString(),
-      lastError: toErrorMessage(error),
-    }, params.deps.tauri);
-    throw error;
-  }
+    } catch (error) {
+      await upsertArchitectPlanMutationJournal({
+        ...currentEntry,
+        updatedAt: new Date().toISOString(),
+        lastError: toErrorMessage(error),
+      }, params.deps.tauri);
+      throw error;
+    }
+  });
 };
 
 const buildUpsertReplicaMutationTarget = async (params: {
@@ -3167,6 +3228,9 @@ const buildUpsertReplicaMutationTarget = async (params: {
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined;
   setActive?: boolean;
   chatMessageCount?: number;
+  chatMessages?: ArchitectPlanChatMessage[];
+  replacePlanDirectory?: boolean;
+  extraFiles?: Record<string, string>;
 }): Promise<ArchitectPlanReplicaMutationTarget> => {
   const index = await readIndexAtScope(params.scope, params.branchName, params.registrySnapshot);
   const previousSummary = index.plans.find((candidate) => candidate.id === params.plan.id);
@@ -3181,6 +3245,9 @@ const buildUpsertReplicaMutationTarget = async (params: {
     scope: params.scope,
     action: 'upsert',
     plan: params.plan,
+    chatMessages: params.chatMessages,
+    replacePlanDirectory: params.replacePlanDirectory,
+    extraFiles: params.extraFiles,
     index: {
       ...index,
       version: 3,
@@ -3668,41 +3735,30 @@ const loadPlanReplicaSet = async (
         ? 'replica_auto_heal'
         : 'replica_target_branch_auto_heal',
     });
-    await Promise.all(
-      snapshotDiagnostics.map(async (snapshot) => {
-        await writePlanAtScope(snapshot.scope, normalizedBranch, canonicalSnapshot.plan, resolvedRegistrySnapshot);
-        await writePlanChatAtScope(
-          snapshot.scope,
-          normalizedBranch,
-          canonicalSnapshot.plan.id,
-          parseJsonLines(canonicalSnapshot.files['chat.jsonl'] || ''),
-          resolvedRegistrySnapshot
-        );
-        await upsertPlanInScopeIndex(snapshot.scope, normalizedBranch, canonicalSnapshot.plan, undefined, resolvedRegistrySnapshot);
-
-        if (!tauriIpc.isTauriAvailable() || snapshot.scope.source === 'local') {
-          return;
-        }
-
-        const replicatedExtraFiles = Object.entries(canonicalSnapshot.files)
-          .filter(([relativePath]) => !['manifest.json', 'plan.json', 'plan.md', 'chat.jsonl', 'runtime.json'].includes(relativePath))
-          .filter(([relativePath]) => relativePath.startsWith('artifacts/'));
-        await Promise.all(
-          replicatedExtraFiles
-            .filter(([relativePath]) => !relativePath.startsWith('tasks/'))
-            .map(([relativePath, content]) =>
-              tauriIpc.fsWriteFile({
-                path: `${getPlanDir(normalizedBranch, canonicalSnapshot.plan.id)}/${relativePath}`,
-                content,
-                createDirs: true,
-                allowOutsideWorkspace: false,
-                workspaceScope: METADATA_WORKSPACE_SCOPE,
-                workspacePath: snapshot.scope.workspacePath,
-              })
-            )
-        );
-      })
+    const canonicalMessages = parseJsonLines(canonicalSnapshot.files['chat.jsonl'] || '');
+    const extraFiles = Object.fromEntries(
+      Object.entries(canonicalSnapshot.files).filter(([relativePath]) => relativePath.startsWith('artifacts/'))
     );
+    const targets = await Promise.all(snapshotDiagnostics.map((snapshot) =>
+      buildUpsertReplicaMutationTarget({
+        scope: snapshot.scope,
+        branchName: normalizedBranch,
+        plan: canonicalSnapshot.plan,
+        registrySnapshot: resolvedRegistrySnapshot,
+        chatMessages: canonicalMessages,
+        chatMessageCount: canonicalMessages.length,
+        extraFiles,
+      })
+    ));
+    await runArchitectPlanReplicaMutation({
+      branchName: normalizedBranch,
+      planId: canonicalSnapshot.plan.id,
+      operation: 'auto_heal',
+      targets,
+      registrySnapshot: resolvedRegistrySnapshot,
+      deps: resolvedDeps,
+      commitMessage: `chore(metadata): auto-heal architect plan ${canonicalSnapshot.plan.id}`,
+    });
 
     return loadPlanReplicaSet(normalizedBranch, safeId, {
       ...options,
@@ -4371,86 +4427,6 @@ const commitMetadataScopes = async (
       tauri: resolvedDeps.tauri,
     });
   }
-};
-
-const upsertPlanInScopeIndex = async (
-  scope: ArchitectMetadataScope,
-  branchName: string,
-  plan: ArchitectPlanRecord,
-  options?: {
-    setActive?: boolean;
-    chatMessageCount?: number;
-  },
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
-): Promise<void> => {
-  const index = await readIndexAtScope(scope, branchName, registrySnapshot);
-  const previousSummary = index.plans.find((candidate) => candidate.id === plan.id);
-  const nextPlans = upsertSummary(
-    index.plans,
-    toSummary(plan, {
-      chatMessageCount: options?.chatMessageCount ?? previousSummary?.chatMessageCount,
-    })
-  );
-  const nextPlanSlugs = nextPlans.map((candidate) =>
-    slugifyPlanTitle(candidate.slug || candidate.title || candidate.id)
-  );
-  const releasableDraftSlug =
-    previousSummary &&
-    previousSummary.status === 'draft' &&
-    plan.status === 'draft' &&
-    slugifyPlanTitle(previousSummary.slug || previousSummary.title || previousSummary.id) !==
-      slugifyPlanTitle(plan.slug)
-      ? slugifyPlanTitle(previousSummary.slug || previousSummary.title || previousSummary.id)
-      : null;
-  await writeIndexAtScope(scope, branchName, {
-    ...index,
-    version: 3,
-    plans: nextPlans,
-    activePlanId: options?.setActive ? plan.id : index.activePlanId,
-    reservedPlanSlugs: Array.from(
-      new Set([
-        ...index.reservedPlanSlugs
-          .map((slug) => slugifyPlanTitle(slug))
-          .filter(
-            (slug) =>
-              slug !== releasableDraftSlug ||
-              nextPlanSlugs.includes(slug)
-          ),
-        ...nextPlanSlugs,
-      ])
-    ),
-  });
-};
-
-const removePlanFromScopeIndex = async (
-  scope: ArchitectMetadataScope,
-  branchName: string,
-  planId: string,
-  registrySnapshot?: ValidProjectRegistrySnapshot | null
-): Promise<void> => {
-  const safeId = sanitizeId(planId);
-  const index = await readIndexAtScope(scope, branchName, registrySnapshot);
-  const removedSummary = index.plans.find((plan) => plan.id === safeId);
-  const nextPlans = index.plans.filter((plan) => plan.id !== safeId);
-  const nextPlanSlugs = new Set(
-    nextPlans.map((plan) => slugifyPlanTitle(plan.slug || plan.title || plan.id))
-  );
-  const releasableDraftSlug =
-    removedSummary?.status === 'draft'
-      ? slugifyPlanTitle(removedSummary.slug || removedSummary.title || removedSummary.id)
-      : null;
-  await writeIndexAtScope(scope, branchName, {
-    ...index,
-    version: 3,
-    plans: nextPlans,
-    activePlanId: index.activePlanId === safeId
-      ? nextPlans.find((plan) => plan.status !== 'deleted' && plan.status !== 'archived')?.id || null
-      : index.activePlanId,
-    reservedPlanSlugs: index.reservedPlanSlugs.filter((slug) => {
-      const normalizedSlug = slugifyPlanTitle(slug);
-      return normalizedSlug !== releasableDraftSlug || nextPlanSlugs.has(normalizedSlug);
-    }),
-  });
 };
 
 const ensurePlanScopes = async (
@@ -5172,23 +5148,26 @@ const bindArchitectPlanConversationWithReplicaSet = async (params: {
   const nextPlan = nextResult.plan;
   const scopes = dedupeScopes(replicaSet.expectedScopes);
 
-  await Promise.all(
-    scopes.map(async (scope) => {
-      const chatMessages = await readPlanChatAtScope(scope, normalizedBranch, nextPlan.id);
-      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
-        chatMessages,
-      });
-      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
-        chatMessageCount: chatMessages.length,
-      }, registrySnapshot);
-    })
-  );
-  await commitMetadataScopes(
-    scopes,
-    `chore(metadata): bind architect plan conversation ${safeId}`,
-    undefined,
-    deps
-  );
+  const targets = await Promise.all(scopes.map(async (scope) => {
+    const chatMessages = await readPlanChatAtScope(scope, normalizedBranch, nextPlan.id);
+    return buildUpsertReplicaMutationTarget({
+      scope,
+      branchName: normalizedBranch,
+      plan: nextPlan,
+      registrySnapshot,
+      chatMessages,
+      chatMessageCount: chatMessages.length,
+    });
+  }));
+  await runArchitectPlanReplicaMutation({
+    branchName: normalizedBranch,
+    planId: safeId,
+    operation: 'bind',
+    targets,
+    registrySnapshot,
+    deps,
+    commitMessage: `chore(metadata): bind architect plan conversation ${safeId}`,
+  });
   invalidateArchitectPlanRuntimeCaches({
     branchName: normalizedBranch,
     planId: safeId,
@@ -5271,20 +5250,31 @@ export const setActiveArchitectPlan = async (
       throw new Error(`Cannot activate missing, deleted, or archived plan: ${planId}`);
     }
 
-    await Promise.all(
-      dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
+    const targets = (await Promise.all(
+      dedupeScopes(replicaSet.expectedScopes).map(async (scope): Promise<ArchitectPlanReplicaMutationTarget | null> => {
         const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
         const exists = index.plans.some((plan) => plan.id === safeId && plan.status !== 'deleted');
         if (!exists || index.activePlanId === safeId) {
-          return;
+          return null;
         }
-        await writeIndexAtScope(scope, normalizedBranch, {
+        return { scope, action: 'index', plan: null, index: {
           ...index,
           version: 3,
           activePlanId: safeId,
-        });
+        } };
       })
-    );
+    )).filter((target): target is ArchitectPlanReplicaMutationTarget => target !== null);
+    if (targets.length > 0) {
+      await runArchitectPlanReplicaMutation({
+        branchName: normalizedBranch,
+        planId: safeId,
+        operation: 'activate',
+        targets,
+        registrySnapshot,
+        deps,
+        commitMessage: `chore(metadata): activate architect plan ${safeId}`,
+      });
+    }
     invalidateArchitectPlanRuntimeCaches({ branchName: normalizedBranch });
   });
 };
@@ -5487,25 +5477,25 @@ const saveArchitectPlanChatMessagesWithReplicaSet = async (params: {
     updatedAt: new Date().toISOString(),
     revision: (replicaSet.canonical.plan.revision || 1) + 1,
   };
-  await Promise.all(
-    dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
-      await writePlanAtScope(scope, normalizedBranch, nextPlan, registrySnapshot, {
-        chatMessages: nextMessages,
-      });
-      await writePlanChatAtScope(scope, normalizedBranch, safeId, nextMessages, registrySnapshot, {
-        skipManifest: true,
-      });
-      await upsertPlanInScopeIndex(scope, normalizedBranch, nextPlan, {
-        chatMessageCount: nextMessages.length,
-      }, registrySnapshot);
+  const targets = await Promise.all(dedupeScopes(replicaSet.expectedScopes).map((scope) =>
+    buildUpsertReplicaMutationTarget({
+      scope,
+      branchName: normalizedBranch,
+      plan: nextPlan,
+      registrySnapshot,
+      chatMessages: nextMessages,
+      chatMessageCount: nextMessages.length,
     })
-  );
-  await commitMetadataScopes(
-    dedupeScopes(replicaSet.expectedScopes),
-    `chore(metadata): update architect plan chat ${safeId}`,
-    undefined,
-    deps
-  );
+  ));
+  await runArchitectPlanReplicaMutation({
+    branchName: normalizedBranch,
+    planId: safeId,
+    operation: 'chat',
+    targets,
+    registrySnapshot,
+    deps,
+    commitMessage: `chore(metadata): update architect plan chat ${safeId}`,
+  });
   invalidateArchitectPlanRuntimeCaches({
     branchName: normalizedBranch,
     planId: safeId,
@@ -5643,47 +5633,29 @@ export const repairArchitectPlanReplicas = async (input: {
 
   const replicatedExtraFiles = Object.entries(canonicalSnapshot.files)
     .filter(([relativePath]) => relativePath.startsWith('artifacts/'));
-  await Promise.all(
-    dedupeScopes(replicaSet.expectedScopes).map(async (scope) => {
-      await removePlanAtScope(scope, normalizedBranch, canonicalPlan.id);
-      await writePlanAtScope(scope, normalizedBranch, canonicalPlan, registrySnapshot);
-      await writePlanChatAtScope(
-        scope,
-        normalizedBranch,
-        canonicalPlan.id,
-        parseJsonLines(canonicalSnapshot.files['chat.jsonl'] || ''),
-        registrySnapshot
-      );
-      await upsertPlanInScopeIndex(scope, normalizedBranch, canonicalPlan, {
-        chatMessageCount: canonicalSnapshot.manifest.conversation.messageCount,
-      }, registrySnapshot);
-
-      if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
-        return;
-      }
-
-      await Promise.all(
-        replicatedExtraFiles
-          .filter(([relativePath]) => !relativePath.startsWith('tasks/'))
-          .map(([relativePath, content]) =>
-            tauriIpc.fsWriteFile({
-              path: `${getPlanDir(normalizedBranch, canonicalPlan.id)}/${relativePath}`,
-              content,
-              createDirs: true,
-              allowOutsideWorkspace: false,
-              workspaceScope: METADATA_WORKSPACE_SCOPE,
-              workspacePath: scope.workspacePath,
-            })
-          )
-      );
+  const canonicalMessages = parseJsonLines(canonicalSnapshot.files['chat.jsonl'] || '');
+  const extraFiles = Object.fromEntries(replicatedExtraFiles);
+  const targets = await Promise.all(dedupeScopes(replicaSet.expectedScopes).map((scope) =>
+    buildUpsertReplicaMutationTarget({
+      scope,
+      branchName: normalizedBranch,
+      plan: canonicalPlan,
+      registrySnapshot,
+      chatMessages: canonicalMessages,
+      chatMessageCount: canonicalMessages.length,
+      replacePlanDirectory: true,
+      extraFiles,
     })
-  );
-  await commitMetadataScopes(
-    dedupeScopes(replicaSet.expectedScopes),
-    `chore(metadata): repair architect plan ${canonicalPlan.id}`,
-    undefined,
-    deps
-  );
+  ));
+  await runArchitectPlanReplicaMutation({
+    branchName: normalizedBranch,
+    planId: canonicalPlan.id,
+    operation: 'repair',
+    targets,
+    registrySnapshot,
+    deps,
+    commitMessage: `chore(metadata): repair architect plan ${canonicalPlan.id}`,
+  });
 
   const repairedReplicaSet = await loadPlanReplicaSet(normalizedBranch, canonicalPlan.id, {
     registrySnapshot,
@@ -5842,20 +5814,22 @@ export const repairArchitectPlanMetadata = async (input: {
     const orphanScopeKeys = new Set(health.orphanedReplicas.map((replica) => replica.scopeKey));
     const removedScopes = scopes.filter((scope) => orphanScopeKeys.has(scope.scopeKey));
 
-    await Promise.all(
-      removedScopes.map(async (scope) => {
-        await removePlanAtScope(scope, normalizedBranch, safeId);
-        await removePlanFromScopeIndex(scope, normalizedBranch, safeId, registrySnapshot);
-      })
-    );
-
     if (removedScopes.length > 0) {
-      await commitMetadataScopes(
-        dedupeScopes(removedScopes),
-        `chore(metadata): remove orphaned architect plan ${safeId}`,
-        undefined,
-        deps
-      );
+      const targets = await Promise.all(removedScopes.map((scope) => buildRemoveReplicaMutationTarget({
+        scope,
+        branchName: normalizedBranch,
+        planId: safeId,
+        registrySnapshot,
+      })));
+      await runArchitectPlanReplicaMutation({
+        branchName: normalizedBranch,
+        planId: safeId,
+        operation: 'orphan_cleanup',
+        targets,
+        registrySnapshot,
+        deps,
+        commitMessage: `chore(metadata): remove orphaned architect plan ${safeId}`,
+      });
     }
 
     invalidateArchitectPlanRuntimeCaches({

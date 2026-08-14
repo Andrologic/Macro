@@ -54,6 +54,7 @@ const workspaceWriteHooks: Array<(params: {
   content: string;
   workspacePath?: string | null;
 }) => Promise<void> | void> = [];
+const workspaceDeleteHooks: Array<(params: { path: string; workspacePath?: string | null }) => Promise<void> | void> = [];
 const appSettingWriteHooks: Array<(params: { key: string; valueJson: string }) => Promise<void> | void> = [];
 const commitHooks: Array<(workspacePath: string | null) => Promise<void> | void> = [];
 const conversationMessages = new Map<
@@ -239,6 +240,11 @@ const registerArchitectPlanMocks = () => {
         created: true,
       };
     },
+    fsExists: async (path: string, options?: { workspacePath?: string | null }) => {
+      const normalized = normalizeFsPath(path);
+      return Array.from(ensureWorkspace(options?.workspacePath).keys())
+        .some((key) => key === normalized || key.startsWith(`${normalized}/`));
+    },
     fsDelete: async ({
       path,
       workspacePath,
@@ -246,6 +252,7 @@ const registerArchitectPlanMocks = () => {
       path: string;
       workspacePath?: string | null;
     }) => {
+      for (const hook of workspaceDeleteHooks) await hook({ path, workspacePath });
       deleteWorkspacePrefix(workspacePath, path);
     },
     fsListDir: async ({
@@ -322,6 +329,7 @@ describe('architectPlanService replicas', () => {
     appSettings.clear();
     commitSnapshots.length = 0;
     workspaceWriteHooks.length = 0;
+    workspaceDeleteHooks.length = 0;
     appSettingWriteHooks.length = 0;
     commitHooks.length = 0;
     conversationMessages.clear();
@@ -896,6 +904,166 @@ describe('architectPlanService replicas', () => {
     const { service } = await loadArchitectPlanService();
     expect((await service.getArchitectPlan('develop', plan.id))?.id).toBe(plan.id);
     expect(JSON.parse(appSettings.get('pendingArchitectPlanReplicaMutations:v1') || '[]')).toEqual([foreign]);
+  });
+
+  it('recovers interrupted bind, activation, and chat mutations across replicas', async () => {
+    for (const operation of ['bind', 'activate', 'chat'] as const) {
+      workspaceFiles.clear();
+      appSettings.clear();
+      workspaceWriteHooks.length = 0;
+      const plan = buildPlan({ projectIds: ['web', 'api'], conversationId: undefined });
+      seedReplica('/repos/web', plan);
+      seedReplica('/repos/api', plan);
+      const { service } = await loadArchitectPlanService();
+      await service.getArchitectPlan('develop', plan.id);
+      if (operation === 'activate') {
+        for (const workspacePath of ['/repos/web', '/repos/api']) {
+          const index = JSON.parse(readWorkspaceFile(workspacePath, 'branches/develop/plans/index.json') || '{}');
+          writeWorkspaceJson(workspacePath, 'branches/develop/plans/index.json', { ...index, activePlanId: null });
+        }
+      }
+      let injected = false;
+      workspaceWriteHooks.push(({ path, workspacePath }) => {
+        if (!injected && workspacePath === '/repos/api' && path.endsWith('/index.json')) {
+          injected = true;
+          throw new Error(`injected-${operation}`);
+        }
+      });
+
+      const mutation = operation === 'bind'
+        ? service.bindArchitectPlanConversation({ branchName: 'develop', planId: plan.id, conversationId: 'bound-conversation' })
+        : operation === 'activate'
+          ? service.setActiveArchitectPlan('develop', plan.id)
+          : service.saveArchitectPlanChatMessages('develop', plan.id, [{
+              id: 'chat-recovered', role: 'assistant', content: 'Recovered transcript', createdAt: '2026-08-14T00:00:00.000Z',
+            }]);
+      await expect(mutation).rejects.toThrow(`injected-${operation}`);
+      workspaceWriteHooks.length = 0;
+      const { service: restartedService } = await loadArchitectPlanService();
+      await restartedService.getArchitectPlan('develop', plan.id);
+
+      for (const workspacePath of ['/repos/web', '/repos/api']) {
+        const scopePlan = JSON.parse(readWorkspaceFile(workspacePath, `branches/develop/plans/${plan.id}/plan.json`) || '{}');
+        const scopeIndex = JSON.parse(readWorkspaceFile(workspacePath, 'branches/develop/plans/index.json') || '{}');
+        if (operation === 'bind') {
+          expect(scopePlan.conversationId).toBe('bound-conversation');
+          expect(scopeIndex.plans[0]?.conversationId).toBe('bound-conversation');
+        } else if (operation === 'activate') {
+          expect(scopeIndex.activePlanId).toBe(plan.id);
+        } else {
+          expect(readWorkspaceFile(workspacePath, `branches/develop/plans/${plan.id}/chat.jsonl`))
+            .toContain('Recovered transcript');
+          expect(scopeIndex.plans[0]?.chatMessageCount).toBe(1);
+        }
+      }
+    }
+  });
+
+  it('recovers interrupted replica repair including canonical chat and artifacts', async () => {
+    const oldest = buildPlan({ projectIds: ['web', 'api'], description: 'oldest', updatedAt: '2026-08-13T00:00:00.000Z' });
+    const newest = buildPlan({ projectIds: ['web', 'api'], description: 'newest', updatedAt: '2026-08-14T00:00:00.000Z' });
+    seedReplica('/repos/web', oldest);
+    seedReplica('/repos/api', newest);
+    writeWorkspaceFile('/repos/api', `branches/develop/plans/${newest.id}/chat.jsonl`, chatLine({
+      id: 'repair-chat', role: 'assistant', content: 'Canonical repair chat', createdAt: newest.updatedAt,
+    }));
+    writeWorkspaceFile('/repos/api', `branches/develop/plans/${newest.id}/artifacts/index.json`, '{"canonical":true}');
+    let injected = false;
+    workspaceWriteHooks.push(({ path, workspacePath }) => {
+      if (!injected && workspacePath === '/repos/api' && path.endsWith('/index.json')) {
+        injected = true;
+        throw new Error('injected-repair');
+      }
+    });
+    const { service } = await loadArchitectPlanService();
+    await expect(service.repairArchitectPlanReplicas({ branchName: 'develop', planId: newest.id, strategy: 'newest' }))
+      .rejects.toThrow('injected-repair');
+    workspaceWriteHooks.length = 0;
+    const { service: restartedService } = await loadArchitectPlanService();
+    expect((await restartedService.getArchitectPlan('develop', newest.id))?.description).toBe('newest');
+    for (const workspacePath of ['/repos/web', '/repos/api']) {
+      expect(readWorkspaceFile(workspacePath, `branches/develop/plans/${newest.id}/chat.jsonl`)).toContain('Canonical repair chat');
+      expect(readWorkspaceFile(workspacePath, `branches/develop/plans/${newest.id}/artifacts/index.json`)).toBe('{"canonical":true}');
+    }
+  });
+
+  it('recovers interrupted runtime-orphan cleanup without leaving an empty partial catalog', async () => {
+    for (const workspacePath of ['/repos/web', '/repos/api']) {
+      writeWorkspaceJson(workspacePath, 'branches/develop/plans/index.json', {
+        version: 3, activePlanId: 'plan-orphan', plans: [toSummary(buildPlan({ id: 'plan-orphan' }))], reservedPlanSlugs: ['plan-orphan'],
+      });
+      writeWorkspaceJson(workspacePath, 'branches/develop/plans/plan-orphan/runtime.json', { taskId: 'task-1' });
+    }
+    let injected = false;
+    workspaceDeleteHooks.push(({ workspacePath }) => {
+      if (!injected && workspacePath === '/repos/api') { injected = true; throw new Error('injected-orphan'); }
+    });
+    const { service } = await loadArchitectPlanService();
+    await expect(service.repairArchitectPlanMetadata({ branchName: 'develop', planId: 'plan-orphan' }))
+      .rejects.toThrow('injected-orphan');
+    workspaceDeleteHooks.length = 0;
+    const { service: restartedService } = await loadArchitectPlanService();
+    expect(await restartedService.getArchitectPlan('develop', 'plan-orphan')).toBeNull();
+    for (const workspacePath of ['/repos/web', '/repos/api']) {
+      expect(readWorkspaceFile(workspacePath, 'branches/develop/plans/plan-orphan/runtime.json')).toBeNull();
+      const index = JSON.parse(readWorkspaceFile(workspacePath, 'branches/develop/plans/index.json') || '{}');
+      expect(index.plans).toEqual([]);
+    }
+  });
+
+  it('journals auto-heal so a read failure cannot leave silent partial divergence', async () => {
+    const plan = buildPlan({ projectIds: ['web', 'api', 'session-project-ghost'] });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    let injected = false;
+    workspaceWriteHooks.push(({ path, workspacePath }) => {
+      if (!injected && workspacePath === '/repos/api' && path.endsWith('/index.json')) {
+        injected = true;
+        throw new Error('injected-auto-heal');
+      }
+    });
+    const { service } = await loadArchitectPlanService();
+    await expect(service.getArchitectPlan('develop', plan.id)).rejects.toThrow('injected-auto-heal');
+    expect(JSON.parse(appSettings.get('pendingArchitectPlanReplicaMutations:v1') || '[]')).toHaveLength(1);
+    workspaceWriteHooks.length = 0;
+    const { service: restartedService } = await loadArchitectPlanService();
+    expect((await restartedService.getArchitectPlan('develop', plan.id))?.projectIds).toEqual(['web', 'api']);
+    expect(readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/plan.json`))
+      .toBe(readWorkspaceFile('/repos/api', `branches/develop/plans/${plan.id}/plan.json`));
+  });
+
+  it('serializes recovery reads with an active transaction instead of replaying its live intent', async () => {
+    const plan = buildPlan({ projectIds: ['web', 'api'], description: 'before-live-lock' });
+    seedReplica('/repos/web', plan);
+    seedReplica('/repos/api', plan);
+    const { service } = await loadArchitectPlanService();
+    await service.getArchitectPlan('develop', plan.id);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let blocked = false;
+    let targetPlanWrites = 0;
+    workspaceWriteHooks.push(async ({ path, content }) => {
+      if (path.endsWith(`/plans/${plan.id}/plan.json`) && content.includes('after-live-lock')) {
+        targetPlanWrites += 1;
+        if (!blocked) { blocked = true; await gate; }
+      }
+    });
+
+    const mutation = service.updateArchitectPlan({
+      branchName: 'develop', planId: plan.id, description: 'after-live-lock',
+    });
+    while (!blocked) await Promise.resolve();
+    let readFinished = false;
+    const concurrentRead = service.getArchitectPlan('develop', plan.id).then((value: unknown) => {
+      readFinished = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(readFinished).toBe(false);
+    expect(targetPlanWrites).toBe(1);
+    release();
+    await Promise.all([mutation, concurrentRead]);
+    expect(targetPlanWrites).toBe(2);
   });
 
   it('keeps reporting true content divergence between repositories', async () => {
