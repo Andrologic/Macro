@@ -100,6 +100,24 @@ export const mapTaskStatusToNodeStatus = (status: TaskStatus): PlanNodeStatus =>
   return 'pending';
 };
 
+export const resolvePlanNodeTaskStatus = (node: Pick<PlanNode, 'status' | 'executionStatus'>): TaskStatus => {
+  const persistedStatus = node.executionStatus;
+  if (persistedStatus && mapTaskStatusToNodeStatus(persistedStatus) === node.status) {
+    return persistedStatus;
+  }
+  return mapNodeStatusToTaskStatus(node.status);
+};
+
+export const applyTaskStatusToPlanNodes = (
+  nodes: PlanNode[],
+  taskId: string,
+  status: TaskStatus,
+): PlanNode[] => nodes.map((node) =>
+  node.id === taskId
+    ? { ...node, status: mapTaskStatusToNodeStatus(status), executionStatus: status }
+    : node
+);
+
 export interface DerivedImplementTask extends Task {
   assigned_branch: string;
   branch_name: string;
@@ -465,7 +483,8 @@ const finalizeTaskStatus = (status: TaskStatus, blockedByTaskIds: string[]): Tas
       status === 'Completed' ||
       status === 'InProgress' ||
       status === 'AwaitingResponse' ||
-      status === 'InReview'
+      status === 'InReview' ||
+      status === 'Failed'
     ) {
       return status;
     }
@@ -484,7 +503,8 @@ const shouldFlagTaskForRevalidation = (status: TaskStatus, blockedByTaskIds: str
   (status === 'Completed' ||
     status === 'InProgress' ||
     status === 'AwaitingResponse' ||
-    status === 'InReview');
+    status === 'InReview' ||
+    status === 'Failed');
 
 const buildExecutionTargets = (
   node: PlanNode,
@@ -573,7 +593,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       : null;
     const branchName = primaryTarget?.branchName || normalizeBranchName(node.assignedBranch) || branchIntent.label;
     const branchTaskIndex = normalized.branchTaskOrder[branchKey]?.indexOf(node.id) ?? -1;
-    const status = mapNodeStatusToTaskStatus(node.status);
+    const status = resolvePlanNodeTaskStatus(node);
     const projectIds = executionTargets.map((target) => target.projectId);
 
     return {

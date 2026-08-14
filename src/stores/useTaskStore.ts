@@ -28,7 +28,7 @@ import {
 } from '../services/linkedTaskDeletionSaga';
 import {
   deriveImplementTasksFromStrategy,
-  mapTaskStatusToNodeStatus,
+  applyTaskStatusToPlanNodes,
   toBranchWorktreeKey,
 } from '../services/implementTaskDerivation';
 import {
@@ -71,6 +71,7 @@ import {
   syncManualFeatureMetadataFromTask,
 } from '../services/manualFeatureMetadataService';
 import { isManualDraftPendingInitialization } from '../services/manualDraftInitialization';
+export { getPlanActivationCandidateTask } from '../services/planActivationCandidate';
 import {
   buildInitialPlanFinalizationRuntimeState,
   buildPlanFinalizationTaskId,
@@ -1242,16 +1243,6 @@ const taskMatchesAnyProjectId = (
   projectIds: string[]
 ): boolean => projectIds.some((projectId) => taskMatchesProjectId(task, projectId));
 
-const PLAN_ACTIVATION_TASK_STATUS_ORDER: Record<TaskStatus, number> = {
-  InProgress: 0,
-  AwaitingResponse: 1,
-  InReview: 2,
-  Pending: 3,
-  Blocked: 4,
-  Failed: 5,
-  Completed: 6,
-};
-
 const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
 
@@ -1318,39 +1309,6 @@ const parseMissingStartRefError = (
     targetBranchName: match[1] || '',
     missingRef: match[2] || '',
   };
-};
-
-export const getPlanActivationCandidateTask = (
-  tasks: CatalogedImplementTask[],
-  planId: string,
-  scopedProjectIds: string[] = []
-): CatalogedImplementTask | null => {
-  const matchesScope = (task: CatalogedImplementTask): boolean =>
-    scopedProjectIds.length === 0 || taskMatchesAnyProjectId(task, scopedProjectIds);
-  const isPlanActivationEligible = (task: CatalogedImplementTask): boolean =>
-    task.plan_id === planId &&
-    !task.draft &&
-    !task.is_blocked &&
-    task.status !== 'Completed' &&
-    task.status !== 'InReview';
-  const compareTasks = (left: CatalogedImplementTask, right: CatalogedImplementTask): number => {
-    const byStatus = PLAN_ACTIVATION_TASK_STATUS_ORDER[left.status] - PLAN_ACTIVATION_TASK_STATUS_ORDER[right.status];
-    if (byStatus !== 0) return byStatus;
-    return left.sequence_index - right.sequence_index;
-  };
-
-  const scopedCandidates = tasks
-    .filter((task) => isPlanActivationEligible(task) && matchesScope(task))
-    .sort(compareTasks);
-  if (scopedCandidates.length > 0) {
-    return scopedCandidates[0] || null;
-  }
-
-  return (
-    tasks
-      .filter(isPlanActivationEligible)
-      .sort(compareTasks)[0] || null
-  );
 };
 
 const ensureAppSync = () => {
@@ -1775,10 +1733,7 @@ const persistTaskStatusToArchitectPlan = async (
       return false;
     }
 
-    const nextNodeStatus = mapTaskStatusToNodeStatus(status);
-    const nextPlanNodes = (plan.nodes || []).map((node) =>
-      node.id === task.id ? { ...node, status: nextNodeStatus } : node
-    );
+    const nextPlanNodes = applyTaskStatusToPlanNodes(plan.nodes || [], task.id, status);
     const currentPlanTasks = deriveImplementTasksFromStrategy({
       planId: plan.id,
       planSlug: plan.slug,

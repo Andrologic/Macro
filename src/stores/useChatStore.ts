@@ -1412,6 +1412,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     LiveContextDiagnosticsRefreshState
   >();
   let awaitingResponseReconciliationScheduled = false;
+  const awaitingResponseReconciliationTaskIds = new Set<string>();
   let suppressedSelectionPersistenceCount = 0;
   const pendingArchitectConversationIdsByPlanKey = new Map<string, string>();
   const pendingArchitectConversationDetailsById = new Map<
@@ -2793,21 +2794,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
 
     for (const taskId of taskIdsToMark) {
-      const currentTask = taskStore.getTaskById(taskId);
-      if (!currentTask) {
+      if (awaitingResponseReconciliationTaskIds.has(taskId)) {
         continue;
       }
+      awaitingResponseReconciliationTaskIds.add(taskId);
+      try {
+        const currentTask = taskStore.getTaskById(taskId);
+        if (!currentTask) {
+          continue;
+        }
 
-      if (currentTask.status === "Pending") {
-        await taskStore.startTask(taskId);
+        if (currentTask.status === "Pending") {
+          await taskStore.startTask(taskId);
+        }
+
+        const refreshedTask = taskStore.getTaskById(taskId);
+        if (!refreshedTask || refreshedTask.status !== "InProgress") {
+          continue;
+        }
+
+        await taskStore.markTaskAwaitingResponse(taskId);
+      } finally {
+        awaitingResponseReconciliationTaskIds.delete(taskId);
       }
-
-      const refreshedTask = taskStore.getTaskById(taskId);
-      if (!refreshedTask || refreshedTask.status !== "InProgress") {
-        continue;
-      }
-
-      await taskStore.markTaskAwaitingResponse(taskId);
     }
   };
 

@@ -119,6 +119,8 @@ export interface PlanNode {
   description?: string;
   type: PlanNodeType;
   status: PlanNodeStatus;
+  /** Exact Implement runtime status. Optional for backward compatibility with legacy plans. */
+  executionStatus?: TaskStatus;
   dependencies: string[];
   todos?: PlanNodeTodo[];
   artifactContracts?: PlanNodeArtifactContract[];
