@@ -2978,6 +2978,42 @@ pub async fn set_app_setting(
     })
 }
 
+pub async fn compare_and_swap_app_setting(
+    pool: &SqlitePool,
+    key: &str,
+    expected_value_json: Option<&str>,
+    value_json: &str,
+) -> DbResult<CompareAndSwapAppSettingResult> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        r#"
+        INSERT INTO app_settings (key, value_json, updated_at)
+        SELECT ?, ?, ?
+        WHERE (? IS NULL AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?))
+           OR (? IS NOT NULL AND EXISTS (
+               SELECT 1 FROM app_settings WHERE key = ? AND value_json = ?
+           ))
+        ON CONFLICT(key) DO UPDATE SET
+            value_json = excluded.value_json,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(key)
+    .bind(value_json)
+    .bind(now)
+    .bind(expected_value_json)
+    .bind(key)
+    .bind(expected_value_json)
+    .bind(key)
+    .bind(expected_value_json)
+    .execute(pool)
+    .await?;
+
+    Ok(CompareAndSwapAppSettingResult {
+        applied: result.rows_affected() == 1,
+    })
+}
+
 // ============ TERMINAL TABS ============
 
 pub async fn list_terminal_tabs(pool: &SqlitePool) -> DbResult<Vec<TerminalTabRecord>> {
@@ -3460,6 +3496,81 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
         (temp_dir, pool)
+    }
+
+    #[tokio::test]
+    async fn app_setting_compare_and_swap_distinguishes_absence_and_exact_values() {
+        let (_temp_dir, pool) = test_pool().await;
+
+        assert!(
+            compare_and_swap_app_setting(&pool, "cas", None, r#"{"version":1}"#)
+                .await
+                .expect("insert absent")
+                .applied
+        );
+        assert!(
+            !compare_and_swap_app_setting(&pool, "cas", None, "unexpected")
+                .await
+                .expect("reject second insert")
+                .applied
+        );
+        assert!(
+            !compare_and_swap_app_setting(&pool, "cas", Some("wrong"), "unexpected")
+                .await
+                .expect("reject stale update")
+                .applied
+        );
+        assert!(
+            compare_and_swap_app_setting(
+                &pool,
+                "cas",
+                Some(r#"{"version":1}"#),
+                r#"{"version":1}"#
+            )
+            .await
+            .expect("accept identical replacement")
+            .applied
+        );
+        assert!(
+            compare_and_swap_app_setting(
+                &pool,
+                "cas",
+                Some(r#"{"version":1}"#),
+                r#"{"version":2}"#
+            )
+            .await
+            .expect("accept exact update")
+            .applied
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_app_setting_compare_and_swap_has_one_winner() {
+        let (_temp_dir, pool) = test_pool().await;
+        set_app_setting(&pool, "contended", "base")
+            .await
+            .expect("seed setting");
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+        for value in ["first", "second"] {
+            let pool = pool.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                compare_and_swap_app_setting(&pool, "contended", Some("base"), value)
+                    .await
+                    .expect("concurrent CAS")
+                    .applied
+            }));
+        }
+        barrier.wait().await;
+        let mut winners = 0;
+        for task in tasks {
+            if task.await.expect("task") {
+                winners += 1;
+            }
+        }
+        assert_eq!(winners, 1);
     }
 
     async fn create_test_conversation(pool: &SqlitePool, title: &str) -> Conversation {
