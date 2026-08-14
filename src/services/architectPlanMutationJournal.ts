@@ -9,7 +9,7 @@ export interface ArchitectPlanMutationJournalEntry<TPayload = unknown> {
   workspaceKey: string;
   branchName: string;
   planId: string;
-  operation: 'create' | 'update' | 'archive' | 'restore' | 'delete' | 'repair';
+  operation: 'create' | 'update' | 'archive' | 'restore' | 'delete' | 'repair' | 'bind' | 'activate' | 'chat' | 'auto_heal' | 'orphan_cleanup';
   phase: 'prepared' | 'applying' | 'files_applied' | 'committing';
   payload: TPayload;
   createdAt: string;
@@ -21,7 +21,7 @@ const isEntry = (value: unknown): value is ArchitectPlanMutationJournalEntry => 
   const entry = value as Partial<ArchitectPlanMutationJournalEntry>;
   return !!entry && typeof entry.id === 'string' && typeof entry.workspaceKey === 'string' && entry.workspaceKey.length > 0 && typeof entry.branchName === 'string' &&
     typeof entry.planId === 'string' &&
-    ['create', 'update', 'archive', 'restore', 'delete', 'repair'].includes(entry.operation || '') &&
+    ['create', 'update', 'archive', 'restore', 'delete', 'repair', 'bind', 'activate', 'chat', 'auto_heal', 'orphan_cleanup'].includes(entry.operation || '') &&
     ['prepared', 'applying', 'files_applied', 'committing'].includes(entry.phase || '') &&
     typeof entry.createdAt === 'string' && typeof entry.updatedAt === 'string' &&
     entry.payload !== undefined;
