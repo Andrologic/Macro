@@ -1,5 +1,6 @@
 import type {
   PlanNode,
+  PlanNodeArtifactContract,
   PlanNodeTodo,
   PlanNodeStatus,
   PredictedBranch,
@@ -7,6 +8,7 @@ import type {
   TaskExecutionTarget,
   TaskStatus,
 } from '../types';
+import { toTaskRuntimeId } from './durableIdentity';
 import {
   buildPlanFeatureBranchKey,
   getPlanNodeLogicalBranchIdentity,
@@ -119,6 +121,8 @@ export const applyTaskStatusToPlanNodes = (
 );
 
 export interface DerivedImplementTask extends Task {
+  node_id?: string;
+  artifact_contracts?: PlanNodeArtifactContract[];
   assigned_branch: string;
   branch_name: string;
   branch_id: string | null;
@@ -539,6 +543,7 @@ const buildExecutionTargets = (
 
 export const deriveImplementTasksFromStrategy = (params: {
   planId: string;
+  runtimeBranchName?: string;
   planSlug?: string;
   nodes: PlanNode[];
   predictedBranches: PredictedBranch[];
@@ -596,15 +601,23 @@ export const deriveImplementTasksFromStrategy = (params: {
     const status = resolvePlanNodeTaskStatus(node);
     const projectIds = executionTargets.map((target) => target.projectId);
 
+    const runtimeId = params.runtimeBranchName
+      ? toTaskRuntimeId({ branchName: params.runtimeBranchName, planId: params.planId, nodeId: node.id })
+      : node.id;
     return {
-      id: node.id,
+      id: runtimeId,
+      node_id: node.id,
       plan_id: params.planId,
       project_id: projectIds[0] || node.projectId || '',
       project_ids: projectIds,
       title: node.title,
       description: node.description || '',
       status,
-      dependencies: [...node.dependencies],
+      dependencies: params.runtimeBranchName
+        ? node.dependencies.map((nodeId) => toTaskRuntimeId({
+            branchName: params.runtimeBranchName!, planId: params.planId, nodeId,
+          }))
+        : [...node.dependencies],
       estimated_changes: [],
       assigned_branch: branchName,
       branch_name: branchName,
@@ -618,6 +631,7 @@ export const deriveImplementTasksFromStrategy = (params: {
       sequence_index: sequenceOrder.get(node.id) ?? Number.MAX_SAFE_INTEGER,
       execution_targets: executionTargets,
       todos: normalizePlanNodeTodos(node.todos),
+      artifact_contracts: (node.artifactContracts || []).map((contract) => ({ ...contract })),
     };
   });
 

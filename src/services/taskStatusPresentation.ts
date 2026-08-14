@@ -8,6 +8,7 @@ import {
   resolveMergeWorkflowIndicatorState,
   type MergeWorkflowIndicatorSource,
 } from './mergeWorkflow';
+import { resolveTaskReference } from './durableIdentity';
 
 export type TaskStatusIndicatorState =
   | 'idle_prompt'
@@ -35,6 +36,7 @@ interface ResolveActiveTaskIdsParams {
   }>;
   tasks?: Array<{
     id: string;
+    node_id?: string | null;
     conversation_id?: string | null;
   }>;
   selectedConversationId?: string | null;
@@ -95,14 +97,15 @@ export const resolveRunningConversationIds = resolveActiveConversationIds;
 
 const collectTaskIdsFromActiveConversations = (
   conversations: ResolveActiveTaskIdsParams['conversations'],
-  activeConversationIds: Set<string>
-): Set<string> =>
-  new Set(
-    conversations
-      .filter((conversation) => activeConversationIds.has(conversation.id))
-      .map((conversation) => conversation.task_id)
-      .filter(hasUsableId)
-  );
+  activeConversationIds: Set<string>,
+  tasks: NonNullable<ResolveActiveTaskIdsParams['tasks']>,
+): Set<string> => new Set(conversations
+  .filter((conversation) => activeConversationIds.has(conversation.id) && hasUsableId(conversation.task_id))
+  .flatMap((conversation) => {
+    if (tasks.length === 0) return [conversation.task_id!];
+    const task = resolveTaskReference(tasks, conversation.task_id!);
+    return task ? [task.id] : [];
+  }));
 
 const addTaskIdsFromTaskConversationLinks = (
   activeTaskIds: Set<string>,
@@ -130,9 +133,9 @@ const canUseSelectedTaskFallback = (
   const selectedConversation = params.conversations.find(
     (conversation) => conversation.id === params.selectedConversationId
   );
-  const selectedTask = params.tasks?.find(
-    (task) => task.id === params.selectedTaskId
-  );
+  const selectedTask = params.tasks
+    ? resolveTaskReference(params.tasks, params.selectedTaskId)
+    : undefined;
 
   if (!selectedConversation || !selectedTask) {
     return false;
@@ -140,7 +143,7 @@ const canUseSelectedTaskFallback = (
 
   const conversationHasNoConflictingTask =
     !selectedConversation.task_id ||
-    selectedConversation.task_id === selectedTask.id;
+    resolveTaskReference(params.tasks || [], selectedConversation.task_id)?.id === selectedTask.id;
   const taskHasNoConflictingConversation =
     !selectedTask.conversation_id ||
     selectedTask.conversation_id === selectedConversation.id;
@@ -168,7 +171,8 @@ export const resolveActiveTaskIds = ({
 
   const activeTaskIds = collectTaskIdsFromActiveConversations(
     conversations,
-    activeConversationIds
+    activeConversationIds,
+    tasks,
   );
 
   addTaskIdsFromTaskConversationLinks(activeTaskIds, tasks, activeConversationIds);

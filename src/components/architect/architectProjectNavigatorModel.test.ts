@@ -62,7 +62,7 @@ describe('architect project navigator model', () => {
     ]);
   });
 
-  it('deduplicates replicated plans and keeps the newest summary', () => {
+  it('keeps identical plan ids on separate branches addressable by locator', () => {
     const scopes = buildArchitectNavigatorScopes({
       projectGroups: [],
       standaloneProjects: [project('a')],
@@ -82,9 +82,12 @@ describe('architect project navigator model', () => {
       },
     ];
 
-    const [entry] = buildArchitectNavigatorPlanEntries({ branches, scopes });
-    expect(entry.plan.title).toBe('Newest');
-    expect(entry.branchName).toBe('release/next');
+    const entries = buildArchitectNavigatorPlanEntries({ branches, scopes });
+    expect(entries.map((entry) => [entry.branchName, entry.plan.id])).toEqual([
+      ['release/next', 'same'],
+      ['develop', 'same'],
+    ]);
+    expect(new Set(entries.map((entry) => entry.locatorKey)).size).toBe(2);
   });
 
   it('sanitizes persisted ids against the current registry', () => {
