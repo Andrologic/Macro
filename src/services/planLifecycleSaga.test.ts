@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parsePlanLifecycleSagas } from './planLifecycleSaga';
+import { parsePlanLifecycleSagaJournal, parsePlanLifecycleSagas } from './planLifecycleSaga';
 
 const serializeSaga = (overrides: Record<string, unknown> = {}) => JSON.stringify([{
   planId: 'plan-1',
@@ -30,5 +30,23 @@ describe('planLifecycleSaga', () => {
 
     expect(historicalSaga).toMatchObject({ phase: 'metadata_commit_pending' });
     expect(historicalSaga).not.toHaveProperty('requiresMetadataCommit');
+  });
+
+  it('quarantines an invalid entry while preserving valid recovery work', () => {
+    const valid = JSON.parse(serializeSaga())[0];
+    const invalid = { ...valid, planId: 'broken', phase: 'metadata_deleted' };
+
+    const journal = parsePlanLifecycleSagaJournal(JSON.stringify([invalid, valid]));
+
+    expect(journal.sagas).toEqual([valid]);
+    expect(journal.quarantined).toHaveLength(1);
+    expect(journal.quarantined[0]?.entry).toEqual(invalid);
+    expect(journal.quarantined[0]?.reason).toContain('invalide');
+  });
+
+  it('still fails closed when the journal container itself is unreadable', () => {
+    expect(() => parsePlanLifecycleSagaJournal('{not-json')).toThrow(
+      'journal du cycle de vie des plans est corrompu',
+    );
   });
 });
