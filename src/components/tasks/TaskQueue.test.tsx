@@ -797,6 +797,37 @@ describe('TaskQueue', () => {
 
     expect(document.body.textContent).not.toContain('First project task');
     expect(document.body.textContent).toContain('Second project task');
+
+    await act(async () => {
+      projectFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const allProjectsOption = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')
+    ).find((option) => option.textContent?.includes('All projects'));
+    expect(allProjectsOption?.querySelector('.tabular-nums')?.textContent).toBe('2');
+
+    const searchInput = document.body.querySelector<HTMLInputElement>(
+      'input[placeholder="Search projects..."]'
+    );
+    await act(async () => {
+      searchInput?.dispatchEvent(new window.KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true,
+      }));
+      await flushRender();
+    });
+    expect(document.activeElement).toBe(allProjectsOption ?? null);
+
+    await act(async () => {
+      allProjectsOption?.dispatchEvent(new window.KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+      }));
+      await flushRender();
+    });
+    expect(document.activeElement).toBe(projectFilter);
   });
 
   it('requires an explicit project when creating from the all-projects view', async () => {

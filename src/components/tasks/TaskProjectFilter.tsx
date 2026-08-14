@@ -81,6 +81,13 @@ export const TaskProjectFilter: React.FC<TaskProjectFilterProps> = ({
     });
   }, []);
 
+  const closeDropdown = useCallback((restoreTriggerFocus = false) => {
+    setIsOpen(false);
+    if (restoreTriggerFocus) {
+      queueMicrotask(() => triggerRef.current?.focus());
+    }
+  }, []);
+
   useEffect(() => {
     if (!isOpen) {
       setPosition(null);
@@ -94,7 +101,7 @@ export const TaskProjectFilter: React.FC<TaskProjectFilterProps> = ({
     const handleOutsideClick = (event: MouseEvent) => {
       const target = event.target as Node;
       if (!triggerRef.current?.contains(target) && !dropdownRef.current?.contains(target)) {
-        setIsOpen(false);
+        closeDropdown();
       }
     };
     document.addEventListener('mousedown', handleOutsideClick);
@@ -103,11 +110,39 @@ export const TaskProjectFilter: React.FC<TaskProjectFilterProps> = ({
       window.removeEventListener('scroll', updatePosition, true);
       document.removeEventListener('mousedown', handleOutsideClick);
     };
-  }, [isOpen, updatePosition]);
+  }, [closeDropdown, isOpen, updatePosition]);
 
   const selectProject = (projectId: string | null) => {
     onSelect(projectId);
-    setIsOpen(false);
+    closeDropdown(true);
+  };
+
+  const handleDropdownKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeDropdown(true);
+      return;
+    }
+
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const options = Array.from(
+      dropdownRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []
+    );
+    if (options.length === 0) return;
+
+    event.preventDefault();
+    const currentIndex = options.findIndex((option) => option === document.activeElement);
+    let nextIndex: number;
+    if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = options.length - 1;
+    } else if (event.key === 'ArrowUp') {
+      nextIndex = currentIndex <= 0 ? options.length - 1 : currentIndex - 1;
+    } else {
+      nextIndex = currentIndex < 0 || currentIndex === options.length - 1 ? 0 : currentIndex + 1;
+    }
+    options[nextIndex]?.focus();
   };
 
   return (
@@ -155,6 +190,7 @@ export const TaskProjectFilter: React.FC<TaskProjectFilterProps> = ({
           ref={dropdownRef}
           role="listbox"
           aria-label={t('implement.projectFilterLabel', 'Filter tasks by project')}
+          onKeyDown={handleDropdownKeyDown}
           style={{
             top: position.top,
             left: position.left,
@@ -170,9 +206,6 @@ export const TaskProjectFilter: React.FC<TaskProjectFilterProps> = ({
                 ref={searchRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') setIsOpen(false);
-                }}
                 placeholder={t('implement.searchProjects', 'Search projects...')}
                 className="h-9 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
               />
