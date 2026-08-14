@@ -773,23 +773,89 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    const projectFilter = document.body.querySelector<HTMLSelectElement>(
+    const projectFilter = document.body.querySelector<HTMLButtonElement>(
       '[data-tour-id="implement-project-filter"]'
     );
-    expect(projectFilter?.value).toBe('__all_projects__');
+    expect(projectFilter?.textContent).toContain('All projects');
     expect(document.body.textContent).toContain('First project task');
     expect(document.body.textContent).toContain('Second project task');
 
     await act(async () => {
-      if (projectFilter) {
-        projectFilter.value = 'project-2';
-        projectFilter.dispatchEvent(new window.Event('change', { bubbles: true }));
-      }
+      projectFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const projectTwoOption = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')
+    ).find((option) => option.textContent?.includes('Project Two'));
+    expect(projectTwoOption).not.toBeUndefined();
+
+    await act(async () => {
+      projectTwoOption?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
     });
 
     expect(document.body.textContent).not.toContain('First project task');
     expect(document.body.textContent).toContain('Second project task');
+  });
+
+  it('requires an explicit project when creating from the all-projects view', async () => {
+    seedTasks([makeTask('task-1', 'Pending')]);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            makeProject('project-1', '/tmp/project-1', 'Project One'),
+            makeProject('project-2', '/tmp/project-2', 'Project Two'),
+          ],
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const createButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-create-task"]'
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const confirmButton = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') || []
+    ).find((button) => button.textContent?.includes('Create task'));
+    expect(dialog?.textContent).toContain('A project is required');
+    expect(confirmButton?.disabled).toBe(true);
+    expect(dialog?.querySelector('[aria-pressed="true"]')).toBeNull();
+
+    const projectTwoButton = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') || []
+    ).find((button) => button.textContent?.includes('Project Two'));
+    const titleInput = dialog?.querySelector<HTMLInputElement>('input[maxlength="160"]');
+    await act(async () => {
+      projectTwoButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      if (titleInput) {
+        const valueSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          'value'
+        )?.set;
+        valueSetter?.call(titleInput, 'Explicitly targeted task');
+        titleInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+      }
+      await flushRender();
+    });
+
+    expect(dialog?.querySelector('[aria-pressed="true"]')?.textContent).toContain('Project Two');
+    expect(confirmButton?.disabled).toBe(false);
   });
 
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {
@@ -1113,7 +1179,7 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
   });
 
-  it('renders the synthetic plan finalization task without the legacy ready-for-validation callout and excludes it from progress', async () => {
+  it('renders the synthetic plan finalization task in the operational status summary', async () => {
     seedTasks([
       makeTask('architect-complete-1', 'Completed', {
         title: 'Architect task',
@@ -1149,7 +1215,9 @@ describe('TaskQueue', () => {
     });
 
     expect(document.body.textContent).not.toContain('Plan ready for validation');
-    expect(document.body.textContent).toContain('1/1');
+    expect(
+      document.body.querySelector('[aria-label="Task status summary"]')?.textContent
+    ).toContain('Ready1');
     expect(document.body.querySelector('[data-task-context-badge="plan_finalization"]')?.textContent)
       .toContain('Plan finalization');
     expect(

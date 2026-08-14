@@ -275,6 +275,8 @@ Le mode Implement doit supporter :
 - une file de tâches issue de plusieurs plans
 - une vue agrégée de toutes les tâches de tous les projets
 - le filtrage des tâches par projet et par autres critères pertinents
+- un résumé opérationnel par statut, utilisable comme filtre, à la place d'une progression globale ambiguë
+- la sélection explicite d'un projet modifiable lors de la création d'une tâche indépendante
 - la prise en compte explicite des dépendances et de l'état de disponibilité d'une tâche
 - la consultation des artefacts hérités depuis les tâches parentes et la production d'artefacts pour les tâches dépendantes
 - une review en fin de tâche
@@ -284,7 +286,7 @@ Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
 ### 7.3 Mode Chat
 
-Le mode Chat est un mode de support independant.
+Le mode Chat est un mode de support indépendant.
 
 Son objectif est de permettre à l'utilisateur de :
 - poser des questions rapides d'ordre technique ou documentaire

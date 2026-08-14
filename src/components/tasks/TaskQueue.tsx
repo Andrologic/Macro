@@ -27,13 +27,9 @@ import {
   isPlanFinalizationTask,
   taskMatchesProjectId,
 } from '../../services/implementTaskCatalog';
-import { shouldIncludeTaskInImplementationProgress } from '../../services/planFinalization';
 import {
   getProjectGroupByProjectId,
   getAllProjects,
-  getScopedActionableProjectIds,
-  getScopedProjectIds,
-  getScopedReadOnlyProjectIds,
 } from '../../services/globalProjects';
 import {
   isProjectWorkspaceMissing,
@@ -63,7 +59,6 @@ import {
 } from '../../services/taskMergeWorkflowPresentation';
 import { Icon, IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
-import { Select } from '../ui/Select';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
@@ -83,6 +78,8 @@ import {
   noteTooManyOpenFilesBackoff,
 } from '../../services/resourcePressureBackoff';
 import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
+import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
+import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
 
 interface TaskQueueProps {
   className?: string;
@@ -104,6 +101,7 @@ type TaskListRow =
     };
 
 const ALL_PROJECTS_FILTER = '__all_projects__';
+type TaskQueueStatusFilter = 'all' | 'ready' | 'in_progress' | 'waiting' | 'blocked';
 
 const statusConfig: Record<TaskStatus, { color: string; bgColor: string }> = {
   Pending: { color: 'text-muted-foreground', bgColor: 'bg-muted' },
@@ -673,6 +671,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS_FILTER);
+  const [statusFilter, setStatusFilter] = useState<TaskQueueStatusFilter>('all');
+  const [showCreateTaskDialog, setShowCreateTaskDialog] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
@@ -793,7 +793,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     t,
   ]);
 
-  const handleCreateManualFeature = async () => {
+  const handleCreateManualFeature = async ({
+    projectId,
+    title,
+  }: {
+    projectId: string;
+    title: string;
+  }) => {
     if (taskMutationDisabled || taskExecutionDisabled) {
       notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
       return;
@@ -809,22 +815,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
 
     if (pendingTaskId) return;
-    const actionableProjectIds = scopedActionableProjectIds;
-    const contextProjectIds = scopedReadOnlyProjectIds;
-    const conversationProjectId =
-      (selectedProjectId && actionableProjectIds.includes(selectedProjectId) ? selectedProjectId : null) ||
-      actionableProjectIds[0] ||
-      null;
-
-    if (actionableProjectIds.length === 0) {
+    const targetProject = getProjectById(projectId) ?? null;
+    if (!targetProject || targetProject.isReadOnly) {
       notify.error(
         t(
           'implement.manualFeatureMissingProjects',
-          'No editable project is available for the current scope.'
+          'The selected project is not available for implementation.'
         )
       );
       return;
     }
+    const targetGroupId = getProjectGroupByProjectId(projectGroups, projectId)?.id ?? null;
 
     const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setPendingTaskId(taskId);
@@ -833,26 +834,27 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     try {
       setSelectedTask(taskId);
       const conversation = await createConversation(
-        t('implement.manualFeatureUntitled', 'New feature'),
+        title,
         taskId,
-        conversationProjectId,
-        selectedGroupId
+        projectId,
+        targetGroupId
       );
       conversationId = conversation.id;
       await createManualFeatureDraft({
         taskId,
         conversationId: conversation.id,
-        groupId: selectedGroupId,
-        projectIds: actionableProjectIds,
-        contextProjectIds,
+        groupId: targetGroupId,
+        projectIds: [projectId],
+        contextProjectIds: [],
         baseBranch: getGitFlowBaseBranch(),
-        title: t('implement.manualFeatureUntitled', 'New feature'),
+        title,
         description: '',
       });
       await activateTask(taskId);
       if (!(await selectConversation(conversation.id))) {
         throw new Error('Impossible de sélectionner la nouvelle conversation.');
       }
+      setShowCreateTaskDialog(false);
     } catch (error) {
       let cleanupError: unknown = null;
       if (conversationId) {
@@ -993,31 +995,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     };
   }, [getProjectById, mergeWorkflowRuntimeByTaskId, t]);
 
-  const scopedProjectState = useMemo(() => {
-    const projectRegistry = { standaloneProjects, projectGroups };
-    const projectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
-    const actionableProjectIds = getScopedActionableProjectIds(
-      projectRegistry,
-      selectedGroupId,
-      selectedProjectId
-    );
-    const readOnlyProjectIds = getScopedReadOnlyProjectIds(
-      projectRegistry,
-      selectedGroupId,
-      selectedProjectId
-    );
-    const readOnlyProjects = readOnlyProjectIds
-      .map((projectId) => getProjectById(projectId))
-      .filter((project): project is NonNullable<typeof project> => Boolean(project));
+  const availableProjects = useMemo(
+    () => getAllProjects(projectGroups, standaloneProjects),
+    [projectGroups, standaloneProjects]
+  );
 
-    return {
-      projectIds,
-      actionableProjectIds,
-      readOnlyProjectIds,
-      readOnlyProjects,
-    };
-  }, [getProjectById, projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]);
-  const scopedProjectIds = scopedProjectState.projectIds;
   const retargetTaskForCurrentScope = useCallback(
     (task: ImplementTask): ImplementTask =>
       retargetTaskForProjectSelection(task, {
@@ -1028,19 +1010,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       }),
     [projectGroups, selectedGroupId, selectedProjectId, standaloneProjects]
   );
-  const scopedActionableProjectIds = scopedProjectState.actionableProjectIds;
-  const scopedReadOnlyProjectIds = scopedProjectState.readOnlyProjectIds;
   const workspaceState = resolveProjectWorkspaceState({
     standaloneProjects,
     projectGroups,
     selectedGroupId,
     selectedProjectId,
   });
-  const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
-  const scopedReadOnlyProjects = scopedProjectState.readOnlyProjects;
+  const isWorkspaceMissing = availableProjects.length === 0 && isProjectWorkspaceMissing(workspaceState);
+  const scopedReadOnlyProjects = availableProjects.filter((project) => project.isReadOnly);
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope =
-    scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
+    availableProjects.length > 0 && availableProjects.every((project) => project.isReadOnly);
   const readOnlyCtaLabel = firstReadOnlyProject?.readOnlyReason === 'missing_git'
     ? t('projects.initializeGitAction', 'Initialize Git')
     : firstReadOnlyProject?.readOnlyReason === 'missing_initial_commit'
@@ -1110,9 +1090,24 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     t,
   ]);
 
-  const availableProjects = useMemo(
-    () => getAllProjects(projectGroups, standaloneProjects),
-    [projectGroups, standaloneProjects]
+  const projectFilterOptions = useMemo<TaskProjectFilterOption[]>(
+    () => availableProjects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      groupName: getProjectGroupByProjectId(projectGroups, project.id)?.name ?? null,
+      taskCount: tasks.filter((task) =>
+        !task.archived_at &&
+        task.status !== 'Completed' &&
+        taskMatchesProjectId(task, project.id)
+      ).length,
+      isReadOnly: Boolean(project.isReadOnly),
+    })),
+    [availableProjects, projectGroups, tasks]
+  );
+  const editableProjectOptions = useMemo(
+    () => projectFilterOptions.filter((project) => !project.isReadOnly),
+    [projectFilterOptions]
   );
 
   const availablePlanSummaries = planSummaries;
@@ -1140,12 +1135,44 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     setProjectFilter(ALL_PROJECTS_FILTER);
   }, [availableProjects, projectFilter]);
 
-  const filteredTasks = useMemo(() => {
+  const projectFilteredTasks = useMemo(() => {
     if (projectFilter === ALL_PROJECTS_FILTER) {
       return tasks;
     }
     return tasks.filter((task) => taskMatchesProjectId(task, projectFilter));
   }, [projectFilter, tasks]);
+
+  const statusCounts = useMemo(() => {
+    const activeTasks = projectFilteredTasks.filter((task) => !task.archived_at && !task.draft);
+    return {
+      ready: activeTasks.filter((task) =>
+        !task.is_blocked && task.status === 'Pending'
+      ).length,
+      in_progress: activeTasks.filter((task) =>
+        task.status === 'InProgress' || task.status === 'InReview'
+      ).length,
+      waiting: activeTasks.filter((task) => task.status === 'AwaitingResponse').length,
+      blocked: activeTasks.filter((task) =>
+        task.is_blocked || task.status === 'Blocked' || task.status === 'Failed'
+      ).length,
+    };
+  }, [projectFilteredTasks]);
+
+  const filteredTasks = useMemo(() => {
+    if (showArchived || statusFilter === 'all') return projectFilteredTasks;
+    return projectFilteredTasks.filter((task) => {
+      if (statusFilter === 'ready') {
+        return !task.is_blocked && task.status === 'Pending';
+      }
+      if (statusFilter === 'in_progress') {
+        return task.status === 'InProgress' || task.status === 'InReview';
+      }
+      if (statusFilter === 'waiting') {
+        return task.status === 'AwaitingResponse';
+      }
+      return task.is_blocked || task.status === 'Blocked' || task.status === 'Failed';
+    });
+  }, [projectFilteredTasks, showArchived, statusFilter]);
 
   const getTaskPlanLabel = (task: ImplementTask): string => {
     if (task.task_source === 'standalone') {
@@ -1619,13 +1646,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     gap: 8,
   });
 
-  const progressTasks = useMemo(
-    () => filteredTasks.filter((task) => shouldIncludeTaskInImplementationProgress(task)),
-    [filteredTasks]
-  );
-  const completedCount = progressTasks.filter((task) => task.status === 'Completed').length;
-  const totalCount = progressTasks.length;
-  const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
   const runningTaskIds = useMemo(
     () =>
       resolveRunningTaskIds({
@@ -1909,17 +1929,17 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           </button>
           <button
             type="button"
-            onClick={() => void handleCreateManualFeature()}
+            onClick={() => setShowCreateTaskDialog(true)}
             data-tour-id="implement-create-task"
             disabled={
               Boolean(pendingTaskId) ||
-              isReadOnlyOnlyScope ||
+              editableProjectOptions.length === 0 ||
               taskMutationDisabled ||
               taskExecutionDisabled
             }
             className={cn(
               'inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
-              pendingTaskId || isReadOnlyOnlyScope || taskMutationDisabled || taskExecutionDisabled
+              pendingTaskId || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled
                 ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                 : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
             )}
@@ -1928,7 +1948,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 ? taskMutationDisabledTitle
                 : taskExecutionDisabled
                   ? taskExecutionDisabledTitle
-                  : isReadOnlyOnlyScope
+                  : editableProjectOptions.length === 0
                     ? t(
                         'implement.readOnlyOnlyAction',
                         'At least one editable repository is required to create a standalone feature.'
@@ -1942,43 +1962,82 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       </div>
 
       <div className="px-4 py-3 border-b border-border">
-        <div className="mb-3">
-          <Select
-            value={projectFilter}
-            onChange={(event) => setProjectFilter(event.target.value)}
-            className="h-9 py-1.5 text-xs"
-            data-tour-id="implement-project-filter"
-          >
-            <option value={ALL_PROJECTS_FILTER}>
-              {t('implement.projectFilterAll', 'All projects')}
-            </option>
-            {availableProjects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-muted-foreground">{t('architect.progress', 'Progress')}</span>
-          <span className="text-xs font-medium text-foreground">
-            {completedCount}/{totalCount}
-          </span>
-        </div>
-        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+        <TaskProjectFilter
+          projects={projectFilterOptions}
+          selectedProjectId={projectFilter === ALL_PROJECTS_FILTER ? null : projectFilter}
+          totalTaskCount={projectFilteredTasks.filter((task) =>
+            !task.archived_at && task.status !== 'Completed'
+          ).length}
+          onSelect={(projectId) => {
+            setProjectFilter(projectId || ALL_PROJECTS_FILTER);
+            setStatusFilter('all');
+          }}
+        />
+
+        {!showArchived && (
           <div
-            className="h-full bg-primary rounded-full transition-all duration-500"
-            style={{ width: `${progressPercent}%` }}
-          />
-        </div>
+            className="mt-3 grid grid-cols-2 gap-1.5"
+            aria-label={t('implement.taskStatusSummary', 'Task status summary')}
+          >
+            {([
+              ['ready', t('implement.statusReady', 'Ready'), statusCounts.ready, 'bg-emerald-400'],
+              ['in_progress', t('implement.statusInProgress', 'In progress'), statusCounts.in_progress, 'bg-sky-400'],
+              ['waiting', t('implement.statusWaiting', 'Waiting'), statusCounts.waiting, 'bg-amber-400'],
+              ['blocked', t('implement.statusBlocked', 'Blocked'), statusCounts.blocked, 'bg-red-400'],
+            ] as const).map(([filter, label, count, dotClassName]) => (
+              <button
+                key={filter}
+                type="button"
+                onClick={() => setStatusFilter((current) => current === filter ? 'all' : filter)}
+                aria-pressed={statusFilter === filter}
+                className={cn(
+                  'flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors',
+                  statusFilter === filter
+                    ? 'border-primary/40 bg-primary/10 text-foreground'
+                    : 'border-border/70 bg-background/50 text-muted-foreground hover:border-primary/30 hover:bg-accent/50 hover:text-foreground'
+                )}
+              >
+                <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotClassName)} />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{label}</span>
+                <span className="text-xs font-semibold tabular-nums">{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {statusFilter !== 'all' && !showArchived && (
+          <button
+            type="button"
+            onClick={() => setStatusFilter('all')}
+            className="mt-2 text-[11px] text-primary hover:underline"
+          >
+            {t('implement.clearStatusFilter', 'Show all statuses')}
+          </button>
+        )}
       </div>
+
+      {showCreateTaskDialog && (
+        <CreateImplementTaskDialog
+          projects={projectFilterOptions}
+          initialProjectId={
+            projectFilter !== ALL_PROJECTS_FILTER &&
+            editableProjectOptions.some((project) => project.id === projectFilter)
+              ? projectFilter
+              : null
+          }
+          isCreating={Boolean(pendingTaskId)}
+          onClose={() => {
+            if (!pendingTaskId) setShowCreateTaskDialog(false);
+          }}
+          onCreate={(input) => void handleCreateManualFeature(input)}
+        />
+      )}
 
       <div ref={taskListRef} className="flex-1 overflow-y-auto">
         {visibleTasks.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center px-2 text-center">
             <Icon name="check-circle" size={32} className="text-muted-foreground/50 mb-3" />
             <p className="text-sm text-muted-foreground">
-              {projectFilter === ALL_PROJECTS_FILTER
+              {projectFilter === ALL_PROJECTS_FILTER && statusFilter === 'all'
                 ? t('implement.noTasks', 'No tasks yet')
                 : t('implement.noTasksForFilter', 'No task matches this filter.')}
             </p>
