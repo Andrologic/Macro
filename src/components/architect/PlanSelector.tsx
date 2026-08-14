@@ -603,8 +603,25 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setActivePlanId(planId);
     try {
+      const catalogBranches = Object.values(
+        useAppStore.getState().architectPlanCatalogByBranch,
+      );
+      const catalogBranch = (
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) => plan === planSummaryHint),
+        ) ??
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) =>
+            plan.id === planId &&
+            plan.targetBranch === planSummaryHint?.targetBranch,
+          ),
+        ) ??
+        catalogBranches.find((branch) =>
+          branch.plans.some((plan) => plan.id === planId),
+        )
+      )?.branchName;
       const activated = await activateArchitectPlan(planId, {
-        targetBranch,
+        targetBranch: catalogBranch ?? planSummaryHint?.targetBranch ?? targetBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
       if (!isCurrentActivationRequest(requestId, requestContext)) {
