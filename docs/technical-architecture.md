@@ -459,6 +459,18 @@ Cette branche contient notamment :
 
 Le stockage metadata dans Git permet l'audit, la redondance et la conservation de l'historique de travail.
 
+Les mutations de cycle de vie d'un plan répliqué (`create`, `update`, `archive`,
+`restore`, `delete`) utilisent une saga locale durable stockée dans SQLite. Une
+intention qualifiée par workspace, branche et identifiant de plan est écrite
+avant toute modification. Elle contient l'état cible complet du plan et de
+l'index pour chaque scope, ainsi que le message de commit metadata. La reprise
+réapplique cet état cible de façon idempotente, finalise les commits `@macro`,
+puis retire seulement le journal. Les mutations d'une même branche sont
+sérialisées afin que deux plans ne calculent jamais leur prochain index depuis
+le même ancien snapshot. Les entrées d'un autre workspace restent en attente et
+les entrées invalides sont mises en quarantaine sans être interprétées comme un
+catalogue vide.
+
 ---
 
 ## 11. Modèle metadata et plans
