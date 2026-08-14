@@ -64,7 +64,7 @@ import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
 import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
 import { TaskStatusIndicator } from './TaskStatusIndicator';
-import type { TaskStatus } from '../../types';
+import type { StandaloneTaskKind, TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getDependencyBlockedMessage } from '../implement/TaskBlockedState';
@@ -623,7 +623,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationCompactionStatusById,
     selectConversation,
     deleteConversation,
-    sendMessage,
   } = useChatStore(useShallow((state) => ({
     createConversation: state.createConversation,
     conversations: state.conversations,
@@ -632,7 +631,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     selectConversation: state.selectConversation,
     deleteConversation: state.deleteConversation,
-    sendMessage: state.sendMessage,
   })));
   const {
     tasks,
@@ -806,10 +804,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const handleCreateManualFeature = async ({
     projectId,
-    request,
+    taskKind,
   }: {
     projectId: string;
-    request: string;
+    taskKind: StandaloneTaskKind;
   }) => {
     if (taskMutationDisabled || taskExecutionDisabled) {
       notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
@@ -839,10 +837,13 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const targetGroupId = getProjectGroupByProjectId(projectGroups, projectId)?.id ?? null;
 
     const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const provisionalTitle = request.replace(/\s+/g, ' ').trim().slice(0, 80);
+    const provisionalTitle = taskKind === 'bugfix'
+      ? t('implement.manualBugfixUntitled', 'New bugfix')
+      : taskKind === 'hotfix'
+        ? t('implement.manualHotfixUntitled', 'New hotfix')
+        : t('implement.manualFeatureUntitled', 'New feature');
     setPendingTaskId(taskId);
     let conversationId: string | null = null;
-    let taskCreated = false;
 
     try {
       setSelectedTask(taskId);
@@ -862,30 +863,23 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         baseBranch: getGitFlowBaseBranch(),
         title: provisionalTitle,
         description: '',
+        taskKind,
       });
       await activateTask(taskId);
       if (!(await selectConversation(conversation.id))) {
         throw new Error('Impossible de sélectionner la nouvelle conversation.');
       }
-      taskCreated = true;
       setShowCreateTaskDialog(false);
-      await sendMessage({
-        conversationId: conversation.id,
-        content: request,
-        taskId,
-      });
     } catch (error) {
       let cleanupError: unknown = null;
-      if (conversationId && !taskCreated) {
+      if (conversationId) {
         try {
           await deleteConversation(conversationId, { mode: 'implement' });
         } catch (cleanupFailure) {
           cleanupError = cleanupFailure;
         }
       }
-      if (!taskCreated) {
-        setSelectedTask(null);
-      }
+      setSelectedTask(null);
       const message = error instanceof Error ? error.message : t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
       notify.error(message, {
         description: cleanupError instanceof Error

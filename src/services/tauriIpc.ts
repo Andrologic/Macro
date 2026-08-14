@@ -2952,6 +2952,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
   baseBranch?: string | null;
   title?: string | null;
   description?: string | null;
+  taskKind: 'feature' | 'bugfix' | 'hotfix';
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_create_manual_feature_draft",
@@ -2964,6 +2965,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
       baseBranch: params.baseBranch ?? null,
       title: params.title ?? null,
       description: params.description ?? null,
+      taskKind: params.taskKind,
     },
   );
 }

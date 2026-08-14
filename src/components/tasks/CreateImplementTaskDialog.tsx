@@ -1,10 +1,10 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
-import { Textarea } from '../ui/Textarea';
 import type { TaskProjectFilterOption } from './TaskProjectFilter';
 
 interface CreateImplementTaskDialogProps {
@@ -12,8 +12,17 @@ interface CreateImplementTaskDialogProps {
   initialProjectId: string | null;
   isCreating: boolean;
   onClose: () => void;
-  onCreate: (input: { projectId: string; request: string }) => void;
+  onCreate: (input: { projectId: string; taskKind: StandaloneTaskKind }) => void;
 }
+
+const TASK_KIND_OPTIONS: Array<{
+  kind: StandaloneTaskKind;
+  icon: 'sparkles' | 'tool' | 'zap';
+}> = [
+  { kind: 'feature', icon: 'sparkles' },
+  { kind: 'bugfix', icon: 'tool' },
+  { kind: 'hotfix', icon: 'zap' },
+];
 
 export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps> = ({
   projects,
@@ -24,9 +33,8 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
 }) => {
   const { t } = useTranslation();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialProjectId);
-  const [request, setRequest] = useState('');
+  const [selectedTaskKind, setSelectedTaskKind] = useState<StandaloneTaskKind | null>(null);
   const [query, setQuery] = useState('');
-  const requestInputRef = useRef<HTMLTextAreaElement>(null);
   const editableProjects = projects.filter((project) => !project.isReadOnly);
   const filteredProjects = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -37,14 +45,13 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         .some((value) => value?.toLocaleLowerCase().includes(normalized))
     );
   }, [editableProjects, query]);
-  const canCreate = Boolean(selectedProjectId && request.trim()) && !isCreating;
+  const canCreate = Boolean(selectedProjectId && selectedTaskKind) && !isCreating;
 
   return (
     <Dialog
       title={t('implement.createTaskDialogTitle', 'Create a task')}
       onClose={onClose}
       panelClassName="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
-      initialFocusRef={requestInputRef}
     >
       <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
         <div>
@@ -54,7 +61,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <p className="mt-1 text-sm text-muted-foreground">
             {t(
               'implement.createTaskDialogDescription',
-              'Choose the project. The agent will then determine the task type from your request.'
+              'Choose the target project and the task type.'
             )}
           </p>
         </div>
@@ -68,34 +75,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         </button>
       </div>
 
-      <div className="space-y-5 px-5 py-4">
-        <label className="block space-y-2">
-          <span className="text-xs font-medium text-foreground">
-            {t('implement.taskRequest', 'Request for the agent')}
-          </span>
-          <Textarea
-            ref={requestInputRef}
-            value={request}
-            onChange={(event) => setRequest(event.target.value)}
-            placeholder={t(
-              'implement.taskRequestPlaceholder',
-              'Describe what the agent should implement or fix...'
-            )}
-            rows={4}
-            maxLength={4000}
-            className="min-h-24 resize-y"
-          />
-          <span className="flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-[11px] text-muted-foreground">
-            <Icon name="sparkles" size={13} className="mt-0.5 shrink-0 text-primary" />
-            <span>
-              {t(
-                'implement.taskKindAutomaticHelp',
-                'The agent will analyze this request and classify it as a feature, bugfix, or hotfix.'
-              )}
-            </span>
-          </span>
-        </label>
-
+      <div className="space-y-4 px-5 py-4">
         <div className="space-y-2">
           <div>
             <div className="text-xs font-medium text-foreground">
@@ -145,6 +125,40 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
             )}
           </div>
         </div>
+
+        <fieldset className="space-y-2">
+          <legend className="text-xs font-medium text-foreground">
+            {t('implement.taskKindLabel', 'Task type')}
+          </legend>
+          <div className="grid grid-cols-3 gap-2">
+            {TASK_KIND_OPTIONS.map(({ kind, icon }) => {
+              const selected = selectedTaskKind === kind;
+              const label = kind === 'feature'
+                ? t('implement.taskKindFeature', 'Feature')
+                : kind === 'bugfix'
+                  ? t('implement.taskKindBugfix', 'Bugfix')
+                  : t('implement.taskKindHotfix', 'Hotfix');
+
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setSelectedTaskKind(kind)}
+                  className={cn(
+                    'flex h-10 items-center justify-center gap-2 rounded-md border text-xs font-medium transition-colors',
+                    selected
+                      ? 'border-primary/40 bg-primary/10 text-foreground'
+                      : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
+                  )}
+                >
+                  <Icon name={icon} size={14} className={selected ? 'text-primary' : undefined} />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
       </div>
 
       <div className="flex justify-end gap-2 border-t border-border bg-muted/20 px-5 py-3">
@@ -157,12 +171,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           disabled={!canCreate}
           isLoading={isCreating}
           onClick={() => {
-            if (selectedProjectId && request.trim()) {
-              onCreate({ projectId: selectedProjectId, request: request.trim() });
+            if (selectedProjectId && selectedTaskKind) {
+              onCreate({ projectId: selectedProjectId, taskKind: selectedTaskKind });
             }
           }}
         >
-          {t('implement.analyzeAndCreateTaskAction', 'Analyze and create task')}
+          {t('implement.createTaskAction', 'Create task')}
         </Button>
       </div>
     </Dialog>

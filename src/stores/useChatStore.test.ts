@@ -8331,7 +8331,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('finalizes a manual feature draft before the first assistant response', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
-    taskStoreState.tasks = [createManualFeatureTask()];
+    taskStoreState.tasks = [createManualFeatureTask({ task_kind: 'bugfix' })];
     providerState.providerConfigs = [
       ...providerState.providerConfigs,
       {
@@ -8406,15 +8406,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       title: 'Quick export',
       description: 'Add a quick CSV export from the table.',
       featureSlug: 'quick-export',
-      taskKind: 'feature',
+      taskKind: 'bugfix',
     });
     expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       draft: false,
       status: 'InProgress',
       feature_slug: 'quick-export',
-      task_kind: 'feature',
-      branch_name: 'feature/quick-export',
+      task_kind: 'bugfix',
+      branch_name: 'bugfix/quick-export',
     });
     expect(
       useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')

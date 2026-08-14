@@ -803,14 +803,12 @@ describe('TaskQueue', () => {
     seedTasks([makeTask('task-1', 'Pending')]);
     const createConversation = mock(async () => ({ id: 'conversation-created' }));
     const selectConversation = mock(async () => true);
-    const sendMessage = mock(async () => ({ status: 'completed' }));
     const createManualFeatureDraft = mock(async () => undefined);
     const activateTask = mock(async () => undefined);
     useChatStore.setState({
       ...useChatStore.getState(),
       createConversation: createConversation as never,
       selectConversation: selectConversation as never,
-      sendMessage: sendMessage as never,
     });
     useTaskStore.setState({
       ...useTaskStore.getState(),
@@ -848,29 +846,26 @@ describe('TaskQueue', () => {
     const dialog = document.body.querySelector('[role="dialog"]');
     const confirmButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
-    ).find((button) => button.textContent?.includes('Analyze and create task'));
+    ).find((button) => button.textContent?.includes('Create task'));
     expect(dialog?.textContent).toContain('A project is required');
+    expect(dialog?.querySelector('textarea')).toBeNull();
     expect(confirmButton?.disabled).toBe(true);
     expect(dialog?.querySelector('[aria-pressed="true"]')).toBeNull();
 
     const projectTwoButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
     ).find((button) => button.textContent?.includes('Project Two'));
-    const requestInput = dialog?.querySelector<HTMLTextAreaElement>('textarea[maxlength="4000"]');
+    const bugfixButton = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') || []
+    ).find((button) => button.textContent?.trim() === 'Bugfix');
     await act(async () => {
       projectTwoButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-      if (requestInput) {
-        const valueSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLTextAreaElement.prototype,
-          'value'
-        )?.set;
-        valueSetter?.call(requestInput, 'Fix the crash when the project is opened');
-        requestInput.dispatchEvent(new window.Event('input', { bubbles: true }));
-      }
+      bugfixButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
     });
 
-    expect(dialog?.querySelector('[aria-pressed="true"]')?.textContent).toContain('Project Two');
+    expect(projectTwoButton?.getAttribute('aria-pressed')).toBe('true');
+    expect(bugfixButton?.getAttribute('aria-pressed')).toBe('true');
     expect(confirmButton?.disabled).toBe(false);
 
     await act(async () => {
@@ -879,15 +874,21 @@ describe('TaskQueue', () => {
     });
 
     expect(createConversation).toHaveBeenCalledWith(
-      'Fix the crash when the project is opened',
+      'New bugfix',
       expect.stringContaining('manual-feature-'),
       'project-2',
       'group-1'
     );
-    expect(sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conversation-created',
-      content: 'Fix the crash when the project is opened',
+    expect(createManualFeatureDraft).toHaveBeenCalledWith({
       taskId: expect.stringContaining('manual-feature-'),
+      conversationId: 'conversation-created',
+      groupId: 'group-1',
+      projectIds: ['project-2'],
+      contextProjectIds: [],
+      baseBranch: expect.any(String),
+      title: 'New bugfix',
+      description: '',
+      taskKind: 'bugfix',
     });
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
