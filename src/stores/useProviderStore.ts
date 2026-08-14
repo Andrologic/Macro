@@ -30,7 +30,7 @@ import {
   providerHasUsableCredentials,
 } from '../services/providerCredentials';
 import { devLogger } from '../utils/devLogger';
-import { MACRO_AI_MODEL_ID, MACRO_AI_PROVIDER_ID } from '../config/macroAi';
+import { MACRO_AI_DEFAULT_MODEL_ID, MACRO_AI_PROVIDER_ID } from '../config/macroAi';
 
 export { isLinkedProviderType, providerHasAuthSession };
 
@@ -1006,7 +1006,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     if (!get().selectedProviderId) {
       await get().commitRestoredSelection({
         providerId: MACRO_AI_PROVIDER_ID,
-        modelId: MACRO_AI_MODEL_ID,
+        modelId: MACRO_AI_DEFAULT_MODEL_ID,
         reasoningEffort: null,
       });
     }
