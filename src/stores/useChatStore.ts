@@ -32,6 +32,7 @@ import {
   SkillPermissionSnapshot,
   SkillTurnFeedback,
   SkillTurnFeedbackItem,
+  StandaloneTaskKind,
   ToolRiskLevel,
   ToolTrace,
   WorkspaceFileReference,
@@ -183,7 +184,7 @@ import {
   type ChatPersistenceAdapters,
 } from "../services/chatPersistenceService";
 import {
-  renderStandaloneFeatureBranchName,
+  renderStandaloneTaskBranchName,
 } from "../services/architectGitNaming";
 import { retargetTaskForProjectSelection } from "../services/projectIdentityReconciliation";
 import { provisionPlanBranches } from "../services/architectGitFlowService";
@@ -726,17 +727,22 @@ const extractManualFeatureMetadataFromModelOutput = (
   title: string;
   description: string;
   featureSlug: string;
+  taskKind: StandaloneTaskKind;
 } => {
   const parsed = extractJsonObjectFromModelOutput(raw) as {
     title?: unknown;
     description?: unknown;
     featureSlug?: unknown;
+    taskKind?: unknown;
   };
 
   if (
     typeof parsed.title !== "string" ||
     typeof parsed.description !== "string" ||
-    typeof parsed.featureSlug !== "string"
+    typeof parsed.featureSlug !== "string" ||
+    (parsed.taskKind !== "feature" &&
+      parsed.taskKind !== "bugfix" &&
+      parsed.taskKind !== "hotfix")
   ) {
     throw new Error("Invalid manual feature metadata shape");
   }
@@ -750,19 +756,27 @@ const extractManualFeatureMetadataFromModelOutput = (
     .trim()
     .slice(0, METADATA_MAX_DESCRIPTION_LENGTH);
   const featureSlug = normalizeManualFeatureSlugInput(parsed.featureSlug);
+  const taskKind = parsed.taskKind;
 
   if (!title || !description || !featureSlug) {
     throw new Error("Empty manual feature metadata values");
   }
 
-  return { title, description, featureSlug };
+  return { title, description, featureSlug, taskKind };
 };
 
-const buildManualFeatureFallbackMetadata = (content: string) => {
+const buildManualFeatureFallbackMetadata = (content: string, taskTitle = '') => {
   const title = getConversationFallbackTitle(content);
   const description = getConversationFallbackDescription(content);
   const featureSlug = normalizeManualFeatureSlugInput(title || content);
-  return { title, description, featureSlug };
+  const normalizedContent = `${taskTitle} ${content}`.toLocaleLowerCase();
+  const taskKind: StandaloneTaskKind =
+    /\b(hotfix|production incident|incident de production|correctif urgent|urgence production)\b/.test(normalizedContent)
+      ? "hotfix"
+      : /\b(bug|bugfix|fix|réparer|corriger|correctif|erreur|régression|regression)\b/.test(normalizedContent)
+        ? "bugfix"
+        : "feature";
+  return { title, description, featureSlug, taskKind };
 };
 
 const normalizeComparableBranchName = (value: string): string =>
@@ -7208,8 +7222,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ];
 
   const prepareManualFeatureMetadataMessages = (
+    taskTitle: string,
     firstUserContent: string,
     unavailableBranchNames: string[] = [],
+    selectedTaskKind?: StandaloneTaskKind | null,
   ) => {
     const unavailableBranchSummary =
       unavailableBranchNames.length > 0
@@ -7220,14 +7236,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       {
         role: "system" as const,
         content:
-          "Generate concise metadata for a standalone implementation feature. Return ONLY valid JSON with keys: title, description, featureSlug. " +
+          "Generate concise metadata for a standalone implementation task. Return ONLY valid JSON with keys: title, description, featureSlug, taskKind. " +
           "title: 3-7 words, specific and action-oriented. description: one clear sentence under 180 characters. " +
-          "featureSlug: lowercase kebab-case branch slug without any branch prefix; the concrete branch name is rendered later from each project's independent feature template." +
+          "featureSlug: lowercase kebab-case branch slug without any branch prefix. " +
+          (selectedTaskKind
+            ? `taskKind must be exactly ${selectedTaskKind}, as selected by the user. Do not change it. `
+            : "taskKind must be exactly feature, bugfix, or hotfix. ") +
+          "The concrete branch name is rendered later from the selected project's Git Flow template." +
           unavailableBranchSummary,
       },
       {
         role: "user" as const,
-        content: firstUserContent,
+        content: `Task title: ${taskTitle}\nImplementation request: ${firstUserContent}`,
       },
     ];
   };
@@ -7484,6 +7504,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: params.modelId,
         reasoningEffort: params.reasoningEffort,
       });
+    const selectedTaskKind = task.task_kind ?? null;
+    const keepSelectedTaskKind = (
+      metadata: ReturnType<typeof buildManualFeatureFallbackMetadata>,
+    ): ReturnType<typeof buildManualFeatureFallbackMetadata> =>
+      selectedTaskKind ? { ...metadata, taskKind: selectedTaskKind } : metadata;
 
     const appState = useAppStore.getState();
     const executionTask = retargetImplementTaskForSelection(task, {
@@ -7503,6 +7528,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const renderManualFeatureBranchCandidates = (
       featureSlug: string,
+      taskKind: StandaloneTaskKind,
     ): Array<{ projectId: string; branchName: string }> => {
       const projectIdsToCheck =
         projectIds.length > 0
@@ -7529,8 +7555,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       return projectIdsToCheck.map((projectId) => ({
         projectId,
-        branchName: renderStandaloneFeatureBranchName({
-          featureSlug,
+        branchName: renderStandaloneTaskBranchName({
+          taskKind,
+          taskSlug: featureSlug,
           settings: appState.getProjectById(projectId)?.gitFlowSettings,
         }),
       }));
@@ -7538,12 +7565,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const findConflictingBranchCandidates = async (
       featureSlug: string,
+      taskKind: StandaloneTaskKind,
     ): Promise<Array<{ projectId: string; branchName: string }>> => {
       if (!tauriIpc.isTauriAvailable()) {
         return [];
       }
 
-      const branchCandidates = renderManualFeatureBranchCandidates(featureSlug);
+      const branchCandidates = renderManualFeatureBranchCandidates(featureSlug, taskKind);
 
       const conflictResults = await Promise.all(
         branchCandidates.map(async (candidate) => {
@@ -7581,13 +7609,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: metadataProviderContext.modelId,
         reasoningEffort: metadataProviderContext.reasoningEffort,
         messages: prepareManualFeatureMetadataMessages(
+          task.title,
           params.firstUserContent,
           unavailableBranchNames,
+          selectedTaskKind,
         ),
         onComplete: () => {},
         onError: () => {},
       });
-      return extractManualFeatureMetadataFromModelOutput(output);
+      return keepSelectedTaskKind(extractManualFeatureMetadataFromModelOutput(output));
     };
 
     const resolveAvailableFallbackSlug = async (
@@ -7603,7 +7633,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 `${normalizedBaseSlug}-${suffix + 1}`,
               );
         const conflictingCandidates =
-          await findConflictingBranchCandidates(candidateSlug);
+          await findConflictingBranchCandidates(candidateSlug, metadata.taskKind);
         if (conflictingCandidates.length === 0) {
           return candidateSlug;
         }
@@ -7612,7 +7642,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return `work-${Date.now().toString(36)}`;
     };
 
-    let metadata = buildManualFeatureFallbackMetadata(params.firstUserContent);
+    let metadata = keepSelectedTaskKind(
+      buildManualFeatureFallbackMetadata(params.firstUserContent, task.title),
+    );
     let unavailableBranchNames: string[] = [];
 
     for (
@@ -7624,8 +7656,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         try {
           metadata = await requestManualFeatureMetadata(unavailableBranchNames);
         } catch {
-          metadata = buildManualFeatureFallbackMetadata(
-            params.firstUserContent,
+          metadata = keepSelectedTaskKind(
+            buildManualFeatureFallbackMetadata(params.firstUserContent, task.title),
           );
         }
       } else {
@@ -7643,6 +7675,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const conflictingCandidates = await findConflictingBranchCandidates(
         metadata.featureSlug,
+        metadata.taskKind,
       );
       if (conflictingCandidates.length === 0) {
         break;
@@ -7679,6 +7712,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       title: metadata.title,
       description: metadata.description,
       featureSlug: metadata.featureSlug,
+      taskKind: metadata.taskKind,
     });
     await taskStore.startTask(params.taskId);
 

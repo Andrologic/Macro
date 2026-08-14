@@ -209,6 +209,22 @@ describe('Header', () => {
     expect(render()).toContain('data-tour-id="toggle-left-panel"');
   });
 
+  it('hides the project picker in Implement mode', async () => {
+    const { Header } = await loadHeader();
+    const render = () => renderToStaticMarkup(
+      <Header
+        isLeftOpen
+        isRightOpen
+        onToggleLeft={() => undefined}
+        onToggleRight={() => undefined}
+      />
+    );
+
+    expect(render()).toContain('data-tour-id="project-picker"');
+    appState.mode = 'Implement';
+    expect(render()).not.toContain('data-tour-id="project-picker"');
+  });
+
   it('uses a single native macOS top bar without custom window controls', async () => {
     const { Header } = await loadHeader();
     chromeState = {
@@ -376,7 +392,7 @@ describe('Header', () => {
     const { Header } = await loadHeader();
     appState = {
       ...appState,
-      mode: 'Implement',
+      mode: 'Architect',
       selectedGroupId: null,
       selectedProjectId: 'project-solo',
       getProjectById: (projectId) =>
@@ -398,7 +414,7 @@ describe('Header', () => {
 
   it('uses the group icon for a selected group in the project picker', async () => {
     const { Header } = await loadHeader();
-    appState.mode = 'Implement';
+    appState.mode = 'Architect';
 
     const html = renderToStaticMarkup(
       <Header
@@ -417,7 +433,7 @@ describe('Header', () => {
     const { Header } = await loadHeader();
     appState = {
       ...appState,
-      mode: 'Implement',
+      mode: 'Architect',
       selectedGroupId: null,
       selectedProjectId: 'project-solo',
       getProjectById: (projectId) =>
@@ -448,7 +464,7 @@ describe('Header', () => {
     const { Header } = await loadHeader();
     appState = {
       ...appState,
-      mode: 'Implement',
+      mode: 'Architect',
       selectedGroupId: null,
       selectedProjectId: 'project-folder',
       getProjectById: (projectId) =>

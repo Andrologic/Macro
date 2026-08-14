@@ -273,7 +273,11 @@ Son objectif est de :
 
 Le mode Implement doit supporter :
 - une file de tâches issue de plusieurs plans
-- le filtrage des tâches par plan et par autres critères pertinents
+- une vue agrégée de toutes les tâches de tous les projets
+- le filtrage des tâches par projet et par autres critères pertinents
+- un résumé opérationnel par statut, utilisable comme filtre, à la place d'une progression globale ambiguë
+- la sélection explicite d'un projet modifiable lors de la création d'une tâche indépendante
+- la création d'une tâche indépendante typée `feature`, `bugfix` ou `hotfix`, avec choix explicite du projet et du type
 - la prise en compte explicite des dépendances et de l'état de disponibilité d'une tâche
 - la consultation des artefacts hérités depuis les tâches parentes et la production d'artefacts pour les tâches dépendantes
 - une review en fin de tâche
@@ -281,9 +285,11 @@ Le mode Implement doit supporter :
 
 Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
+Lors de la création d'une tâche indépendante, l'utilisateur choisit le projet et le type de tâche. La fenêtre ne demande pas le contenu de la tâche : celui-ci est fourni ensuite dans la conversation. Le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Le type `release` reste réservé aux plans Architect.
+
 ### 7.3 Mode Chat
 
-Le mode Chat est un mode de support independant.
+Le mode Chat est un mode de support indépendant.
 
 Son objectif est de permettre à l'utilisateur de :
 - poser des questions rapides d'ordre technique ou documentaire
@@ -436,7 +442,8 @@ L'interface doit permettre d'identifier clairement :
 - quel ou quels projets elle affecte
 - quel est son état de dépendance
 
-L'interface doit aussi permettre de filtrer les tâches par plan.
+L'interface doit afficher toutes les tâches de tous les projets par défaut et permettre de les filtrer par projet.
+Le mode Implement ne dépend pas du sélecteur de projet global du header.
 
 ---
 

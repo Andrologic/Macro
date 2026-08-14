@@ -1135,6 +1135,7 @@ export interface WorkspaceManualFeatureDto {
   description: string;
   status: string;
   featureSlug: string | null;
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | null;
   branchName: string | null;
   archivedAt: string | null;
   archiveReason: string | null;
@@ -2951,6 +2952,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
   baseBranch?: string | null;
   title?: string | null;
   description?: string | null;
+  taskKind: 'feature' | 'bugfix' | 'hotfix';
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_create_manual_feature_draft",
@@ -2963,6 +2965,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
       baseBranch: params.baseBranch ?? null,
       title: params.title ?? null,
       description: params.description ?? null,
+      taskKind: params.taskKind,
     },
   );
 }
@@ -2973,6 +2976,7 @@ export async function workspaceFinalizeManualFeature(params: {
   title: string;
   description: string;
   featureSlug: string;
+  taskKind: 'feature' | 'bugfix' | 'hotfix';
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_finalize_manual_feature",
@@ -2982,6 +2986,7 @@ export async function workspaceFinalizeManualFeature(params: {
       title: params.title,
       description: params.description,
       featureSlug: params.featureSlug,
+      taskKind: params.taskKind,
     },
   );
 }

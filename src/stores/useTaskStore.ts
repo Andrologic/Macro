@@ -1674,6 +1674,7 @@ interface TaskStore {
     baseBranch?: string | null;
     title?: string | null;
     description?: string | null;
+    taskKind: import('../types').StandaloneTaskKind;
   }) => Promise<void>;
   finalizeManualFeatureDraft: (params: {
     taskId: string;
@@ -1681,6 +1682,7 @@ interface TaskStore {
     title: string;
     description: string;
     featureSlug: string;
+    taskKind: import('../types').StandaloneTaskKind;
   }) => Promise<void>;
   revertManualFeatureToDraft: (params: {
     taskId: string;
@@ -2804,6 +2806,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         baseBranch: params.baseBranch ?? null,
         title: params.title ?? null,
         description: params.description ?? null,
+        taskKind: params.taskKind,
       });
       draftCreated = true;
 
@@ -2842,6 +2845,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         title: params.title,
         description: params.description,
         featureSlug: params.featureSlug,
+        taskKind: params.taskKind,
       });
 
       await get().refreshFromPlan();

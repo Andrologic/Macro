@@ -112,6 +112,7 @@ const buildMetadataJson = (
     | 'status'
     | 'draft'
     | 'feature_slug'
+    | 'task_kind'
     | 'branch_name'
     | 'base_branch'
     | 'conversation_id'
@@ -129,6 +130,7 @@ const buildMetadataJson = (
       status: task.status,
       draft: task.draft,
       featureSlug: task.feature_slug ?? null,
+      taskKind: task.task_kind ?? null,
       branchName: task.branch_name || null,
       baseBranch: normalizeBranchName(task.base_branch),
       conversationId: task.conversation_id ?? null,
@@ -156,6 +158,7 @@ const buildMetadataMarkdown = (
     | 'status'
     | 'draft'
     | 'feature_slug'
+    | 'task_kind'
     | 'branch_name'
     | 'base_branch'
     | 'conversation_id'
@@ -167,13 +170,14 @@ const buildMetadataMarkdown = (
   const projectIds = getTaskProjectIds(task);
   const executionTargets = task.execution_targets || [];
   const lines = [
-    `# Manual Feature: ${task.title}`,
+    `# Standalone Task: ${task.title}`,
     '',
-    `- Feature ID: ${task.id}`,
+    `- Task ID: ${task.id}`,
+    `- Task Kind: ${task.task_kind || 'pending classification'}`,
     `- Status: ${task.draft ? 'Draft' : task.status}`,
     `- Base Branch (legacy snapshot): ${normalizeBranchName(task.base_branch)}`,
-    `- Feature Branch: ${task.branch_name || 'Not created yet'}`,
-    `- Feature Slug: ${task.feature_slug || 'pending'}`,
+    `- Task Branch: ${task.branch_name || 'Not created yet'}`,
+    `- Task Slug: ${task.feature_slug || 'pending'}`,
     `- Conversation ID: ${task.conversation_id || 'none'}`,
     `- Projects: ${projectIds.join(', ') || 'none'}`,
     '',
@@ -246,6 +250,7 @@ export const syncManualFeatureMetadataFromTask = async (
     | 'project_id'
     | 'project_ids'
     | 'execution_targets'
+    | 'task_kind'
     | 'standalone_kind'
   >
 ): Promise<void> => {
