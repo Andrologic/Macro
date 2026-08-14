@@ -277,12 +277,15 @@ Le mode Implement doit supporter :
 - le filtrage des tâches par projet et par autres critères pertinents
 - un résumé opérationnel par statut, utilisable comme filtre, à la place d'une progression globale ambiguë
 - la sélection explicite d'un projet modifiable lors de la création d'une tâche indépendante
+- la classification automatique des tâches indépendantes en `feature`, `bugfix` ou `hotfix` par l'agent à partir de la demande, sans imposer ce choix à l'utilisateur
 - la prise en compte explicite des dépendances et de l'état de disponibilité d'une tâche
 - la consultation des artefacts hérités depuis les tâches parentes et la production d'artefacts pour les tâches dépendantes
 - une review en fin de tâche
 - une validation globale du plan avant merge du plan vers la branche de base
 
 Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
+
+Lors du premier message d'une tâche indépendante, l'agent détermine son type avant la préparation de l'environnement d'exécution. Macro utilise cette classification pour choisir le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`.
 
 ### 7.3 Mode Chat
 

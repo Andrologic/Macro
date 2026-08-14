@@ -52,7 +52,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
             {t('implement.createTaskDialogTitle', 'Create a task')}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {t('implement.createTaskDialogDescription', 'Choose exactly where this task will be implemented.')}
+            {t(
+              'implement.createTaskDialogDescription',
+              'Choose the project. The agent will then determine the task type from your request.'
+            )}
           </p>
         </div>
         <button

@@ -1938,6 +1938,7 @@ pub async fn create_manual_feature_draft(
             .to_string(),
         status: "Pending".to_string(),
         feature_slug: None,
+        task_kind: None,
         branch_name: None,
         archived_at: None,
         archive_reason: None,
@@ -1978,6 +1979,7 @@ pub async fn finalize_manual_feature(
     title: &str,
     description: &str,
     feature_slug: &str,
+    task_kind: &str,
 ) -> Result<ManualFeatureDto> {
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -1995,6 +1997,7 @@ pub async fn finalize_manual_feature(
     let normalized_title = title.trim();
     let normalized_description = description.trim();
     let normalized_feature_slug = slugify(feature_slug);
+    let normalized_task_kind = normalize_manual_task_kind(task_kind)?;
     if normalized_title.is_empty()
         || normalized_description.is_empty()
         || normalized_feature_slug.is_empty()
@@ -2052,13 +2055,16 @@ pub async fn finalize_manual_feature(
     let execution_targets = build_manual_feature_execution_targets(
         &feature.project_ids,
         &normalized_feature_slug,
+        normalized_task_kind,
         &standalone_projects,
         &project_groups,
     );
     let branch_name = execution_targets
         .first()
         .map(|target| target.branch_name.clone())
-        .unwrap_or_else(|| render_standalone_feature_branch_name(None, &normalized_feature_slug));
+        .unwrap_or_else(|| {
+            render_standalone_task_branch_name(None, &normalized_feature_slug, normalized_task_kind)
+        });
     let base_branch = execution_targets
         .first()
         .and_then(|target| target.target_branch_name.clone())
@@ -2067,6 +2073,7 @@ pub async fn finalize_manual_feature(
     feature.title = normalized_title.to_string();
     feature.description = normalized_description.to_string();
     feature.feature_slug = Some(normalized_feature_slug.clone());
+    feature.task_kind = Some(normalized_task_kind.to_string());
     feature.branch_name = Some(branch_name.clone());
     feature.archived_at = None;
     feature.archive_reason = None;
@@ -2149,6 +2156,7 @@ pub async fn revert_manual_feature_to_draft(
     feature.description = description.map(str::trim).unwrap_or("").to_string();
     feature.status = "Pending".to_string();
     feature.feature_slug = None;
+    feature.task_kind = None;
     feature.branch_name = None;
     feature.archived_at = None;
     feature.archive_reason = None;
@@ -4306,6 +4314,7 @@ fn to_branch_worktree_key(project_id: &str, branch_name: &str) -> String {
 fn build_manual_feature_execution_targets(
     project_ids: &[String],
     feature_slug: &str,
+    task_kind: &str,
     standalone_projects: &[ProjectDto],
     project_groups: &[ProjectGroupDto],
 ) -> Vec<WorkspaceTaskExecutionTargetDto> {
@@ -4316,15 +4325,21 @@ fn build_manual_feature_execution_targets(
                 .iter()
                 .find(|project| project.id == *project_id)
                 .or_else(|| find_project_by_id(project_groups, project_id));
-            let branch_name = render_standalone_feature_branch_name(
+            let branch_name = render_standalone_task_branch_name(
                 project.map(|project| &project.git_flow_settings),
                 feature_slug,
+                task_kind,
             );
             WorkspaceTaskExecutionTargetDto {
                 project_id: project_id.clone(),
                 branch_name: branch_name.clone(),
-                target_branch_name: project
-                    .map(|project| project.git_flow_settings.base_branch.clone()),
+                target_branch_name: project.map(|project| {
+                    if task_kind == "hotfix" {
+                        project.git_flow_settings.main_branch.clone()
+                    } else {
+                        project.git_flow_settings.base_branch.clone()
+                    }
+                }),
                 worktree_key: to_branch_worktree_key(project_id, &branch_name),
                 repo_path: project.map(|project| project.path.clone()),
             }
@@ -4387,6 +4402,9 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
         "standalone_kind".to_string(),
         Value::String("manual_feature".to_string()),
     );
+    if let Some(task_kind) = feature.task_kind.as_ref() {
+        task.insert("task_kind".to_string(), Value::String(task_kind.clone()));
+    }
     task.insert(
         "base_branch".to_string(),
         Value::String(feature.base_branch.clone()),
@@ -4579,6 +4597,7 @@ struct ManualFeatureMetadataSnapshot {
     description: String,
     status: String,
     feature_slug: Option<String>,
+    task_kind: Option<String>,
     branch_name: Option<String>,
     archived_at: Option<String>,
     archive_reason: Option<String>,
@@ -4634,6 +4653,10 @@ fn manual_feature_snapshot_to_dto(
             .feature_slug
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        task_kind: snapshot
+            .task_kind
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| matches!(value.as_str(), "feature" | "bugfix" | "hotfix")),
         branch_name: snapshot
             .branch_name
             .map(|value| value.trim().to_string())
@@ -6369,10 +6392,17 @@ fn sanitize_manual_features(
             continue;
         }
 
+        let task_kind = feature
+            .task_kind
+            .as_ref()
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| matches!(value.as_str(), "feature" | "bugfix" | "hotfix"));
+
         sanitized_features.push(ManualFeatureDto {
             project_ids: fallback_project_ids,
             context_project_ids,
             execution_targets,
+            task_kind,
             ..feature.clone()
         });
     }
@@ -6814,14 +6844,49 @@ fn render_standalone_feature_branch_name(
     settings: Option<&ProjectGitFlowSettingsDto>,
     feature_slug: &str,
 ) -> String {
+    render_standalone_task_branch_name(settings, feature_slug, "feature")
+}
+
+fn normalize_manual_task_kind(task_kind: &str) -> Result<&'static str> {
+    match task_kind.trim().to_lowercase().as_str() {
+        "feature" => Ok("feature"),
+        "bugfix" => Ok("bugfix"),
+        "hotfix" => Ok("hotfix"),
+        _ => Err(BackendError::Validation(
+            "Manual task kind must be feature, bugfix or hotfix".to_string(),
+        )),
+    }
+}
+
+fn render_standalone_task_branch_name(
+    settings: Option<&ProjectGitFlowSettingsDto>,
+    task_slug: &str,
+    task_kind: &str,
+) -> String {
     let normalized_settings = normalize_project_git_flow_settings(settings);
-    let rendered = replace_template_tokens(
-        &normalized_settings.standalone_feature_branch_template,
-        &[("featureSlug", feature_slug)],
-    );
+    let (template, token, fallback_prefix) = match task_kind {
+        "bugfix" => (
+            normalized_settings.bugfix_branch_template.as_str(),
+            "bugfixSlug",
+            "bugfix",
+        ),
+        "hotfix" => (
+            normalized_settings.hotfix_branch_template.as_str(),
+            "hotfixSlug",
+            "hotfix",
+        ),
+        _ => (
+            normalized_settings
+                .standalone_feature_branch_template
+                .as_str(),
+            "featureSlug",
+            "feature",
+        ),
+    };
+    let rendered = replace_template_tokens(template, &[(token, task_slug)]);
     normalize_branch_template(
         Some(rendered.as_str()),
-        &format!("feature/{}", feature_slug),
+        &format!("{}/{}", fallback_prefix, task_slug),
     )
 }
 
@@ -7812,6 +7877,7 @@ mod tests {
         let targets = build_manual_feature_execution_targets(
             &["project-web".to_string(), "project-api".to_string()],
             "quick-export",
+            "feature",
             &[],
             &project_groups,
         );
@@ -7823,6 +7889,42 @@ mod tests {
         assert_eq!(targets[1].project_id, "project-api");
         assert_eq!(targets[1].branch_name, "work/quick-export");
         assert_eq!(targets[1].target_branch_name.as_deref(), Some("develop"));
+
+        let bugfix_targets = build_manual_feature_execution_targets(
+            &["project-web".to_string(), "project-api".to_string()],
+            "broken-export",
+            "bugfix",
+            &[],
+            &project_groups,
+        );
+        assert_eq!(bugfix_targets[0].branch_name, "bugfix/broken-export");
+        assert_eq!(
+            bugfix_targets[0].target_branch_name.as_deref(),
+            Some("main")
+        );
+        assert_eq!(bugfix_targets[1].branch_name, "bugfix/broken-export");
+        assert_eq!(
+            bugfix_targets[1].target_branch_name.as_deref(),
+            Some("develop")
+        );
+
+        let hotfix_targets = build_manual_feature_execution_targets(
+            &["project-web".to_string(), "project-api".to_string()],
+            "production-export",
+            "hotfix",
+            &[],
+            &project_groups,
+        );
+        assert_eq!(hotfix_targets[0].branch_name, "hotfix/production-export");
+        assert_eq!(
+            hotfix_targets[0].target_branch_name.as_deref(),
+            Some("main")
+        );
+        assert_eq!(hotfix_targets[1].branch_name, "hotfix/production-export");
+        assert_eq!(
+            hotfix_targets[1].target_branch_name.as_deref(),
+            Some("main")
+        );
     }
 
     #[test]
@@ -7904,6 +8006,7 @@ mod tests {
                 description: "Standalone work".to_string(),
                 status: "Pending".to_string(),
                 feature_slug: Some("quick-export".to_string()),
+                task_kind: Some("feature".to_string()),
                 branch_name: Some("feature/quick-export".to_string()),
                 archived_at: None,
                 archive_reason: None,
@@ -9274,7 +9377,7 @@ mod tests {
         .await
         .expect("create draft");
 
-        finalize_manual_feature(
+        let finalized = finalize_manual_feature(
             temp.path(),
             &metadata_root,
             "manual-task-1",
@@ -9282,9 +9385,11 @@ mod tests {
             "Quick export",
             "Add a quick CSV export from the table.",
             "quick-export",
+            "feature",
         )
         .await
         .expect("finalize draft");
+        assert_eq!(finalized.task_kind.as_deref(), Some("feature"));
 
         let reverted = revert_manual_feature_to_draft(
             temp.path(),
@@ -9302,6 +9407,7 @@ mod tests {
         assert_eq!(reverted.description, "");
         assert_eq!(reverted.status, "Pending");
         assert!(reverted.feature_slug.is_none());
+        assert!(reverted.task_kind.is_none());
         assert!(reverted.branch_name.is_none());
         assert!(reverted.execution_targets.is_empty());
 

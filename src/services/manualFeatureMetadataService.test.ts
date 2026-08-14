@@ -86,7 +86,8 @@ describe('manualFeatureMetadataService', () => {
       status: 'InProgress',
       draft: false,
       feature_slug: 'quick-export',
-      branch_name: 'feature/quick-export',
+      task_kind: 'bugfix',
+      branch_name: 'bugfix/quick-export',
       base_branch: 'develop',
       conversation_id: 'conversation-1',
       project_id: 'project-1',
@@ -95,7 +96,7 @@ describe('manualFeatureMetadataService', () => {
       execution_targets: [
         {
           projectId: 'project-1',
-          branchName: 'feature/quick-export',
+          branchName: 'bugfix/quick-export',
           targetBranchName: 'release/app',
           worktreeKey: 'project-1::feature/quick-export',
           repoPath: '/repo/app',
@@ -115,10 +116,16 @@ describe('manualFeatureMetadataService', () => {
       ([params]) => params.path === 'manual-features/task-1/feature.md'
     )?.[0];
     expect(markdownWrite?.content).toContain('Base Branch (legacy snapshot): develop');
+    expect(markdownWrite?.content).toContain('Task Kind: bugfix');
     expect(markdownWrite?.content).toContain('## Execution Targets');
     expect(markdownWrite?.content).toContain(
-      '- project-1 (/repo/app): feature/quick-export -> release/app'
+      '- project-1 (/repo/app): bugfix/quick-export -> release/app'
     );
+
+    const jsonWrite = fsWriteFileMock.mock.calls.find(
+      ([params]) => params.path === 'manual-features/task-1/feature.json'
+    )?.[0];
+    expect(JSON.parse(jsonWrite?.content || '{}')).toMatchObject({ taskKind: 'bugfix' });
 
     expect(fsDeleteMock).toHaveBeenCalledWith({
       path: 'branches/develop/manual-features/task-1',

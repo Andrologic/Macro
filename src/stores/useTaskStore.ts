@@ -1681,6 +1681,7 @@ interface TaskStore {
     title: string;
     description: string;
     featureSlug: string;
+    taskKind: import('../types').StandaloneTaskKind;
   }) => Promise<void>;
   revertManualFeatureToDraft: (params: {
     taskId: string;
@@ -2842,6 +2843,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         title: params.title,
         description: params.description,
         featureSlug: params.featureSlug,
+        taskKind: params.taskKind,
       });
 
       await get().refreshFromPlan();

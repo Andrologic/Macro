@@ -1,4 +1,9 @@
-import type { CompletionMergePolicy, GitFlowBranchType, ProjectGitFlowSettings } from '../types';
+import type {
+  CompletionMergePolicy,
+  GitFlowBranchType,
+  ProjectGitFlowSettings,
+  StandaloneTaskKind,
+} from '../types';
 import { PREF_DEFAULTS, PREF_KEYS } from './preferences';
 
 export interface ArchitectGitNamingSettings extends ProjectGitFlowSettings {
@@ -555,6 +560,22 @@ export const renderStandaloneFeatureBranchName = (params: {
   featureSlug: string;
   settings?: Partial<ProjectGitFlowSettings> | null;
 }): string => toStandaloneFeatureBranchName(params.featureSlug, params.settings);
+
+export const renderStandaloneTaskBranchName = (params: {
+  taskKind: StandaloneTaskKind;
+  taskSlug: string;
+  settings?: Partial<ProjectGitFlowSettings> | null;
+}): string => {
+  if (params.taskKind === 'feature') {
+    return toStandaloneFeatureBranchName(params.taskSlug, params.settings);
+  }
+
+  return renderGitFlowBranchName({
+    branchType: params.taskKind,
+    branchSlug: params.taskSlug,
+    settings: params.settings,
+  });
+};
 
 export const getProjectBaseBranch = (settings?: Partial<ProjectGitFlowSettings> | null): string =>
   resolveProjectGitFlowSettings(settings).baseBranch;
