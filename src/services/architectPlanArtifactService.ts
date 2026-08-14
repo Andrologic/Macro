@@ -13,6 +13,7 @@ import {
   resolveTargetBranch,
 } from './architectPlanService';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
+import { getTaskBusinessId, resolveTaskReference } from './durableIdentity';
 import { isPlanFinalizationTask } from './implementTaskCatalog';
 import { recordMacroMetadataMutation } from './macroMetadataCoordinator';
 import * as tauriIpc from './tauriIpc';
@@ -632,7 +633,7 @@ const getCurrentTask = (
   const currentTaskId =
     params.executionContext.taskId || params.selectedTaskId || '';
   return currentTaskId
-    ? params.tasks.find((task) => task.id === currentTaskId) || null
+    ? resolveTaskReference(params.tasks, currentTaskId) || null
     : null;
 };
 
@@ -678,7 +679,7 @@ export const resolveTaskArtifactTarget = async (
   if (!requestedTaskId) {
     throw toServiceError('task_artifact_* requires an Implement task context or task_id.');
   }
-  const task = params.tasks.find((candidate) => candidate.id === requestedTaskId);
+  const task = resolveTaskReference(params.tasks, requestedTaskId);
   if (!task) {
     throw toServiceError(`Unknown task: ${requestedTaskId}`);
   }
@@ -1182,7 +1183,7 @@ const putTaskArtifactInternal = async ({
         : typeof args.supersedes === 'string' && args.supersedes.trim()
           ? sanitizeId(args.supersedes)
           : undefined;
-  const node = target.plan.nodes.find((candidate) => candidate.id === target.task.id);
+  const node = target.plan.nodes.find((candidate) => candidate.id === getTaskBusinessId(target.task));
   if (!node) {
     throw toServiceError(`Cannot find Architect node for task ${target.task.id}.`);
   }
@@ -1331,7 +1332,7 @@ export const formatTaskArtifactListResult = async (
     includeInherited,
     includeOwn,
   });
-  const node = target.plan.nodes.find((candidate) => candidate.id === target.task.id);
+  const node = target.plan.nodes.find((candidate) => candidate.id === getTaskBusinessId(target.task));
   return [
     `task_artifact_list: ${artifacts.length} visible artifact(s) for ${target.task.title}.`,
     '',
@@ -1430,7 +1431,7 @@ export const loadMissingRequiredArtifactsForCompletion = async (
     task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch(),
   );
   const plan = await getPlan(branchName, task.plan_id);
-  const node = plan?.nodes?.find((candidate) => candidate.id === task.id);
+  const node = plan?.nodes?.find((candidate) => candidate.id === getTaskBusinessId(task));
   if (!plan || !node) {
     return [];
   }
@@ -1451,7 +1452,7 @@ export const loadMissingRequiredArtifactsForCompletion = async (
       (contract) =>
         !index.artifacts.some(
           (artifact) =>
-            artifact.taskId === task.id &&
+            artifact.taskId === getTaskBusinessId(task) &&
             (artifact.contractId === contract.id || artifact.id === contract.id),
         ),
     )
@@ -1482,7 +1483,7 @@ export const loadUnvalidatedCurrentTaskArtifactsForCompletion = async (
     task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch(),
   );
   const plan = await getPlan(branchName, task.plan_id);
-  const node = plan?.nodes?.find((candidate) => candidate.id === task.id);
+  const node = plan?.nodes?.find((candidate) => candidate.id === getTaskBusinessId(task));
   if (!plan || !node) {
     return [];
   }
@@ -1496,13 +1497,13 @@ export const loadUnvalidatedCurrentTaskArtifactsForCompletion = async (
   });
   const reviews = index.reviews || [];
   return index.artifacts
-    .filter((artifact) => artifact.taskId === task.id)
+    .filter((artifact) => artifact.taskId === getTaskBusinessId(task))
     .filter(
       (artifact) =>
         !reviews.some(
           (review) =>
             review.artifactId === artifact.id &&
-            review.taskId === task.id,
+            review.taskId === getTaskBusinessId(task),
         ),
     );
 };
@@ -1529,7 +1530,7 @@ export const buildTaskArtifactContextBlock = async (params: {
     includeInherited: true,
     includeOwn: true,
   });
-  const node = plan.nodes.find((candidate) => candidate.id === params.task.id);
+  const node = plan.nodes.find((candidate) => candidate.id === getTaskBusinessId(params.task));
   const contracts = normalizeArtifactContracts(node || {});
   const inheritedArtifacts = artifacts.filter((artifact) => artifact.visibility === 'inherited');
   const ownArtifacts = artifacts.filter((artifact) => artifact.visibility === 'own');

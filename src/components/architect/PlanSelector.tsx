@@ -89,6 +89,7 @@ import {
 } from '../../services/planLifecycleSaga';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
+import { toPlanLocatorKey } from '../../services/durableIdentity';
 
 interface PlanSelectorProps {
   className?: string;
@@ -264,8 +265,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
   const activePlan = useMemo(() => {
     if (!activePlanId) return null;
-    return plans.find((plan) => plan.id === activePlanId) || null;
-  }, [plans, activePlanId]);
+    const activeBranch = activePlanContext?.targetBranch;
+    return plans.find((plan) =>
+      plan.id === activePlanId && (!activeBranch || plan.targetBranch === activeBranch)
+    ) || null;
+  }, [plans, activePlanContext?.targetBranch, activePlanId]);
   const projectRegistry = useMemo(
     () => ({ standaloneProjects: standaloneProjects ?? [], projectGroups }),
     [projectGroups, standaloneProjects]
@@ -613,16 +617,18 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     planId: string,
     planSummaryHint?: ArchitectPlanSummary | null
   ) => {
+    const planBranch = planSummaryHint?.targetBranch || targetBranch;
+    const locatorKey = toPlanLocatorKey({ branchName: planBranch, planId });
     const requestId = ++activationRequestIdRef.current;
     const requestContext = selectorAsyncContextRef.current ?? selectorAsyncContext;
-    setIsActivating(planId);
+    setIsActivating(locatorKey);
     setError(null);
     setActivePlanId(planId);
     try {
       const catalogBranches = Object.values(
         useAppStore.getState().architectPlanCatalogByBranch,
       );
-      const catalogBranch = (
+      const exactCatalogBranch = (
         catalogBranches.find((branch) =>
           branch.plans.some((plan) => plan === planSummaryHint),
         ) ??
@@ -631,13 +637,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             plan.id === planId &&
             plan.targetBranch === planSummaryHint?.targetBranch,
           ),
-        ) ??
-        catalogBranches.find((branch) =>
-          branch.plans.some((plan) => plan.id === planId),
         )
       )?.branchName;
+      const idOnlyBranches = catalogBranches.filter((branch) =>
+        branch.plans.some((plan) => plan.id === planId),
+      );
+      const unambiguousLegacyBranch = idOnlyBranches.length === 1
+        ? idOnlyBranches[0]?.branchName
+        : null;
       const activated = await activateArchitectPlan(planId, {
-        targetBranch: catalogBranch ?? planSummaryHint?.targetBranch ?? targetBranch,
+        targetBranch: exactCatalogBranch ?? unambiguousLegacyBranch ?? planBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
       if (!isCurrentActivationRequest(requestId, requestContext)) {
@@ -906,11 +915,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     plans.length,
   ]);
 
-  const handleRenamePlan = (planId: string) => {
-    const plan = plans.find((p) => p.id === planId);
-    if (!plan) {
-      return;
-    }
+  const handleRenamePlan = (plan: ArchitectPlanSummary) => {
     if (!getArchitectPlanCrudCapabilities(plan).canEditDetails) {
       return;
     }
@@ -1012,7 +1017,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         updatedAt: new Date().toISOString(),
       });
       const cleanup = await cleanupPlanBranches(archivedPlan);
-      await removePlanLifecycleSaga(plan.id, 'archive');
+      await removePlanLifecycleSaga(plan.id, 'archive', targetBranch);
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
@@ -1525,10 +1530,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             )}
 
             {plans.map((plan) => {
-              const isActive = plan.id === activePlanId;
+              const locatorKey = toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id });
+              const isActive = plan.id === activePlanId &&
+                (!activePlanContext?.targetBranch || plan.targetBranch === activePlanContext.targetBranch);
               const planPhase = getArchitectPlanLifecyclePhase(plan);
               const statusClass = statusClassName[planPhase] || statusClassName.draft;
-              const isBusy = isActivating === plan.id;
+              const isBusy = isActivating === locatorKey;
               const isUnavailable = plan.status === 'deleted';
               const isMissingProjects = plan.replicationState === 'missing_projects';
               const missingCount = plan.missingProjectIds?.length ?? 0;
@@ -1575,7 +1582,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
 
               return (
                 <div
-                  key={plan.id}
+                  key={locatorKey}
                   role="button"
                   tabIndex={canActivatePlan ? 0 : -1}
                   aria-disabled={!canActivatePlan}
@@ -1627,7 +1634,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          handleRenamePlan(plan.id);
+                          handleRenamePlan(plan);
                         }}
                         disabled={!canRenamePlan}
                         className="w-6 h-6 rounded border border-border hover:bg-accent flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"

@@ -12,6 +12,7 @@ import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
 import { removePlanLifecycleSaga, upsertPlanLifecycleSaga } from '../services/planLifecycleSaga';
+import { getTaskBusinessId, resolveTaskReference, toPlanLocatorKey } from '../services/durableIdentity';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
 import {
@@ -362,6 +363,17 @@ const createTaskArtifactsBlockedErrorFromPlan = async (
 const getTaskPlanStorageBranch = (
   task: Pick<CatalogedImplementTask, 'plan_storage_branch' | 'plan_target_branch'>
 ): string => resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
+
+const findPlanSummaryForTask = (
+  summaries: ImplementTaskPlanSummary[],
+  task: Pick<CatalogedImplementTask, 'plan_id' | 'plan_storage_branch' | 'plan_target_branch'>,
+): ImplementTaskPlanSummary | undefined => {
+  const locatorKey = toPlanLocatorKey({
+    branchName: getTaskPlanStorageBranch(task),
+    planId: task.plan_id,
+  });
+  return summaries.find((summary) => summary.locatorKey === locatorKey);
+};
 
 const createInitialMergeWorkflowStateForTask = (
   task: Pick<CatalogedImplementTask, 'id' | 'task_source'>
@@ -1421,7 +1433,7 @@ const applyPredictedBranchLifecycle = (
   taskId: string,
   nextStatus: TaskStatus
 ) => {
-  const targetTask = tasks.find((task) => task.id === taskId);
+  const targetTask = resolveTaskReference(tasks, taskId);
   if (!targetTask) return predictedBranches;
 
   const taskStatuses = new Map(tasks.map((task) => [task.id, task.id === taskId ? nextStatus : task.status]));
@@ -1733,7 +1745,8 @@ const persistTaskStatusToArchitectPlan = async (
       return false;
     }
 
-    const nextPlanNodes = applyTaskStatusToPlanNodes(plan.nodes || [], task.id, status);
+    const businessTaskId = getTaskBusinessId(task);
+    const nextPlanNodes = applyTaskStatusToPlanNodes(plan.nodes || [], businessTaskId, status);
     const currentPlanTasks = deriveImplementTasksFromStrategy({
       planId: plan.id,
       planSlug: plan.slug,
@@ -1760,7 +1773,7 @@ const persistTaskStatusToArchitectPlan = async (
         merged_at: null,
       })),
       plan.predictedBranches || [],
-      task.id,
+      businessTaskId,
       status
     );
     const strategy = deriveImplementTasksFromStrategy({
@@ -2430,7 +2443,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       if (requestId !== refreshRequestId) return;
       for (const pending of pendingLinkedTaskDeletions) {
         if (requestId !== refreshRequestId) return;
-        const taskStillExists = catalog.tasks.some((task) => task.id === pending.taskId);
+        const taskStillExists = Boolean(resolveTaskReference(catalog.tasks, pending.taskId));
         if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
           const message =
             "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.";
@@ -2479,7 +2492,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           .getState()
           .completeLinkedTaskConversationDeletion(pending.conversationId);
         if (completed) {
-          await removeLinkedTaskDeletionSaga(pending.taskId);
+          await removeLinkedTaskDeletionSaga(pending.taskId, pending.targetBranch);
         } else {
           await upsertLinkedTaskDeletionSaga({
             ...taskDeletedSaga,
@@ -2578,7 +2591,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           selectedProjectId
         );
         const selectedTaskIdFromApp = useAppStore.getState().selectedTaskId;
-        if (selectedTaskIdFromApp && !tasks.some((task) => task.id === selectedTaskIdFromApp)) {
+        if (selectedTaskIdFromApp && !resolveTaskReference(tasks, selectedTaskIdFromApp)) {
           useAppStore.getState().setSelectedTask(null);
         }
 
@@ -2590,7 +2603,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             if (requestId !== refreshRequestId) return;
             const candidateTaskId = context?.lastTaskId;
             if (candidateTaskId) {
-              const candidateTask = tasks.find((task) => task.id === candidateTaskId);
+              const candidateTask = resolveTaskReference(tasks, candidateTaskId);
               if (candidateTask && taskMatchesAnyProjectId(candidateTask, scopedProjectIds)) {
                 useAppStore.getState().setSelectedTask(candidateTaskId);
               }
@@ -2640,7 +2653,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   activateTask: async (taskId) => {
     const requestId = ++taskActivationRequestId;
     const appState = useAppStore.getState();
-    const task = get().tasks.find((candidate) => candidate.id === taskId);
+    const task = resolveTaskReference(get().tasks, taskId);
     const mergeRuntime = task ? get().mergeWorkflowRuntimeByTaskId[task.id] ?? null : null;
 
     if (appState.selectedTaskId !== taskId) {
@@ -3314,7 +3327,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           .getState()
           .completeLinkedTaskConversationDeletion(task.conversation_id!);
         if (linkedConversationCleanupCompleted && !sagaPersistenceError) {
-          await removeLinkedTaskDeletionSaga(task.id);
+          await removeLinkedTaskDeletionSaga(task.id, taskDeletedSaga.targetBranch);
         } else if (!linkedConversationCleanupCompleted) {
           await upsertLinkedTaskDeletionSaga({
             ...taskDeletedSaga,
@@ -3391,7 +3404,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    const task = get().tasks.find((candidate) => candidate.id === taskId);
+    const task = resolveTaskReference(get().tasks, taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
@@ -3629,7 +3642,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
-    const task = get().tasks.find((candidate) => candidate.id === taskId);
+    const task = resolveTaskReference(get().tasks, taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return null;
@@ -4082,7 +4095,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       try {
         let nextRuntime: MergeWorkflowRuntimeState | null = null;
         if (kind === 'plan_finalization') {
-          const summary = get().planSummaries.find((plan) => plan.id === task.plan_id);
+          const summary = findPlanSummaryForTask(get().planSummaries, task);
           if (!summary) {
             return null;
           }
@@ -4304,7 +4317,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       if (kind === 'plan_finalization') {
-        const summary = get().planSummaries.find((plan) => plan.id === task.plan_id);
+        const summary = findPlanSummaryForTask(get().planSummaries, task);
         if (!summary) {
           throw new Error(
             tTask(
@@ -4436,7 +4449,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           conversationId: plan.conversationId ?? null, requiresMetadataCommit: true,
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
         });
-        await removePlanLifecycleSaga(plan.id, 'archive');
+        await removePlanLifecycleSaga(plan.id, 'archive', branchName);
         await get().refreshFromPlan();
         await persistRuntime(null);
         get().clearPlanRuntimeState({
@@ -4701,7 +4714,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             });
           } else {
             const nextPlanNodes = (plan.nodes || []).map((node) =>
-              node.id === task.id
+              node.id === getTaskBusinessId(task)
                 ? {
                     ...node,
                     status: 'completed' as const,
@@ -5091,7 +5104,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   retryTask: async (taskId) => {
-    const task = get().tasks.find((candidate) => candidate.id === taskId);
+    const task = resolveTaskReference(get().tasks, taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
@@ -5121,7 +5134,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     set({ lastError: null });
     assertTaskMutationRuntime('setTaskStatus');
 
-    const currentTask = get().tasks.find((task) => task.id === taskId);
+    const currentTask = resolveTaskReference(get().tasks, taskId);
     if (!currentTask) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
       return;
@@ -5376,7 +5389,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     );
   },
 
-  getTaskById: (taskId) => get().tasks.find((task) => task.id === taskId),
+  getTaskById: (taskId) => resolveTaskReference(get().tasks, taskId),
   });
 });
 

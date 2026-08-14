@@ -204,6 +204,7 @@ import {
   getScopedProjectIds,
 } from "../services/globalProjects";
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
+import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
 import {
   isProjectWorkspaceMissing,
   resolveProjectWorkspaceState,
@@ -1240,7 +1241,7 @@ export const resolveImplementTaskForContext = ({
     if (taskMatchesScopedProjectIds(task, scopedProjectIds)) {
       return true;
     }
-    if (task.task_source !== "standalone" && task.id !== selectedTaskId) {
+    if (task.task_source !== "standalone" && !taskReferenceMatches(tasks, task, selectedTaskId)) {
       return false;
     }
     const executionTask = retargetImplementTaskForSelection(task, {
@@ -1253,7 +1254,7 @@ export const resolveImplementTaskForContext = ({
   });
   const findEligibleTask = (taskId?: string | null): ImplementTask | null =>
     taskId
-      ? eligibleTasks.find((task) => task.id === taskId) ?? null
+      ? resolveTaskReference(eligibleTasks, taskId) ?? null
       : null;
 
   return (
@@ -6828,7 +6829,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!selectedTaskId) {
         return !conversation.task_id;
       }
-      return conversation.task_id === selectedTaskId;
+      const tasks = useTaskStore.getState().tasks;
+      const selectedTask = resolveTaskReference(tasks, selectedTaskId);
+      return Boolean(selectedTask && taskReferenceMatches(tasks, selectedTask, conversation.task_id));
     }
 
     return false;
@@ -6864,17 +6867,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const getLatestConversationForTask = (
     taskId: string,
     conversations: Conversation[] = get().conversations,
-  ): Conversation | null =>
-    conversations
+  ): Conversation | null => {
+    const tasks = useTaskStore.getState().tasks;
+    const task = resolveTaskReference(tasks, taskId);
+    if (!task) return null;
+    return conversations
       .filter(
         (conversation) =>
           getConversationScopeMode(conversation) === "Implement" &&
-          conversation.task_id === taskId,
+          taskReferenceMatches(tasks, task, conversation.task_id),
       )
       .sort(
         (a, b) =>
           new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
       )[0] ?? null;
+  };
 
   type ConversationRemovalSnapshot = Pick<
     ChatStore,
@@ -10588,8 +10595,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         selectedProjectId: appState.selectedProjectId,
         localContext: null,
       });
-      if (resolvedTask?.id === conversation.task_id) {
-        appState.setSelectedTask(conversation.task_id);
+      if (resolvedTask) {
+        appState.setSelectedTask(resolvedTask.id);
         appState = useAppStore.getState();
       }
     }
