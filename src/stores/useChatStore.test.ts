@@ -520,6 +520,7 @@ const taskStoreState = {
     title: string;
     description: string;
     featureSlug: string;
+    taskKind: 'feature' | 'bugfix' | 'hotfix';
   }) => {
     const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
@@ -530,8 +531,9 @@ const taskStoreState = {
             description: params.description,
             draft: false,
             feature_slug: params.featureSlug,
-            assigned_branch: `feature/${params.featureSlug}`,
-            branch_name: `feature/${params.featureSlug}`,
+            task_kind: params.taskKind,
+            assigned_branch: `${params.taskKind}/${params.featureSlug}`,
+            branch_name: `${params.taskKind}/${params.featureSlug}`,
             status: 'Pending',
           }
         : task
@@ -8329,7 +8331,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('finalizes a manual feature draft before the first assistant response', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
-    taskStoreState.tasks = [createManualFeatureTask()];
+    taskStoreState.tasks = [createManualFeatureTask({ task_kind: 'bugfix' })];
     providerState.providerConfigs = [
       ...providerState.providerConfigs,
       {
@@ -8362,6 +8364,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
         featureSlug: 'quick-export',
+        taskKind: 'feature',
       })
     );
 
@@ -8403,13 +8406,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       title: 'Quick export',
       description: 'Add a quick CSV export from the table.',
       featureSlug: 'quick-export',
+      taskKind: 'bugfix',
     });
     expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       draft: false,
       status: 'InProgress',
       feature_slug: 'quick-export',
-      branch_name: 'feature/quick-export',
+      task_kind: 'bugfix',
+      branch_name: 'bugfix/quick-export',
     });
     expect(
       useChatStore.getState().conversations.find((conversation: Conversation) => conversation.id === 'manual-conv')
@@ -8429,6 +8434,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
         featureSlug: 'quick-export',
+        taskKind: 'feature',
       })
     );
 
@@ -8527,6 +8533,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       title: 'Quick export',
       description: 'Add a quick CSV export from the table.',
       featureSlug: 'quick-export',
+      taskKind: 'feature',
     });
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       draft: false,
@@ -8552,6 +8559,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
         featureSlug: 'quick-export',
+        taskKind: 'feature',
       })
     );
     taskStoreState.startTask.mockImplementationOnce(async () => {
@@ -8600,6 +8608,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       title: 'Quick export',
       description: 'Add a quick CSV export from the table.',
       featureSlug: 'quick-export',
+      taskKind: 'feature',
     });
     expect(taskStoreState.revertManualFeatureToDraft).toHaveBeenCalledWith({
       taskId: 'manual-task-1',
@@ -8654,7 +8663,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.tasks = [createManualFeatureTask()];
     gitBranchesByRepo = {
       '/repos/web': {
-        local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
+        local: [{ name: 'bugfix/quick-export', is_head: false, commit: 'abc123' }],
         remote: [],
         current: 'develop',
       },
@@ -8665,6 +8674,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
         featureSlug: 'quick-export',
+        taskKind: 'bugfix',
       })
     );
     queueSendChatNonStreamingImplementation(async () =>
@@ -8672,6 +8682,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
         featureSlug: 'quick-export-fast',
+        taskKind: 'bugfix',
       })
     );
 
@@ -8710,6 +8721,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       title: 'Quick export',
       description: 'Add a quick CSV export from the table.',
       featureSlug: 'quick-export-fast',
+      taskKind: 'bugfix',
+    });
+    expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
+      task_kind: 'bugfix',
+      branch_name: 'bugfix/quick-export-fast',
     });
     expect(updateConversationDetailsMock).toHaveBeenCalledWith({
       id: 'manual-conv',

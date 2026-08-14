@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { ProjectGitFlowSettings } from '../types';
 import {
   isMainlineGitWorkflow,
+  renderStandaloneTaskBranchName,
   validateProjectGitFlowParsing,
   validateProjectGitFlowSettings,
 } from './architectGitNaming';
@@ -50,5 +51,16 @@ describe('architectGitNaming', () => {
     expect(errors).toContain(
       'Plan branch template must render a valid Git branch name.',
     );
+  });
+
+  it('renders standalone branches from the task kind selected by the agent', () => {
+    const settings = createSettings();
+
+    expect(renderStandaloneTaskBranchName({ taskKind: 'feature', taskSlug: 'quick-export', settings }))
+      .toBe('feature/quick-export');
+    expect(renderStandaloneTaskBranchName({ taskKind: 'bugfix', taskSlug: 'quick-export', settings }))
+      .toBe('bugfix/quick-export');
+    expect(renderStandaloneTaskBranchName({ taskKind: 'hotfix', taskSlug: 'quick-export', settings }))
+      .toBe('hotfix/quick-export');
   });
 });

@@ -417,6 +417,8 @@ pub struct ManualFeatureDto {
     pub status: String,
     #[serde(default, rename = "featureSlug")]
     pub feature_slug: Option<String>,
+    #[serde(default, rename = "taskKind")]
+    pub task_kind: Option<String>,
     #[serde(default, rename = "branchName")]
     pub branch_name: Option<String>,
     #[serde(default, rename = "archivedAt")]

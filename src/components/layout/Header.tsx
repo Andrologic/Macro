@@ -320,7 +320,7 @@ export function Header({
               </span>
             </div>
 
-            {mode === 'Implement' ? (
+            {mode === 'Architect' ? (
               <>
                 <div className="ml-2 hidden h-5 w-px shrink-0 bg-border sm:block" />
                 <button

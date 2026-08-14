@@ -32,6 +32,7 @@ export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
 export type PlanNodeTodoStatus = 'pending' | 'in-progress' | 'done';
 export type PlanTaskArtifactContentType = 'markdown' | 'json' | 'text';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
+export type StandaloneTaskKind = 'feature' | 'bugfix' | 'hotfix';
 export type CompletionMergePolicy = 'merge_commit' | 'fast_forward';
 export type ProjectGitSetupState =
   | 'not_git'
@@ -581,6 +582,7 @@ export interface Task {
   code_diff?: CodeDiff;
   draft?: boolean;
   standalone_kind?: 'legacy' | 'manual_feature';
+  task_kind?: StandaloneTaskKind | null;
   base_branch?: string | null;
   feature_slug?: string | null;
   conversation_id?: string | null;

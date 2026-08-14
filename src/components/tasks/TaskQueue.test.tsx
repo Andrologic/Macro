@@ -736,6 +736,194 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Archived task');
   });
 
+  it('shows tasks from every project by default and filters them by project', async () => {
+    seedTasks([
+      makeTask('task-project-1', 'Pending', { title: 'First project task' }),
+      makeTask('task-project-2', 'Pending', {
+        title: 'Second project task',
+        project_id: 'project-2',
+        project_ids: ['project-2'],
+        execution_targets: [{
+          projectId: 'project-2',
+          branchName: 'feature/task-project-2',
+          worktreeKey: 'project-2::feature/task-project-2',
+        }],
+      }),
+    ]);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'First group',
+          isOpen: true,
+          projects: [makeProject('project-1', '/tmp/project-1', 'Project One')],
+        },
+        {
+          id: 'group-2',
+          name: 'Second group',
+          isOpen: true,
+          projects: [makeProject('project-2', '/tmp/project-2', 'Project Two')],
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const projectFilter = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-project-filter"]'
+    );
+    expect(projectFilter?.textContent).toContain('All projects');
+    expect(document.body.textContent).toContain('First project task');
+    expect(document.body.textContent).toContain('Second project task');
+
+    await act(async () => {
+      projectFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const projectTwoOption = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')
+    ).find((option) => option.textContent?.includes('Project Two'));
+    expect(projectTwoOption).not.toBeUndefined();
+
+    await act(async () => {
+      projectTwoOption?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('First project task');
+    expect(document.body.textContent).toContain('Second project task');
+
+    await act(async () => {
+      projectFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const allProjectsOption = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')
+    ).find((option) => option.textContent?.includes('All projects'));
+    expect(allProjectsOption?.querySelector('.tabular-nums')?.textContent).toBe('2');
+
+    const searchInput = document.body.querySelector<HTMLInputElement>(
+      'input[placeholder="Search projects..."]'
+    );
+    await act(async () => {
+      searchInput?.dispatchEvent(new window.KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true,
+      }));
+      await flushRender();
+    });
+    expect(document.activeElement).toBe(allProjectsOption ?? null);
+
+    await act(async () => {
+      allProjectsOption?.dispatchEvent(new window.KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+      }));
+      await flushRender();
+    });
+    expect(document.activeElement).toBe(projectFilter);
+  });
+
+  it('requires an explicit project when creating from the all-projects view', async () => {
+    seedTasks([makeTask('task-1', 'Pending')]);
+    const createConversation = mock(async () => ({ id: 'conversation-created' }));
+    const selectConversation = mock(async () => true);
+    const createManualFeatureDraft = mock(async () => undefined);
+    const activateTask = mock(async () => undefined);
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      createConversation: createConversation as never,
+      selectConversation: selectConversation as never,
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      createManualFeatureDraft: createManualFeatureDraft as never,
+      activateTask: activateTask as never,
+    });
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            makeProject('project-1', '/tmp/project-1', 'Project One'),
+            makeProject('project-2', '/tmp/project-2', 'Project Two'),
+          ],
+        },
+      ] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const createButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-create-task"]'
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const confirmButton = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') || []
+    ).find((button) => button.textContent?.includes('Create task'));
+    expect(dialog?.textContent).toContain('A project is required');
+    expect(dialog?.querySelector('textarea')).toBeNull();
+    expect(confirmButton?.disabled).toBe(true);
+    expect(dialog?.querySelector('[aria-pressed="true"]')).toBeNull();
+
+    const projectTwoButton = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') || []
+    ).find((button) => button.textContent?.includes('Project Two'));
+    const bugfixButton = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') || []
+    ).find((button) => button.textContent?.trim() === 'Bugfix');
+    await act(async () => {
+      projectTwoButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      bugfixButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(projectTwoButton?.getAttribute('aria-pressed')).toBe('true');
+    expect(bugfixButton?.getAttribute('aria-pressed')).toBe('true');
+    expect(confirmButton?.disabled).toBe(false);
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(createConversation).toHaveBeenCalledWith(
+      'New bugfix',
+      expect.stringContaining('manual-feature-'),
+      'project-2',
+      'group-1'
+    );
+    expect(createManualFeatureDraft).toHaveBeenCalledWith({
+      taskId: expect.stringContaining('manual-feature-'),
+      conversationId: 'conversation-created',
+      groupId: 'group-1',
+      projectIds: ['project-2'],
+      contextProjectIds: [],
+      baseBranch: expect.any(String),
+      title: 'New bugfix',
+      description: '',
+      taskKind: 'bugfix',
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it('renders a pulsing dot for awaiting response tasks without streaming', async () => {
     seedStores('AwaitingResponse');
 
@@ -1057,7 +1245,7 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
   });
 
-  it('renders the synthetic plan finalization task without the legacy ready-for-validation callout and excludes it from progress', async () => {
+  it('renders the synthetic plan finalization task in the operational status summary', async () => {
     seedTasks([
       makeTask('architect-complete-1', 'Completed', {
         title: 'Architect task',
@@ -1093,7 +1281,9 @@ describe('TaskQueue', () => {
     });
 
     expect(document.body.textContent).not.toContain('Plan ready for validation');
-    expect(document.body.textContent).toContain('1/1');
+    expect(
+      document.body.querySelector('[aria-label="Task status summary"]')?.textContent
+    ).toContain('Ready1');
     expect(document.body.querySelector('[data-task-context-badge="plan_finalization"]')?.textContent)
       .toContain('Plan finalization');
     expect(
@@ -1126,7 +1316,7 @@ describe('TaskQueue', () => {
     expect(taskCard?.className).toContain('h-[96px]');
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
-      { key: 'standalone', text: 'Standalone' },
+      { key: 'standalone', text: 'Agent classification' },
       { key: 'draft', text: 'Draft' },
     ]);
   });
