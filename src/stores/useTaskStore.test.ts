@@ -13,7 +13,8 @@ import {
   toBlockedPlanFinalizationState,
 } from '../services/planFinalization';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
-import { getPlanActivationCandidateTask, type ImplementTask } from './useTaskStore';
+import { getPlanActivationCandidateTask } from '../services/planActivationCandidate';
+import type { ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
 const actualTauriIpc = await import('../services/tauriIpc');
