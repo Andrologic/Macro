@@ -316,6 +316,43 @@ describe('architectPlanService', () => {
     ]);
   });
 
+  it('reserves distinct ids and slugs for concurrent plan creations', async () => {
+    const [first, second] = await Promise.all([
+      service.createArchitectPlan({ branchName, title: 'Concurrent plan' }),
+      service.createArchitectPlan({ branchName, title: 'Concurrent plan' }),
+    ]);
+
+    expect(first.id).not.toBe(second.id);
+    expect(first.slug).toBe('concurrent-plan');
+    expect(second.slug).toBe('concurrent-plan-2');
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    expect(listed.plans.map((plan: ArchitectPlanSummary) => plan.id).sort()).toEqual(
+      [first.id, second.id].sort()
+    );
+  });
+
+  it('rejects one of two concurrent creations with the same explicit id', async () => {
+    const results = await Promise.allSettled([
+      service.createArchitectPlan({ branchName, planId: 'explicit-collision', title: 'First' }),
+      service.createArchitectPlan({ branchName, planId: 'explicit-collision', title: 'Second' }),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({
+        message: 'A plan with id "explicit-collision" already exists. Choose a different identifier.',
+      }),
+    });
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    expect(
+      listed.plans.filter((plan: ArchitectPlanSummary) => plan.id === 'explicit-collision')
+    ).toHaveLength(1);
+  });
+
   it('treats title updates as label updates for canonical plans', async () => {
     const created = await service.createArchitectPlan({
       branchName,
