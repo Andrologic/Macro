@@ -11,7 +11,6 @@ import {
   isArchitectPlanReplicaDivergenceError,
   listArchitectPlans,
   repairArchitectPlanReplicas,
-  restoreArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanReplicaDivergence,
   type ArchitectPlanRecord,
@@ -20,6 +19,7 @@ import {
 import {
   cleanupPlanBranches,
   deletePlanAndCleanupBranches,
+  restorePlanAndProvisionBranches,
 } from '../../services/architectGitFlowService';
 import {
   getArchitectPlanKind,
@@ -1171,7 +1171,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     setError(null);
     setIsLoading(true);
     try {
-      await restoreArchitectPlan(targetBranch, plan.id);
+      await restorePlanAndProvisionBranches({ branchName: targetBranch, planId: plan.id });
       const planDisplayName = getArchitectPlanDisplayName(plan);
       notify.success(
         t('architect.planSelector.toastPlanRestored', {
