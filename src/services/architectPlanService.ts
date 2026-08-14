@@ -2326,6 +2326,7 @@ function throwPlanMetadataMissing(
 }
 
 const architectPlanMutationQueues = new Map<string, Promise<void>>();
+const architectPlanCreationQueues = new Map<string, Promise<void>>();
 
 const getArchitectPlanMutationQueueKey = (branchName: string, planId: string): string =>
   `${normalizeBranchName(branchName)}::${sanitizeId(planId)}`;
@@ -2349,6 +2350,28 @@ const enqueueArchitectPlanMutation = async <T>(
   } finally {
     if (architectPlanMutationQueues.get(queueKey) === stored) {
       architectPlanMutationQueues.delete(queueKey);
+    }
+  }
+};
+
+const enqueueArchitectPlanCreation = async <T>(
+  branchName: string,
+  creation: () => Promise<T>
+): Promise<T> => {
+  const queueKey = normalizeBranchName(branchName);
+  const previous = architectPlanCreationQueues.get(queueKey) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(creation);
+  const stored = run.then(
+    () => undefined,
+    () => undefined
+  );
+  architectPlanCreationQueues.set(queueKey, stored);
+
+  try {
+    return await run;
+  } finally {
+    if (architectPlanCreationQueues.get(queueKey) === stored) {
+      architectPlanCreationQueues.delete(queueKey);
     }
   }
 };
@@ -4361,7 +4384,7 @@ export const getArchitectPlan = async (
   return replicaSet?.canonical.plan || null;
 };
 
-export const createArchitectPlan = async (input: {
+type CreateArchitectPlanInput = {
   branchName: string;
   title?: string;
   label?: string;
@@ -4379,26 +4402,46 @@ export const createArchitectPlan = async (input: {
   predictedBranches?: PredictedBranch[];
   planId?: string;
   setActive?: boolean;
-}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
+};
+
+const createArchitectPlanId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  return `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+};
+
+const createArchitectPlanUnlocked = async (
+  input: CreateArchitectPlanInput,
+  deps: ResolvedArchitectPlanServiceDependencies
+): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const now = new Date().toISOString();
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
 
-  // Read index early for uniqueness checks
-  const planId = input.planId ? sanitizeId(input.planId) : String(Date.now());
   const initialLabel = normalizePlanLabel(input.label || input.title);
   const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
+  const explicitPlanId = input.planId?.trim() ? sanitizeId(input.planId) : null;
+  let planId = explicitPlanId || createArchitectPlanId();
+  while (!explicitPlanId && index.plans.some((plan) => plan.id === planId)) {
+    planId = createArchitectPlanId();
+  }
   const canonicalSlug = createAvailablePlanSlug(
     input.slug || initialLabel || planId,
     index.reservedPlanSlugs,
   );
 
-  if (index.plans.some((plan) => plan.id === planId)) {
+  if (explicitPlanId && index.plans.some((plan) => plan.id === planId)) {
     throw new Error(`A plan with id "${planId}" already exists. Choose a different identifier.`);
   }
 
-  // ID is always a random numeric sequence — independent of the title
   const normalizedNodes = normalizePlanNodes(input.nodes || []);
   const normalizedPredictedBranches = normalizePlanPredictedBranches(input.predictedBranches || []);
   const projectIds = resolvePlanProjectIds({
@@ -4494,6 +4537,12 @@ export const createArchitectPlan = async (input: {
 
   return (await getArchitectPlan(normalizedBranch, plan.id, deps)) || plan;
 };
+
+export const createArchitectPlan = async (
+  input: CreateArchitectPlanInput,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
+): Promise<ArchitectPlanRecord> =>
+  enqueueArchitectPlanCreation(input.branchName, () => createArchitectPlanUnlocked(input, deps));
 
 export const updateArchitectPlan = async (input: {
   branchName: string;
