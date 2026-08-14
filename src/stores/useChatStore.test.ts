@@ -11019,7 +11019,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ).toBe(1);
   });
 
-  it('reapplies AwaitingResponse after a task refresh when an implement questionnaire is still unresolved', async () => {
+  it('reconciles an unresolved questionnaire to AwaitingResponse only once while persistence is pending', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
     taskStoreState.tasks = [
@@ -11077,6 +11077,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     taskStoreState.markTaskAwaitingResponse.mockClear();
+    let resolvePersistence: (() => void) | null = null;
+    taskStoreState.markTaskAwaitingResponse.mockImplementationOnce(async (taskId: string) => {
+      await new Promise<void>((resolve) => {
+        resolvePersistence = resolve;
+      });
+      taskStoreState.tasks = taskStoreState.tasks.map((task) =>
+        task.id === taskId ? { ...task, status: 'AwaitingResponse' } : task
+      );
+    });
     const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) => ({ ...task }));
     emitTaskStoreUpdate(previousTasks);
@@ -11084,6 +11093,16 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledWith('manual-task-1');
+    const tasksBeforeSecondRefresh = taskStoreState.tasks;
+    taskStoreState.tasks = taskStoreState.tasks.map((task) => ({ ...task }));
+    emitTaskStoreUpdate(tasksBeforeSecondRefresh);
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(taskStoreState.markTaskAwaitingResponse).toHaveBeenCalledTimes(1);
+    expect(resolvePersistence).toBeDefined();
+    (resolvePersistence as unknown as () => void)();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
       status: 'AwaitingResponse',
     });

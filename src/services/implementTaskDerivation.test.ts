@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import type { PlanNode, PredictedBranch } from '../types';
-import { deriveImplementTasksFromStrategy } from './implementTaskDerivation';
+import {
+  applyTaskStatusToPlanNodes,
+  deriveImplementTasksFromStrategy,
+} from './implementTaskDerivation';
 
 const makeNode = (overrides: Partial<PlanNode> & Pick<PlanNode, 'id' | 'title'>): PlanNode => ({
   id: overrides.id,
@@ -8,6 +11,7 @@ const makeNode = (overrides: Partial<PlanNode> & Pick<PlanNode, 'id' | 'title'>)
   description: overrides.description ?? '',
   type: overrides.type ?? 'task',
   status: overrides.status ?? 'pending',
+  executionStatus: overrides.executionStatus,
   dependencies: overrides.dependencies ?? [],
   assignedBranch: overrides.assignedBranch,
   branchType: overrides.branchType ?? 'feature',
@@ -31,6 +35,56 @@ const makeBranch = (
 });
 
 describe('deriveImplementTasksFromStrategy', () => {
+  it.each([
+    ['AwaitingResponse', 'in-progress'],
+    ['InReview', 'in-progress'],
+    ['Failed', 'blocked'],
+  ] as const)('restores the exact %s Architect execution status', (executionStatus, status) => {
+    const nodes = applyTaskStatusToPlanNodes(
+      [makeNode({ id: 'task-a', title: 'Exact status' })],
+      'task-a',
+      executionStatus,
+    );
+    const result = deriveImplementTasksFromStrategy({
+      planId: 'plan-1',
+      nodes,
+      predictedBranches: [],
+    });
+
+    expect(result.tasks[0]?.status).toBe(executionStatus);
+    expect(result.nodes[0]).toMatchObject({ status, executionStatus });
+  });
+
+  it('falls back to the legacy node status when an exact status is absent or stale', () => {
+    const result = deriveImplementTasksFromStrategy({
+      planId: 'plan-1',
+      nodes: [
+        makeNode({ id: 'legacy', title: 'Legacy', status: 'in-progress' }),
+        makeNode({ id: 'stale', title: 'Stale', status: 'completed', executionStatus: 'InReview' }),
+      ],
+      predictedBranches: [],
+    });
+
+    expect(result.tasks.map((task) => task.status)).toEqual(['InProgress', 'Completed']);
+  });
+
+  it('preserves Failed even when an Architect dependency is unresolved', () => {
+    const result = deriveImplementTasksFromStrategy({
+      planId: 'plan-1',
+      nodes: applyTaskStatusToPlanNodes([
+        makeNode({ id: 'dependency', title: 'Dependency' }),
+        makeNode({ id: 'failed', title: 'Failed task', dependencies: ['dependency'] }),
+      ], 'failed', 'Failed'),
+      predictedBranches: [],
+    });
+
+    expect(result.tasks.find((task) => task.id === 'failed')).toMatchObject({
+      status: 'Failed',
+      is_blocked: true,
+      needs_revalidation: true,
+    });
+  });
+
   it('splits legacy sequential branch groups into one branch per task', () => {
     const result = deriveImplementTasksFromStrategy({
       planId: 'plan-1',
