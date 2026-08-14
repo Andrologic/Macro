@@ -16,7 +16,10 @@ const INSTALLATION_IDENTITY_SECRET_ID: &str = "__macro_ai_installation_identity"
 const BOOTSTRAP_URL: &str = "https://lmstudio.andrologic.ai/macro/v1/instances/bootstrap";
 const CONTEXT_WINDOW_TOKENS: i32 = 200_000;
 const OUTPUT_LIMIT_TOKENS: i32 = 16_384;
-const INPUT_LIMIT_TOKENS: i32 = CONTEXT_WINDOW_TOKENS - OUTPUT_LIMIT_TOKENS;
+// Macro subtracts the output reserve when it computes the usable prompt budget.
+// Keep the provider input ceiling at the full context window to avoid reserving
+// OUTPUT_LIMIT_TOKENS twice.
+const INPUT_LIMIT_TOKENS: i32 = CONTEXT_WINDOW_TOKENS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallationIdentity {
@@ -133,13 +136,9 @@ async fn ensure_managed_provider_and_model(pool: &SqlitePool) -> Result<(), Stri
     .await
     .map_err(|error| format!("Failed to configure the Macro AI provider: {error}"))?;
 
-    repository::upsert_provider_models(
-        pool,
-        PROVIDER_ID,
-        &managed_models(),
-    )
-    .await
-    .map_err(|error| format!("Failed to configure the Macro AI model: {error}"))?;
+    repository::upsert_provider_models(pool, PROVIDER_ID, &managed_models())
+        .await
+        .map_err(|error| format!("Failed to configure the Macro AI model: {error}"))?;
     Ok(())
 }
 
@@ -241,6 +240,7 @@ mod tests {
         assert_eq!(models[0].name, FAST_MODEL_NAME);
         assert_eq!(models[1].model_id, DEEP_MODEL_ID);
         assert_eq!(models[1].name, DEEP_MODEL_NAME);
+        assert_eq!(INPUT_LIMIT_TOKENS, CONTEXT_WINDOW_TOKENS);
         assert!(models.iter().all(|model| {
             model.context_window_tokens == Some(CONTEXT_WINDOW_TOKENS)
                 && model.input_limit_tokens == Some(INPUT_LIMIT_TOKENS)

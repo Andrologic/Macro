@@ -411,14 +411,14 @@ describe('useProviderStore secret resolution', () => {
           dbModel('macro-ai', 'macro-ai', {
             name: 'Macro AI Fast',
             context_window_tokens: 200_000,
-            input_limit_tokens: 183_616,
+            input_limit_tokens: 200_000,
             output_limit_tokens: 16_384,
             context_window_source: 'provider_metadata',
           }),
           dbModel('macro-ai', 'macro-ai-deep', {
             name: 'Macro AI Deep',
             context_window_tokens: 200_000,
-            input_limit_tokens: 183_616,
+            input_limit_tokens: 200_000,
             output_limit_tokens: 16_384,
             context_window_source: 'provider_metadata',
           }),
