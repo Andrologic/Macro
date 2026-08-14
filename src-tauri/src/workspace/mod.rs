@@ -45,6 +45,7 @@ use tokio::time::timeout;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const WORKSPACE_STATE_BACKUP_FILE: &str = "workspace.json.bak";
+const WORKSPACE_STATE_FILE_LOCK: &str = ".workspace.json.lock";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
 const MANUAL_FEATURES_METADATA_DIR: &str = "manual-features";
 const MANUAL_FEATURE_METADATA_FILE: &str = "feature.json";
@@ -100,6 +101,48 @@ async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
             .clone()
     };
     lock.lock_owned().await
+}
+
+struct WorkspaceFileLock {
+    path: PathBuf,
+}
+
+impl Drop for WorkspaceFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
+
+fn lock_workspace_state_file(metadata_root: &Path) -> Result<WorkspaceFileLock> {
+    std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
+        message: format!("Failed to create workspace metadata directory: {error}"),
+    })?;
+    let lock_path = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
+    for _ in 0..100 {
+        match std::fs::create_dir(&lock_path) {
+            Ok(()) => return Ok(WorkspaceFileLock { path: lock_path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = std::fs::metadata(&lock_path)
+                    .and_then(|metadata| metadata.modified())
+                    .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+                    .map(|elapsed| elapsed > Duration::from_secs(30))
+                    .unwrap_or(false);
+                if stale {
+                    let _ = std::fs::remove_dir(&lock_path);
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => {
+                return Err(BackendError::Filesystem {
+                    message: format!("Failed to acquire workspace state lock: {error}"),
+                })
+            }
+        }
+    }
+    Err(BackendError::Validation(
+        "Une autre instance modifie le workspace. Réessayez dans un instant.".to_string(),
+    ))
 }
 const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
 const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
@@ -1954,6 +1997,9 @@ pub async fn create_manual_feature_draft(
         updated_at: now,
     };
 
+    state
+        .deleted_manual_feature_ids
+        .retain(|candidate| candidate != normalized_task_id);
     state.manual_features.insert(0, feature.clone());
     let (sanitized_state, _) = persist_sanitized_state(
         workspace_path,
@@ -2207,6 +2253,10 @@ pub async fn delete_manual_feature_draft(
             task_id
         )));
     }
+    let normalized_task_id = task_id.trim().to_string();
+    if !state.deleted_manual_feature_ids.contains(&normalized_task_id) {
+        state.deleted_manual_feature_ids.push(normalized_task_id);
+    }
 
     persist_sanitized_state(
         workspace_path,
@@ -2380,6 +2430,15 @@ pub async fn delete_manual_feature(
             "Unknown manual feature: {}",
             normalized_task_id
         )));
+    }
+    if !state
+        .deleted_manual_feature_ids
+        .iter()
+        .any(|candidate| candidate == normalized_task_id)
+    {
+        state
+            .deleted_manual_feature_ids
+            .push(normalized_task_id.to_string());
     }
 
     persist_sanitized_state(
@@ -4505,10 +4564,61 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
         .join(WORKSPACE_STATE_FILE)
 }
 
+fn latest_valid_workspace_temp_sync(
+    metadata_root: &Path,
+) -> Option<(PathBuf, WorkspaceState)> {
+    let prefix = format!(".{WORKSPACE_STATE_FILE}.macro-tmp-");
+    let mut candidates = std::fs::read_dir(metadata_root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with(&prefix) {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            let content = std::fs::read_to_string(entry.path()).ok()?;
+            let state = serde_json::from_str::<WorkspaceState>(&content).ok()?;
+            Some((modified, name, entry.path(), state))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .3
+            .workspace_revision
+            .cmp(&left.3.workspace_revision)
+            .then_with(|| right.0.cmp(&left.0))
+            .then_with(|| right.1.cmp(&left.1))
+    });
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, _, path, state)| (path, state))
+}
+
 fn load_raw_state_sync(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
     let primary_path = workspace_state_path(metadata_root);
     let legacy_path = legacy_workspace_state_path(metadata_root);
     let backup_path = workspace_state_backup_path(metadata_root);
+    if let Some((temp_path, state)) = latest_valid_workspace_temp_sync(metadata_root) {
+        let primary_candidate = std::fs::read_to_string(&primary_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<WorkspaceState>(&content).ok());
+        let should_promote = match primary_candidate {
+            None => true,
+            Some(primary) => state.workspace_revision > primary.workspace_revision,
+        };
+        if should_promote {
+            persist_state_sync(metadata_root, &state)?;
+            let _ = std::fs::remove_file(&temp_path);
+            tracing::warn!(
+                action = "workspace_state_recovered_from_temp",
+                temp_path = %temp_path.display(),
+                primary_path = %primary_path.display()
+            );
+            return Ok(Some(state));
+        }
+    }
     let path = if primary_path.exists() {
         primary_path.clone()
     } else if legacy_path.exists() {
@@ -4728,10 +4838,19 @@ fn merge_manual_feature_snapshots_from_metadata_root(
         .iter()
         .map(|feature| feature.id.clone())
         .collect::<HashSet<_>>();
+    let deleted_ids = state
+        .deleted_manual_feature_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .collect::<HashSet<_>>();
     let recovered_features = load_manual_features_from_metadata_root_sync(metadata_root);
     let mut added = 0;
 
     for feature in recovered_features {
+        if deleted_ids.contains(feature.id.as_str()) {
+            continue;
+        }
         if known_ids.insert(feature.id.clone()) {
             state.manual_features.push(feature);
             added += 1;
@@ -4941,6 +5060,67 @@ fn persist_state_sync(metadata_root: &Path, state: &WorkspaceState) -> Result<()
     Ok(())
 }
 
+fn merge_manual_feature_snapshots_from_project_roots(
+    state: &mut WorkspaceState,
+    primary_metadata_root: &Path,
+) -> usize {
+    let mut added = merge_manual_feature_snapshots_from_metadata_root(state, primary_metadata_root);
+    let projects = state
+        .standalone_projects
+        .iter()
+        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
+        .map(|project| (project.id.clone(), PathBuf::from(&project.path)))
+        .collect::<Vec<_>>();
+    for (project_id, project_path) in projects {
+        let Some(root) = resolve_existing_macro_metadata_root(&project_path) else {
+            continue;
+        };
+        if workspace_state_lock_key(&root) == workspace_state_lock_key(primary_metadata_root) {
+            continue;
+        }
+        let existing_ids = state
+            .manual_features
+            .iter()
+            .map(|feature| feature.id.clone())
+            .collect::<HashSet<_>>();
+        merge_manual_feature_snapshots_from_metadata_root(state, &root);
+        state.manual_features.retain(|feature| {
+            existing_ids.contains(&feature.id)
+                || feature.project_ids.iter().any(|candidate| candidate == &project_id)
+                || feature.execution_targets.iter().any(|target| target.project_id == project_id)
+        });
+        added += state.manual_features.len().saturating_sub(existing_ids.len());
+    }
+    added
+}
+
+fn replace_workspace_state_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let source_wide = source.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        let destination_wide = destination.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        let replaced = unsafe {
+            MoveFileExW(
+                source_wide.as_ptr(),
+                destination_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if replaced == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(source, destination)
+    }
+}
+
 fn write_workspace_state_durably_sync(metadata_root: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
         message: format!(
@@ -4995,18 +5175,7 @@ fn write_workspace_state_durably_sync(metadata_root: &Path, bytes: &[u8]) -> Res
             }
         }
 
-        #[cfg(windows)]
-        if primary_path.exists() {
-            std::fs::remove_file(&primary_path).map_err(|error| BackendError::Filesystem {
-                message: format!(
-                    "Failed to prepare workspace state replacement {}: {}",
-                    primary_path.display(),
-                    error
-                ),
-            })?;
-        }
-
-        if let Err(error) = std::fs::rename(&temp_path, &primary_path) {
+        if let Err(error) = replace_workspace_state_file(&temp_path, &primary_path) {
             if !primary_path.exists() && backup_path.exists() {
                 let _ = std::fs::copy(&backup_path, &primary_path);
             }
@@ -5049,7 +5218,7 @@ fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option
         sanitized_state
     };
 
-    merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+    merge_manual_feature_snapshots_from_project_roots(&mut loaded_state, metadata_root);
     recover_physical_workspace_project_if_missing(&mut loaded_state, workspace_path, metadata_root);
 
     if repair_report.has_destructive_repairs() {
@@ -5283,12 +5452,14 @@ fn reconstruct_workspace_state_from_hints(
 
     let mut state = WorkspaceState {
         version: WorkspaceState::default().version,
+        workspace_revision: 0,
         standalone_projects: Vec::new(),
         project_groups,
         current_plan: None,
         plan_nodes: Vec::new(),
         predicted_branches: Vec::new(),
         manual_features: Vec::new(),
+        deleted_manual_feature_ids: Vec::new(),
         reserved_standalone_feature_slugs: Vec::new(),
     };
     collapse_singleton_project_groups(&mut state);
@@ -5923,7 +6094,7 @@ async fn load_or_default_state(
     }
 
     let mut state = WorkspaceState::default();
-    merge_manual_feature_snapshots_from_metadata_root(&mut state, metadata_root);
+    merge_manual_feature_snapshots_from_project_roots(&mut state, metadata_root);
     recover_physical_workspace_project_if_missing(&mut state, workspace_path, metadata_root);
     Ok(state)
 }
@@ -5961,7 +6132,7 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
                 "Workspace metadata repairs were ignored because a simple load must not remove projects or task metadata."
             );
             let mut loaded_state = raw_state;
-            merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+            merge_manual_feature_snapshots_from_project_roots(&mut loaded_state, metadata_root);
             recover_physical_workspace_project_if_missing(
                 &mut loaded_state,
                 workspace_path,
@@ -5974,7 +6145,7 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
     }
 
     let mut loaded_state = sanitized_state;
-    merge_manual_feature_snapshots_from_metadata_root(&mut loaded_state, metadata_root);
+    merge_manual_feature_snapshots_from_project_roots(&mut loaded_state, metadata_root);
     recover_physical_workspace_project_if_missing(&mut loaded_state, workspace_path, metadata_root);
 
     Ok(Some(loaded_state))
@@ -6417,7 +6588,17 @@ async fn persist_sanitized_state(
     state: WorkspaceState,
     operation: &str,
 ) -> Result<(WorkspaceState, ProjectRegistryRepairReportDto)> {
-    let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
+    let _file_guard = lock_workspace_state_file(metadata_root)?;
+    let (mut sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
+    let persisted_revision = load_raw_state_sync(metadata_root)?
+        .map(|current| current.workspace_revision)
+        .unwrap_or(0);
+    if persisted_revision != sanitized_state.workspace_revision {
+        return Err(BackendError::Validation(
+            "Le workspace a été modifié par une autre instance. Actualisez puis réessayez.".to_string(),
+        ));
+    }
+    sanitized_state.workspace_revision = sanitized_state.workspace_revision.saturating_add(1);
     if repair_report.has_repairs() {
         tracing::warn!(
             action = "project_registry_mutation_sanitized",
@@ -8046,6 +8227,7 @@ mod tests {
         init_git_repo(&workspace_path.join("apps/api"), "main", &[]);
         let state = WorkspaceState {
             version: 1,
+            workspace_revision: 0,
             standalone_projects: Vec::new(),
             project_groups: vec![
                 ProjectGroupDto {
@@ -8145,6 +8327,7 @@ mod tests {
                 },
             ],
             manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
             reserved_standalone_feature_slugs: Vec::new(),
         };
 
@@ -8179,6 +8362,7 @@ mod tests {
         let workspace_path = PathBuf::from("C:/workspace");
         let state = WorkspaceState {
             version: 1,
+            workspace_revision: 0,
             standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
@@ -8199,6 +8383,7 @@ mod tests {
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
             manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
             reserved_standalone_feature_slugs: Vec::new(),
         };
 
@@ -9156,6 +9341,7 @@ mod tests {
 
         let state = WorkspaceState {
             version: 3,
+            workspace_revision: 0,
             standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-1".to_string(),
@@ -9180,6 +9366,7 @@ mod tests {
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
             manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
             reserved_standalone_feature_slugs: Vec::new(),
         };
         persist_state_sync(&metadata_root, &state).expect("persist raw state");
@@ -9343,6 +9530,7 @@ mod tests {
         init_git_repo(&project_path, "main", &[]);
         let state = WorkspaceState {
             version: 1,
+            workspace_revision: 0,
             standalone_projects: Vec::new(),
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
@@ -9357,6 +9545,7 @@ mod tests {
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
             manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
             reserved_standalone_feature_slugs: Vec::new(),
         };
 
@@ -9450,6 +9639,185 @@ mod tests {
         let restored: WorkspaceState =
             serde_json::from_str(&restored_content).expect("valid restored json");
         assert_eq!(restored.standalone_projects[0].id, "project-first");
+    }
+
+    #[test]
+    fn stale_manual_feature_snapshot_does_not_override_a_tombstone() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let snapshot_root = metadata_root.join(MANUAL_FEATURES_METADATA_DIR).join("deleted-task");
+        stdfs::create_dir_all(&snapshot_root).expect("snapshot root");
+        stdfs::write(
+            snapshot_root.join(MANUAL_FEATURE_METADATA_FILE),
+            r#"{"id":"deleted-task","projectIds":["project-web"],"title":"Stale"}"#,
+        )
+        .expect("snapshot");
+        let mut state = WorkspaceState {
+            deleted_manual_feature_ids: vec!["deleted-task".to_string()],
+            ..WorkspaceState::default()
+        };
+
+        assert_eq!(
+            merge_manual_feature_snapshots_from_metadata_root(&mut state, &metadata_root),
+            0
+        );
+        assert!(state.manual_features.is_empty());
+    }
+
+    #[tokio::test]
+    async fn workspace_revision_rejects_a_stale_writer() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let initial = WorkspaceState::default();
+        persist_state_sync(&metadata_root, &initial).expect("seed state");
+        let first = load_raw_state_sync(&metadata_root).expect("load").expect("state");
+        let stale = first.clone();
+        persist_sanitized_state(temp.path(), &metadata_root, first, "first_writer")
+            .await
+            .expect("first writer");
+
+        let error = persist_sanitized_state(temp.path(), &metadata_root, stale, "stale_writer")
+            .await
+            .expect_err("stale writer must fail");
+        assert!(error.to_string().contains("autre instance"));
+    }
+
+    #[test]
+    fn load_raw_state_promotes_the_newest_valid_temp_after_a_crash() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let primary = WorkspaceState {
+            workspace_revision: 1,
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &primary).expect("primary");
+        std::thread::sleep(Duration::from_millis(20));
+        let recovered = WorkspaceState {
+            workspace_revision: 2,
+            standalone_projects: vec![make_project("project-recovered", "/tmp/recovered")],
+            ..WorkspaceState::default()
+        };
+        let temp_path = metadata_root.join(format!(
+            ".{}.macro-tmp-recovery-test",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(&temp_path, serde_json::to_string(&recovered).expect("json"))
+            .expect("temp state");
+
+        let loaded = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("workspace state");
+        assert_eq!(loaded.workspace_revision, 2);
+        assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn load_raw_state_never_downgrades_a_valid_primary_to_a_newer_touched_temp() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let primary = WorkspaceState {
+            workspace_revision: 8,
+            standalone_projects: vec![make_project("project-current", "/tmp/current")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &primary).expect("primary");
+        std::thread::sleep(Duration::from_millis(20));
+        let stale_temp = WorkspaceState {
+            workspace_revision: 7,
+            standalone_projects: vec![make_project("project-stale", "/tmp/stale")],
+            ..WorkspaceState::default()
+        };
+        let temp_path = metadata_root.join(format!(
+            ".{}.macro-tmp-newer-mtime-stale-revision",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(&temp_path, serde_json::to_string(&stale_temp).expect("json"))
+            .expect("stale temp");
+
+        let loaded = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("workspace state");
+        assert_eq!(loaded.workspace_revision, 8);
+        assert_eq!(loaded.standalone_projects[0].id, "project-current");
+        assert!(temp_path.exists(), "an unselected temp remains available for diagnostics");
+    }
+
+    #[test]
+    fn load_raw_state_keeps_valid_primary_when_temp_revision_is_equal() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let primary = WorkspaceState {
+            workspace_revision: 12,
+            standalone_projects: vec![make_project("project-primary", "/tmp/primary")],
+            ..WorkspaceState::default()
+        };
+        persist_state_sync(&metadata_root, &primary).expect("primary");
+        std::thread::sleep(Duration::from_millis(20));
+        let divergent_temp = WorkspaceState {
+            workspace_revision: 12,
+            standalone_projects: vec![make_project("project-divergent", "/tmp/divergent")],
+            ..WorkspaceState::default()
+        };
+        let temp_path = metadata_root.join(format!(
+            ".{}.macro-tmp-equal-revision-divergent",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(
+            &temp_path,
+            serde_json::to_string(&divergent_temp).expect("json"),
+        )
+        .expect("equal revision temp");
+
+        let loaded = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("workspace state");
+        assert_eq!(loaded.workspace_revision, 12);
+        assert_eq!(loaded.standalone_projects[0].id, "project-primary");
+        assert!(temp_path.exists());
+    }
+
+    #[test]
+    fn load_raw_state_prefers_temp_revision_over_temp_mtime() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        stdfs::create_dir_all(&metadata_root).expect("metadata root");
+        let newest_revision = WorkspaceState {
+            workspace_revision: 11,
+            standalone_projects: vec![make_project("project-revision-11", "/tmp/revision-11")],
+            ..WorkspaceState::default()
+        };
+        let revision_11_path = metadata_root.join(format!(
+            ".{}.macro-tmp-revision-11",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(
+            &revision_11_path,
+            serde_json::to_string(&newest_revision).expect("json"),
+        )
+        .expect("revision 11 temp");
+        std::thread::sleep(Duration::from_millis(20));
+        let newer_mtime = WorkspaceState {
+            workspace_revision: 10,
+            standalone_projects: vec![make_project("project-revision-10", "/tmp/revision-10")],
+            ..WorkspaceState::default()
+        };
+        let revision_10_path = metadata_root.join(format!(
+            ".{}.macro-tmp-revision-10-newer-mtime",
+            WORKSPACE_STATE_FILE
+        ));
+        stdfs::write(
+            &revision_10_path,
+            serde_json::to_string(&newer_mtime).expect("json"),
+        )
+        .expect("revision 10 temp");
+
+        let loaded = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("workspace state");
+        assert_eq!(loaded.workspace_revision, 11);
+        assert_eq!(loaded.standalone_projects[0].id, "project-revision-11");
+        assert!(!revision_11_path.exists());
+        assert!(revision_10_path.exists());
     }
 
     #[test]

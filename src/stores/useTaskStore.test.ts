@@ -2256,6 +2256,14 @@ describe('useTaskStore reopenTask and retryTask', () => {
 
 describe('useTaskStore revertManualFeatureToDraft', () => {
   beforeEach(() => {
+    gitStatusMock.mockImplementation(async () => ({
+      branch: 'feature/quick-export',
+      is_clean: true,
+      conflicted_files: [],
+      conflictedFiles: [],
+      merge_in_progress: false,
+      mergeInProgress: false,
+    }));
     gitWorktreeRemoveMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchDeleteMock.mockClear();
@@ -2332,14 +2340,14 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
     expect(gitWorktreeRemoveMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
       taskId: 'project-1::feature/quick-export',
-      force: true,
+      force: false,
       branchName: 'feature/quick-export',
     });
     expect(gitBranchListMock).toHaveBeenCalledWith('/repos/web');
     expect(gitBranchDeleteMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
       branchName: 'feature/quick-export',
-      force: true,
+      force: false,
     });
     expect(workspaceRevertManualFeatureToDraftMock).toHaveBeenCalledWith({
       taskId: 'task-1',

@@ -252,6 +252,14 @@ const archiveArchitectPlanMock = mock(async (_branchName: string, _planId: strin
   };
   return currentPlan;
 });
+const restoreArchitectPlanMock = mock(async (_branchName: string, _planId: string) => {
+  currentPlan = {
+    ...currentPlan,
+    status: currentPlan?.archivedFromStatus ?? 'draft',
+    archivedFromStatus: undefined,
+  };
+  return currentPlan;
+});
 const deleteArchitectPlanMock = mock(async () => undefined);
 const commitArchitectPlanMetadataMock = mock(async () => undefined);
 
@@ -530,6 +538,7 @@ describe('architectGitFlowService', () => {
     getArchitectPlanMock.mockClear();
     updateArchitectPlanMock.mockClear();
     archiveArchitectPlanMock.mockClear();
+    restoreArchitectPlanMock.mockClear();
     deleteArchitectPlanMock.mockClear();
     commitArchitectPlanMetadataMock.mockClear();
 
@@ -563,10 +572,69 @@ describe('architectGitFlowService', () => {
       getArchitectPlan: getArchitectPlanMock,
       updateArchitectPlan: updateArchitectPlanMock,
       archiveArchitectPlan: archiveArchitectPlanMock,
+      restoreArchitectPlan: restoreArchitectPlanMock,
       deleteArchitectPlan: deleteArchitectPlanMock,
       commitArchitectPlanMetadata: commitArchitectPlanMetadataMock,
       getGitFlowBaseBranch: () => 'develop',
     });
+  });
+
+  it('reprovisions executable plan branches before restoring archived metadata', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      status: 'archived',
+      archivedFromStatus: 'in_progress',
+    };
+    const restored = await architectGitFlowService.restorePlanAndProvisionBranches({
+      branchName: 'develop',
+      planId: currentPlan.id,
+    });
+
+    expect(restored.status).toBe('in_progress');
+    expect(gitWorktreeInspectMock).toHaveBeenCalled();
+    expect(restoreArchitectPlanMock).toHaveBeenCalledTimes(1);
+    const firstRestoreCallOrder = restoreArchitectPlanMock.mock.invocationCallOrder[0];
+    expect(gitWorktreeInspectMock.mock.invocationCallOrder.every((order) => order < firstRestoreCallOrder)).toBe(true);
+  });
+
+  it('cancels the branch-qualified pending archive saga after a successful restore', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      status: 'archived',
+      archivedFromStatus: 'in_progress',
+    };
+    const now = new Date().toISOString();
+    persistedPlanLifecycleSagas = JSON.stringify([
+      {
+        planId: currentPlan.id,
+        branchName: 'feature/storage',
+        operation: 'archive',
+        phase: 'metadata_written',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        planId: currentPlan.id,
+        branchName: 'develop',
+        operation: 'archive',
+        phase: 'metadata_written',
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    await architectGitFlowService.restorePlanAndProvisionBranches({
+      branchName: 'feature/storage',
+      planId: currentPlan.id,
+    });
+
+    expect(readPersistedLifecycleSagas()).toEqual([
+      expect.objectContaining({
+        planId: currentPlan.id,
+        branchName: 'develop',
+        operation: 'archive',
+      }),
+    ]);
   });
 
   it('renders and provisions repo-specific branch names when projects use different Git workflow templates', async () => {
@@ -1923,12 +1991,10 @@ describe('architectGitFlowService', () => {
     expect(readPersistedLifecycleSagas()).toEqual([]);
   });
 
-  it('fails closed before Git cleanup when the persisted lifecycle journal is corrupt', async () => {
+  it('quarantines a corrupt persisted lifecycle journal without running Git cleanup', async () => {
     persistedPlanLifecycleSagas = '{not-json';
 
-    await expect(architectGitFlowService.resumePlanLifecycleSagas()).rejects.toMatchObject({
-      name: 'PlanLifecycleSagaCorruptionError',
-    });
+    await architectGitFlowService.resumePlanLifecycleSagas();
 
     expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
     expect(gitBranchDeleteMock).not.toHaveBeenCalled();

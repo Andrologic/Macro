@@ -2,15 +2,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
 import {
-  archiveArchitectPlan,
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
   getGitFlowBaseBranch,
-  restoreArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanRecord,
 } from '../../services/architectPlanService';
-import { cleanupPlanBranches, deletePlanAndCleanupBranches } from '../../services/architectGitFlowService';
+import {
+  archivePlanAndCleanupBranches,
+  deletePlanAndCleanupBranches,
+  restorePlanAndProvisionBranches,
+} from '../../services/architectGitFlowService';
 import {
   getArchitectPlanKind,
   getCreatableArchitectPlanKinds,
@@ -369,7 +371,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     let releaseMutation: (() => void) | null = null;
     try {
       if (entry.plan.status === 'archived') {
-        await restoreArchitectPlan(entry.branchName, entry.plan.id);
+        await restorePlanAndProvisionBranches({ branchName: entry.branchName, planId: entry.plan.id });
         notify.success(t('architect.projectNavigator.planRestored', 'Plan restauré.'));
       } else {
         const taskStore = useTaskStore.getState();
@@ -381,13 +383,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         if (!latest || !getArchitectPlanCrudCapabilities(latest).canArchive) {
           throw new Error(t('architect.projectNavigator.archiveUnavailable', 'Ce plan ne peut plus être archivé.'));
         }
-        const cleanup = await cleanupPlanBranches(latest);
+        const { cleanup } = await archivePlanAndCleanupBranches({
+          branchName: entry.branchName,
+          planId: entry.plan.id,
+        });
         taskStore.clearPlanRuntimeState({
           planId: entry.plan.id,
           deletedWorktreeKeys: cleanup.flatMap((repository) =>
             repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)),
         });
-        await archiveArchitectPlan(entry.branchName, entry.plan.id);
         notify.success(t('architect.projectNavigator.planArchived', 'Plan archivé.'));
       }
       await refreshAfterMutation();
