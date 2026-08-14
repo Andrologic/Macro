@@ -6,6 +6,8 @@ use std::collections::HashMap;
 pub struct WorkspaceState {
     #[serde(default = "default_version")]
     pub version: u32,
+    #[serde(default, rename = "workspaceRevision")]
+    pub workspace_revision: u64,
     #[serde(default, rename = "standaloneProjects")]
     pub standalone_projects: Vec<ProjectDto>,
     #[serde(default)]
@@ -18,6 +20,8 @@ pub struct WorkspaceState {
     pub predicted_branches: Vec<PredictedBranchDto>,
     #[serde(default)]
     pub manual_features: Vec<ManualFeatureDto>,
+    #[serde(default, rename = "deletedManualFeatureIds")]
+    pub deleted_manual_feature_ids: Vec<String>,
     #[serde(default, rename = "reservedStandaloneFeatureSlugs")]
     pub reserved_standalone_feature_slugs: Vec<String>,
 }
@@ -26,12 +30,14 @@ impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
             version: default_version(),
+            workspace_revision: 0,
             standalone_projects: Vec::new(),
             project_groups: Vec::new(),
             current_plan: None,
             plan_nodes: Vec::new(),
             predicted_branches: Vec::new(),
             manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
             reserved_standalone_feature_slugs: Vec::new(),
         }
     }

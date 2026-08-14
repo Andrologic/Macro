@@ -9,6 +9,7 @@ import {
   getArchitectPlanCrudCapabilities,
   getGitFlowBaseBranch,
   getArchitectPlan,
+  restoreArchitectPlan,
   updateArchitectPlan,
   type ArchitectPlanRecord,
 } from './architectPlanService';
@@ -449,6 +450,7 @@ export interface ArchitectGitFlowDependencies {
   getArchitectPlan: typeof getArchitectPlan;
   updateArchitectPlan: typeof updateArchitectPlan;
   archiveArchitectPlan: typeof archiveArchitectPlan;
+  restoreArchitectPlan: typeof restoreArchitectPlan;
   deleteArchitectPlan: typeof deleteArchitectPlan;
   commitArchitectPlanMetadata: typeof commitArchitectPlanMetadata;
   getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
@@ -460,6 +462,7 @@ const getDefaultArchitectGitFlowDependencies = (): ArchitectGitFlowDependencies 
   getArchitectPlan,
   updateArchitectPlan,
   archiveArchitectPlan,
+  restoreArchitectPlan,
   deleteArchitectPlan,
   commitArchitectPlanMetadata,
   getGitFlowBaseBranch,
@@ -810,6 +813,13 @@ export const archivePlanAndCleanupBranches = async (params: {
   requireMetadataCommit?: boolean;
 }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> =>
   getDefaultArchitectGitFlowService().archivePlanAndCleanupBranches(params);
+
+export const restorePlanAndProvisionBranches = async (params: {
+  branchName: string;
+  planId: string;
+  repoPath?: string;
+}): Promise<ArchitectPlanRecord> =>
+  getDefaultArchitectGitFlowService().restorePlanAndProvisionBranches(params);
 
 export const deletePlanAndCleanupBranches = async (params: {
   branchName: string;
@@ -1655,6 +1665,37 @@ export const createArchitectGitFlowService = (
     return { plan: archived, cleanup };
   };
 
+  const restorePlanAndProvisionBranchesWithDeps = async (params: {
+    branchName: string;
+    planId: string;
+    repoPath?: string;
+  }): Promise<ArchitectPlanRecord> => {
+    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    if (!plan || plan.status === 'deleted') {
+      throw new Error(`Plan ${params.planId} is unavailable.`);
+    }
+    if (plan.status !== 'archived') {
+      await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+      return plan;
+    }
+
+    if (plan.archivedFromStatus === 'validated' || plan.archivedFromStatus === 'in_progress') {
+      const provision = await provisionPlanBranchesWithDeps(plan, params.repoPath);
+      let restored: ArchitectPlanRecord;
+      try {
+        restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
+      } catch (error) {
+        await rollbackProvisionResultWithDeps(provision).catch(() => undefined);
+        throw error;
+      }
+      await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+      return restored;
+    }
+    const restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
+    await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+    return restored;
+  };
+
   const finalizePlanIntoBaseBranchWithDeps = async (params: {
     branchName: string;
     planId: string;
@@ -1913,6 +1954,7 @@ export const createArchitectGitFlowService = (
     finalizePlanIntoBaseBranch: finalizePlanIntoBaseBranchWithDeps,
     cleanupPlanBranches: cleanupPlanBranchesWithDeps,
     archivePlanAndCleanupBranches: archivePlanAndCleanupBranchesWithDeps,
+    restorePlanAndProvisionBranches: restorePlanAndProvisionBranchesWithDeps,
     deletePlanAndCleanupBranches: deletePlanAndCleanupBranchesWithDeps,
     resumePlanLifecycleSagas: resumePlanLifecycleSagasWithDeps,
   };
