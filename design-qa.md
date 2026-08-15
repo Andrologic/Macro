@@ -1,4 +1,31 @@
-# QA visuelle — navigation Architecte
+# QA visuelle — badge projet des cartes de tâches
+
+## Références et état comparé
+
+- Vérité visuelle source : `C:\Users\oscar\AppData\Local\Temp\codex-clipboard-eaf576e6-43aa-4e3e-8898-de0b06822054.png` (`576 × 189` px).
+- Capture complète : `C:\Users\oscar\.codex\visualizations\2026\08\14\01a0012a-4aff-70d3-aff1-b4f330065a0e\task-project-badge\implementation-full.png` (`567 × 500` px).
+- Capture ciblée : `C:\Users\oscar\.codex\visualizations\2026\08\14\01a0012a-4aff-70d3-aff1-b4f330065a0e\task-project-badge\implementation-focus.png` (`567 × 165` px).
+- Comparaison combinée : `C:\Users\oscar\.codex\visualizations\2026\08\14\01a0012a-4aff-70d3-aff1-b4f330065a0e\task-project-badge\comparison.png` (`1134 × 190` px).
+- Cas étroit avec nom long : `C:\Users\oscar\.codex\visualizations\2026\08\14\01a0012a-4aff-70d3-aff1-b4f330065a0e\task-project-badge\implementation-narrow-long-project.jpg` (`320 × 500` px).
+- Viewports CSS : `567 × 500`, puis `320 × 500`; DPR `1,25`. La capture ciblée a été recadrée sans redimensionnement. La source a été recadrée à `567` px de large pour la planche comparative.
+- État : thème sombre, tâche Architecte prête, projet primaire « Andrologic », plan « Refonte du site ».
+
+## Vérifications
+
+Le badge projet apparaît en première position, avant le badge de plan. Son icône `folder-git-2` reprend l’iconographie projet existante de Macro. Le footer reste sur une ligne et la carte conserve sa hauteur fixe de `112` px.
+
+La comparaison focalisée valide les cinq surfaces de fidélité : typographie identique aux badges existants ; espacement, padding et rayon cohérents ; tokens de couleurs réutilisés ; icône Lucide nette sans asset approximatif ; nom réel du projet primaire avec libellé complet dans `title`. À `320` px, un nom volontairement long et le badge de plan restent tous deux visibles et se tronquent sans débordement.
+
+- Aucun écart P0, P1 ou P2.
+- Aucun avertissement ni erreur de console.
+- Historique : premier passage nominal réussi ; second passage étroit avec nom long réussi, sans correction intermédiaire.
+- Vérifications fonctionnelles : badge omis si le projet primaire manque ; une tâche multi-projets n’affiche que son projet primaire ; ordre des badges couvert par les tests.
+
+final result: passed
+
+---
+
+# Archive QA visuelle — navigation Architecte
 
 ## Références et état comparé
 
