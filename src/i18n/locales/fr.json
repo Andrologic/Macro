@@ -110,10 +110,6 @@
           "Chat : conversations, sources et outils généraux."
         ]
       },
-      "project-picker": {
-        "title": "Projet actif",
-        "body": "Ce bouton ouvre le navigateur de projets. Il détermine le groupe, les projets, les branches et le contexte utilisés par Architect et Implement."
-      },
       "panel-toggles": {
         "title": "Panneaux latéraux",
         "body": "Les boutons de panneau masquent ou affichent les zones de contexte. Le panneau gauche contient souvent la liste de travail, le panneau droit les détails ou validations."

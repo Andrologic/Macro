@@ -62,7 +62,6 @@ const testTranslations: Record<string, string> = {
   'onboarding.sections.implement': 'Implement',
   'onboarding.sections.chat': 'Chat',
   'onboarding.sections.system': 'Système',
-  'onboarding.steps.project-picker.title': 'Projet actif',
 };
 
 mock.module('react-i18next', () => ({
@@ -347,9 +346,7 @@ describe('OnboardingGuide positioning', () => {
           <div data-tour-id="app-shell" />
           <div data-tour-id="mode-switcher" />
           <div data-tour-id="mode-context-header" />
-          {snapshot.mode === 'Implement' ? (
-            <div data-tour-id="project-picker" />
-          ) : null}
+          <button data-tour-id="toggle-right-panel" type="button">Right panel</button>
           {snapshot.mode === 'Architect' ? (
             <div data-tour-id="mode-architect" />
           ) : null}
@@ -387,11 +384,12 @@ describe('OnboardingGuide positioning', () => {
 
     clickByText('Next');
     clickByText('Next');
+    clickByText('Next');
+    clickByText('Next');
     await flushFrames();
 
-    expect(storeSnapshot.mode).toBe('Implement');
-    expect(document.querySelector('[data-tour-id="project-picker"]')).not.toBeNull();
-    expect(document.body.textContent).toContain('Projet actif');
+    expect(storeSnapshot.mode).toBe('Architect');
+    expect(document.querySelector('[data-tour-id="mode-architect"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain('Cette zone peut etre masquee');
   });
 
@@ -432,10 +430,10 @@ describe('OnboardingGuide positioning', () => {
     clickByText('Next');
     await flushFrames();
 
-    const projectPicker = document.querySelector<HTMLElement>('[data-tour-id="project-picker"]');
+    const panelToggle = document.querySelector<HTMLElement>('[data-tour-id="toggle-right-panel"]');
     act(() => {
-      if (projectPicker) {
-        projectPicker.style.display = 'none';
+      if (panelToggle) {
+        panelToggle.style.display = 'none';
       }
       window.dispatchEvent(new Event('resize'));
     });

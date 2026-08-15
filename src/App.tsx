@@ -28,6 +28,11 @@ import type {
 const DiffModal = lazy(() => import("./components/modals/DiffModal"));
 const SettingsModal = lazy(() => import("./components/settings/SettingsModal"));
 const ProjectModal = lazy(() => import("./components/modals/ProjectModal"));
+const ProjectNavigator = lazy(() =>
+  import("./components/modals/ProjectNavigator").then((module) => ({
+    default: module.ProjectNavigator,
+  })),
+);
 const ProjectGitFlowModal = lazy(
   () => import("./components/modals/ProjectGitFlowModal"),
 );
@@ -159,6 +164,8 @@ const App: React.FC = () => {
     setRightPanelWidth,
     metadataRecoveryReport,
     mode,
+    projectNavigatorOpen,
+    closeProjectNavigator,
   ] = useAppStore(
     useShallow((state) => [
       state.isLeftPanelOpen,
@@ -173,6 +180,8 @@ const App: React.FC = () => {
       state.setRightPanelWidth,
       state.metadataRecoveryReport,
       state.mode,
+      state.projectNavigatorOpen,
+      state.closeProjectNavigator,
     ]),
   );
   const hasLeftPanel = hasModePanel(mode, "left");
@@ -490,6 +499,9 @@ const App: React.FC = () => {
         <DiffModal />
         <SettingsModal />
         <ProjectModal />
+        {projectNavigatorOpen ? (
+          <ProjectNavigator isOpen onClose={closeProjectNavigator} />
+        ) : null}
         <ProjectGitFlowModal />
         <CodeFileViewerModal />
       </Suspense>
