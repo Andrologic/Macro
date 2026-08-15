@@ -429,6 +429,43 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('h2')?.parentElement?.className).toContain('h-7');
   });
 
+  it('lets users clear a status filter from the compact status controls', async () => {
+    seedTasks([
+      makeTask('ready-task', 'Pending', { title: 'Ready task' }),
+      makeTask('blocked-task', 'Blocked', { title: 'Blocked task', is_ready: false }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const readyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Ready'));
+
+    await act(async () => {
+      readyFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(readyFilter?.getAttribute('aria-pressed')).toBe('true');
+    expect(document.body.textContent).toContain('Ready task');
+    expect(document.body.textContent).not.toContain('Blocked task');
+
+    const clearFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('All statuses'));
+    expect(clearFilter?.getAttribute('title')).toBe('Show all statuses');
+
+    await act(async () => {
+      clearFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(readyFilter?.getAttribute('aria-pressed')).toBe('false');
+    expect(document.body.textContent).toContain('Ready task');
+    expect(document.body.textContent).toContain('Blocked task');
+  });
+
   it('sends task workspace errors to an actionable retry notification', async () => {
     seedStores('Pending');
     const activateTask = mock(() => undefined);

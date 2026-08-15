@@ -282,6 +282,7 @@
   "statusWaiting": "En espera",
   "statusBlocked": "Bloqueadas",
   "clearStatusFilter": "Mostrar todos los estados",
+  "allStatuses": "Todos los estados",
   "planFilterStandalone": "Sin plan / independiente",
   "standaloneBadge": "Independiente",
   "taskKindPending": "Clasificación del agente",

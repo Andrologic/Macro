@@ -282,6 +282,7 @@
   "statusWaiting": "대기 중",
   "statusBlocked": "차단됨",
   "clearStatusFilter": "모든 상태 표시",
+  "allStatuses": "모든 상태",
   "planFilterStandalone": "계획 없음/독립형",
   "standaloneBadge": "독립형",
   "taskKindPending": "에이전트 분류",
