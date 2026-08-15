@@ -5,7 +5,7 @@ import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
 import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore';
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
-import type { TaskStatus } from '../../types';
+import type { ProjectGitFlowSettings, TaskStatus } from '../../types';
 import {
   createTranslationMock,
   installReactI18nextMock,
@@ -161,13 +161,33 @@ const flushRender = async () => {
   await Promise.resolve();
 };
 
-const makeProject = (id: string, path: string, name: string) => ({
+const makeGitFlowSettings = (
+  baseBranch: string,
+  mainBranch: string,
+): ProjectGitFlowSettings => ({
+  baseBranch,
+  mainBranch,
+  planBranchTemplate: 'plan/{planSlug}',
+  featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+  standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+  releaseBranchTemplate: 'release/{releaseSlug}',
+  hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+  bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+});
+
+const makeProject = (
+  id: string,
+  path: string,
+  name: string,
+  gitFlowSettings?: ProjectGitFlowSettings,
+) => ({
   id,
   name,
   mountName: id,
   path,
   created_at: '2026-04-14T00:00:00.000Z',
   status: 'active' as const,
+  gitFlowSettings,
   metadata: {
     description: '',
     tags: [],
@@ -892,7 +912,12 @@ describe('TaskQueue', () => {
           isOpen: true,
           projects: [
             makeProject('project-1', '/tmp/project-1', 'Project One'),
-            makeProject('project-2', '/tmp/project-2', 'Project Two'),
+            makeProject(
+              'project-2',
+              '/tmp/project-2',
+              'Project Two',
+              makeGitFlowSettings('integration', 'production'),
+            ),
           ],
         },
       ] as never,
@@ -923,11 +948,15 @@ describe('TaskQueue', () => {
     const projectTwoButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
     ).find((button) => button.textContent?.includes('Project Two'));
+    await act(async () => {
+      projectTwoButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
     const bugfixButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
     ).find((button) => button.textContent?.trim() === 'Bugfix');
     await act(async () => {
-      projectTwoButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       bugfixButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
     });
@@ -953,7 +982,7 @@ describe('TaskQueue', () => {
       groupId: 'group-1',
       projectIds: ['project-2'],
       contextProjectIds: [],
-      baseBranch: expect.any(String),
+      baseBranch: 'integration',
       title: 'New bugfix',
       description: '',
       taskKind: 'bugfix',

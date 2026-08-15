@@ -285,7 +285,7 @@ Le mode Implement doit supporter :
 
 Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
-Lors de la création d'une tâche indépendante, l'utilisateur choisit le projet et le type de tâche. La fenêtre ne demande pas le contenu de la tâche : celui-ci est fourni ensuite dans la conversation. Le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Le type `release` reste réservé aux plans Architect.
+Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord le projet, puis un type de tâche compatible avec son workflow Git. La fenêtre ne demande pas le contenu de la tâche : celui-ci est fourni ensuite dans la conversation. Le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Un projet mainline, sans branche de développement distincte de la branche principale, permet `Feature` et `Hotfix`, mais pas `Bugfix`. La disponibilité est recalculée lorsque le projet cible change et tout choix devenu incompatible est effacé. Le type `release` reste réservé aux plans Architect.
 
 ### 7.3 Mode Chat
 

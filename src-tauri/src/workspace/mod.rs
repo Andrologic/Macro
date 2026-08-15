@@ -1965,6 +1965,12 @@ pub async fn create_manual_feature_draft(
         ));
     }
     let normalized_task_kind = normalize_manual_task_kind(task_kind)?;
+    validate_manual_task_kind_for_projects(
+        normalized_task_kind,
+        &normalized_project_ids,
+        &state.standalone_projects,
+        &state.project_groups,
+    )?;
 
     let now = Utc::now().to_rfc3339();
     let feature = ManualFeatureDto {
@@ -2046,6 +2052,13 @@ pub async fn finalize_manual_feature(
     let normalized_description = description.trim();
     let normalized_feature_slug = slugify(feature_slug);
     let normalized_task_kind = normalize_manual_task_kind(task_kind)?;
+    let feature_project_ids = state.manual_features[feature_index].project_ids.clone();
+    validate_manual_task_kind_for_projects(
+        normalized_task_kind,
+        &feature_project_ids,
+        &standalone_projects,
+        &project_groups,
+    )?;
     if normalized_title.is_empty()
         || normalized_description.is_empty()
         || normalized_feature_slug.is_empty()
@@ -4408,6 +4421,37 @@ fn build_manual_feature_execution_targets(
             }
         })
         .collect()
+}
+
+fn validate_manual_task_kind_for_projects(
+    task_kind: &str,
+    project_ids: &[String],
+    standalone_projects: &[ProjectDto],
+    project_groups: &[ProjectGroupDto],
+) -> Result<()> {
+    if task_kind != "bugfix" {
+        return Ok(());
+    }
+
+    for project_id in project_ids {
+        let project = standalone_projects
+            .iter()
+            .find(|project| project.id == *project_id)
+            .or_else(|| find_project_by_id(project_groups, project_id));
+        let Some(project) = project else {
+            continue;
+        };
+        let base_branch = project.git_flow_settings.base_branch.trim();
+        let main_branch = project.git_flow_settings.main_branch.trim();
+        if !base_branch.is_empty() && base_branch.eq_ignore_ascii_case(main_branch) {
+            return Err(BackendError::Validation(format!(
+                "Bugfix tasks require a development branch distinct from the production branch for project {}.",
+                project.name
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
@@ -8121,6 +8165,44 @@ mod tests {
             hotfix_targets[1].target_branch_name.as_deref(),
             Some("main")
         );
+    }
+
+    #[test]
+    fn manual_bugfix_requires_a_distinct_development_branch() {
+        let mut mainline = make_project("project-mainline", "apps/mainline");
+        mainline.git_flow_settings.base_branch = "main".to_string();
+        mainline.git_flow_settings.main_branch = "MAIN".to_string();
+        let develop = make_project("project-develop", "apps/develop");
+
+        let error = validate_manual_task_kind_for_projects(
+            "bugfix",
+            &[mainline.id.clone()],
+            &[mainline.clone(), develop.clone()],
+            &[],
+        )
+        .expect_err("mainline bugfix should be rejected");
+        assert!(matches!(
+            error,
+            BackendError::Validation(message)
+                if message.contains("development branch distinct from the production branch")
+        ));
+
+        validate_manual_task_kind_for_projects(
+            "feature",
+            &[mainline.id.clone()],
+            &[mainline.clone()],
+            &[],
+        )
+        .expect("mainline feature should remain available");
+        validate_manual_task_kind_for_projects(
+            "hotfix",
+            &[mainline.id.clone()],
+            &[mainline],
+            &[],
+        )
+            .expect("mainline hotfix should remain available");
+        validate_manual_task_kind_for_projects("bugfix", &[develop.id.clone()], &[develop], &[])
+            .expect("develop-based bugfix should remain available");
     }
 
     #[test]
