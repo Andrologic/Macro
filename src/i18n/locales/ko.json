@@ -340,7 +340,8 @@
     "scope": {
       "allProjects": "All projects",
       "allRepositories": "모든 저장소",
-      "gitScope": "Git 범위"
+      "gitScope": "Git 범위",
+      "selectRepository": "저장소 선택"
     }
   },
   "window": {
@@ -963,6 +964,7 @@
     "newProject": "새 프로젝트",
     "newGroup": "새 그룹",
     "noProjects": "아직 프로젝트가 없습니다.",
+    "noProject": "프로젝트 없음",
     "openProject": "프로젝트 열기",
     "projectSettings": "프로젝트 설정",
     "deleteProject": "프로젝트 삭제",
