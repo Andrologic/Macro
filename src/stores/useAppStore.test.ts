@@ -373,6 +373,17 @@ const debugResetProjectMock = mock(async (data: { projectId: string }) => {
     warnings: [],
   };
 });
+const removeProjectMock = mock(async (data: { projectId: string }) => {
+  bootstrapStandaloneProjects = bootstrapStandaloneProjects.filter(
+    (project) => project.id !== data.projectId,
+  );
+  bootstrapProjectGroups = bootstrapProjectGroups
+    .map((group) => ({
+      ...group,
+      projects: group.projects.filter((project) => project.id !== data.projectId),
+    }))
+    .filter((group) => group.projects.length > 0);
+});
 const workspaceRecoverMissingMetadataMock = mock(async () => ({
   status: 'none',
   restoredCommit: null,
@@ -486,12 +497,14 @@ const registerUseAppStoreMocks = async () => {
     services: {
       getAppBootstrap: getAppBootstrapMock,
       debugResetProject: debugResetProjectMock,
+      removeProject: removeProjectMock,
     },
   }));
   mock.module('../services/index.ts', () => ({
     services: {
       getAppBootstrap: getAppBootstrapMock,
       debugResetProject: debugResetProjectMock,
+      removeProject: removeProjectMock,
     },
   }));
 
@@ -501,7 +514,9 @@ const registerUseAppStoreMocks = async () => {
       key in preferenceValues
         ? preferenceValues[key]
         : actualPreferences.PREF_DEFAULTS[key as keyof typeof actualPreferences.PREF_DEFAULTS],
-    savePreference: async () => undefined,
+    savePreference: async (key: string, value: unknown) => {
+      preferenceValues[key] = value;
+    },
     savePreferenceDebounced: () => undefined,
     purgeLegacyImplementExecutionModePreference: async () => undefined,
   }));
@@ -621,6 +636,7 @@ describe('useAppStore architect plan resolution', () => {
       predictedBranches: bootstrapPredictedBranches,
     }));
     debugResetProjectMock.mockClear();
+    removeProjectMock.mockClear();
     debugResetProjectMock.mockImplementation(async (data: { projectId: string }) => {
       bootstrapProjectGroups = bootstrapProjectGroups
         .map((group) => ({
@@ -1080,6 +1096,62 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().selectedProjectId).toBeNull();
     expect(useAppStore.getState().projectRegistryRepairSummary).toBeNull();
     expect(sessionContext?.selectedProjectId).toBeNull();
+  });
+
+  it('removes the last project and clears selection, remembered lists, preferences, and session', async () => {
+    const onlyProject = {
+      id: 'project-only',
+      name: 'Only',
+      path: '/repos/only',
+      gitFlowSettings: { baseBranch: 'develop' },
+    };
+    bootstrapProjectGroups = [buildProjectGroup({ projects: [onlyProject] })];
+    const rememberedProject = {
+      projectId: onlyProject.id,
+      groupId: 'group-1',
+      name: onlyProject.name,
+      path: onlyProject.path,
+      lastOpenedAt: '2026-08-15T10:00:00.000Z',
+    };
+    preferenceValues.lastSelectedGroupId = 'group-1';
+    preferenceValues.lastSelectedProjectId = onlyProject.id;
+    preferenceValues.lastOpenProjectPath = onlyProject.path;
+    preferenceValues.recentProjects = [rememberedProject];
+    preferenceValues.macroEnabledProjects = [rememberedProject];
+    projectContexts.set(
+      onlyProject.id,
+      buildProjectContext({ projectId: onlyProject.id }),
+    );
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Implement',
+      projectGroups: bootstrapProjectGroups,
+      standaloneProjects: [],
+      selectedGroupId: 'group-1',
+      selectedProjectId: onlyProject.id,
+      recentProjects: [rememberedProject],
+      macroEnabledProjects: [rememberedProject],
+    });
+
+    await useAppStore.getState().removeProject(onlyProject.id);
+    await flushAsyncWork();
+
+    const state = useAppStore.getState();
+    expect(state.projectGroups).toEqual([]);
+    expect(state.standaloneProjects).toEqual([]);
+    expect(state.selectedGroupId).toBeNull();
+    expect(state.selectedProjectId).toBeNull();
+    expect(state.recentProjects).toEqual([]);
+    expect(state.macroEnabledProjects).toEqual([]);
+    expect(preferenceValues.lastSelectedGroupId).toBeNull();
+    expect(preferenceValues.lastSelectedProjectId).toBeNull();
+    expect(preferenceValues.lastOpenProjectPath).toBeNull();
+    expect(preferenceValues.recentProjects).toEqual([]);
+    expect(preferenceValues.macroEnabledProjects).toEqual([]);
+    expect(sessionContext?.selectedGroupId).toBeNull();
+    expect(sessionContext?.selectedProjectId).toBeNull();
+    expect(projectContexts.has(onlyProject.id)).toBe(false);
   });
 
   it('hydrates the remembered plan when entering Architect mode', async () => {
