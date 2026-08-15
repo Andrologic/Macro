@@ -110,10 +110,6 @@
           "Chat: conversaciones, fuentes y herramientas generales."
         ]
       },
-      "project-picker": {
-        "title": "Proyecto activo",
-        "body": "Este botón abre el navegador de proyectos. Determina los proyectos, ramas y contexto usados por Architect e Implement."
-      },
       "panel-toggles": {
         "title": "Paneles laterales",
         "body": "Los botones de panel ocultan o muestran las zonas de contexto. El panel izquierdo suele contener la lista de trabajo, y el derecho los detalles o validaciones."

@@ -71,15 +71,6 @@ const TOUR_STEPS: TourStep[] = [
     pointCount: 3,
   },
   {
-    id: 'project-picker',
-    section: 'basics',
-    mode: 'Implement',
-    targetId: 'project-picker',
-    fallbackTargetId: 'mode-context-header',
-    placement: 'bottom',
-    icon: 'folder-git-2',
-  },
-  {
     id: 'panel-toggles',
     section: 'basics',
     targetId: 'toggle-right-panel',
