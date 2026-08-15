@@ -782,9 +782,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       )
     : null;
   const contextMenuScope = scopeContextMenu ? scopesById.get(scopeContextMenu.scopeId) ?? null : null;
-  const contextMenuScopeIsExpanded = contextMenuScope
-    ? expandedScopeIds.includes(contextMenuScope.id)
-    : false;
 
   const scopeCreateMenuPortal = scopeCreateMenu && createMenuScope && createMenuPosition && typeof document !== 'undefined'
     ? createPortal(
@@ -852,17 +849,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           >
             <Icon name="edit" size={11} />
             {t('common.rename', 'Renommer')}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => toggleScope(contextMenuScope.id)}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <Icon name={contextMenuScopeIsExpanded ? 'chevron-right' : 'chevron-down'} size={11} />
-            {contextMenuScopeIsExpanded
-              ? t('architect.projectNavigator.collapseProject', 'Réduire le projet')
-              : t('architect.projectNavigator.expandProject', 'Développer le projet')}
           </button>
           <button
             type="button"
@@ -991,7 +977,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                       scopeId: scope.id,
                       position: getPointerArchitectMenuPosition(
                         { x: event.clientX, y: event.clientY },
-                        { width: SCOPE_CONTEXT_MENU_WIDTH, height: 100 },
+                        { width: SCOPE_CONTEXT_MENU_WIDTH, height: 72 },
                         { width: window.innerWidth, height: window.innerHeight },
                       ),
                     });
