@@ -70,6 +70,7 @@ describe('Dialog', () => {
     expect(dialogs).toHaveLength(2);
     expect(dialogs[1]?.getAttribute('aria-modal')).toBe('true');
     expect(dialogs[1]?.className).toContain('w-full');
+    expect(dialogs[1]?.className).toContain('justify-center');
     expect(dialogs[1]?.parentElement?.parentElement).toBe(document.body);
     expect(transformedAncestor.contains(dialogs[1]!)).toBe(false);
     expect(document.body.querySelector('[inert]')).not.toBeNull();
