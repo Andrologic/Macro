@@ -876,7 +876,37 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           <Icon name="folder-tree" size={15} className="shrink-0 text-primary" />
           <h2 className="truncate text-sm font-semibold text-foreground">{t('architect.projectNavigator.title', 'Projets')}</h2>
         </div>
-        <div className="flex items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              setOpenPlanMenuKey(null);
+              setScopeCreateMenu(null);
+              setScopeContextMenu(null);
+              setShowArchived((current) => !current);
+            }}
+            data-tour-id="architect-archive-toggle"
+            aria-pressed={showArchived}
+            aria-label={showArchived
+              ? t('architect.projectNavigator.activePlans', 'Plans actifs')
+              : t('architect.projectNavigator.archives', 'Archives')}
+            title={showArchived
+              ? t('architect.projectNavigator.activePlans', 'Plans actifs')
+              : t('architect.projectNavigator.archives', 'Archives')}
+            className={cn(
+              'mr-1.5 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+              showArchived
+                ? 'border-border bg-accent text-foreground'
+                : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
+            )}
+          >
+            <Icon name={showArchived ? 'arrow-left' : 'archive'} size={12} />
+            <span className="hidden xl:inline">
+              {showArchived
+                ? t('architect.projectNavigator.activePlans', 'Plans actifs')
+                : t('architect.projectNavigator.archives', 'Archives')}
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => openProjectModal(null)}
@@ -1101,30 +1131,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             )}
           </section>
         )}
-      </div>
-
-      <div className="flex h-12 shrink-0 items-center justify-between border-t border-border bg-card px-3">
-        <span className="text-xs text-muted-foreground">
-          {showArchived
-            ? t('architect.projectNavigator.archivedPlanCount', '{{count}} plans archivés', { count: archivedEntries.length })
-            : t('architect.projectNavigator.activePlanCount', '{{count}} plans actifs', { count: activeEntries.length })}
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            setOpenPlanMenuKey(null);
-            setScopeCreateMenu(null);
-            setScopeContextMenu(null);
-            setShowArchived((current) => !current);
-          }}
-          data-tour-id="architect-archive-toggle"
-          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-        >
-          <Icon name={showArchived ? 'arrow-left' : 'archive'} size={12} />
-          {showArchived
-            ? t('architect.projectNavigator.activePlans', 'Plans actifs')
-            : t('architect.projectNavigator.archives', 'Archives')}
-        </button>
       </div>
       {planToEdit && (
         <PlanFormModal
