@@ -12,6 +12,14 @@ export type ArchitectPlanSelectorStateDetail = {
 
 export type ArchitectPlanSelectorRequestDetail = {
   action: 'primary';
+  anchorRect?: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+    width: number;
+    height: number;
+  };
 };
 
 export const dispatchArchitectPlanSelectorRequest = (
