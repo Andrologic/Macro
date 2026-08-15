@@ -8,12 +8,18 @@ use std::time::Duration;
 pub const PROVIDER_ID: &str = "macro-ai";
 pub const PROVIDER_NAME: &str = "Andrologic";
 pub const PROVIDER_BASE_URL: &str = "https://lmstudio.andrologic.ai/v1";
-pub const MODEL_ID: &str = "macro-ai";
-pub const MODEL_NAME: &str = "Macro AI";
+pub const DEFAULT_MODEL_ID: &str = "macro-ai";
+pub const FAST_MODEL_NAME: &str = "Macro AI Fast";
+pub const DEEP_MODEL_ID: &str = "macro-ai-deep";
+pub const DEEP_MODEL_NAME: &str = "Macro AI Deep";
 const INSTALLATION_IDENTITY_SECRET_ID: &str = "__macro_ai_installation_identity";
 const BOOTSTRAP_URL: &str = "https://lmstudio.andrologic.ai/macro/v1/instances/bootstrap";
-const CONTEXT_WINDOW_TOKENS: i32 = 131_072;
-const OUTPUT_LIMIT_TOKENS: i32 = 11_072;
+const CONTEXT_WINDOW_TOKENS: i32 = 200_000;
+const OUTPUT_LIMIT_TOKENS: i32 = 16_384;
+// Macro subtracts the output reserve when it computes the usable prompt budget.
+// Keep the provider input ceiling at the full context window to avoid reserving
+// OUTPUT_LIMIT_TOKENS twice.
+const INPUT_LIMIT_TOKENS: i32 = CONTEXT_WINDOW_TOKENS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallationIdentity {
@@ -48,6 +54,41 @@ pub struct MacroAiProvisioningStatus {
     pub model_id: String,
     pub context_window_tokens: i32,
     pub activated_now: bool,
+}
+
+fn managed_models() -> Vec<ProviderModelInput> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+
+    [
+        (
+            DEFAULT_MODEL_ID,
+            FAST_MODEL_NAME,
+            "Qwen3.6-35B-A3B",
+        ),
+        (
+            DEEP_MODEL_ID,
+            DEEP_MODEL_NAME,
+            "Qwen3.8-27B",
+        ),
+    ]
+    .into_iter()
+    .map(|(model_id, name, description)| ProviderModelInput {
+        model_id: model_id.to_string(),
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        owned_by: Some(PROVIDER_NAME.to_string()),
+        pricing_prompt: Some("0".to_string()),
+        pricing_completion: Some("0".to_string()),
+        pricing_request: Some("0".to_string()),
+        reasoning_efforts: None,
+        default_reasoning_effort: None,
+        context_window_tokens: Some(CONTEXT_WINDOW_TOKENS),
+        input_limit_tokens: Some(INPUT_LIMIT_TOKENS),
+        output_limit_tokens: Some(OUTPUT_LIMIT_TOKENS),
+        context_window_source: Some("provider_metadata".to_string()),
+        context_limits_updated_at: Some(updated_at.clone()),
+    })
+    .collect()
 }
 
 fn new_installation_identity() -> InstallationIdentity {
@@ -95,31 +136,9 @@ async fn ensure_managed_provider_and_model(pool: &SqlitePool) -> Result<(), Stri
     .await
     .map_err(|error| format!("Failed to configure the Macro AI provider: {error}"))?;
 
-    repository::upsert_provider_models(
-        pool,
-        PROVIDER_ID,
-        &[ProviderModelInput {
-            model_id: MODEL_ID.to_string(),
-            name: MODEL_NAME.to_string(),
-            description: Some(
-                "Modèle de code inclus avec la bêta de Macro. Les échanges et les métriques d’usage sont journalisés côté serveur."
-                    .to_string(),
-            ),
-            owned_by: Some(PROVIDER_NAME.to_string()),
-            pricing_prompt: Some("0".to_string()),
-            pricing_completion: Some("0".to_string()),
-            pricing_request: Some("0".to_string()),
-            reasoning_efforts: None,
-            default_reasoning_effort: None,
-            context_window_tokens: Some(CONTEXT_WINDOW_TOKENS),
-            input_limit_tokens: Some(120_000),
-            output_limit_tokens: Some(OUTPUT_LIMIT_TOKENS),
-            context_window_source: Some("provider_metadata".to_string()),
-            context_limits_updated_at: Some(chrono::Utc::now().to_rfc3339()),
-        }],
-    )
-    .await
-    .map_err(|error| format!("Failed to configure the Macro AI model: {error}"))?;
+    repository::upsert_provider_models(pool, PROVIDER_ID, &managed_models())
+        .await
+        .map_err(|error| format!("Failed to configure the Macro AI model: {error}"))?;
     Ok(())
 }
 
@@ -135,7 +154,7 @@ pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, S
             .map_err(|error| error.to_string())?;
         return Ok(MacroAiProvisioningStatus {
             provider_id: PROVIDER_ID.to_string(),
-            model_id: MODEL_ID.to_string(),
+            model_id: DEFAULT_MODEL_ID.to_string(),
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
             activated_now: false,
         });
@@ -175,7 +194,7 @@ pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, S
         .await
         .map_err(|error| format!("Macro AI returned an invalid activation response: {error}"))?;
     if payload.access_token.trim().is_empty()
-        || payload.model != MODEL_ID
+        || payload.model != DEFAULT_MODEL_ID
         || payload.context_window_tokens != CONTEXT_WINDOW_TOKENS
     {
         return Err("Macro AI returned inconsistent activation metadata.".to_string());
@@ -189,7 +208,7 @@ pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, S
 
     Ok(MacroAiProvisioningStatus {
         provider_id: PROVIDER_ID.to_string(),
-        model_id: MODEL_ID.to_string(),
+        model_id: DEFAULT_MODEL_ID.to_string(),
         context_window_tokens: CONTEXT_WINDOW_TOKENS,
         activated_now: true,
     })
@@ -212,8 +231,28 @@ mod tests {
     }
 
     #[test]
-    fn provider_and_model_have_distinct_display_names() {
+    fn managed_catalog_exposes_fast_and_deep_models_with_the_same_context() {
+        let models = managed_models();
+
         assert_eq!(PROVIDER_NAME, "Andrologic");
-        assert_eq!(MODEL_NAME, "Macro AI");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model_id, DEFAULT_MODEL_ID);
+        assert_eq!(models[0].name, FAST_MODEL_NAME);
+        assert_eq!(
+            models[0].description.as_deref(),
+            Some("Qwen3.6-35B-A3B")
+        );
+        assert_eq!(models[1].model_id, DEEP_MODEL_ID);
+        assert_eq!(models[1].name, DEEP_MODEL_NAME);
+        assert_eq!(
+            models[1].description.as_deref(),
+            Some("Qwen3.8-27B")
+        );
+        assert_eq!(INPUT_LIMIT_TOKENS, CONTEXT_WINDOW_TOKENS);
+        assert!(models.iter().all(|model| {
+            model.context_window_tokens == Some(CONTEXT_WINDOW_TOKENS)
+                && model.input_limit_tokens == Some(INPUT_LIMIT_TOKENS)
+                && model.output_limit_tokens == Some(OUTPUT_LIMIT_TOKENS)
+        }));
     }
 }

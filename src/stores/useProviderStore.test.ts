@@ -97,7 +97,7 @@ const aiSyncProviderModelsMock = mock(async () => []);
 const aiProvisionMacroAiMock = mock(async () => ({
   providerId: 'macro-ai',
   modelId: 'macro-ai',
-  contextWindowTokens: 131_072,
+  contextWindowTokens: 200_000,
   activatedNow: false,
 }));
 const fetchModelsFromProviderMock = mock(async () => ({
@@ -385,7 +385,7 @@ describe('useProviderStore secret resolution', () => {
     expect(providerStore.useProviderStore.getState().selectedModelId).toBeNull();
   });
 
-  it('selects the managed Macro AI model by default after activation', async () => {
+  it('selects the compatible Fast model by default when both managed models are available', async () => {
     listProviderConfigsMock.mockImplementationOnce(async () => [
       {
         id: 'macro-ai',
@@ -409,10 +409,17 @@ describe('useProviderStore secret resolution', () => {
       async () =>
         [
           dbModel('macro-ai', 'macro-ai', {
-            name: 'Macro AI',
-            context_window_tokens: 131_072,
-            input_limit_tokens: 120_000,
-            output_limit_tokens: 11_072,
+            name: 'Macro AI Fast',
+            context_window_tokens: 200_000,
+            input_limit_tokens: 200_000,
+            output_limit_tokens: 16_384,
+            context_window_source: 'provider_metadata',
+          }),
+          dbModel('macro-ai', 'macro-ai-deep', {
+            name: 'Macro AI Deep',
+            context_window_tokens: 200_000,
+            input_limit_tokens: 200_000,
+            output_limit_tokens: 16_384,
             context_window_source: 'provider_metadata',
           }),
         ] as never[]
