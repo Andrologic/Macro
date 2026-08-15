@@ -1,8 +1,9 @@
-import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
+import { getCreatableStandaloneTaskKinds } from '../../services/standaloneTaskKinds';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
@@ -94,7 +95,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const [tooltipSize, setTooltipSize] = useState(TOOLTIP_ESTIMATED_SIZE);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
-  const editableProjects = projects.filter((project) => !project.isReadOnly);
+  const editableProjects = useMemo(
+    () => projects.filter((project) => !project.isReadOnly),
+    [projects],
+  );
   const filteredProjects = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return editableProjects;
@@ -104,11 +108,36 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         .some((value) => value?.toLocaleLowerCase().includes(normalized))
     );
   }, [editableProjects, query]);
-  const canCreate = Boolean(selectedProjectId && selectedTaskKind) && !isCreating;
+  const selectedProject = editableProjects.find((project) => project.id === selectedProjectId) ?? null;
+  const creatableTaskKinds = useMemo(
+    () => selectedProject
+      ? getCreatableStandaloneTaskKinds(selectedProject.gitFlowSettings)
+      : [],
+    [selectedProject],
+  );
+  const selectedTaskKindIsCreatable = selectedTaskKind
+    ? creatableTaskKinds.includes(selectedTaskKind)
+    : false;
+  const canCreate = Boolean(selectedProject && selectedTaskKindIsCreatable) && !isCreating;
   const taskKindDescriptions: Record<StandaloneTaskKind, string> = {
     feature: t('implement.taskKindFeatureHelp', 'Feature creates a branch from the configured development branch and merges it back into that branch.'),
     bugfix: t('implement.taskKindBugfixHelp', 'Bugfix creates a branch from the configured development branch and merges it back into that branch.'),
     hotfix: t('implement.taskKindHotfixHelp', 'Hotfix creates a branch from the configured production branch and merges it back into that branch.'),
+  };
+  const getTaskKindDescription = (kind: StandaloneTaskKind): string => {
+    if (!selectedProject) {
+      return t(
+        'implement.taskKindSelectProjectHelp',
+        'Select a target project to see which task types are available.',
+      );
+    }
+    if (!creatableTaskKinds.includes(kind)) {
+      return t(
+        'implement.taskKindBugfixUnavailableMainlineHelp',
+        'Bugfix requires a development branch distinct from the production branch. This project uses a mainline workflow.',
+      );
+    }
+    return taskKindDescriptions[kind];
   };
   const tooltipAnchor = pointerTooltipAnchor ?? focusTooltipAnchor;
   const tooltipPosition = tooltipAnchor
@@ -124,6 +153,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       setTooltipSize({ width: rect.width, height: rect.height });
     }
   }, [tooltipAnchor, tooltipSize.height, tooltipSize.width]);
+
+  useEffect(() => {
+    if (selectedTaskKind && !creatableTaskKinds.includes(selectedTaskKind)) {
+      setSelectedTaskKind(null);
+    }
+  }, [creatableTaskKinds, selectedTaskKind]);
 
   return (
     <Dialog
@@ -217,14 +252,19 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                   ? t('implement.taskKindBugfix', 'Bugfix')
                   : t('implement.taskKindHotfix', 'Hotfix');
               const descriptionId = `implement-task-kind-${kind}-description`;
+              const isCreatable = creatableTaskKinds.includes(kind);
 
               return (
                   <button
                     key={kind}
                     type="button"
                     aria-pressed={selected}
+                    aria-disabled={!isCreatable}
                     aria-describedby={descriptionId}
-                    onClick={() => setSelectedTaskKind(kind)}
+                    data-task-kind-available={isCreatable ? 'true' : 'false'}
+                    onClick={() => {
+                      if (isCreatable) setSelectedTaskKind(kind);
+                    }}
                     onFocus={(event) => setFocusTooltipAnchor({
                       kind,
                       source: 'focus',
@@ -248,7 +288,9 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                       'flex h-10 items-center justify-center gap-2 rounded-md border text-xs font-medium transition-colors',
                       selected
                         ? 'border-primary/40 bg-primary/10 text-foreground'
-                        : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
+                        : isCreatable
+                          ? 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
+                          : 'cursor-not-allowed border-border/60 bg-muted/20 text-muted-foreground/50'
                     )}
                   >
                     <Icon name={icon} size={14} className={selected ? 'text-primary' : undefined} />
@@ -259,7 +301,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           </div>
           {TASK_KIND_OPTIONS.map(({ kind }) => (
             <span key={kind} id={`implement-task-kind-${kind}-description`} className="sr-only">
-              {taskKindDescriptions[kind]}
+              {getTaskKindDescription(kind)}
             </span>
           ))}
         </fieldset>
@@ -272,7 +314,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           className="pointer-events-none fixed z-[100] max-w-80 rounded-md border border-border bg-popover px-2.5 py-2 text-[11px] leading-snug text-popover-foreground shadow-md"
           style={{ left: tooltipPosition.left, top: tooltipPosition.top }}
         >
-          {taskKindDescriptions[tooltipAnchor.kind]}
+          {getTaskKindDescription(tooltipAnchor.kind)}
         </div>,
         document.body
       )}

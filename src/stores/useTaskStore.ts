@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { CompletionMergePolicy, TaskExecutionTarget, TaskStatus } from '../types';
+import type { CompletionMergePolicy, StandaloneTaskKind, TaskExecutionTarget, TaskStatus } from '../types';
 import i18n from '../i18n';
 import {
   createRemoteUnsupportedInRemoteModeError,
@@ -124,6 +124,7 @@ import {
   sendMergeWorkflowConflictPrompt,
 } from '../services/mergeWorkflowRuntime';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
+import { isStandaloneTaskKindCreatable } from '../services/standaloneTaskKinds';
 import { notify } from '../components/ui/toastService';
 import { devLogger } from '../utils/devLogger';
 
@@ -1279,6 +1280,24 @@ const taskMatchesAnyProjectId = (
 
 const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const assertStandaloneTaskKindCreatableForProjects = (
+  taskKind: StandaloneTaskKind,
+  projectIds: string[],
+): void => {
+  const appState = useAppStore.getState();
+  const unavailableProject = projectIds
+    .map((projectId) => appState.getProjectById(projectId))
+    .find((project) => project && !isStandaloneTaskKindCreatable(taskKind, project.gitFlowSettings));
+
+  if (!unavailableProject) return;
+
+  throw new Error(tTask(
+    'implement.taskKindUnavailableForProject',
+    'This task type is not available for the selected project workflow.',
+    { projectName: unavailableProject.name },
+  ));
+};
 
 const getIncompletePlanFinalizationTasks = (
   finalizationTask: CatalogedImplementTask,
@@ -2798,6 +2817,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         throw new Error('Manual features require the desktop runtime.');
       }
 
+      assertStandaloneTaskKindCreatableForProjects(params.taskKind, params.projectIds);
+
       await tauriIpc.workspaceCreateManualFeatureDraft({
         taskId: params.taskId,
         conversationId: params.conversationId,
@@ -2839,6 +2860,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       if (!tauriIpc.isTauriAvailable()) {
         throw new Error('Manual features require the desktop runtime.');
       }
+
+      const existingTask = get().getTaskById(params.taskId);
+      assertStandaloneTaskKindCreatableForProjects(
+        params.taskKind,
+        existingTask?.project_ids ?? [],
+      );
 
       await tauriIpc.workspaceFinalizeManualFeature({
         taskId: params.taskId,

@@ -16,6 +16,7 @@ import {
 } from '../../services/architectPlanPresentation';
 import {
   getGitFlowBaseBranch,
+  getGitFlowMainBranch,
   repairArchitectPlanMetadata,
 } from '../../services/architectPlanService';
 import {
@@ -78,6 +79,7 @@ import {
   noteTooManyOpenFilesBackoff,
 } from '../../services/resourcePressureBackoff';
 import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
+import { isStandaloneTaskKindCreatable } from '../../services/standaloneTaskKinds';
 import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
 import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
 
@@ -847,6 +849,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       );
       return;
     }
+    if (!isStandaloneTaskKindCreatable(taskKind, targetProject.gitFlowSettings)) {
+      notify.error(
+        t(
+          'implement.taskKindUnavailableForProject',
+          'This task type is not available for the selected project workflow.',
+        ),
+      );
+      return;
+    }
     const targetGroupId = getProjectGroupByProjectId(projectGroups, projectId)?.id ?? null;
 
     const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -873,7 +884,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         groupId: targetGroupId,
         projectIds: [projectId],
         contextProjectIds: [],
-        baseBranch: getGitFlowBaseBranch(),
+        baseBranch: taskKind === 'hotfix'
+          ? targetProject.gitFlowSettings?.mainBranch || getGitFlowMainBranch()
+          : targetProject.gitFlowSettings?.baseBranch || getGitFlowBaseBranch(),
         title: provisionalTitle,
         description: '',
         taskKind,
@@ -1130,6 +1143,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         taskMatchesProjectId(task, project.id)
       ).length,
       isReadOnly: Boolean(project.isReadOnly),
+      gitFlowSettings: project.gitFlowSettings,
     })),
     [availableProjects, projectGroups, tasks]
   );

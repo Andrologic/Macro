@@ -14,6 +14,31 @@ mock.module('../ui/Dialog', () => ({
 }));
 
 import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
+import type { TaskProjectFilterOption } from './TaskProjectFilter';
+
+const project = (
+  id: string,
+  name: string,
+  baseBranch: string,
+  mainBranch: string,
+): TaskProjectFilterOption => ({
+  id,
+  name,
+  path: `/repo/${id}`,
+  groupName: null,
+  taskCount: 0,
+  isReadOnly: false,
+  gitFlowSettings: {
+    baseBranch,
+    mainBranch,
+    planBranchTemplate: 'plan/{planSlug}',
+    featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+    standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+    releaseBranchTemplate: 'release/{releaseSlug}',
+    hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+    bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
+  },
+});
 
 describe('CreateImplementTaskDialog task type help', () => {
   let container: HTMLDivElement;
@@ -36,8 +61,8 @@ describe('CreateImplementTaskDialog task type help', () => {
     await act(async () => {
       root.render(
         <CreateImplementTaskDialog
-          projects={[]}
-          initialProjectId={null}
+          projects={[project('develop', 'Develop project', 'develop', 'main')]}
+          initialProjectId="develop"
           isCreating={false}
           onClose={() => undefined}
           onCreate={() => undefined}
@@ -138,5 +163,64 @@ describe('CreateImplementTaskDialog task type help', () => {
     });
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
     expect(container.querySelector('fieldset > p')).toBeNull();
+  });
+
+  it('recomputes task type availability from the selected project workflow', async () => {
+    const onCreate = mock(() => undefined);
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[
+            project('develop', 'Develop project', 'develop', 'main'),
+            project('mainline', 'Mainline project', 'main', 'main'),
+          ]}
+          initialProjectId="develop"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={onCreate}
+        />
+      );
+    });
+
+    const findButton = (label: string) => Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === label,
+    ) as HTMLButtonElement;
+    const bugfixButton = findButton('Bugfix');
+    const featureButton = findButton('Feature');
+    const hotfixButton = findButton('Hotfix');
+    const createButton = findButton('Create task');
+
+    expect(featureButton.getAttribute('aria-disabled')).toBe('false');
+    expect(bugfixButton.getAttribute('aria-disabled')).toBe('false');
+    expect(hotfixButton.getAttribute('aria-disabled')).toBe('false');
+
+    await act(async () => bugfixButton.click());
+    expect(bugfixButton.getAttribute('aria-pressed')).toBe('true');
+    expect(createButton.disabled).toBe(false);
+
+    const mainlineProjectButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Mainline project'),
+    ) as HTMLButtonElement;
+    await act(async () => mainlineProjectButton.click());
+    expect(featureButton.getAttribute('aria-disabled')).toBe('false');
+    expect(bugfixButton.getAttribute('aria-disabled')).toBe('true');
+    expect(hotfixButton.getAttribute('aria-disabled')).toBe('false');
+    expect(bugfixButton.getAttribute('aria-pressed')).toBe('false');
+    expect(createButton.disabled).toBe(true);
+
+    await act(async () => bugfixButton.dispatchEvent(new MouseEvent('mouseover', {
+      bubbles: true,
+      clientX: 100,
+      clientY: 120,
+    })));
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe(
+      'Bugfix requires a development branch distinct from the production branch. This project uses a mainline workflow.',
+    );
+    await act(async () => bugfixButton.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
+
+    await act(async () => hotfixButton.click());
+    expect(createButton.disabled).toBe(false);
+    await act(async () => createButton.click());
+    expect(onCreate).toHaveBeenCalledWith({ projectId: 'mainline', taskKind: 'hotfix' });
   });
 });
