@@ -91,13 +91,27 @@ export interface LoadMacroProjectMetadataForSelectionParams {
 }
 
 const defaultDeps: MacroProjectMetadataLoaderDeps = {
-  getGitFlowBaseBranch,
-  listArchitectPlans,
-  listArchitectPlanTargetBranches,
-  resolveTargetBranch,
-  clearArchitectPlanFrontendCaches,
-  workspaceArchitectInvalidate: tauriIpc.workspaceArchitectInvalidate,
-  isTauriAvailable: tauriIpc.isTauriAvailable,
+  get getGitFlowBaseBranch() {
+    return getGitFlowBaseBranch;
+  },
+  get listArchitectPlans() {
+    return listArchitectPlans;
+  },
+  get listArchitectPlanTargetBranches() {
+    return listArchitectPlanTargetBranches;
+  },
+  get resolveTargetBranch() {
+    return resolveTargetBranch;
+  },
+  get clearArchitectPlanFrontendCaches() {
+    return clearArchitectPlanFrontendCaches;
+  },
+  get workspaceArchitectInvalidate() {
+    return tauriIpc.workspaceArchitectInvalidate;
+  },
+  get isTauriAvailable() {
+    return tauriIpc.isTauriAvailable;
+  },
 };
 
 const normalizeBranchCandidates = (
