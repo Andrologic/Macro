@@ -5,6 +5,8 @@ import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
 import { useAppStore, type MetadataSyncRepositoryStatus } from '../../stores/useAppStore';
+import { useTaskStore } from '../../stores/useTaskStore';
+import { useChatStore } from '../../stores/useChatStore';
 import { hasUnreadNotifications, useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
 import { toServiceError } from '../../services/contracts/errors';
 import * as tauriIpc from '../../services/tauriIpc';
@@ -16,7 +18,7 @@ import {
 import { openConflictAssistant } from '../../services/conflictAssistantService';
 import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
-import { getGlobalProjectById, getSubProjectsForGroup } from '../../services/globalProjects';
+import { resolveFooterGitContext } from '../../services/footerGitContext';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
 import {
   presentMetadataSyncIssue,
@@ -133,7 +135,6 @@ interface PushMissingUpstreamResolution {
 
 type PushResolutionState = PushMissingOriginResolution | PushMissingUpstreamResolution;
 
-const ALL_PROJECTS_OPTION = '__all__';
 const DEFAULT_CODE_STATUS: CodeStatusSnapshot = { branch: null, ahead: 0, behind: 0 };
 const DEFAULT_FOOTER_METADATA_SYNC: FooterMetadataSyncState = {
   state: 'clean',
@@ -692,21 +693,30 @@ export const Footer: React.FC = () => {
   );
   const isTauriRuntime = tauriIpc.isTauriAvailable();
   const {
-    selectedGroupId,
+    mode,
     selectedProjectId,
     standaloneProjects,
     projectGroups,
-    getProjectById,
+    selectedTaskId,
+    activeArchitectPlanId,
+    visibleArchitectPlans,
     metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy,
   } = useAppStore(useShallow((state) => ({
-    selectedGroupId: state.selectedGroupId,
+    mode: state.mode,
     selectedProjectId: state.selectedProjectId,
     standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
-    getProjectById: state.getProjectById,
+    selectedTaskId: state.selectedTaskId,
+    activeArchitectPlanId: state.activeArchitectPlanId,
+    visibleArchitectPlans: state.visibleArchitectPlans,
     metadataMissingUpstreamPolicy: state.metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy: state.setMetadataMissingUpstreamPolicy,
+  })));
+  const tasks = useTaskStore((state) => state.tasks);
+  const { conversations, selectedConversationId } = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    selectedConversationId: state.selectedConversationId,
   })));
   const notificationItems = useNotificationCenterStore((state) => state.items);
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
@@ -736,44 +746,28 @@ export const Footer: React.FC = () => {
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const footerMetadataSyncRef = useRef(footerMetadataSync);
 
-  const selectedGlobalProject = useMemo(
-    () => getGlobalProjectById(projectGroups, selectedGroupId),
-    [projectGroups, selectedGroupId]
-  );
-  const allProjectsById = useMemo(
-    () =>
-      new Map(
-        projectGroups.flatMap((group) =>
-          group.projects.map((project) => [project.id, project] as const)
-        ).concat(standaloneProjects.map((project) => [project.id, project] as const))
-      ),
-    [projectGroups, standaloneProjects]
-  );
-  const focusProjects = useMemo<ScopedProject[]>(() => {
-    if (selectedGroupId) {
-      return getSubProjectsForGroup(projectGroups, selectedGroupId);
-    }
-
-    if (selectedProjectId) {
-      const selectedProject = getProjectById(selectedProjectId);
-      return selectedProject ? [selectedProject] : [];
-    }
-
-    return [];
-  }, [getProjectById, projectGroups, selectedGroupId, selectedProjectId]);
-  const focusedProject = useMemo(
-    () => (selectedProjectId ? allProjectsById.get(selectedProjectId) ?? null : null),
-    [allProjectsById, selectedProjectId]
-  );
+  const gitContext = useMemo(() => resolveFooterGitContext({
+    mode,
+    standaloneProjects,
+    projectGroups,
+    selectedTaskId,
+    tasks,
+    activeArchitectPlanId,
+    visibleArchitectPlans,
+    selectedConversationId,
+    conversations,
+    durableFocusProjectId: selectedProjectId,
+    manualProjectId: gitScopeProjectId,
+  }), [activeArchitectPlanId, conversations, gitScopeProjectId, mode, projectGroups, selectedConversationId, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
+  const focusProjects = gitContext.candidates;
+  const focusedProject = gitContext.project;
   const scopeProjects = useMemo<ScopedProject[]>(
-    () => (gitScopeProjectId ? focusProjects.filter((project) => project.id === gitScopeProjectId) : focusProjects),
-    [focusProjects, gitScopeProjectId]
+    () => (focusedProject ? [focusedProject] : []),
+    [focusedProject]
   );
   const selectedProjectLabel = useMemo(
-    () => (gitScopeProjectId
-      ? focusProjects.find((project) => project.id === gitScopeProjectId)?.name ?? ''
-      : t('footer.scope.allRepositories', 'Tous les dépôts')),
-    [focusProjects, gitScopeProjectId, t]
+    () => focusedProject?.name ?? t('footer.scope.selectRepository', 'Sélectionner un dépôt'),
+    [focusedProject, t]
   );
   const setFooterMetadataSyncStatus = useCallback((params: {
     state: tauriIpc.MacroSyncState;
@@ -855,7 +849,7 @@ export const Footer: React.FC = () => {
 
   useEffect(() => {
     setGitScopeProjectId(null);
-  }, [selectedGroupId, selectedProjectId]);
+  }, [gitContext.contextKey]);
 
   useEffect(() => {
     if (!gitScopeProjectId) return;
@@ -885,11 +879,11 @@ export const Footer: React.FC = () => {
     }));
 
     setCodeStatus({
-      branch: gitScopeProjectId ? (statuses[0]?.branch || detachedLabel) : null,
+      branch: statuses[0]?.branch || detachedLabel,
       ahead: statuses.reduce((sum, status) => sum + status.ahead, 0),
       behind: statuses.reduce((sum, status) => sum + status.behind, 0),
     });
-  }, [gitScopeProjectId, isTauriRuntime, scopeProjects, t]);
+  }, [isTauriRuntime, scopeProjects, t]);
 
   const focusedProjectPath = focusedProject?.path ?? null;
 
@@ -1950,9 +1944,9 @@ export const Footer: React.FC = () => {
       >
         <div className="flex h-full min-w-0 items-center justify-between gap-3">
           <div className="flex min-w-0 items-center overflow-hidden">
-            <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={selectedGlobalProject?.name || focusedProject?.name || undefined}>
-              <Icon name={selectedGlobalProject ? 'layers' : 'folder-git-2'} size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
-              <span className="truncate leading-4 text-foreground">{selectedGlobalProject?.name || focusedProject?.name || t('project.noGroup', 'No group')}</span>
+            <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={focusedProject?.name || undefined}>
+              <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+              <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('project.noProject', 'Aucun projet')}</span>
             </span>
             <Button
               size="sm"
@@ -1985,22 +1979,20 @@ export const Footer: React.FC = () => {
                     </span>
                     <select
                       className="col-start-1 row-start-1 h-6 min-w-0 rounded border border-border bg-card px-2 pr-6 text-[11px] leading-6 text-foreground"
-                      value={gitScopeProjectId ?? ALL_PROJECTS_OPTION}
+                      value={focusedProject?.id ?? ''}
                       data-tour-id="footer-project-scope"
                       aria-label={t('footer.scope.gitScope', 'Portée Git')}
                       title={t('footer.scope.gitScope', 'Portée Git')}
-                      onChange={(event) => setGitScopeProjectId(
-                        event.target.value === ALL_PROJECTS_OPTION ? null : event.target.value
-                      )}
+                      onChange={(event) => setGitScopeProjectId(event.target.value || null)}
                     >
-                      <option value={ALL_PROJECTS_OPTION}>{t('footer.scope.allRepositories', 'Tous les dépôts')}</option>
+                      <option value="">{t('footer.scope.selectRepository', 'Sélectionner un dépôt')}</option>
                       {focusProjects.map((project) => (
                         <option key={project.id} value={project.id}>{project.name}</option>
                       ))}
                     </select>
                   </div>
                 )}
-                {selectedProjectId && focusedProjectBranch && (
+                {focusedProject && focusedProjectBranch && (
                   <span className="flex min-w-0 max-w-[10rem] items-center gap-1.5" title={focusedProjectBranch}>
                     <Icon name="git-branch" size={12} className="shrink-0 text-blue-400" />
                     <span className="truncate">{focusedProjectBranch}</span>

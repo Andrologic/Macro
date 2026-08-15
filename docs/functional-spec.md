@@ -376,6 +376,8 @@ Exemples :
 
 Le footer doit exposer les informations et actions globales de statut.
 
+Le projet Git affiché et utilisé par les actions de synchronisation est strictement dérivé du travail actif. En mode Implement, la tâche sélectionnée fait autorité. En mode Architect, le plan actif fait autorité : un plan mono-projet sélectionne directement son dépôt, tandis qu'un plan multi-projets exige un focus durable déjà présent dans sa portée ou une sélection manuelle bornée à cette portée. En mode Chat, la conversation active doit désigner un projet sans ambiguïté. Sans dépôt unique, le footer n'affiche aucun projet et n'exécute aucune commande Git de repli. Toute sélection manuelle est invalidée lorsque l'identité ou la portée du contexte actif change.
+
 Exemples :
 
 - état Git
