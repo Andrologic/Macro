@@ -84,3 +84,51 @@ La comparaison côte à côte confirme la même structure : titre et actions glo
 - Les points de statut exposent désormais leur libellé traduit. Le menu d'un plan se ferme au clic extérieur ou avec Échap, et une liste développée peut revenir à son état condensé.
 
 final result: passed
+
+---
+
+# Design QA — centrage de la fenêtre « Ajouter un projet »
+
+- Vérité visuelle source : `C:/Users/oscar/AppData/Local/Temp/codex-clipboard-486b7d13-afed-40d7-980d-3473b4b864c2.png`
+- Capture de l’implémentation : `docs/design-qa/project-modal-centered.png`
+- État comparé : fenêtre « Ajouter un projet » ouverte, thème sombre, projet non sélectionné.
+- Source : 3439 × 1372 px, densité inconnue.
+- Implémentation : viewport CSS 1280 × 720, capture 1280 × 720 px, `devicePixelRatio = 1.25`.
+
+**Findings**
+
+- Aucun écart P0, P1 ou P2 restant.
+- Typographie : famille, graisse, taille, hauteur de ligne et hiérarchie inchangées par rapport au composant existant.
+- Espacement et rythme : carte de 620 px centrée exactement dans le viewport ; erreur mesurée de 0 px sur les axes horizontal et vertical. Les marges de sécurité du fond restent intactes.
+- Couleurs et tokens : fond, bordures, ombre, opacité du backdrop et couleurs sémantiques inchangés.
+- Images et icônes : aucune ressource visuelle n’a été remplacée ou altérée.
+- Contenu : libellés, champs, onglets et actions inchangés.
+
+**Full-view comparison evidence**
+
+- La source montre la carte alignée à environ 20 px du bord gauche du viewport.
+- La capture corrigée montre la même carte au centre de la zone assombrie.
+- Mesures après correction : viewport 1280 × 720 ; carte `x = 330`, `y = 124.8`, largeur `620`, hauteur `470.4` ; centre de la carte `640 × 360`, identique au centre du viewport.
+
+**Focused region comparison evidence**
+
+- Aucun recadrage supplémentaire n’était nécessaire : la seule différence attendue concerne la composition globale et les limites de la carte sont entièrement lisibles dans les deux captures.
+
+**Comparison history**
+
+1. Avant correction — P1 : le panneau sémantique du dialogue occupait toute la largeur et son enfant à largeur maximale restait aligné à gauche.
+2. Correctif — le panneau partagé `Dialog` utilise désormais un conteneur flex centré pour ses enfants lorsque le consommateur ne fournit pas sa propre classe de panneau.
+3. Après correction — centre horizontal et vertical mesuré à 0 px d’écart ; onglets et fermeture testés ; aucune erreur ou aucun avertissement dans la console.
+
+**Implementation Checklist**
+
+- [x] Centrer les cartes de dialogue utilisant le panneau partagé par défaut.
+- [x] Préserver les dialogues qui fournissent leur propre `panelClassName`.
+- [x] Ajouter une assertion de régression ciblée.
+- [x] Vérifier les interactions principales et la console dans le navigateur intégré.
+
+**Follow-up Polish**
+
+- Aucun suivi nécessaire pour cette correction.
+
+final result: passed
