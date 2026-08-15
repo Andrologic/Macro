@@ -10,6 +10,8 @@ pub struct WorkspaceState {
     pub workspace_revision: u64,
     #[serde(default, rename = "standaloneProjects")]
     pub standalone_projects: Vec<ProjectDto>,
+    #[serde(default, rename = "projectRegistryExplicitlyEmpty")]
+    pub project_registry_explicitly_empty: bool,
     #[serde(default)]
     pub project_groups: Vec<ProjectGroupDto>,
     #[serde(default)]
@@ -32,6 +34,7 @@ impl Default for WorkspaceState {
             version: default_version(),
             workspace_revision: 0,
             standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
             project_groups: Vec::new(),
             current_plan: None,
             plan_nodes: Vec::new(),
