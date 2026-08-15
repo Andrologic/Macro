@@ -34,6 +34,8 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const { t } = useTranslation();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialProjectId);
   const [selectedTaskKind, setSelectedTaskKind] = useState<StandaloneTaskKind | null>(null);
+  const [hoveredTaskKind, setHoveredTaskKind] = useState<StandaloneTaskKind | null>(null);
+  const [focusedTaskKind, setFocusedTaskKind] = useState<StandaloneTaskKind | null>(null);
   const [query, setQuery] = useState('');
   const editableProjects = projects.filter((project) => !project.isReadOnly);
   const filteredProjects = useMemo(() => {
@@ -46,6 +48,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     );
   }, [editableProjects, query]);
   const canCreate = Boolean(selectedProjectId && selectedTaskKind) && !isCreating;
+  const taskKindDescriptions: Record<StandaloneTaskKind, string> = {
+    feature: t('implement.taskKindFeatureHelp', 'Feature creates a branch from the configured development branch and merges it back into that branch.'),
+    bugfix: t('implement.taskKindBugfixHelp', 'Bugfix creates a branch from the configured development branch and merges it back into that branch.'),
+    hotfix: t('implement.taskKindHotfixHelp', 'Hotfix creates a branch from the configured production branch and merges it back into that branch.'),
+  };
+  const activeTooltipKind = hoveredTaskKind ?? focusedTaskKind;
 
   return (
     <Dialog
@@ -130,34 +138,55 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <legend className="text-xs font-medium text-foreground">
             {t('implement.taskKindLabel', 'Task type')}
           </legend>
-          <div className="grid grid-cols-3 gap-2">
-            {TASK_KIND_OPTIONS.map(({ kind, icon }) => {
-              const selected = selectedTaskKind === kind;
-              const label = kind === 'feature'
-                ? t('implement.taskKindFeature', 'Feature')
-                : kind === 'bugfix'
-                  ? t('implement.taskKindBugfix', 'Bugfix')
-                  : t('implement.taskKindHotfix', 'Hotfix');
+          <div className="relative">
+            <div className="grid grid-cols-3 gap-2">
+              {TASK_KIND_OPTIONS.map(({ kind, icon }) => {
+                const selected = selectedTaskKind === kind;
+                const label = kind === 'feature'
+                  ? t('implement.taskKindFeature', 'Feature')
+                  : kind === 'bugfix'
+                    ? t('implement.taskKindBugfix', 'Bugfix')
+                    : t('implement.taskKindHotfix', 'Hotfix');
+                const descriptionId = `implement-task-kind-${kind}-description`;
 
-              return (
-                <button
-                  key={kind}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => setSelectedTaskKind(kind)}
-                  className={cn(
-                    'flex h-10 items-center justify-center gap-2 rounded-md border text-xs font-medium transition-colors',
-                    selected
-                      ? 'border-primary/40 bg-primary/10 text-foreground'
-                      : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
-                  )}
-                >
-                  <Icon name={icon} size={14} className={selected ? 'text-primary' : undefined} />
-                  {label}
-                </button>
-              );
-            })}
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    aria-pressed={selected}
+                    aria-describedby={descriptionId}
+                    onClick={() => setSelectedTaskKind(kind)}
+                    onFocus={() => setFocusedTaskKind(kind)}
+                    onBlur={() => setFocusedTaskKind(null)}
+                    onMouseEnter={() => setHoveredTaskKind(kind)}
+                    onMouseLeave={() => setHoveredTaskKind(null)}
+                    className={cn(
+                      'flex h-10 items-center justify-center gap-2 rounded-md border text-xs font-medium transition-colors',
+                      selected
+                        ? 'border-primary/40 bg-primary/10 text-foreground'
+                        : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'
+                    )}
+                  >
+                    <Icon name={icon} size={14} className={selected ? 'text-primary' : undefined} />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {activeTooltipKind && (
+              <div
+                role="tooltip"
+                className="pointer-events-none absolute bottom-full left-0 right-0 z-20 mb-1.5 rounded-md border border-border bg-popover px-2.5 py-2 text-[11px] leading-snug text-popover-foreground shadow-md"
+              >
+                {taskKindDescriptions[activeTooltipKind]}
+              </div>
+            )}
           </div>
+          {TASK_KIND_OPTIONS.map(({ kind }) => (
+            <span key={kind} id={`implement-task-kind-${kind}-description`} className="sr-only">
+              {taskKindDescriptions[kind]}
+            </span>
+          ))}
         </fieldset>
       </div>
 
