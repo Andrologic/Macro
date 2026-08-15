@@ -16,14 +16,18 @@ type ProjectGroup = {
 };
 
 type AppStoreState = {
+  mode: 'Architect' | 'Implement' | 'Chat';
   selectedGroupId: string | null;
   selectedProjectId: string | null;
+  selectedTaskId: string | null;
+  standaloneProjects: Project[];
   projectGroups: ProjectGroup[];
   metadataAutoPush: boolean;
   metadataMissingUpstreamPolicy: 'ask' | 'ignore';
   setMetadataMissingUpstreamPolicy: ReturnType<typeof mock>;
   activeArchitectPlanId: string | null;
   activePlanContext: { targetBranch: string } | null;
+  visibleArchitectPlans: Array<{ id: string; projectIds: string[] }>;
   switchProjectContext: ReturnType<typeof mock>;
   getProjectById: (projectId: string) => Project | undefined;
 };
@@ -104,6 +108,8 @@ type GitRebaseCheckDto = {
 };
 
 let appState: AppStoreState;
+let taskState: { tasks: unknown[] };
+let chatState: { conversations: unknown[]; selectedConversationId: string | null };
 let notificationState: NotificationStoreState;
 let gitStatusByPath: Record<string, GitStatusDto>;
 let macroStatusByPath: Record<string, MacroBranchSyncDto>;
@@ -251,6 +257,8 @@ const buildMissingOriginMacroStatus = (): MacroBranchSyncDto => ({
 });
 
 const useAppStore = createStoreHook(() => appState);
+const useTaskStore = createStoreHook(() => taskState);
+const useChatStore = createStoreHook(() => chatState);
 const useNotificationCenterStore = createStoreHook(() => notificationState);
 
 const getProjectById = (projectId: string): Project | undefined =>
@@ -287,27 +295,30 @@ const selectGitScope = async (container: HTMLDivElement, value: string) => {
   await flushAsyncWork();
 };
 
+const translateMock = (
+  key: string,
+  fallbackOrOptions?: string | { defaultValue?: string; [key: string]: unknown },
+  maybeOptions?: { defaultValue?: string; [key: string]: unknown }
+) => {
+  if (typeof fallbackOrOptions === 'string') return fallbackOrOptions;
+  return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
+};
+
 const loadFooter = async () => {
   mock.restore();
 
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
-      t: (
-        key: string,
-        fallbackOrOptions?: string | { defaultValue?: string; [key: string]: unknown },
-        maybeOptions?: { defaultValue?: string; [key: string]: unknown }
-      ) => {
-        if (typeof fallbackOrOptions === 'string') {
-          return fallbackOrOptions;
-        }
-        return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
-      },
+      t: translateMock,
     }),
   }));
 
   mock.module('../../stores/useAppStore', () => ({
     useAppStore,
   }));
+
+  mock.module('../../stores/useTaskStore', () => ({ useTaskStore }));
+  mock.module('../../stores/useChatStore', () => ({ useChatStore }));
 
   mock.module('../../stores/useNotificationCenterStore', () => ({
     useNotificationCenterStore,
@@ -450,8 +461,11 @@ describe('Footer', () => {
       appState.metadataMissingUpstreamPolicy = policy;
     });
     appState = {
+      mode: 'Architect',
       selectedGroupId: 'group-1',
       selectedProjectId: 'project-a',
+      selectedTaskId: null,
+      standaloneProjects: [],
       projectGroups: [
         { id: 'group-1', name: 'Macro', projects: GROUP_ONE_PROJECTS },
         { id: 'group-2', name: 'Docs', projects: GROUP_TWO_PROJECTS },
@@ -459,11 +473,14 @@ describe('Footer', () => {
       metadataAutoPush: false,
       metadataMissingUpstreamPolicy: 'ask',
       setMetadataMissingUpstreamPolicy: setMetadataMissingUpstreamPolicyMock,
-      activeArchitectPlanId: null,
-      activePlanContext: null,
+      activeArchitectPlanId: 'plan-group-1',
+      activePlanContext: { targetBranch: 'develop' },
+      visibleArchitectPlans: [{ id: 'plan-group-1', projectIds: ['project-a', 'project-b'] }],
       switchProjectContext: mock(async () => undefined),
       getProjectById,
     };
+    taskState = { tasks: [] };
+    chatState = { conversations: [], selectedConversationId: null };
     notificationState = {
       items: [],
       isCenterOpen: false,
@@ -571,6 +588,54 @@ describe('Footer', () => {
     mock.restore();
   });
 
+  it('uses the selected Implement task repository for the label and Git commands', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-web';
+    appState.selectedProjectId = 'project-a';
+    taskState.tasks = [{
+      id: 'task-web',
+      project_id: 'project-b',
+      project_ids: ['project-b'],
+      execution_targets: [],
+    }];
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await flushAsyncWork();
+
+    expect(container.textContent ?? '').toContain('Web');
+    expect(container.textContent ?? '').not.toContain('API');
+
+    act(() => findButtonByIcon(container!, 'arrow-down')?.click());
+    await flushAsyncWork();
+
+    expect(gitPullMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
+  });
+
+  it('disables Git actions and executes no fallback command without an active Chat project', async () => {
+    appState.mode = 'Chat';
+    appState.selectedProjectId = 'project-a';
+    chatState.selectedConversationId = 'chat-empty';
+    chatState.conversations = [{ id: 'chat-empty', task_id: null, project_id: null }];
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await flushAsyncWork();
+
+    expect(container.textContent ?? '').toContain('Aucun projet');
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(true);
+    expect(findButtonByIcon(container!, 'arrow-down')).toBeNull();
+    expect(findButtonByIcon(container!, 'arrow-up')).toBeNull();
+    expect(gitPullMock).not.toHaveBeenCalled();
+    expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
   it('keeps the group focus stable while the footer git scope changes', async () => {
     const { Footer } = await loadFooter();
     container = document.createElement('div');
@@ -580,8 +645,8 @@ describe('Footer', () => {
     root?.render(<Footer />);
     await flushAsyncWork();
 
-    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('2@13');
-    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3@10');
+    expect(findButtonByIcon(container!, 'arrow-down')?.textContent?.trim()).toBe('2@5');
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('0@4');
 
     await selectGitScope(container!, 'project-b');
 
@@ -592,12 +657,12 @@ describe('Footer', () => {
     expect(findButtonByIcon(container!, 'arrow-up')?.textContent?.trim()).toBe('3@6');
   });
 
-  it('renders the group label with enough line height for descenders', async () => {
+  it('renders the contextual project label with enough line height for descenders', async () => {
     appState.projectGroups = [
       {
         id: 'group-1',
-        name: 'andrologic.ai',
-        projects: GROUP_ONE_PROJECTS,
+        name: 'Group',
+        projects: [{ ...GROUP_ONE_PROJECTS[0]!, name: 'andrologic.ai' }, GROUP_ONE_PROJECTS[1]!],
       },
     ];
     const { Footer } = await loadFooter();
@@ -618,7 +683,7 @@ describe('Footer', () => {
     expect(projectLabel?.classList.contains('leading-none')).toBe(false);
   });
 
-  it('targets footer git actions to the selected local scope and aggregates all projects when reset', async () => {
+  it('targets footer git actions to the selected contextual repository and never aggregates repositories', async () => {
     const { Footer } = await loadFooter();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -662,7 +727,7 @@ describe('Footer', () => {
       [{ repoPath: '/repo/web' }],
     ]);
 
-    await selectGitScope(container!, '__all__');
+    await selectGitScope(container!, 'project-a');
 
     const fetchCallsBeforeAllProjects = gitFetchMock.mock.calls.length;
     act(() => {
@@ -672,7 +737,6 @@ describe('Footer', () => {
 
     expect(gitFetchMock.mock.calls.slice(fetchCallsBeforeAllProjects)).toEqual([
       [{ repoPath: '/repo/api' }],
-      [{ repoPath: '/repo/web' }],
     ]);
   });
 
@@ -1244,6 +1308,8 @@ describe('Footer', () => {
 
     appState.selectedGroupId = 'group-2';
     appState.selectedProjectId = 'project-c';
+    appState.activeArchitectPlanId = 'plan-group-2';
+    appState.visibleArchitectPlans = [{ id: 'plan-group-2', projectIds: ['project-c'] }];
 
     root?.render(<Footer />);
     await flushAsyncWork();
@@ -1254,7 +1320,7 @@ describe('Footer', () => {
     expect(container?.textContent ?? '').toContain('release-c');
   });
 
-  it('falls back to all projects when the scoped footer project disappears', async () => {
+  it('invalidates a disappeared manual scope and resolves the only remaining plan repository', async () => {
     const { Footer } = await loadFooter();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -1413,7 +1479,7 @@ describe('Footer', () => {
     expect(gitPushMock).not.toHaveBeenCalled();
   });
 
-  it('pushes ready repositories while leaving missing-origin repositories local for this push', async () => {
+  it('does not push an out-of-context repository while the contextual repository has no origin', async () => {
     gitStatusByPath = {
       '/repo/api': buildGitStatusWithoutOrigin('main-a'),
       '/repo/web': buildGitStatus('feature-b', 0, 0),
@@ -1439,9 +1505,7 @@ describe('Footer', () => {
     await flushAsyncWork();
 
     expect(gitRemoteAddOriginMock).not.toHaveBeenCalled();
-    expect(gitPushMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repo/web' },
-    ]);
+    expect(gitPushMock).not.toHaveBeenCalled();
   });
 
   it('rechecks origin state on each push so external remote changes are picked up', async () => {
@@ -1489,7 +1553,7 @@ describe('Footer', () => {
     ]);
   });
 
-  it('shows every missing-origin sub-project and requires at least one pushable repository', async () => {
+  it('shows only the contextual missing-origin repository and requires it to be configured', async () => {
     gitStatusByPath = {
       '/repo/api': buildGitStatusWithoutOrigin('main-a'),
       '/repo/web': buildGitStatusWithoutOrigin('feature-b'),
@@ -1510,8 +1574,7 @@ describe('Footer', () => {
     await flushAsyncWork();
 
     expect(container?.textContent ?? '').toContain('API');
-    expect(container?.textContent ?? '').toContain('Web');
-    expect(container?.querySelectorAll('input')).toHaveLength(2);
+    expect(container?.querySelectorAll('input')).toHaveLength(1);
 
     act(() => {
       findButtonByText(container!, 'Push available repositories')?.click();
@@ -1747,7 +1810,6 @@ describe('Footer', () => {
 
     expect(gitPushMock.mock.calls.map(([params]) => params)).toEqual([
       { repoPath: '/repo/api' },
-      { repoPath: '/repo/web' },
     ]);
     expect(macroBranchPushMock).toHaveBeenCalled();
     expect(setMetadataMissingUpstreamPolicyMock).not.toHaveBeenCalled();
