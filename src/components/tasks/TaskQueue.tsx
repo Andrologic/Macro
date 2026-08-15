@@ -200,10 +200,11 @@ interface TaskActionDescriptor {
 type TaskContextBadgeTone = 'default' | 'draft';
 
 interface TaskContextBadgeDescriptor {
-  key: 'plan' | 'plan_finalization' | 'standalone' | 'draft';
+  key: 'project' | 'plan' | 'plan_finalization' | 'standalone' | 'draft';
   label: string;
   icon?: IconName;
   tone?: TaskContextBadgeTone;
+  title?: string;
 }
 
 const taskContextBadgeToneClassName: Record<TaskContextBadgeTone, string> = {
@@ -216,6 +217,7 @@ interface TaskItemProps {
   mergeWorkflowRuntime?: MergeWorkflowRuntimeState | null;
   multiRepoPresentation?: MultiRepoTaskPresentation | null;
   isSelected: boolean;
+  projectName?: string | null;
   planLabel: string;
   planKind?: ArchitectPlanKind | null;
   isAssistantRunning: boolean;
@@ -235,6 +237,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   mergeWorkflowRuntime,
   multiRepoPresentation,
   isSelected,
+  projectName,
   planLabel,
   planKind,
   isAssistantRunning,
@@ -255,6 +258,15 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const taskMenuRef = useRef<HTMLDivElement>(null);
   const trimmedPlanLabel = planLabel.trim();
   const contextBadges: TaskContextBadgeDescriptor[] = [];
+  const trimmedProjectName = projectName?.trim() ?? '';
+  if (trimmedProjectName.length > 0) {
+    contextBadges.push({
+      key: 'project',
+      label: trimmedProjectName,
+      icon: 'folder-git-2',
+      title: trimmedProjectName,
+    });
+  }
   if (task.task_source === 'architect' && trimmedPlanLabel.length > 0) {
     contextBadges.push({
       key: 'plan',
@@ -478,6 +490,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
                 <span
                   key={badge.key}
                   data-task-context-badge={badge.key}
+                  title={badge.title}
                   className={cn(
                     'inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
                     taskContextBadgeToneClassName[badge.tone ?? 'default']
@@ -2103,6 +2116,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
                         multiRepoPresentation={row.multiRepoPresentation}
                         isSelected={selectedTaskId === row.task.id}
+                        projectName={getProjectById(row.task.project_id)?.name ?? null}
                         planLabel={getTaskPlanLabel(row.task)}
                         planKind={planKindsById.get(row.task.plan_id) ?? null}
                         isAssistantRunning={runningTaskIds.has(row.task.id)}
