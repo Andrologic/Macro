@@ -1110,6 +1110,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     architectPlanSelectorState,
     setArchitectPlanSelectorState,
   ] = useState<ArchitectPlanSelectorStateDetail | null>(null);
+  const missingArchitectPlanActionRef = useRef<HTMLButtonElement | null>(null);
   const taskTodoDropdownRef = useRef<HTMLDivElement | null>(null);
   const currentMessages = useMemo(
     () =>
@@ -1778,7 +1779,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const handleMissingArchitectPlanAction = useCallback(() => {
     setLeftPanelOpen(true);
     window.requestAnimationFrame(() => {
-      dispatchArchitectPlanSelectorRequest({ action: 'primary' });
+      const anchor = missingArchitectPlanActionRef.current?.getBoundingClientRect();
+      dispatchArchitectPlanSelectorRequest({
+        action: 'primary',
+        anchorRect: anchor
+          ? {
+              top: anchor.top,
+              right: anchor.right,
+              bottom: anchor.bottom,
+              left: anchor.left,
+              width: anchor.width,
+              height: anchor.height,
+            }
+          : undefined,
+      });
     });
   }, [setLeftPanelOpen]);
 
@@ -2714,6 +2728,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   )}
                 </p>
                 <button
+                  ref={missingArchitectPlanActionRef}
                   type="button"
                   onClick={handleMissingArchitectPlanAction}
                   disabled={isMissingArchitectPlanActionLoading}

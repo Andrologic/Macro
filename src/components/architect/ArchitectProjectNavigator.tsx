@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
 import {
@@ -50,8 +51,27 @@ import {
   type ArchitectNavigatorPlanEntry,
   type ArchitectNavigatorScope,
 } from './architectProjectNavigatorModel';
+import {
+  getAnchoredArchitectMenuPosition,
+  getPointerArchitectMenuPosition,
+  type ArchitectMenuAnchorRect,
+  type ArchitectMenuPosition,
+} from './architectProjectNavigatorMenu';
 
 const MAX_VISIBLE_PLANS_PER_SCOPE = 7;
+const SCOPE_CREATE_MENU_WIDTH = 240;
+const SCOPE_CONTEXT_MENU_WIDTH = 208;
+
+interface ScopeCreateMenuState {
+  scopeId: string;
+  triggerKey: 'header' | 'empty' | 'external';
+  anchorRect: ArchitectMenuAnchorRect;
+}
+
+interface ScopeContextMenuState {
+  scopeId: string;
+  position: ArchitectMenuPosition;
+}
 
 const summarizePlanRecord = (plan: ArchitectPlanRecord) => ({
   ...plan,
@@ -91,6 +111,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const refreshCurrentPlanCatalog = useAppStore((state) => state.loadMacroProjectMetadataForSelection);
   const openProjectNavigator = useAppStore((state) => state.openProjectNavigator);
   const openProjectModal = useAppStore((state) => state.openProjectModal);
+  const renameProject = useAppStore((state) => state.renameProject);
+  const renameProjectGroup = useAppStore((state) => state.renameProjectGroup);
 
   const [entries, setEntries] = useState<ArchitectNavigatorPlanEntry[]>([]);
   const [expandedScopeIds, setExpandedScopeIds] = useState<string[]>([]);
@@ -102,7 +124,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
   const [activatingPlanId, setActivatingPlanId] = useState<string | null>(null);
   const [openPlanMenuKey, setOpenPlanMenuKey] = useState<string | null>(null);
-  const [openScopeMenuId, setOpenScopeMenuId] = useState<string | null>(null);
+  const [scopeCreateMenu, setScopeCreateMenu] = useState<ScopeCreateMenuState | null>(null);
+  const [scopeContextMenu, setScopeContextMenu] = useState<ScopeContextMenuState | null>(null);
+  const [scopeToRename, setScopeToRename] = useState<ArchitectNavigatorScope | null>(null);
+  const [isRenamingScope, setIsRenamingScope] = useState(false);
   const [planToEdit, setPlanToEdit] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [planToDelete, setPlanToDelete] = useState<ArchitectNavigatorPlanEntry | null>(null);
   const [formLoading, setFormLoading] = useState(false);
@@ -111,6 +136,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [mutatingPlanId, setMutatingPlanId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const scopeCreateButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const scopes = useMemo(
     () => buildArchitectNavigatorScopes({ standaloneProjects, projectGroups }),
@@ -268,7 +294,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, []);
 
   const toggleScope = (scopeId: string) => {
-    setOpenScopeMenuId(null);
+    setScopeCreateMenu(null);
+    setScopeContextMenu(null);
     persistExpandedScopes(toggleArchitectNavigatorScope(expandedScopeIds, scopeId));
   };
 
@@ -289,10 +316,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
 
   const selectAndToggleScope = useCallback((scope: ArchitectNavigatorScope) => {
     setOpenPlanMenuKey(null);
-    setOpenScopeMenuId(null);
+    setScopeCreateMenu(null);
+    setScopeContextMenu(null);
     applyScopeSelection(scope);
     persistExpandedScopes(toggleArchitectNavigatorScope(expandedScopeIds, scope.id));
   }, [applyScopeSelection, expandedScopeIds, persistExpandedScopes]);
+
+  const openScopeCreateMenu = useCallback((
+    scopeId: string,
+    triggerKey: ScopeCreateMenuState['triggerKey'],
+    anchorRect: ArchitectMenuAnchorRect,
+  ) => {
+    setOpenPlanMenuKey(null);
+    setScopeContextMenu(null);
+    setScopeCreateMenu((current) =>
+      current?.scopeId === scopeId && current.triggerKey === triggerKey
+        ? null
+        : { scopeId, triggerKey, anchorRect }
+    );
+  }, []);
 
   const togglePin = (planId: string) => {
     const next = pinnedPlanIds.includes(planId)
@@ -451,7 +493,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       notify.warning(t('architect.projectNavigator.readOnlyScope', 'Ce projet est en lecture seule.'));
       return;
     }
-    setOpenScopeMenuId(null);
+    setScopeCreateMenu(null);
     setCreatingScopeId(scope.id);
     setCreatingPlanKind(planKind);
     setError(null);
@@ -485,6 +527,34 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
   }, [activateArchitectPlan, creatingScopeId, isBusy, refreshPlans, selectScope, t]);
 
+  const confirmScopeRename = useCallback(async (value: string) => {
+    if (!scopeToRename || isRenamingScope) return;
+    const nextName = value.trim();
+    if (!nextName || nextName === scopeToRename.label) {
+      setScopeToRename(null);
+      return;
+    }
+
+    setIsRenamingScope(true);
+    try {
+      if (scopeToRename.kind === 'group' && scopeToRename.groupId) {
+        await renameProjectGroup(scopeToRename.groupId, nextName);
+        notify.success(t('projects.groupRenamed', 'Groupe renommé.'));
+      } else if (scopeToRename.projectId) {
+        await renameProject(scopeToRename.projectId, nextName);
+        notify.success(t('projects.projectRenamed', 'Projet renommé.'));
+      }
+      setScopeToRename(null);
+    } catch (renameError) {
+      const message = renameError instanceof Error
+        ? renameError.message
+        : t('common.error', 'Une erreur est survenue.');
+      notify.error(message);
+    } finally {
+      setIsRenamingScope(false);
+    }
+  }, [isRenamingScope, renameProject, renameProjectGroup, scopeToRename, t]);
+
   useEffect(() => {
     const handleRequest = (event: Event) => {
       const detail = (event as CustomEvent<ArchitectPlanSelectorRequestDetail>).detail;
@@ -496,8 +566,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         const selectedPlans = entriesByScope.get(selectedScope.id) ?? [];
         if (selectedPlans.length === 0) {
           setLeftPanelOpen(true);
-          setOpenPlanMenuKey(null);
-          setOpenScopeMenuId(selectedScope.id);
+          const anchorRect = detail.anchorRect
+            ?? scopeCreateButtonRefs.current.get(selectedScope.id)?.getBoundingClientRect();
+          if (anchorRect) {
+            openScopeCreateMenu(selectedScope.id, 'external', anchorRect);
+          }
         }
       } else {
         openProjectNavigator();
@@ -505,10 +578,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     };
     window.addEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
     return () => window.removeEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
-  }, [entriesByScope, expandedScopeIds, openProjectNavigator, persistExpandedScopes, selectedScope, setLeftPanelOpen]);
+  }, [entriesByScope, expandedScopeIds, openProjectNavigator, openScopeCreateMenu, persistExpandedScopes, selectedScope, setLeftPanelOpen]);
 
   useEffect(() => {
-    if (!openPlanMenuKey && !openScopeMenuId) return;
+    if (!openPlanMenuKey && !scopeCreateMenu && !scopeContextMenu) return;
 
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (
@@ -516,22 +589,32 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         && event.target.closest('[data-architect-plan-menu], [data-architect-scope-menu]')
       ) return;
       setOpenPlanMenuKey(null);
-      setOpenScopeMenuId(null);
+      setScopeCreateMenu(null);
+      setScopeContextMenu(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setOpenPlanMenuKey(null);
-        setOpenScopeMenuId(null);
+        setScopeCreateMenu(null);
+        setScopeContextMenu(null);
       }
+    };
+    const closeOnViewportChange = () => {
+      setScopeCreateMenu(null);
+      setScopeContextMenu(null);
     };
 
     document.addEventListener('pointerdown', closeOnOutsidePointer);
     document.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('resize', closeOnViewportChange);
+    window.addEventListener('scroll', closeOnViewportChange, true);
     return () => {
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
       document.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('resize', closeOnViewportChange);
+      window.removeEventListener('scroll', closeOnViewportChange, true);
     };
-  }, [openPlanMenuKey, openScopeMenuId]);
+  }, [openPlanMenuKey, scopeContextMenu, scopeCreateMenu]);
 
   const renderPlanRow = (entry: ArchitectNavigatorPlanEntry, showScope = false) => {
     const isActive = entry.plan.id === activeArchitectPlanId &&
@@ -557,7 +640,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           event.preventDefault();
           event.stopPropagation();
           if (isBusy) return;
-          setOpenScopeMenuId(null);
+          setScopeCreateMenu(null);
+          setScopeContextMenu(null);
           setOpenPlanMenuKey(planMenuKey);
         }}
       >
@@ -606,7 +690,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           <button
             type="button"
             onClick={() => {
-              setOpenScopeMenuId(null);
+              setScopeCreateMenu(null);
+              setScopeContextMenu(null);
               setOpenPlanMenuKey((current) => current === planMenuKey ? null : planMenuKey);
             }}
             className={cn(
@@ -682,8 +767,124 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     );
   };
 
+  const createMenuScope = scopeCreateMenu ? scopesById.get(scopeCreateMenu.scopeId) ?? null : null;
+  const createMenuPlanKinds = createMenuScope
+    ? getCreatableArchitectPlanKinds(createMenuScope.projects.map((project) => project.gitFlowSettings))
+    : [];
+  const createMenuPosition = scopeCreateMenu && typeof window !== 'undefined'
+    ? getAnchoredArchitectMenuPosition(
+        scopeCreateMenu.anchorRect,
+        {
+          width: SCOPE_CREATE_MENU_WIDTH,
+          height: Math.max(56, createMenuPlanKinds.length * 44 + 12),
+        },
+        { width: window.innerWidth, height: window.innerHeight },
+      )
+    : null;
+  const contextMenuScope = scopeContextMenu ? scopesById.get(scopeContextMenu.scopeId) ?? null : null;
+  const contextMenuScopeIsExpanded = contextMenuScope
+    ? expandedScopeIds.includes(contextMenuScope.id)
+    : false;
+
+  const scopeCreateMenuPortal = scopeCreateMenu && createMenuScope && createMenuPosition && typeof document !== 'undefined'
+    ? createPortal(
+        <div
+          role="menu"
+          aria-label={t('architect.projectNavigator.newPlan', 'Nouveau plan')}
+          className="fixed z-[90] w-60 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl"
+          style={{ top: createMenuPosition.top, left: createMenuPosition.left }}
+          data-architect-scope-menu
+          data-architect-scope-create-menu
+        >
+          {createMenuPlanKinds.map((planKind) => {
+            const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
+            const canCreatePlan = createMenuScope.projects.some(isProjectActionable);
+            return (
+              <button
+                key={planKind}
+                type="button"
+                role="menuitem"
+                disabled={isBusy || Boolean(creatingScopeId) || !canCreatePlan}
+                onClick={() => void createPlan(createMenuScope, planKind)}
+                className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-muted/65 text-muted-foreground">
+                  <Icon
+                    name={isCreatingKind ? 'loader' : getPlanKindIconName(planKind)}
+                    size={12}
+                    className={cn(isCreatingKind && 'animate-spin text-primary')}
+                  />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium text-foreground">
+                    {planKindLabel(planKind)}
+                  </span>
+                  <span className="block truncate text-[10px] text-muted-foreground">
+                    {planKindHelp(planKind)}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )
+    : null;
+
+  const scopeContextMenuPortal = scopeContextMenu && contextMenuScope && typeof document !== 'undefined'
+    ? createPortal(
+        <div
+          role="menu"
+          aria-label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
+          className="fixed z-[90] w-52 rounded-lg border border-border bg-popover p-1.5 text-xs text-popover-foreground shadow-2xl"
+          style={{ top: scopeContextMenu.position.top, left: scopeContextMenu.position.left }}
+          data-architect-scope-menu
+          data-architect-scope-context-menu
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setScopeContextMenu(null);
+              setScopeToRename(contextMenuScope);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Icon name="edit" size={11} />
+            {t('common.rename', 'Renommer')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => toggleScope(contextMenuScope.id)}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Icon name={contextMenuScopeIsExpanded ? 'chevron-right' : 'chevron-down'} size={11} />
+            {contextMenuScopeIsExpanded
+              ? t('architect.projectNavigator.collapseProject', 'Réduire le projet')
+              : t('architect.projectNavigator.expandProject', 'Développer le projet')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setScopeContextMenu(null);
+              openProjectNavigator();
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Icon name="settings" size={11} />
+            {t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
+          </button>
+        </div>,
+        document.body,
+      )
+    : null;
+
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}>
+      {scopeCreateMenuPortal}
+      {scopeContextMenuPortal}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Icon name="folder-tree" size={15} className="shrink-0 text-primary" />
@@ -775,19 +976,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               const visibleEntries = showAll ? scopeEntries : scopeEntries.slice(0, MAX_VISIBLE_PLANS_PER_SCOPE);
               const hiddenCount = scopeEntries.length - visibleEntries.length;
               const canCreatePlan = scope.projects.some(isProjectActionable);
-              const creatablePlanKinds = getCreatableArchitectPlanKinds(
-                scope.projects.map((project) => project.gitFlowSettings),
-              );
               return (
                 <div
                   key={scope.id}
                   className="relative"
+                  data-architect-scope-id={scope.id}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     if (isBusy) return;
                     applyScopeSelection(scope);
                     setOpenPlanMenuKey(null);
-                    setOpenScopeMenuId(scope.id);
+                    setScopeCreateMenu(null);
+                    setScopeContextMenu({
+                      scopeId: scope.id,
+                      position: getPointerArchitectMenuPosition(
+                        { x: event.clientX, y: event.clientY },
+                        { width: SCOPE_CONTEXT_MENU_WIDTH, height: 100 },
+                        { width: window.innerWidth, height: window.innerHeight },
+                      ),
+                    });
                   }}
                 >
                   <div className={cn(
@@ -824,10 +1031,14 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                       )}
                     </button>
                     <button
+                      ref={(element) => {
+                        if (element) scopeCreateButtonRefs.current.set(scope.id, element);
+                        else scopeCreateButtonRefs.current.delete(scope.id);
+                      }}
                       type="button"
-                      onClick={() => {
-                    setOpenPlanMenuKey(null);
-                        setOpenScopeMenuId((current) => current === scope.id ? null : scope.id);
+                      onClick={(event) => {
+                        const anchor = event.currentTarget.getBoundingClientRect();
+                        openScopeCreateMenu(scope.id, 'header', anchor);
                       }}
                       disabled={isBusy || creatingScopeId === scope.id || !canCreatePlan}
                       className={cn(
@@ -836,82 +1047,26 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                       )}
                       title={t('architect.projectNavigator.newPlan', 'Nouveau plan')}
                       aria-label={t('architect.projectNavigator.newPlanFor', 'Nouveau plan pour {{project}}', { project: scope.label })}
+                      aria-haspopup="menu"
+                      aria-expanded={scopeCreateMenu?.scopeId === scope.id && scopeCreateMenu.triggerKey === 'header'}
                     >
                       <Icon name={creatingScopeId === scope.id ? 'loader' : 'plus'} size={11} className={cn(creatingScopeId === scope.id && 'animate-spin')} />
                     </button>
                   </div>
-
-                  {openScopeMenuId === scope.id && (
-                    <div
-                      className="absolute right-0 top-8 z-40 w-60 max-w-[calc(100%-0.5rem)] rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-xl"
-                      data-architect-scope-menu
-                    >
-                      <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium text-muted-foreground">
-                        {t('architect.projectNavigator.newPlanFor', 'Nouveau plan pour {{project}}', { project: scope.label })}
-                      </p>
-                      {creatablePlanKinds.map((planKind) => {
-                        const isCreatingKind = creatingScopeId === scope.id && creatingPlanKind === planKind;
-                        return (
-                          <button
-                            key={planKind}
-                            type="button"
-                            disabled={isBusy || Boolean(creatingScopeId) || !canCreatePlan}
-                            onClick={() => void createPlan(scope, planKind)}
-                            className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
-                          >
-                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-muted/65 text-muted-foreground">
-                              <Icon
-                                name={isCreatingKind ? 'loader' : getPlanKindIconName(planKind)}
-                                size={12}
-                                className={cn(isCreatingKind && 'animate-spin text-primary')}
-                              />
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-xs font-medium text-foreground">
-                                {planKindLabel(planKind)}
-                              </span>
-                              <span className="block truncate text-[10px] text-muted-foreground">
-                                {planKindHelp(planKind)}
-                              </span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                      <div className="my-1 border-t border-border/70" />
-                      <button
-                        type="button"
-                        onClick={() => toggleScope(scope.id)}
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                      >
-                        <Icon name={isExpanded ? 'chevron-right' : 'chevron-down'} size={11} />
-                        {isExpanded
-                          ? t('architect.projectNavigator.collapseProject', 'Réduire le projet')
-                          : t('architect.projectNavigator.expandProject', 'Développer le projet')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOpenScopeMenuId(null);
-                          openProjectNavigator();
-                        }}
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                      >
-                        <Icon name="settings" size={11} />
-                        {t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
-                      </button>
-                    </div>
-                  )}
 
                   {isExpanded && (
                     <div className="ml-7 space-y-0.5 pb-0.5 pt-0.5">
                       {visibleEntries.length > 0 ? visibleEntries.map((entry) => renderPlanRow(entry)) : (
                         <button
                           type="button"
-                          onClick={() => {
-                            setOpenPlanMenuKey(null);
-                            setOpenScopeMenuId(scope.id);
+                          onClick={(event) => {
+                            const anchor = event.currentTarget.getBoundingClientRect();
+                            openScopeCreateMenu(scope.id, 'empty', anchor);
                           }}
                           disabled={!canCreatePlan || isBusy}
+                          aria-haspopup="menu"
+                          aria-expanded={scopeCreateMenu?.scopeId === scope.id && scopeCreateMenu.triggerKey === 'empty'}
+                          data-architect-scope-menu
                           className="mt-0.5 flex min-h-8 w-full items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/10 px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground disabled:cursor-default disabled:opacity-50"
                         >
                           <Icon name="plus" size={11} />
@@ -972,7 +1127,8 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           type="button"
           onClick={() => {
             setOpenPlanMenuKey(null);
-            setOpenScopeMenuId(null);
+            setScopeCreateMenu(null);
+            setScopeContextMenu(null);
             setShowArchived((current) => !current);
           }}
           data-tour-id="architect-archive-toggle"
@@ -996,6 +1152,24 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           error={formError}
         />
       )}
+
+      <ConfirmPromptModal
+        isOpen={Boolean(scopeToRename)}
+        title={t('common.rename', 'Renommer')}
+        description={scopeToRename?.kind === 'group'
+          ? t('projects.renameGroupPrompt', 'Entrez un nouveau nom pour ce groupe.')
+          : t('projects.renameProjectPrompt', 'Entrez un nouveau nom pour ce projet.')}
+        confirmLabel={t('common.rename', 'Renommer')}
+        cancelLabel={t('common.cancel', 'Annuler')}
+        initialValue={scopeToRename?.label ?? ''}
+        inputPlaceholder={t('common.name', 'Nom')}
+        requireInput
+        isSubmitting={isRenamingScope}
+        onCancel={() => {
+          if (!isRenamingScope) setScopeToRename(null);
+        }}
+        onConfirm={(value) => void confirmScopeRename(value ?? '')}
+      />
 
       <ConfirmPromptModal
         isOpen={Boolean(planToDelete)}
