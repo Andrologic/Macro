@@ -15,6 +15,8 @@ type AppStoreState = {
   setArchitectLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
   metadataRecoveryReport: null;
+  projectNavigatorOpen: boolean;
+  closeProjectNavigator: () => void;
 };
 
 type AppBootstrapSnapshot = {
@@ -133,6 +135,11 @@ const registerAppMocks = () => {
     default: () => null,
   }));
 
+  mock.module('./components/modals/ProjectNavigator', () => ({
+    ProjectNavigator: ({ isOpen }: { isOpen: boolean }) =>
+      isOpen ? <div data-testid="mock-project-navigator" /> : null,
+  }));
+
   mock.module('./components/modals/ProjectGitFlowModal', () => ({
     default: () => null,
   }));
@@ -170,6 +177,8 @@ describe('App layout containment', () => {
       setArchitectLeftPanelWidth: () => undefined,
       setRightPanelWidth: () => undefined,
       metadataRecoveryReport: null,
+      projectNavigatorOpen: false,
+      closeProjectNavigator: () => undefined,
     };
 
     appBootstrapSnapshot = {
@@ -258,6 +267,22 @@ describe('App layout containment', () => {
     expect(container.querySelector('[data-testid="panel-right"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid="mock-resizer"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="panel-left"]')?.parentElement?.style.width).toBe('340px');
+  });
+
+  it('hosts the project navigator outside the header when it is open', async () => {
+    appState.projectNavigatorOpen = true;
+    const { default: App } = await loadApp();
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<App />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="mock-project-navigator"]')).not.toBeNull();
   });
 
   it('renders startup chrome while critical boot is pending', async () => {

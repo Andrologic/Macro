@@ -110,10 +110,6 @@
           "Chat: Unterhaltungen, Quellen und allgemeine Werkzeuge."
         ]
       },
-      "project-picker": {
-        "title": "Aktives Projekt",
-        "body": "Diese Schaltfläche öffnet den Projektnavigator. Sie bestimmt die Projekte, Branches und den Kontext, den Architect und Implement verwenden."
-      },
       "panel-toggles": {
         "title": "Seitenpanels",
         "body": "Panel-Schaltflächen blenden Kontextbereiche ein oder aus. Das linke Panel enthält oft die Arbeitsliste, das rechte Details oder Prüfungen."

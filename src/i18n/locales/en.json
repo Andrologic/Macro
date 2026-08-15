@@ -110,10 +110,6 @@
           "Chat: conversations, sources, and general tools."
         ]
       },
-      "project-picker": {
-        "title": "Active project",
-        "body": "This button opens the project navigator. It determines the group, projects, branches, and context used by Architect and Implement."
-      },
       "panel-toggles": {
         "title": "Side panels",
         "body": "Panel buttons hide or show context areas. The left panel often contains the work list, while the right panel contains details or validation."
