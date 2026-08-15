@@ -340,7 +340,8 @@
     "scope": {
       "allProjects": "All projects",
       "allRepositories": "すべてのリポジトリ",
-      "gitScope": "Git スコープ"
+      "gitScope": "Git スコープ",
+      "selectRepository": "リポジトリを選択"
     }
   },
   "window": {
@@ -963,6 +964,7 @@
     "newProject": "新しいプロジェクト",
     "newGroup": "新しいグループ",
     "noProjects": "まだプロジェクトはありません",
+    "noProject": "プロジェクトなし",
     "openProject": "プロジェクトを開く",
     "projectSettings": "プロジェクト設定",
     "deleteProject": "プロジェクトの削除",
