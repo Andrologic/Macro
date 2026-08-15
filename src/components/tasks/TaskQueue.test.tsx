@@ -1181,8 +1181,13 @@ describe('TaskQueue', () => {
 
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
+      { key: 'project', text: 'Project One' },
       { key: 'plan', text: 'Checkout refresh' },
     ]);
+    const projectBadge = document.body.querySelector('[data-task-context-badge="project"]');
+    expect(projectBadge?.getAttribute('title')).toBe('Project One');
+    const projectIcon = getTaskContextBadgeIconIdentity('project');
+    expect(`${projectIcon.dataIcon} ${projectIcon.className}`).toContain('folder-git-2');
     const icon = getTaskContextBadgeIconIdentity('plan');
     expect(`${icon.dataIcon} ${icon.className}`).toContain('flag');
     expect(icon.className).not.toContain('border');
@@ -1277,9 +1282,77 @@ describe('TaskQueue', () => {
 
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
+      { key: 'project', text: 'Project One' },
       { key: 'standalone', text: 'Standalone' },
     ]);
     expect(document.body.querySelector('[data-task-context-badge="plan"]')).toBeNull();
+  });
+
+  it('omits the project badge when the primary project no longer exists', async () => {
+    seedTasks([
+      makeTask('orphaned-project', 'Pending', {
+        title: 'Task with a removed project',
+        project_id: 'removed-project',
+        project_ids: ['removed-project'],
+      }),
+    ]);
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-task-context-badge="project"]')).toBeNull();
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'standalone', text: 'Standalone' },
+    ]);
+  });
+
+  it('shows only the primary project badge for a multi-project task', async () => {
+    seedTasks([
+      makeTask('multi-project', 'Pending', {
+        title: 'Multi-project task',
+        project_id: 'project-1',
+        project_ids: ['project-1', 'project-2'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/multi-project',
+            worktreeKey: 'project-1::feature/multi-project',
+          },
+          {
+            projectId: 'project-2',
+            branchName: 'feature/multi-project',
+            worktreeKey: 'project-2::feature/multi-project',
+          },
+        ],
+      }),
+    ]);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            makeProject('project-1', '/tmp/project-1', 'Primary Project'),
+            makeProject('project-2', '/tmp/project-2', 'Secondary Project'),
+          ],
+        },
+      ],
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskContextBadges()).toEqual([
+      { key: 'project', text: 'Primary Project' },
+      { key: 'standalone', text: 'Standalone' },
+    ]);
+    expect(document.body.textContent).not.toContain('Secondary Project');
   });
 
   it('renders the synthetic plan finalization task in the operational status summary', async () => {
@@ -1353,6 +1426,7 @@ describe('TaskQueue', () => {
     expect(taskCard?.className).toContain('h-[96px]');
     expect(getTaskCardFooter()).not.toBeNull();
     expect(getTaskContextBadges()).toEqual([
+      { key: 'project', text: 'Project One' },
       { key: 'standalone', text: 'Agent classification' },
       { key: 'draft', text: 'Draft' },
     ]);
