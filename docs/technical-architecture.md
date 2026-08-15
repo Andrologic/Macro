@@ -180,6 +180,8 @@ L'interface est structurée autour de :
 
 Le centre reste principalement occupé par la conversation et la coordination du travail.
 
+La résolution du dépôt Git du footer est centralisée dans un service pur et typé. Ses entrées sont les identités durables du mode courant — tâche Implement, plan Architect et conversation Chat — ainsi que le registre de projets. Le composant ne reconstruit pas cette logique à partir de sélections globales. Le service retourne soit un dépôt unique, soit une portée ambiguë ou vide ; dans ces deux derniers cas, les actions Git restent sans cible et donc désactivées. Pour un plan multi-projets, le seul focus implicite autorisé est le focus durable courant s'il appartient encore à la portée du plan. Une sélection manuelle reste locale au footer, limitée aux candidats retournés et invalidée par la clé d'identité du contexte.
+
 ### 5.4 Initialisation
 
 Le frontend initialise ses stores par priorités afin de réduire le coût de démarrage perçu.
