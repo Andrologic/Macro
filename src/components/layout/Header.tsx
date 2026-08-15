@@ -1,8 +1,6 @@
 import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
-  Suspense,
-  lazy,
   useEffect,
   useRef,
   useState,
@@ -10,10 +8,9 @@ import {
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
-import { getGlobalProjectById } from '../../services/globalProjects';
 import { windowSetTrafficLightPosition } from '../../services/tauriWindow';
 import { useAppStore } from '../../stores/useAppStore';
-import { type AppMode, type Project } from '../../types';
+import { type AppMode } from '../../types';
 import { cn } from '../../utils/cn';
 import { getPlatformChromeState } from '../../utils/desktopPlatform';
 import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
@@ -25,12 +22,6 @@ import {
   getMacosTrafficLightPosition,
   getTitleBarLayout,
 } from './titleBarLayout';
-
-const ProjectNavigator = lazy(() =>
-  import('../modals/ProjectNavigator').then((module) => ({
-    default: module.ProjectNavigator,
-  }))
-);
 
 const MODES_DROPDOWN_WIDTH = 192;
 const MODES_DROPDOWN_GAP = 6;
@@ -52,13 +43,6 @@ interface ModeOption {
 }
 
 export type MacosTitlebarMouseAction = 'none' | 'toggle-maximize' | 'start-dragging';
-
-const projectHasGitIntegration = (
-  project: Pick<Project, 'gitSetupState' | 'readOnlyReason'>
-): boolean => {
-  if (project.gitSetupState === 'not_git') return false;
-  return project.readOnlyReason !== 'missing_git' && project.readOnlyReason !== 'manual_and_missing_git';
-};
 
 export function resolveMacosTitlebarMouseAction({
   button,
@@ -91,13 +75,6 @@ export function Header({
   const mode = useAppStore((state) => state.mode);
   const setMode = useAppStore((state) => state.setMode);
   const openSettings = useAppStore((state) => state.openSettings);
-  const projectNavigatorOpen = useAppStore((state) => state.projectNavigatorOpen);
-  const openProjectNavigator = useAppStore((state) => state.openProjectNavigator);
-  const closeProjectNavigator = useAppStore((state) => state.closeProjectNavigator);
-  const selectedGroupId = useAppStore((state) => state.selectedGroupId);
-  const selectedProjectId = useAppStore((state) => state.selectedProjectId);
-  const projectGroups = useAppStore((state) => state.projectGroups);
-  const getProjectById = useAppStore((state) => state.getProjectById);
   const uiZoomMode = useAppStore((state) => state.uiZoomMode);
   const uiZoomLevel = useAppStore((state) => state.uiZoomLevel);
 
@@ -244,17 +221,6 @@ export function Header({
     }
   };
 
-  const selectedGroup = getGlobalProjectById(projectGroups, selectedGroupId);
-  const selectedProject = selectedProjectId ? getProjectById(selectedProjectId) ?? null : null;
-  const projectName = selectedGroup?.name ?? selectedProject?.name ?? null;
-  const projectPickerIcon: IconName = selectedGroup
-    ? 'layers'
-    : selectedProject
-      ? projectHasGitIntegration(selectedProject)
-        ? 'folder-git-2'
-        : 'folder'
-      : 'layers';
-
   const renderModeButton = (modeOption: ModeOption) => (
     <button
       key={modeOption.value}
@@ -293,19 +259,18 @@ export function Header({
   );
 
   return (
-    <>
-      <header
-        ref={headerRef}
-        className={cn(
-          'macro-topbar select-none shrink-0 overflow-visible',
-          isNativeMacosTitlebar && 'macro-topbar--native-macos'
-        )}
-        style={headerStyle}
-        data-tauri-drag-region
-        onMouseDown={handleHeaderMouseDown}
-        onDoubleClick={handleHeaderDoubleClick}
-      >
-        <div className="macro-topbar-inner grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-3">
+    <header
+      ref={headerRef}
+      className={cn(
+        'macro-topbar select-none shrink-0 overflow-visible',
+        isNativeMacosTitlebar && 'macro-topbar--native-macos'
+      )}
+      style={headerStyle}
+      data-tauri-drag-region
+      onMouseDown={handleHeaderMouseDown}
+      onDoubleClick={handleHeaderDoubleClick}
+    >
+      <div className="macro-topbar-inner grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-3">
           <div className="macro-topbar-leading flex min-w-0 items-center gap-2">
             <div className="macro-topbar-brand flex items-center gap-2 shrink-0" data-tour-id="app-brand">
               <Logo size={24} />
@@ -319,28 +284,6 @@ export function Header({
                 Macro
               </span>
             </div>
-
-            {mode === 'Architect' ? (
-              <>
-                <div className="ml-2 hidden h-5 w-px shrink-0 bg-border sm:block" />
-                <button
-                  onClick={openProjectNavigator}
-                  className={cn(
-                    'macro-titlebar-action flex h-8 items-center gap-2 rounded-md px-2.5',
-                    'hover:bg-accent transition-colors text-sm',
-                    'min-w-[80px] max-w-[140px] sm:max-w-[180px] md:max-w-[220px] lg:max-w-[280px] xl:max-w-[320px]'
-                  )}
-                  data-tauri-drag-region="false"
-                  data-tour-id="project-picker"
-                >
-                  <Icon name={projectPickerIcon} size={15} className="text-muted-foreground shrink-0" />
-                  <span className="inline-flex min-w-0 items-center truncate leading-none text-foreground">
-                    {projectName || t('header.selectProject')}
-                  </span>
-                  <Icon name="chevron-down" size={12} className="text-muted-foreground shrink-0" />
-                </button>
-              </>
-            ) : null}
           </div>
 
           <div className="macro-topbar-center justify-self-center" data-tauri-drag-region="false">
@@ -452,15 +395,7 @@ export function Header({
 
             <WindowControls chromeState={platformChrome} />
           </div>
-        </div>
-      </header>
-
-      <Suspense fallback={null}>
-        <ProjectNavigator
-          isOpen={projectNavigatorOpen}
-          onClose={closeProjectNavigator}
-        />
-      </Suspense>
-    </>
+      </div>
+    </header>
   );
 }
