@@ -2871,6 +2871,19 @@ describe('ChatZone', () => {
       '[data-tour-id="architect-empty-plan-action"]'
     ) as HTMLButtonElement | null;
     expect(button?.textContent).toContain('Create a plan');
+    if (button) {
+      button.getBoundingClientRect = () => ({
+        top: 300,
+        right: 740,
+        bottom: 336,
+        left: 600,
+        width: 140,
+        height: 36,
+        x: 600,
+        y: 300,
+        toJSON: () => ({}),
+      });
+    }
 
     const requestDetails: unknown[] = [];
     const handleRequest = (event: Event) => {
@@ -2886,7 +2899,17 @@ describe('ChatZone', () => {
       window.removeEventListener('macro:architect-plan-selector-request', handleRequest);
     }
 
-    expect(requestDetails).toEqual([{ action: 'primary' }]);
+    expect(requestDetails).toEqual([{
+      action: 'primary',
+      anchorRect: {
+        top: 300,
+        right: 740,
+        bottom: 336,
+        left: 600,
+        width: 140,
+        height: 36,
+      },
+    }]);
   });
 
   it('offers to select a plan in the central panel when plans exist', async () => {
