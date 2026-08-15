@@ -4142,6 +4142,9 @@ pub async fn close_project(
         plan.updated_at = Utc::now().to_rfc3339();
     }
 
+    state.project_registry_explicitly_empty =
+        count_registry_projects(&state.standalone_projects, &state.project_groups) == 0;
+
     let (sanitized_state, repair_report) =
         persist_sanitized_state(workspace_path, metadata_root, state, "remove_project").await?;
     tracing::info!(
@@ -5021,6 +5024,9 @@ fn recover_physical_workspace_project_if_missing(
     workspace_path: &Path,
     metadata_root: &Path,
 ) -> bool {
+    if state.project_registry_explicitly_empty {
+        return false;
+    }
     if count_registry_projects(&state.standalone_projects, &state.project_groups) > 0 {
         return false;
     }
@@ -5454,6 +5460,7 @@ fn reconstruct_workspace_state_from_hints(
         version: WorkspaceState::default().version,
         workspace_revision: 0,
         standalone_projects: Vec::new(),
+        project_registry_explicitly_empty: false,
         project_groups,
         current_plan: None,
         plan_nodes: Vec::new(),
@@ -6590,6 +6597,13 @@ async fn persist_sanitized_state(
 ) -> Result<(WorkspaceState, ProjectRegistryRepairReportDto)> {
     let _file_guard = lock_workspace_state_file(metadata_root)?;
     let (mut sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
+    if count_registry_projects(
+        &sanitized_state.standalone_projects,
+        &sanitized_state.project_groups,
+    ) > 0
+    {
+        sanitized_state.project_registry_explicitly_empty = false;
+    }
     let persisted_revision = load_raw_state_sync(metadata_root)?
         .map(|current| current.workspace_revision)
         .unwrap_or(0);
@@ -8229,6 +8243,7 @@ mod tests {
             version: 1,
             workspace_revision: 0,
             standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
             project_groups: vec![
                 ProjectGroupDto {
                     id: "group-main".to_string(),
@@ -8364,6 +8379,7 @@ mod tests {
             version: 1,
             workspace_revision: 0,
             standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
@@ -9041,6 +9057,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removing_last_project_keeps_git_workspace_registry_empty_after_reload() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("octan_sales");
+        let _repo = init_git_repo(&workspace_path, "main", &[]);
+        let metadata_root = temp.path().join("metadata");
+
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                standalone_projects: vec![make_project(
+                    "project-octan-sales",
+                    workspace_path.to_string_lossy().as_ref(),
+                )],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist workspace state");
+
+        close_project(&workspace_path, &metadata_root, "project-octan-sales")
+            .await
+            .expect("remove last project");
+
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("load persisted state")
+            .expect("persisted state");
+        assert!(persisted.project_registry_explicitly_empty);
+        assert!(persisted.standalone_projects.is_empty());
+        assert!(persisted.project_groups.is_empty());
+
+        let loaded_async = load_state(&workspace_path, &metadata_root)
+            .await
+            .expect("load async state")
+            .expect("async state");
+        let loaded_sync = load_state_sync(&workspace_path, &metadata_root)
+            .expect("load sync state")
+            .expect("sync state");
+        let loaded_default = load_or_default_state(&workspace_path, &metadata_root)
+            .await
+            .expect("load default state");
+
+        for loaded in [loaded_async, loaded_sync, loaded_default] {
+            assert!(loaded.project_registry_explicitly_empty);
+            assert!(loaded.standalone_projects.is_empty());
+            assert!(loaded.project_groups.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn persisting_added_project_clears_explicitly_empty_registry_marker() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join("metadata");
+        let state = WorkspaceState {
+            project_registry_explicitly_empty: true,
+            standalone_projects: vec![make_project("project-added", "/repos/added")],
+            ..WorkspaceState::default()
+        };
+
+        persist_sanitized_state(temp.path(), &metadata_root, state, "add_project_test")
+            .await
+            .expect("persist added project");
+        let persisted = load_raw_state_sync(&metadata_root)
+            .expect("load persisted state")
+            .expect("persisted state");
+
+        assert!(!persisted.project_registry_explicitly_empty);
+        assert_eq!(persisted.standalone_projects.len(), 1);
+    }
+
+    #[test]
+    fn legacy_empty_registry_still_recovers_physical_git_workspace() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("octan_sales");
+        let _repo = init_git_repo(&workspace_path, "main", &[]);
+        let metadata_root = temp.path().join("metadata");
+        stdfs::create_dir_all(&metadata_root).expect("create metadata root");
+        let mut legacy_state = serde_json::to_value(WorkspaceState::default())
+            .expect("serialize legacy workspace state");
+        legacy_state
+            .as_object_mut()
+            .expect("workspace state object")
+            .remove("projectRegistryExplicitlyEmpty");
+        stdfs::write(
+            workspace_state_path(&metadata_root),
+            serde_json::to_vec_pretty(&legacy_state).expect("serialize legacy state"),
+        )
+        .expect("write legacy workspace state");
+
+        let loaded = load_state_sync(&workspace_path, &metadata_root)
+            .expect("load legacy state")
+            .expect("legacy state");
+
+        assert!(!loaded.project_registry_explicitly_empty);
+        assert_eq!(loaded.standalone_projects.len(), 1);
+        assert_eq!(
+            PathBuf::from(&loaded.standalone_projects[0].path),
+            absolutize_path(&workspace_path)
+        );
+    }
+
+    #[tokio::test]
     async fn list_tasks_recovers_manual_features_from_macro_metadata_without_workspace_state() {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".git").join("macro-metadata-worktree");
@@ -9343,6 +9459,7 @@ mod tests {
             version: 3,
             workspace_revision: 0,
             standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
             project_groups: vec![ProjectGroupDto {
                 id: "group-1".to_string(),
                 name: "Suite".to_string(),
@@ -9532,6 +9649,7 @@ mod tests {
             version: 1,
             workspace_revision: 0,
             standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
             project_groups: vec![ProjectGroupDto {
                 id: "group-main".to_string(),
                 name: "Main".to_string(),
