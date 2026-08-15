@@ -242,6 +242,7 @@
   "restoreTask": "Wiederherstellen",
   "hideArchived": "Archivierte Aufgaben ausblenden",
   "showArchived": "Archivierte Aufgaben anzeigen",
+  "archives": "Archiv",
   "taskCommandsDraftUnsupported": "Befehle sind nicht verfügbar, solange diese Aufgabe noch ein Entwurf ist.",
   "taskCommandsArchivedUnsupported": "Befehle sind für archivierte Aufgaben nicht verfügbar.",
   "completedTasks": "Abgeschlossene Aufgaben",
