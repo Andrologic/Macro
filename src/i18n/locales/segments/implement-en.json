@@ -282,6 +282,7 @@
   "statusWaiting": "Waiting",
   "statusBlocked": "Blocked",
   "clearStatusFilter": "Show all statuses",
+  "allStatuses": "All statuses",
   "planFilterStandalone": "No plan / standalone",
   "standaloneBadge": "Standalone",
   "taskKindPending": "Agent classification",

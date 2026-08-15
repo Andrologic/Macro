@@ -1993,7 +1993,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
         {!showArchived && (
           <div
-            className="mt-3 grid grid-cols-2 gap-1.5"
+            className="mt-2.5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,6.5rem),1fr))] gap-1.5"
             aria-label={t('implement.taskStatusSummary', 'Task status summary')}
           >
             {([
@@ -2007,8 +2007,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 type="button"
                 onClick={() => setStatusFilter((current) => current === filter ? 'all' : filter)}
                 aria-pressed={statusFilter === filter}
+                title={label}
                 className={cn(
-                  'flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors',
+                  'flex h-7 min-w-0 items-center gap-1.5 rounded-md border px-2 text-left transition-colors',
                   statusFilter === filter
                     ? 'border-primary/40 bg-primary/10 text-foreground'
                     : 'border-border/70 bg-background/50 text-muted-foreground hover:border-primary/30 hover:bg-accent/50 hover:text-foreground'
@@ -2019,16 +2020,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 <span className="text-xs font-semibold tabular-nums">{count}</span>
               </button>
             ))}
+            {statusFilter !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setStatusFilter('all')}
+                title={t('implement.clearStatusFilter', 'Show all statuses')}
+                className="flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-md border border-border/70 bg-muted/30 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+              >
+                <Icon name="rotate-ccw" size={11} className="shrink-0" />
+                <span className="truncate">
+                  {t('implement.allStatuses', 'All statuses')}
+                </span>
+              </button>
+            )}
           </div>
-        )}
-        {statusFilter !== 'all' && !showArchived && (
-          <button
-            type="button"
-            onClick={() => setStatusFilter('all')}
-            className="mt-2 text-[11px] text-primary hover:underline"
-          >
-            {t('implement.clearStatusFilter', 'Show all statuses')}
-          </button>
         )}
       </div>
 
