@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
@@ -24,6 +25,60 @@ const TASK_KIND_OPTIONS: Array<{
   { kind: 'hotfix', icon: 'zap' },
 ];
 
+const TOOLTIP_OFFSET = 12;
+const TOOLTIP_VIEWPORT_MARGIN = 8;
+const TOOLTIP_ESTIMATED_SIZE = { width: 320, height: 80 };
+
+type TaskKindTooltipAnchor =
+  | { kind: StandaloneTaskKind; source: 'pointer'; x: number; y: number }
+  | { kind: StandaloneTaskKind; source: 'focus'; rect: DOMRect };
+
+const clamp = (value: number, minimum: number, maximum: number): number =>
+  Math.max(minimum, Math.min(value, maximum));
+
+const resolveTooltipPosition = (
+  anchor: TaskKindTooltipAnchor,
+  size: { width: number; height: number }
+): { left: number; top: number } => {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const maximumLeft = Math.max(TOOLTIP_VIEWPORT_MARGIN, viewportWidth - size.width - TOOLTIP_VIEWPORT_MARGIN);
+  const maximumTop = Math.max(TOOLTIP_VIEWPORT_MARGIN, viewportHeight - size.height - TOOLTIP_VIEWPORT_MARGIN);
+
+  if (anchor.source === 'pointer') {
+    const preferredLeft = anchor.x + TOOLTIP_OFFSET;
+    const preferredTop = anchor.y + TOOLTIP_OFFSET;
+    return {
+      left: clamp(
+        preferredLeft + size.width > viewportWidth - TOOLTIP_VIEWPORT_MARGIN
+          ? anchor.x - size.width - TOOLTIP_OFFSET
+          : preferredLeft,
+        TOOLTIP_VIEWPORT_MARGIN,
+        maximumLeft
+      ),
+      top: clamp(
+        preferredTop + size.height > viewportHeight - TOOLTIP_VIEWPORT_MARGIN
+          ? anchor.y - size.height - TOOLTIP_OFFSET
+          : preferredTop,
+        TOOLTIP_VIEWPORT_MARGIN,
+        maximumTop
+      ),
+    };
+  }
+
+  const preferredTop = anchor.rect.bottom + TOOLTIP_OFFSET;
+  return {
+    left: clamp(anchor.rect.left, TOOLTIP_VIEWPORT_MARGIN, maximumLeft),
+    top: clamp(
+      preferredTop + size.height > viewportHeight - TOOLTIP_VIEWPORT_MARGIN
+        ? anchor.rect.top - size.height - TOOLTIP_OFFSET
+        : preferredTop,
+      TOOLTIP_VIEWPORT_MARGIN,
+      maximumTop
+    ),
+  };
+};
+
 export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps> = ({
   projects,
   initialProjectId,
@@ -34,8 +89,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const { t } = useTranslation();
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialProjectId);
   const [selectedTaskKind, setSelectedTaskKind] = useState<StandaloneTaskKind | null>(null);
-  const [hoveredTaskKind, setHoveredTaskKind] = useState<StandaloneTaskKind | null>(null);
-  const [focusedTaskKind, setFocusedTaskKind] = useState<StandaloneTaskKind | null>(null);
+  const [pointerTooltipAnchor, setPointerTooltipAnchor] = useState<TaskKindTooltipAnchor | null>(null);
+  const [focusTooltipAnchor, setFocusTooltipAnchor] = useState<TaskKindTooltipAnchor | null>(null);
+  const [tooltipSize, setTooltipSize] = useState(TOOLTIP_ESTIMATED_SIZE);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
   const editableProjects = projects.filter((project) => !project.isReadOnly);
   const filteredProjects = useMemo(() => {
@@ -53,7 +110,20 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     bugfix: t('implement.taskKindBugfixHelp', 'Bugfix creates a branch from the configured development branch and merges it back into that branch.'),
     hotfix: t('implement.taskKindHotfixHelp', 'Hotfix creates a branch from the configured production branch and merges it back into that branch.'),
   };
-  const activeTooltipKind = hoveredTaskKind ?? focusedTaskKind;
+  const tooltipAnchor = pointerTooltipAnchor ?? focusTooltipAnchor;
+  const tooltipPosition = tooltipAnchor
+    ? resolveTooltipPosition(tooltipAnchor, tooltipSize)
+    : null;
+
+  useLayoutEffect(() => {
+    const tooltip = tooltipRef.current;
+    if (!tooltipAnchor || !tooltip) return;
+    const rect = tooltip.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0 &&
+      (rect.width !== tooltipSize.width || rect.height !== tooltipSize.height)) {
+      setTooltipSize({ width: rect.width, height: rect.height });
+    }
+  }, [tooltipAnchor, tooltipSize.height, tooltipSize.width]);
 
   return (
     <Dialog
@@ -138,28 +208,42 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <legend className="text-xs font-medium text-foreground">
             {t('implement.taskKindLabel', 'Task type')}
           </legend>
-          <div className="relative">
-            <div className="grid grid-cols-3 gap-2">
-              {TASK_KIND_OPTIONS.map(({ kind, icon }) => {
-                const selected = selectedTaskKind === kind;
-                const label = kind === 'feature'
-                  ? t('implement.taskKindFeature', 'Feature')
-                  : kind === 'bugfix'
-                    ? t('implement.taskKindBugfix', 'Bugfix')
-                    : t('implement.taskKindHotfix', 'Hotfix');
-                const descriptionId = `implement-task-kind-${kind}-description`;
+          <div className="grid grid-cols-3 gap-2">
+            {TASK_KIND_OPTIONS.map(({ kind, icon }) => {
+              const selected = selectedTaskKind === kind;
+              const label = kind === 'feature'
+                ? t('implement.taskKindFeature', 'Feature')
+                : kind === 'bugfix'
+                  ? t('implement.taskKindBugfix', 'Bugfix')
+                  : t('implement.taskKindHotfix', 'Hotfix');
+              const descriptionId = `implement-task-kind-${kind}-description`;
 
-                return (
+              return (
                   <button
                     key={kind}
                     type="button"
                     aria-pressed={selected}
                     aria-describedby={descriptionId}
                     onClick={() => setSelectedTaskKind(kind)}
-                    onFocus={() => setFocusedTaskKind(kind)}
-                    onBlur={() => setFocusedTaskKind(null)}
-                    onMouseEnter={() => setHoveredTaskKind(kind)}
-                    onMouseLeave={() => setHoveredTaskKind(null)}
+                    onFocus={(event) => setFocusTooltipAnchor({
+                      kind,
+                      source: 'focus',
+                      rect: event.currentTarget.getBoundingClientRect(),
+                    })}
+                    onBlur={() => setFocusTooltipAnchor(null)}
+                    onMouseEnter={(event) => setPointerTooltipAnchor({
+                      kind,
+                      source: 'pointer',
+                      x: event.clientX,
+                      y: event.clientY,
+                    })}
+                    onMouseMove={(event) => setPointerTooltipAnchor({
+                      kind,
+                      source: 'pointer',
+                      x: event.clientX,
+                      y: event.clientY,
+                    })}
+                    onMouseLeave={() => setPointerTooltipAnchor(null)}
                     className={cn(
                       'flex h-10 items-center justify-center gap-2 rounded-md border text-xs font-medium transition-colors',
                       selected
@@ -170,17 +254,8 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                     <Icon name={icon} size={14} className={selected ? 'text-primary' : undefined} />
                     {label}
                   </button>
-                );
-              })}
-            </div>
-            {activeTooltipKind && (
-              <div
-                role="tooltip"
-                className="pointer-events-none absolute bottom-full left-0 right-0 z-20 mb-1.5 rounded-md border border-border bg-popover px-2.5 py-2 text-[11px] leading-snug text-popover-foreground shadow-md"
-              >
-                {taskKindDescriptions[activeTooltipKind]}
-              </div>
-            )}
+              );
+            })}
           </div>
           {TASK_KIND_OPTIONS.map(({ kind }) => (
             <span key={kind} id={`implement-task-kind-${kind}-description`} className="sr-only">
@@ -189,6 +264,18 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           ))}
         </fieldset>
       </div>
+
+      {tooltipAnchor && tooltipPosition && createPortal(
+        <div
+          ref={tooltipRef}
+          role="tooltip"
+          className="pointer-events-none fixed z-[100] max-w-80 rounded-md border border-border bg-popover px-2.5 py-2 text-[11px] leading-snug text-popover-foreground shadow-md"
+          style={{ left: tooltipPosition.left, top: tooltipPosition.top }}
+        >
+          {taskKindDescriptions[tooltipAnchor.kind]}
+        </div>,
+        document.body
+      )}
 
       <div className="flex justify-end gap-2 border-t border-border bg-muted/20 px-5 py-3">
         <Button type="button" variant="ghost" size="sm" onClick={onClose}>
