@@ -92,6 +92,11 @@ export const ModelDropdown: React.FC = () => {
               )}
             >
               <span className="font-medium">{model.name || model.id}</span>
+              {model.description && (
+                <span className="text-xs leading-snug opacity-75">
+                  {model.description}
+                </span>
+              )}
             </button>
           ))}
 

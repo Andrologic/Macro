@@ -63,12 +63,12 @@ fn managed_models() -> Vec<ProviderModelInput> {
         (
             DEFAULT_MODEL_ID,
             FAST_MODEL_NAME,
-            "Modèle rapide inclus avec la bêta de Macro.",
+            "Qwen3.6-35B-A3B · Chemin rapide",
         ),
         (
             DEEP_MODEL_ID,
             DEEP_MODEL_NAME,
-            "Modèle approfondi inclus avec la bêta de Macro.",
+            "Qwen3.8-27B · Raisonnement approfondi",
         ),
     ]
     .into_iter()
@@ -238,8 +238,16 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].model_id, DEFAULT_MODEL_ID);
         assert_eq!(models[0].name, FAST_MODEL_NAME);
+        assert_eq!(
+            models[0].description.as_deref(),
+            Some("Qwen3.6-35B-A3B · Chemin rapide")
+        );
         assert_eq!(models[1].model_id, DEEP_MODEL_ID);
         assert_eq!(models[1].name, DEEP_MODEL_NAME);
+        assert_eq!(
+            models[1].description.as_deref(),
+            Some("Qwen3.8-27B · Raisonnement approfondi")
+        );
         assert_eq!(INPUT_LIMIT_TOKENS, CONTEXT_WINDOW_TOKENS);
         assert!(models.iter().all(|model| {
             model.context_window_tokens == Some(CONTEXT_WINDOW_TOKENS)
