@@ -339,7 +339,8 @@
     "scope": {
       "allProjects": "Tout le projet",
       "allRepositories": "Tous les dépôts",
-      "gitScope": "Portée Git"
+      "gitScope": "Portée Git",
+      "selectRepository": "Sélectionner un dépôt"
     }
   },
   "window": {
@@ -962,6 +963,7 @@
     "newProject": "Nouveau projet",
     "newGroup": "Nouveau groupe",
     "noProjects": "Aucun projet pour l'instant",
+    "noProject": "Aucun projet",
     "openProject": "Projet ouvert",
     "projectSettings": "Paramètres du projet",
     "deleteProject": "Supprimer le projet",

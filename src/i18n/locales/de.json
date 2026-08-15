@@ -340,7 +340,8 @@
     "scope": {
       "allProjects": "All projects",
       "allRepositories": "Alle Repositories",
-      "gitScope": "Git-Bereich"
+      "gitScope": "Git-Bereich",
+      "selectRepository": "Repository auswählen"
     }
   },
   "window": {
@@ -963,6 +964,7 @@
     "newProject": "Neues Projekt",
     "newGroup": "Neue Gruppe",
     "noProjects": "Noch keine Projekte",
+    "noProject": "Kein Projekt",
     "openProject": "Projekt öffnen",
     "projectSettings": "Projekteinstellungen",
     "deleteProject": "Projekt löschen",
