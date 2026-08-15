@@ -62,7 +62,7 @@ export const Dialog: React.FC<DialogProps> = ({
   onClose,
   children,
   backdropClassName = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4',
-  panelClassName = 'w-full',
+  panelClassName = 'flex w-full justify-center',
   initialFocusRef,
 }) => {
   const titleId = useId();
