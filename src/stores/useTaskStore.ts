@@ -196,7 +196,8 @@ const serializeMergeWorkflowRepositoryOperation = async <T>(
     }
   }
 };
-const REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE = REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE;
+const getRemoteTaskActionUnavailableMessage = (): string =>
+  REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE;
 
 const canUseTaskMutationRuntime = (): boolean => getServiceRuntimeCapabilities().taskMutation;
 const canUseImplementExecutionRuntime = (): boolean =>
@@ -3428,7 +3429,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
   startTask: async (taskId) => {
     if (!canUseImplementExecutionRuntime()) {
-      set({ lastError: REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE });
+      set({ lastError: getRemoteTaskActionUnavailableMessage() });
       return;
     }
 
@@ -3666,7 +3667,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
   runTaskCommands: async (taskId) => {
     if (!canUseTaskCommandRuntime()) {
-      set({ lastError: REMOTE_TASK_ACTION_UNAVAILABLE_MESSAGE });
+      set({ lastError: getRemoteTaskActionUnavailableMessage() });
       return null;
     }
 

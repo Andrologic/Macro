@@ -4,7 +4,7 @@ import type {
   ProjectGitFlowSettings,
   StandaloneTaskKind,
 } from '../types';
-import { PREF_DEFAULTS, PREF_KEYS } from './preferences';
+import { PREF_KEYS } from './preferences';
 
 export interface ArchitectGitNamingSettings extends ProjectGitFlowSettings {
   completionMergePolicy: CompletionMergePolicy;
@@ -44,30 +44,20 @@ const TEMPLATE_LABEL_BY_BRANCH_TYPE: Record<GitFlowBranchType, string> = {
 };
 
 const DEFAULT_PROJECT_SETTINGS: NormalizedProjectGitFlowSettings = {
-  baseBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH] || 'main'),
-  mainBranch: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH] || 'main'),
+  baseBranch: 'main',
+  mainBranch: 'main',
   completionMergePolicy: 'merge_commit',
-  planBranchTemplate: String(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE] || 'plan/{planSlug}'),
-  featureBranchTemplate: String(
-    PREF_DEFAULTS[PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE] || 'feature/{planSlug}/{featureSlug}'
-  ),
-  standaloneFeatureBranchTemplate: String(
-    PREF_DEFAULTS[PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE] || 'feature/{featureSlug}'
-  ),
-  releaseBranchTemplate: String(
-    PREF_DEFAULTS[PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE] || 'release/{releaseSlug}'
-  ),
-  hotfixBranchTemplate: String(
-    PREF_DEFAULTS[PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE] || 'hotfix/{hotfixSlug}'
-  ),
-  bugfixBranchTemplate: String(
-    PREF_DEFAULTS[PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE] || 'bugfix/{bugfixSlug}'
-  ),
+  planBranchTemplate: 'plan/{planSlug}',
+  featureBranchTemplate: 'feature/{planSlug}/{featureSlug}',
+  standaloneFeatureBranchTemplate: 'feature/{featureSlug}',
+  releaseBranchTemplate: 'release/{releaseSlug}',
+  hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
+  bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
 };
 
 const DEFAULT_SETTINGS: ArchitectGitNamingSettings = {
   ...DEFAULT_PROJECT_SETTINGS,
-  syncTargetBeforeFinish: Boolean(PREF_DEFAULTS[PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH] ?? true),
+  syncTargetBeforeFinish: true,
 };
 
 export const normalizeGitBranchName = (

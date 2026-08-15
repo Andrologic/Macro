@@ -6,6 +6,8 @@ import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
 import { initializeI18n } from "./i18n";
 import { installFrontendDiagnostics } from "./services/frontendDiagnostics";
+import { registerAppStateGetter } from "./services/appStateRuntime";
+import { useAppStore } from "./stores/useAppStore";
 import { isDevelopmentBuild } from "./utils/devLogger";
 import "xterm/css/xterm.css";
 import "./index.css";
@@ -78,6 +80,7 @@ if (typeof performance !== 'undefined' && performance.mark) {
 
 installBenignTauriReloadWarningFilter();
 installFrontendDiagnostics();
+registerAppStateGetter(() => useAppStore.getState());
 
 const renderApp = (): void => {
   const macroWindow = window as MacroRootWindow;
