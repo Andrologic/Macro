@@ -771,17 +771,26 @@ describe('toast wrapper', () => {
     });
   });
 
-  it('dismisses all visible toasts when the notification center opens', () => {
-    notify.info('Visible info', {
-      description: 'Tracked in center',
+  it('dismisses all visible toasts when the notification center opens', async () => {
+    await act(async () => {
+      root?.render(createElement(Toaster));
+      await Promise.resolve();
     });
-    notify.warning('Visible warning', {
-      description: 'Also visible',
+
+    await act(async () => {
+      notify.info('Visible info', {
+        description: 'Tracked in center',
+      });
+      notify.warning('Visible warning', {
+        description: 'Also visible',
+      });
     });
 
     expect(getToastBatchSnapshot().activeToastIds).toHaveLength(2);
 
-    useNotificationCenterStore.getState().setCenterOpen(true);
+    await act(async () => {
+      useNotificationCenterStore.getState().setCenterOpen(true);
+    });
 
     expect(sonnerToastMock.dismiss).toHaveBeenCalledWith();
     expect(getToastBatchSnapshot().activeToastIds).toEqual([]);

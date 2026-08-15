@@ -13,7 +13,11 @@ import {
 } from '../services/mcp';
 
 const CHAT_MODE_TOOL_SETTINGS_KEY = 'macro_chat_mode_tool_settings';
-const CHAT_MODE_TOOL_IDS = new Set(getToolModePolicy('Chat').allowedToolIds);
+let chatModeToolIds: Set<string> | null = null;
+const getChatModeToolIds = (): Set<string> => {
+  chatModeToolIds ??= new Set(getToolModePolicy('Chat').allowedToolIds);
+  return chatModeToolIds;
+};
 const CHAT_SOURCE_TOOL_IDS = ['mark_source_passage', 'read_sources', 'edit_source_passage'] as const;
 const CHAT_TOGGLE_GROUPS: Record<string, readonly string[]> = {
   sources: CHAT_SOURCE_TOOL_IDS,
@@ -35,7 +39,7 @@ const isToolEnabledState = (tool: Tool): boolean => {
 };
 
 const isChatEligibleTool = (tool: Tool): boolean =>
-  CHAT_MODE_TOOL_IDS.has(tool.id) && getConfigBoolean(tool, 'chatMode') !== false;
+  getChatModeToolIds().has(tool.id) && getConfigBoolean(tool, 'chatMode') !== false;
 const isVisibleChatTool = (tool: Tool): boolean =>
   isChatEligibleTool(tool) &&
   getConfigBoolean(tool, 'visible') !== false &&

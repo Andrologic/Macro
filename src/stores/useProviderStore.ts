@@ -34,15 +34,21 @@ import { MACRO_AI_DEFAULT_MODEL_ID, MACRO_AI_PROVIDER_ID } from '../config/macro
 
 export { isLinkedProviderType, providerHasAuthSession };
 
-const {
-  isTauriAvailable: ipcIsTauriAvailable,
-  revealProviderApiKey: ipcRevealProviderApiKey,
-  listProviderConfigs: ipcListProviderConfigs,
-  listProviderModels: ipcListProviderModels,
-  getProviderSettings: ipcGetProviderSettings,
-  updateProviderConfig: ipcUpdateProviderConfig,
-  createProviderConfig: ipcCreateProviderConfig,
-} = tauriIpc;
+// Resolve IPC functions only when an action runs. Eagerly destructuring this
+// namespace reads the services chunk while the production chunk graph is still
+// initializing.
+const ipcIsTauriAvailable = (): boolean => tauriIpc.isTauriAvailable();
+const ipcRevealProviderApiKey = (providerId: string) =>
+  tauriIpc.revealProviderApiKey(providerId);
+const ipcListProviderConfigs = () => tauriIpc.listProviderConfigs();
+const ipcListProviderModels = (providerId: string) => tauriIpc.listProviderModels(providerId);
+const ipcGetProviderSettings = (providerId: string) => tauriIpc.getProviderSettings(providerId);
+const ipcUpdateProviderConfig = (
+  params: Parameters<typeof tauriIpc.updateProviderConfig>[0],
+) => tauriIpc.updateProviderConfig(params);
+const ipcCreateProviderConfig = (
+  params: Parameters<typeof tauriIpc.createProviderConfig>[0],
+) => tauriIpc.createProviderConfig(params);
 
 const isZeroPrice = (value?: string | null): boolean => {
   if (value === null || value === undefined) return false;

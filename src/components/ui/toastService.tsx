@@ -142,11 +142,12 @@ const dismissAllVisibleToasts = (): void => {
   sonnerToast.dismiss();
 };
 
-useNotificationCenterStore.subscribe((state, previousState) => {
-  if (!previousState.isCenterOpen && state.isCenterOpen) {
-    dismissAllVisibleToasts();
-  }
-});
+export const subscribeToNotificationCenterOpen = (): (() => void) =>
+  useNotificationCenterStore.subscribe((state, previousState) => {
+    if (!previousState.isCenterOpen && state.isCenterOpen) {
+      dismissAllVisibleToasts();
+    }
+  });
 
 const uncategorizedNotificationsEnabled = (): boolean =>
   useAppStore.getState().inAppNotificationsEnabled !== false;
