@@ -57,7 +57,9 @@ interface NotificationCenterStore {
 }
 
 export const NOTIFICATION_CENTER_MAX_ITEMS = 100;
-export const NOTIFICATION_CENTER_STORAGE_KEY = `macro_${PREF_KEYS.NOTIFICATION_CENTER_ITEMS}`;
+// Keep startup persistence independent from the services chunk. The matching
+// preference key remains PREF_KEYS.NOTIFICATION_CENTER_ITEMS for writes.
+export const NOTIFICATION_CENTER_STORAGE_KEY = 'macro_notificationCenterItems';
 
 const isNotificationLevel = (value: unknown): value is NotificationLevel =>
   value === 'info' || value === 'warning' || value === 'error';

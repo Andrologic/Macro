@@ -58,7 +58,6 @@ import {
   PREF_KEYS,
 } from "../services/preferences";
 import {
-  DEFAULT_NOTIFICATION_CHANNEL_MODES,
   sanitizeNotificationChannelMode,
   sanitizeNotificationChannelModes,
   type NotificationCategory,
@@ -95,7 +94,6 @@ import {
   type MacroProjectMetadataLoadResult,
 } from "../services/macroProjectMetadataLoader";
 import { flushMacroMetadata } from "../services/macroMetadataCoordinator";
-import { registerAppStateGetter } from "../services/appStateRuntime";
 import type { NormalizeProjectRegistryResult } from "../services/projectRegistry";
 import * as tauriIpc from "../services/tauriIpc";
 import type {
@@ -1494,6 +1492,14 @@ const derivePlanNodesFromPlan = (plan: Plan | null): PlanNode[] => {
   }));
 };
 
+const INITIAL_NOTIFICATION_CHANNEL_MODES: NotificationChannelModes = {
+  task_attention_required: "both",
+  task_run_completed: "desktop",
+  task_completed: "both",
+  git_sync_completed: "desktop",
+  git_sync_attention_required: "both",
+};
+
 export const useAppStore = create<AppStore>((set, get) => ({
   mode: "Implement",
   agentType: "build",
@@ -1531,7 +1537,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   metadataAutoPush: false,
   metadataMissingUpstreamPolicy: "ask",
   inAppNotificationsEnabled: true,
-  notificationChannelModes: DEFAULT_NOTIFICATION_CHANNEL_MODES,
+  notificationChannelModes: INITIAL_NOTIFICATION_CHANNEL_MODES,
   metadataSyncState: "clean",
   metadataSyncError: null,
   metadataSyncReason: null,
@@ -4846,5 +4852,3 @@ export const useAppStore = create<AppStore>((set, get) => ({
     await get().resumeAfterInitialize();
   },
 }));
-
-registerAppStateGetter(() => useAppStore.getState());

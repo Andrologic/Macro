@@ -10,7 +10,6 @@ import * as tauriIpc from '../services/tauriIpc';
 import { useTaskStore, type TaskCompletionRepositoryRecord } from './useTaskStore';
 import type { Project, ProjectGroup, TaskExecutionTarget, TaskStatus } from '../types';
 import {
-  EMPTY_REVIEW_TASK_SUMMARY,
   buildReviewTaskSummary,
   type ReviewTaskSummary,
 } from '../services/implementMultiRepoSummary';
@@ -50,6 +49,26 @@ import {
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
 export type ReviewRepositoryCommitState = 'idle' | 'committing' | 'committed' | 'no_changes';
+const EMPTY_FILE_CHANGES_REVIEW_SUMMARY: ReviewTaskSummary = {
+  repositoryCount: 0,
+  stateCounts: {
+    pending_validation: 0,
+    ready_to_commit: 0,
+    committed: 0,
+    no_changes: 0,
+  },
+  actionCounts: {
+    pending_validation: 0,
+    ready_to_commit: 0,
+  },
+  repositories: [],
+  nextRepositoryId: null,
+  nextAction: 'none',
+  hasCommittedRepositories: false,
+  hasActionableRepositories: false,
+  allRepositoriesResolved: false,
+  allRepositoriesNoChanges: false,
+};
 export type FileChangesTaskLoadState =
   | 'idle'
   | 'loading'
@@ -260,12 +279,18 @@ export interface FileChangesStoreDependencies {
 }
 
 const getDefaultFileChangesStoreDependencies = (): FileChangesStoreDependencies => ({
-  tauri: tauriIpc,
-  getGitFlowBaseBranch,
+  get tauri() {
+    return tauriIpc;
+  },
+  get getGitFlowBaseBranch() {
+    return getGitFlowBaseBranch;
+  },
   getAppState: () => useAppStore.getState(),
   getTaskState: () => useTaskStore.getState(),
   setTaskState: (partial) => useTaskStore.setState(partial),
-  generateCommitMessages: generateSmartCommitMessages,
+  get generateCommitMessages() {
+    return generateSmartCommitMessages;
+  },
 });
 
 const resolveReviewRepositoryIntegrationBranch = (
@@ -432,8 +457,6 @@ const normalizeBranchName = (value?: string | null): string => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed || 'work';
 };
-
-const toDefaultCommitMessage = buildDefaultCommitMessage;
 
 const computeStats = (changes: FileChangeEntry[], stagedPathCount: number): ReviewRepositoryStats => {
   const pendingChanges = changes.filter((change) => change.hasPendingVisibleChange);
@@ -1010,7 +1033,7 @@ const loadRepositoryState = async (params: {
         stagedPaths,
         selectedChangeId,
         stats: computeStats(changes, stagedPaths.length),
-        commitMessageDraft: previousRepository?.commitMessageDraft || toDefaultCommitMessage(task.title),
+        commitMessageDraft: previousRepository?.commitMessageDraft || buildDefaultCommitMessage(task.title),
         commitState,
         loadingChangeId: null,
         savingChangeId: null,
@@ -1105,7 +1128,7 @@ const loadRepositoryState = async (params: {
     stagedPaths,
     selectedChangeId,
     stats: computeStats(changes, stagedPaths.length),
-    commitMessageDraft: previousRepository?.commitMessageDraft || toDefaultCommitMessage(task.title),
+    commitMessageDraft: previousRepository?.commitMessageDraft || buildDefaultCommitMessage(task.title),
     commitState,
     loadingChangeId: null,
     savingChangeId: null,
@@ -1296,11 +1319,21 @@ export const createFileChangesStore = (
   overrides: Partial<FileChangesStoreDependencies> = {}
 ) => {
   const defaultFileChangesStoreDependencies = getDefaultFileChangesStoreDependencies();
-  const deps: FileChangesStoreDependencies = {
-    ...defaultFileChangesStoreDependencies,
-    ...overrides,
-    tauri: mergeFileChangesTauriDeps(defaultFileChangesStoreDependencies.tauri, overrides.tauri),
-  };
+  const deps = Object.create(
+    defaultFileChangesStoreDependencies,
+    Object.getOwnPropertyDescriptors(overrides),
+  ) as FileChangesStoreDependencies;
+  if (overrides.tauri) {
+    Object.defineProperty(deps, 'tauri', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: mergeFileChangesTauriDeps(
+        defaultFileChangesStoreDependencies.tauri,
+        overrides.tauri,
+      ),
+    });
+  }
 
   return create<FileChangesState>((set, get) => {
     const hydrateDiffModalFile = async (repositoryId: string, changeId: string) => {
@@ -1439,7 +1472,7 @@ export const createFileChangesStore = (
     currentTaskLoadMessage: null,
     loadRequestId: 0,
     repositories: [],
-    reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
+    reviewSummary: EMPTY_FILE_CHANGES_REVIEW_SUMMARY,
     selectedDiffTarget: null,
     diffModalSession: null,
     isDiffModalOpen: false,
@@ -1457,7 +1490,7 @@ export const createFileChangesStore = (
 
     const resetLoadState = {
       repositories: [],
-      reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
+      reviewSummary: EMPTY_FILE_CHANGES_REVIEW_SUMMARY,
       selectedDiffTarget: null,
       diffModalSession: null,
       isDiffModalOpen: false,
@@ -1665,7 +1698,7 @@ export const createFileChangesStore = (
       currentTaskLoadMessage: null,
       loadRequestId: get().loadRequestId + 1,
       repositories: [],
-      reviewSummary: EMPTY_REVIEW_TASK_SUMMARY,
+      reviewSummary: EMPTY_FILE_CHANGES_REVIEW_SUMMARY,
       selectedDiffTarget: null,
       diffModalSession: null,
       isDiffModalOpen: false,
@@ -2180,7 +2213,9 @@ export const createFileChangesStore = (
   commitStagedChanges: async (repositoryId, message) => {
     const task = ensureReviewTask(deps);
     const repository = get().getRepository(repositoryId);
-    const commitMessage = (message || repository?.commitMessageDraft || toDefaultCommitMessage(task.title)).trim();
+    const commitMessage = (
+      message || repository?.commitMessageDraft || buildDefaultCommitMessage(task.title)
+    ).trim();
     if (!commitMessage) {
       throw new Error(tChanges('implement.errors.commitMessageRequired', 'Commit message is required.'));
     }

@@ -7,6 +7,7 @@ import {
   subscribeToToastBatch,
   TOAST_BATCH_DURATION_MS,
 } from './toastBatchController';
+import { subscribeToNotificationCenterOpen } from './toastService';
 
 const COMPACT_VISIBLE_TOASTS = 3;
 const EXPANDED_VISIBLE_TOASTS = 99;
@@ -27,6 +28,8 @@ export function Toaster() {
   const visibleToasts = isExpanded
     ? EXPANDED_VISIBLE_TOASTS
     : COMPACT_VISIBLE_TOASTS;
+
+  useEffect(() => subscribeToNotificationCenterOpen(), []);
 
   useEffect(() => {
     const toasterNode = toasterRef.current;

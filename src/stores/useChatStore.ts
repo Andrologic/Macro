@@ -439,7 +439,9 @@ const agentCodeCheckpointLoadPromisesByConversationId = new Map<
 >();
 const chatPersistenceAdapters: ChatPersistenceAdapters = {
   isTauriAvailable: () => tauriIpc.isTauriAvailable(),
-  ipc: tauriIpc,
+  get ipc() {
+    return tauriIpc;
+  },
   now: () => new Date(),
   randomIdSuffix: () => Math.random().toString(36).slice(2, 8),
 };

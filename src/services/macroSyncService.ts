@@ -536,9 +536,16 @@ const createAggregateMacroResult = (
 };
 
 const defaultMacroSyncServiceDependencies: MacroSyncServiceDependencies = {
-  tauriIpc,
+  // Keep cross-chunk imports lazy. The production bundle intentionally groups
+  // workflow services separately from generic services, which creates a
+  // circular module graph during startup.
+  get tauriIpc() {
+    return tauriIpc;
+  },
   getAppState: () => useAppStore.getState(),
-  toServiceError,
+  get toServiceError() {
+    return toServiceError;
+  },
 };
 
 export const createMacroSyncService = (
