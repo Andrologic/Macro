@@ -60,6 +60,7 @@ import {
 } from '../../services/taskMergeWorkflowPresentation';
 import { Icon, IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
+import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
@@ -1949,32 +1950,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             {t('implement.tasks', 'Tasks')}
           </h1>
         </div>
-        <div className="flex shrink-0 items-center">
-          <button
-            type="button"
+        <div className="flex shrink-0 items-center gap-1">
+          <PanelHeaderIconButton
+            icon="archive"
+            label={t('implement.archives', 'Archives')}
+            pressed={showArchived}
             onClick={() => setShowArchived((current) => !current)}
             data-tour-id="implement-archive-toggle"
-            className={cn(
-              'mr-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs transition-colors',
-              showArchived
-                ? 'border-border bg-accent text-foreground'
-                : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
-            )}
-            title={
-              showArchived
-                ? t('implement.hideArchived', 'Hide archived')
-                : t('implement.showArchived', 'Show archived')
-            }
-          >
-            <Icon name="archive" size={12} />
-            <span className="hidden xl:inline">
-              {showArchived
-                ? t('implement.hideArchived', 'Hide archived')
-                : t('implement.showArchived', 'Show archived')}
-            </span>
-          </button>
-          <button
-            type="button"
+          />
+          <PanelHeaderIconButton
+            icon="plus"
             onClick={() => setShowCreateTaskDialog(true)}
             data-tour-id="implement-create-task"
             disabled={
@@ -1983,13 +1968,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               taskMutationDisabled ||
               taskExecutionDisabled
             }
-            className={cn(
-              'inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
-              pendingTaskId || editableProjectOptions.length === 0 || taskMutationDisabled || taskExecutionDisabled
-                ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
-                : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground'
-            )}
-            title={
+            isLoading={Boolean(pendingTaskId)}
+            label={
               taskMutationDisabled
                 ? taskMutationDisabledTitle
                 : taskExecutionDisabled
@@ -2001,9 +1981,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       )
                     : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
-          >
-            {pendingTaskId ? <SpinnerIcon size={12} /> : <Icon name="plus" size={12} />}
-          </button>
+          />
         </div>
       </div>
 

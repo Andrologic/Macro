@@ -242,6 +242,7 @@
   "restoreTask": "復元",
   "hideArchived": "アーカイブ済みタスクを隠す",
   "showArchived": "アーカイブ済みタスクを表示",
+  "archives": "アーカイブ",
   "taskCommandsDraftUnsupported": "このタスクがまだ下書きの間はコマンドを利用できません。",
   "taskCommandsArchivedUnsupported": "アーカイブ済みタスクではコマンドを利用できません。",
   "completedTasks": "完了したタスク",

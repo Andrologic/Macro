@@ -781,6 +781,9 @@ describe('TaskQueue', () => {
       '[data-tour-id="implement-archive-toggle"]'
     );
     expect(archiveToggle).not.toBeNull();
+    expect(archiveToggle?.textContent).toBe('');
+    expect(archiveToggle?.getAttribute('aria-label')).toBe('Archives');
+    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('false');
 
     await act(async () => {
       archiveToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
@@ -789,6 +792,7 @@ describe('TaskQueue', () => {
 
     expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived-task']);
     expect(getSectionSummaries()).toEqual([{ title: 'Archive', count: '1' }]);
+    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
     expect(document.body.textContent).not.toContain('Active task');
     expect(document.body.textContent).toContain('Archived task');
   });
