@@ -11,14 +11,14 @@ const models: AIModel[] = [
     id: 'macro-ai',
     name: 'Macro AI Fast',
     provider_id: 'macro-ai',
-    description: 'Qwen3.6-35B-A3B · Chemin rapide',
+    description: 'Qwen3.6-35B-A3B',
     isEnabled: true,
   },
   {
     id: 'macro-ai-deep',
     name: 'Macro AI Deep',
     provider_id: 'macro-ai',
-    description: 'Qwen3.8-27B · Raisonnement approfondi',
+    description: 'Qwen3.8-27B',
     isEnabled: true,
   },
 ];
@@ -78,7 +78,7 @@ describe('ModelDropdown', () => {
 
     act(() => trigger?.click());
 
-    expect(container.textContent).toContain('Qwen3.6-35B-A3B · Chemin rapide');
-    expect(container.textContent).toContain('Qwen3.8-27B · Raisonnement approfondi');
+    expect(container.textContent).toContain('Qwen3.6-35B-A3B');
+    expect(container.textContent).toContain('Qwen3.8-27B');
   });
 });
