@@ -282,6 +282,7 @@
   "statusWaiting": "待機中",
   "statusBlocked": "ブロック中",
   "clearStatusFilter": "すべての状態を表示",
+  "allStatuses": "すべての状態",
   "planFilterStandalone": "プランなし / スタンドアロン",
   "standaloneBadge": "独立",
   "taskKindPending": "エージェントが分類中",
