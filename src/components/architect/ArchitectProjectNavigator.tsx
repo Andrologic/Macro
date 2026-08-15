@@ -34,6 +34,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
 import { PlanFormModal } from './PlanFormModal';
@@ -876,9 +877,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           <Icon name="folder-tree" size={15} className="shrink-0 text-primary" />
           <h2 className="truncate text-sm font-semibold text-foreground">{t('architect.projectNavigator.title', 'Projets')}</h2>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
+        <div className="flex shrink-0 items-center gap-1">
+          <PanelHeaderIconButton
+            icon="archive"
+            label={t('architect.projectNavigator.archives', 'Archives')}
+            pressed={showArchived}
             onClick={() => {
               setOpenPlanMenuKey(null);
               setScopeCreateMenu(null);
@@ -886,45 +889,17 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               setShowArchived((current) => !current);
             }}
             data-tour-id="architect-archive-toggle"
-            aria-pressed={showArchived}
-            aria-label={showArchived
-              ? t('architect.projectNavigator.activePlans', 'Plans actifs')
-              : t('architect.projectNavigator.archives', 'Archives')}
-            title={showArchived
-              ? t('architect.projectNavigator.activePlans', 'Plans actifs')
-              : t('architect.projectNavigator.archives', 'Archives')}
-            className={cn(
-              'mr-1.5 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
-              showArchived
-                ? 'border-border bg-accent text-foreground'
-                : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
-            )}
-          >
-            <Icon name={showArchived ? 'arrow-left' : 'archive'} size={12} />
-            <span className="hidden xl:inline">
-              {showArchived
-                ? t('architect.projectNavigator.activePlans', 'Plans actifs')
-                : t('architect.projectNavigator.archives', 'Archives')}
-            </span>
-          </button>
-          <button
-            type="button"
+          />
+          <PanelHeaderIconButton
+            icon="plus"
+            label={t('architect.projectNavigator.addProject', 'Ajouter un projet')}
             onClick={() => openProjectModal(null)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            title={t('architect.projectNavigator.addProject', 'Ajouter un projet')}
-            aria-label={t('architect.projectNavigator.addProject', 'Ajouter un projet')}
-          >
-            <Icon name="plus" size={14} />
-          </button>
-          <button
-            type="button"
+          />
+          <PanelHeaderIconButton
+            icon="settings"
+            label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
             onClick={openProjectNavigator}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            title={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
-            aria-label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
-          >
-            <Icon name="settings" size={14} />
-          </button>
+          />
         </div>
       </div>
 

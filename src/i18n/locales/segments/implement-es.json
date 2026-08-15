@@ -242,6 +242,7 @@
   "restoreTask": "Restaurar",
   "hideArchived": "Ocultar tareas archivadas",
   "showArchived": "Mostrar tareas archivadas",
+  "archives": "Archivos",
   "taskCommandsDraftUnsupported": "Los comandos no están disponibles mientras esta tarea siga siendo un borrador.",
   "taskCommandsArchivedUnsupported": "Los comandos no están disponibles para tareas archivadas.",
   "completedTasks": "Tareas completadas",
