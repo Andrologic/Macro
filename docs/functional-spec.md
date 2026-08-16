@@ -969,6 +969,18 @@ envoyé à un service distant. Un fournisseur déclaré local ou sans clé peut 
 HTTP pour joindre un service de confiance sur la machine ou le réseau local ; tout
 fournisseur distant authentifié doit utiliser HTTPS.
 
+Le fournisseur vocal géré `andrologic-speech`, affiché sous le nom Andrologic,
+est sélectionné par défaut lorsqu'aucun choix vocal n'a encore été persisté. Il
+utilise le modèle public `macro-transcription` sur le gateway Andrologic et
+réemploie le jeton d'installation sécurisé du fournisseur `macro-ai`. Aucune clé
+utilisateur supplémentaire n'est demandée et aucun secret statique n'est inclus
+dans le dépôt ou l'exécutable. Avant l'envoi, Macro convertit la capture en WAV
+mono PCM 16 bits à 16 kHz. Le gateway ne conserve jamais l'audio brut ; le texte
+transcrit et les métadonnées opérationnelles de la requête figurent dans ses
+journaux. En cas de saturation ou d'indisponibilité temporaire, Macro présente
+l'erreur renvoyée par le gateway sans envoyer automatiquement une seconde fois
+le même enregistrement.
+
 Andrologic est le fournisseur sélectionné par défaut lorsqu'il a pu être activé
 et qu'aucune sélection de conversation existante ne doit être restaurée. Il
 présente un seul modèle nommé `Macro AI`, inclus dans la bêta. L'interface doit

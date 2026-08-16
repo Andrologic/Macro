@@ -26,9 +26,10 @@
       "description": "Graba desde el compositor, transcribe con el proveedor seleccionado y revisa el texto antes de enviarlo.",
       "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
       "maxDuration": "Duración máxima de grabación", "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
+      "andrologicPrivacy": "Andrologic: el audio se procesa mediante el gateway autenticado de Macro y nunca se conserva. El texto transcrito se incluye en los registros operativos.",
       "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
       "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",
-      "keyStored": "Clave API guardada localmente", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
+      "keyStored": "Clave API guardada localmente", "managedAuth": "Autenticación gestionada por Macro", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
       "editProvider": "Editar proveedor", "newProvider": "Nuevo proveedor", "protocol": "Protocolo", "model": "Modelo de transcripción",
       "endpoint": "URL base", "apiKey": "Clave API", "keepKey": "Déjalo vacío para conservar la clave guardada",
       "localProvider": "Proveedor local o sin clave", "removeKey": "Eliminar la clave API guardada"

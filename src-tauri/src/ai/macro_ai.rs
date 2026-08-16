@@ -3,7 +3,9 @@ use crate::db::repository;
 use crate::secrets;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::sync::OnceLock;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 pub const PROVIDER_ID: &str = "macro-ai";
 pub const PROVIDER_NAME: &str = "Andrologic";
@@ -12,6 +14,8 @@ pub const DEFAULT_MODEL_ID: &str = "macro-ai";
 pub const FAST_MODEL_NAME: &str = "Macro AI Fast";
 pub const DEEP_MODEL_ID: &str = "macro-ai-deep";
 pub const DEEP_MODEL_NAME: &str = "Macro AI Deep";
+pub const SPEECH_PROVIDER_ID: &str = "andrologic-speech";
+pub const SPEECH_MODEL_ID: &str = "macro-transcription";
 const INSTALLATION_IDENTITY_SECRET_ID: &str = "__macro_ai_installation_identity";
 const BOOTSTRAP_URL: &str = "https://lmstudio.andrologic.ai/macro/v1/instances/bootstrap";
 const CONTEXT_WINDOW_TOKENS: i32 = 200_000;
@@ -20,6 +24,11 @@ const OUTPUT_LIMIT_TOKENS: i32 = 16_384;
 // Keep the provider input ceiling at the full context window to avoid reserving
 // OUTPUT_LIMIT_TOKENS twice.
 const INPUT_LIMIT_TOKENS: i32 = CONTEXT_WINDOW_TOKENS;
+
+fn provisioning_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InstallationIdentity {
@@ -60,16 +69,8 @@ fn managed_models() -> Vec<ProviderModelInput> {
     let updated_at = chrono::Utc::now().to_rfc3339();
 
     [
-        (
-            DEFAULT_MODEL_ID,
-            FAST_MODEL_NAME,
-            "Qwen3.6-35B-A3B",
-        ),
-        (
-            DEEP_MODEL_ID,
-            DEEP_MODEL_NAME,
-            "Qwen3.8-27B",
-        ),
+        (DEFAULT_MODEL_ID, FAST_MODEL_NAME, "Qwen3.6-35B-A3B"),
+        (DEEP_MODEL_ID, DEEP_MODEL_NAME, "Qwen3.8-27B"),
     ]
     .into_iter()
     .map(|(model_id, name, description)| ProviderModelInput {
@@ -142,13 +143,24 @@ async fn ensure_managed_provider_and_model(pool: &SqlitePool) -> Result<(), Stri
     Ok(())
 }
 
+pub fn access_token() -> Result<Option<String>, String> {
+    secrets::get_api_key(PROVIDER_ID)
+        .map_err(|error| format!("Failed to read the Macro AI access token: {error}"))
+}
+
+pub async fn ensure_access_token(pool: &SqlitePool) -> Result<String, String> {
+    if let Some(token) = access_token()? {
+        return Ok(token);
+    }
+    provision(pool).await?;
+    access_token()?.ok_or_else(|| "Macro AI activation returned no access token.".to_string())
+}
+
 pub async fn provision(pool: &SqlitePool) -> Result<MacroAiProvisioningStatus, String> {
+    let _guard = provisioning_lock().lock().await;
     ensure_managed_provider_and_model(pool).await?;
 
-    if secrets::get_api_key(PROVIDER_ID)
-        .map_err(|error| format!("Failed to read the Macro AI access token: {error}"))?
-        .is_some()
-    {
+    if access_token()?.is_some() {
         repository::set_provider_has_stored_api_key(pool, PROVIDER_ID, true)
             .await
             .map_err(|error| error.to_string())?;
@@ -238,16 +250,10 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].model_id, DEFAULT_MODEL_ID);
         assert_eq!(models[0].name, FAST_MODEL_NAME);
-        assert_eq!(
-            models[0].description.as_deref(),
-            Some("Qwen3.6-35B-A3B")
-        );
+        assert_eq!(models[0].description.as_deref(), Some("Qwen3.6-35B-A3B"));
         assert_eq!(models[1].model_id, DEEP_MODEL_ID);
         assert_eq!(models[1].name, DEEP_MODEL_NAME);
-        assert_eq!(
-            models[1].description.as_deref(),
-            Some("Qwen3.8-27B")
-        );
+        assert_eq!(models[1].description.as_deref(), Some("Qwen3.8-27B"));
         assert_eq!(INPUT_LIMIT_TOKENS, CONTEXT_WINDOW_TOKENS);
         assert!(models.iter().all(|model| {
             model.context_window_tokens == Some(CONTEXT_WINDOW_TOKENS)

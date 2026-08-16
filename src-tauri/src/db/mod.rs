@@ -1,6 +1,7 @@
 pub mod models;
 pub mod repository;
 
+use crate::ai::macro_ai;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 use std::collections::HashSet;
@@ -1468,6 +1469,32 @@ async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> Db
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         r#"
+        INSERT INTO speech_provider_configs (
+            id, name, provider_type, base_url, model, has_stored_api_key,
+            is_enabled, is_local, created_at, updated_at
+        )
+        VALUES (?, ?, 'openai-compatible', ?, ?, 0, 1, 0, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            provider_type = excluded.provider_type,
+            base_url = excluded.base_url,
+            model = excluded.model,
+            is_enabled = 1,
+            is_local = 0,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(macro_ai::SPEECH_PROVIDER_ID)
+    .bind(macro_ai::PROVIDER_NAME)
+    .bind(macro_ai::PROVIDER_BASE_URL)
+    .bind(macro_ai::SPEECH_MODEL_ID)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
         INSERT OR IGNORE INTO speech_provider_configs (
             id, name, provider_type, base_url, model, has_stored_api_key,
             is_enabled, is_local, created_at, updated_at
@@ -1490,6 +1517,7 @@ mod tests {
         app_db_path, apply_migration, create_pool, ensure_schema_migrations_table, stamp_migration,
         table_columns, MIGRATION_001_NAME, MIGRATION_001_SQL, MIGRATION_001_VERSION,
     };
+    use crate::ai::macro_ai;
     use sqlx::Row;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1955,7 +1983,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_pool_inserts_and_restores_the_default_speech_provider() {
+    async fn create_pool_inserts_and_restores_the_default_speech_providers() {
         let temp_dir = TempDir::new().expect("temp dir");
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
@@ -1984,7 +2012,33 @@ mod tests {
         assert_eq!(provider.get::<i64, _>("is_enabled"), 1);
         assert_eq!(provider.get::<i64, _>("is_local"), 0);
 
-        sqlx::query("DELETE FROM speech_provider_configs WHERE id = 'openai-speech'")
+        let managed = sqlx::query(
+            r#"
+            SELECT name, provider_type, base_url, model, has_stored_api_key, is_enabled, is_local
+            FROM speech_provider_configs
+            WHERE id = ?
+            "#,
+        )
+        .bind(macro_ai::SPEECH_PROVIDER_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("managed Andrologic speech provider");
+        assert_eq!(managed.get::<String, _>("name"), macro_ai::PROVIDER_NAME);
+        assert_eq!(
+            managed.get::<String, _>("provider_type"),
+            "openai-compatible"
+        );
+        assert_eq!(
+            managed.get::<String, _>("base_url"),
+            macro_ai::PROVIDER_BASE_URL
+        );
+        assert_eq!(managed.get::<String, _>("model"), macro_ai::SPEECH_MODEL_ID);
+        assert_eq!(managed.get::<i64, _>("has_stored_api_key"), 0);
+        assert_eq!(managed.get::<i64, _>("is_enabled"), 1);
+        assert_eq!(managed.get::<i64, _>("is_local"), 0);
+
+        sqlx::query("DELETE FROM speech_provider_configs WHERE id IN ('openai-speech', ?)")
+            .bind(macro_ai::SPEECH_PROVIDER_ID)
             .execute(&pool)
             .await
             .expect("delete default speech provider");
@@ -1992,12 +2046,13 @@ mod tests {
 
         let reopened = create_pool(&db_path).await.expect("reopened db pool");
         let count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM speech_provider_configs WHERE id = 'openai-speech'",
+            "SELECT COUNT(*) FROM speech_provider_configs WHERE id IN ('openai-speech', ?)",
         )
+        .bind(macro_ai::SPEECH_PROVIDER_ID)
         .fetch_one(&reopened)
         .await
         .expect("restored default speech provider");
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
