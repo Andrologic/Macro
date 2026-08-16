@@ -1497,8 +1497,7 @@
   "providers": {
     "macroAi": {
       "included": "Macro ベータに AI が含まれます",
-      "dropdownNotice": "ベータ版に AI が含まれます",
-      "loggingNotice": "この共有ベータサービスの運用と改善のため、Macro AI に送信された会話とトークン使用量の指標は推論サーバーに記録されます。"
+      "dropdownNotice": "ベータ版に AI が含まれます"
     },
     "add": "プロバイダーを追加",
     "edit": "プロバイダーを編集",

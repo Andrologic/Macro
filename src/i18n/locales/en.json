@@ -1497,8 +1497,7 @@
   "providers": {
     "macroAi": {
       "included": "AI included with the Macro beta",
-      "dropdownNotice": "AI included with the beta",
-      "loggingNotice": "To operate and improve this shared beta service, conversations sent to Macro AI and token-usage metrics are logged on the inference server."
+      "dropdownNotice": "AI included with the beta"
     },
     "add": "Add Provider",
     "edit": "Edit Provider",
