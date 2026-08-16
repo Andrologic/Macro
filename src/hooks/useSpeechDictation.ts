@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isMacroAiSpeechProvider } from '../config/macroAi';
+import { prepareAudioForSpeechProvider } from '../services/speech/andrologicAudio';
 import { MicrophoneRecorder } from '../services/speech/microphoneRecorder';
 import { useSpeechToTextStore } from '../stores/useSpeechToTextStore';
 
@@ -64,6 +66,7 @@ export const useSpeechDictation = ({
   const finishingRef = useRef(false);
   const operationIdRef = useRef(0);
   const operationContextRef = useRef<string | null>(null);
+  const operationProviderIdRef = useRef<string | null>(null);
   const contextKeyRef = useRef(contextKey);
 
   useEffect(() => {
@@ -75,6 +78,7 @@ export const useSpeechDictation = ({
     return () => {
       mountedRef.current = false;
       operationIdRef.current += 1;
+      operationProviderIdRef.current = null;
       recorderRef.current?.cancel();
       recorderRef.current = null;
     };
@@ -86,6 +90,7 @@ export const useSpeechDictation = ({
 
     operationIdRef.current += 1;
     operationContextRef.current = null;
+    operationProviderIdRef.current = null;
     recorderRef.current?.cancel();
     recorderRef.current = null;
     setElapsedSeconds(0);
@@ -110,16 +115,20 @@ export const useSpeechDictation = ({
     if (finishingRef.current || !recorderRef.current) return;
     const operationId = operationIdRef.current;
     const operationContext = operationContextRef.current;
+    const providerId = operationProviderIdRef.current;
     finishingRef.current = true;
     setPhase('transcribing');
     try {
       const recorded = await recorderRef.current.stop();
       recorderRef.current = null;
-      const bytes = new Uint8Array(await recorded.blob.arrayBuffer());
+      if (!providerId) throw new Error('The speech provider changed during recording.');
+      const prepared = await prepareAudioForSpeechProvider(recorded, providerId);
+      const bytes = new Uint8Array(await prepared.blob.arrayBuffer());
       const result = await transcribe({
+        providerId,
         audio: bytes,
-        mimeType: recorded.mimeType,
-        fileName: recorded.fileName,
+        mimeType: prepared.mimeType,
+        fileName: prepared.fileName,
       });
       const text = normalizeTranscript(result.text);
       if (
@@ -144,6 +153,7 @@ export const useSpeechDictation = ({
       finishingRef.current = false;
       if (operationId === operationIdRef.current) {
         operationContextRef.current = null;
+        operationProviderIdRef.current = null;
       }
       if (mountedRef.current) {
         setElapsedSeconds(0);
@@ -182,13 +192,18 @@ export const useSpeechDictation = ({
       onError({ code: 'provider-disabled' });
       return;
     }
-    if (!provider.isLocal && !provider.hasStoredApiKey) {
+    if (
+      !provider.isLocal &&
+      !provider.hasStoredApiKey &&
+      !isMacroAiSpeechProvider(provider.id)
+    ) {
       operationContextRef.current = null;
       setPhase('idle');
       onError({ code: 'api-key-missing' });
       return;
     }
 
+    operationProviderIdRef.current = provider.id;
     const recorder = new MicrophoneRecorder();
     recorderRef.current = recorder;
     try {
@@ -200,6 +215,7 @@ export const useSpeechDictation = ({
       recorderRef.current = null;
       if (mountedRef.current && operationId === operationIdRef.current) {
         operationContextRef.current = null;
+        operationProviderIdRef.current = null;
         setPhase('idle');
         onError(classifyMicrophoneError(error));
       }

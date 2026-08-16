@@ -437,6 +437,19 @@ adaptateurs refusent les redirections, limitent la réponse du fournisseur à 1 
 et imposent HTTPS aux fournisseurs distants afin que l'audio et les clés ne
 transitent pas en clair.
 
+Le provider vocal géré `andrologic-speech` cible
+`https://lmstudio.andrologic.ai/v1/audio/transcriptions` avec le modèle public
+`macro-transcription`. La commande native ne possède pas de secret vocal dédié :
+elle résout le jeton d'installation du provider LLM `macro-ai` dans le stockage
+sécurisé et déclenche son provisionnement existant s'il manque. Le WebView
+capture dans un format pris en charge par `MediaRecorder`, puis
+`andrologicAudio` décode, réduit en mono, rééchantillonne à 16 kHz et encapsule
+en WAV PCM 16 bits avant l'IPC binaire. Le timeout Andrologic couvre jusqu'à dix
+minutes de FIFO puis dix minutes de traitement. Les réponses `429` conservent
+l'indication `Retry-After` dans l'erreur et les réponses `503` sont signalées
+comme indisponibilités temporaires ; aucun retry automatique ne duplique
+l'enregistrement.
+
 ---
 
 ## 10. Persistance

@@ -6,6 +6,8 @@ import { Icon } from '../../../ui/Icon';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
+import { AndrologicProviderIcon } from '../../../ai/AndrologicProviderIcon';
+import { isMacroAiSpeechProvider } from '../../../../config/macroAi';
 
 interface ProviderDraft {
   id: string | null;
@@ -68,6 +70,7 @@ export const SpeechSettings: React.FC = () => {
     () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
     [providers, selectedProviderId],
   );
+  const selectedIsAndrologic = isMacroAiSpeechProvider(selectedProvider?.id);
 
   useEffect(() => {
     void initialize();
@@ -187,6 +190,11 @@ export const SpeechSettings: React.FC = () => {
                   'speech.settings.noProviderPrivacy',
                   'Select a provider to see where recorded audio will be sent.',
                 )
+              : selectedIsAndrologic
+              ? t(
+                  'speech.settings.andrologicPrivacy',
+                  'Andrologic: audio is processed by the authenticated Macro gateway and is never retained. Transcribed text is included in operational logs.',
+                )
               : selectedProvider.isLocal
               ? t(
                   'speech.settings.localPrivacy',
@@ -227,10 +235,14 @@ export const SpeechSettings: React.FC = () => {
           </div>
         ) : isLoading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t('common.loading', 'Loading...')}</div>
-        ) : providers.map((provider) => (
-          <div key={provider.id} className="flex items-center gap-3 rounded-xl border border-border bg-card/60 p-4">
+        ) : providers.map((provider) => {
+          const isManagedAndrologic = isMacroAiSpeechProvider(provider.id);
+          return (
+            <div key={provider.id} className="flex items-center gap-3 rounded-xl border border-border bg-card/60 p-4">
             <div className={cn('rounded-lg p-2', provider.isLocal ? 'bg-emerald-500/10 text-emerald-500' : 'bg-primary/10 text-primary')}>
-              <Icon name={provider.isLocal ? 'hard-drive' : 'cloud'} size={18} />
+              {isManagedAndrologic
+                ? <AndrologicProviderIcon className="h-[18px] w-[18px]" />
+                : <Icon name={provider.isLocal ? 'hard-drive' : 'cloud'} size={18} />}
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -239,17 +251,21 @@ export const SpeechSettings: React.FC = () => {
               </div>
               <p className="truncate text-xs text-muted-foreground">{provider.model} · {provider.baseUrl}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {provider.hasStoredApiKey
+                {isManagedAndrologic
+                  ? t('speech.settings.managedAuth', 'Authentication managed by Macro')
+                  : provider.hasStoredApiKey
                   ? t('speech.settings.keyStored', 'API key stored locally')
                   : provider.isLocal
                     ? t('speech.settings.noKeyRequired', 'No API key required')
                     : t('speech.settings.keyMissing', 'API key required')}
               </p>
             </div>
-            <button type="button" onClick={() => setDraft(draftFromProvider(provider))} className="rounded-lg p-2 hover:bg-muted" title={t('common.edit', 'Edit')}>
-              <Icon name="edit" size={15} />
-            </button>
-            {provider.id !== 'openai-speech' && (
+            {!isManagedAndrologic && (
+              <button type="button" onClick={() => setDraft(draftFromProvider(provider))} className="rounded-lg p-2 hover:bg-muted" title={t('common.edit', 'Edit')}>
+                <Icon name="edit" size={15} />
+              </button>
+            )}
+            {!isManagedAndrologic && provider.id !== 'openai-speech' && (
               <button
                 type="button"
                 onClick={() => setProviderToDelete(provider)}
@@ -259,8 +275,9 @@ export const SpeechSettings: React.FC = () => {
                 <Icon name="trash" size={15} />
               </button>
             )}
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </section>
 
       {draft && (

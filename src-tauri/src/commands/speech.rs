@@ -1,4 +1,5 @@
 use super::{command_error, get_pool, provider_mutation_lock, CommandResult, DbPool};
+use crate::ai::macro_ai;
 use crate::db::{models::*, repository};
 use crate::{secrets, speech};
 use serde::Deserialize;
@@ -8,6 +9,10 @@ const SECRET_PREFIX: &str = "speech:";
 
 fn secret_id(provider_id: &str) -> String {
     format!("{SECRET_PREFIX}{provider_id}")
+}
+
+fn is_managed_provider(provider_id: &str) -> bool {
+    provider_id == macro_ai::SPEECH_PROVIDER_ID
 }
 
 fn validate_provider_fields(
@@ -109,9 +114,13 @@ pub async fn speech_list_provider_configs(
         .map_err(super::CommandError::from)?;
 
     for provider in &mut providers {
-        let has_key = secrets::get_api_key(&secret_id(&provider.id))
-            .map_err(|error| command_error(error.to_string()))?
-            .is_some();
+        let has_key = if is_managed_provider(&provider.id) {
+            macro_ai::access_token().map_err(command_error)?.is_some()
+        } else {
+            secrets::get_api_key(&secret_id(&provider.id))
+                .map_err(|error| command_error(error.to_string()))?
+                .is_some()
+        };
         if has_key != provider.has_stored_api_key {
             repository::set_speech_provider_has_stored_api_key(&pool, &provider.id, has_key)
                 .await
@@ -179,6 +188,11 @@ pub async fn speech_update_provider_config(
     pool: State<'_, DbPool>,
     params: UpdateSpeechProviderParams,
 ) -> CommandResult<()> {
+    if is_managed_provider(&params.id) {
+        return Err(command_error(
+            "The managed Andrologic speech provider cannot be edited.",
+        ));
+    }
     let pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock(&secret_id(&params.id));
     let _guard = lock.lock().await;
@@ -252,7 +266,8 @@ pub async fn speech_update_provider_config(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_provider_fields;
+    use super::{is_managed_provider, validate_provider_fields};
+    use crate::ai::macro_ai;
 
     #[test]
     fn rejects_plain_http_for_remote_speech_providers() {
@@ -293,6 +308,13 @@ mod tests {
 
         assert!(error.message.contains("credentials"));
     }
+
+    #[test]
+    fn recognizes_only_the_managed_andrologic_speech_provider() {
+        assert!(is_managed_provider(macro_ai::SPEECH_PROVIDER_ID));
+        assert!(!is_managed_provider(macro_ai::PROVIDER_ID));
+        assert!(!is_managed_provider("openai-speech"));
+    }
 }
 
 #[tauri::command]
@@ -300,9 +322,9 @@ pub async fn speech_delete_provider_config(
     pool: State<'_, DbPool>,
     id: String,
 ) -> CommandResult<()> {
-    if id == "openai-speech" {
+    if id == "openai-speech" || is_managed_provider(&id) {
         return Err(command_error(
-            "The default OpenAI speech provider cannot be deleted.",
+            "Default and managed speech providers cannot be deleted.",
         ));
     }
     let pool = get_pool(&pool).await?;
@@ -356,9 +378,17 @@ pub async fn speech_transcribe(
         .await
         .map_err(super::CommandError::from)?
         .ok_or_else(|| command_error(format!("Speech provider {provider_id} not found.")))?;
-    let api_key = secrets::get_api_key(&secret_id(&provider_id)).map_err(|error| {
-        command_error(format!("Failed to access speech provider API key: {error}"))
-    })?;
+    let api_key = if is_managed_provider(&provider_id) {
+        Some(
+            macro_ai::ensure_access_token(&pool)
+                .await
+                .map_err(command_error)?,
+        )
+    } else {
+        secrets::get_api_key(&secret_id(&provider_id)).map_err(|error| {
+            command_error(format!("Failed to access speech provider API key: {error}"))
+        })?
+    };
 
     speech::transcribe(
         &provider,

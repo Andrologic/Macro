@@ -137,6 +137,35 @@ describe('useSpeechDictation', () => {
 
   });
 
+  it('starts Andrologic dictation without requiring a user API key', async () => {
+    const managedProvider = {
+      ...provider,
+      id: 'andrologic-speech',
+      name: 'Andrologic',
+      model: 'macro-transcription',
+      hasStoredApiKey: false,
+    };
+    useSpeechToTextStore.setState({
+      providers: [managedProvider],
+      selectedProviderId: managedProvider.id,
+      isInitialized: true,
+      error: null,
+      initialize: mock(async () => undefined),
+      transcribe: mock(async () => ({ text: 'Bonjour' })),
+    });
+
+    await act(async () => {
+      root.render(<Harness contextKey="conversation:a" />);
+    });
+    await act(async () => {
+      await currentHook?.toggle();
+    });
+
+    expect(startRecording).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(currentHook?.phase).toBe('recording');
+  });
+
   it('does not insert a transcript after the composer context changes', async () => {
     let resolveTranscription: ((result: { text: string }) => void) | undefined;
     const transcription = new Promise<{ text: string }>((resolve) => {

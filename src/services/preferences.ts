@@ -7,6 +7,7 @@
 
 import { load, Store } from "@tauri-apps/plugin-store";
 import type { AppMode, ToolRiskLevel } from "../types";
+import { MACRO_AI_SPEECH_PROVIDER_ID } from "../config/macroAi";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
@@ -326,7 +327,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.METADATA_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_PROMPT]: DEFAULT_SMART_COMMIT_PROMPT,
-  [PREF_KEYS.SPEECH_PROVIDER_ID]: "openai-speech",
+  [PREF_KEYS.SPEECH_PROVIDER_ID]: MACRO_AI_SPEECH_PROVIDER_ID,
   [PREF_KEYS.SPEECH_LANGUAGE]: "auto",
   [PREF_KEYS.SPEECH_MAX_DURATION_SECONDS]: 120,
 };

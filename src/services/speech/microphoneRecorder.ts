@@ -36,6 +36,8 @@ export class MicrophoneRecorder {
 
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: 16_000 },
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,

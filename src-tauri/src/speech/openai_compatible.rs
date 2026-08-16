@@ -1,4 +1,5 @@
 use super::{read_provider_response, SpeechError, TranscriptionRequest, TranscriptionResult};
+use crate::ai::macro_ai;
 use crate::db::models::SpeechProviderConfig;
 use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
@@ -42,8 +43,15 @@ pub(super) async fn transcribe(
         form = form.text("language", language);
     }
 
+    let timeout = if provider.id == macro_ai::SPEECH_PROVIDER_ID {
+        // The gateway may wait up to ten minutes in its FIFO and then process
+        // the audio for up to ten additional minutes.
+        Duration::from_secs(20 * 60 + 30)
+    } else {
+        Duration::from_secs(90)
+    };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
+        .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| SpeechError::Request(error.to_string()))?;
@@ -56,9 +64,29 @@ pub(super) async fn transcribe(
         .send()
         .await
         .map_err(|error| SpeechError::Request(error.to_string()))?;
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let (status, body) = read_provider_response(response).await?;
 
     if !status.is_success() {
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let suffix = retry_after
+                .map(|value| format!(" Retry after {value}."))
+                .unwrap_or_default();
+            return Err(SpeechError::Request(format!(
+                "The transcription service is saturated.{suffix}"
+            )));
+        }
+        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            return Err(SpeechError::Request(
+                "The transcription service is temporarily unavailable.".to_string(),
+            ));
+        }
         let message = serde_json::from_slice::<ProviderErrorEnvelope>(&body)
             .ok()
             .and_then(|value| value.error)
@@ -79,7 +107,13 @@ pub(super) async fn transcribe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Bytes, extract::State, http::HeaderMap, routing::post, Json, Router};
+    use axum::{
+        body::Bytes,
+        extract::State,
+        http::{HeaderMap, HeaderValue, StatusCode},
+        routing::post,
+        Json, Router,
+    };
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -93,6 +127,16 @@ mod tests {
     ) -> Json<serde_json::Value> {
         *capture.0.lock().expect("capture lock") = Some((headers, body.to_vec()));
         Json(json!({ "text": "Bonjour Macro", "language": "fr", "duration": 1.25 }))
+    }
+
+    async fn saturated_handler() -> (StatusCode, HeaderMap, Json<serde_json::Value>) {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("12"));
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            headers,
+            Json(json!({ "error": { "message": "queue full" } })),
+        )
     }
 
     #[tokio::test]
@@ -155,5 +199,46 @@ mod tests {
         assert!(body.contains("dictation.webm"));
         assert!(body.contains("audio-bytes"));
         assert!(body.contains("\r\n\r\nfr\r\n"));
+    }
+
+    #[tokio::test]
+    async fn preserves_retry_after_when_the_transcription_gateway_is_saturated() {
+        let app = Router::new().route("/v1/audio/transcriptions", post(saturated_handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("test server");
+        });
+        let provider = SpeechProviderConfig {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            provider_type: "openai-compatible".to_string(),
+            base_url: format!("http://{address}/v1"),
+            model: "whisper-test".to_string(),
+            has_stored_api_key: true,
+            is_enabled: true,
+            is_local: false,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        };
+
+        let error = transcribe(
+            &provider,
+            Some("secret"),
+            TranscriptionRequest {
+                audio: b"audio-bytes".to_vec(),
+                mime_type: "audio/wav".to_string(),
+                file_name: "dictation.wav".to_string(),
+                language: None,
+            },
+        )
+        .await
+        .expect_err("saturated gateway must fail");
+        server.abort();
+
+        assert!(error.to_string().contains("saturated"));
+        assert!(error.to_string().contains("Retry after 12"));
     }
 }
