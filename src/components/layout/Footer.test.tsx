@@ -622,6 +622,29 @@ describe('Footer', () => {
     expect(gitPullMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
   });
 
+  it('uses the project selected in Architect when no plan is selected', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    appState.selectedProjectId = 'project-b';
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await flushAsyncWork();
+
+    expect(container.textContent ?? '').toContain('Web');
+    expect(container.textContent ?? '').toContain('feature-b');
+    expect(container.textContent ?? '').not.toContain('Aucun projet');
+
+    act(() => findButtonByIcon(container!, 'refresh-cw')?.click());
+    await flushAsyncWork();
+
+    expect(gitFetchMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
+  });
+
   it('disables Git actions and executes no fallback command without an active Chat project', async () => {
     appState.mode = 'Chat';
     appState.selectedProjectId = 'project-a';
