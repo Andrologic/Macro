@@ -341,7 +341,10 @@
       "allProjects": "All projects",
       "allRepositories": "すべてのリポジトリ",
       "gitScope": "Git スコープ",
-      "selectRepository": "リポジトリを選択"
+      "selectRepository": "リポジトリを選択",
+      "selectFolder": "Git フォルダーを選択",
+      "folderNotGit": "このフォルダーは Git リポジトリではありません。",
+      "folderSelectionFailed": "このフォルダーを選択できませんでした。"
     }
   },
   "window": {

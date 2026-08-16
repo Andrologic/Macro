@@ -128,6 +128,7 @@ let gitFastForwardMock: ReturnType<typeof mock>;
 let gitRestorePathsMock: ReturnType<typeof mock>;
 let gitResetMock: ReturnType<typeof mock>;
 let openConflictAssistantMock: ReturnType<typeof mock>;
+let openFolderMock: ReturnType<typeof mock>;
 let windowConfirmSpy: ReturnType<typeof mock> | null = null;
 let macroBranchEnsureMock: ReturnType<typeof mock>;
 let macroBranchStatusMock: ReturnType<typeof mock>;
@@ -311,6 +312,11 @@ const loadFooter = async () => {
     useTranslation: () => ({
       t: translateMock,
     }),
+  }));
+
+  mock.module('@tauri-apps/plugin-dialog', () => ({
+    open: (options: { directory?: boolean; multiple?: boolean; title?: string }) =>
+      openFolderMock(options),
   }));
 
   mock.module('../../stores/useAppStore', () => ({
@@ -558,6 +564,7 @@ describe('Footer', () => {
     gitRestorePathsMock = mock(async () => undefined);
     gitResetMock = mock(async () => undefined);
     openConflictAssistantMock = mock(async () => 'conversation-id');
+    openFolderMock = mock(async () => null);
     windowConfirmSpy = null;
     macroBranchEnsureMock = mock(async (params?: { workspacePath?: string | null }) =>
       cloneMacroStatus(macroStatusByPath[params?.workspacePath ?? '']!)
@@ -634,6 +641,55 @@ describe('Footer', () => {
     expect(findButtonByIcon(container!, 'arrow-up')).toBeNull();
     expect(gitPullMock).not.toHaveBeenCalled();
     expect(gitPushMock).not.toHaveBeenCalled();
+  });
+
+  it('lets Architect use an explicitly selected Git folder when no project exists', async () => {
+    appState.mode = 'Architect';
+    appState.selectedProjectId = null;
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    appState.projectGroups = [];
+    appState.standaloneProjects = [];
+    gitStatusByPath['/repo/sandbox'] = buildGitStatus('feature/sandbox', 2, 0);
+    openFolderMock = mock(async () => '/repo/sandbox');
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await flushAsyncWork();
+
+    const folderButton = container.querySelector(
+      '[data-tour-id="footer-folder-scope"]'
+    ) as HTMLButtonElement | null;
+    expect(folderButton?.textContent).toContain('Sélectionner un dossier Git');
+
+    act(() => folderButton?.click());
+    await flushAsyncWork();
+
+    expect(openFolderMock).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+      title: 'Sélectionner un dossier Git',
+    });
+    expect(container.textContent ?? '').toContain('sandbox');
+    expect(container.textContent ?? '').toContain('feature/sandbox');
+    expect(findButtonByIcon(container, 'arrow-down')?.textContent?.trim()).toBe('2');
+    expect(findButtonByIcon(container, 'arrow-up')?.textContent?.trim()).toBe('0');
+
+    act(() => findButtonByIcon(container!, 'arrow-down')?.click());
+    await flushAsyncWork();
+    act(() => findButtonByIcon(container!, 'arrow-up')?.click());
+    await flushAsyncWork();
+
+    expect(gitPullMock).toHaveBeenCalledWith({ repoPath: '/repo/sandbox' });
+    expect(gitPushMock).toHaveBeenCalledWith({ repoPath: '/repo/sandbox' });
+    expect(macroBranchEnsureMock).not.toHaveBeenCalled();
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
 
   it('keeps the group focus stable while the footer git scope changes', async () => {

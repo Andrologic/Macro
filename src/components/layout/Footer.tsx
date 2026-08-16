@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
+import { open } from '@tauri-apps/plugin-dialog';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
@@ -42,6 +43,7 @@ interface ScopedProject {
   id: string;
   name: string;
   path: string;
+  source: 'project' | 'folder';
 }
 
 interface CodeStatusSnapshot {
@@ -155,6 +157,11 @@ const CODE_DIVERGENCE_STATUS_PRIORITY: CodeDivergencePreflightStatus[] = [
 
 const uniqueStrings = (items: string[]): string[] =>
   Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+
+const getFolderName = (path: string): string => {
+  const normalized = path.trim().replace(/[\\/]+$/, '');
+  return normalized.split(/[\\/]/).filter(Boolean).at(-1) ?? normalized;
+};
 
 const createCodeDivergencePreflight = (
   status: CodeDivergencePreflightStatus,
@@ -723,6 +730,7 @@ export const Footer: React.FC = () => {
   const setNotificationCenterOpen = useNotificationCenterStore((state) => state.setCenterOpen);
 
   const [gitScopeProjectId, setGitScopeProjectId] = useState<string | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<{ name: string; path: string } | null>(null);
   const [codeStatus, setCodeStatus] = useState(DEFAULT_CODE_STATUS);
   const [focusedProjectBranch, setFocusedProjectBranch] = useState<string | null>(null);
   const [macroSnapshot, setMacroSnapshot] = useState<tauriIpc.MacroBranchSyncDto | null>(null);
@@ -738,6 +746,7 @@ export const Footer: React.FC = () => {
     useState<CodeDivergenceAction | null>(null);
   const [pushResolution, setPushResolution] = useState<PushResolutionState | null>(null);
   const [isConfiguringRemote, setIsConfiguringRemote] = useState(false);
+  const [isSelectingFolder, setIsSelectingFolder] = useState(false);
 
   const refreshRef = useRef<Promise<void> | null>(null);
   const focusedBranchRequestIdRef = useRef(0);
@@ -745,6 +754,12 @@ export const Footer: React.FC = () => {
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const footerMetadataSyncRef = useRef(footerMetadataSync);
+
+  const registeredProjectCount = standaloneProjects.length + projectGroups.reduce(
+    (count, group) => count + group.projects.length,
+    0,
+  );
+  const canSelectFolder = mode === 'Architect' && registeredProjectCount === 0;
 
   const gitContext = useMemo(() => resolveFooterGitContext({
     mode,
@@ -758,7 +773,8 @@ export const Footer: React.FC = () => {
     conversations,
     durableFocusProjectId: selectedProjectId,
     manualProjectId: gitScopeProjectId,
-  }), [activeArchitectPlanId, conversations, gitScopeProjectId, mode, projectGroups, selectedConversationId, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
+    selectedFolder: canSelectFolder ? selectedFolder : null,
+  }), [activeArchitectPlanId, canSelectFolder, conversations, gitScopeProjectId, mode, projectGroups, selectedConversationId, selectedFolder, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
   const focusProjects = gitContext.candidates;
   const focusedProject = gitContext.project;
   const scopeProjects = useMemo<ScopedProject[]>(
@@ -769,6 +785,7 @@ export const Footer: React.FC = () => {
     () => focusedProject?.name ?? t('footer.scope.selectRepository', 'Sélectionner un dépôt'),
     [focusedProject, t]
   );
+  const syncsMacroMetadata = focusedProject?.source === 'project';
   const setFooterMetadataSyncStatus = useCallback((params: {
     state: tauriIpc.MacroSyncState;
     error?: string | null;
@@ -852,6 +869,10 @@ export const Footer: React.FC = () => {
   }, [gitContext.contextKey]);
 
   useEffect(() => {
+    if (!canSelectFolder) setSelectedFolder(null);
+  }, [canSelectFolder]);
+
+  useEffect(() => {
     if (!gitScopeProjectId) return;
     if (!focusProjects.some((project) => project.id === gitScopeProjectId)) {
       setGitScopeProjectId(null);
@@ -861,6 +882,35 @@ export const Footer: React.FC = () => {
   useEffect(() => {
     footerMetadataSyncRef.current = footerMetadataSync;
   }, [footerMetadataSync]);
+
+  const selectFolderScope = useCallback(async () => {
+    if (!isTauriRuntime || !canSelectFolder || isSelectingFolder) return;
+    setIsSelectingFolder(true);
+    try {
+      const selectedPath = await open({
+        directory: true,
+        multiple: false,
+        title: t('footer.scope.selectFolder', 'Sélectionner un dossier Git'),
+      });
+      if (typeof selectedPath !== 'string' || !selectedPath.trim()) return;
+      const path = selectedPath.trim();
+      try {
+        await tauriIpc.gitStatus(path);
+      } catch (error) {
+        notify.error(t('footer.scope.folderNotGit', 'Ce dossier n’est pas un dépôt Git.'), {
+          description: toServiceError(error).message,
+        });
+        return;
+      }
+      setSelectedFolder({ name: getFolderName(path), path });
+    } catch (error) {
+      notify.error(t('footer.scope.folderSelectionFailed', 'Impossible de sélectionner ce dossier.'), {
+        description: toServiceError(error).message,
+      });
+    } finally {
+      setIsSelectingFolder(false);
+    }
+  }, [canSelectFolder, isSelectingFolder, isTauriRuntime, t]);
 
   const refreshCodeStatus = useCallback(async () => {
     if (!isTauriRuntime || scopeProjects.length === 0) {
@@ -1021,7 +1071,7 @@ export const Footer: React.FC = () => {
   }, [scopeProjects]);
 
   const refreshMacroStatus = useCallback(async (ensure = false) => {
-    if (!isTauriRuntime) {
+    if (!isTauriRuntime || !syncsMacroMetadata) {
       setMacroSnapshot(null);
       setFooterMetadataSync(DEFAULT_FOOTER_METADATA_SYNC);
       return null;
@@ -1031,7 +1081,7 @@ export const Footer: React.FC = () => {
       setMacroSnapshot(result);
     }
     return result;
-  }, [isTauriRuntime, scopedMacroSyncService]);
+  }, [isTauriRuntime, scopedMacroSyncService, syncsMacroMetadata]);
 
   const refreshFooterStatus = useCallback(async (options?: { ensureMacro?: boolean; showBusy?: boolean }) => {
     if (refreshRef.current) return refreshRef.current;
@@ -1267,10 +1317,13 @@ export const Footer: React.FC = () => {
   }, [t, translate]);
 
   const runPushPreflight = useCallback(async (projects: ScopedProject[]) => {
-    const macroSyncService = createMacroSyncServiceForProjects(projects);
+    const shouldSyncMetadata = projects.some((project) => project.source === 'project');
+    const macroSyncService = shouldSyncMetadata
+      ? createMacroSyncServiceForProjects(projects)
+      : null;
     const [codePreflight, preflight] = await Promise.all([
       readScopedCodeStatuses(projects),
-      macroSyncService.refreshMacroSyncStatus({ ensure: true }),
+      macroSyncService?.refreshMacroSyncStatus({ ensure: true }) ?? Promise.resolve(null),
     ]);
     if (preflight) {
       setMacroSnapshot(preflight);
@@ -1297,6 +1350,7 @@ export const Footer: React.FC = () => {
     const actionMacroSyncService = options?.projects
       ? createMacroSyncServiceForProjects(actionProjects)
       : scopedMacroSyncService;
+    const shouldSyncMetadata = actionProjects.some((project) => project.source === 'project');
     setSyncAction(action);
     lastMacroConflictActionRef.current = action;
     try {
@@ -1367,9 +1421,11 @@ export const Footer: React.FC = () => {
         }
       }
 
-      let macroResult = action === 'fetch'
-        ? await actionMacroSyncService.refreshMacroSyncStatus({ ensure: true })
-        : await actionMacroSyncService.syncMacroMetadataForCodeAction({ action });
+      let macroResult = shouldSyncMetadata
+        ? action === 'fetch'
+          ? await actionMacroSyncService.refreshMacroSyncStatus({ ensure: true })
+          : await actionMacroSyncService.syncMacroMetadataForCodeAction({ action })
+        : null;
       if (
         action === 'push' &&
         macroResult?.reason === 'missing_upstream' &&
@@ -1944,10 +2000,27 @@ export const Footer: React.FC = () => {
       >
         <div className="flex h-full min-w-0 items-center justify-between gap-3">
           <div className="flex min-w-0 items-center overflow-hidden">
-            <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={focusedProject?.name || undefined}>
-              <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
-              <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('project.noProject', 'Aucun projet')}</span>
-            </span>
+            {canSelectFolder ? (
+              <button
+                type="button"
+                className="flex h-6 min-w-0 max-w-[14rem] items-center gap-1.5 rounded px-1 text-left hover:bg-muted/60 disabled:cursor-default disabled:opacity-60"
+                title={selectedFolder?.path ?? t('footer.scope.selectFolder', 'Sélectionner un dossier Git')}
+                aria-label={t('footer.scope.selectFolder', 'Sélectionner un dossier Git')}
+                disabled={!isTauriRuntime || isSelectingFolder || Boolean(syncAction) || isRefreshing}
+                onClick={() => void selectFolderScope()}
+                data-tour-id="footer-folder-scope"
+              >
+                <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+                <span className="truncate leading-4 text-foreground">
+                  {focusedProject?.name ?? t('footer.scope.selectFolder', 'Sélectionner un dossier Git')}
+                </span>
+              </button>
+            ) : (
+              <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={focusedProject?.name || undefined}>
+                <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+                <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('project.noProject', 'Aucun projet')}</span>
+              </span>
+            )}
             <Button
               size="sm"
               variant="ghost"
