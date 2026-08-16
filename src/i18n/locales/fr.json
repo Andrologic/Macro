@@ -340,7 +340,10 @@
       "allProjects": "Tout le projet",
       "allRepositories": "Tous les dépôts",
       "gitScope": "Portée Git",
-      "selectRepository": "Sélectionner un dépôt"
+      "selectRepository": "Sélectionner un dépôt",
+      "selectFolder": "Sélectionner un dossier Git",
+      "folderNotGit": "Ce dossier n’est pas un dépôt Git.",
+      "folderSelectionFailed": "Impossible de sélectionner ce dossier."
     }
   },
   "window": {
