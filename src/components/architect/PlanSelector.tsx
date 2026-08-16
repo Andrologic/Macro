@@ -74,7 +74,7 @@ import {
 } from './planSelectorState';
 import {
   ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT,
-  ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+  registerArchitectPlanSelectorStatePublisher,
   type ArchitectPlanSelectorRequestDetail,
   type ArchitectPlanSelectorStateDetail,
 } from './planSelectorEvents';
@@ -868,12 +868,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       canCreate: canCreatePlanForScope,
       canSelect: plans.length > 0,
     };
-    window.dispatchEvent(
-      new CustomEvent<ArchitectPlanSelectorStateDetail>(
-        ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
-        { detail },
-      ),
-    );
+    return registerArchitectPlanSelectorStatePublisher(detail);
   }, [
     canCreatePlanForScope,
     error,
