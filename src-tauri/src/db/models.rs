@@ -182,6 +182,21 @@ pub struct ProviderSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechProviderConfig {
+    pub id: String,
+    pub name: String,
+    pub provider_type: String,
+    pub base_url: String,
+    pub model: String,
+    pub has_stored_api_key: bool,
+    pub is_enabled: bool,
+    pub is_local: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettingRecord {
     pub key: String,
     pub value_json: String,
@@ -316,6 +331,17 @@ pub struct UpdateProviderConfigInput {
     pub provider_type: Option<String>,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
+    pub is_local: Option<bool>,
+    pub is_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSpeechProviderConfigInput {
+    pub id: String,
+    pub name: Option<String>,
+    pub provider_type: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
     pub is_local: Option<bool>,
     pub is_enabled: Option<bool>,
 }

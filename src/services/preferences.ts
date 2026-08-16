@@ -97,6 +97,9 @@ export const PREF_KEYS = {
   METADATA_MODEL_CONFIG: "metadataModelConfig",
   SMART_COMMIT_MODEL_CONFIG: "smartCommitModelConfig",
   SMART_COMMIT_PROMPT: "smartCommitPrompt",
+  SPEECH_PROVIDER_ID: "speech.providerId",
+  SPEECH_LANGUAGE: "speech.language",
+  SPEECH_MAX_DURATION_SECONDS: "speech.maxDurationSeconds",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -323,6 +326,9 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.METADATA_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_PROMPT]: DEFAULT_SMART_COMMIT_PROMPT,
+  [PREF_KEYS.SPEECH_PROVIDER_ID]: "andrologic-speech",
+  [PREF_KEYS.SPEECH_LANGUAGE]: "auto",
+  [PREF_KEYS.SPEECH_MAX_DURATION_SECONDS]: 120,
 };
 
 // Store instance (singleton)
@@ -369,6 +375,12 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
       value === null ||
       (typeof value === "number" && Number.isFinite(value) && value >= 0)
     );
+  }
+  if (key === PREF_KEYS.SPEECH_PROVIDER_ID || key === PREF_KEYS.SPEECH_LANGUAGE) {
+    return typeof value === "string";
+  }
+  if (key === PREF_KEYS.SPEECH_MAX_DURATION_SECONDS) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 10 && value <= 600;
   }
   return true;
 };

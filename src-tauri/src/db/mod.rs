@@ -137,6 +137,7 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
 
     // Insert default providers if they don't exist
     insert_default_providers(connection).await?;
+    insert_default_speech_provider(connection).await?;
 
     Ok(())
 }
@@ -256,6 +257,7 @@ async fn upgrade_legacy_schema_to_baseline(connection: &mut SqliteConnection) ->
     ensure_legacy_provider_configs(&mut *connection).await?;
     ensure_legacy_ai_models(&mut *connection).await?;
     ensure_legacy_provider_settings(&mut *connection).await?;
+    ensure_legacy_speech_provider_configs(&mut *connection).await?;
     ensure_legacy_app_settings(&mut *connection).await?;
     ensure_legacy_terminal_tabs(&mut *connection).await?;
     ensure_legacy_project_context_states(&mut *connection).await?;
@@ -1101,6 +1103,29 @@ async fn ensure_legacy_provider_settings(connection: &mut SqliteConnection) -> D
     Ok(())
 }
 
+async fn ensure_legacy_speech_provider_configs(connection: &mut SqliteConnection) -> DbResult<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS speech_provider_configs (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            provider_type TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            model TEXT NOT NULL,
+            has_stored_api_key INTEGER NOT NULL DEFAULT 0,
+            is_enabled INTEGER DEFAULT 1,
+            is_local INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .execute(&mut *connection)
+    .await?;
+
+    Ok(())
+}
+
 async fn ensure_legacy_app_settings(connection: &mut SqliteConnection) -> DbResult<()> {
     sqlx::query(
         r#"
@@ -1439,6 +1464,61 @@ async fn insert_default_providers(connection: &mut SqliteConnection) -> DbResult
     Ok(())
 }
 
+async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO speech_provider_configs (
+            id, name, provider_type, base_url, model, has_stored_api_key,
+            is_enabled, is_local, created_at, updated_at
+        )
+        VALUES ('andrologic-speech', 'Andrologic', 'openai-compatible',
+                'https://lmstudio.andrologic.ai/v1', 'macro-transcription', 1, 1, 0, ?, ?)
+        "#,
+    )
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE speech_provider_configs
+        SET name = 'Andrologic', provider_type = 'openai-compatible',
+            base_url = 'https://lmstudio.andrologic.ai/v1',
+            model = 'macro-transcription', has_stored_api_key = 1,
+            is_enabled = 1, is_local = 0, updated_at = ?
+        WHERE id = 'andrologic-speech'
+        "#,
+    )
+    .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO speech_provider_configs (
+            id, name, provider_type, base_url, model, has_stored_api_key,
+            is_enabled, is_local, created_at, updated_at
+        )
+        VALUES ('openai-speech', 'OpenAI', 'openai-compatible',
+                'https://api.openai.com/v1', 'gpt-4o-mini-transcribe', 0, 0, 0, ?, ?)
+        "#,
+    )
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        "UPDATE speech_provider_configs SET is_enabled = 0 WHERE id = 'openai-speech' AND has_stored_api_key = 0",
+    )
+    .execute(&mut *connection)
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1653,6 +1733,7 @@ mod tests {
                 'git_repositories',
                 'git_worktrees',
                 'provider_configs',
+                'speech_provider_configs',
                 'ai_models',
                 'provider_settings',
                 'app_settings',
@@ -1688,6 +1769,7 @@ mod tests {
                 "schema_migrations".to_string(),
                 "session_context_state".to_string(),
                 "settings".to_string(),
+                "speech_provider_configs".to_string(),
                 "terminal_tabs".to_string(),
             ]
         );
@@ -1905,6 +1987,75 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn create_pool_inserts_and_restores_the_default_speech_provider() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("db pool");
+
+        let provider = sqlx::query(
+            r#"
+            SELECT name, provider_type, base_url, model, has_stored_api_key, is_enabled, is_local
+            FROM speech_provider_configs
+            WHERE id = 'openai-speech'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("default speech provider");
+        assert_eq!(provider.get::<String, _>("name"), "OpenAI");
+        assert_eq!(
+            provider.get::<String, _>("provider_type"),
+            "openai-compatible"
+        );
+        assert_eq!(
+            provider.get::<String, _>("base_url"),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(provider.get::<String, _>("model"), "gpt-4o-mini-transcribe");
+        assert_eq!(provider.get::<i64, _>("has_stored_api_key"), 0);
+        assert_eq!(provider.get::<i64, _>("is_enabled"), 0);
+        assert_eq!(provider.get::<i64, _>("is_local"), 0);
+
+        let included_provider = sqlx::query(
+            r#"
+            SELECT name, provider_type, base_url, model, has_stored_api_key, is_enabled, is_local
+            FROM speech_provider_configs
+            WHERE id = 'andrologic-speech'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("included speech provider");
+        assert_eq!(included_provider.get::<String, _>("name"), "Andrologic");
+        assert_eq!(
+            included_provider.get::<String, _>("base_url"),
+            "https://lmstudio.andrologic.ai/v1"
+        );
+        assert_eq!(
+            included_provider.get::<String, _>("model"),
+            "macro-transcription"
+        );
+        assert_eq!(included_provider.get::<i64, _>("has_stored_api_key"), 1);
+        assert_eq!(included_provider.get::<i64, _>("is_enabled"), 1);
+        assert_eq!(included_provider.get::<i64, _>("is_local"), 0);
+
+        sqlx::query("DELETE FROM speech_provider_configs WHERE id = 'openai-speech'")
+            .execute(&pool)
+            .await
+            .expect("delete default speech provider");
+        drop(pool);
+
+        let reopened = create_pool(&db_path).await.expect("reopened db pool");
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM speech_provider_configs WHERE id = 'openai-speech'",
+        )
+        .fetch_one(&reopened)
+        .await
+        .expect("restored default speech provider");
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
