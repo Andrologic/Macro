@@ -629,10 +629,17 @@ export const createMacroSyncService = (
 
   const runAcrossTargets = async (
     targets: MetadataSyncTarget[],
-    operation: (target: MetadataSyncTarget) => Promise<MacroSyncResult>
+    operation: (target: MetadataSyncTarget) => Promise<MacroSyncResult>,
+    preservedResults: ReadonlyMap<string, MacroSyncResult> = new Map()
   ): Promise<MacroSyncResult> => {
     const entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
     for (const target of targets) {
+      const preservedResult = preservedResults.get(target.repoPath);
+      if (preservedResult) {
+        entries.push({ target, result: preservedResult });
+        continue;
+      }
+
       try {
         entries.push({
           target,
@@ -784,11 +791,18 @@ export const createMacroSyncService = (
           );
         }
 
+        const missingUpstreamResults = new Map(
+          preflight.entries
+            .filter(({ result }) => isMissingUpstreamResult(result))
+            .map(({ target, result }) => [target.repoPath, result] as const)
+        );
         setMacroSyncPending(targets);
-        return await runAcrossTargets(targets, (target) =>
-          dependencies.tauriIpc.macroBranchPull({
-            workspacePath: target.repoPath,
-          })
+        return await runAcrossTargets(
+          targets,
+          (target) => dependencies.tauriIpc.macroBranchPull({
+              workspacePath: target.repoPath,
+            }),
+          missingUpstreamResults
         );
       } catch (error) {
         return applyMacroSyncFailure(error, targets);
@@ -884,15 +898,24 @@ export const createMacroSyncService = (
           );
         }
 
+        const missingUpstreamResults = params.action === 'pull'
+          ? new Map(
+              postFlushEntries
+                .filter(({ result }) => isMissingUpstreamResult(result))
+                .map(({ target, result }) => [target.repoPath, result] as const)
+            )
+          : new Map<string, MacroSyncResult>();
         setMacroSyncPending(targets);
-        return await runAcrossTargets(targets, (target) =>
-          params.action === 'pull'
-            ? dependencies.tauriIpc.macroBranchPull({
-                workspacePath: target.repoPath,
-              })
-            : dependencies.tauriIpc.macroBranchPush({
-                workspacePath: target.repoPath,
-              })
+        return await runAcrossTargets(
+          targets,
+          (target) => params.action === 'pull'
+              ? dependencies.tauriIpc.macroBranchPull({
+                  workspacePath: target.repoPath,
+                })
+              : dependencies.tauriIpc.macroBranchPush({
+                  workspacePath: target.repoPath,
+                }),
+          missingUpstreamResults
         );
       } catch (error) {
         return applyMacroSyncFailure(error, targets);
