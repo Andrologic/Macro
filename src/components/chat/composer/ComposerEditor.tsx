@@ -47,7 +47,7 @@ import {
 export interface ComposerEditorHandle {
   clear: () => void;
   setText: (text: string, contextRefs?: readonly ContextReference[]) => void;
-  insertTextAtSelection: (text: string, spacing?: TextInsertionSpacing) => void;
+  insertTextAtSelection: (text: string, spacing?: TextInsertionSpacing) => string;
   getTextContent: () => string;
   focus: () => void;
 }
@@ -298,7 +298,8 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
         textRef.current = text;
       },
       insertTextAtSelection: (text: string, spacing = 'preserve') => {
-        if (!text) return;
+        if (!text) return textRef.current;
+        let nextText = textRef.current;
         editor.update(() => {
           let selection = $getSelection();
           if (!$isRangeSelection(selection)) {
@@ -318,10 +319,13 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
                   after: rootText.slice(end),
                 })
               : text;
+            nextText = `${rootText.slice(0, start)}${insertion}${rootText.slice(end)}`;
             selection.insertText(insertion);
           }
         });
+        textRef.current = nextText;
         editor.focus();
+        return nextText;
       },
       getTextContent: () => textRef.current,
       focus: () => editor.focus(),

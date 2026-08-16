@@ -26,6 +26,9 @@ export class MicrophoneRecorder {
   private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
   private extension = 'webm';
   private cancelled = false;
+  private audioContext: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private analyserData: Uint8Array<ArrayBuffer> | null = null;
 
   async start(maxDurationSeconds: number, onAutoStop?: () => void): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -47,6 +50,7 @@ export class MicrophoneRecorder {
       this.cleanup();
       throw new Error('Microphone recording cancelled.');
     }
+    this.setupAnalyser(this.stream);
     const format = selectRecordingFormat();
     this.extension = format.extension;
     this.chunks = [];
@@ -110,11 +114,44 @@ export class MicrophoneRecorder {
     this.cleanup();
   }
 
+  getAudioLevel(): number {
+    if (!this.analyser || !this.analyserData) return 0;
+    this.analyser.getByteTimeDomainData(this.analyserData);
+    let sumOfSquares = 0;
+    for (const sample of this.analyserData) {
+      const normalized = (sample - 128) / 128;
+      sumOfSquares += normalized * normalized;
+    }
+    const rms = Math.sqrt(sumOfSquares / this.analyserData.length);
+    return Math.min(1, rms * 4.5);
+  }
+
+  private setupAnalyser(stream: MediaStream): void {
+    if (typeof AudioContext === 'undefined') return;
+    try {
+      this.audioContext = new AudioContext({ sampleRate: 16_000 });
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.72;
+      this.analyserData = new Uint8Array(this.analyser.frequencyBinCount);
+      this.audioContext.createMediaStreamSource(stream).connect(this.analyser);
+    } catch {
+      if (this.audioContext) void this.audioContext.close().catch(() => undefined);
+      this.audioContext = null;
+      this.analyser = null;
+      this.analyserData = null;
+    }
+  }
+
   private cleanup(): void {
     if (this.maxDurationTimer) clearTimeout(this.maxDurationTimer);
     this.maxDurationTimer = null;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
+    if (this.audioContext) void this.audioContext.close().catch(() => undefined);
+    this.audioContext = null;
+    this.analyser = null;
+    this.analyserData = null;
     this.recorder = null;
     this.chunks = [];
     this.stopPromise = null;

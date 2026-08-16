@@ -1,6 +1,7 @@
 {
   "speech": {
     "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "文字起こし中" },
+    "recording": { "active": "録音中", "stopAndInsert": "停止して文字起こしを挿入", "stopAndSend": "停止して文字起こし後に送信" },
     "errors": {
       "title": "音声入力を利用できません",
       "provider-missing": "最初に音声プロバイダーを設定して選択してください。",

@@ -15,6 +15,7 @@ class FakeMicrophoneRecorder {
   start = startRecording;
   stop = stopRecording;
   cancel = cancelRecording;
+  getAudioLevel = () => 0.35;
 }
 
 const provider: SpeechProviderConfig = {
@@ -37,7 +38,7 @@ describe('useSpeechDictation', () => {
   let useSpeechToTextStore: typeof import('../stores/useSpeechToTextStore').useSpeechToTextStore;
   let currentHook: ReturnType<typeof useSpeechDictation> | null = null;
   let onError = mock((_error: unknown) => undefined);
-  let onTranscript = mock((_text: string) => undefined);
+  let onTranscript = mock((_text: string, _completion: 'insert' | 'send') => undefined);
 
   const Harness: React.FC<{ contextKey: string }> = ({ contextKey }) => {
     currentHook = useSpeechDictation({ contextKey, onError, onTranscript });
@@ -58,7 +59,7 @@ describe('useSpeechDictation', () => {
     root = createRoot(container);
     currentHook = null;
     onError = mock((_error: unknown) => undefined);
-    onTranscript = mock((_text: string) => undefined);
+    onTranscript = mock((_text: string, _completion: 'insert' | 'send') => undefined);
     startRecording.mockClear();
     stopRecording.mockClear();
     cancelRecording.mockClear();
@@ -164,6 +165,30 @@ describe('useSpeechDictation', () => {
     expect(startRecording).toHaveBeenCalledTimes(1);
     expect(onError).not.toHaveBeenCalled();
     expect(currentHook?.phase).toBe('recording');
+  });
+
+  it('forwards the send intent with the completed transcript', async () => {
+    useSpeechToTextStore.setState({
+      providers: [provider],
+      selectedProviderId: provider.id,
+      isInitialized: true,
+      error: null,
+      initialize: mock(async () => undefined),
+      transcribe: mock(async () => ({ text: '  Message vocal  ' })),
+    });
+
+    await act(async () => {
+      root.render(<Harness contextKey="conversation:a" />);
+    });
+    await act(async () => {
+      await currentHook?.toggle();
+      await currentHook?.finish('send');
+    });
+
+    expect(stopRecording).toHaveBeenCalledTimes(1);
+    expect(onTranscript).toHaveBeenCalledWith('Message vocal', 'send');
+    expect(currentHook?.phase).toBe('idle');
+    expect(currentHook?.completion).toBeNull();
   });
 
   it('does not insert a transcript after the composer context changes', async () => {

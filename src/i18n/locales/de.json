@@ -1,6 +1,7 @@
 {
   "speech": {
     "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Wird transkribiert" },
+    "recording": { "active": "Aufnahme läuft", "stopAndInsert": "Stoppen und Transkription einfügen", "stopAndSend": "Stoppen, transkribieren und senden" },
     "errors": {
       "title": "Diktat nicht verfügbar",
       "provider-missing": "Konfigurieren und wählen Sie zuerst einen Sprachanbieter.",

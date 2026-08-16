@@ -147,11 +147,10 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
       },
       insertTextAtSelection: (text: string, spacing = 'preserve') => {
         if (loadedEditorRef.current) {
-          loadedEditorRef.current.insertTextAtSelection(text, spacing);
-          return;
+          return loadedEditorRef.current.insertTextAtSelection(text, spacing);
         }
         const textarea = fallbackTextareaRef.current;
-        if (!textarea) return;
+        if (!textarea) return fallbackTextRef.current;
         const start = textarea.selectionStart ?? textarea.value.length;
         const end = textarea.selectionEnd ?? start;
         const insertion = spacing === 'contextual'
@@ -165,6 +164,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         fallbackTextRef.current = textarea.value;
         onTextChange(textarea.value);
         textarea.focus();
+        return textarea.value;
       },
       getTextContent: () => {
         if (loadedEditorRef.current) {

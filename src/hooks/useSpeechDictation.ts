@@ -10,6 +10,8 @@ export type SpeechDictationPhase =
   | 'recording'
   | 'transcribing';
 
+export type SpeechDictationCompletion = 'insert' | 'send';
+
 export type SpeechDictationErrorCode =
   | 'provider-missing'
   | 'provider-disabled'
@@ -29,7 +31,7 @@ export interface SpeechDictationError {
 
 interface UseSpeechDictationOptions {
   contextKey: string;
-  onTranscript: (text: string) => void;
+  onTranscript: (text: string, completion: SpeechDictationCompletion) => void;
   onError: (error: SpeechDictationError) => void;
 }
 
@@ -61,6 +63,7 @@ export const useSpeechDictation = ({
   const transcribe = useSpeechToTextStore((state) => state.transcribe);
   const [phase, setPhase] = useState<SpeechDictationPhase>('idle');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [completion, setCompletion] = useState<SpeechDictationCompletion | null>(null);
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const mountedRef = useRef(true);
   const finishingRef = useRef(false);
@@ -111,12 +114,15 @@ export const useSpeechDictation = ({
     return () => window.clearInterval(timer);
   }, [phase]);
 
-  const finishRecording = useCallback(async () => {
+  const finishRecording = useCallback(async (
+    requestedCompletion: SpeechDictationCompletion = 'insert',
+  ) => {
     if (finishingRef.current || !recorderRef.current) return;
     const operationId = operationIdRef.current;
     const operationContext = operationContextRef.current;
     const providerId = operationProviderIdRef.current;
     finishingRef.current = true;
+    setCompletion(requestedCompletion);
     setPhase('transcribing');
     try {
       const recorded = await recorderRef.current.stop();
@@ -141,7 +147,7 @@ export const useSpeechDictation = ({
         if (mountedRef.current) onError({ code: 'empty-transcript' });
         return;
       }
-      if (mountedRef.current) onTranscript(text);
+      if (mountedRef.current) onTranscript(text, requestedCompletion);
     } catch (error) {
       if (mountedRef.current && operationId === operationIdRef.current) {
         onError({
@@ -156,6 +162,7 @@ export const useSpeechDictation = ({
         operationProviderIdRef.current = null;
       }
       if (mountedRef.current) {
+        setCompletion(null);
         setElapsedSeconds(0);
         setPhase('idle');
       }
@@ -164,7 +171,7 @@ export const useSpeechDictation = ({
 
   const toggle = useCallback(async () => {
     if (phase === 'recording') {
-      await finishRecording();
+      await finishRecording('insert');
       return;
     }
     if (phase !== 'idle') return;
@@ -224,8 +231,11 @@ export const useSpeechDictation = ({
 
   return {
     phase,
+    completion,
     elapsedSeconds,
     toggle,
+    finish: finishRecording,
+    getAudioLevel: () => recorderRef.current?.getAudioLevel() ?? 0,
     isBusy: phase !== 'idle',
   };
 };

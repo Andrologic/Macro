@@ -1,6 +1,7 @@
 {
   "speech": {
     "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Transcription en cours" },
+    "recording": { "active": "Enregistrement en cours", "stopAndInsert": "Arrêter et insérer la transcription", "stopAndSend": "Arrêter, transcrire et envoyer" },
     "errors": {
       "title": "Dictée indisponible",
       "provider-missing": "Configurez et sélectionnez d’abord un fournisseur vocal.",

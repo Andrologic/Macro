@@ -1,6 +1,7 @@
 {
   "speech": {
     "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Transcribing" },
+    "recording": { "active": "Recording", "stopAndInsert": "Stop and insert transcription", "stopAndSend": "Stop, transcribe and send" },
     "errors": {
       "title": "Dictation unavailable",
       "provider-missing": "Configure and select a speech provider first.",
