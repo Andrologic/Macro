@@ -75,6 +75,7 @@ describe('resolveFooterGitContext', () => {
       ...baseInput(),
       selectedTaskId: 'task-web',
       tasks: [task('task-web', ['web'])],
+      durableFocusProjectId: 'api',
     });
 
     expect(result.project).toMatchObject({ id: 'web', path: '/repo/web' });
@@ -86,6 +87,7 @@ describe('resolveFooterGitContext', () => {
       mode: 'Architect',
       activeArchitectPlanId: 'single',
       visibleArchitectPlans: [plan('single', ['api'])],
+      durableFocusProjectId: 'web',
     });
     const multiple = resolveFooterGitContext({
       ...baseInput(),
@@ -158,6 +160,7 @@ describe('resolveFooterGitContext', () => {
       selectedTaskId: 'deleted-task',
       tasks: [task('other-task', ['api'])],
       manualProjectId: 'api',
+      durableFocusProjectId: 'api',
     });
     const unknownProject = resolveFooterGitContext({
       ...baseInput(),
@@ -168,6 +171,23 @@ describe('resolveFooterGitContext', () => {
     expect(missingTask.project).toBeNull();
     expect(missingTask.candidates).toEqual([]);
     expect(unknownProject.project).toBeNull();
+  });
+
+  it('falls back to the selected project when Architect has no plan or Implement has no task', () => {
+    const architect = resolveFooterGitContext({
+      ...baseInput(),
+      mode: 'Architect',
+      durableFocusProjectId: 'api',
+    });
+    const implement = resolveFooterGitContext({
+      ...baseInput(),
+      durableFocusProjectId: 'web',
+    });
+
+    expect(architect.project).toMatchObject({ id: 'api', path: '/repo/api' });
+    expect(implement.project).toMatchObject({ id: 'web', path: '/repo/web' });
+    expect(architect.contextKey).toContain('Architect:project:api');
+    expect(implement.contextKey).toContain('Implement:project:web');
   });
 
   it('uses an explicitly selected folder only in Architect when no project is registered', () => {

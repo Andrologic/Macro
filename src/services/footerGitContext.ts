@@ -97,6 +97,14 @@ export const resolveFooterGitContext = (
     }
   }
 
+  const canUseSelectedProjectFallback =
+    (input.mode === 'Architect' && !input.activeArchitectPlanId) ||
+    (input.mode === 'Implement' && !input.selectedTaskId);
+  if (canUseSelectedProjectFallback && input.durableFocusProjectId) {
+    identity = `project:${input.durableFocusProjectId}`;
+    projectIds = [input.durableFocusProjectId];
+  }
+
   let candidates = resolveCandidates(projectIds, projectsById);
   if (
     input.mode === 'Architect' &&
