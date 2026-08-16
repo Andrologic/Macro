@@ -341,7 +341,10 @@
       "allProjects": "All projects",
       "allRepositories": "Todos los repositorios",
       "gitScope": "Alcance de Git",
-      "selectRepository": "Seleccionar repositorio"
+      "selectRepository": "Seleccionar repositorio",
+      "selectFolder": "Seleccionar una carpeta Git",
+      "folderNotGit": "Esta carpeta no es un repositorio Git.",
+      "folderSelectionFailed": "No se pudo seleccionar esta carpeta."
     }
   },
   "window": {
