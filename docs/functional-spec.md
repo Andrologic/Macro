@@ -965,7 +965,9 @@ d'enregistrement et un fournisseur activé. Les fournisseurs de reconnaissance
 vocale sont distincts des fournisseurs de chat. Macro prend en charge les
 protocoles OpenAI-compatible et Deepgram, y compris les endpoints locaux
 configurables. L'interface doit indiquer clairement si l'audio reste local ou est
-envoyé à un service distant.
+envoyé à un service distant. Un fournisseur déclaré local ou sans clé peut utiliser
+HTTP pour joindre un service de confiance sur la machine ou le réseau local ; tout
+fournisseur distant authentifié doit utiliser HTTPS.
 
 Andrologic est le fournisseur sélectionné par défaut lorsqu'il a pu être activé
 et qu'aucune sélection de conversation existante ne doit être restaurée. Il

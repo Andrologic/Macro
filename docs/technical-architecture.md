@@ -432,7 +432,10 @@ Le module `speech` valide la taille et la configuration des enregistrements, pui
 sélectionne un adaptateur de protocole. L'adaptateur OpenAI-compatible envoie un
 multipart vers `/audio/transcriptions`; l'adaptateur Deepgram envoie les octets
 audio vers `/v1/listen`. Les commandes Tauri reçoivent le contenu audio dans un
-corps IPC binaire afin d'éviter une sérialisation JSON ou base64 inutile.
+corps IPC binaire afin d'éviter une sérialisation JSON ou base64 inutile. Les
+adaptateurs refusent les redirections, limitent la réponse du fournisseur à 1 Mo
+et imposent HTTPS aux fournisseurs distants afin que l'audio et les clés ne
+transitent pas en clair.
 
 ---
 

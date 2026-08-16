@@ -1,19 +1,33 @@
 {
   "speech": {
     "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Wird transkribiert" },
-    "errors": { "title": "Diktat nicht verfügbar" },
+    "errors": {
+      "title": "Diktat nicht verfügbar",
+      "provider-missing": "Konfigurieren und wählen Sie zuerst einen Sprachanbieter.",
+      "provider-disabled": "Der ausgewählte Sprachanbieter ist deaktiviert.",
+      "api-key-missing": "Fügen Sie zuerst einen API-Schlüssel zum ausgewählten Sprachanbieter hinzu.",
+      "permission-denied": "Der Mikrofonzugriff wurde verweigert. Erlauben Sie ihn in den Systemeinstellungen und versuchen Sie es erneut.",
+      "microphone-missing": "Kein Mikrofon gefunden.",
+      "microphone-unavailable": "Das Mikrofon wird bereits verwendet oder ist nicht verfügbar.",
+      "recording-unsupported": "Mikrofonaufnahmen werden in dieser Umgebung nicht unterstützt.",
+      "context-changed": "Das Diktat wurde abgebrochen, weil sich die aktive Unterhaltung geändert hat.",
+      "empty-transcript": "Der Sprachanbieter hat keinen Text zurückgegeben.",
+      "transcription-failed": "Die Sprachtranskription ist fehlgeschlagen."
+    },
     "settings": {
       "validation": "Name, Endpunkt und Modell sind erforderlich.", "saved": "Sprachanbieter gespeichert.",
-      "saveFailed": "Der Sprachanbieter konnte nicht gespeichert werden.", "title": "Mikrofondiktat",
+      "saveFailed": "Der Sprachanbieter konnte nicht gespeichert werden.", "deleted": "Sprachanbieter gelöscht.",
+      "deleteFailed": "Der Sprachanbieter konnte nicht gelöscht werden.", "deleteTitle": "Sprachanbieter löschen",
+      "deleteConfirm": "{{name}} und den lokal gespeicherten API-Schlüssel löschen?", "title": "Mikrofondiktat",
       "description": "Nehmen Sie im Composer auf, transkribieren Sie mit dem gewählten Anbieter und prüfen Sie den Text vor dem Senden.",
       "activeProvider": "Aktiver Anbieter", "noProvider": "Kein Anbieter", "language": "Sprache", "autoLanguage": "Automatisch",
-      "maxDuration": "Maximale Aufnahmedauer", "localPrivacy": "Lokaler Anbieter: Audio bleibt auf dem konfigurierten Rechner.",
+      "maxDuration": "Maximale Aufnahmedauer", "noProviderPrivacy": "Wählen Sie einen Anbieter aus, um zu sehen, wohin die Aufnahme gesendet wird.", "localPrivacy": "Lokaler oder schlüsselloser Anbieter: Audio wird ohne erforderlichen API-Schlüssel an den konfigurierten Endpunkt gesendet.",
       "remotePrivacy": "Remote-Anbieter: Die Aufnahme wird an den konfigurierten Endpunkt gesendet.", "providers": "Sprachanbieter",
       "compatibility": "Unterstützt OpenAI-kompatible und Deepgram-Transkriptionsendpunkte.", "addProvider": "Anbieter hinzufügen",
       "keyStored": "API-Schlüssel lokal gespeichert", "noKeyRequired": "Kein API-Schlüssel erforderlich", "keyMissing": "API-Schlüssel erforderlich",
       "editProvider": "Anbieter bearbeiten", "newProvider": "Neuer Anbieter", "protocol": "Protokoll", "model": "Transkriptionsmodell",
       "endpoint": "Basis-URL", "apiKey": "API-Schlüssel", "keepKey": "Leer lassen, um den gespeicherten Schlüssel beizubehalten",
-      "localProvider": "Lokaler Anbieter", "removeKey": "Gespeicherten API-Schlüssel entfernen"
+      "localProvider": "Lokaler oder schlüsselloser Anbieter", "removeKey": "Gespeicherten API-Schlüssel entfernen"
     }
   },
   "startup": {

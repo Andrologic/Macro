@@ -1,11 +1,27 @@
 {
   "speech": {
     "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Transcription en cours" },
-    "errors": { "title": "Dictée indisponible" },
+    "errors": {
+      "title": "Dictée indisponible",
+      "provider-missing": "Configurez et sélectionnez d’abord un fournisseur vocal.",
+      "provider-disabled": "Le fournisseur vocal sélectionné est désactivé.",
+      "api-key-missing": "Ajoutez d’abord une clé API au fournisseur vocal sélectionné.",
+      "permission-denied": "L’accès au microphone a été refusé. Autorisez-le dans les réglages système, puis réessayez.",
+      "microphone-missing": "Aucun microphone n’a été détecté.",
+      "microphone-unavailable": "Le microphone est déjà utilisé ou indisponible.",
+      "recording-unsupported": "L’enregistrement au microphone n’est pas pris en charge dans cet environnement.",
+      "context-changed": "La dictée a été annulée, car la conversation active a changé.",
+      "empty-transcript": "Le fournisseur vocal n’a renvoyé aucun texte.",
+      "transcription-failed": "La transcription vocale a échoué."
+    },
     "settings": {
       "validation": "Le nom, le point de terminaison et le modèle sont obligatoires.",
       "saved": "Fournisseur vocal enregistré.",
       "saveFailed": "Impossible d’enregistrer le fournisseur vocal.",
+      "deleted": "Fournisseur vocal supprimé.",
+      "deleteFailed": "Impossible de supprimer le fournisseur vocal.",
+      "deleteTitle": "Supprimer le fournisseur vocal",
+      "deleteConfirm": "Supprimer {{name}} et sa clé API enregistrée localement ?",
       "title": "Dictée au microphone",
       "description": "Enregistrez depuis le composer, transcrivez avec le fournisseur sélectionné, puis relisez le texte avant l’envoi.",
       "activeProvider": "Fournisseur actif",
@@ -13,7 +29,8 @@
       "language": "Langue",
       "autoLanguage": "Automatique",
       "maxDuration": "Durée maximale d’enregistrement",
-      "localPrivacy": "Fournisseur local : l’audio reste sur la machine configurée.",
+      "noProviderPrivacy": "Sélectionnez un fournisseur pour savoir où l’audio enregistré sera envoyé.",
+      "localPrivacy": "Fournisseur local ou sans clé : l’audio est envoyé au point de terminaison configuré sans exiger de clé API.",
       "remotePrivacy": "Fournisseur distant : l’audio enregistré est envoyé au point de terminaison configuré.",
       "providers": "Fournisseurs de reconnaissance vocale",
       "compatibility": "Prend en charge les points de terminaison de transcription compatibles OpenAI et Deepgram.",
@@ -28,7 +45,7 @@
       "endpoint": "URL de base",
       "apiKey": "Clé API",
       "keepKey": "Laisser vide pour conserver la clé enregistrée",
-      "localProvider": "Fournisseur local",
+      "localProvider": "Fournisseur local ou sans clé",
       "removeKey": "Supprimer la clé API enregistrée"
     }
   },

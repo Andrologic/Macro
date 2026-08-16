@@ -1684,15 +1684,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
   const speechDictation = useSpeechDictation({
+    contextKey: composerDraftContextKey,
     onTranscript: (text) => {
       const editor = composerEditorRef.current;
       if (!editor) return;
-      const currentText = editor.getTextContent();
-      editor.insertTextAtSelection(currentText.length > 0 && !/\s$/.test(currentText) ? ` ${text}` : text);
+      editor.insertTextAtSelection(text, 'contextual');
     },
-    onError: (message) => {
+    onError: ({ code, detail }) => {
+      const message = t(`speech.errors.${code}`, {
+        defaultValue: t('speech.errors.transcription-failed', 'Speech transcription failed.'),
+      });
       notify.error(t('speech.errors.title', 'Dictation unavailable'), {
-        description: message,
+        description: detail ? `${message} ${detail}` : message,
       });
     },
   });
