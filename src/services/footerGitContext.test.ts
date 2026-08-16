@@ -169,4 +169,34 @@ describe('resolveFooterGitContext', () => {
     expect(missingTask.candidates).toEqual([]);
     expect(unknownProject.project).toBeNull();
   });
+
+  it('uses an explicitly selected folder only in Architect when no project is registered', () => {
+    const selectedFolder = { name: 'Sandbox', path: '/repo/sandbox' };
+    const architect = resolveFooterGitContext({
+      ...baseInput(),
+      mode: 'Architect',
+      projectGroups: [],
+      selectedFolder,
+    });
+    const chat = resolveFooterGitContext({
+      ...baseInput(),
+      mode: 'Chat',
+      projectGroups: [],
+      selectedFolder,
+    });
+    const registeredProject = resolveFooterGitContext({
+      ...baseInput(),
+      mode: 'Architect',
+      selectedFolder,
+    });
+
+    expect(architect.project).toEqual({
+      id: 'folder:/repo/sandbox',
+      name: 'Sandbox',
+      path: '/repo/sandbox',
+      source: 'folder',
+    });
+    expect(chat.project).toBeNull();
+    expect(registeredProject.project).toBeNull();
+  });
 });

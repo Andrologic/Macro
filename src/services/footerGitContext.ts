@@ -5,6 +5,12 @@ export interface FooterGitProject {
   id: string;
   name: string;
   path: string;
+  source: 'project' | 'folder';
+}
+
+export interface FooterGitFolder {
+  name: string;
+  path: string;
 }
 
 export interface ResolveFooterGitContextInput {
@@ -19,6 +25,7 @@ export interface ResolveFooterGitContextInput {
   conversations: Conversation[];
   durableFocusProjectId?: string | null;
   manualProjectId?: string | null;
+  selectedFolder?: FooterGitFolder | null;
 }
 
 export interface FooterGitContext {
@@ -46,7 +53,9 @@ const resolveCandidates = (
 ): FooterGitProject[] => projectIds.flatMap((projectId) => {
   const project = projectsById.get(projectId);
   const path = project?.path?.trim();
-  return project && path ? [{ id: project.id, name: project.name, path }] : [];
+  return project && path
+    ? [{ id: project.id, name: project.name, path, source: 'project' }]
+    : [];
 });
 
 export const resolveFooterGitContext = (
@@ -88,7 +97,22 @@ export const resolveFooterGitContext = (
     }
   }
 
-  const candidates = resolveCandidates(projectIds, projectsById);
+  let candidates = resolveCandidates(projectIds, projectsById);
+  if (
+    input.mode === 'Architect' &&
+    allProjects.length === 0 &&
+    candidates.length === 0 &&
+    input.selectedFolder?.path.trim()
+  ) {
+    const path = input.selectedFolder.path.trim();
+    candidates = [{
+      id: `folder:${path}`,
+      name: input.selectedFolder.name.trim() || path,
+      path,
+      source: 'folder',
+    }];
+    identity = `folder:${path}`;
+  }
   const contextKey = `${input.mode}:${identity}:${candidates.map((project) => `${project.id}@${project.path}`).join(',')}`;
   const eligibleFocusProjectId = input.manualProjectId ?? (
     input.mode === 'Architect' ? input.durableFocusProjectId : null
