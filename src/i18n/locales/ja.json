@@ -1,18 +1,32 @@
 {
   "speech": {
     "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "文字起こし中" },
-    "errors": { "title": "音声入力を利用できません" },
+    "errors": {
+      "title": "音声入力を利用できません",
+      "provider-missing": "最初に音声プロバイダーを設定して選択してください。",
+      "provider-disabled": "選択した音声プロバイダーは無効です。",
+      "api-key-missing": "選択した音声プロバイダーに API キーを追加してください。",
+      "permission-denied": "マイクへのアクセスが拒否されました。システム設定で許可してから再試行してください。",
+      "microphone-missing": "マイクが見つかりません。",
+      "microphone-unavailable": "マイクは使用中または利用できません。",
+      "recording-unsupported": "この環境ではマイク録音に対応していません。",
+      "context-changed": "アクティブな会話が変わったため、音声入力をキャンセルしました。",
+      "empty-transcript": "音声プロバイダーからテキストが返されませんでした。",
+      "transcription-failed": "音声の文字起こしに失敗しました。"
+    },
     "settings": {
       "validation": "名前、エンドポイント、モデルは必須です。", "saved": "音声プロバイダーを保存しました。", "saveFailed": "音声プロバイダーを保存できませんでした。",
+      "deleted": "音声プロバイダーを削除しました。", "deleteFailed": "音声プロバイダーを削除できませんでした。", "deleteTitle": "音声プロバイダーを削除",
+      "deleteConfirm": "{{name}} とローカルに保存された API キーを削除しますか？",
       "title": "マイク音声入力", "description": "コンポーザーから録音し、選択したプロバイダーで文字起こしして、送信前に内容を確認します。",
       "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
-      "maxDuration": "最大録音時間", "localPrivacy": "ローカルプロバイダー：音声は設定したマシン内に保持されます。",
+      "maxDuration": "最大録音時間", "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
       "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",
       "compatibility": "OpenAI互換およびDeepgramの文字起こしエンドポイントに対応します。", "addProvider": "プロバイダーを追加",
       "keyStored": "APIキーはローカルに保存済み", "noKeyRequired": "APIキー不要", "keyMissing": "APIキーが必要",
       "editProvider": "プロバイダーを編集", "newProvider": "新しいプロバイダー", "protocol": "プロトコル", "model": "文字起こしモデル",
       "endpoint": "ベースURL", "apiKey": "APIキー", "keepKey": "保存済みのキーを保持するには空のままにします",
-      "localProvider": "ローカルプロバイダー", "removeKey": "保存済みのAPIキーを削除"
+      "localProvider": "ローカルまたはキーレスのプロバイダー", "removeKey": "保存済みのAPIキーを削除"
     }
   },
   "startup": {

@@ -15,6 +15,7 @@ fn validate_provider_fields(
     provider_type: &str,
     base_url: &str,
     model: &str,
+    is_local: bool,
 ) -> CommandResult<()> {
     if name.trim().is_empty() || base_url.trim().is_empty() || model.trim().is_empty() {
         return Err(command_error(
@@ -35,6 +36,21 @@ fn validate_provider_fields(
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(command_error(
             "Speech provider base URL must use HTTP or HTTPS.",
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(command_error(
+            "Speech provider base URLs must not contain credentials.",
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(command_error(
+            "Speech provider base URLs must not contain a query or fragment.",
+        ));
+    }
+    if !is_local && parsed.scheme() != "https" {
+        return Err(command_error(
+            "Remote speech provider base URLs must use HTTPS.",
         ));
     }
     Ok(())
@@ -118,7 +134,7 @@ pub async fn speech_create_provider_config(
     is_local: bool,
     is_enabled: bool,
 ) -> CommandResult<SpeechProviderConfig> {
-    validate_provider_fields(&name, &provider_type, &base_url, &model)?;
+    validate_provider_fields(&name, &provider_type, &base_url, &model, is_local)?;
     let pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock("speech:create");
     let _guard = lock.lock().await;
@@ -177,7 +193,14 @@ pub async fn speech_update_provider_config(
         .unwrap_or(&previous.provider_type);
     let next_base_url = params.base_url.as_deref().unwrap_or(&previous.base_url);
     let next_model = params.model.as_deref().unwrap_or(&previous.model);
-    validate_provider_fields(next_name, next_type, next_base_url, next_model)?;
+    let next_is_local = params.is_local.unwrap_or(previous.is_local);
+    validate_provider_fields(
+        next_name,
+        next_type,
+        next_base_url,
+        next_model,
+        next_is_local,
+    )?;
     let previous_api_key = if params.api_key.is_some() {
         secrets::get_api_key(&secret_id(&params.id)).map_err(|error| {
             command_error(format!("Failed to access speech provider API key: {error}"))
@@ -225,6 +248,51 @@ pub async fn speech_update_provider_config(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_provider_fields;
+
+    #[test]
+    fn rejects_plain_http_for_remote_speech_providers() {
+        let error = validate_provider_fields(
+            "Remote",
+            "openai-compatible",
+            "http://speech.example.com/v1",
+            "whisper-1",
+            false,
+        )
+        .expect_err("remote HTTP endpoint must fail");
+
+        assert!(error.message.contains("HTTPS"));
+    }
+
+    #[test]
+    fn permits_plain_http_for_explicit_local_speech_providers() {
+        validate_provider_fields(
+            "Local",
+            "openai-compatible",
+            "http://127.0.0.1:8080/v1",
+            "whisper-1",
+            true,
+        )
+        .expect("local HTTP endpoint should be supported");
+    }
+
+    #[test]
+    fn rejects_credentials_embedded_in_speech_provider_urls() {
+        let error = validate_provider_fields(
+            "Provider",
+            "openai-compatible",
+            "https://user:password@speech.example.com/v1",
+            "whisper-1",
+            false,
+        )
+        .expect_err("URL credentials must fail");
+
+        assert!(error.message.contains("credentials"));
+    }
 }
 
 #[tauri::command]

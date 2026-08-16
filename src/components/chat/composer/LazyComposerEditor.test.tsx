@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client';
 interface TestComposerEditorHandle {
   clear: () => void;
   setText: (text: string) => void;
-  insertTextAtSelection: (text: string) => void;
+  insertTextAtSelection: (text: string, spacing?: 'preserve' | 'contextual') => void;
   getTextContent: () => string;
   focus: () => void;
 }
@@ -193,6 +193,31 @@ describe('LazyComposerEditor', () => {
 
     expect(onTextChange).toHaveBeenLastCalledWith('Bonjour Macro');
     expect(editorRef.current?.getTextContent()).toBe('Bonjour Macro');
+  });
+
+  it('spaces dictated text according to the fallback textarea selection', async () => {
+    const onTextChange = mock((_text: string) => undefined);
+    const editorRef = React.createRef<TestComposerEditorHandle>();
+
+    await act(async () => {
+      flushSync(() => {
+        root.render(
+          <LazyComposerEditor
+            ref={editorRef}
+            editable
+            placeholder="Message"
+            onTextChange={onTextChange}
+            onSend={() => undefined}
+            initialText="Bonjourmonde"
+          />
+        );
+      });
+      const textarea = container.querySelector('textarea');
+      textarea?.setSelectionRange(7, 7);
+      editorRef.current?.insertTextAtSelection('Macro', 'contextual');
+    });
+
+    expect(onTextChange).toHaveBeenLastCalledWith('Bonjour Macro monde');
   });
 
   it('delegates loaded setText and clear calls without emitting locally first', async () => {

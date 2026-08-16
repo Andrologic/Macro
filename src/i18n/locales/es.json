@@ -1,21 +1,37 @@
 {
   "speech": {
     "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Transcribiendo" },
-    "errors": { "title": "Dictado no disponible" },
+    "errors": {
+      "title": "Dictado no disponible",
+      "provider-missing": "Configura y selecciona primero un proveedor de voz.",
+      "provider-disabled": "El proveedor de voz seleccionado está desactivado.",
+      "api-key-missing": "Añade primero una clave API al proveedor de voz seleccionado.",
+      "permission-denied": "Se denegó el acceso al micrófono. Permítelo en los ajustes del sistema y vuelve a intentarlo.",
+      "microphone-missing": "No se encontró ningún micrófono.",
+      "microphone-unavailable": "El micrófono ya está en uso o no está disponible.",
+      "recording-unsupported": "La grabación por micrófono no es compatible con este entorno.",
+      "context-changed": "El dictado se canceló porque cambió la conversación activa.",
+      "empty-transcript": "El proveedor de voz no devolvió ningún texto.",
+      "transcription-failed": "La transcripción de voz ha fallado."
+    },
     "settings": {
       "validation": "El nombre, el endpoint y el modelo son obligatorios.",
       "saved": "Proveedor de voz guardado.",
       "saveFailed": "No se pudo guardar el proveedor de voz.",
+      "deleted": "Proveedor de voz eliminado.",
+      "deleteFailed": "No se pudo eliminar el proveedor de voz.",
+      "deleteTitle": "Eliminar proveedor de voz",
+      "deleteConfirm": "¿Eliminar {{name}} y su clave API guardada localmente?",
       "title": "Dictado por micrófono",
       "description": "Graba desde el compositor, transcribe con el proveedor seleccionado y revisa el texto antes de enviarlo.",
       "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
-      "maxDuration": "Duración máxima de grabación", "localPrivacy": "Proveedor local: el audio permanece en el equipo configurado.",
+      "maxDuration": "Duración máxima de grabación", "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
       "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
       "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",
       "keyStored": "Clave API guardada localmente", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
       "editProvider": "Editar proveedor", "newProvider": "Nuevo proveedor", "protocol": "Protocolo", "model": "Modelo de transcripción",
       "endpoint": "URL base", "apiKey": "Clave API", "keepKey": "Déjalo vacío para conservar la clave guardada",
-      "localProvider": "Proveedor local", "removeKey": "Eliminar la clave API guardada"
+      "localProvider": "Proveedor local o sin clave", "removeKey": "Eliminar la clave API guardada"
     }
   },
   "startup": {

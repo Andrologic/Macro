@@ -5,6 +5,7 @@ import { useSpeechToTextStore } from '../../../../stores/useSpeechToTextStore';
 import { Icon } from '../../../ui/Icon';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
+import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 
 interface ProviderDraft {
   id: string | null;
@@ -50,6 +51,7 @@ export const SpeechSettings: React.FC = () => {
     language,
     maxDurationSeconds,
     isLoading,
+    error,
     initialize,
     selectProvider,
     setLanguage,
@@ -60,6 +62,8 @@ export const SpeechSettings: React.FC = () => {
   } = useSpeechToTextStore();
   const [draft, setDraft] = useState<ProviderDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [providerToDelete, setProviderToDelete] = useState<SpeechProviderConfig | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const selectedProvider = useMemo(
     () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
     [providers, selectedProviderId],
@@ -95,6 +99,22 @@ export const SpeechSettings: React.FC = () => {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const deleteSelectedProvider = async () => {
+    if (!providerToDelete) return;
+    setDeleting(true);
+    try {
+      await deleteProvider(providerToDelete.id);
+      setProviderToDelete(null);
+      notify.success(t('speech.settings.deleted', 'Speech provider deleted.'));
+    } catch (deleteError) {
+      notify.error(t('speech.settings.deleteFailed', 'Unable to delete the speech provider.'), {
+        description: deleteError instanceof Error ? deleteError.message : undefined,
+      });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -162,8 +182,16 @@ export const SpeechSettings: React.FC = () => {
             </div>
           </label>
           <div className="rounded-lg border border-border bg-background/50 p-3 text-xs text-muted-foreground">
-            {selectedProvider?.isLocal
-              ? t('speech.settings.localPrivacy', 'Local provider: audio stays on the configured machine.')
+            {!selectedProvider
+              ? t(
+                  'speech.settings.noProviderPrivacy',
+                  'Select a provider to see where recorded audio will be sent.',
+                )
+              : selectedProvider.isLocal
+              ? t(
+                  'speech.settings.localPrivacy',
+                  'Local or keyless provider: audio is sent to the configured endpoint without requiring an API key.',
+                )
               : t('speech.settings.remotePrivacy', 'Remote provider: recorded audio is sent to its configured endpoint.')}
           </div>
         </div>
@@ -186,7 +214,18 @@ export const SpeechSettings: React.FC = () => {
             {t('speech.settings.addProvider', 'Add provider')}
           </button>
         </div>
-        {isLoading ? (
+        {error && !isLoading ? (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => void initialize()}
+              className="shrink-0 rounded-md border border-destructive/30 px-2.5 py-1.5 hover:bg-destructive/10"
+            >
+              {t('common.retry', 'Retry')}
+            </button>
+          </div>
+        ) : isLoading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t('common.loading', 'Loading...')}</div>
         ) : providers.map((provider) => (
           <div key={provider.id} className="flex items-center gap-3 rounded-xl border border-border bg-card/60 p-4">
@@ -213,7 +252,7 @@ export const SpeechSettings: React.FC = () => {
             {provider.id !== 'openai-speech' && (
               <button
                 type="button"
-                onClick={() => void deleteProvider(provider.id)}
+                onClick={() => setProviderToDelete(provider)}
                 className="rounded-lg p-2 text-destructive hover:bg-destructive/10"
                 title={t('common.delete', 'Delete')}
               >
@@ -275,7 +314,7 @@ export const SpeechSettings: React.FC = () => {
             </label>
           </div>
           <div className="flex flex-wrap gap-5 text-sm">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={draft.isLocal} onChange={(event) => setDraft({ ...draft, isLocal: event.target.checked })} />{t('speech.settings.localProvider', 'Local provider')}</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={draft.isLocal} onChange={(event) => setDraft({ ...draft, isLocal: event.target.checked })} />{t('speech.settings.localProvider', 'Local or keyless provider')}</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={draft.isEnabled} onChange={(event) => setDraft({ ...draft, isEnabled: event.target.checked })} />{t('common.enabled', 'Enabled')}</label>
             {draft.id && providers.find((provider) => provider.id === draft.id)?.hasStoredApiKey && (
               <label className="flex items-center gap-2 text-destructive"><input type="checkbox" checked={draft.removeApiKey} onChange={(event) => setDraft({ ...draft, removeApiKey: event.target.checked, apiKey: '' })} />{t('speech.settings.removeKey', 'Remove stored API key')}</label>
@@ -287,6 +326,24 @@ export const SpeechSettings: React.FC = () => {
           </div>
         </section>
       )}
+
+      <ConfirmPromptModal
+        isOpen={providerToDelete !== null}
+        title={t('speech.settings.deleteTitle', 'Delete speech provider')}
+        description={t(
+          'speech.settings.deleteConfirm',
+          'Delete {{name}} and its locally stored API key?',
+          { name: providerToDelete?.name ?? '' },
+        )}
+        confirmLabel={t('common.delete', 'Delete')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="error"
+        isSubmitting={deleting}
+        onCancel={() => {
+          if (!deleting) setProviderToDelete(null);
+        }}
+        onConfirm={() => void deleteSelectedProvider()}
+      />
     </div>
   );
 };

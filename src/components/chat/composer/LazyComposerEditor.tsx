@@ -10,6 +10,7 @@ import React, {
 import { cn } from '../../../utils/cn';
 import type { ComposerEditorHandle } from './ComposerEditor';
 import type { MentionSurface } from './MentionNode';
+import { prepareContextualTextInsertion } from './composerTextInsertion';
 
 interface LazyComposerEditorProps {
   editable: boolean;
@@ -144,16 +145,23 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         }
         onTextChange(text);
       },
-      insertTextAtSelection: (text: string) => {
+      insertTextAtSelection: (text: string, spacing = 'preserve') => {
         if (loadedEditorRef.current) {
-          loadedEditorRef.current.insertTextAtSelection(text);
+          loadedEditorRef.current.insertTextAtSelection(text, spacing);
           return;
         }
         const textarea = fallbackTextareaRef.current;
         if (!textarea) return;
         const start = textarea.selectionStart ?? textarea.value.length;
         const end = textarea.selectionEnd ?? start;
-        textarea.setRangeText(text, start, end, 'end');
+        const insertion = spacing === 'contextual'
+          ? prepareContextualTextInsertion({
+              text,
+              before: textarea.value.slice(0, start),
+              after: textarea.value.slice(end),
+            })
+          : text;
+        textarea.setRangeText(insertion, start, end, 'end');
         fallbackTextRef.current = textarea.value;
         onTextChange(textarea.value);
         textarea.focus();

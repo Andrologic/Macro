@@ -1,4 +1,4 @@
-use super::{SpeechError, TranscriptionRequest, TranscriptionResult};
+use super::{read_provider_response, SpeechError, TranscriptionRequest, TranscriptionResult};
 use crate::db::models::SpeechProviderConfig;
 use serde::Deserialize;
 use std::time::Duration;
@@ -47,6 +47,7 @@ pub(super) async fn transcribe(
     );
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(90))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| SpeechError::Request(error.to_string()))?;
     let mut request_builder = client
@@ -68,11 +69,7 @@ pub(super) async fn transcribe(
         .send()
         .await
         .map_err(|error| SpeechError::Request(error.to_string()))?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| SpeechError::Request(error.to_string()))?;
+    let (status, body) = read_provider_response(response).await?;
 
     if !status.is_success() {
         let message = serde_json::from_slice::<DeepgramError>(&body)
