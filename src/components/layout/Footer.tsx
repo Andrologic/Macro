@@ -826,6 +826,10 @@ export const Footer: React.FC = () => {
   const pushCountLabel = macroAhead > 0 ? `${codeAhead}@${macroAhead}` : String(codeAhead);
   const hasPullWork = codeBehind > 0 || macroBehind > 0;
   const hasPushWork = codeAhead > 0 || macroAhead > 0;
+  const branchActionSuffix = focusedProjectBranch ? ` · ${focusedProjectBranch}` : '';
+  const fetchActionLabel = `${t('footer.sync.refreshTitle', 'Rafraîchir l’état du code et du sync @macro')}${branchActionSuffix}`;
+  const pullActionLabel = `${t('footer.sync.pull', 'Pull')}${branchActionSuffix}`;
+  const pushActionLabel = `${t('footer.sync.push', 'Push')}${branchActionSuffix}`;
   const hasUnreadNotificationDot = useMemo(() => hasUnreadNotifications(notificationItems), [notificationItems]);
   const hasMissingUpstream =
     footerMetadataSync.reason === 'missing_upstream' &&
@@ -2025,18 +2029,22 @@ export const Footer: React.FC = () => {
               size="sm"
               variant="ghost"
               className="ml-2 h-6 w-6 shrink-0 px-0 text-[11px]"
+              aria-label={fetchActionLabel}
+              title={fetchActionLabel}
               disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
               onClick={() => void handleSyncAction('fetch')}
               data-tour-id="footer-fetch"
             >
-              <Icon
-                name="refresh-cw"
-                size={12}
-                className={cn(
-                  'block translate-x-[0.25px] -translate-y-[0.5px]',
-                  (syncAction === 'fetch' || isRefreshing) && 'animate-spin'
-                )}
-              />
+              <span className="footer-git-action-icon-frame" aria-hidden="true">
+                <Icon
+                  name="refresh-cw"
+                  size={12}
+                  className={cn(
+                    'footer-git-action-icon',
+                    (syncAction === 'fetch' || isRefreshing) && 'footer-git-action-icon--fetching'
+                  )}
+                />
+              </span>
             </Button>
             {(focusProjects.length > 0 || codeStatus.branch || hasPushWork || hasPullWork) && (
               <div className="flex min-w-0 items-center overflow-hidden">
@@ -2078,11 +2086,22 @@ export const Footer: React.FC = () => {
                     'h-6 shrink-0 gap-1 px-2 text-[11px] font-medium',
                     hasPullWork ? 'text-amber-400 hover:text-amber-300' : 'text-muted-foreground/80'
                   )}
+                  aria-label={`${pullActionLabel} · ${pullCountLabel}`}
+                  title={pullActionLabel}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
                   onClick={() => void handleSyncAction('pull')}
                   data-tour-id="footer-pull"
                 >
-                  <Icon name="arrow-down" size={12} className={cn(syncAction === 'pull' && 'animate-bounce')} />
+                  <span className="footer-git-action-icon-frame" aria-hidden="true">
+                    <Icon
+                      name="arrow-down"
+                      size={12}
+                      className={cn(
+                        'footer-git-action-icon',
+                        syncAction === 'pull' && 'footer-git-action-icon--pulling'
+                      )}
+                    />
+                  </span>
                   <span>{pullCountLabel}</span>
                 </Button>
                 <Button
@@ -2092,11 +2111,22 @@ export const Footer: React.FC = () => {
                     'h-6 shrink-0 gap-1 px-2 text-[11px] font-medium',
                     hasPushWork ? 'text-emerald-400 hover:text-emerald-300' : 'text-muted-foreground/80'
                   )}
+                  aria-label={`${pushActionLabel} · ${pushCountLabel}`}
+                  title={pushActionLabel}
                   disabled={!isTauriRuntime || scopeProjects.length === 0 || Boolean(syncAction) || isRefreshing}
                   onClick={() => void handleSyncAction('push')}
                   data-tour-id="footer-push"
                 >
-                  <Icon name="arrow-up" size={12} className={cn(syncAction === 'push' && 'animate-bounce')} />
+                  <span className="footer-git-action-icon-frame" aria-hidden="true">
+                    <Icon
+                      name="arrow-up"
+                      size={12}
+                      className={cn(
+                        'footer-git-action-icon',
+                        syncAction === 'push' && 'footer-git-action-icon--pushing'
+                      )}
+                    />
+                  </span>
                   <span>{pushCountLabel}</span>
                 </Button>
                 </div>
