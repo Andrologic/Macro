@@ -62,6 +62,7 @@ import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNami
 import {
   ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
   dispatchArchitectPlanSelectorRequest,
+  requestArchitectPlanSelectorState,
   type ArchitectPlanSelectorStateDetail,
 } from '../architect/planSelectorEvents';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
@@ -1755,6 +1756,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
       handlePlanSelectorState,
     );
+    requestArchitectPlanSelectorState();
     return () => {
       window.removeEventListener(
         ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
@@ -1776,6 +1778,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     : missingArchitectPlanActionKind === 'create'
       ? t('architect.createPlanAction', 'Create a plan')
       : t('architect.selectPlanAction', 'Select a plan');
+  const missingArchitectPlanMessage = missingArchitectPlanActionKind === 'create'
+    ? t(
+        'architect.createFirstPlanToStart',
+        'Create your first plan to start architecting.',
+      )
+    : architectPlanSelectorState?.status === 'ready' && architectPlanSelectorState.canSelect
+      ? t(
+          'architect.selectExistingPlanToStart',
+          'Select a plan to start architecting.',
+        )
+      : t(
+          'architect.selectPlanToStart',
+          'Select or create a plan to start architecting.',
+        );
   const handleMissingArchitectPlanAction = useCallback(() => {
     setLeftPanelOpen(true);
     window.requestAnimationFrame(() => {
@@ -2722,10 +2738,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <Icon name="compass" size={24} className="text-muted-foreground" />
                 </div>
                 <p className="text-muted-foreground text-sm">
-                  {t(
-                    'architect.selectPlanToStart',
-                    'Select or create a plan to start architecting.'
-                  )}
+                  {missingArchitectPlanMessage}
                 </p>
                 <button
                   ref={missingArchitectPlanActionRef}
@@ -3111,10 +3124,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                           ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
                           : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
                       : isArchitectPlanSelectionMissing
-                        ? t(
-                            'architect.selectPlanToStart',
-                            'Select or create a plan to start architecting.'
-                          )
+                        ? missingArchitectPlanMessage
                       : isImplementTaskSelectionMissing
                         ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
                       : isSelectedTaskDependencyBlocked

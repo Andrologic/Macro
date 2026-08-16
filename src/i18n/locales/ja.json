@@ -1468,6 +1468,8 @@
     "strategyPreviewConflicts": "Conflicts",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "設計を始めるにはプランを選択または作成してください。",
+    "createFirstPlanToStart": "設計を始めるには最初のプランを作成してください。",
+    "selectExistingPlanToStart": "設計を始めるにはプランを選択してください。",
     "createPlanAction": "プランを作成",
     "selectPlanAction": "プランを選択",
     "noStrategyDiscussionDescription": "Architect とプランについて話し合い、スコープが明確になったら戦略を生成します。"

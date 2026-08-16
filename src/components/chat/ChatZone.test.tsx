@@ -332,6 +332,8 @@ const translationMock = createTranslationMock({
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
   'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
+  'architect.createFirstPlanToStart': 'Create your first plan to start architecting.',
+  'architect.selectExistingPlanToStart': 'Select a plan to start architecting.',
   'architect.createPlanAction': 'Create a plan',
   'architect.selectPlanAction': 'Select a plan',
   'chat.toolTurnLimitNoticeTitle': 'Tool turn limit reached',
@@ -2850,11 +2852,7 @@ describe('ChatZone', () => {
       activePlanContext: null,
     };
 
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    await act(async () => {
+    const handleStateRequest = () => {
       window.dispatchEvent(
         new CustomEvent('macro:architect-plan-selector-state', {
           detail: {
@@ -2865,11 +2863,21 @@ describe('ChatZone', () => {
           },
         }),
       );
-    });
+    };
+    window.addEventListener('macro:architect-plan-selector-state-request', handleStateRequest);
+    try {
+      await act(async () => {
+        requireRoot().render(<ChatZone />);
+      });
+    } finally {
+      window.removeEventListener('macro:architect-plan-selector-state-request', handleStateRequest);
+    }
 
     const button = requireContainer().querySelector(
       '[data-tour-id="architect-empty-plan-action"]'
     ) as HTMLButtonElement | null;
+    expect(requireContainer().textContent).toContain('Create your first plan to start architecting.');
+    expect(requireContainer().textContent).not.toContain('Select or create a plan to start architecting.');
     expect(button?.textContent).toContain('Create a plan');
     if (button) {
       button.getBoundingClientRect = () => ({
@@ -2940,6 +2948,7 @@ describe('ChatZone', () => {
     const button = requireContainer().querySelector(
       '[data-tour-id="architect-empty-plan-action"]'
     ) as HTMLButtonElement | null;
+    expect(requireContainer().textContent).toContain('Select a plan to start architecting.');
     expect(button?.textContent).toContain('Select a plan');
   });
 
