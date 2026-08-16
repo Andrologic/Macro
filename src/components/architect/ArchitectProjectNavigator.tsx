@@ -40,7 +40,7 @@ import { notify } from '../ui/toastService';
 import { PlanFormModal } from './PlanFormModal';
 import {
   ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT,
-  ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
+  registerArchitectPlanSelectorStatePublisher,
   type ArchitectPlanSelectorRequestDetail,
   type ArchitectPlanSelectorStateDetail,
 } from './planSelectorEvents';
@@ -286,7 +286,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       canCreate: Boolean(selectedScope?.projects.some(isProjectActionable)),
       canSelect: selectedPlans.length > 0,
     };
-    window.dispatchEvent(new CustomEvent(ARCHITECT_PLAN_SELECTOR_STATE_EVENT, { detail }));
+    return registerArchitectPlanSelectorStatePublisher(detail);
   }, [entriesByScope, error, isLoading, selectedScope]);
 
   const persistExpandedScopes = useCallback((next: string[]) => {

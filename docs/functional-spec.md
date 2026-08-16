@@ -347,6 +347,8 @@ Le clic droit reprend les actions déjà disponibles sans créer une voie parall
 
 Les archives ne constituent pas une section dépliable dans l'arborescence active. Un bouton à icône dans l'en-tête du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, de façon cohérente avec le mode Implement et sans réserver une barre en bas du panneau. Les actions d'archives et de création utilisent le même bouton carré dans les deux modes ; leur intitulé reste disponible au survol et pour les technologies d'assistance. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
 
+L'état vide central dépend du catalogue du projet sélectionné. Si aucun plan n'existe et que le projet est modifiable, il propose explicitement de créer le premier plan et ouvre le choix contextuel du type de plan. Le libellé « Sélectionner un plan » n'apparaît que lorsqu'au moins un plan est réellement disponible. Le panneau central demande explicitement l'état courant au navigateur lors de son montage afin de ne pas dépendre de l'ordre de chargement des panneaux.
+
 Sa largeur est propre au mode Architect afin de conserver une arborescence compacte, même si les panneaux des modes Implement ou Chat ont été agrandis. Le projet sélectionné et le plan actif utilisent des traitements visuels distincts : le premier définit la portée, le second représente le contenu actuellement ouvert.
 
 Le sélecteur de projet du header reste disponible en mode Implement, mais n'est pas dupliqué en mode Architect. De la même façon, le plan actif n'est plus sélectionné depuis un menu dans la zone centrale : celle-ci affiche le contexte courant et laisse la navigation au panneau gauche.
