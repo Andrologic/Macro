@@ -32,6 +32,7 @@ describe('MicrophoneRecorder', () => {
     getTracks: () => [{ stop: stopTrack }],
   }) as unknown as MediaStream);
   const originalMediaRecorder = globalThis.MediaRecorder;
+  const originalAudioContext = globalThis.AudioContext;
   const originalMediaDevices = navigator.mediaDevices;
 
   beforeEach(() => {
@@ -41,6 +42,20 @@ describe('MicrophoneRecorder', () => {
     Object.defineProperty(globalThis, 'MediaRecorder', {
       configurable: true,
       value: FakeMediaRecorder,
+    });
+    Object.defineProperty(globalThis, 'AudioContext', {
+      configurable: true,
+      value: class FakeAudioContext {
+        async decodeAudioData(): Promise<AudioBuffer> {
+          return {
+            numberOfChannels: 1,
+            sampleRate: 48_000,
+            getChannelData: () => new Float32Array([0, 0.5, -0.5, 0]),
+          } as unknown as AudioBuffer;
+        }
+
+        async close(): Promise<void> {}
+      },
     });
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
@@ -52,6 +67,10 @@ describe('MicrophoneRecorder', () => {
     Object.defineProperty(globalThis, 'MediaRecorder', {
       configurable: true,
       value: originalMediaRecorder,
+    });
+    Object.defineProperty(globalThis, 'AudioContext', {
+      configurable: true,
+      value: originalAudioContext,
     });
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
@@ -66,9 +85,12 @@ describe('MicrophoneRecorder', () => {
     const audio = await recorder.stop();
 
     expect(getUserMedia).toHaveBeenCalledTimes(1);
-    expect(audio.mimeType).toBe('audio/webm;codecs=opus');
-    expect(audio.fileName).toEndWith('.webm');
+    expect(audio.mimeType).toBe('audio/wav');
+    expect(audio.fileName).toEndWith('.wav');
     expect(audio.blob.size).toBeGreaterThan(0);
+    const bytes = new Uint8Array(await audio.blob.arrayBuffer());
+    expect(new TextDecoder().decode(bytes.slice(0, 4))).toBe('RIFF');
+    expect(new TextDecoder().decode(bytes.slice(8, 12))).toBe('WAVE');
     expect(stopTrack).toHaveBeenCalledTimes(1);
   });
 

@@ -1472,12 +1472,47 @@ async fn insert_default_speech_provider(connection: &mut SqliteConnection) -> Db
             id, name, provider_type, base_url, model, has_stored_api_key,
             is_enabled, is_local, created_at, updated_at
         )
-        VALUES ('openai-speech', 'OpenAI', 'openai-compatible',
-                'https://api.openai.com/v1', 'gpt-4o-mini-transcribe', 0, 1, 0, ?, ?)
+        VALUES ('andrologic-speech', 'Andrologic', 'openai-compatible',
+                'https://lmstudio.andrologic.ai/v1', 'macro-transcription', 1, 1, 0, ?, ?)
         "#,
     )
     .bind(&now)
     .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE speech_provider_configs
+        SET name = 'Andrologic', provider_type = 'openai-compatible',
+            base_url = 'https://lmstudio.andrologic.ai/v1',
+            model = 'macro-transcription', has_stored_api_key = 1,
+            is_enabled = 1, is_local = 0, updated_at = ?
+        WHERE id = 'andrologic-speech'
+        "#,
+    )
+    .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO speech_provider_configs (
+            id, name, provider_type, base_url, model, has_stored_api_key,
+            is_enabled, is_local, created_at, updated_at
+        )
+        VALUES ('openai-speech', 'OpenAI', 'openai-compatible',
+                'https://api.openai.com/v1', 'gpt-4o-mini-transcribe', 0, 0, 0, ?, ?)
+        "#,
+    )
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+
+    sqlx::query(
+        "UPDATE speech_provider_configs SET is_enabled = 0 WHERE id = 'openai-speech' AND has_stored_api_key = 0",
+    )
     .execute(&mut *connection)
     .await?;
 
@@ -1981,8 +2016,31 @@ mod tests {
         );
         assert_eq!(provider.get::<String, _>("model"), "gpt-4o-mini-transcribe");
         assert_eq!(provider.get::<i64, _>("has_stored_api_key"), 0);
-        assert_eq!(provider.get::<i64, _>("is_enabled"), 1);
+        assert_eq!(provider.get::<i64, _>("is_enabled"), 0);
         assert_eq!(provider.get::<i64, _>("is_local"), 0);
+
+        let included_provider = sqlx::query(
+            r#"
+            SELECT name, provider_type, base_url, model, has_stored_api_key, is_enabled, is_local
+            FROM speech_provider_configs
+            WHERE id = 'andrologic-speech'
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("included speech provider");
+        assert_eq!(included_provider.get::<String, _>("name"), "Andrologic");
+        assert_eq!(
+            included_provider.get::<String, _>("base_url"),
+            "https://lmstudio.andrologic.ai/v1"
+        );
+        assert_eq!(
+            included_provider.get::<String, _>("model"),
+            "macro-transcription"
+        );
+        assert_eq!(included_provider.get::<i64, _>("has_stored_api_key"), 1);
+        assert_eq!(included_provider.get::<i64, _>("is_enabled"), 1);
+        assert_eq!(included_provider.get::<i64, _>("is_local"), 0);
 
         sqlx::query("DELETE FROM speech_provider_configs WHERE id = 'openai-speech'")
             .execute(&pool)

@@ -4,6 +4,10 @@ use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
 use std::time::Duration;
 
+const MAX_ATTEMPTS: usize = 3;
+const DEFAULT_RETRY_SECONDS: u64 = 2;
+const MAX_RETRY_SECONDS: u64 = 15;
+
 #[derive(Debug, Deserialize)]
 struct ProviderResponse {
     text: String,
@@ -30,50 +34,65 @@ pub(super) async fn transcribe(
         "{}/audio/transcriptions",
         provider.base_url.trim().trim_end_matches('/')
     );
-    let audio = Part::bytes(request.audio)
-        .file_name(request.file_name)
-        .mime_str(&request.mime_type)
-        .map_err(|error| SpeechError::Request(error.to_string()))?;
-    let mut form = Form::new()
-        .part("file", audio)
-        .text("model", provider.model.clone())
-        .text("response_format", "json");
-    if let Some(language) = request.language.filter(|value| value != "auto") {
-        form = form.text("language", language);
-    }
-
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(600))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| SpeechError::Request(error.to_string()))?;
-    let mut request_builder = client.post(endpoint).multipart(form);
-    if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
-        request_builder = request_builder.bearer_auth(api_key);
+
+    for attempt in 0..MAX_ATTEMPTS {
+        let audio = Part::bytes(request.audio.clone())
+            .file_name(request.file_name.clone())
+            .mime_str(&request.mime_type)
+            .map_err(|error| SpeechError::Request(error.to_string()))?;
+        let mut form = Form::new()
+            .part("file", audio)
+            .text("model", provider.model.clone())
+            .text("response_format", "json");
+        if let Some(language) = request.language.as_deref().filter(|value| *value != "auto") {
+            form = form.text("language", language.to_string());
+        }
+
+        let mut request_builder = client.post(&endpoint).multipart(form);
+        if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
+            request_builder = request_builder.bearer_auth(api_key);
+        }
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|error| SpeechError::Request(error.to_string()))?;
+        let retry_seconds = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_RETRY_SECONDS)
+            .clamp(1, MAX_RETRY_SECONDS);
+        let (status, body) = read_provider_response(response).await?;
+
+        if matches!(status.as_u16(), 429 | 503) && attempt + 1 < MAX_ATTEMPTS {
+            tokio::time::sleep(Duration::from_secs(retry_seconds)).await;
+            continue;
+        }
+        if !status.is_success() {
+            let message = serde_json::from_slice::<ProviderErrorEnvelope>(&body)
+                .ok()
+                .and_then(|value| value.error)
+                .and_then(|value| value.message)
+                .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+            return Err(SpeechError::Request(message));
+        }
+
+        let parsed = serde_json::from_slice::<ProviderResponse>(&body)
+            .map_err(|error| SpeechError::InvalidResponse(error.to_string()))?;
+        return Ok(TranscriptionResult {
+            text: parsed.text,
+            language: parsed.language,
+            duration_seconds: parsed.duration,
+        });
     }
 
-    let response = request_builder
-        .send()
-        .await
-        .map_err(|error| SpeechError::Request(error.to_string()))?;
-    let (status, body) = read_provider_response(response).await?;
-
-    if !status.is_success() {
-        let message = serde_json::from_slice::<ProviderErrorEnvelope>(&body)
-            .ok()
-            .and_then(|value| value.error)
-            .and_then(|value| value.message)
-            .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
-        return Err(SpeechError::Request(message));
-    }
-
-    let parsed = serde_json::from_slice::<ProviderResponse>(&body)
-        .map_err(|error| SpeechError::InvalidResponse(error.to_string()))?;
-    Ok(TranscriptionResult {
-        text: parsed.text,
-        language: parsed.language,
-        duration_seconds: parsed.duration,
-    })
+    unreachable!("the transcription retry loop always returns")
 }
 
 #[cfg(test)]

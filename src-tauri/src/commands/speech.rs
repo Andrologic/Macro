@@ -1,6 +1,6 @@
 use super::{command_error, get_pool, provider_mutation_lock, CommandResult, DbPool};
 use crate::db::{models::*, repository};
-use crate::{secrets, speech};
+use crate::{ai::macro_ai, secrets, speech};
 use serde::Deserialize;
 use tauri::{ipc::InvokeBody, ipc::Request, State};
 
@@ -8,6 +8,10 @@ const SECRET_PREFIX: &str = "speech:";
 
 fn secret_id(provider_id: &str) -> String {
     format!("{SECRET_PREFIX}{provider_id}")
+}
+
+fn is_managed_provider(provider_id: &str) -> bool {
+    provider_id == macro_ai::SPEECH_PROVIDER_ID
 }
 
 fn validate_provider_fields(
@@ -109,6 +113,15 @@ pub async fn speech_list_provider_configs(
         .map_err(super::CommandError::from)?;
 
     for provider in &mut providers {
+        if is_managed_provider(&provider.id) {
+            if !provider.has_stored_api_key {
+                repository::set_speech_provider_has_stored_api_key(&pool, &provider.id, true)
+                    .await
+                    .map_err(super::CommandError::from)?;
+                provider.has_stored_api_key = true;
+            }
+            continue;
+        }
         let has_key = secrets::get_api_key(&secret_id(&provider.id))
             .map_err(|error| command_error(error.to_string()))?
             .is_some();
@@ -179,6 +192,11 @@ pub async fn speech_update_provider_config(
     pool: State<'_, DbPool>,
     params: UpdateSpeechProviderParams,
 ) -> CommandResult<()> {
+    if is_managed_provider(&params.id) {
+        return Err(command_error(
+            "The included Andrologic speech provider is managed by Macro.",
+        ));
+    }
     let pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock(&secret_id(&params.id));
     let _guard = lock.lock().await;
@@ -300,9 +318,9 @@ pub async fn speech_delete_provider_config(
     pool: State<'_, DbPool>,
     id: String,
 ) -> CommandResult<()> {
-    if id == "openai-speech" {
+    if id == "openai-speech" || is_managed_provider(&id) {
         return Err(command_error(
-            "The default OpenAI speech provider cannot be deleted.",
+            "Built-in speech providers cannot be deleted.",
         ));
     }
     let pool = get_pool(&pool).await?;
@@ -356,9 +374,18 @@ pub async fn speech_transcribe(
         .await
         .map_err(super::CommandError::from)?
         .ok_or_else(|| command_error(format!("Speech provider {provider_id} not found.")))?;
-    let api_key = secrets::get_api_key(&secret_id(&provider_id)).map_err(|error| {
-        command_error(format!("Failed to access speech provider API key: {error}"))
-    })?;
+    let api_key = if is_managed_provider(&provider_id) {
+        macro_ai::provision(&pool)
+            .await
+            .map_err(command_error)?;
+        secrets::get_api_key(macro_ai::PROVIDER_ID).map_err(|error| {
+            command_error(format!("Failed to access the included AI token: {error}"))
+        })?
+    } else {
+        secrets::get_api_key(&secret_id(&provider_id)).map_err(|error| {
+            command_error(format!("Failed to access speech provider API key: {error}"))
+        })?
+    };
 
     speech::transcribe(
         &provider,
