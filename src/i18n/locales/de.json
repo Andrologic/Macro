@@ -1497,8 +1497,7 @@
   "providers": {
     "macroAi": {
       "included": "KI in der Macro-Beta enthalten",
-      "dropdownNotice": "KI in der Beta enthalten",
-      "loggingNotice": "Für den Betrieb und die Verbesserung dieses gemeinsam genutzten Beta-Dienstes werden an Macro AI gesendete Gespräche und Token-Nutzungsmetriken auf dem Inferenzserver protokolliert."
+      "dropdownNotice": "KI in der Beta enthalten"
     },
     "add": "Provider hinzufügen",
     "edit": "Provider bearbeiten",

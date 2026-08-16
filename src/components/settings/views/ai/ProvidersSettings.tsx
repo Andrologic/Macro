@@ -1374,14 +1374,6 @@ export const ProvidersSettings: React.FC = () => {
                         </>
                       )}
                     </div>
-                    {isManagedMacroAi && (
-                      <div className="mt-1 max-w-2xl text-xs text-muted-foreground">
-                        {t(
-                          'providers.macroAi.loggingNotice',
-                          'To operate and improve this shared beta service, conversations sent to Macro AI and token-usage metrics are logged on the inference server.'
-                        )}
-                      </div>
-                    )}
                   </div>
                 </div>
 
