@@ -311,6 +311,27 @@ describe('macroSyncService', () => {
     });
   });
 
+  it('treats a missing remote @macro branch as a pull no-op', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      createMacroResult({
+        state: 'pending',
+        has_upstream: false,
+        ahead: 1,
+        reason: 'missing_upstream',
+        next_action: 'push',
+        output: `missing upstream:${workspacePath || 'default'}`,
+      })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.pullMacroMetadata();
+
+    expect(macroBranchPullMock).not.toHaveBeenCalled();
+    expect(result?.state).toBe('pending');
+    expect(result?.reason).toBe('missing_upstream');
+    expect(result?.error).toBeNull();
+  });
+
   it('blocks commit across all repositories when one target already has conflicts', async () => {
     macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
       workspacePath?.includes('web')
@@ -457,6 +478,32 @@ describe('macroSyncService', () => {
     expect(macroBranchPullMock).toHaveBeenCalledTimes(2);
     expect(macroBranchPushMock).not.toHaveBeenCalled();
     expect(result?.state).toBe('clean');
+  });
+
+  it('skips only repositories without a remote @macro branch during code-triggered pull', async () => {
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
+      workspacePath?.includes('web')
+        ? createMacroResult({
+            state: 'pending',
+            has_upstream: false,
+            ahead: 1,
+            reason: 'missing_upstream',
+            next_action: 'push',
+          })
+        : createMacroResult({
+            output: `ensured:${workspacePath || 'default'}`,
+          })
+    );
+
+    const service = loadMacroSyncService();
+    const result = await service.syncMacroMetadataForCodeAction({ action: 'pull' });
+
+    expect(macroBranchPullMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchPullMock).toHaveBeenCalledWith({ workspacePath: '/repos/api' });
+    expect(macroBranchPushMock).not.toHaveBeenCalled();
+    expect(result?.state).toBe('pending');
+    expect(result?.reason).toBe('missing_upstream');
+    expect(result?.error).toBeNull();
   });
 
   it('blocks code-triggered push when metadata must pull first', async () => {
