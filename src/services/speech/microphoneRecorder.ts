@@ -16,6 +16,79 @@ const selectRecordingFormat = (): { mimeType: string; extension: string } => {
   return match ?? { mimeType: '', extension: 'webm' };
 };
 
+const WAV_SAMPLE_RATE = 16_000;
+const WAV_HEADER_BYTES = 44;
+
+const encodeMonoPcm16Wav = (
+  channels: Float32Array[],
+  sourceSampleRate: number,
+  targetSampleRate = WAV_SAMPLE_RATE,
+): Blob => {
+  if (channels.length === 0 || channels[0]!.length === 0) {
+    throw new Error('The microphone recording is empty.');
+  }
+  if (sourceSampleRate <= 0 || targetSampleRate <= 0) {
+    throw new Error('The microphone recording has an invalid sample rate.');
+  }
+
+  const sourceLength = Math.min(...channels.map((channel) => channel.length));
+  const sampleCount = Math.max(1, Math.floor(sourceLength * targetSampleRate / sourceSampleRate));
+  const buffer = new ArrayBuffer(WAV_HEADER_BYTES + sampleCount * 2);
+  const view = new DataView(buffer);
+  const writeAscii = (offset: number, value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+
+  writeAscii(0, 'RIFF');
+  view.setUint32(4, buffer.byteLength - 8, true);
+  writeAscii(8, 'WAVE');
+  writeAscii(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, targetSampleRate, true);
+  view.setUint32(28, targetSampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, 'data');
+  view.setUint32(40, sampleCount * 2, true);
+
+  const sourceStep = sourceSampleRate / targetSampleRate;
+  for (let index = 0; index < sampleCount; index += 1) {
+    const sourcePosition = index * sourceStep;
+    const leftIndex = Math.min(sourceLength - 1, Math.floor(sourcePosition));
+    const rightIndex = Math.min(sourceLength - 1, leftIndex + 1);
+    const fraction = sourcePosition - leftIndex;
+    let sample = 0;
+    for (const channel of channels) {
+      sample += channel[leftIndex]! + (channel[rightIndex]! - channel[leftIndex]!) * fraction;
+    }
+    sample = Math.max(-1, Math.min(1, sample / channels.length));
+    view.setInt16(
+      WAV_HEADER_BYTES + index * 2,
+      sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff),
+      true,
+    );
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+};
+
+const convertRecordingToWav = async (recording: Blob): Promise<Blob> => {
+  const context = new AudioContext();
+  try {
+    const decoded = await context.decodeAudioData(await recording.arrayBuffer());
+    const channels = Array.from(
+      { length: decoded.numberOfChannels },
+      (_, index) => decoded.getChannelData(index),
+    );
+    return encodeMonoPcm16Wav(channels, decoded.sampleRate);
+  } finally {
+    await context.close();
+  }
+};
+
 export class MicrophoneRecorder {
   private recorder: MediaRecorder | null = null;
   private stream: MediaStream | null = null;
@@ -24,7 +97,6 @@ export class MicrophoneRecorder {
   private resolveStop: ((audio: RecordedAudio) => void) | null = null;
   private rejectStop: ((error: Error) => void) | null = null;
   private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
-  private extension = 'webm';
   private cancelled = false;
 
   async start(maxDurationSeconds: number, onAutoStop?: () => void): Promise<void> {
@@ -46,7 +118,6 @@ export class MicrophoneRecorder {
       throw new Error('Microphone recording cancelled.');
     }
     const format = selectRecordingFormat();
-    this.extension = format.extension;
     this.chunks = [];
     try {
       this.recorder = format.mimeType
@@ -66,12 +137,23 @@ export class MicrophoneRecorder {
     this.recorder.addEventListener('stop', () => {
       const mimeType = this.recorder?.mimeType || format.mimeType || 'audio/webm';
       const blob = new Blob(this.chunks, { type: mimeType });
-      this.resolveStop?.({
-        blob,
-        mimeType,
-        fileName: `macro-dictation-${Date.now()}.${this.extension}`,
-      });
-      this.cleanup();
+      void convertRecordingToWav(blob)
+        .then((wav) => {
+          const resolve = this.resolveStop;
+          this.cleanup();
+          resolve?.({
+            blob: wav,
+            mimeType: 'audio/wav',
+            fileName: `macro-dictation-${Date.now()}.wav`,
+          });
+        })
+        .catch((error: unknown) => {
+          const reject = this.rejectStop;
+          this.cleanup();
+          reject?.(
+            error instanceof Error ? error : new Error('The microphone recording could not be decoded.'),
+          );
+        });
     });
     this.stopPromise = new Promise<RecordedAudio>((resolve, reject) => {
       this.resolveStop = resolve;

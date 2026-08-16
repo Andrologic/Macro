@@ -9,6 +9,7 @@ import {
   updateSpeechProviderConfig,
 } from '../services/tauriIpc';
 import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
+import { MACRO_AI_SPEECH_PROVIDER_ID } from '../config/macroAi';
 
 interface CreateSpeechProviderInput {
   name: string;
@@ -72,13 +73,17 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
         const selectedExists = providers.some(
           (provider) => provider.id === selectedProviderId && provider.isEnabled,
         );
+        const nextSelectedProviderId = selectedExists
+          ? selectedProviderId
+          : providers.find((provider) => provider.isEnabled)?.id ?? null;
+        const normalizedDuration = nextSelectedProviderId === MACRO_AI_SPEECH_PROVIDER_ID
+          ? Math.min(120, maxDurationSeconds)
+          : maxDurationSeconds;
         set({
           providers,
-          selectedProviderId: selectedExists
-            ? selectedProviderId
-            : providers.find((provider) => provider.isEnabled)?.id ?? null,
+          selectedProviderId: nextSelectedProviderId,
           language,
-          maxDurationSeconds,
+          maxDurationSeconds: normalizedDuration,
           isInitialized: true,
           isLoading: false,
         });
@@ -108,8 +113,14 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
   },
 
   selectProvider: async (id) => {
-    set({ selectedProviderId: id });
-    await savePreference(PREF_KEYS.SPEECH_PROVIDER_ID, id ?? '');
+    const duration = id === MACRO_AI_SPEECH_PROVIDER_ID
+      ? Math.min(120, get().maxDurationSeconds)
+      : get().maxDurationSeconds;
+    set({ selectedProviderId: id, maxDurationSeconds: duration });
+    await Promise.all([
+      savePreference(PREF_KEYS.SPEECH_PROVIDER_ID, id ?? ''),
+      savePreference(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS, duration),
+    ]);
   },
 
   setLanguage: async (language) => {
@@ -118,7 +129,8 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
   },
 
   setMaxDurationSeconds: async (seconds) => {
-    const normalized = Math.min(600, Math.max(10, Math.round(seconds)));
+    const maximum = get().selectedProviderId === MACRO_AI_SPEECH_PROVIDER_ID ? 120 : 600;
+    const normalized = Math.min(maximum, Math.max(10, Math.round(seconds)));
     set({ maxDurationSeconds: normalized });
     await savePreference(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS, normalized);
   },
