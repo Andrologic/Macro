@@ -168,6 +168,8 @@ Le navigateur Architect charge un catalogue transverse des plans, mais délègue
 
 Le shell persiste une largeur dédiée au panneau gauche Architect. Elle est bornée séparément de la largeur générique des panneaux gauche afin qu'une préférence héritée d'un autre mode ne dégrade pas la lisibilité de l'arborescence projets/plans.
 
+Le panneau de conversations Chat conserve son mode de sélection multiple dans un état local au composant. Hors de ce mode, seul un déclencheur compact et accessible est rendu dans l'en-tête à côté de la création de conversation. L'activation rend la barre d'actions groupées et initialise la sélection à vide ; l'annulation ou un changement de vue réinitialise simultanément le mode, la sélection et les modales associées.
+
 ### 5.3 Découpage des panneaux
 
 L'interface est structurée autour de :

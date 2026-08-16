@@ -834,19 +834,40 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             <Icon name="message-circle" size={16} className="text-primary" />
             {t('chat.conversations', 'Conversations')}
           </h1>
-          <button
-            onClick={handleNewChat}
-            disabled={isBulkDeleting}
-            data-tour-id="chat-new-conversation"
-            className="p-1 hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            title={t('chat.newChat', 'New Chat')}
-          >
-            <Icon name="plus" size={16} className="text-muted-foreground" />
-          </button>
+          <div className="flex items-center gap-1">
+            {!isMultiSelectMode && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedIds(new Set());
+                  setIsMultiSelectMode(true);
+                }}
+                disabled={filteredConversations.length === 0 || isBulkDeleting}
+                data-tour-id="chat-multiselect"
+                className="p-1 hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title={t('chat.multiSelect', 'Multi-select')}
+                aria-label={t('chat.multiSelect', 'Multi-select')}
+              >
+                <Icon name="list-todo" size={16} className="text-muted-foreground" />
+              </button>
+            )}
+            <button
+              onClick={handleNewChat}
+              disabled={isBulkDeleting}
+              data-tour-id="chat-new-conversation"
+              className="p-1 hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title={t('chat.newChat', 'New Chat')}
+            >
+              <Icon name="plus" size={16} className="text-muted-foreground" />
+            </button>
+          </div>
         </div>
 
-        <div className="px-3 py-2 border-b border-border">
-          {isMultiSelectMode ? (
+        {isMultiSelectMode && (
+          <div
+            className="px-3 py-2 border-b border-border"
+            data-tour-id="chat-multiselect-toolbar"
+          >
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="min-w-24 flex-1 truncate text-xs font-medium text-muted-foreground">
                 {selectedCountLabel}
@@ -898,29 +919,8 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                 </button>
               </div>
             </div>
-          ) : (
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedIds(new Set());
-                  setIsMultiSelectMode(true);
-                }}
-                disabled={filteredConversations.length === 0 || isBulkDeleting}
-                data-tour-id="chat-multiselect"
-                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Icon name="check-square" size={12} />
-                <span className="truncate">{t('chat.multiSelect', 'Multi-select')}</span>
-              </button>
-              {showArchived && (
-                <span className="text-xs text-muted-foreground">
-                  {t('chat.archivedView', 'Archived view')}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
         <div className="p-3 border-b border-border">
           <SearchBar
