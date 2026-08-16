@@ -1,6 +1,7 @@
 {
   "speech": {
     "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Transcribiendo" },
+    "recording": { "active": "Grabando", "stopAndInsert": "Detener e insertar la transcripción", "stopAndSend": "Detener, transcribir y enviar" },
     "errors": {
       "title": "Dictado no disponible",
       "provider-missing": "Configura y selecciona primero un proveedor de voz.",

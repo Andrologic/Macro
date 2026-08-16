@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client';
 interface TestComposerEditorHandle {
   clear: () => void;
   setText: (text: string) => void;
-  insertTextAtSelection: (text: string, spacing?: 'preserve' | 'contextual') => void;
+  insertTextAtSelection: (text: string, spacing?: 'preserve' | 'contextual') => string;
   getTextContent: () => string;
   focus: () => void;
 }
@@ -35,6 +35,7 @@ const MockComposerEditor = React.forwardRef<TestComposerEditorHandle, MockCompos
       insertTextAtSelection: (text: string) => {
         loadedEditorText += text;
         props.onTextChange(loadedEditorText);
+        return loadedEditorText;
       },
       getTextContent: () => loadedEditorText,
       focus: () => undefined,
@@ -188,7 +189,8 @@ describe('LazyComposerEditor', () => {
       const textarea = container.querySelector('textarea');
       expect(textarea).not.toBeNull();
       textarea?.setSelectionRange(8, 13);
-      editorRef.current?.insertTextAtSelection('Macro');
+      const insertedText = editorRef.current?.insertTextAtSelection('Macro');
+      expect(insertedText).toBe('Bonjour Macro');
     });
 
     expect(onTextChange).toHaveBeenLastCalledWith('Bonjour Macro');
@@ -214,7 +216,8 @@ describe('LazyComposerEditor', () => {
       });
       const textarea = container.querySelector('textarea');
       textarea?.setSelectionRange(7, 7);
-      editorRef.current?.insertTextAtSelection('Macro', 'contextual');
+      const insertedText = editorRef.current?.insertTextAtSelection('Macro', 'contextual');
+      expect(insertedText).toBe('Bonjour Macro monde');
     });
 
     expect(onTextChange).toHaveBeenLastCalledWith('Bonjour Macro monde');

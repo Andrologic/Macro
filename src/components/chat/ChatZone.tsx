@@ -33,6 +33,7 @@ import { useScrollMagnet } from '../../hooks/useScrollMagnet';
 import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
 import { SpeechDictationButton } from './SpeechDictationButton';
+import { SpeechRecordingBar } from './SpeechRecordingBar';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { ContextReferenceChip } from './ContextReferenceChip';
 import {
@@ -1683,23 +1684,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isSelectedTaskDependencyBlocked ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
-  const speechDictation = useSpeechDictation({
-    contextKey: composerDraftContextKey,
-    onTranscript: (text) => {
-      const editor = composerEditorRef.current;
-      if (!editor) return;
-      editor.insertTextAtSelection(text, 'contextual');
-    },
-    onError: ({ code, detail }) => {
-      const message = t(`speech.errors.${code}`, {
-        defaultValue: t('speech.errors.transcription-failed', 'Speech transcription failed.'),
-      });
-      notify.error(t('speech.errors.title', 'Dictation unavailable'), {
-        description: detail ? `${message} ${detail}` : message,
-      });
-    },
-  });
-
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
     [projectGroups, selectedGroupId]
@@ -2346,12 +2330,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   }, [addComposerContextRef, clearComposerContextRefs]);
 
-  const handleSend = async () => {
-    if (speechDictation.isBusy) return;
+  const sendComposerMessage = async (textOverride?: string) => {
     if (isComposerDisabled || activeQuestionnaire) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
-    const text = (composerEditorRef.current?.getTextContent() ?? '').trim();
+    const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
     if (composerEditSession) {
       if (!text || isBusySending) return;
       await requestReplay({
@@ -2409,6 +2392,32 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } catch {
       // Keep the draft intact. The visible error feedback comes from the chat store.
     }
+  };
+
+  const speechDictation = useSpeechDictation({
+    contextKey: composerDraftContextKey,
+    onTranscript: (text, completion) => {
+      const editor = composerEditorRef.current;
+      const composedText = editor?.insertTextAtSelection(text, 'contextual') ?? text;
+      if (completion === 'send') {
+        void sendComposerMessage(composedText);
+      }
+    },
+    onError: ({ code, detail }) => {
+      const message = t(`speech.errors.${code}`, {
+        defaultValue: t('speech.errors.transcription-failed', 'Speech transcription failed.'),
+      });
+      notify.error(t('speech.errors.title', 'Dictation unavailable'), {
+        description: detail ? `${message} ${detail}` : message,
+      });
+    },
+  });
+  const showSpeechRecordingBar =
+    speechDictation.phase === 'recording' || speechDictation.phase === 'transcribing';
+
+  const handleSend = async () => {
+    if (speechDictation.isBusy) return;
+    await sendComposerMessage();
   };
 
   const handleQuestionnaireAnswer = async (answer: string) => {
@@ -3129,59 +3138,82 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 onPasteCapture={handleComposerPaste}
                 data-tour-id="chat-composer"
               >
-                <Suspense fallback={<ComposerFallbackStatus />}>
-                  <LazyComposerEditor
-                    ref={composerEditorRef}
-                    editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
-                    placeholder={
-                      composerEditSession
-                        ? t('chat.editMessagePlaceholder', 'Edit message...')
-                      : isConversationPending
-                        ? t('chat.loadingConversation', 'Restoring conversation...')
-                      : isModeProjectWorkspaceMissing
-                        ? workspaceState.kind === 'noProjectAvailable'
-                          ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
-                          : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
-                      : isArchitectPlanSelectionMissing
-                        ? missingArchitectPlanMessage
-                      : isImplementTaskSelectionMissing
-                        ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
-                      : isSelectedTaskDependencyBlocked
-                        ? t(
-                            'implement.taskBlockedComposerPlaceholder',
-                            'Task blocked until prerequisites are completed'
-                          )
-                      : isImplementComposerInKickoffMode
-                        ? t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')
-                        : !selectedProviderId || !selectedModelId
-                        ? t('chat.selectProvider')
-                        : t('chat.typeMessage')
-                    }
-                    onTextChange={(text) => {
-                      if (composerError) {
-                        clearConversationRuntimeError(selectedConversationId ?? '');
-                        clearLastError();
+                <div
+                  className={cn('min-w-0 flex-1', showSpeechRecordingBar && 'hidden')}
+                  aria-hidden={showSpeechRecordingBar || undefined}
+                >
+                  <Suspense fallback={<ComposerFallbackStatus />}>
+                    <LazyComposerEditor
+                      ref={composerEditorRef}
+                      editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                      placeholder={
+                        composerEditSession
+                          ? t('chat.editMessagePlaceholder', 'Edit message...')
+                        : isConversationPending
+                          ? t('chat.loadingConversation', 'Restoring conversation...')
+                        : isModeProjectWorkspaceMissing
+                          ? workspaceState.kind === 'noProjectAvailable'
+                            ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
+                            : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+                        : isArchitectPlanSelectionMissing
+                          ? missingArchitectPlanMessage
+                        : isImplementTaskSelectionMissing
+                          ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
+                        : isSelectedTaskDependencyBlocked
+                          ? t(
+                              'implement.taskBlockedComposerPlaceholder',
+                              'Task blocked until prerequisites are completed'
+                            )
+                        : isImplementComposerInKickoffMode
+                          ? t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')
+                          : !selectedProviderId || !selectedModelId
+                            ? t('chat.selectProvider')
+                            : t('chat.typeMessage')
                       }
-                      const pendingPromptHistoryText = pendingPromptHistoryTextRef.current;
-                      const isPromptHistoryText = pendingPromptHistoryText === text;
-                      if (pendingPromptHistoryText !== null) {
-                        pendingPromptHistoryTextRef.current = null;
+                      onTextChange={(text) => {
+                        if (composerError) {
+                          clearConversationRuntimeError(selectedConversationId ?? '');
+                          clearLastError();
+                        }
+                        const pendingPromptHistoryText = pendingPromptHistoryTextRef.current;
+                        const isPromptHistoryText = pendingPromptHistoryText === text;
+                        if (pendingPromptHistoryText !== null) {
+                          pendingPromptHistoryTextRef.current = null;
+                        }
+                        setInputValue(text);
+                        if (!isPromptHistoryText && promptHistoryIndex !== null) {
+                          resetPromptHistoryNavigation();
+                        }
+                      }}
+                      onSend={handleSend}
+                      onPromptHistory={
+                        !composerEditSession &&
+                        promptHistoryNavigationMode === 'contextual_arrows'
+                          ? navigatePromptHistory
+                          : undefined
                       }
-                      setInputValue(text);
-                      if (!isPromptHistoryText && promptHistoryIndex !== null) {
-                        resetPromptHistoryNavigation();
-                      }
+                    />
+                  </Suspense>
+                </div>
+                {showSpeechRecordingBar && (
+                  <SpeechRecordingBar
+                    phase={speechDictation.phase as 'recording' | 'transcribing'}
+                    completion={speechDictation.completion}
+                    elapsedSeconds={speechDictation.elapsedSeconds}
+                    getAudioLevel={speechDictation.getAudioLevel}
+                    recordingLabel={t('speech.recording.active', 'Recording')}
+                    transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
+                    stopLabel={t('speech.recording.stopAndInsert', 'Stop and insert transcription')}
+                    sendLabel={t('speech.recording.stopAndSend', 'Stop, transcribe and send')}
+                    onStop={() => {
+                      void speechDictation.finish('insert');
                     }}
-                    onSend={handleSend}
-                    onPromptHistory={
-                      !composerEditSession &&
-                      promptHistoryNavigationMode === 'contextual_arrows'
-                        ? navigatePromptHistory
-                        : undefined
-                    }
+                    onSend={() => {
+                      void speechDictation.finish('send');
+                    }}
                   />
-                </Suspense>
-              {composerEditSession && !isStreaming && (
+                )}
+              {composerEditSession && !isStreaming && !showSpeechRecordingBar && (
                 <button
                   type="button"
                   onClick={handleEditCancel}
@@ -3201,7 +3233,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <Icon name="square" size={14} />
                   <span className="text-xs">{t('chat.stop')}</span>
                 </button>
-              ) : (
+              ) : !showSpeechRecordingBar ? (
                 <>
                   <SpeechDictationButton
                     phase={speechDictation.phase}
@@ -3232,7 +3264,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     )}
                   </button>
                 </>
-              )}
+              ) : null}
               </div>
             )}
           </div>
