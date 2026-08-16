@@ -12,6 +12,7 @@ pub const DEFAULT_MODEL_ID: &str = "macro-ai";
 pub const FAST_MODEL_NAME: &str = "Macro AI Fast";
 pub const DEEP_MODEL_ID: &str = "macro-ai-deep";
 pub const DEEP_MODEL_NAME: &str = "Macro AI Deep";
+pub const SPEECH_PROVIDER_ID: &str = "andrologic-speech";
 const INSTALLATION_IDENTITY_SECRET_ID: &str = "__macro_ai_installation_identity";
 const BOOTSTRAP_URL: &str = "https://lmstudio.andrologic.ai/macro/v1/instances/bootstrap";
 const CONTEXT_WINDOW_TOKENS: i32 = 200_000;

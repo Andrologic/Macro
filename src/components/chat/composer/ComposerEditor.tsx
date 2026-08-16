@@ -37,12 +37,17 @@ import {
   domSelectionBelongsToElement,
 } from './composerDomSelection';
 import { ComposerHistoryPlugin } from './ComposerHistoryPlugin';
+import {
+  prepareContextualTextInsertion,
+  type TextInsertionSpacing,
+} from './composerTextInsertion';
 
 // ------ Types ------
 
 export interface ComposerEditorHandle {
   clear: () => void;
   setText: (text: string, contextRefs?: readonly ContextReference[]) => void;
+  insertTextAtSelection: (text: string, spacing?: TextInsertionSpacing) => void;
   getTextContent: () => string;
   focus: () => void;
 }
@@ -291,6 +296,32 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           deferMentionRefRemovalResume();
         }
         textRef.current = text;
+      },
+      insertTextAtSelection: (text: string, spacing = 'preserve') => {
+        if (!text) return;
+        editor.update(() => {
+          let selection = $getSelection();
+          if (!$isRangeSelection(selection)) {
+            $getRoot().selectEnd();
+            selection = $getSelection();
+          }
+          if ($isRangeSelection(selection)) {
+            const rootText = $getRoot().getTextContent();
+            const anchorOffset = getAbsoluteTextOffsetForPoint(selection.anchor);
+            const focusOffset = getAbsoluteTextOffsetForPoint(selection.focus);
+            const start = Math.min(anchorOffset ?? rootText.length, focusOffset ?? rootText.length);
+            const end = Math.max(anchorOffset ?? rootText.length, focusOffset ?? rootText.length);
+            const insertion = spacing === 'contextual'
+              ? prepareContextualTextInsertion({
+                  text,
+                  before: rootText.slice(0, start),
+                  after: rootText.slice(end),
+                })
+              : text;
+            selection.insertText(insertion);
+          }
+        });
+        editor.focus();
       },
       getTextContent: () => textRef.current,
       focus: () => editor.focus(),

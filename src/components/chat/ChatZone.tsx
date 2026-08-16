@@ -30,7 +30,9 @@ import { ModelDropdown } from '../ai/ModelDropdown';
 import { ReasoningDropdown } from '../ai/ReasoningDropdown';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { useScrollMagnet } from '../../hooks/useScrollMagnet';
+import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
+import { SpeechDictationButton } from './SpeechDictationButton';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { ContextReferenceChip } from './ContextReferenceChip';
 import {
@@ -1681,6 +1683,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isSelectedTaskDependencyBlocked ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
+  const speechDictation = useSpeechDictation({
+    contextKey: composerDraftContextKey,
+    onTranscript: (text) => {
+      const editor = composerEditorRef.current;
+      if (!editor) return;
+      editor.insertTextAtSelection(text, 'contextual');
+    },
+    onError: ({ code, detail }) => {
+      const message = t(`speech.errors.${code}`, {
+        defaultValue: t('speech.errors.transcription-failed', 'Speech transcription failed.'),
+      });
+      notify.error(t('speech.errors.title', 'Dictation unavailable'), {
+        description: detail ? `${message} ${detail}` : message,
+      });
+    },
+  });
 
   const selectedGlobalProject = useMemo(
     () => getGlobalProjectById(projectGroups, selectedGroupId),
@@ -2329,6 +2347,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [addComposerContextRef, clearComposerContextRefs]);
 
   const handleSend = async () => {
+    if (speechDictation.isBusy) return;
     if (isComposerDisabled || activeQuestionnaire) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
@@ -3183,23 +3202,36 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <span className="text-xs">{t('chat.stop')}</span>
                 </button>
               ) : (
-                <button
-                  onClick={handleSend}
-                  data-tour-id="chat-send-button"
-                  disabled={isBusySending || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
-                  className={cn(
-                    'rounded-lg px-3 h-9 flex items-center transition-colors',
-                    isBusySending || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
-                      ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                      : 'bg-primary hover:bg-primary/90 text-primary-foreground'
-                  )}
-                >
-                  {isBusySending ? (
-                    <SpinnerIcon size={14} />
-                  ) : (
-                    <Icon name="arrow-up" size={14} />
-                  )}
-                </button>
+                <>
+                  <SpeechDictationButton
+                    phase={speechDictation.phase}
+                    elapsedSeconds={speechDictation.elapsedSeconds}
+                    disabled={isBusySending || isComposerDisabled}
+                    label={t('speech.button.start', 'Start dictation')}
+                    recordingLabel={t('speech.button.stop', 'Stop dictation')}
+                    transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
+                    onToggle={() => {
+                      void speechDictation.toggle();
+                    }}
+                  />
+                  <button
+                    onClick={handleSend}
+                    data-tour-id="chat-send-button"
+                    disabled={isBusySending || speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
+                    className={cn(
+                      'rounded-lg px-3 h-9 flex items-center transition-colors',
+                      isBusySending || speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
+                        ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                        : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                    )}
+                  >
+                    {isBusySending ? (
+                      <SpinnerIcon size={14} />
+                    ) : (
+                      <Icon name="arrow-up" size={14} />
+                    )}
+                  </button>
+                </>
               )}
               </div>
             )}

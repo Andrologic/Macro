@@ -109,6 +109,7 @@ export type SettingsTab =
   | "appearance"
   | "providers"
   | "models"
+  | "speech"
   | "tools"
   | "skills"
   | "shortcuts"

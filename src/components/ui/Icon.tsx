@@ -101,6 +101,7 @@ import {
   Expand,
   Save,
   Split,
+  Mic,
 } from 'lucide-react';
 
 export type IconName =
@@ -207,7 +208,8 @@ export type IconName =
   | 'book-open'
   | 'save'
   | 'split'
-  | 'expand';
+  | 'expand'
+  | 'mic';
 
 interface IconProps {
   name: IconName;
@@ -346,6 +348,7 @@ const iconMap: Record<IconName, React.ComponentType<{ size?: number | string; cl
   'save': Save,
   'split': Split,
   'expand': Expand,
+  'mic': Mic,
 };
 
 export const isIconName = (name: string): name is IconName => name in iconMap;

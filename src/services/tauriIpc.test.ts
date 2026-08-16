@@ -1,9 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 
 const actualCore = await import("@tauri-apps/api/core");
-const invokeCalls: Array<{ command: string; payload: unknown }> = [];
-const invokeMock = mock(async (command: string, payload?: unknown) => {
-  invokeCalls.push({ command, payload });
+const invokeCalls: Array<{ command: string; payload: unknown; options?: unknown }> = [];
+const invokeMock = mock(async (command: string, payload?: unknown, options?: unknown) => {
+  invokeCalls.push({ command, payload, ...(options ? { options } : {}) });
   return '{"ok":true}';
 });
 
@@ -94,6 +94,34 @@ describe("tauriIpc executeWorkspaceTool", () => {
             apiKey: "test-api-key",
             isLocal: false,
             isEnabled: true,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("sends speech recordings as a raw IPC body with provider metadata headers", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const audio = new Uint8Array([1, 2, 3]);
+
+    await tauriIpc.transcribeSpeech({
+      providerId: "openai-speech",
+      audio,
+      mimeType: "audio/webm;codecs=opus",
+      fileName: "dictation.webm",
+      language: "fr",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "speech_transcribe",
+        payload: audio,
+        options: {
+          headers: {
+            "x-macro-speech-provider-id": "openai-speech",
+            "x-macro-speech-mime-type": "audio/webm;codecs=opus",
+            "x-macro-speech-file-name": "dictation.webm",
+            "x-macro-speech-language": "fr",
           },
         },
       },
