@@ -1468,6 +1468,8 @@
     "strategyPreviewConflicts": "Conflicts",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Select or create a plan to start architecting.",
+    "createFirstPlanToStart": "Create your first plan to start architecting.",
+    "selectExistingPlanToStart": "Select a plan to start architecting.",
     "createPlanAction": "Create a plan",
     "selectPlanAction": "Select a plan",
     "noStrategyDiscussionDescription": "Discuss the plan with Architect, then generate the strategy when the scope is clear."
