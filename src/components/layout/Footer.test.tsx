@@ -395,7 +395,9 @@ const loadFooter = async () => {
   }));
 
   mock.module('../ui/Icon', () => ({
-    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+    Icon: ({ name, className }: { name: string; className?: string }) => (
+      <span data-icon={name} className={className} />
+    ),
   }));
 
   mock.module('../ui/toastService', () => ({
@@ -760,6 +762,54 @@ describe('Footer', () => {
     expect(projectLabel).toBeDefined();
     expect(projectLabel?.classList.contains('leading-4')).toBe(true);
     expect(projectLabel?.classList.contains('leading-none')).toBe(false);
+  });
+
+  it('keeps footer Git animations in fixed frames and gives each action its own motion', async () => {
+    let resolveFetch!: (value: { branch: string; remote: string; output: string }) => void;
+    let resolvePull!: (value: { branch: string; remote: string; output: string }) => void;
+    let resolvePush!: (value: { branch: string; remote: string; output: string }) => void;
+    gitFetchMock = mock(() => new Promise<{ branch: string; remote: string; output: string }>((resolve) => { resolveFetch = resolve; }));
+    gitPullMock = mock(() => new Promise<{ branch: string; remote: string; output: string }>((resolve) => { resolvePull = resolve; }));
+    gitPushMock = mock(() => new Promise<{ branch: string; remote: string; output: string }>((resolve) => { resolvePush = resolve; }));
+
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    const fetchButton = findButtonByIcon(container, 'refresh-cw');
+    const pullButton = findButtonByIcon(container, 'arrow-down');
+    const pushButton = findButtonByIcon(container, 'arrow-up');
+    expect(fetchButton?.title).toContain('main-a');
+    expect(pullButton?.title).toContain('main-a');
+    expect(pushButton?.title).toContain('main-a');
+    expect(container.querySelectorAll('.footer-git-action-icon-frame')).toHaveLength(3);
+    expect(container.querySelector('.animate-bounce')).toBeNull();
+
+    act(() => fetchButton?.click());
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-icon="refresh-cw"]')?.classList)
+      .toContain('footer-git-action-icon--fetching');
+    resolveFetch({ branch: 'main-a', remote: 'origin', output: 'ok' });
+    await flushAsyncWork();
+
+    act(() => pullButton?.click());
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-icon="arrow-down"]')?.classList)
+      .toContain('footer-git-action-icon--pulling');
+    resolvePull({ branch: 'main-a', remote: 'origin', output: 'ok' });
+    await flushAsyncWork();
+
+    act(() => pushButton?.click());
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-icon="arrow-up"]')?.classList)
+      .toContain('footer-git-action-icon--pushing');
+    resolvePush({ branch: 'main-a', remote: 'origin', output: 'ok' });
+    await flushAsyncWork();
   });
 
   it('targets footer git actions to the selected contextual repository and never aggregates repositories', async () => {
