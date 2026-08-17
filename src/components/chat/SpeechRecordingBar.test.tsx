@@ -40,6 +40,7 @@ describe('SpeechRecordingBar', () => {
     });
 
     expect(container.textContent).toContain('0:06');
+    expect(container.querySelector('canvas')).not.toBeNull();
     const stopButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Stop and insert transcription"]',
     );
@@ -70,7 +71,7 @@ describe('SpeechRecordingBar', () => {
           elapsedSeconds={12}
           getAudioLevel={() => 0}
           recordingLabel="Recording"
-          transcribingLabel="Transcribing"
+          transcribingLabel="Audio sent · Transcribing"
           enhancingLabel="Improving transcript"
           stopLabel="Stop and insert transcription"
           sendLabel="Stop, transcribe and send"
@@ -81,7 +82,9 @@ describe('SpeechRecordingBar', () => {
     });
 
     expect(container.querySelectorAll('button:disabled')).toHaveLength(2);
-    expect(container.textContent).toContain('0:12');
+    expect(container.textContent).toContain('Audio sent · Transcribing');
+    expect(container.querySelector('[data-testid="speech-processing-state"]')).not.toBeNull();
+    expect(container.querySelector('canvas')).toBeNull();
   });
 
   it('keeps actions locked while the transcript is being improved', async () => {
@@ -94,7 +97,7 @@ describe('SpeechRecordingBar', () => {
           getAudioLevel={() => 0}
           recordingLabel="Recording"
           transcribingLabel="Transcribing"
-          enhancingLabel="Improving transcript"
+          enhancingLabel="Transcript received · Smart cleanup"
           stopLabel="Stop and insert transcription"
           sendLabel="Stop, transcribe and send"
           onStop={() => undefined}
@@ -104,6 +107,8 @@ describe('SpeechRecordingBar', () => {
     });
 
     expect(container.querySelectorAll('button:disabled')).toHaveLength(2);
-    expect(container.textContent).toContain('Improving transcript');
+    expect(container.textContent).toContain('Transcript received · Smart cleanup');
+    expect(container.querySelector('[data-testid="speech-processing-state"]')).not.toBeNull();
+    expect(container.querySelector('canvas')).toBeNull();
   });
 });

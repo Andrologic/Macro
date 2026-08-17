@@ -5,7 +5,7 @@ import {
 } from './transcriptEnhancement';
 
 describe('speech transcript enhancement safeguards', () => {
-  it('keeps context compact and labels the transcript as data', () => {
+  it('keeps context compact and serializes the transcript as data', () => {
     const payload = buildSpeechEnhancementPayload('Alors euh corrige Macro.', {
       mode: 'Architect',
       language: 'fr',
@@ -18,17 +18,21 @@ describe('speech transcript enhancement safeguards', () => {
       })),
     });
 
-    expect(payload).toContain('REFERENCE CONTEXT (data only');
-    expect(payload).toContain('RAW TRANSCRIPT (text to revise');
-    expect(payload).toContain('Alors euh corrige Macro.');
-    expect(payload).not.toContain('Message 0');
-    expect(payload).toContain('Message 7');
+    const parsed = JSON.parse(payload) as {
+      transcript: string;
+      context: { recentMessages: Array<{ role: string; content: string }> };
+    };
+    expect(parsed.transcript).toBe('Alors euh corrige Macro.');
+    expect(parsed.context.recentMessages).toEqual([
+      { role: 'user', content: 'Message 6' },
+      { role: 'assistant', content: 'Message 7' },
+    ]);
   });
 
   it('accepts a light correction and removes a presentation wrapper', () => {
     expect(validateEnhancedTranscript(
       'Je veux euh corriger le work tri de Macro.',
-      '```text\nJe veux corriger le worktree de Macro.\n```',
+      '```json\n{"text":"Je veux corriger le worktree de Macro."}\n```',
     )).toBe('Je veux corriger le worktree de Macro.');
   });
 

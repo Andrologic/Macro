@@ -1,6 +1,6 @@
 {
   "speech": {
-    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Transcribing", "enhancing": "Improving transcript" },
+    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Audio sent · Transcribing", "enhancing": "Transcript received · Smart cleanup" },
     "recording": { "active": "Recording", "stopAndInsert": "Stop and insert transcription", "stopAndSend": "Stop, transcribe and send" },
     "errors": {
       "title": "Dictation unavailable",
@@ -33,10 +33,7 @@
       "autoLanguage": "Automatic",
       "maxDuration": "Maximum recording duration",
       "enhancementTitle": "Smart transcript cleanup",
-      "enhancementDescription": "Use an AI model to correct likely recognition errors, hesitations and repetitions while preserving your intent.",
-      "useConversationModel": "Use conversation model",
-      "useDedicatedModel": "Use dedicated model",
-      "enhancementModel": "Cleanup model",
+      "enhancementDescription": "Use the active conversation model to make a short, conservative correction of recognition errors, hesitations and repetitions.",
       "noProviderPrivacy": "Select a provider to see where recorded audio will be sent.",
       "localPrivacy": "Local or keyless provider: audio is sent to the configured endpoint without requiring an API key.",
       "andrologicPrivacy": "Andrologic: audio is processed by the authenticated Macro gateway and is never retained. Transcribed text is included in operational logs.",

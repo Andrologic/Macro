@@ -1,6 +1,6 @@
 {
   "speech": {
-    "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "文字起こし中", "enhancing": "文字起こしを改善中" },
+    "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "音声を送信済み · 文字起こし中", "enhancing": "文字起こしを受信済み · スマート補正中" },
     "recording": { "active": "録音中", "stopAndInsert": "停止して文字起こしを挿入", "stopAndSend": "停止して文字起こし後に送信" },
     "errors": {
       "title": "音声入力を利用できません",
@@ -23,8 +23,7 @@
       "deleteConfirm": "{{name}} とローカルに保存された API キーを削除しますか？",
       "title": "マイク音声入力", "description": "コンポーザーから録音し、選択したプロバイダーで文字起こしして、送信前に内容を確認します。",
       "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
-      "maxDuration": "最大録音時間", "enhancementTitle": "文字起こしのスマート補正", "enhancementDescription": "AI モデルを使用して、意図を変えずに認識ミス、ためらい、繰り返しを補正します。",
-      "useConversationModel": "会話のモデルを使用", "useDedicatedModel": "専用モデルを使用", "enhancementModel": "補正モデル",
+      "maxDuration": "最大録音時間", "enhancementTitle": "文字起こしのスマート補正", "enhancementDescription": "会話で使用中のモデルにより、認識ミス、ためらい、繰り返しだけを短く慎重に補正します。",
       "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
       "andrologicPrivacy": "Andrologic：音声は認証済みの Macro ゲートウェイで処理され、保存されません。文字起こしされたテキストは運用ログに記録されます。",
       "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",

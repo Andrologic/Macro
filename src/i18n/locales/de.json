@@ -1,6 +1,6 @@
 {
   "speech": {
-    "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Wird transkribiert", "enhancing": "Transkription wird verbessert" },
+    "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Audio gesendet · Transkription läuft", "enhancing": "Transkript empfangen · Intelligente Bereinigung" },
     "recording": { "active": "Aufnahme läuft", "stopAndInsert": "Stoppen und Transkription einfügen", "stopAndSend": "Stoppen, transkribieren und senden" },
     "errors": {
       "title": "Diktat nicht verfügbar",
@@ -24,8 +24,7 @@
       "deleteConfirm": "{{name}} und den lokal gespeicherten API-Schlüssel löschen?", "title": "Mikrofondiktat",
       "description": "Nehmen Sie im Composer auf, transkribieren Sie mit dem gewählten Anbieter und prüfen Sie den Text vor dem Senden.",
       "activeProvider": "Aktiver Anbieter", "noProvider": "Kein Anbieter", "language": "Sprache", "autoLanguage": "Automatisch",
-      "maxDuration": "Maximale Aufnahmedauer", "enhancementTitle": "Intelligente Transkriptbereinigung", "enhancementDescription": "Verwenden Sie ein KI-Modell, um wahrscheinliche Erkennungsfehler, Zögern und Wiederholungen zu korrigieren, ohne Ihre Absicht zu verändern.",
-      "useConversationModel": "Unterhaltungsmodell verwenden", "useDedicatedModel": "Dediziertes Modell verwenden", "enhancementModel": "Bereinigungsmodell",
+      "maxDuration": "Maximale Aufnahmedauer", "enhancementTitle": "Intelligente Transkriptbereinigung", "enhancementDescription": "Verwenden Sie das aktive Unterhaltungsmodell für eine kurze, vorsichtige Korrektur von Erkennungsfehlern, Zögern und Wiederholungen.",
       "noProviderPrivacy": "Wählen Sie einen Anbieter aus, um zu sehen, wohin die Aufnahme gesendet wird.", "localPrivacy": "Lokaler oder schlüsselloser Anbieter: Audio wird ohne erforderlichen API-Schlüssel an den konfigurierten Endpunkt gesendet.",
       "andrologicPrivacy": "Andrologic: Audio wird vom authentifizierten Macro-Gateway verarbeitet und niemals gespeichert. Der transkribierte Text wird in Betriebsprotokollen erfasst.",
       "remotePrivacy": "Remote-Anbieter: Die Aufnahme wird an den konfigurierten Endpunkt gesendet.", "providers": "Sprachanbieter",

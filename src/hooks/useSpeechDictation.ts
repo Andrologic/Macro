@@ -83,7 +83,6 @@ export const useSpeechDictation = ({
   const operationProviderIdRef = useRef<string | null>(null);
   const operationEnhancementRef = useRef<{
     enabled: boolean;
-    modelConfig: ReturnType<typeof useSpeechToTextStore.getState>['enhancementModelConfig'];
     context: SpeechTranscriptContext;
   } | null>(null);
   const enhancementAbortControllerRef = useRef<AbortController | null>(null);
@@ -185,7 +184,6 @@ export const useSpeechDictation = ({
           finalText = await enhanceTranscript({
             transcript: rawText,
             context: enhancement.context,
-            modelConfig: enhancement.modelConfig,
             signal: controller.signal,
           });
         } catch (error) {
@@ -277,7 +275,6 @@ export const useSpeechDictation = ({
     operationProviderIdRef.current = provider.id;
     operationEnhancementRef.current = {
       enabled: speechState.enhancementEnabled,
-      modelConfig: speechState.enhancementModelConfig,
       context: enhancementContextRef.current,
     };
     const recorder = new MicrophoneRecorder();

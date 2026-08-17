@@ -959,7 +959,8 @@ gauche du bouton d'envoi. Un premier clic démarre l'enregistrement et remplace
 temporairement la zone d'édition par une visualisation audio. L'utilisateur peut
 ensuite arrêter la capture pour transcrire et insérer le texte à la position
 d'édition courante, ou arrêter, transcrire et envoyer immédiatement avec l'action
-d'envoi dédiée.
+d'envoi dédiée. Dès l'arrêt, la visualisation audio disparaît et laisse place à
+un état animé explicite de transcription, puis de nettoyage lorsqu'il est activé.
 
 Les réglages de dictée doivent permettre de choisir la langue, la durée maximale
 d'enregistrement et un fournisseur activé. Les fournisseurs de reconnaissance
@@ -971,13 +972,13 @@ HTTP pour joindre un service de confiance sur la machine ou le réseau local ; t
 fournisseur distant authentifié doit utiliser HTTPS.
 
 Un nettoyage intelligent facultatif peut faire relire le texte transcrit par le
-modèle de la conversation ou par un modèle dédié. Il corrige uniquement les
+modèle actif de la conversation. Il corrige uniquement les
 erreurs probables de reconnaissance, les hésitations, les répétitions et la
 ponctuation en s'appuyant sur un contexte compact : mode actif, projet, plan,
-tâche, brouillon et derniers messages. Il ne doit ni répondre au prompt, ni le
-résumer, le traduire, inventer des informations ou modifier ses contraintes. Les
-réglages signalent que ce texte contextuel est transmis au fournisseur d'IA, mais
-que l'audio ne lui est pas renvoyé. Cette option est désactivée par défaut. Une
+tâche, brouillon et au maximum les deux derniers messages, tous limités à de
+courts extraits. Il ne doit ni répondre au prompt, ni le résumer, le traduire,
+inventer des informations ou modifier ses contraintes. Cette option est
+désactivée par défaut. Une
 réponse vide ou excessivement raccourcie ou développée, une erreur réseau ou un
 modèle indisponible ne doit jamais faire perdre la dictée : Macro conserve alors
 la transcription brute et peut tout de même l'insérer ou l'envoyer.

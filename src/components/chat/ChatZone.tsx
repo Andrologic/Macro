@@ -1720,7 +1720,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     draftText: inputValue,
     recentMessages: currentMessages
       .filter((message) => message.role === 'user' || message.role === 'assistant')
-      .slice(-6)
+      .slice(-2)
       .map((message) => ({
         role: message.role as 'user' | 'assistant',
         content: message.content,
@@ -2442,13 +2442,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         description: detail ? `${message} ${detail}` : message,
       });
     },
-    onEnhancementError: (detail) => {
+    onEnhancementError: () => {
       notify.warning(
         t('speech.errors.enhancement-failed-title', 'Smart cleanup unavailable'),
         {
-          description: detail
-            ? `${t('speech.errors.enhancement-failed', 'Macro kept the raw transcript.')} ${detail}`
-            : t('speech.errors.enhancement-failed', 'Macro kept the raw transcript.'),
+          description: t('speech.errors.enhancement-failed', 'Macro kept the raw transcript.'),
         },
       );
     },
@@ -3245,8 +3243,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     elapsedSeconds={speechDictation.elapsedSeconds}
                     getAudioLevel={speechDictation.getAudioLevel}
                     recordingLabel={t('speech.recording.active', 'Recording')}
-                    transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
-                    enhancingLabel={t('speech.button.enhancing', 'Improving transcript')}
+                    transcribingLabel={t('speech.button.transcribing', 'Audio sent · Transcribing')}
+                    enhancingLabel={t('speech.button.enhancing', 'Transcript received · Smart cleanup')}
                     stopLabel={t('speech.recording.stopAndInsert', 'Stop and insert transcription')}
                     sendLabel={t('speech.recording.stopAndSend', 'Stop, transcribe and send')}
                     onStop={() => {
