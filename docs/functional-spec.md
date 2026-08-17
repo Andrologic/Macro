@@ -960,7 +960,10 @@ temporairement la zone d'édition par une visualisation audio. L'utilisateur peu
 ensuite arrêter la capture pour transcrire et insérer le texte à la position
 d'édition courante, ou arrêter, transcrire et envoyer immédiatement avec l'action
 d'envoi dédiée. Dès l'arrêt, la visualisation audio disparaît et laisse place à
-un état animé explicite de transcription, puis de nettoyage lorsqu'il est activé.
+un état animé explicite de transcription. Si le nettoyage est activé, le texte
+brut apparaît ensuite immédiatement dans le composer avec un balayage discret
+sur le texte jusqu'à son remplacement par la version corrigée. L'envoi demandé
+attend cette correction ou son fallback vers la transcription brute.
 
 Les réglages de dictée doivent permettre de choisir la langue, la durée maximale
 d'enregistrement et un fournisseur activé. Les fournisseurs de reconnaissance

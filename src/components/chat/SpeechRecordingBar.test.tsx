@@ -30,7 +30,6 @@ describe('SpeechRecordingBar', () => {
           getAudioLevel={() => 0.4}
           recordingLabel="Recording"
           transcribingLabel="Transcribing"
-          enhancingLabel="Improving transcript"
           stopLabel="Stop and insert transcription"
           sendLabel="Stop, transcribe and send"
           onStop={onStop}
@@ -72,7 +71,6 @@ describe('SpeechRecordingBar', () => {
           getAudioLevel={() => 0}
           recordingLabel="Recording"
           transcribingLabel="Audio sent · Transcribing"
-          enhancingLabel="Improving transcript"
           stopLabel="Stop and insert transcription"
           sendLabel="Stop, transcribe and send"
           onStop={() => undefined}
@@ -87,28 +85,4 @@ describe('SpeechRecordingBar', () => {
     expect(container.querySelector('canvas')).toBeNull();
   });
 
-  it('keeps actions locked while the transcript is being improved', async () => {
-    await act(async () => {
-      root.render(
-        <SpeechRecordingBar
-          phase="enhancing"
-          completion="insert"
-          elapsedSeconds={4}
-          getAudioLevel={() => 0}
-          recordingLabel="Recording"
-          transcribingLabel="Transcribing"
-          enhancingLabel="Transcript received · Smart cleanup"
-          stopLabel="Stop and insert transcription"
-          sendLabel="Stop, transcribe and send"
-          onStop={() => undefined}
-          onSend={() => undefined}
-        />,
-      );
-    });
-
-    expect(container.querySelectorAll('button:disabled')).toHaveLength(2);
-    expect(container.textContent).toContain('Transcript received · Smart cleanup');
-    expect(container.querySelector('[data-testid="speech-processing-state"]')).not.toBeNull();
-    expect(container.querySelector('canvas')).toBeNull();
-  });
 });

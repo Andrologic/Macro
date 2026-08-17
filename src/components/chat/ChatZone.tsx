@@ -35,6 +35,11 @@ import { useSpeechDictation } from '../../hooks/useSpeechDictation';
 import { ScrollSeparator } from './ScrollSeparator';
 import { SpeechDictationButton } from './SpeechDictationButton';
 import { SpeechRecordingBar } from './SpeechRecordingBar';
+import {
+  locateSpeechComposerInsertion,
+  replaceSpeechComposerInsertion,
+  type SpeechComposerInsertion,
+} from './speechComposerText';
 import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { ContextReferenceChip } from './ContextReferenceChip';
 import {
@@ -1090,6 +1095,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
+  const pendingSpeechInsertionRef = useRef<SpeechComposerInsertion | null>(null);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
@@ -1105,6 +1111,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     : activeContextKey
       ? `context:${activeContextKey}`
       : `mode:${mode}`;
+  useEffect(() => {
+    pendingSpeechInsertionRef.current = null;
+  }, [composerDraftContextKey]);
   const activeComposerDraftContextKeyRef = useRef<string | null>(null);
   const latestComposerDraftRef = useRef({
     text: '',
@@ -2427,9 +2436,33 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const speechDictation = useSpeechDictation({
     contextKey: composerDraftContextKey,
     enhancementContext: speechEnhancementContext,
+    onInterimTranscript: (text) => {
+      const editor = composerEditorRef.current;
+      const previousText = editor?.getTextContent() ?? inputValue;
+      const composedText = editor?.insertTextAtSelection(text, 'contextual') ?? text;
+      pendingSpeechInsertionRef.current = locateSpeechComposerInsertion(
+        previousText,
+        composedText,
+        text,
+      );
+    },
     onTranscript: (text, completion) => {
       const editor = composerEditorRef.current;
-      const composedText = editor?.insertTextAtSelection(text, 'contextual') ?? text;
+      const pendingInsertion = pendingSpeechInsertionRef.current;
+      pendingSpeechInsertionRef.current = null;
+      let composedText: string;
+      if (editor && pendingInsertion) {
+        const currentText = editor.getTextContent();
+        const replacedText = replaceSpeechComposerInsertion(currentText, pendingInsertion, text);
+        if (replacedText !== null) {
+          editor.setText(replacedText);
+          composedText = replacedText;
+        } else {
+          composedText = currentText;
+        }
+      } else {
+        composedText = editor?.insertTextAtSelection(text, 'contextual') ?? text;
+      }
       if (completion === 'send') {
         void sendComposerMessage(composedText);
       }
@@ -2453,8 +2486,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   });
   const showSpeechRecordingBar =
     speechDictation.phase === 'recording' ||
-    speechDictation.phase === 'transcribing' ||
-    speechDictation.phase === 'enhancing';
+    speechDictation.phase === 'transcribing';
+  const isSpeechEnhancing = speechDictation.phase === 'enhancing';
 
   const handleSend = async () => {
     if (speechDictation.isBusy) return;
@@ -3186,7 +3219,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <Suspense fallback={<ComposerFallbackStatus />}>
                     <LazyComposerEditor
                       ref={composerEditorRef}
-                      editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                      editable={!isBusySending && !isSpeechEnhancing && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                      className={isSpeechEnhancing ? 'speech-cleanup-text' : undefined}
                       placeholder={
                         composerEditSession
                           ? t('chat.editMessagePlaceholder', 'Edit message...')
@@ -3238,13 +3272,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 </div>
                 {showSpeechRecordingBar && (
                   <SpeechRecordingBar
-                    phase={speechDictation.phase as 'recording' | 'transcribing' | 'enhancing'}
+                    phase={speechDictation.phase as 'recording' | 'transcribing'}
                     completion={speechDictation.completion}
                     elapsedSeconds={speechDictation.elapsedSeconds}
                     getAudioLevel={speechDictation.getAudioLevel}
                     recordingLabel={t('speech.recording.active', 'Recording')}
                     transcribingLabel={t('speech.button.transcribing', 'Audio sent · Transcribing')}
-                    enhancingLabel={t('speech.button.enhancing', 'Transcript received · Smart cleanup')}
                     stopLabel={t('speech.recording.stopAndInsert', 'Stop and insert transcription')}
                     sendLabel={t('speech.recording.stopAndSend', 'Stop, transcribe and send')}
                     onStop={() => {

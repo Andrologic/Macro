@@ -8,13 +8,12 @@ import { Icon } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 interface SpeechRecordingBarProps {
-  phase: Extract<SpeechDictationPhase, 'recording' | 'transcribing' | 'enhancing'>;
+  phase: Extract<SpeechDictationPhase, 'recording' | 'transcribing'>;
   completion: SpeechDictationCompletion | null;
   elapsedSeconds: number;
   getAudioLevel: () => number;
   recordingLabel: string;
   transcribingLabel: string;
-  enhancingLabel: string;
   stopLabel: string;
   sendLabel: string;
   onStop: () => void;
@@ -77,7 +76,6 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
   getAudioLevel,
   recordingLabel,
   transcribingLabel,
-  enhancingLabel,
   stopLabel,
   sendLabel,
   onStop,
@@ -119,11 +117,9 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
   }, [phase]);
 
   const isProcessing = phase !== 'recording';
-  const statusLabel = phase === 'enhancing'
-    ? enhancingLabel
-    : phase === 'transcribing'
-      ? transcribingLabel
-      : `${recordingLabel} ${formatElapsed(elapsedSeconds)}`;
+  const statusLabel = phase === 'transcribing'
+    ? transcribingLabel
+    : `${recordingLabel} ${formatElapsed(elapsedSeconds)}`;
 
   return (
     <div
@@ -152,7 +148,7 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
           <span className="relative flex h-6 w-6 shrink-0 items-center justify-center">
             <span className="absolute inset-0 animate-spin rounded-lg border border-current border-r-transparent opacity-50" />
             <Icon
-              name={phase === 'enhancing' ? 'sparkles' : 'arrow-up'}
+              name="arrow-up"
               size={12}
               className="animate-pulse"
             />
