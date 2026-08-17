@@ -24,7 +24,7 @@
       "title": "マイク音声入力", "description": "コンポーザーから録音し、選択したプロバイダーで文字起こしして、送信前に内容を確認します。",
       "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
       "maxDuration": "最大録音時間", "enhancementTitle": "文字起こしのスマート補正", "enhancementDescription": "AI モデルを使用して、意図を変えずに認識ミス、ためらい、繰り返しを補正します。",
-      "useConversationModel": "会話のモデルを使用", "useDedicatedModel": "専用モデルを使用", "enhancementModel": "補正モデル", "enhancementPrivacy": "文字起こしと簡潔な会話コンテキストのみが、選択した AI プロバイダーに送信されます。音声は再送信されません。補正に失敗した場合や変更が大きすぎる場合、Macro は未補正の文字起こしを保持します。",
+      "useConversationModel": "会話のモデルを使用", "useDedicatedModel": "専用モデルを使用", "enhancementModel": "補正モデル",
       "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
       "andrologicPrivacy": "Andrologic：音声は認証済みの Macro ゲートウェイで処理され、保存されません。文字起こしされたテキストは運用ログに記録されます。",
       "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",

@@ -336,13 +336,6 @@ export const SpeechSettings: React.FC = () => {
                   </label>
                 </div>
               )}
-
-              <p className="rounded-lg border border-border bg-background/50 p-3 text-xs text-muted-foreground">
-                {t(
-                  'speech.settings.enhancementPrivacy',
-                  'Only the transcript and a compact conversation context are sent to the selected AI provider. Audio is never sent again. If cleanup fails or changes too much, Macro keeps the raw transcript.',
-                )}
-              </p>
             </div>
           )}
         </div>
