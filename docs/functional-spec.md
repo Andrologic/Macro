@@ -959,8 +959,8 @@ gauche du bouton d'envoi. Un premier clic démarre l'enregistrement et remplace
 temporairement la zone d'édition par une visualisation audio. L'utilisateur peut
 ensuite arrêter la capture pour transcrire et insérer le texte à la position
 d'édition courante, ou arrêter, transcrire et envoyer immédiatement avec l'action
-d'envoi dédiée. Dès l'arrêt, la visualisation audio disparaît et laisse place à
-un état animé explicite de transcription. Si le nettoyage est activé, le texte
+d'envoi dédiée. Dès l'arrêt, la forme d'onde enregistrée reste visible avec une
+propagation douce jusqu'à la réception de la transcription. Si le nettoyage est activé, le texte
 brut apparaît ensuite immédiatement dans le composer avec un balayage discret
 sur le texte jusqu'à son remplacement par la version corrigée. L'envoi demandé
 attend cette correction ou son fallback vers la transcription brute.

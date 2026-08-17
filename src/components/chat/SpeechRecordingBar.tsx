@@ -26,6 +26,8 @@ const formatElapsed = (seconds: number): string =>
 const drawWaveform = (
   canvas: HTMLCanvasElement,
   samples: number[],
+  isProcessing: boolean,
+  now: number,
 ) => {
   const width = Math.max(1, canvas.clientWidth);
   const height = Math.max(1, canvas.clientHeight);
@@ -53,14 +55,20 @@ const drawWaveform = (
   context.lineTo(width, centerY);
   context.stroke();
 
-  context.globalAlpha = 0.82;
   context.lineWidth = 2;
   context.lineCap = 'round';
   context.setLineDash([]);
   const gap = width / Math.max(1, samples.length);
   samples.forEach((sample, index) => {
     const x = gap * index + gap / 2;
-    const barHeight = Math.max(2, sample * (height - 4));
+    const propagation = isProcessing
+      ? (Math.sin(now / 180 - index * 0.42) + 1) / 2
+      : 1;
+    const barHeight = Math.max(
+      2,
+      sample * (height - 4) * (isProcessing ? 0.72 + propagation * 0.28 : 1),
+    );
+    context.globalAlpha = isProcessing ? 0.28 + propagation * 0.58 : 0.82;
     context.beginPath();
     context.moveTo(x, centerY - barHeight / 2);
     context.lineTo(x, centerY + barHeight / 2);
@@ -103,13 +111,13 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
           ...retained,
         ];
       }
-      if (now - lastSampleAt >= 45) {
+      if (phase === 'recording' && now - lastSampleAt >= 45) {
         const level = Math.max(0.035, Math.min(1, getAudioLevelRef.current()));
         samplesRef.current.shift();
         samplesRef.current.push(level);
         lastSampleAt = now;
       }
-      drawWaveform(canvas, samplesRef.current);
+      drawWaveform(canvas, samplesRef.current, phase === 'transcribing', now);
       animationFrame = window.requestAnimationFrame(animate);
     };
     animationFrame = window.requestAnimationFrame(animate);
@@ -127,44 +135,19 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
       data-tour-id="chat-dictation-recording-bar"
       data-phase={phase}
     >
-      {phase === 'recording' ? (
-        <>
-          <span className="sr-only" aria-live="polite">{statusLabel}</span>
-          <canvas
-            ref={canvasRef}
-            aria-hidden="true"
-            className="h-8 w-0 min-w-0 flex-1 text-foreground"
-          />
-          <span className="w-10 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
-            {formatElapsed(elapsedSeconds)}
-          </span>
-        </>
-      ) : (
-        <div
-          className="flex h-8 w-0 min-w-0 flex-1 items-center gap-2.5 px-1 text-muted-foreground"
-          data-testid="speech-processing-state"
-          aria-live="polite"
-        >
-          <span className="relative flex h-6 w-6 shrink-0 items-center justify-center">
-            <span className="absolute inset-0 animate-spin rounded-lg border border-current border-r-transparent opacity-50" />
-            <Icon
-              name="arrow-up"
-              size={12}
-              className="animate-pulse"
-            />
-          </span>
-          <span className="truncate text-xs">{statusLabel}</span>
-          <span className="ml-auto flex shrink-0 items-center gap-1" aria-hidden="true">
-            {[0, 1, 2].map((index) => (
-              <span
-                key={index}
-                className="h-1 w-1 animate-pulse rounded-full bg-current"
-                style={{ animationDelay: `${index * 160}ms` }}
-              />
-            ))}
-          </span>
-        </div>
-      )}
+      <span className="sr-only" aria-live="polite">{statusLabel}</span>
+      <canvas
+        ref={canvasRef}
+        aria-hidden="true"
+        data-processing={isProcessing || undefined}
+        className={cn(
+          'h-8 w-0 min-w-0 flex-1 transition-colors duration-300',
+          isProcessing ? 'text-primary' : 'text-foreground',
+        )}
+      />
+      <span className="w-10 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
+        {formatElapsed(elapsedSeconds)}
+      </span>
       <button
         type="button"
         aria-label={stopLabel}

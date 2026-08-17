@@ -80,9 +80,8 @@ describe('SpeechRecordingBar', () => {
     });
 
     expect(container.querySelectorAll('button:disabled')).toHaveLength(2);
-    expect(container.textContent).toContain('Audio sent · Transcribing');
-    expect(container.querySelector('[data-testid="speech-processing-state"]')).not.toBeNull();
-    expect(container.querySelector('canvas')).toBeNull();
+    expect(container.querySelector('canvas[data-processing="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="speech-processing-state"]')).toBeNull();
   });
 
 });
