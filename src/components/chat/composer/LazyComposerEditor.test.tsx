@@ -14,6 +14,7 @@ interface TestComposerEditorHandle {
 
 interface MockComposerEditorProps {
   editable: boolean;
+  readOnly?: boolean;
   placeholder: string;
   onTextChange: (text: string) => void;
   onSend: () => void;
@@ -46,6 +47,7 @@ const MockComposerEditor = React.forwardRef<TestComposerEditorHandle, MockCompos
         data-shortcut-chat-input="true"
         data-testid="loaded-composer-editor"
         aria-disabled={props.editable ? 'false' : 'true'}
+        aria-readonly={props.readOnly ? 'true' : 'false'}
       >
         {loadedEditorText || props.placeholder}
       </div>
@@ -195,6 +197,33 @@ describe('LazyComposerEditor', () => {
 
     expect(onTextChange).toHaveBeenLastCalledWith('Bonjour Macro');
     expect(editorRef.current?.getTextContent()).toBe('Bonjour Macro');
+  });
+
+  it('keeps cleanup text read-only and scrollable in both editor implementations', async () => {
+    await act(async () => {
+      flushSync(() => {
+        root.render(
+          <LazyComposerEditor
+            editable
+            readOnly
+            placeholder="Message"
+            onTextChange={() => undefined}
+            onSend={() => undefined}
+          />
+        );
+      });
+
+      const fallback = container.querySelector('textarea');
+      expect(fallback?.disabled).toBe(false);
+      expect(fallback?.readOnly).toBe(true);
+      expect(fallback?.getAttribute('aria-readonly')).toBe('true');
+    });
+
+    await waitForLoadedEditor();
+
+    const loadedEditor = container.querySelector('[data-testid="loaded-composer-editor"]');
+    expect(loadedEditor?.getAttribute('aria-disabled')).toBe('false');
+    expect(loadedEditor?.getAttribute('aria-readonly')).toBe('true');
   });
 
   it('spaces dictated text according to the fallback textarea selection', async () => {

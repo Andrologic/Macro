@@ -964,7 +964,8 @@ variation d'amplitude progressive, sans changement de couleur, jusqu'à la
 réception de la transcription. Si le nettoyage est activé, le texte brut apparaît
 ensuite immédiatement dans le composer avec un balayage discret
 sur le texte jusqu'à son remplacement par la version corrigée. L'envoi demandé
-attend cette correction ou son fallback vers la transcription brute.
+attend cette correction ou son fallback vers la transcription brute. Durant ce
+nettoyage, le texte reste non modifiable, mais le composer demeure défilable.
 
 Les réglages de dictée doivent permettre de choisir la langue, la durée maximale
 d'enregistrement et un fournisseur activé. Les fournisseurs de reconnaissance
