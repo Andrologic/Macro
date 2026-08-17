@@ -104,6 +104,14 @@ describe('preferences legacy cleanup', () => {
     expect(value).toBe(120);
   });
 
+  it('keeps smart transcript cleanup disabled by default', async () => {
+    const { loadPreference, PREF_KEYS } = await loadPreferencesModule();
+
+    const value = await loadPreference(PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED);
+
+    expect(value).toBe(false);
+  });
+
   it('keeps the Architect prompt aligned with the conversation-first strategy workflow', async () => {
     const { getDefaultPromptForPreferenceKey, PREF_KEYS } = await loadPreferencesModule();
 

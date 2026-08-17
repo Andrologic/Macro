@@ -453,10 +453,11 @@ comme indisponibilités temporaires ; aucun retry automatique ne duplique
 l'enregistrement.
 
 Après la transcription native, `useSpeechDictation` peut déclencher
-`speech/transcriptEnhancement`. Ce service réutilise `sendChatNonStreaming` et
-la résolution sécurisée des identifiants du provider IA sélectionné. La requête
+`speech/transcriptEnhancement`. Ce service réutilise `sendChatNonStreaming`, le
+provider et le modèle actifs de la conversation, sans raisonnement avancé. La requête
 emploie un identifiant de conversation éphémère, n'active aucun outil et transmet
-un contexte textuel borné sans renvoyer l'audio. Le contrat de prompt impose une
+un contexte textuel borné aux deux derniers messages et à de courts champs de
+contexte. Le contrat de prompt impose une
 réécriture minimale. Des garde-fous rejettent les réponses vides ou dont la
 longueur indique une synthèse ou une expansion excessive ; le hook revient alors
 à la transcription brute. Un changement de contexte annule aussi la requête en

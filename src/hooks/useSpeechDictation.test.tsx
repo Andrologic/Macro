@@ -76,7 +76,6 @@ describe('useSpeechDictation', () => {
     onEnhancementError = mock((_detail?: string) => undefined);
     useSpeechToTextStore.setState({
       enhancementEnabled: false,
-      enhancementModelConfig: { mode: 'conversation' },
     });
     startRecording.mockClear();
     stopRecording.mockClear();
@@ -218,7 +217,6 @@ describe('useSpeechDictation', () => {
       isInitialized: true,
       error: null,
       enhancementEnabled: true,
-      enhancementModelConfig: { mode: 'conversation' },
       initialize: mock(async () => undefined),
       transcribe: mock(async () => ({ text: 'Message vocale corrige' })),
     });
@@ -244,7 +242,6 @@ describe('useSpeechDictation', () => {
       isInitialized: true,
       error: null,
       enhancementEnabled: true,
-      enhancementModelConfig: { mode: 'conversation' },
       initialize: mock(async () => undefined),
       transcribe: mock(async () => ({ text: 'Texte brut conservé' })),
     });

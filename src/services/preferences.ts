@@ -102,7 +102,6 @@ export const PREF_KEYS = {
   SPEECH_LANGUAGE: "speech.language",
   SPEECH_MAX_DURATION_SECONDS: "speech.maxDurationSeconds",
   SPEECH_ENHANCEMENT_ENABLED: "speech.enhancementEnabled",
-  SPEECH_ENHANCEMENT_MODEL_CONFIG: "speech.enhancementModelConfig",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -333,7 +332,6 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.SPEECH_LANGUAGE]: "auto",
   [PREF_KEYS.SPEECH_MAX_DURATION_SECONDS]: 120,
   [PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED]: false,
-  [PREF_KEYS.SPEECH_ENHANCEMENT_MODEL_CONFIG]: { mode: "conversation" },
 };
 
 // Store instance (singleton)
