@@ -39,6 +39,7 @@ describe('useSpeechDictation', () => {
   let useSpeechToTextStore: typeof import('../stores/useSpeechToTextStore').useSpeechToTextStore;
   let currentHook: ReturnType<typeof useSpeechDictation> | null = null;
   let onError = mock((_error: unknown) => undefined);
+  let onInterimTranscript = mock((_text: string) => undefined);
   let onTranscript = mock((_text: string, _completion: 'insert' | 'send') => undefined);
   let onEnhancementError = mock((_detail?: string) => undefined);
 
@@ -51,6 +52,7 @@ describe('useSpeechDictation', () => {
         recentMessages: [{ role: 'user', content: 'Contexte récent' }],
       },
       onError,
+      onInterimTranscript,
       onTranscript,
       onEnhancementError,
       enhanceTranscript,
@@ -72,6 +74,7 @@ describe('useSpeechDictation', () => {
     root = createRoot(container);
     currentHook = null;
     onError = mock((_error: unknown) => undefined);
+    onInterimTranscript = mock((_text: string) => undefined);
     onTranscript = mock((_text: string, _completion: 'insert' | 'send') => undefined);
     onEnhancementError = mock((_detail?: string) => undefined);
     useSpeechToTextStore.setState({
@@ -204,13 +207,17 @@ describe('useSpeechDictation', () => {
     });
 
     expect(stopRecording).toHaveBeenCalledTimes(1);
+    expect(onInterimTranscript).not.toHaveBeenCalled();
     expect(onTranscript).toHaveBeenCalledWith('Message vocal', 'send');
     expect(currentHook?.phase).toBe('idle');
     expect(currentHook?.completion).toBeNull();
   });
 
   it('improves the transcript before forwarding it when cleanup is enabled', async () => {
-    enhanceTranscript.mockResolvedValueOnce('Message vocal corrigé');
+    let resolveEnhancement: ((text: string) => void) | undefined;
+    enhanceTranscript.mockImplementationOnce(() => new Promise<string>((resolve) => {
+      resolveEnhancement = resolve;
+    }));
     useSpeechToTextStore.setState({
       providers: [provider],
       selectedProviderId: provider.id,
@@ -224,12 +231,23 @@ describe('useSpeechDictation', () => {
     await act(async () => {
       root.render(<Harness contextKey="conversation:a" />);
     });
+    let finishPromise: Promise<void> | undefined;
     await act(async () => {
       await currentHook?.toggle();
-      await currentHook?.finish('insert');
+      finishPromise = currentHook?.finish('insert');
+      await Promise.resolve();
     });
 
     expect(enhanceTranscript).toHaveBeenCalledTimes(1);
+    expect(onInterimTranscript).toHaveBeenCalledWith('Message vocale corrige');
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect(currentHook?.phase).toBe('enhancing');
+
+    await act(async () => {
+      resolveEnhancement?.('Message vocal corrigé');
+      await finishPromise;
+    });
+
     expect(onTranscript).toHaveBeenCalledWith('Message vocal corrigé', 'insert');
     expect(onEnhancementError).not.toHaveBeenCalled();
   });
@@ -255,6 +273,7 @@ describe('useSpeechDictation', () => {
     });
 
     expect(onEnhancementError).toHaveBeenCalledWith('Model unavailable');
+    expect(onInterimTranscript).toHaveBeenCalledWith('Texte brut conservé');
     expect(onTranscript).toHaveBeenCalledWith('Texte brut conservé', 'send');
     expect(onError).not.toHaveBeenCalled();
   });

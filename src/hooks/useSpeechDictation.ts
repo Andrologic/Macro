@@ -37,6 +37,7 @@ export interface SpeechDictationError {
 interface UseSpeechDictationOptions {
   contextKey: string;
   enhancementContext: SpeechTranscriptContext;
+  onInterimTranscript?: (text: string) => void;
   onTranscript: (text: string, completion: SpeechDictationCompletion) => void;
   onError: (error: SpeechDictationError) => void;
   onEnhancementError?: (detail?: string) => void;
@@ -65,6 +66,7 @@ const classifyMicrophoneError = (error: unknown): SpeechDictationError => {
 export const useSpeechDictation = ({
   contextKey,
   enhancementContext,
+  onInterimTranscript,
   onTranscript,
   onError,
   onEnhancementError,
@@ -177,6 +179,7 @@ export const useSpeechDictation = ({
       }
       let finalText = rawText;
       if (enhancement?.enabled) {
+        if (mountedRef.current) onInterimTranscript?.(rawText);
         setPhase('enhancing');
         const controller = new AbortController();
         enhancementAbortControllerRef.current = controller;
@@ -229,7 +232,7 @@ export const useSpeechDictation = ({
         setPhase('idle');
       }
     }
-  }, [enhanceTranscript, onEnhancementError, onError, onTranscript, transcribe]);
+  }, [enhanceTranscript, onEnhancementError, onError, onInterimTranscript, onTranscript, transcribe]);
 
   const toggle = useCallback(async () => {
     if (phase === 'recording') {
