@@ -1,6 +1,6 @@
 {
   "speech": {
-    "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Transcription en cours" },
+    "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Transcription en cours", "enhancing": "Amélioration de la transcription" },
     "recording": { "active": "Enregistrement en cours", "stopAndInsert": "Arrêter et insérer la transcription", "stopAndSend": "Arrêter, transcrire et envoyer" },
     "errors": {
       "title": "Dictée indisponible",
@@ -13,7 +13,9 @@
       "recording-unsupported": "L’enregistrement au microphone n’est pas pris en charge dans cet environnement.",
       "context-changed": "La dictée a été annulée, car la conversation active a changé.",
       "empty-transcript": "Le fournisseur vocal n’a renvoyé aucun texte.",
-      "transcription-failed": "La transcription vocale a échoué."
+      "transcription-failed": "La transcription vocale a échoué.",
+      "enhancement-failed-title": "Nettoyage intelligent indisponible",
+      "enhancement-failed": "Macro a conservé la transcription brute."
     },
     "settings": {
       "validation": "Le nom, le point de terminaison et le modèle sont obligatoires.",
@@ -30,6 +32,12 @@
       "language": "Langue",
       "autoLanguage": "Automatique",
       "maxDuration": "Durée maximale d’enregistrement",
+      "enhancementTitle": "Nettoyage intelligent de la transcription",
+      "enhancementDescription": "Utilisez un modèle d’IA pour corriger les erreurs probables de reconnaissance, les hésitations et les répétitions, sans modifier votre intention.",
+      "useConversationModel": "Utiliser le modèle de la conversation",
+      "useDedicatedModel": "Utiliser un modèle dédié",
+      "enhancementModel": "Modèle de nettoyage",
+      "enhancementPrivacy": "Seuls la transcription et un contexte compact de la conversation sont envoyés au fournisseur d’IA sélectionné. L’audio n’est jamais renvoyé. Si le nettoyage échoue ou modifie trop le texte, Macro conserve la transcription brute.",
       "noProviderPrivacy": "Sélectionnez un fournisseur pour savoir où l’audio enregistré sera envoyé.",
       "localPrivacy": "Fournisseur local ou sans clé : l’audio est envoyé au point de terminaison configuré sans exiger de clé API.",
       "andrologicPrivacy": "Andrologic : l’audio est traité par le gateway Macro authentifié et n’est jamais conservé. Le texte transcrit figure dans les journaux opérationnels.",

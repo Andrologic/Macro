@@ -20,6 +20,7 @@ import type {
   WorkspaceFileReference,
 } from '../../types';
 import { useProviderStore } from '../../stores/useProviderStore';
+import { useSpeechToTextStore } from '../../stores/useSpeechToTextStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon, type IconName } from '../ui/Icon';
@@ -1059,6 +1060,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     nativeToolsSupported: state.selectedSupportsNativeToolCalling(),
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
+  const speechLanguage = useSpeechToTextStore((state) => state.language);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
     startTask: state.startTask,
@@ -1705,6 +1707,34 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     return selectedGlobalProjectName || focusedProjectName || null;
   }, [focusedProjectName, selectedGlobalProjectName]);
+  const speechEnhancementContext = useMemo(() => ({
+    mode,
+    language: speechLanguage,
+    projectName: mode === 'Implement' && selectedTask
+      ? selectedTaskProjectSummary
+      : projectScopeLabel,
+    planName: mode === 'Architect' && activePlanContext
+      ? getArchitectPlanPrimaryName(activePlanContext)
+      : null,
+    taskTitle: mode === 'Implement' ? selectedTask?.title ?? null : null,
+    draftText: inputValue,
+    recentMessages: currentMessages
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .slice(-6)
+      .map((message) => ({
+        role: message.role as 'user' | 'assistant',
+        content: message.content,
+      })),
+  }), [
+    activePlanContext,
+    currentMessages,
+    inputValue,
+    mode,
+    projectScopeLabel,
+    selectedTask,
+    selectedTaskProjectSummary,
+    speechLanguage,
+  ]);
 
   const modeHeader = useMemo(() => {
     if (mode === 'Architect') {
@@ -2396,6 +2426,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const speechDictation = useSpeechDictation({
     contextKey: composerDraftContextKey,
+    enhancementContext: speechEnhancementContext,
     onTranscript: (text, completion) => {
       const editor = composerEditorRef.current;
       const composedText = editor?.insertTextAtSelection(text, 'contextual') ?? text;
@@ -2411,9 +2442,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         description: detail ? `${message} ${detail}` : message,
       });
     },
+    onEnhancementError: (detail) => {
+      notify.warning(
+        t('speech.errors.enhancement-failed-title', 'Smart cleanup unavailable'),
+        {
+          description: detail
+            ? `${t('speech.errors.enhancement-failed', 'Macro kept the raw transcript.')} ${detail}`
+            : t('speech.errors.enhancement-failed', 'Macro kept the raw transcript.'),
+        },
+      );
+    },
   });
   const showSpeechRecordingBar =
-    speechDictation.phase === 'recording' || speechDictation.phase === 'transcribing';
+    speechDictation.phase === 'recording' ||
+    speechDictation.phase === 'transcribing' ||
+    speechDictation.phase === 'enhancing';
 
   const handleSend = async () => {
     if (speechDictation.isBusy) return;
@@ -3197,12 +3240,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 </div>
                 {showSpeechRecordingBar && (
                   <SpeechRecordingBar
-                    phase={speechDictation.phase as 'recording' | 'transcribing'}
+                    phase={speechDictation.phase as 'recording' | 'transcribing' | 'enhancing'}
                     completion={speechDictation.completion}
                     elapsedSeconds={speechDictation.elapsedSeconds}
                     getAudioLevel={speechDictation.getAudioLevel}
                     recordingLabel={t('speech.recording.active', 'Recording')}
                     transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
+                    enhancingLabel={t('speech.button.enhancing', 'Improving transcript')}
                     stopLabel={t('speech.recording.stopAndInsert', 'Stop and insert transcription')}
                     sendLabel={t('speech.recording.stopAndSend', 'Stop, transcribe and send')}
                     onStop={() => {

@@ -101,6 +101,8 @@ export const PREF_KEYS = {
   SPEECH_PROVIDER_ID: "speech.providerId",
   SPEECH_LANGUAGE: "speech.language",
   SPEECH_MAX_DURATION_SECONDS: "speech.maxDurationSeconds",
+  SPEECH_ENHANCEMENT_ENABLED: "speech.enhancementEnabled",
+  SPEECH_ENHANCEMENT_MODEL_CONFIG: "speech.enhancementModelConfig",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -330,6 +332,8 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.SPEECH_PROVIDER_ID]: MACRO_AI_SPEECH_PROVIDER_ID,
   [PREF_KEYS.SPEECH_LANGUAGE]: "auto",
   [PREF_KEYS.SPEECH_MAX_DURATION_SECONDS]: 120,
+  [PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED]: false,
+  [PREF_KEYS.SPEECH_ENHANCEMENT_MODEL_CONFIG]: { mode: "conversation" },
 };
 
 // Store instance (singleton)
@@ -382,6 +386,9 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
   }
   if (key === PREF_KEYS.SPEECH_MAX_DURATION_SECONDS) {
     return typeof value === "number" && Number.isFinite(value) && value >= 10 && value <= 600;
+  }
+  if (key === PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED) {
+    return typeof value === "boolean";
   }
   return true;
 };

@@ -8,12 +8,13 @@ import { Icon } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 
 interface SpeechRecordingBarProps {
-  phase: Extract<SpeechDictationPhase, 'recording' | 'transcribing'>;
+  phase: Extract<SpeechDictationPhase, 'recording' | 'transcribing' | 'enhancing'>;
   completion: SpeechDictationCompletion | null;
   elapsedSeconds: number;
   getAudioLevel: () => number;
   recordingLabel: string;
   transcribingLabel: string;
+  enhancingLabel: string;
   stopLabel: string;
   sendLabel: string;
   onStop: () => void;
@@ -78,6 +79,7 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
   getAudioLevel,
   recordingLabel,
   transcribingLabel,
+  enhancingLabel,
   stopLabel,
   sendLabel,
   onStop,
@@ -111,17 +113,19 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
         samplesRef.current.push(level);
         lastSampleAt = now;
       }
-      drawWaveform(canvas, samplesRef.current, phase === 'transcribing', now);
+      drawWaveform(canvas, samplesRef.current, phase !== 'recording', now);
       animationFrame = window.requestAnimationFrame(animate);
     };
     animationFrame = window.requestAnimationFrame(animate);
     return () => window.cancelAnimationFrame(animationFrame);
   }, [phase]);
 
-  const isTranscribing = phase === 'transcribing';
-  const statusLabel = isTranscribing
-    ? transcribingLabel
-    : `${recordingLabel} ${formatElapsed(elapsedSeconds)}`;
+  const isProcessing = phase !== 'recording';
+  const statusLabel = phase === 'enhancing'
+    ? enhancingLabel
+    : phase === 'transcribing'
+      ? transcribingLabel
+      : `${recordingLabel} ${formatElapsed(elapsedSeconds)}`;
 
   return (
     <div
@@ -135,7 +139,7 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
         aria-hidden="true"
         className={cn(
           'h-8 w-0 min-w-0 flex-1 text-foreground transition-opacity',
-          isTranscribing && 'opacity-70',
+          isProcessing && 'opacity-70',
         )}
       />
       <span className="w-10 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
@@ -145,15 +149,15 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
         type="button"
         aria-label={stopLabel}
         title={stopLabel}
-        disabled={isTranscribing}
+        disabled={isProcessing}
         onMouseDown={(event) => event.preventDefault()}
         onClick={onStop}
         className={cn(
           'flex h-9 min-w-9 shrink-0 items-center justify-center rounded-lg bg-muted px-2 text-foreground transition-colors',
-          isTranscribing ? 'cursor-wait opacity-70' : 'hover:bg-accent',
+          isProcessing ? 'cursor-wait opacity-70' : 'hover:bg-accent',
         )}
       >
-        {isTranscribing && completion === 'insert' ? (
+        {isProcessing && completion === 'insert' ? (
           <SpinnerIcon size={14} />
         ) : (
           <Icon name="square" size={12} className="fill-current" />
@@ -163,15 +167,15 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
         type="button"
         aria-label={sendLabel}
         title={sendLabel}
-        disabled={isTranscribing}
+        disabled={isProcessing}
         onMouseDown={(event) => event.preventDefault()}
         onClick={onSend}
         className={cn(
           'flex h-9 min-w-9 shrink-0 items-center justify-center rounded-lg bg-primary px-3 text-primary-foreground transition-colors',
-          isTranscribing ? 'cursor-wait opacity-70' : 'hover:bg-primary/90',
+          isProcessing ? 'cursor-wait opacity-70' : 'hover:bg-primary/90',
         )}
       >
-        {isTranscribing && completion === 'send' ? (
+        {isProcessing && completion === 'send' ? (
           <SpinnerIcon size={14} />
         ) : (
           <Icon name="arrow-up" size={15} />
