@@ -37,7 +37,6 @@
       "useConversationModel": "Use conversation model",
       "useDedicatedModel": "Use dedicated model",
       "enhancementModel": "Cleanup model",
-      "enhancementPrivacy": "Only the transcript and a compact conversation context are sent to the selected AI provider. Audio is never sent again. If cleanup fails or changes too much, Macro keeps the raw transcript.",
       "noProviderPrivacy": "Select a provider to see where recorded audio will be sent.",
       "localPrivacy": "Local or keyless provider: audio is sent to the configured endpoint without requiring an API key.",
       "andrologicPrivacy": "Andrologic: audio is processed by the authenticated Macro gateway and is never retained. Transcribed text is included in operational logs.",

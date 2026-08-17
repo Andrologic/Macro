@@ -37,7 +37,6 @@
       "useConversationModel": "Utiliser le modèle de la conversation",
       "useDedicatedModel": "Utiliser un modèle dédié",
       "enhancementModel": "Modèle de nettoyage",
-      "enhancementPrivacy": "Seuls la transcription et un contexte compact de la conversation sont envoyés au fournisseur d’IA sélectionné. L’audio n’est jamais renvoyé. Si le nettoyage échoue ou modifie trop le texte, Macro conserve la transcription brute.",
       "noProviderPrivacy": "Sélectionnez un fournisseur pour savoir où l’audio enregistré sera envoyé.",
       "localPrivacy": "Fournisseur local ou sans clé : l’audio est envoyé au point de terminaison configuré sans exiger de clé API.",
       "andrologicPrivacy": "Andrologic : l’audio est traité par le gateway Macro authentifié et n’est jamais conservé. Le texte transcrit figure dans les journaux opérationnels.",
