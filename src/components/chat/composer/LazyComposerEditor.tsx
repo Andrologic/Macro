@@ -14,6 +14,7 @@ import { prepareContextualTextInsertion } from './composerTextInsertion';
 
 interface LazyComposerEditorProps {
   editable: boolean;
+  readOnly?: boolean;
   placeholder: string;
   onTextChange: (text: string) => void;
   onSend: () => void;
@@ -43,6 +44,7 @@ const syncComposerText = (
 export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerEditorProps>(
   ({
     editable,
+    readOnly = false,
     placeholder,
     onTextChange,
     onSend,
@@ -188,6 +190,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         <LoadedEditor
           ref={loadedEditorRef}
           editable={editable}
+          readOnly={readOnly}
           placeholder={placeholder}
           onTextChange={onTextChange}
           onSend={onSend}
@@ -206,6 +209,8 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           data-shortcut-chat-input="true"
           defaultValue={fallbackTextRef.current}
           disabled={!editable}
+          readOnly={readOnly}
+          aria-readonly={readOnly || undefined}
           placeholder={placeholder}
           onChange={(event) => {
             fallbackTextRef.current = event.target.value;

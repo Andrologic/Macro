@@ -3219,7 +3219,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   <Suspense fallback={<ComposerFallbackStatus />}>
                     <LazyComposerEditor
                       ref={composerEditorRef}
-                      editable={!isBusySending && !isSpeechEnhancing && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                      editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                      readOnly={isSpeechEnhancing}
                       className={isSpeechEnhancing ? 'speech-cleanup-text' : undefined}
                       placeholder={
                         composerEditSession
