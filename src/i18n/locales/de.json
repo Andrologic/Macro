@@ -1,6 +1,6 @@
 {
   "speech": {
-    "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Wird transkribiert" },
+    "button": { "start": "Diktat starten", "stop": "Diktat beenden", "transcribing": "Wird transkribiert", "enhancing": "Transkription wird verbessert" },
     "recording": { "active": "Aufnahme läuft", "stopAndInsert": "Stoppen und Transkription einfügen", "stopAndSend": "Stoppen, transkribieren und senden" },
     "errors": {
       "title": "Diktat nicht verfügbar",
@@ -13,7 +13,9 @@
       "recording-unsupported": "Mikrofonaufnahmen werden in dieser Umgebung nicht unterstützt.",
       "context-changed": "Das Diktat wurde abgebrochen, weil sich die aktive Unterhaltung geändert hat.",
       "empty-transcript": "Der Sprachanbieter hat keinen Text zurückgegeben.",
-      "transcription-failed": "Die Sprachtranskription ist fehlgeschlagen."
+      "transcription-failed": "Die Sprachtranskription ist fehlgeschlagen.",
+      "enhancement-failed-title": "Intelligente Bereinigung nicht verfügbar",
+      "enhancement-failed": "Macro hat die Rohtranskription beibehalten."
     },
     "settings": {
       "validation": "Name, Endpunkt und Modell sind erforderlich.", "saved": "Sprachanbieter gespeichert.",
@@ -22,7 +24,9 @@
       "deleteConfirm": "{{name}} und den lokal gespeicherten API-Schlüssel löschen?", "title": "Mikrofondiktat",
       "description": "Nehmen Sie im Composer auf, transkribieren Sie mit dem gewählten Anbieter und prüfen Sie den Text vor dem Senden.",
       "activeProvider": "Aktiver Anbieter", "noProvider": "Kein Anbieter", "language": "Sprache", "autoLanguage": "Automatisch",
-      "maxDuration": "Maximale Aufnahmedauer", "noProviderPrivacy": "Wählen Sie einen Anbieter aus, um zu sehen, wohin die Aufnahme gesendet wird.", "localPrivacy": "Lokaler oder schlüsselloser Anbieter: Audio wird ohne erforderlichen API-Schlüssel an den konfigurierten Endpunkt gesendet.",
+      "maxDuration": "Maximale Aufnahmedauer", "enhancementTitle": "Intelligente Transkriptbereinigung", "enhancementDescription": "Verwenden Sie ein KI-Modell, um wahrscheinliche Erkennungsfehler, Zögern und Wiederholungen zu korrigieren, ohne Ihre Absicht zu verändern.",
+      "useConversationModel": "Unterhaltungsmodell verwenden", "useDedicatedModel": "Dediziertes Modell verwenden", "enhancementModel": "Bereinigungsmodell", "enhancementPrivacy": "Nur die Transkription und ein kompakter Gesprächskontext werden an den ausgewählten KI-Anbieter gesendet. Das Audio wird nicht erneut gesendet. Wenn die Bereinigung fehlschlägt oder zu viel ändert, behält Macro die Rohtranskription bei.",
+      "noProviderPrivacy": "Wählen Sie einen Anbieter aus, um zu sehen, wohin die Aufnahme gesendet wird.", "localPrivacy": "Lokaler oder schlüsselloser Anbieter: Audio wird ohne erforderlichen API-Schlüssel an den konfigurierten Endpunkt gesendet.",
       "andrologicPrivacy": "Andrologic: Audio wird vom authentifizierten Macro-Gateway verarbeitet und niemals gespeichert. Der transkribierte Text wird in Betriebsprotokollen erfasst.",
       "remotePrivacy": "Remote-Anbieter: Die Aufnahme wird an den konfigurierten Endpunkt gesendet.", "providers": "Sprachanbieter",
       "compatibility": "Unterstützt OpenAI-kompatible und Deepgram-Transkriptionsendpunkte.", "addProvider": "Anbieter hinzufügen",

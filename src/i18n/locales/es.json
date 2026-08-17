@@ -1,6 +1,6 @@
 {
   "speech": {
-    "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Transcribiendo" },
+    "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Transcribiendo", "enhancing": "Mejorando la transcripción" },
     "recording": { "active": "Grabando", "stopAndInsert": "Detener e insertar la transcripción", "stopAndSend": "Detener, transcribir y enviar" },
     "errors": {
       "title": "Dictado no disponible",
@@ -13,7 +13,9 @@
       "recording-unsupported": "La grabación por micrófono no es compatible con este entorno.",
       "context-changed": "El dictado se canceló porque cambió la conversación activa.",
       "empty-transcript": "El proveedor de voz no devolvió ningún texto.",
-      "transcription-failed": "La transcripción de voz ha fallado."
+      "transcription-failed": "La transcripción de voz ha fallado.",
+      "enhancement-failed-title": "La limpieza inteligente no está disponible",
+      "enhancement-failed": "Macro conservó la transcripción original."
     },
     "settings": {
       "validation": "El nombre, el endpoint y el modelo son obligatorios.",
@@ -26,7 +28,9 @@
       "title": "Dictado por micrófono",
       "description": "Graba desde el compositor, transcribe con el proveedor seleccionado y revisa el texto antes de enviarlo.",
       "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
-      "maxDuration": "Duración máxima de grabación", "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
+      "maxDuration": "Duración máxima de grabación", "enhancementTitle": "Limpieza inteligente de la transcripción", "enhancementDescription": "Usa un modelo de IA para corregir posibles errores de reconocimiento, vacilaciones y repeticiones sin cambiar tu intención.",
+      "useConversationModel": "Usar el modelo de la conversación", "useDedicatedModel": "Usar un modelo dedicado", "enhancementModel": "Modelo de limpieza", "enhancementPrivacy": "Solo se envían la transcripción y un contexto compacto de la conversación al proveedor de IA seleccionado. El audio no se vuelve a enviar. Si la limpieza falla o cambia demasiado el texto, Macro conserva la transcripción original.",
+      "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
       "andrologicPrivacy": "Andrologic: el audio se procesa mediante el gateway autenticado de Macro y nunca se conserva. El texto transcrito se incluye en los registros operativos.",
       "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
       "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",

@@ -27,7 +27,8 @@ export const SpeechDictationButton: React.FC<SpeechDictationButtonProps> = ({
   onToggle,
 }) => {
   const isRecording = phase === 'recording';
-  const isTranscribing = phase === 'transcribing' || phase === 'requesting-permission';
+  const isTranscribing =
+    phase === 'transcribing' || phase === 'enhancing' || phase === 'requesting-permission';
   const accessibleLabel = isRecording
     ? `${recordingLabel} ${formatElapsed(elapsedSeconds)}`
     : isTranscribing

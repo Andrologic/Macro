@@ -16,6 +16,7 @@ import {
 } from '../services/preferences';
 import { isMacroAiSpeechProvider } from '../config/macroAi';
 import { resolveSpeechProviderSelection } from '../services/speech/providerSelection';
+import type { MetadataModelConfig } from '../services/metadataModelConfig';
 
 interface CreateSpeechProviderInput {
   name: string;
@@ -32,6 +33,8 @@ interface SpeechToTextState {
   selectedProviderId: string | null;
   language: string;
   maxDurationSeconds: number;
+  enhancementEnabled: boolean;
+  enhancementModelConfig: MetadataModelConfig;
   isInitialized: boolean;
   isLoading: boolean;
   error: string | null;
@@ -40,6 +43,8 @@ interface SpeechToTextState {
   selectProvider: (id: string | null) => Promise<void>;
   setLanguage: (language: string) => Promise<void>;
   setMaxDurationSeconds: (seconds: number) => Promise<void>;
+  setEnhancementEnabled: (enabled: boolean) => Promise<void>;
+  setEnhancementModelConfig: (config: MetadataModelConfig) => Promise<void>;
   createProvider: (input: CreateSpeechProviderInput) => Promise<void>;
   updateProvider: (id: string, input: Partial<CreateSpeechProviderInput>) => Promise<void>;
   deleteProvider: (id: string) => Promise<void>;
@@ -56,11 +61,30 @@ let initializePromise: Promise<void> | null = null;
 const errorMessage = (error: unknown, fallback: string): string =>
   error instanceof Error ? error.message : fallback;
 
+const normalizeEnhancementModelConfig = (value: unknown): MetadataModelConfig => {
+  if (!value || typeof value !== 'object') return { mode: 'conversation' };
+  const candidate = value as Partial<Extract<MetadataModelConfig, { mode: 'dedicated' }>> & {
+    mode?: unknown;
+  };
+  if (candidate.mode !== 'dedicated') return { mode: 'conversation' };
+  if (typeof candidate.providerId !== 'string' || typeof candidate.modelId !== 'string') {
+    return { mode: 'conversation' };
+  }
+  return {
+    mode: 'dedicated',
+    providerId: candidate.providerId,
+    modelId: candidate.modelId,
+    reasoningEffort: candidate.reasoningEffort ?? null,
+  };
+};
+
 export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
   providers: [],
   selectedProviderId: null,
   language: 'auto',
   maxDurationSeconds: 120,
+  enhancementEnabled: false,
+  enhancementModelConfig: { mode: 'conversation' },
   isInitialized: false,
   isLoading: false,
   error: null,
@@ -71,10 +95,18 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
     initializePromise = (async () => {
       set({ isLoading: true, error: null });
       try {
-        const [persistedProviderId, language, maxDurationSeconds] = await Promise.all([
+        const [
+          persistedProviderId,
+          language,
+          maxDurationSeconds,
+          enhancementEnabled,
+          enhancementModelConfig,
+        ] = await Promise.all([
           loadPersistedPreference<string>(PREF_KEYS.SPEECH_PROVIDER_ID),
           loadPreference<string>(PREF_KEYS.SPEECH_LANGUAGE),
           loadPreference<number>(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS),
+          loadPreference<boolean>(PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED),
+          loadPreference<unknown>(PREF_KEYS.SPEECH_ENHANCEMENT_MODEL_CONFIG),
         ]);
         const providers = isTauriAvailable() ? await listSpeechProviderConfigs() : [];
         const selectedProviderId = resolveSpeechProviderSelection(providers, persistedProviderId);
@@ -83,6 +115,8 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
           selectedProviderId,
           language,
           maxDurationSeconds,
+          enhancementEnabled,
+          enhancementModelConfig: normalizeEnhancementModelConfig(enhancementModelConfig),
           isInitialized: true,
           isLoading: false,
         });
@@ -120,6 +154,17 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
     const normalized = Math.min(600, Math.max(10, Math.round(seconds)));
     set({ maxDurationSeconds: normalized });
     await savePreference(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS, normalized);
+  },
+
+  setEnhancementEnabled: async (enabled) => {
+    set({ enhancementEnabled: enabled });
+    await savePreference(PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED, enabled);
+  },
+
+  setEnhancementModelConfig: async (config) => {
+    const normalized = normalizeEnhancementModelConfig(config);
+    set({ enhancementModelConfig: normalized });
+    await savePreference(PREF_KEYS.SPEECH_ENHANCEMENT_MODEL_CONFIG, normalized);
   },
 
   createProvider: async (input) => {

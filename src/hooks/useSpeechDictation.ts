@@ -2,13 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { isMacroAiSpeechProvider } from '../config/macroAi';
 import { prepareAudioForSpeechProvider } from '../services/speech/andrologicAudio';
 import { MicrophoneRecorder } from '../services/speech/microphoneRecorder';
+import {
+  enhanceSpeechTranscript,
+  type SpeechTranscriptContext,
+} from '../services/speech/transcriptEnhancement';
 import { useSpeechToTextStore } from '../stores/useSpeechToTextStore';
 
 export type SpeechDictationPhase =
   | 'idle'
   | 'requesting-permission'
   | 'recording'
-  | 'transcribing';
+  | 'transcribing'
+  | 'enhancing';
 
 export type SpeechDictationCompletion = 'insert' | 'send';
 
@@ -31,8 +36,11 @@ export interface SpeechDictationError {
 
 interface UseSpeechDictationOptions {
   contextKey: string;
+  enhancementContext: SpeechTranscriptContext;
   onTranscript: (text: string, completion: SpeechDictationCompletion) => void;
   onError: (error: SpeechDictationError) => void;
+  onEnhancementError?: (detail?: string) => void;
+  enhanceTranscript?: typeof enhanceSpeechTranscript;
 }
 
 const normalizeTranscript = (text: string): string => text.trim();
@@ -56,8 +64,11 @@ const classifyMicrophoneError = (error: unknown): SpeechDictationError => {
 
 export const useSpeechDictation = ({
   contextKey,
+  enhancementContext,
   onTranscript,
   onError,
+  onEnhancementError,
+  enhanceTranscript = enhanceSpeechTranscript,
 }: UseSpeechDictationOptions) => {
   const initialize = useSpeechToTextStore((state) => state.initialize);
   const transcribe = useSpeechToTextStore((state) => state.transcribe);
@@ -70,7 +81,14 @@ export const useSpeechDictation = ({
   const operationIdRef = useRef(0);
   const operationContextRef = useRef<string | null>(null);
   const operationProviderIdRef = useRef<string | null>(null);
+  const operationEnhancementRef = useRef<{
+    enabled: boolean;
+    modelConfig: ReturnType<typeof useSpeechToTextStore.getState>['enhancementModelConfig'];
+    context: SpeechTranscriptContext;
+  } | null>(null);
+  const enhancementAbortControllerRef = useRef<AbortController | null>(null);
   const contextKeyRef = useRef(contextKey);
+  const enhancementContextRef = useRef(enhancementContext);
 
   useEffect(() => {
     void initialize();
@@ -82,6 +100,9 @@ export const useSpeechDictation = ({
       mountedRef.current = false;
       operationIdRef.current += 1;
       operationProviderIdRef.current = null;
+      operationEnhancementRef.current = null;
+      enhancementAbortControllerRef.current?.abort();
+      enhancementAbortControllerRef.current = null;
       recorderRef.current?.cancel();
       recorderRef.current = null;
     };
@@ -89,15 +110,22 @@ export const useSpeechDictation = ({
 
   useEffect(() => {
     contextKeyRef.current = contextKey;
+    enhancementContextRef.current = enhancementContext;
+  }, [contextKey, enhancementContext]);
+
+  useEffect(() => {
     if (!operationContextRef.current || operationContextRef.current === contextKey) return;
 
     operationIdRef.current += 1;
     operationContextRef.current = null;
     operationProviderIdRef.current = null;
+    operationEnhancementRef.current = null;
+    enhancementAbortControllerRef.current?.abort();
+    enhancementAbortControllerRef.current = null;
     recorderRef.current?.cancel();
     recorderRef.current = null;
     setElapsedSeconds(0);
-    if (phase !== 'transcribing') {
+    if (phase !== 'transcribing' && phase !== 'enhancing') {
       finishingRef.current = false;
       setPhase('idle');
     }
@@ -121,6 +149,7 @@ export const useSpeechDictation = ({
     const operationId = operationIdRef.current;
     const operationContext = operationContextRef.current;
     const providerId = operationProviderIdRef.current;
+    const enhancement = operationEnhancementRef.current;
     finishingRef.current = true;
     setCompletion(requestedCompletion);
     setPhase('transcribing');
@@ -136,18 +165,52 @@ export const useSpeechDictation = ({
         mimeType: prepared.mimeType,
         fileName: prepared.fileName,
       });
-      const text = normalizeTranscript(result.text);
+      const rawText = normalizeTranscript(result.text);
       if (
         operationId !== operationIdRef.current ||
         operationContext !== contextKeyRef.current
       ) {
         return;
       }
-      if (!text) {
+      if (!rawText) {
         if (mountedRef.current) onError({ code: 'empty-transcript' });
         return;
       }
-      if (mountedRef.current) onTranscript(text, requestedCompletion);
+      let finalText = rawText;
+      if (enhancement?.enabled) {
+        setPhase('enhancing');
+        const controller = new AbortController();
+        enhancementAbortControllerRef.current = controller;
+        try {
+          finalText = await enhanceTranscript({
+            transcript: rawText,
+            context: enhancement.context,
+            modelConfig: enhancement.modelConfig,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (
+            operationId !== operationIdRef.current ||
+            operationContext !== contextKeyRef.current ||
+            (error instanceof DOMException && error.name === 'AbortError')
+          ) {
+            return;
+          }
+          onEnhancementError?.(error instanceof Error ? error.message : undefined);
+          finalText = rawText;
+        } finally {
+          if (enhancementAbortControllerRef.current === controller) {
+            enhancementAbortControllerRef.current = null;
+          }
+        }
+      }
+      if (
+        operationId !== operationIdRef.current ||
+        operationContext !== contextKeyRef.current
+      ) {
+        return;
+      }
+      if (mountedRef.current) onTranscript(finalText, requestedCompletion);
     } catch (error) {
       if (mountedRef.current && operationId === operationIdRef.current) {
         onError({
@@ -160,6 +223,7 @@ export const useSpeechDictation = ({
       if (operationId === operationIdRef.current) {
         operationContextRef.current = null;
         operationProviderIdRef.current = null;
+        operationEnhancementRef.current = null;
       }
       if (mountedRef.current) {
         setCompletion(null);
@@ -167,7 +231,7 @@ export const useSpeechDictation = ({
         setPhase('idle');
       }
     }
-  }, [onError, onTranscript, transcribe]);
+  }, [enhanceTranscript, onEnhancementError, onError, onTranscript, transcribe]);
 
   const toggle = useCallback(async () => {
     if (phase === 'recording') {
@@ -211,6 +275,11 @@ export const useSpeechDictation = ({
     }
 
     operationProviderIdRef.current = provider.id;
+    operationEnhancementRef.current = {
+      enabled: speechState.enhancementEnabled,
+      modelConfig: speechState.enhancementModelConfig,
+      context: enhancementContextRef.current,
+    };
     const recorder = new MicrophoneRecorder();
     recorderRef.current = recorder;
     try {

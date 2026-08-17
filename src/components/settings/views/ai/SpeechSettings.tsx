@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SpeechProviderConfig } from '../../../../types';
 import { useSpeechToTextStore } from '../../../../stores/useSpeechToTextStore';
+import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
 import { Icon } from '../../../ui/Icon';
+import { Switch } from '../../../ui/Switch';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
@@ -52,16 +54,21 @@ export const SpeechSettings: React.FC = () => {
     selectedProviderId,
     language,
     maxDurationSeconds,
+    enhancementEnabled,
+    enhancementModelConfig,
     isLoading,
     error,
     initialize,
     selectProvider,
     setLanguage,
     setMaxDurationSeconds,
+    setEnhancementEnabled,
+    setEnhancementModelConfig,
     createProvider,
     updateProvider,
     deleteProvider,
   } = useSpeechToTextStore();
+  const { providerConfigs, modelsByProvider } = useProviderStore();
   const [draft, setDraft] = useState<ProviderDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [providerToDelete, setProviderToDelete] = useState<SpeechProviderConfig | null>(null);
@@ -71,6 +78,23 @@ export const SpeechSettings: React.FC = () => {
     [providers, selectedProviderId],
   );
   const selectedIsAndrologic = isMacroAiSpeechProvider(selectedProvider?.id);
+  const enhancementProviders = useMemo(
+    () => providerConfigs.filter((provider) =>
+      providerHasCredentials(provider) &&
+      (modelsByProvider[provider.id] ?? []).some((model) => model.isEnabled !== false),
+    ),
+    [modelsByProvider, providerConfigs],
+  );
+  const dedicatedEnhancementProviderId = enhancementModelConfig.mode === 'dedicated'
+    ? enhancementModelConfig.providerId
+    : enhancementProviders[0]?.id ?? '';
+  const dedicatedEnhancementModels = dedicatedEnhancementProviderId
+    ? (modelsByProvider[dedicatedEnhancementProviderId] ?? [])
+      .filter((model) => model.isEnabled !== false)
+    : [];
+  const dedicatedEnhancementModelId = enhancementModelConfig.mode === 'dedicated'
+    ? enhancementModelConfig.modelId
+    : dedicatedEnhancementModels[0]?.id ?? '';
 
   useEffect(() => {
     void initialize();
@@ -202,6 +226,125 @@ export const SpeechSettings: React.FC = () => {
                 )
               : t('speech.settings.remotePrivacy', 'Remote provider: recorded audio is sent to its configured endpoint.')}
           </div>
+        </div>
+        <div className="mt-4 border-t border-border pt-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h5 className="text-sm font-medium text-foreground">
+                {t('speech.settings.enhancementTitle', 'Smart transcript cleanup')}
+              </h5>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(
+                  'speech.settings.enhancementDescription',
+                  'Use an AI model to correct likely recognition errors, hesitations and repetitions while preserving your intent.',
+                )}
+              </p>
+            </div>
+            <Switch
+              checked={enhancementEnabled}
+              onCheckedChange={(checked) => void setEnhancementEnabled(checked)}
+              aria-label={t('speech.settings.enhancementTitle', 'Smart transcript cleanup')}
+            />
+          </div>
+
+          {enhancementEnabled && (
+            <div className="mt-4 space-y-3">
+              <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-muted/20 p-1">
+                <button
+                  type="button"
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm transition-colors',
+                    enhancementModelConfig.mode === 'conversation'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  )}
+                  onClick={() => void setEnhancementModelConfig({ mode: 'conversation' })}
+                >
+                  {t('speech.settings.useConversationModel', 'Use conversation model')}
+                </button>
+                <button
+                  type="button"
+                  disabled={!dedicatedEnhancementProviderId || !dedicatedEnhancementModelId}
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                    enhancementModelConfig.mode === 'dedicated'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  )}
+                  onClick={() => {
+                    if (!dedicatedEnhancementProviderId || !dedicatedEnhancementModelId) return;
+                    void setEnhancementModelConfig({
+                      mode: 'dedicated',
+                      providerId: dedicatedEnhancementProviderId,
+                      modelId: dedicatedEnhancementModelId,
+                      reasoningEffort: null,
+                    });
+                  }}
+                >
+                  {t('speech.settings.useDedicatedModel', 'Use dedicated model')}
+                </button>
+              </div>
+
+              {enhancementModelConfig.mode === 'dedicated' && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1.5 text-sm">
+                    <span className="text-muted-foreground">
+                      {t('settings.providers', 'AI providers')}
+                    </span>
+                    <select
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground"
+                      value={dedicatedEnhancementProviderId}
+                      onChange={(event) => {
+                        const providerId = event.target.value;
+                        const firstModel = (modelsByProvider[providerId] ?? [])
+                          .find((model) => model.isEnabled !== false);
+                        if (!firstModel) return;
+                        void setEnhancementModelConfig({
+                          mode: 'dedicated',
+                          providerId,
+                          modelId: firstModel.id,
+                          reasoningEffort: null,
+                        });
+                      }}
+                    >
+                      {enhancementProviders.map((provider) => (
+                        <option key={provider.id} value={provider.id}>{provider.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1.5 text-sm">
+                    <span className="text-muted-foreground">
+                      {t('speech.settings.enhancementModel', 'Cleanup model')}
+                    </span>
+                    <select
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground"
+                      value={dedicatedEnhancementModelId}
+                      onChange={(event) => {
+                        if (!dedicatedEnhancementProviderId) return;
+                        void setEnhancementModelConfig({
+                          mode: 'dedicated',
+                          providerId: dedicatedEnhancementProviderId,
+                          modelId: event.target.value,
+                          reasoningEffort: null,
+                        });
+                      }}
+                    >
+                      {dedicatedEnhancementModels.map((model) => (
+                        <option key={model.id} value={model.id}>{model.name || model.id}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+
+              <p className="rounded-lg border border-border bg-background/50 p-3 text-xs text-muted-foreground">
+                {t(
+                  'speech.settings.enhancementPrivacy',
+                  'Only the transcript and a compact conversation context are sent to the selected AI provider. Audio is never sent again. If cleanup fails or changes too much, Macro keeps the raw transcript.',
+                )}
+              </p>
+            </div>
+          )}
         </div>
       </section>
 

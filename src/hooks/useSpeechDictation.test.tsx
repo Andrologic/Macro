@@ -10,6 +10,7 @@ const stopRecording = mock(async () => ({
   mimeType: 'audio/webm',
   fileName: 'dictation.webm',
 }));
+const enhanceTranscript = mock(async ({ transcript }: { transcript: string }) => transcript);
 
 class FakeMicrophoneRecorder {
   start = startRecording;
@@ -39,9 +40,21 @@ describe('useSpeechDictation', () => {
   let currentHook: ReturnType<typeof useSpeechDictation> | null = null;
   let onError = mock((_error: unknown) => undefined);
   let onTranscript = mock((_text: string, _completion: 'insert' | 'send') => undefined);
+  let onEnhancementError = mock((_detail?: string) => undefined);
 
   const Harness: React.FC<{ contextKey: string }> = ({ contextKey }) => {
-    currentHook = useSpeechDictation({ contextKey, onError, onTranscript });
+    currentHook = useSpeechDictation({
+      contextKey,
+      enhancementContext: {
+        mode: 'Chat',
+        projectName: 'Macro',
+        recentMessages: [{ role: 'user', content: 'Contexte récent' }],
+      },
+      onError,
+      onTranscript,
+      onEnhancementError,
+      enhanceTranscript,
+    });
     return <span>{currentHook.phase}</span>;
   };
 
@@ -60,9 +73,15 @@ describe('useSpeechDictation', () => {
     currentHook = null;
     onError = mock((_error: unknown) => undefined);
     onTranscript = mock((_text: string, _completion: 'insert' | 'send') => undefined);
+    onEnhancementError = mock((_detail?: string) => undefined);
+    useSpeechToTextStore.setState({
+      enhancementEnabled: false,
+      enhancementModelConfig: { mode: 'conversation' },
+    });
     startRecording.mockClear();
     stopRecording.mockClear();
     cancelRecording.mockClear();
+    enhanceTranscript.mockClear();
   });
 
   afterEach(async () => {
@@ -189,6 +208,58 @@ describe('useSpeechDictation', () => {
     expect(onTranscript).toHaveBeenCalledWith('Message vocal', 'send');
     expect(currentHook?.phase).toBe('idle');
     expect(currentHook?.completion).toBeNull();
+  });
+
+  it('improves the transcript before forwarding it when cleanup is enabled', async () => {
+    enhanceTranscript.mockResolvedValueOnce('Message vocal corrigé');
+    useSpeechToTextStore.setState({
+      providers: [provider],
+      selectedProviderId: provider.id,
+      isInitialized: true,
+      error: null,
+      enhancementEnabled: true,
+      enhancementModelConfig: { mode: 'conversation' },
+      initialize: mock(async () => undefined),
+      transcribe: mock(async () => ({ text: 'Message vocale corrige' })),
+    });
+
+    await act(async () => {
+      root.render(<Harness contextKey="conversation:a" />);
+    });
+    await act(async () => {
+      await currentHook?.toggle();
+      await currentHook?.finish('insert');
+    });
+
+    expect(enhanceTranscript).toHaveBeenCalledTimes(1);
+    expect(onTranscript).toHaveBeenCalledWith('Message vocal corrigé', 'insert');
+    expect(onEnhancementError).not.toHaveBeenCalled();
+  });
+
+  it('keeps the raw transcript when smart cleanup fails', async () => {
+    enhanceTranscript.mockRejectedValueOnce(new Error('Model unavailable'));
+    useSpeechToTextStore.setState({
+      providers: [provider],
+      selectedProviderId: provider.id,
+      isInitialized: true,
+      error: null,
+      enhancementEnabled: true,
+      enhancementModelConfig: { mode: 'conversation' },
+      initialize: mock(async () => undefined),
+      transcribe: mock(async () => ({ text: 'Texte brut conservé' })),
+    });
+
+    await act(async () => {
+      root.render(<Harness contextKey="conversation:a" />);
+    });
+    await act(async () => {
+      await currentHook?.toggle();
+      await currentHook?.finish('send');
+    });
+
+    expect(onEnhancementError).toHaveBeenCalledWith('Model unavailable');
+    expect(onTranscript).toHaveBeenCalledWith('Texte brut conservé', 'send');
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('does not insert a transcript after the composer context changes', async () => {

@@ -304,6 +304,8 @@ Exemples principaux :
 - `projectExecutionContext`
 - `skills` via le contrat provider et les commandes IPC dédiées
 - `speech/microphoneRecorder` pour la capture audio différée côté WebView
+- `speech/transcriptEnhancement` pour la correction LLM facultative et bornée
+  des transcriptions
 
 ### 7.3 Contrats et DTO
 
@@ -449,6 +451,16 @@ minutes de FIFO puis dix minutes de traitement. Les réponses `429` conservent
 l'indication `Retry-After` dans l'erreur et les réponses `503` sont signalées
 comme indisponibilités temporaires ; aucun retry automatique ne duplique
 l'enregistrement.
+
+Après la transcription native, `useSpeechDictation` peut déclencher
+`speech/transcriptEnhancement`. Ce service réutilise `sendChatNonStreaming` et
+la résolution sécurisée des identifiants du provider IA sélectionné. La requête
+emploie un identifiant de conversation éphémère, n'active aucun outil et transmet
+un contexte textuel borné sans renvoyer l'audio. Le contrat de prompt impose une
+réécriture minimale. Des garde-fous rejettent les réponses vides ou dont la
+longueur indique une synthèse ou une expansion excessive ; le hook revient alors
+à la transcription brute. Un changement de contexte annule aussi la requête en
+cours afin qu'un résultat ne soit jamais inséré dans une autre conversation.
 
 ---
 
