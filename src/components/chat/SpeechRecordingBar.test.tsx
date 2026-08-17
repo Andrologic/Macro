@@ -80,7 +80,10 @@ describe('SpeechRecordingBar', () => {
     });
 
     expect(container.querySelectorAll('button:disabled')).toHaveLength(2);
-    expect(container.querySelector('canvas[data-processing="true"]')).not.toBeNull();
+    const processingWaveform = container.querySelector('canvas[data-processing="true"]');
+    expect(processingWaveform).not.toBeNull();
+    expect(processingWaveform?.className).toContain('text-foreground');
+    expect(processingWaveform?.className).not.toContain('text-primary');
     expect(container.querySelector('[data-testid="speech-processing-state"]')).toBeNull();
   });
 

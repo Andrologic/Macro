@@ -66,9 +66,9 @@ const drawWaveform = (
       : 1;
     const barHeight = Math.max(
       2,
-      sample * (height - 4) * (isProcessing ? 0.72 + propagation * 0.28 : 1),
+      sample * (height - 4) * (isProcessing ? 0.52 + propagation * 0.48 : 1),
     );
-    context.globalAlpha = isProcessing ? 0.28 + propagation * 0.58 : 0.82;
+    context.globalAlpha = isProcessing ? 0.74 : 0.82;
     context.beginPath();
     context.moveTo(x, centerY - barHeight / 2);
     context.lineTo(x, centerY + barHeight / 2);
@@ -140,10 +140,7 @@ export const SpeechRecordingBar: React.FC<SpeechRecordingBarProps> = ({
         ref={canvasRef}
         aria-hidden="true"
         data-processing={isProcessing || undefined}
-        className={cn(
-          'h-8 w-0 min-w-0 flex-1 transition-colors duration-300',
-          isProcessing ? 'text-primary' : 'text-foreground',
-        )}
+        className="h-8 w-0 min-w-0 flex-1 text-foreground"
       />
       <span className="w-10 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
         {formatElapsed(elapsedSeconds)}
