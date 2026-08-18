@@ -196,7 +196,10 @@ async fn apply_migration(
     name: String,
     sql: String,
 ) -> DbResult<()> {
-    sqlx::raw_sql(&sql).execute(&mut *connection).await?;
+    // Migration SQL is bundled with the application, never provided by a user.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(&mut *connection)
+        .await?;
     stamp_migration(&mut *connection, version, name).await
 }
 
@@ -226,7 +229,10 @@ async fn table_columns(
     table: String,
 ) -> DbResult<HashSet<String>> {
     let pragma = format!("PRAGMA table_info({})", table);
-    let rows = sqlx::query(&pragma).fetch_all(&mut *connection).await?;
+    // Callers pass internal migration table names, not user input.
+    let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
+        .fetch_all(&mut *connection)
+        .await?;
 
     Ok(rows
         .into_iter()
@@ -708,7 +714,10 @@ async fn ensure_conversation_compactions(connection: &mut SqliteConnection) -> D
                 "ALTER TABLE conversation_compactions ADD COLUMN {} {}",
                 column, definition
             );
-            sqlx::query(&statement).execute(&mut *connection).await?;
+            // Both the column name and definition come from the fixed allowlist above.
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&mut *connection)
+                .await?;
         }
     }
 
@@ -1545,7 +1554,7 @@ mod tests {
             columns.join(",\n    ")
         );
 
-        sqlx::query(&statement)
+        sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(pool)
             .await
             .expect("create legacy conversations");
@@ -1568,7 +1577,7 @@ mod tests {
             values_sql
         );
 
-        sqlx::query(&statement)
+        sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(pool)
             .await
             .expect("seed legacy conversations");

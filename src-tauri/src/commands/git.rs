@@ -2245,7 +2245,12 @@ pub(crate) fn stash_repo(repo: &mut Repository, message: Option<String>) -> Resu
 }
 
 fn commit_to_dto(commit: &Commit<'_>) -> GitCommitDto {
-    let message = commit.summary().unwrap_or("(no message)").to_string();
+    let message = commit
+        .summary()
+        .ok()
+        .flatten()
+        .unwrap_or("(no message)")
+        .to_string();
     let author = commit.author().name().unwrap_or("Unknown").to_string();
     let time = commit.time();
     let date = DateTime::<Utc>::from_timestamp(time.seconds(), 0)
@@ -2380,8 +2385,8 @@ fn status_entry_paths(entry: &StatusEntry<'_>) -> (Option<String>, Option<String
     }
 
     (
-        entry.path().map(|s| s.to_string()),
-        entry.path().map(|s| s.to_string()),
+        entry.path().ok().map(str::to_string),
+        entry.path().ok().map(str::to_string),
     )
 }
 
@@ -3062,7 +3067,7 @@ fn read_conflict_entry_side(
         ));
     };
 
-    if entry.id == Oid::zero() {
+    if entry.id == Oid::ZERO_SHA1 {
         return Ok((
             GitConflictFileSideDto {
                 exists: false,
@@ -6591,7 +6596,10 @@ mod tests {
         assert_eq!(result.remote, "origin");
         assert_eq!(result.url, "https://github.com/example/repo.git");
         let origin = repo.find_remote("origin").expect("origin remote");
-        assert_eq!(origin.url(), Some("https://github.com/example/repo.git"));
+        assert_eq!(
+            origin.url().expect("origin URL should be valid UTF-8"),
+            "https://github.com/example/repo.git"
+        );
     }
 
     #[test]
