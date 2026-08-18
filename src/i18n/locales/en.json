@@ -1,6 +1,7 @@
 {
   "speech": {
-    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Transcribing" },
+    "button": { "start": "Start dictation", "stop": "Stop dictation", "transcribing": "Audio sent · Transcribing", "enhancing": "Transcript received · Smart cleanup" },
+    "recording": { "active": "Recording", "stopAndInsert": "Stop and insert transcription", "stopAndSend": "Stop, transcribe and send" },
     "errors": {
       "title": "Dictation unavailable",
       "provider-missing": "Configure and select a speech provider first.",
@@ -12,7 +13,9 @@
       "recording-unsupported": "Microphone recording is not supported in this environment.",
       "context-changed": "Dictation was cancelled because the active conversation changed.",
       "empty-transcript": "The speech provider returned no text.",
-      "transcription-failed": "Speech transcription failed."
+      "transcription-failed": "Speech transcription failed.",
+      "enhancement-failed-title": "Smart cleanup unavailable",
+      "enhancement-failed": "Macro kept the raw transcript."
     },
     "settings": {
       "validation": "Name, endpoint and model are required.",
@@ -29,13 +32,17 @@
       "language": "Language",
       "autoLanguage": "Automatic",
       "maxDuration": "Maximum recording duration",
+      "enhancementTitle": "Smart transcript cleanup",
+      "enhancementDescription": "Use the active conversation model to make a short, conservative correction of recognition errors, hesitations and repetitions.",
       "noProviderPrivacy": "Select a provider to see where recorded audio will be sent.",
       "localPrivacy": "Local or keyless provider: audio is sent to the configured endpoint without requiring an API key.",
+      "andrologicPrivacy": "Andrologic: audio is processed by the authenticated Macro gateway and is never retained. Transcribed text is included in operational logs.",
       "remotePrivacy": "Remote provider: recorded audio is sent to its configured endpoint.",
       "providers": "Speech providers",
       "compatibility": "Supports OpenAI-compatible and Deepgram transcription endpoints.",
       "addProvider": "Add provider",
       "keyStored": "API key stored locally",
+      "managedAuth": "Authentication managed by Macro",
       "noKeyRequired": "No API key required",
       "keyMissing": "API key required",
       "editProvider": "Edit provider",

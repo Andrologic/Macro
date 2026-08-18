@@ -304,6 +304,8 @@ Exemples principaux :
 - `projectExecutionContext`
 - `skills` via le contrat provider et les commandes IPC dédiées
 - `speech/microphoneRecorder` pour la capture audio différée côté WebView
+- `speech/transcriptEnhancement` pour la correction LLM facultative et bornée
+  des transcriptions
 
 ### 7.3 Contrats et DTO
 
@@ -436,6 +438,30 @@ corps IPC binaire afin d'éviter une sérialisation JSON ou base64 inutile. Les
 adaptateurs refusent les redirections, limitent la réponse du fournisseur à 1 Mo
 et imposent HTTPS aux fournisseurs distants afin que l'audio et les clés ne
 transitent pas en clair.
+
+Le provider vocal géré `andrologic-speech` cible
+`https://lmstudio.andrologic.ai/v1/audio/transcriptions` avec le modèle public
+`macro-transcription`. La commande native ne possède pas de secret vocal dédié :
+elle résout le jeton d'installation du provider LLM `macro-ai` dans le stockage
+sécurisé et déclenche son provisionnement existant s'il manque. Le WebView
+capture dans un format pris en charge par `MediaRecorder`, puis
+`andrologicAudio` décode, réduit en mono, rééchantillonne à 16 kHz et encapsule
+en WAV PCM 16 bits avant l'IPC binaire. Le timeout Andrologic couvre jusqu'à dix
+minutes de FIFO puis dix minutes de traitement. Les réponses `429` conservent
+l'indication `Retry-After` dans l'erreur et les réponses `503` sont signalées
+comme indisponibilités temporaires ; aucun retry automatique ne duplique
+l'enregistrement.
+
+Après la transcription native, `useSpeechDictation` peut déclencher
+`speech/transcriptEnhancement`. Ce service réutilise `sendChatNonStreaming`, le
+provider et le modèle actifs de la conversation, sans raisonnement avancé. La requête
+emploie un identifiant de conversation éphémère, n'active aucun outil et transmet
+un contexte textuel borné aux deux derniers messages et à de courts champs de
+contexte. Le contrat de prompt impose une
+réécriture minimale. Des garde-fous rejettent les réponses vides ou dont la
+longueur indique une synthèse ou une expansion excessive ; le hook revient alors
+à la transcription brute. Un changement de contexte annule aussi la requête en
+cours afin qu'un résultat ne soit jamais inséré dans une autre conversation.
 
 ---
 

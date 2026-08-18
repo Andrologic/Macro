@@ -1,3 +1,44 @@
+# QA visuelle — bandeau de dictée
+
+- Vérité visuelle source : `C:\Users\oscar\AppData\Local\Temp\codex-clipboard-3e1185c9-3895-41fa-846e-577acce7a539.png`
+- Capture complète de l’implémentation : `C:\Users\oscar\.codex\visualizations\2026\08\14\01a0012a-4aff-70d3-aff1-b4f330065a0e\speech-recording-implementation-full-final.png`
+- Capture rapprochée de l’implémentation : `C:\Users\oscar\.codex\visualizations\2026\08\14\01a0012a-4aff-70d3-aff1-b4f330065a0e\speech-recording-implementation-focused-final.png`
+- État : enregistrement actif à 0:06, thème sombre, actions « arrêter et insérer » et « arrêter et envoyer » disponibles.
+- Viewport : 1280 × 720 CSS px, `devicePixelRatio` 1,25.
+- Dimensions : source 926 × 80 px ; composant 920 × 49,6 CSS px ; capture rapprochée 920 × 50 px. La différence de hauteur est intentionnelle : le bandeau remplace le composer Macro sans augmenter sa hauteur.
+
+## Comparaison complète
+
+Le bandeau conserve la largeur et la densité du composer Macro. La hiérarchie correspond à la référence : onde dominante, durée tabulaire, arrêt secondaire, envoi primaire. Les tokens de fond, bordure, premier plan et couleur primaire restent ceux du thème Macro. Les boutons utilisent volontairement les coins arrondis existants de Macro, conformément au retour utilisateur, plutôt que les pastilles circulaires de la référence.
+
+## Comparaison rapprochée
+
+- Typographie : durée compacte, lisible et alignée ; aucun autre texte visible ne surcharge l’état d’enregistrement.
+- Espacement : onde flexible, durée stable et actions de 36 px ; aucun décalage vertical ni débordement.
+- Couleurs : contraste conforme aux tokens du thème ; l’action d’envoi reste immédiatement identifiable.
+- Qualité visuelle : onde rendue sur canvas à partir du niveau réel du microphone, nette à la densité courante.
+- Copie : les libellés accessibles distinguent explicitement l’insertion de l’envoi immédiat.
+- Icônes : icônes Lucide partagées par Macro ; aucun dessin ou glyphe approximatif.
+
+## Historique des corrections
+
+1. Première passe — bloquée : la largeur intrinsèque du canvas augmentait au fil des images et pouvait repousser la durée et les actions hors du composer (P1).
+2. Correction : ajout d’une base de largeur nulle au canvas flexible pour empêcher sa résolution interne haute densité d’influencer le calcul Flexbox.
+3. Nouvelle capture après 2,2 secondes d’animation : canvas de 763,4 px dans un bandeau de 920 px ; les deux boutons restent à l’intérieur, sans erreur console.
+4. Retour utilisateur intégré : remplacement des boutons circulaires par les boutons `rounded-lg` habituels de Macro. Aucun P0, P1 ou P2 restant.
+
+## Interactions vérifiées
+
+- Arrêter déclenche la transcription avec l’intention d’insérer le texte dans le brouillon.
+- Envoyer déclenche la transcription avec l’intention d’insérer au curseur puis d’envoyer immédiatement le texte composé.
+- Les deux actions sont verrouillées pendant le traitement et l’action choisie affiche sa progression.
+- Les tests automatisés vérifient les deux intentions, les styles des boutons et la conservation du texte au curseur.
+- Aucune erreur console sur la passe finale rendue dans le navigateur.
+
+final result: passed
+
+---
+
 # QA visuelle — badge projet des cartes de tâches
 
 ## Références et état comparé

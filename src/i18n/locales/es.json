@@ -1,6 +1,7 @@
 {
   "speech": {
-    "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Transcribiendo" },
+    "button": { "start": "Iniciar dictado", "stop": "Detener dictado", "transcribing": "Audio enviado · Transcribiendo", "enhancing": "Transcripción recibida · Limpieza inteligente" },
+    "recording": { "active": "Grabando", "stopAndInsert": "Detener e insertar la transcripción", "stopAndSend": "Detener, transcribir y enviar" },
     "errors": {
       "title": "Dictado no disponible",
       "provider-missing": "Configura y selecciona primero un proveedor de voz.",
@@ -12,7 +13,9 @@
       "recording-unsupported": "La grabación por micrófono no es compatible con este entorno.",
       "context-changed": "El dictado se canceló porque cambió la conversación activa.",
       "empty-transcript": "El proveedor de voz no devolvió ningún texto.",
-      "transcription-failed": "La transcripción de voz ha fallado."
+      "transcription-failed": "La transcripción de voz ha fallado.",
+      "enhancement-failed-title": "La limpieza inteligente no está disponible",
+      "enhancement-failed": "Macro conservó la transcripción original."
     },
     "settings": {
       "validation": "El nombre, el endpoint y el modelo son obligatorios.",
@@ -25,10 +28,12 @@
       "title": "Dictado por micrófono",
       "description": "Graba desde el compositor, transcribe con el proveedor seleccionado y revisa el texto antes de enviarlo.",
       "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
-      "maxDuration": "Duración máxima de grabación", "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
+      "maxDuration": "Duración máxima de grabación", "enhancementTitle": "Limpieza inteligente de la transcripción", "enhancementDescription": "Usa el modelo activo de la conversación para corregir de forma breve y prudente errores de reconocimiento, vacilaciones y repeticiones.",
+      "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
+      "andrologicPrivacy": "Andrologic: el audio se procesa mediante el gateway autenticado de Macro y nunca se conserva. El texto transcrito se incluye en los registros operativos.",
       "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
       "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",
-      "keyStored": "Clave API guardada localmente", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
+      "keyStored": "Clave API guardada localmente", "managedAuth": "Autenticación gestionada por Macro", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
       "editProvider": "Editar proveedor", "newProvider": "Nuevo proveedor", "protocol": "Protocolo", "model": "Modelo de transcripción",
       "endpoint": "URL base", "apiKey": "Clave API", "keepKey": "Déjalo vacío para conservar la clave guardada",
       "localProvider": "Proveedor local o sin clave", "removeKey": "Eliminar la clave API guardada"

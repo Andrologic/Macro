@@ -8,8 +8,14 @@ import {
   transcribeSpeech,
   updateSpeechProviderConfig,
 } from '../services/tauriIpc';
-import { loadPreference, PREF_KEYS, savePreference } from '../services/preferences';
-import { MACRO_AI_SPEECH_PROVIDER_ID } from '../config/macroAi';
+import {
+  loadPersistedPreference,
+  loadPreference,
+  PREF_KEYS,
+  savePreference,
+} from '../services/preferences';
+import { isMacroAiSpeechProvider, MACRO_AI_SPEECH_PROVIDER_ID } from '../config/macroAi';
+import { resolveSpeechProviderSelection } from '../services/speech/providerSelection';
 
 interface CreateSpeechProviderInput {
   name: string;
@@ -26,6 +32,7 @@ interface SpeechToTextState {
   selectedProviderId: string | null;
   language: string;
   maxDurationSeconds: number;
+  enhancementEnabled: boolean;
   isInitialized: boolean;
   isLoading: boolean;
   error: string | null;
@@ -34,10 +41,12 @@ interface SpeechToTextState {
   selectProvider: (id: string | null) => Promise<void>;
   setLanguage: (language: string) => Promise<void>;
   setMaxDurationSeconds: (seconds: number) => Promise<void>;
+  setEnhancementEnabled: (enabled: boolean) => Promise<void>;
   createProvider: (input: CreateSpeechProviderInput) => Promise<void>;
   updateProvider: (id: string, input: Partial<CreateSpeechProviderInput>) => Promise<void>;
   deleteProvider: (id: string) => Promise<void>;
   transcribe: (input: {
+    providerId: string;
     audio: Uint8Array;
     mimeType: string;
     fileName: string;
@@ -54,6 +63,7 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
   selectedProviderId: null,
   language: 'auto',
   maxDurationSeconds: 120,
+  enhancementEnabled: false,
   isInitialized: false,
   isLoading: false,
   error: null,
@@ -64,26 +74,23 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
     initializePromise = (async () => {
       set({ isLoading: true, error: null });
       try {
-        const [selectedProviderId, language, maxDurationSeconds] = await Promise.all([
-          loadPreference<string>(PREF_KEYS.SPEECH_PROVIDER_ID),
+        const [persistedProviderId, language, maxDurationSeconds, enhancementEnabled] = await Promise.all([
+          loadPersistedPreference<string>(PREF_KEYS.SPEECH_PROVIDER_ID),
           loadPreference<string>(PREF_KEYS.SPEECH_LANGUAGE),
           loadPreference<number>(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS),
+          loadPreference<boolean>(PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED),
         ]);
         const providers = isTauriAvailable() ? await listSpeechProviderConfigs() : [];
-        const selectedExists = providers.some(
-          (provider) => provider.id === selectedProviderId && provider.isEnabled,
-        );
-        const nextSelectedProviderId = selectedExists
-          ? selectedProviderId
-          : providers.find((provider) => provider.isEnabled)?.id ?? null;
-        const normalizedDuration = nextSelectedProviderId === MACRO_AI_SPEECH_PROVIDER_ID
+        const selectedProviderId = resolveSpeechProviderSelection(providers, persistedProviderId);
+        const normalizedDuration = selectedProviderId === MACRO_AI_SPEECH_PROVIDER_ID
           ? Math.min(120, maxDurationSeconds)
           : maxDurationSeconds;
         set({
           providers,
-          selectedProviderId: nextSelectedProviderId,
+          selectedProviderId,
           language,
           maxDurationSeconds: normalizedDuration,
+          enhancementEnabled,
           isInitialized: true,
           isLoading: false,
         });
@@ -100,12 +107,7 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
     if (!isTauriAvailable()) return;
     const providers = await listSpeechProviderConfigs();
     const selectedProviderId = get().selectedProviderId;
-    const selectedIsAvailable = providers.some(
-      (provider) => provider.id === selectedProviderId && provider.isEnabled,
-    );
-    const nextProviderId = selectedIsAvailable
-      ? selectedProviderId
-      : providers.find((provider) => provider.isEnabled)?.id ?? null;
+    const nextProviderId = resolveSpeechProviderSelection(providers, selectedProviderId);
     set({ providers, selectedProviderId: nextProviderId });
     if (nextProviderId !== selectedProviderId) {
       await savePreference(PREF_KEYS.SPEECH_PROVIDER_ID, nextProviderId ?? '');
@@ -135,6 +137,11 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
     await savePreference(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS, normalized);
   },
 
+  setEnhancementEnabled: async (enabled) => {
+    set({ enhancementEnabled: enabled });
+    await savePreference(PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED, enabled);
+  },
+
   createProvider: async (input) => {
     await createSpeechProviderConfig(input);
     await get().reloadProviders();
@@ -150,12 +157,16 @@ export const useSpeechToTextStore = create<SpeechToTextState>((set, get) => ({
     await get().reloadProviders();
   },
 
-  transcribe: async ({ audio, mimeType, fileName }) => {
-    const { selectedProviderId, language, providers } = get();
-    const provider = providers.find((entry) => entry.id === selectedProviderId);
+  transcribe: async ({ providerId, audio, mimeType, fileName }) => {
+    const { language, providers } = get();
+    const provider = providers.find((entry) => entry.id === providerId);
     if (!provider) throw new Error('No speech-to-text provider is selected.');
     if (!provider.isEnabled) throw new Error('The selected speech-to-text provider is disabled.');
-    if (!provider.isLocal && !provider.hasStoredApiKey) {
+    if (
+      !provider.isLocal &&
+      !provider.hasStoredApiKey &&
+      !isMacroAiSpeechProvider(provider.id)
+    ) {
       throw new Error('The selected speech-to-text provider requires an API key.');
     }
     return transcribeSpeech({

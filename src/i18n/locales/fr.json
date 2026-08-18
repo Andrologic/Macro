@@ -1,6 +1,7 @@
 {
   "speech": {
-    "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Transcription en cours" },
+    "button": { "start": "Démarrer la dictée", "stop": "Arrêter la dictée", "transcribing": "Audio envoyé · Transcription en cours", "enhancing": "Transcription reçue · Nettoyage en cours" },
+    "recording": { "active": "Enregistrement en cours", "stopAndInsert": "Arrêter et insérer la transcription", "stopAndSend": "Arrêter, transcrire et envoyer" },
     "errors": {
       "title": "Dictée indisponible",
       "provider-missing": "Configurez et sélectionnez d’abord un fournisseur vocal.",
@@ -12,7 +13,9 @@
       "recording-unsupported": "L’enregistrement au microphone n’est pas pris en charge dans cet environnement.",
       "context-changed": "La dictée a été annulée, car la conversation active a changé.",
       "empty-transcript": "Le fournisseur vocal n’a renvoyé aucun texte.",
-      "transcription-failed": "La transcription vocale a échoué."
+      "transcription-failed": "La transcription vocale a échoué.",
+      "enhancement-failed-title": "Nettoyage intelligent indisponible",
+      "enhancement-failed": "Macro a conservé la transcription brute."
     },
     "settings": {
       "validation": "Le nom, le point de terminaison et le modèle sont obligatoires.",
@@ -29,13 +32,17 @@
       "language": "Langue",
       "autoLanguage": "Automatique",
       "maxDuration": "Durée maximale d’enregistrement",
+      "enhancementTitle": "Nettoyage intelligent de la transcription",
+      "enhancementDescription": "Utilisez le modèle actif de la conversation pour corriger brièvement et avec prudence les erreurs de reconnaissance, les hésitations et les répétitions.",
       "noProviderPrivacy": "Sélectionnez un fournisseur pour savoir où l’audio enregistré sera envoyé.",
       "localPrivacy": "Fournisseur local ou sans clé : l’audio est envoyé au point de terminaison configuré sans exiger de clé API.",
+      "andrologicPrivacy": "Andrologic : l’audio est traité par le gateway Macro authentifié et n’est jamais conservé. Le texte transcrit figure dans les journaux opérationnels.",
       "remotePrivacy": "Fournisseur distant : l’audio enregistré est envoyé au point de terminaison configuré.",
       "providers": "Fournisseurs de reconnaissance vocale",
       "compatibility": "Prend en charge les points de terminaison de transcription compatibles OpenAI et Deepgram.",
       "addProvider": "Ajouter un fournisseur",
       "keyStored": "Clé API enregistrée localement",
+      "managedAuth": "Authentification gérée par Macro",
       "noKeyRequired": "Aucune clé API requise",
       "keyMissing": "Clé API requise",
       "editProvider": "Modifier le fournisseur",
