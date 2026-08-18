@@ -69,3 +69,8 @@ dev/ai-keys.local.json
 *.key
 Etude-Marche-Macro.pdf
 Plan-Action-Revente-Macro.pdf
+
+# Temporary visual QA reports and captures
+/design-qa.md
+/design-qa-artifacts/
+/docs/design-qa/
