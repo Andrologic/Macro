@@ -56,7 +56,6 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - notifications et supervision distante non finalisées
 - articulation desktop / remote / mobile encore incomplète
 - expérience multi-plan et multi-projet encore à consolider de bout en bout
-- documents de référence recentrés autour d'un socle unique et d'une archive minimale non normative
 
 ---
 
@@ -72,7 +71,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 État livré pour 0.1 :
 - le socle documentaire actif est recentré sur `functional-spec.md`, `technical-architecture.md` et `roadmap.md`
-- l'archive documentaire est réduite à un historique minimal non normatif
+- les anciens documents obsolètes et redondants ont été retirés
 - les documents actifs constituent l'unique source de vérité
 
 ### 4.2 Mode Architect
@@ -302,7 +301,7 @@ Livrables :
 - `functional-spec.md`
 - `technical-architecture.md`
 - `roadmap.md`
-- archivage des anciens documents non références
+- retrait des anciens documents non référencés
 
 Critère de sortie :
 - la documentation de référence devient claire et non superposée
@@ -324,7 +323,7 @@ Critère de sortie :
 - un utilisateur peut livrer un plan complet sur desktop sans bricolage majeur
 
 État :
-- socle documentaire de référence assaini et archive historique réduite au minimum utile
+- socle documentaire de référence assaini et anciens doublons retirés
 - socle desktop local-first considéré comme stabilisé
 - les prochaines évolutions doivent préserver les contrats déjà posés du flow Implement
 
