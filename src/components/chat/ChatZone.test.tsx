@@ -3365,7 +3365,7 @@ describe('ChatZone', () => {
         buildMessage({
           id: 'msg-assistant-1',
           role: 'assistant',
-          content: "La limite de 3 tours agent a ete atteinte.\nOutils utilises avant l'arret: read.",
+          content: "La limite de 3 tours agent a été atteinte.\nOutils utilisés avant l'arrêt : read.",
           completion_reason: 'post_tool_empty_fallback',
           tool_traces: [],
         }),

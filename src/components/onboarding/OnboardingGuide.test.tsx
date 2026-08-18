@@ -390,7 +390,7 @@ describe('OnboardingGuide positioning', () => {
 
     expect(storeSnapshot.mode).toBe('Architect');
     expect(document.querySelector('[data-tour-id="mode-architect"]')).not.toBeNull();
-    expect(document.body.textContent).not.toContain('Cette zone peut etre masquee');
+    expect(document.body.textContent).not.toContain('Cette zone peut être masquée');
   });
 
   it('keeps header step highlights anchored near the viewport edge', async () => {
@@ -440,7 +440,7 @@ describe('OnboardingGuide positioning', () => {
     await flushFrames(8);
 
     expect(document.body.textContent).toContain('zone de contexte la plus proche');
-    expect(document.body.textContent).not.toContain('Cette zone peut etre masquee');
+    expect(document.body.textContent).not.toContain('Cette zone peut être masquée');
   });
 
   it('persists dismissed and completed onboarding state', async () => {
