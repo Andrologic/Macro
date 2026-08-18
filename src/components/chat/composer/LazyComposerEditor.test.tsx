@@ -7,13 +7,14 @@ import { createRoot, type Root } from 'react-dom/client';
 interface TestComposerEditorHandle {
   clear: () => void;
   setText: (text: string) => void;
-  insertTextAtSelection: (text: string, spacing?: 'preserve' | 'contextual') => void;
+  insertTextAtSelection: (text: string, spacing?: 'preserve' | 'contextual') => string;
   getTextContent: () => string;
   focus: () => void;
 }
 
 interface MockComposerEditorProps {
   editable: boolean;
+  readOnly?: boolean;
   placeholder: string;
   onTextChange: (text: string) => void;
   onSend: () => void;
@@ -35,6 +36,7 @@ const MockComposerEditor = React.forwardRef<TestComposerEditorHandle, MockCompos
       insertTextAtSelection: (text: string) => {
         loadedEditorText += text;
         props.onTextChange(loadedEditorText);
+        return loadedEditorText;
       },
       getTextContent: () => loadedEditorText,
       focus: () => undefined,
@@ -45,6 +47,7 @@ const MockComposerEditor = React.forwardRef<TestComposerEditorHandle, MockCompos
         data-shortcut-chat-input="true"
         data-testid="loaded-composer-editor"
         aria-disabled={props.editable ? 'false' : 'true'}
+        aria-readonly={props.readOnly ? 'true' : 'false'}
       >
         {loadedEditorText || props.placeholder}
       </div>
@@ -188,11 +191,39 @@ describe('LazyComposerEditor', () => {
       const textarea = container.querySelector('textarea');
       expect(textarea).not.toBeNull();
       textarea?.setSelectionRange(8, 13);
-      editorRef.current?.insertTextAtSelection('Macro');
+      const insertedText = editorRef.current?.insertTextAtSelection('Macro');
+      expect(insertedText).toBe('Bonjour Macro');
     });
 
     expect(onTextChange).toHaveBeenLastCalledWith('Bonjour Macro');
     expect(editorRef.current?.getTextContent()).toBe('Bonjour Macro');
+  });
+
+  it('keeps cleanup text read-only and scrollable in both editor implementations', async () => {
+    await act(async () => {
+      flushSync(() => {
+        root.render(
+          <LazyComposerEditor
+            editable
+            readOnly
+            placeholder="Message"
+            onTextChange={() => undefined}
+            onSend={() => undefined}
+          />
+        );
+      });
+
+      const fallback = container.querySelector('textarea');
+      expect(fallback?.disabled).toBe(false);
+      expect(fallback?.readOnly).toBe(true);
+      expect(fallback?.getAttribute('aria-readonly')).toBe('true');
+    });
+
+    await waitForLoadedEditor();
+
+    const loadedEditor = container.querySelector('[data-testid="loaded-composer-editor"]');
+    expect(loadedEditor?.getAttribute('aria-disabled')).toBe('false');
+    expect(loadedEditor?.getAttribute('aria-readonly')).toBe('true');
   });
 
   it('spaces dictated text according to the fallback textarea selection', async () => {
@@ -214,7 +245,8 @@ describe('LazyComposerEditor', () => {
       });
       const textarea = container.querySelector('textarea');
       textarea?.setSelectionRange(7, 7);
-      editorRef.current?.insertTextAtSelection('Macro', 'contextual');
+      const insertedText = editorRef.current?.insertTextAtSelection('Macro', 'contextual');
+      expect(insertedText).toBe('Bonjour Macro monde');
     });
 
     expect(onTextChange).toHaveBeenLastCalledWith('Bonjour Macro monde');

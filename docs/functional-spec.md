@@ -955,10 +955,17 @@ Macro doit exposer un contrôle utilisateur sur au moins les dimensions suivante
 - prompts et cadrage du comportement système
 
 La dictée vocale est une action propre du composer, placée immédiatement à
-gauche du bouton d'envoi. Un premier clic démarre l'enregistrement, un second
-l'arrête et lance la transcription. Le texte reconnu est inséré dans le brouillon
-à la position d'édition courante et n'est jamais envoyé automatiquement, afin que
-l'utilisateur puisse le relire et le corriger.
+gauche du bouton d'envoi. Un premier clic démarre l'enregistrement et remplace
+temporairement la zone d'édition par une visualisation audio. L'utilisateur peut
+ensuite arrêter la capture pour transcrire et insérer le texte à la position
+d'édition courante, ou arrêter, transcrire et envoyer immédiatement avec l'action
+d'envoi dédiée. Dès l'arrêt, la forme d'onde enregistrée reste visible avec une
+variation d'amplitude progressive, sans changement de couleur, jusqu'à la
+réception de la transcription. Si le nettoyage est activé, le texte brut apparaît
+ensuite immédiatement dans le composer avec un balayage discret
+sur le texte jusqu'à son remplacement par la version corrigée. L'envoi demandé
+attend cette correction ou son fallback vers la transcription brute. Durant ce
+nettoyage, le texte reste non modifiable, mais le composer demeure défilable.
 
 Les réglages de dictée doivent permettre de choisir la langue, la durée maximale
 d'enregistrement et un fournisseur activé. Les fournisseurs de reconnaissance
@@ -968,6 +975,31 @@ configurables. L'interface doit indiquer clairement si l'audio reste local ou es
 envoyé à un service distant. Un fournisseur déclaré local ou sans clé peut utiliser
 HTTP pour joindre un service de confiance sur la machine ou le réseau local ; tout
 fournisseur distant authentifié doit utiliser HTTPS.
+
+Un nettoyage intelligent facultatif peut faire relire le texte transcrit par le
+modèle actif de la conversation. Il corrige les erreurs probables de
+reconnaissance, les hésitations, les répétitions et la ponctuation, et peut
+reformuler librement les phrases pour rendre le prompt clair et fluide. Il
+s'appuie sur un contexte compact : mode actif, projet, plan, tâche, brouillon et
+au maximum les deux derniers messages, tous limités à de courts extraits. Il ne
+doit ni répondre au prompt, ni le traduire, inventer des informations ou modifier
+son intention et ses contraintes. Cette option est désactivée par défaut. Les
+blocs de raisonnement éventuels du fournisseur sont ignorés. Une réponse vide,
+une erreur réseau ou un modèle indisponible ne doit jamais faire perdre la
+dictée : Macro conserve alors la transcription brute et peut tout de même
+l'insérer ou l'envoyer.
+
+Le fournisseur vocal géré `andrologic-speech`, affiché sous le nom Andrologic,
+est sélectionné par défaut lorsqu'aucun choix vocal n'a encore été persisté. Il
+utilise le modèle public `macro-transcription` sur le gateway Andrologic et
+réemploie le jeton d'installation sécurisé du fournisseur `macro-ai`. Aucune clé
+utilisateur supplémentaire n'est demandée et aucun secret statique n'est inclus
+dans le dépôt ou l'exécutable. Avant l'envoi, Macro convertit la capture en WAV
+mono PCM 16 bits à 16 kHz. Le gateway ne conserve jamais l'audio brut ; le texte
+transcrit et les métadonnées opérationnelles de la requête figurent dans ses
+journaux. En cas de saturation ou d'indisponibilité temporaire, Macro présente
+l'erreur renvoyée par le gateway sans envoyer automatiquement une seconde fois
+le même enregistrement.
 
 Andrologic est le fournisseur sélectionné par défaut lorsqu'il a pu être activé
 et qu'aucune sélection de conversation existante ne doit être restaurée. Il

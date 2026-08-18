@@ -47,13 +47,14 @@ import {
 export interface ComposerEditorHandle {
   clear: () => void;
   setText: (text: string, contextRefs?: readonly ContextReference[]) => void;
-  insertTextAtSelection: (text: string, spacing?: TextInsertionSpacing) => void;
+  insertTextAtSelection: (text: string, spacing?: TextInsertionSpacing) => string;
   getTextContent: () => string;
   focus: () => void;
 }
 
 interface ComposerEditorProps {
   editable: boolean;
+  readOnly?: boolean;
   placeholder: string;
   onTextChange: (text: string) => void;
   onSend: () => void;
@@ -235,6 +236,7 @@ export const shouldUsePromptHistoryForPosition = (
 const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   ({
     editable,
+    readOnly = false,
     placeholder,
     onTextChange,
     onSend,
@@ -259,10 +261,10 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
       onPromptHistoryRef.current = onPromptHistory;
     }, [onPromptHistory]);
 
-    // Editable state
+    // Keep cleanup text immutable without treating the scroll surface as disabled.
     useEffect(() => {
-      editor.setEditable(editable);
-    }, [editor, editable]);
+      editor.setEditable(editable && !readOnly);
+    }, [editor, editable, readOnly]);
 
     // Imperative handle for ChatZone
     useImperativeHandle(ref, () => ({
@@ -298,7 +300,8 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
         textRef.current = text;
       },
       insertTextAtSelection: (text: string, spacing = 'preserve') => {
-        if (!text) return;
+        if (!text) return textRef.current;
+        let nextText = textRef.current;
         editor.update(() => {
           let selection = $getSelection();
           if (!$isRangeSelection(selection)) {
@@ -318,10 +321,13 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
                   after: rootText.slice(end),
                 })
               : text;
+            nextText = `${rootText.slice(0, start)}${insertion}${rootText.slice(end)}`;
             selection.insertText(insertion);
           }
         });
+        textRef.current = nextText;
         editor.focus();
+        return nextText;
       },
       getTextContent: () => textRef.current,
       focus: () => editor.focus(),
@@ -464,6 +470,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
                 'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-[6.5px] leading-[1.35]',
                 '[&_.composer-editor-paragraph]:m-0 [&_.composer-editor-paragraph]:min-h-[1.35em]',
                 !editable && 'opacity-50 cursor-not-allowed',
+                readOnly && '!max-h-none !overflow-visible',
                 className
               )}
             />
@@ -528,7 +535,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     return (
       <LexicalComposer initialConfig={initialConfig}>
-        <div className="relative flex-1">
+        <div
+          className={cn(
+            'relative flex-1',
+            props.readOnly && 'max-h-[120px] overflow-y-auto',
+          )}
+        >
           <InnerEditor ref={ref} {...props} />
         </div>
       </LexicalComposer>

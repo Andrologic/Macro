@@ -7,6 +7,7 @@
 
 import { load, Store } from "@tauri-apps/plugin-store";
 import type { AppMode, ToolRiskLevel } from "../types";
+import { MACRO_AI_SPEECH_PROVIDER_ID } from "../config/macroAi";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
@@ -100,6 +101,7 @@ export const PREF_KEYS = {
   SPEECH_PROVIDER_ID: "speech.providerId",
   SPEECH_LANGUAGE: "speech.language",
   SPEECH_MAX_DURATION_SECONDS: "speech.maxDurationSeconds",
+  SPEECH_ENHANCEMENT_ENABLED: "speech.enhancementEnabled",
 } as const;
 
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
@@ -326,9 +328,10 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.METADATA_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_PROMPT]: DEFAULT_SMART_COMMIT_PROMPT,
-  [PREF_KEYS.SPEECH_PROVIDER_ID]: "andrologic-speech",
+  [PREF_KEYS.SPEECH_PROVIDER_ID]: MACRO_AI_SPEECH_PROVIDER_ID,
   [PREF_KEYS.SPEECH_LANGUAGE]: "auto",
   [PREF_KEYS.SPEECH_MAX_DURATION_SECONDS]: 120,
+  [PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED]: false,
 };
 
 // Store instance (singleton)
@@ -381,6 +384,9 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
   }
   if (key === PREF_KEYS.SPEECH_MAX_DURATION_SECONDS) {
     return typeof value === "number" && Number.isFinite(value) && value >= 10 && value <= 600;
+  }
+  if (key === PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED) {
+    return typeof value === "boolean";
   }
   return true;
 };

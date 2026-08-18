@@ -1,6 +1,7 @@
 {
   "speech": {
-    "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "文字起こし中" },
+    "button": { "start": "音声入力を開始", "stop": "音声入力を停止", "transcribing": "音声を送信済み · 文字起こし中", "enhancing": "文字起こしを受信済み · スマート補正中" },
+    "recording": { "active": "録音中", "stopAndInsert": "停止して文字起こしを挿入", "stopAndSend": "停止して文字起こし後に送信" },
     "errors": {
       "title": "音声入力を利用できません",
       "provider-missing": "最初に音声プロバイダーを設定して選択してください。",
@@ -12,7 +13,9 @@
       "recording-unsupported": "この環境ではマイク録音に対応していません。",
       "context-changed": "アクティブな会話が変わったため、音声入力をキャンセルしました。",
       "empty-transcript": "音声プロバイダーからテキストが返されませんでした。",
-      "transcription-failed": "音声の文字起こしに失敗しました。"
+      "transcription-failed": "音声の文字起こしに失敗しました。",
+      "enhancement-failed-title": "スマート補正を利用できません",
+      "enhancement-failed": "Macro は未補正の文字起こしを保持しました。"
     },
     "settings": {
       "validation": "名前、エンドポイント、モデルは必須です。", "saved": "音声プロバイダーを保存しました。", "saveFailed": "音声プロバイダーを保存できませんでした。",
@@ -20,10 +23,12 @@
       "deleteConfirm": "{{name}} とローカルに保存された API キーを削除しますか？",
       "title": "マイク音声入力", "description": "コンポーザーから録音し、選択したプロバイダーで文字起こしして、送信前に内容を確認します。",
       "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
-      "maxDuration": "最大録音時間", "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
+      "maxDuration": "最大録音時間", "enhancementTitle": "文字起こしのスマート補正", "enhancementDescription": "会話で使用中のモデルにより、認識ミス、ためらい、繰り返しだけを短く慎重に補正します。",
+      "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
+      "andrologicPrivacy": "Andrologic：音声は認証済みの Macro ゲートウェイで処理され、保存されません。文字起こしされたテキストは運用ログに記録されます。",
       "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",
       "compatibility": "OpenAI互換およびDeepgramの文字起こしエンドポイントに対応します。", "addProvider": "プロバイダーを追加",
-      "keyStored": "APIキーはローカルに保存済み", "noKeyRequired": "APIキー不要", "keyMissing": "APIキーが必要",
+      "keyStored": "APIキーはローカルに保存済み", "managedAuth": "認証は Macro が管理", "noKeyRequired": "APIキー不要", "keyMissing": "APIキーが必要",
       "editProvider": "プロバイダーを編集", "newProvider": "新しいプロバイダー", "protocol": "プロトコル", "model": "文字起こしモデル",
       "endpoint": "ベースURL", "apiKey": "APIキー", "keepKey": "保存済みのキーを保持するには空のままにします",
       "localProvider": "ローカルまたはキーレスのプロバイダー", "removeKey": "保存済みのAPIキーを削除"

@@ -1,6 +1,7 @@
 {
   "speech": {
-    "button": { "start": "받아쓰기 시작", "stop": "받아쓰기 중지", "transcribing": "변환 중" },
+    "button": { "start": "받아쓰기 시작", "stop": "받아쓰기 중지", "transcribing": "오디오 전송됨 · 변환 중", "enhancing": "변환 내용 수신됨 · 스마트 정리 중" },
+    "recording": { "active": "녹음 중", "stopAndInsert": "중지하고 변환 내용 삽입", "stopAndSend": "중지하고 변환 후 보내기" },
     "errors": {
       "title": "받아쓰기를 사용할 수 없음",
       "provider-missing": "먼저 음성 공급자를 구성하고 선택하세요.",
@@ -12,7 +13,9 @@
       "recording-unsupported": "이 환경에서는 마이크 녹음을 지원하지 않습니다.",
       "context-changed": "활성 대화가 변경되어 받아쓰기가 취소되었습니다.",
       "empty-transcript": "음성 공급자가 텍스트를 반환하지 않았습니다.",
-      "transcription-failed": "음성 변환에 실패했습니다."
+      "transcription-failed": "음성 변환에 실패했습니다.",
+      "enhancement-failed-title": "스마트 정리를 사용할 수 없음",
+      "enhancement-failed": "Macro가 원본 변환 내용을 유지했습니다."
     },
     "settings": {
       "validation": "이름, 엔드포인트 및 모델이 필요합니다.", "saved": "음성 공급자를 저장했습니다.", "saveFailed": "음성 공급자를 저장할 수 없습니다.",
@@ -20,10 +23,12 @@
       "deleteConfirm": "{{name}} 및 로컬에 저장된 API 키를 삭제하시겠습니까?",
       "title": "마이크 받아쓰기", "description": "작성기에서 녹음하고 선택한 공급자로 텍스트를 변환한 다음 보내기 전에 검토합니다.",
       "activeProvider": "활성 공급자", "noProvider": "공급자 없음", "language": "언어", "autoLanguage": "자동",
-      "maxDuration": "최대 녹음 시간", "noProviderPrivacy": "녹음된 오디오의 전송 위치를 확인하려면 공급자를 선택하세요.", "localPrivacy": "로컬 또는 키 없는 공급자: API 키를 요구하지 않고 설정된 엔드포인트로 오디오를 전송합니다.",
+      "maxDuration": "최대 녹음 시간", "enhancementTitle": "변환 내용 스마트 정리", "enhancementDescription": "현재 대화 모델을 사용하여 인식 오류, 머뭇거림 및 반복을 짧고 신중하게 수정합니다.",
+      "noProviderPrivacy": "녹음된 오디오의 전송 위치를 확인하려면 공급자를 선택하세요.", "localPrivacy": "로컬 또는 키 없는 공급자: API 키를 요구하지 않고 설정된 엔드포인트로 오디오를 전송합니다.",
+      "andrologicPrivacy": "Andrologic: 오디오는 인증된 Macro 게이트웨이에서 처리되며 보관되지 않습니다. 변환된 텍스트는 운영 로그에 포함됩니다.",
       "remotePrivacy": "원격 공급자: 녹음된 오디오가 설정된 엔드포인트로 전송됩니다.", "providers": "음성 공급자",
       "compatibility": "OpenAI 호환 및 Deepgram 음성 변환 엔드포인트를 지원합니다.", "addProvider": "공급자 추가",
-      "keyStored": "API 키가 로컬에 저장됨", "noKeyRequired": "API 키가 필요하지 않음", "keyMissing": "API 키 필요",
+      "keyStored": "API 키가 로컬에 저장됨", "managedAuth": "Macro에서 인증 관리", "noKeyRequired": "API 키가 필요하지 않음", "keyMissing": "API 키 필요",
       "editProvider": "공급자 편집", "newProvider": "새 공급자", "protocol": "프로토콜", "model": "음성 변환 모델",
       "endpoint": "기본 URL", "apiKey": "API 키", "keepKey": "저장된 키를 유지하려면 비워 두세요",
       "localProvider": "로컬 또는 키 없는 공급자", "removeKey": "저장된 API 키 제거"

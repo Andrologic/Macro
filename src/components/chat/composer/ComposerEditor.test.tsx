@@ -308,6 +308,25 @@ describe('ComposerEditor context references', () => {
     expect(editorRef.current?.getTextContent()).toBe('[skill: test-skill] utilise ce skill');
   });
 
+  it('keeps the cleanup editor immutable while exposing a scrollable wrapper', async () => {
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          editable
+          readOnly
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    const editor = container.querySelector<HTMLElement>('[data-shortcut-chat-input="true"]');
+    expect(editor?.getAttribute('contenteditable')).toBe('false');
+    expect(editor?.className).toContain('!overflow-visible');
+    expect(editor?.parentElement?.className).toContain('overflow-y-auto');
+  });
+
   it('keeps arrow-key navigation as a text range around context chips', async () => {
     const lexical = await import('lexical');
     const { MentionNode, $createMentionNode } = await import(
