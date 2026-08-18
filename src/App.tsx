@@ -19,6 +19,11 @@ import type {
   AppBootstrapController,
   AppBootstrapSnapshot,
 } from "./services/appBootstrap";
+import {
+  getDatabaseInitializationStatus,
+  isTauriAvailable,
+  retryDatabaseInitialization,
+} from "./services/tauriIpc";
 
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
@@ -333,11 +338,10 @@ const App: React.FC = () => {
     }
 
     void (async () => {
-      const tauriIpc = await import("./services/tauriIpc");
-      if (tauriIpc.isTauriAvailable()) {
-        const databaseStatus = await tauriIpc.getDatabaseInitializationStatus();
+      if (isTauriAvailable()) {
+        const databaseStatus = await getDatabaseInitializationStatus();
         if (databaseStatus.status === "failed") {
-          await tauriIpc.retryDatabaseInitialization();
+          await retryDatabaseInitialization();
         }
       }
       await controller.restart();
