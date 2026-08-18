@@ -31,19 +31,30 @@ describe('speech transcript enhancement safeguards', () => {
 
   it('accepts a light correction and removes a presentation wrapper', () => {
     expect(validateEnhancedTranscript(
-      'Je veux euh corriger le work tri de Macro.',
       '```json\n{"text":"Je veux corriger le worktree de Macro."}\n```',
     )).toBe('Je veux corriger le worktree de Macro.');
   });
 
-  it('rejects empty, summarised or over-expanded responses', () => {
-    const raw = 'Je souhaite corriger cette fonctionnalité en conservant toutes les contraintes et tous les détails importants du comportement attendu.';
-    expect(() => validateEnhancedTranscript(raw, '')).toThrow();
-    expect(() => validateEnhancedTranscript(raw, 'Corriger la fonctionnalité.')).toThrow();
-    expect(() => validateEnhancedTranscript('Texte court.', 'x'.repeat(400))).toThrow();
+  it('accepts substantial rewrites without length or token-overlap heuristics', () => {
+    expect(validateEnhancedTranscript('Corriger la fonctionnalité sans perdre ses contraintes.')).toBe(
+      'Corriger la fonctionnalité sans perdre ses contraintes.',
+    );
+    const expanded = 'Je souhaite corriger cette fonctionnalité, clarifier son comportement et conserver précisément les contraintes exprimées dans la demande initiale.';
+    expect(validateEnhancedTranscript(expanded)).toBe(expanded);
+  });
+
+  it('removes provider reasoning before parsing the cleaned transcript', () => {
+    expect(validateEnhancedTranscript(
+      '<think>Je dois identifier le terme technique probable.</think>\n{"text":"Je veux corriger le worktree."}',
+    )).toBe('Je veux corriger le worktree.');
+  });
+
+  it('falls back only when the model produces no usable transcript', () => {
+    expect(() => validateEnhancedTranscript('')).toThrow(
+      'The enhancement model returned an empty transcript.',
+    );
     expect(() => validateEnhancedTranscript(
-      'Il faut corriger la carte de tâche et conserver le projet actif dans le pied de page.',
-      'Nous devrions plutôt créer une nouvelle interface totalement différente pour les utilisateurs.',
-    )).toThrow();
+      '<think>Réflexion interrompue sans réponse finale.',
+    )).toThrow('The enhancement model returned an empty transcript.');
   });
 });

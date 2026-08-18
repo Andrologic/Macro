@@ -977,16 +977,17 @@ HTTP pour joindre un service de confiance sur la machine ou le réseau local ; t
 fournisseur distant authentifié doit utiliser HTTPS.
 
 Un nettoyage intelligent facultatif peut faire relire le texte transcrit par le
-modèle actif de la conversation. Il corrige uniquement les
-erreurs probables de reconnaissance, les hésitations, les répétitions et la
-ponctuation en s'appuyant sur un contexte compact : mode actif, projet, plan,
-tâche, brouillon et au maximum les deux derniers messages, tous limités à de
-courts extraits. Il ne doit ni répondre au prompt, ni le résumer, le traduire,
-inventer des informations ou modifier ses contraintes. Cette option est
-désactivée par défaut. Une
-réponse vide ou excessivement raccourcie ou développée, une erreur réseau ou un
-modèle indisponible ne doit jamais faire perdre la dictée : Macro conserve alors
-la transcription brute et peut tout de même l'insérer ou l'envoyer.
+modèle actif de la conversation. Il corrige les erreurs probables de
+reconnaissance, les hésitations, les répétitions et la ponctuation, et peut
+reformuler librement les phrases pour rendre le prompt clair et fluide. Il
+s'appuie sur un contexte compact : mode actif, projet, plan, tâche, brouillon et
+au maximum les deux derniers messages, tous limités à de courts extraits. Il ne
+doit ni répondre au prompt, ni le traduire, inventer des informations ou modifier
+son intention et ses contraintes. Cette option est désactivée par défaut. Les
+blocs de raisonnement éventuels du fournisseur sont ignorés. Une réponse vide,
+une erreur réseau ou un modèle indisponible ne doit jamais faire perdre la
+dictée : Macro conserve alors la transcription brute et peut tout de même
+l'insérer ou l'envoyer.
 
 Le fournisseur vocal géré `andrologic-speech`, affiché sous le nom Andrologic,
 est sélectionné par défaut lorsqu'aucun choix vocal n'a encore été persisté. Il
