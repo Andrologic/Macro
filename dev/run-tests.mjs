@@ -11,6 +11,7 @@ const ignoredPrefixes = [
 
 const run = async (args) => {
   const proc = Bun.spawn(['bun', 'test', ...args], {
+    env: { ...process.env, NODE_ENV: 'test' },
     stdout: 'inherit',
     stderr: 'inherit',
   });
