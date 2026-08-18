@@ -88,8 +88,12 @@ const createMermaidParserSourcePlugin = () => {
   sourceByAbsolutePath.set(
     resolve(parserSourceRoot, "index.ts"),
     [
-      'export { parse } from "./parse.js";',
+      'export { MermaidParseError, parse } from "./parse.js";',
       'export { isEmResetFrame } from "./language/generated/ast.js";',
+      'export { createRailroadServices } from "./language/railroad/index.js";',
+      'export { createRailroadAbnfServices } from "./language/railroad-abnf/index.js";',
+      'export { createRailroadEbnfServices } from "./language/railroad-ebnf/index.js";',
+      'export { createRailroadPegServices } from "./language/railroad-peg/index.js";',
     ].join("\n")
   );
 
