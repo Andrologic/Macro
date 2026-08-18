@@ -107,7 +107,7 @@ fn current_branch_name(repo: &Repository) -> Option<String> {
 
     repo.head()
         .ok()
-        .and_then(|head| head.shorthand().map(|value| value.to_string()))
+        .and_then(|head| head.shorthand().ok().map(str::to_string))
 }
 
 fn branch_exists(repo: &Repository, branch_name: &str, branch_type: BranchType) -> bool {
@@ -144,7 +144,13 @@ fn distinct_branch_names(repo: &Repository) -> Vec<String> {
 fn resolve_origin_head_branch(repo: &Repository) -> Option<String> {
     repo.find_reference("refs/remotes/origin/HEAD")
         .ok()
-        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .and_then(|reference| {
+            reference
+                .symbolic_target()
+                .ok()
+                .flatten()
+                .map(str::to_string)
+        })
         .and_then(|target| {
             target
                 .strip_prefix("refs/remotes/origin/")
@@ -1068,7 +1074,7 @@ impl GitState {
         let worktree_names = repo.worktrees().map_err(|e| BackendError::Git {
             message: format!("Failed to list registered worktrees: {}", e),
         })?;
-        for worktree_name in worktree_names.iter().flatten() {
+        for worktree_name in worktree_names.iter().flatten().flatten() {
             let worktree = match repo.find_worktree(worktree_name) {
                 Ok(worktree) => worktree,
                 Err(err) if err.code() == ErrorCode::NotFound => continue,
@@ -1295,7 +1301,7 @@ mod tests {
         }
         repo.head()
             .ok()
-            .and_then(|head| head.shorthand().map(|value| value.to_string()))
+            .and_then(|head| head.shorthand().ok().map(str::to_string))
     }
 
     fn read_branch_file(repo: &Repository, branch_name: &str, path: &str) -> Option<String> {

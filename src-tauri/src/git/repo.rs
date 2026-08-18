@@ -25,8 +25,9 @@ pub fn get_branch_name(repo: &Repository) -> Result<Option<String>> {
     if head.is_branch() {
         Ok(head
             .shorthand()
-            .map(|s| s.to_string())
-            .or_else(|| head.name().map(|s| s.to_string())))
+            .or_else(|_| head.name())
+            .ok()
+            .map(str::to_string))
     } else {
         Ok(None)
     }
