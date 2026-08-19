@@ -5518,6 +5518,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
         })}\n${result}`;
       };
 
+      const getTerminalProjectScopeError = (projectId: string): string | null => {
+        const projectMount = executionContext.projectMounts.find(
+          (mount) => mount.projectId === projectId,
+        );
+        if (
+          !projectMount ||
+          !executionContext.actionableProjectIds.includes(projectId)
+        ) {
+          return `project "${projectId}" is outside the writable workspace scope for this conversation.`;
+        }
+        if (projectMount.isReadOnly) {
+          return `project "${projectMount.displayName}" is read-only.`;
+        }
+        return null;
+      };
+
+      const readScopedTerminalSession = async (sessionId: string) => {
+        const terminalStore = useTerminalStore.getState();
+        const session =
+          terminalStore.sessions[sessionId] ??
+          (await terminalStore.readSession(sessionId));
+        const scopeError = getTerminalProjectScopeError(session.project_id);
+        return { session, scopeError };
+      };
+
       if (normalizedToolName === "terminal_create_session") {
         const explicitProjectId =
           typeof args.project_id === "string" &&
@@ -5526,21 +5551,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : null;
         const projectId =
           explicitProjectId ||
-          executionContext.actionableProjectIds[0] ||
-          executionContext.focusedProjectId ||
-          executionContext.projectId;
+          executionContext.actionableProjectIds[0];
 
         if (!projectId) {
           return "Missing project_id argument for terminal_create_session.";
         }
 
-        if (explicitProjectId) {
-          const explicitProject = executionContext.projectMounts.find(
-            (mount) => mount.projectId === explicitProjectId,
-          );
-          if (explicitProject?.isReadOnly) {
-            return `Error executing terminal_create_session: project "${explicitProject.displayName}" is read-only.`;
-          }
+        const scopeError = getTerminalProjectScopeError(projectId);
+        if (scopeError) {
+          return `Error executing terminal_create_session: ${scopeError}`;
         }
 
         const session = await useTerminalStore.getState().createSession({
@@ -5558,6 +5577,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!command.trim())
           return "Missing command argument for terminal_run.";
 
+        const scopedSession = await readScopedTerminalSession(sessionId);
+        if (scopedSession.scopeError) {
+          return `Error executing terminal_run: ${scopedSession.scopeError}`;
+        }
+
         const session = await useTerminalStore.getState().runCommand({
           sessionId,
           command,
@@ -5574,16 +5598,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
           typeof args.session_id === "string" ? args.session_id.trim() : "";
         if (!sessionId) return "Missing session_id argument for terminal_read.";
 
-        const session = await useTerminalStore
-          .getState()
-          .readSession(sessionId);
-        return JSON.stringify(session, null, 2);
+        const scopedSession = await readScopedTerminalSession(sessionId);
+        if (scopedSession.scopeError) {
+          return `Error executing terminal_read: ${scopedSession.scopeError}`;
+        }
+        return JSON.stringify(scopedSession.session, null, 2);
       }
 
       if (normalizedToolName === "terminal_kill") {
         const sessionId =
           typeof args.session_id === "string" ? args.session_id.trim() : "";
         if (!sessionId) return "Missing session_id argument for terminal_kill.";
+
+        const scopedSession = await readScopedTerminalSession(sessionId);
+        if (scopedSession.scopeError) {
+          return `Error executing terminal_kill: ${scopedSession.scopeError}`;
+        }
 
         const session = await useTerminalStore
           .getState()
