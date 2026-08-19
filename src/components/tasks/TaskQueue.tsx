@@ -61,10 +61,8 @@ import {
 import { Icon, IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
-import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
-import { TaskProjectCommandsModal } from './TaskProjectCommandsModal';
 import { TaskStatusIndicator } from './TaskStatusIndicator';
 import type { StandaloneTaskKind, TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
@@ -82,7 +80,22 @@ import {
 import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
 import { isStandaloneTaskKindCreatable } from '../../services/standaloneTaskKinds';
 import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
-import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
+
+const ConfirmPromptModal = React.lazy(() =>
+  import('../ui/ConfirmPromptModal').then((module) => ({
+    default: module.ConfirmPromptModal,
+  })),
+);
+const TaskProjectCommandsModal = React.lazy(() =>
+  import('./TaskProjectCommandsModal').then((module) => ({
+    default: module.TaskProjectCommandsModal,
+  })),
+);
+const CreateImplementTaskDialog = React.lazy(() =>
+  import('./CreateImplementTaskDialog').then((module) => ({
+    default: module.CreateImplementTaskDialog,
+  })),
+);
 
 interface TaskQueueProps {
   className?: string;
@@ -2043,20 +2056,22 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       </div>
 
       {showCreateTaskDialog && (
-        <CreateImplementTaskDialog
-          projects={projectFilterOptions}
-          initialProjectId={
-            projectFilter !== ALL_PROJECTS_FILTER &&
-            editableProjectOptions.some((project) => project.id === projectFilter)
-              ? projectFilter
-              : null
-          }
-          isCreating={Boolean(pendingTaskId)}
-          onClose={() => {
-            if (!pendingTaskId) setShowCreateTaskDialog(false);
-          }}
-          onCreate={(input) => void handleCreateManualFeature(input)}
-        />
+        <React.Suspense fallback={null}>
+          <CreateImplementTaskDialog
+            projects={projectFilterOptions}
+            initialProjectId={
+              projectFilter !== ALL_PROJECTS_FILTER &&
+              editableProjectOptions.some((project) => project.id === projectFilter)
+                ? projectFilter
+                : null
+            }
+            isCreating={Boolean(pendingTaskId)}
+            onClose={() => {
+              if (!pendingTaskId) setShowCreateTaskDialog(false);
+            }}
+            onCreate={(input) => void handleCreateManualFeature(input)}
+          />
+        </React.Suspense>
       )}
 
       <div ref={taskListRef} className="flex-1 overflow-y-auto">
@@ -2132,133 +2147,143 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       </div>
 
       {taskCommandModal && (
-        <TaskProjectCommandsModal
-          isOpen
-          projectGroupName={taskCommandModal.groupName}
-          projects={taskCommandModal.projects}
-          isSubmitting={isSavingTaskCommands}
-          requireRunCommand={taskCommandModal.autoRunAfterSave}
-          onClose={() => {
-            if (!isSavingTaskCommands) {
-              setTaskCommandModal(null);
-            }
-          }}
-          onSave={(projects) => {
-            void (async () => {
-              setIsSavingTaskCommands(true);
-              try {
-                await saveTaskProjectCommandDrafts(projects);
-                const autoRunTaskId = taskCommandModal.autoRunAfterSave
-                  ? taskCommandModal.taskId
-                  : null;
+        <React.Suspense fallback={null}>
+          <TaskProjectCommandsModal
+            isOpen
+            projectGroupName={taskCommandModal.groupName}
+            projects={taskCommandModal.projects}
+            isSubmitting={isSavingTaskCommands}
+            requireRunCommand={taskCommandModal.autoRunAfterSave}
+            onClose={() => {
+              if (!isSavingTaskCommands) {
                 setTaskCommandModal(null);
-                notify.success(
-                  t('project.projectSettings', 'Paramètres du projet'),
-                  {
-                    description: t(
-                      'implement.taskCommandsSaved',
-                      'Commands saved successfully.'
-                    ),
-                  }
-                );
-
-                if (autoRunTaskId) {
-                  const nextTask = tasks.find((task) => task.id === autoRunTaskId);
-                  if (nextTask) {
-                    await handleRunTaskCommands(nextTask);
-                  }
-                }
-              } catch (error) {
-                const message =
-                  error instanceof Error
-                    ? error.message
-                    : t('common.error', 'An error occurred');
-                notify.error(message);
-              } finally {
-                setIsSavingTaskCommands(false);
               }
-            })();
-          }}
-        />
+            }}
+            onSave={(projects) => {
+              void (async () => {
+                setIsSavingTaskCommands(true);
+                try {
+                  await saveTaskProjectCommandDrafts(projects);
+                  const autoRunTaskId = taskCommandModal.autoRunAfterSave
+                    ? taskCommandModal.taskId
+                    : null;
+                  setTaskCommandModal(null);
+                  notify.success(
+                    t('project.projectSettings', 'Paramètres du projet'),
+                    {
+                      description: t(
+                        'implement.taskCommandsSaved',
+                        'Commands saved successfully.'
+                      ),
+                    }
+                  );
+
+                  if (autoRunTaskId) {
+                    const nextTask = tasks.find((task) => task.id === autoRunTaskId);
+                    if (nextTask) {
+                      await handleRunTaskCommands(nextTask);
+                    }
+                  }
+                } catch (error) {
+                  const message =
+                    error instanceof Error
+                      ? error.message
+                      : t('common.error', 'An error occurred');
+                  notify.error(message);
+                } finally {
+                  setIsSavingTaskCommands(false);
+                }
+              })();
+            }}
+          />
+        </React.Suspense>
       )}
 
-      <ConfirmPromptModal
-        isOpen={Boolean(renameTarget)}
-        title={t('implement.renameTaskTitle', 'Rename task')}
-        description={t('implement.renameTaskDescription', 'Choose a new title for this task.')}
-        confirmLabel={t('common.rename', 'Rename')}
-        cancelLabel={t('common.cancel', 'Cancel')}
-        initialValue={renameTarget?.title || ''}
-        inputPlaceholder={t('implement.taskTitle', 'Task title')}
-        requireInput
-        isSubmitting={pendingTaskId === renameTarget?.id}
-        onCancel={() => {
-          if (!pendingTaskId) {
-            setRenameTarget(null);
-          }
-        }}
-        onConfirm={(value) => {
-          if (!renameTarget) return;
-          void (async () => {
-            setPendingTaskId(renameTarget.id);
-            try {
-              await renameTask(renameTarget.id, value || '');
-              setRenameTarget(null);
-            } finally {
-              setPendingTaskId((current) => (current === renameTarget.id ? null : current));
-            }
-          })();
-        }}
-      />
-
-      <ConfirmPromptModal
-        isOpen={Boolean(confirmTarget)}
-        title={
-          confirmTarget?.action === 'archive'
-            ? t('implement.archiveTaskTitle', 'Archive task')
-            : t('implement.deleteTaskTitle', 'Delete task')
-        }
-        description={
-          confirmTarget?.action === 'archive'
-            ? t(
-              'implement.archiveTaskDescription',
-              'Archive this task, remove its worktree and local branch, and keep its conversation history.'
-            )
-            : t(
-              'implement.deleteTaskDescription',
-              'Delete this standalone feature, discard local changes, remove its worktree and local branch, and delete its conversation.'
-            )
-        }
-        confirmLabel={
-          confirmTarget?.action === 'archive'
-            ? t('common.archive', 'Archive')
-            : t('common.delete', 'Delete')
-        }
-        cancelLabel={t('common.cancel', 'Cancel')}
-        confirmVariant={confirmTarget?.action === 'delete' ? 'error' : 'primary'}
-        isSubmitting={pendingTaskId === confirmTarget?.task.id}
-        onCancel={() => {
-          if (!pendingTaskId) {
-            setConfirmTarget(null);
-          }
-        }}
-        onConfirm={() => {
-          if (!confirmTarget) return;
-          void (async () => {
-            setPendingTaskId(confirmTarget.task.id);
-            try {
-              if (confirmTarget.action === 'archive') {
-                await archiveTask(confirmTarget.task.id);
-              } else {
-                await deleteTask(confirmTarget.task.id);
+      {renameTarget && (
+        <React.Suspense fallback={null}>
+          <ConfirmPromptModal
+            isOpen
+            title={t('implement.renameTaskTitle', 'Rename task')}
+            description={t('implement.renameTaskDescription', 'Choose a new title for this task.')}
+            confirmLabel={t('common.rename', 'Rename')}
+            cancelLabel={t('common.cancel', 'Cancel')}
+            initialValue={renameTarget.title}
+            inputPlaceholder={t('implement.taskTitle', 'Task title')}
+            requireInput
+            isSubmitting={pendingTaskId === renameTarget.id}
+            onCancel={() => {
+              if (!pendingTaskId) {
+                setRenameTarget(null);
               }
-              setConfirmTarget(null);
-            } finally {
-              setPendingTaskId((current) => (current === confirmTarget.task.id ? null : current));
+            }}
+            onConfirm={(value) => {
+              void (async () => {
+                setPendingTaskId(renameTarget.id);
+                try {
+                  await renameTask(renameTarget.id, value || '');
+                  setRenameTarget(null);
+                } finally {
+                  setPendingTaskId((current) => (current === renameTarget.id ? null : current));
+                }
+              })();
+            }}
+          />
+        </React.Suspense>
+      )}
+
+      {confirmTarget && (
+        <React.Suspense fallback={null}>
+          <ConfirmPromptModal
+            isOpen
+            title={
+              confirmTarget.action === 'archive'
+                ? t('implement.archiveTaskTitle', 'Archive task')
+                : t('implement.deleteTaskTitle', 'Delete task')
             }
-          })();
-        }}
-      />
+            description={
+              confirmTarget.action === 'archive'
+                ? t(
+                  'implement.archiveTaskDescription',
+                  'Archive this task, remove its worktree and local branch, and keep its conversation history.'
+                )
+                : t(
+                  'implement.deleteTaskDescription',
+                  'Delete this standalone feature, discard local changes, remove its worktree and local branch, and delete its conversation.'
+                )
+            }
+            confirmLabel={
+              confirmTarget.action === 'archive'
+                ? t('common.archive', 'Archive')
+                : t('common.delete', 'Delete')
+            }
+            cancelLabel={t('common.cancel', 'Cancel')}
+            confirmVariant={confirmTarget.action === 'delete' ? 'error' : 'primary'}
+            isSubmitting={pendingTaskId === confirmTarget.task.id}
+            onCancel={() => {
+              if (!pendingTaskId) {
+                setConfirmTarget(null);
+              }
+            }}
+            onConfirm={() => {
+              void (async () => {
+                setPendingTaskId(confirmTarget.task.id);
+                try {
+                  if (confirmTarget.action === 'archive') {
+                    await archiveTask(confirmTarget.task.id);
+                  } else {
+                    await deleteTask(confirmTarget.task.id);
+                  }
+                  setConfirmTarget(null);
+                } finally {
+                  setPendingTaskId((current) => (
+                    current === confirmTarget.task.id ? null : current
+                  ));
+                }
+              })();
+            }}
+          />
+        </React.Suspense>
+      )}
     </aside>
   );
 };

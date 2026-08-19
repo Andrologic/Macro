@@ -391,6 +391,7 @@ fn collect_initial_commit_preview(repo: &Repository) -> Result<InitialCommitPrev
     for entry in statuses.iter() {
         let candidate_path = entry
             .path()
+            .ok()
             .or_else(|| {
                 entry
                     .head_to_index()
@@ -432,7 +433,13 @@ fn collect_initial_commit_preview(repo: &Repository) -> Result<InitialCommitPrev
 fn resolve_unborn_head_branch(repo: &Repository) -> Option<String> {
     repo.find_reference("HEAD")
         .ok()
-        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .and_then(|reference| {
+            reference
+                .symbolic_target()
+                .ok()
+                .flatten()
+                .map(str::to_string)
+        })
         .and_then(|target| target.rsplit('/').next().map(str::to_string))
         .map(|branch| branch.trim().to_string())
         .filter(|branch| !branch.is_empty())
@@ -1053,7 +1060,13 @@ fn create_initial_commit(repo: &Repository) -> Result<Option<String>> {
     let head_reference_name = repo
         .find_reference("HEAD")
         .ok()
-        .and_then(|reference| reference.symbolic_target().map(str::to_string))
+        .and_then(|reference| {
+            reference
+                .symbolic_target()
+                .ok()
+                .flatten()
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| "refs/heads/main".to_string());
     let mut index = repo.index().map_err(|e| BackendError::Git {
         message: format!("Failed to open repository index: {}", e),

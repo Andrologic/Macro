@@ -44,6 +44,7 @@ interface LoadArchitectPlanServiceOptions {
 
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
+  const appSettings = new Map<string, string>();
   const workspaceFilesByWorkspacePath = options.filesByWorkspacePath ?? {};
   const normalizeMockPath = (value: string): string =>
     value.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -95,6 +96,21 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     ...actualTauriIpc,
     aiGetDevProviderOverrides: async () => null,
     isTauriAvailable: () => options.tauriAvailable === true,
+    dbGetAppSetting: async (key: string) => {
+      const value = appSettings.get(key);
+      return value === undefined ? null : { key, value_json: value, updated_at: '' };
+    },
+    dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }: {
+      key: string;
+      expectedValueJson: string | null;
+      valueJson: string;
+    }) => {
+      if ((appSettings.get(key) ?? null) !== expectedValueJson) {
+        return { applied: false };
+      }
+      appSettings.set(key, valueJson);
+      return { applied: true };
+    },
     workspaceGetActiveRoot: async () => options.workspaceRoot ?? '/repos/web',
     macroBranchCommitIfDirty: async () => ({
       branch: '@macro',

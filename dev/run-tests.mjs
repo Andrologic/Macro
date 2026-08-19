@@ -9,8 +9,24 @@ const ignoredPrefixes = [
   'dist/',
 ];
 
+const productionConditionTestFiles = new Set([
+  'src/components/chat/composer/ComposerEditor.test.tsx',
+]);
+
 const run = async (args) => {
-  const proc = Bun.spawn(['bun', 'test', ...args], {
+  const usesLexicalProductionExports = args.some((arg) =>
+    productionConditionTestFiles.has(arg.replaceAll('\\', '/'))
+  );
+  // Bun 1.3.14 creates an initialization cycle in Lexical's development ESM
+  // exports. Keep React in test mode while selecting Lexical's equivalent
+  // production exports for the affected integration test.
+  const proc = Bun.spawn([
+    'bun',
+    ...(usesLexicalProductionExports ? ['--conditions=production'] : []),
+    'test',
+    ...args,
+  ], {
+    env: { ...process.env, NODE_ENV: 'test' },
     stdout: 'inherit',
     stderr: 'inherit',
   });

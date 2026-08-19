@@ -96,7 +96,7 @@ export function buildDiffArgs(base, head, mode = 'direct') {
     : ['diff', '--name-status', '-z', '--find-renames', base, head];
 }
 
-function changedPaths(base, head, mode) {
+export function changedPaths(base, head, mode) {
   const args = buildDiffArgs(base, head, mode);
   // An all-zero base means a newly created ref. Classify it conservatively by
   // returning no paths, which maps to configuration=true and runs every check.

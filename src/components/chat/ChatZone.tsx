@@ -40,7 +40,6 @@ import {
   replaceSpeechComposerInsertion,
   type SpeechComposerInsertion,
 } from './speechComposerText';
-import { ImagePreviewModal } from '../modals/ImagePreviewModal';
 import { ContextReferenceChip } from './ContextReferenceChip';
 import {
   getFocusedProjectForGroup,
@@ -63,11 +62,6 @@ import {
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
-import { QuestionnaireFooter } from './QuestionnaireFooter';
-import { ToolApprovalFooter } from './ToolApprovalFooter';
-import { QuestionnaireResponseSummary } from './QuestionnaireResponseSummary';
-import { PlanFormModal } from '../architect/PlanFormModal';
-import { ArchitectPlanNamingRecoveryModal } from '../architect/ArchitectPlanNamingRecoveryModal';
 import {
   ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
   dispatchArchitectPlanSelectorRequest,
@@ -76,7 +70,6 @@ import {
 } from '../architect/planSelectorEvents';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getPlanNodeTodoState } from '../../services/planNodeTodos';
-import { ImplementTaskTodoDropdown } from './ImplementTaskTodoDropdown';
 import { TaskArtifactsButton } from '../implement/TaskArtifactsButton';
 import {
   getDependencyBlockedMessage,
@@ -93,11 +86,51 @@ import {
   CompactionBoundaryRow,
   CompactionProgressRow,
 } from './CompactionTranscriptUi';
-import { ContextWindowIndicator } from './ContextWindowIndicator';
-import { AgentCodeReplayConfirmModal } from './AgentCodeReplayConfirmModal';
 import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation';
 import { notify } from '../ui/toastService';
 import { toServiceError } from '../../services/contracts/errors';
+
+const QuestionnaireFooter = React.lazy(() =>
+  import('./QuestionnaireFooter').then((module) => ({ default: module.QuestionnaireFooter })),
+);
+const ToolApprovalFooter = React.lazy(() =>
+  import('./ToolApprovalFooter').then((module) => ({ default: module.ToolApprovalFooter })),
+);
+const QuestionnaireResponseSummary = React.lazy(() =>
+  import('./QuestionnaireResponseSummary').then((module) => ({
+    default: module.QuestionnaireResponseSummary,
+  })),
+);
+const ImplementTaskTodoDropdown = React.lazy(() =>
+  import('./ImplementTaskTodoDropdown').then((module) => ({
+    default: module.ImplementTaskTodoDropdown,
+  })),
+);
+const ContextWindowIndicator = React.lazy(() =>
+  import('./ContextWindowIndicator').then((module) => ({
+    default: module.ContextWindowIndicator,
+  })),
+);
+const AgentCodeReplayConfirmModal = React.lazy(() =>
+  import('./AgentCodeReplayConfirmModal').then((module) => ({
+    default: module.AgentCodeReplayConfirmModal,
+  })),
+);
+const ImagePreviewModal = React.lazy(() =>
+  import('../modals/ImagePreviewModal').then((module) => ({
+    default: module.ImagePreviewModal,
+  })),
+);
+const ArchitectPlanNamingRecoveryModal = React.lazy(() =>
+  import('../architect/ArchitectPlanNamingRecoveryModal').then((module) => ({
+    default: module.ArchitectPlanNamingRecoveryModal,
+  })),
+);
+const PlanFormModal = React.lazy(() =>
+  import('../architect/PlanFormModal').then((module) => ({
+    default: module.PlanFormModal,
+  })),
+);
 
 interface ChatZoneProps {
   headerActions?: React.ReactNode;
@@ -747,7 +780,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
               ) : architectActionMessage ? (
                 <ArchitectActionMessage action={architectActionMessage} />
               ) : questionnaireResponseSummary ? (
-                <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
+                <Suspense fallback={null}>
+                  <QuestionnaireResponseSummary summary={questionnaireResponseSummary} />
+                </Suspense>
               ) : (
                 <UserMessageContent content={message.content} />
               )}
@@ -2763,13 +2798,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         >
           <div className="flex items-center gap-3 min-w-0">
             {canShowImplementTaskTodoDropdown ? (
-              <ImplementTaskTodoDropdown
-                taskTitle={modeHeader.title}
-                todos={selectedTaskTodos}
-                isOpen={isTaskTodoDropdownOpen}
-                onToggle={() => setIsTaskTodoDropdownOpen((current) => !current)}
-                rootRef={taskTodoDropdownRef}
-              />
+              <Suspense fallback={null}>
+                <ImplementTaskTodoDropdown
+                  taskTitle={modeHeader.title}
+                  todos={selectedTaskTodos}
+                  isOpen={isTaskTodoDropdownOpen}
+                  onToggle={() => setIsTaskTodoDropdownOpen((current) => !current)}
+                  rootRef={taskTodoDropdownRef}
+                />
+              </Suspense>
             ) : (
               <div className="h-8 w-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
                 <Icon name={modeHeader.icon} size={14} className="text-primary" />
@@ -2788,19 +2825,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           <div className="flex items-center gap-2">
             {mode === 'Implement' && <TaskArtifactsButton />}
             {shouldShowContextIndicator && selectedConversationId && (
-              <ContextWindowIndicator
-                diagnostics={contextDiagnostics}
-                compactionStatus={activeCompactionStatus}
-                isCompacting={isActiveContextCompacting}
-                activityLabel={manualCompactionActivityLabel}
-                canCompactNow={!isBusySending && !isManualCompacting}
-                manualCompactionDisabledReason={manualCompactionDisabledReason}
-                manualCompactionFeedback={manualCompactionFeedback}
-                onRefresh={() => {
-                  void runContextDiagnosticsRefresh();
-                }}
-                onCompactNow={handleManualCompaction}
-              />
+              <Suspense fallback={null}>
+                <ContextWindowIndicator
+                  diagnostics={contextDiagnostics}
+                  compactionStatus={activeCompactionStatus}
+                  isCompacting={isActiveContextCompacting}
+                  activityLabel={manualCompactionActivityLabel}
+                  canCompactNow={!isBusySending && !isManualCompacting}
+                  manualCompactionDisabledReason={manualCompactionDisabledReason}
+                  manualCompactionFeedback={manualCompactionFeedback}
+                  onRefresh={() => {
+                    void runContextDiagnosticsRefresh();
+                  }}
+                  onCompactNow={handleManualCompaction}
+                />
+              </Suspense>
             )}
             {headerActions}
           </div>
@@ -3159,45 +3198,49 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             )}
 
             {activePendingToolApproval ? (
-              <ToolApprovalFooter
-                pendingApproval={activePendingToolApproval}
-                onAllowOnce={() =>
-                  approvePendingToolApprovalOnce(
-                    activePendingToolApproval.conversationId,
-                  )
-                }
-                onAllowForConversation={() =>
-                  approvePendingToolApprovalForConversation(
-                    activePendingToolApproval.conversationId,
-                  )
-                }
-                onDeny={(reason) =>
-                  denyPendingToolApproval(
-                    activePendingToolApproval.conversationId,
-                    reason,
-                  )
-                }
-              />
+              <Suspense fallback={null}>
+                <ToolApprovalFooter
+                  pendingApproval={activePendingToolApproval}
+                  onAllowOnce={() =>
+                    approvePendingToolApprovalOnce(
+                      activePendingToolApproval.conversationId,
+                    )
+                  }
+                  onAllowForConversation={() =>
+                    approvePendingToolApprovalForConversation(
+                      activePendingToolApproval.conversationId,
+                    )
+                  }
+                  onDeny={(reason) =>
+                    denyPendingToolApproval(
+                      activePendingToolApproval.conversationId,
+                      reason,
+                    )
+                  }
+                />
+              </Suspense>
             ) : activeQuestionnaire ? (
-              <QuestionnaireFooter
-                activeQuestionnaire={activeQuestionnaire}
-                draftText={activeQuestionnaireDraftText}
-                selectedChoice={activeQuestionnaireSelectedChoice}
-                submitValue={activeQuestionnaireSubmitValue}
-                hasPreviousStep={activeQuestionnaireHasPreviousStep}
-                hasNextStep={activeQuestionnaireHasNextStep}
-                isBusySending={isBusySending}
-                onAnswer={handleQuestionnaireAnswer}
-                onSubmit={handleQuestionnaireSubmit}
-                onStepChange={handleQuestionnaireStepChange}
-                onDraftTextChange={(value) =>
-                  setActiveQuestionnaireDraftText(
-                    activeQuestionnaire.conversationId,
-                    value,
-                  )
-                }
-                onCancel={handleQuestionnaireCancel}
-              />
+              <Suspense fallback={null}>
+                <QuestionnaireFooter
+                  activeQuestionnaire={activeQuestionnaire}
+                  draftText={activeQuestionnaireDraftText}
+                  selectedChoice={activeQuestionnaireSelectedChoice}
+                  submitValue={activeQuestionnaireSubmitValue}
+                  hasPreviousStep={activeQuestionnaireHasPreviousStep}
+                  hasNextStep={activeQuestionnaireHasNextStep}
+                  isBusySending={isBusySending}
+                  onAnswer={handleQuestionnaireAnswer}
+                  onSubmit={handleQuestionnaireSubmit}
+                  onStepChange={handleQuestionnaireStepChange}
+                  onDraftTextChange={(value) =>
+                    setActiveQuestionnaireDraftText(
+                      activeQuestionnaire.conversationId,
+                      value,
+                    )
+                  }
+                  onCancel={handleQuestionnaireCancel}
+                />
+              </Suspense>
             ) : (
               <div
                 data-chat-composer-editing={
@@ -3347,80 +3390,92 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         </footer>
       </div>
 
-      <AgentCodeReplayConfirmModal
-        pendingReplayConfirmation={pendingReplayConfirmation}
-        isSubmitting={isReplayConfirmationSubmitting}
-        onCancel={cancelReplayConfirmation}
-        onConfirm={() => {
-          void confirmReplayConfirmation();
-        }}
-      />
+      {pendingReplayConfirmation && (
+        <Suspense fallback={null}>
+          <AgentCodeReplayConfirmModal
+            pendingReplayConfirmation={pendingReplayConfirmation}
+            isSubmitting={isReplayConfirmationSubmitting}
+            onCancel={cancelReplayConfirmation}
+            onConfirm={() => {
+              void confirmReplayConfirmation();
+            }}
+          />
+        </Suspense>
+      )}
 
-      <ImagePreviewModal
-        isOpen={Boolean(previewImage)}
-        image={previewImage}
-        onClose={() => setPreviewImage(null)}
-      />
+      {previewImage && (
+        <Suspense fallback={null}>
+          <ImagePreviewModal
+            isOpen
+            image={previewImage}
+            onClose={() => setPreviewImage(null)}
+          />
+        </Suspense>
+      )}
 
       {mode === 'Architect' &&
         architectPlanNamingRecovery?.stage === 'choice' && (
-          <ArchitectPlanNamingRecoveryModal
-            title={t(
-              'architect.planNamingRecovery.title',
-              'Plan name still needed'
-            )}
-            description={t(
-              'architect.planNamingRecovery.description',
-              'Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.'
-            )}
-            retryLabel={t('architect.planNamingRecovery.retryAi', 'Retry AI')}
-            manualLabel={t(
-              'architect.planNamingRecovery.nameManually',
-              'Name manually'
-            )}
-            retryingLabel={t(
-              'architect.planNamingRecovery.retryingAi',
-              'Retrying AI...'
-            )}
-            error={architectPlanNamingRecovery.error}
-            isLoading={architectPlanNamingRecovery.isSubmitting}
-            onRetry={() => {
-              void retryArchitectPlanNamingRecovery();
-            }}
-            onManual={() => setArchitectPlanNamingRecoveryStage('manual')}
-          />
+          <Suspense fallback={null}>
+            <ArchitectPlanNamingRecoveryModal
+              title={t(
+                'architect.planNamingRecovery.title',
+                'Plan name still needed'
+              )}
+              description={t(
+                'architect.planNamingRecovery.description',
+                'Macro could not generate a plan name from the first message after three attempts. Retry with AI or name the plan manually.'
+              )}
+              retryLabel={t('architect.planNamingRecovery.retryAi', 'Retry AI')}
+              manualLabel={t(
+                'architect.planNamingRecovery.nameManually',
+                'Name manually'
+              )}
+              retryingLabel={t(
+                'architect.planNamingRecovery.retryingAi',
+                'Retrying AI...'
+              )}
+              error={architectPlanNamingRecovery.error}
+              isLoading={architectPlanNamingRecovery.isSubmitting}
+              onRetry={() => {
+                void retryArchitectPlanNamingRecovery();
+              }}
+              onManual={() => setArchitectPlanNamingRecoveryStage('manual')}
+            />
+          </Suspense>
         )}
 
       {mode === 'Architect' &&
         architectPlanNamingRecovery?.stage === 'manual' && (
-          <PlanFormModal
-            initialValue=""
-            isCanonicalPlan
-            title={t(
-              'architect.planNamingRecovery.manualTitle',
-              'Name This Plan'
-            )}
-            description={t(
-              'architect.planNamingRecovery.manualDescription',
-              'Enter the plan name you want to use for this conversation.'
-            )}
-            confirmLabel={t(
-              'architect.planNamingRecovery.saveManualName',
-              'Save plan name'
-            )}
-            cancelLabel={t('architect.planNamingRecovery.back', 'Back')}
-            requireValue
-            placeholder={t(
-              'architect.planNamingRecovery.manualPlaceholder',
-              'e.g. Checkout Recovery Refresh'
-            )}
-            isLoading={architectPlanNamingRecovery.isSubmitting}
-            error={architectPlanNamingRecovery.error}
-            onConfirm={(value) => {
-              void submitArchitectPlanManualName(value);
-            }}
-            onClose={() => setArchitectPlanNamingRecoveryStage('choice')}
-          />
+          <Suspense fallback={null}>
+            <PlanFormModal
+              initialValue=""
+              isCanonicalPlan
+              title={t(
+                'architect.planNamingRecovery.manualTitle',
+                'Name This Plan'
+              )}
+              description={t(
+                'architect.planNamingRecovery.manualDescription',
+                'Enter the plan name you want to use for this conversation.'
+              )}
+              confirmLabel={t(
+                'architect.planNamingRecovery.saveManualName',
+                'Save plan name'
+              )}
+              cancelLabel={t('architect.planNamingRecovery.back', 'Back')}
+              requireValue
+              placeholder={t(
+                'architect.planNamingRecovery.manualPlaceholder',
+                'e.g. Checkout Recovery Refresh'
+              )}
+              isLoading={architectPlanNamingRecovery.isSubmitting}
+              error={architectPlanNamingRecovery.error}
+              onConfirm={(value) => {
+                void submitArchitectPlanManualName(value);
+              }}
+              onClose={() => setArchitectPlanNamingRecoveryStage('choice')}
+            />
+          </Suspense>
         )}
     </main>
   );
