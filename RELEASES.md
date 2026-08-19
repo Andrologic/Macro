@@ -125,11 +125,15 @@ sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 ## Release Runbook
 
 1. Finish the feature branch and run the smallest relevant local checks.
-2. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
-3. Merge to `main`, then create and push an annotated matching `vX.Y.Z` tag
+2. Run `bun run ci:pre-push` before updating the pull request.
+3. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
+4. Merge to `main`, fetch the resulting remote state, and run
+   `bun run release:preflight` from a clean checkout exactly matching
+   `origin/main`.
+5. Create and push an annotated matching `vX.Y.Z` tag
    from that history using an authorized release-maintainer account.
-4. Review the cheap validation job, then approve the protected `release`
+6. Review the cheap validation job, then approve the protected `release`
    environment when the tag and version are correct.
-5. Wait for `.github/workflows/release.yml` to create the draft release.
-6. Check the draft assets, signatures, notes, and checksums in GitHub.
-7. Publish the draft manually when it is ready for users.
+7. Wait for `.github/workflows/release.yml` to create the draft release.
+8. Check the draft assets, signatures, notes, and checksums in GitHub.
+9. Publish the draft manually when it is ready for users.

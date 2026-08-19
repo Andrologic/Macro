@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 
+git diff --cached --check
 bun dev/check-git-binaries.mjs --staged

@@ -34,6 +34,14 @@
     "build:analyze": "NODE_ENV=production bun node_modules/vite/bin/vite.js build --mode analyze",
     "bundle:check": "bun ./dev/check-bundle-size.mjs",
     "repo:check-binaries": "bun ./dev/check-git-binaries.mjs",
+    "hooks:install": "bun ./dev/git/install-hooks.mjs",
+    "ci:workflows": "bun ./dev/ci/validate-workflows.mjs",
+    "ci:documentation": "bun ./dev/ci/run-checks.mjs --profile documentation",
+    "ci:frontend": "bun ./dev/ci/run-checks.mjs --profile frontend",
+    "ci:native": "bun ./dev/ci/run-checks.mjs --profile native",
+    "ci:windows": "bun ./dev/ci/run-checks.mjs --profile windows",
+    "ci:pre-push": "bun ./dev/ci/pre-push.mjs",
+    "release:preflight": "bun ./dev/release/preflight.mjs",
     "preview": "bun node_modules/vite/bin/vite.js preview",
     "tauri": "bun dev/tauri-cli.mjs",
     "tauri:dev": "bun dev/tauri-cli.mjs dev",
@@ -57,7 +65,7 @@
     "version:sync": "bun dev/version/sync.mjs",
     "version:check": "bun dev/version/check.mjs",
     "version:bump": "bun dev/version/bump.mjs",
-    "ci": "bun install --frozen-lockfile && bun run version:check && bun run repo:check-binaries && bun run typecheck && bun run lint && bun run i18n:audit && bun run test && bun run build:ai-runtime && cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1 && cargo check --manifest-path src-tauri/Cargo.toml --example macro-headless --locked && bun run build && bun run bundle:check"
+    "ci": "bun ./dev/ci/run-checks.mjs --profile full"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.2",
@@ -134,7 +142,8 @@
     "terser": "5.49.0",
     "typescript-eslint": "8.59.2",
     "typescript": "5.9.3",
-    "vite": "7.3.6"
+    "vite": "7.3.6",
+    "yaml": "2.8.4"
   },
   "overrides": {
     "@codemirror/autocomplete": "6.20.2",

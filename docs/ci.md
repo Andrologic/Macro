@@ -2,6 +2,37 @@
 
 Macro uses two GitHub Actions workflows with deliberately different cost profiles.
 
+## Local validation gate
+
+GitHub Actions confirms changes on clean remote runners; it is not a development
+loop. Every clone should install the tracked hooks once:
+
+```bash
+bun run hooks:install
+```
+
+Before a push, `.githooks/pre-push` compares the complete proposed integration
+range, runs `dev/ci/classify-changes.mjs`, and selects a shared local profile:
+
+| Change | Local profile |
+| --- | --- |
+| Documentation only | Version manifests and tracked-binary policy |
+| Frontend | Locked install, workflow policy, frontend tests, build, and bundle budget |
+| Native or configuration | Complete frontend and Rust validation |
+| Full profile on Windows | Complete validation plus `cargo check --all-targets` |
+
+The successful result is cached outside the worktree for the exact HEAD, target
+base, platform, and profile. Running `bun run ci:pre-push` manually immediately
+before `git push` therefore does not duplicate the expensive work. A dirty
+worktree is rejected because it would make the validation differ from the
+commits actually sent.
+
+The workflow files invoke the same `dev/ci/run-checks.mjs` profiles. Workflow
+syntax and repository security policy are checked locally by
+`bun run ci:workflows`, including immutable action pins, explicit permissions,
+job timeouts, credential-free checkouts, tag-only releases, and the protected
+release environment.
+
 ## Pull request and branch CI
 
 The ordinary `CI` workflow runs for pull requests targeting `develop` or `main`, and as a safety net for direct pushes to those two branches. Feature-branch pushes do not trigger a second push workflow. A stable concurrency key per pull request cancels obsolete runs.
@@ -26,6 +57,17 @@ All actions are pinned to immutable commits, checkouts do not persist credential
 The `Release` workflow is tag-only. A stable tag named exactly `v<package version>` must point to a commit contained in `origin/main`. Cheap metadata, lockfile, frontend, bundle, sidecar, and Rust checks complete before the signed build matrix starts.
 
 The build matrix creates a universal macOS DMG, a Windows x64 NSIS installer, and Linux x64 AppImage, DEB, and RPM packages. It verifies platform signatures or package contents, refuses missing artifacts, and uploads short-lived build artifacts. The final job calculates SHA-256 sums and creates a draft GitHub release only. Publishing the draft is always a manual owner action.
+
+Before a release tag is created or pushed, `bun run release:preflight` requires
+a clean checkout whose HEAD exactly matches `origin/main`, verifies the stable
+version and tag availability, runs full local CI, and builds the native package
+for the current operating system. The tag push hook applies the same gate.
+
+Agents must not push repeatedly while using Actions results as their test loop.
+After a remote failure they must first reproduce or explain it locally, apply a
+focused correction, and pass the relevant local profile. An unchanged job may
+be rerun once only for a demonstrated transient runner, service, or network
+failure.
 
 ## Required GitHub settings
 
