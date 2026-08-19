@@ -1255,26 +1255,57 @@ const importMessagesMock = mock(
       conversation_id: conversationId,
     }))
 );
+const createTerminalSessionFromChatDto = (params: {
+  sessionId: string;
+  projectId: string;
+  cwd?: string | null;
+}) => ({
+  id: params.sessionId,
+  project_id: params.projectId,
+  project_name: params.projectId === 'project-2' ? 'API' : 'Web',
+  mount_name: params.projectId === 'project-2' ? 'api' : 'web',
+  workspace_path: params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
+  cwd:
+    params.cwd ??
+    (params.projectId === 'project-2'
+      ? 'C:/repos/api/.macro/worktrees/task-1'
+      : 'C:/repos/web/.macro/worktrees/task-1'),
+  status: 'idle',
+  last_command: null,
+  output: '',
+  exit_code: null,
+  timed_out: false,
+  updated_at: '2026-03-26T10:00:00.000Z',
+});
+const terminalSessionsFromChat = new Map<
+  string,
+  ReturnType<typeof createTerminalSessionFromChatDto>
+>();
 const terminalCreateSessionFromChatMock = mock(
-  async ({ projectId, cwd }: { projectId: string; cwd?: string | null }) => ({
-    id: `session-${projectId}`,
-    project_id: projectId,
-    project_name: projectId === 'project-2' ? 'API' : 'Web',
-    mount_name: projectId === 'project-2' ? 'api' : 'web',
-    workspace_path: projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
-    cwd:
-      cwd ??
-      (projectId === 'project-2'
-        ? 'C:/repos/api/.macro/worktrees/task-1'
-        : 'C:/repos/web/.macro/worktrees/task-1'),
-    status: 'idle',
-    last_command: null,
-    output: '',
-    exit_code: null,
-    timed_out: false,
-    updated_at: '2026-03-26T10:00:00.000Z',
-  })
+  async ({ projectId, cwd }: { projectId: string; cwd?: string | null }) => {
+    const session = createTerminalSessionFromChatDto({
+      sessionId: `session-${projectId}`,
+      projectId,
+      cwd,
+    });
+    terminalSessionsFromChat.set(session.id, session);
+    return session;
+  }
 );
+const terminalReadSessionFromChatMock = mock(async (sessionId: string) => {
+  const session =
+    terminalSessionsFromChat.get(sessionId) ??
+    createTerminalSessionFromChatDto({ sessionId, projectId: 'project-1' });
+  terminalSessionsFromChat.set(sessionId, session);
+  return session;
+});
+const terminalKillSessionFromChatMock = mock(async (sessionId: string) => {
+  const session = terminalSessionsFromChat.get(sessionId);
+  if (!session) {
+    throw new Error(`Unknown terminal session ${sessionId}`);
+  }
+  return { ...session, status: 'killed' };
+});
 const terminalRunCommandFromChatMock = mock(
   async ({
     sessionId,
@@ -1594,8 +1625,11 @@ const registerUseChatStoreMocks = async () => {
     useTerminalStore: {
       getState: () => ({
         addTerminalLine: () => undefined,
+        sessions: Object.fromEntries(terminalSessionsFromChat),
         createSession: terminalCreateSessionFromChatMock,
         runCommand: terminalRunCommandFromChatMock,
+        readSession: terminalReadSessionFromChatMock,
+        killSession: terminalKillSessionFromChatMock,
       }),
     },
   }));
@@ -1846,7 +1880,24 @@ const registerUseChatStoreMocks = async () => {
         'project-1': 'C:/repos/web/.macro/worktrees/task-1',
       },
       virtualRootEnabled: false,
-      projectMounts: [],
+      projectMounts: [
+        {
+          projectId: 'project-1',
+          groupId: 'group-1',
+          mountName: 'web',
+          displayName: 'Web',
+          workspacePath: 'C:/repos/web/.macro/worktrees/task-1',
+          isReadOnly: false,
+        },
+        {
+          projectId: 'project-2',
+          groupId: 'group-1',
+          mountName: 'api',
+          displayName: 'API',
+          workspacePath: 'C:/repos/api/.macro/worktrees/task-1',
+          isReadOnly: true,
+        },
+      ],
     })),
   }));
 
@@ -2519,8 +2570,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     dbFinalizeConversationReplayMock.mockClear();
     dbFinalizeConversationReplayMock.mockImplementation(async () => undefined);
     importMessagesMock.mockClear();
+    terminalSessionsFromChat.clear();
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
+    terminalReadSessionFromChatMock.mockClear();
+    terminalKillSessionFromChatMock.mockClear();
     resetSendChatNonStreamingImplementation();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => [
@@ -6732,6 +6786,88 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         'terminal_kill',
       ]),
     );
+  });
+
+  it('rejects terminal sessions outside the durable Chat workspace scope', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv'),
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: 'group-1',
+          project_id: 'project-1',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Ouvre un terminal dans un autre projet.',
+    });
+
+    const result = await getLatestArchitectToolHandler()('terminal_create_session', {
+      project_id: 'project-foreign',
+    });
+
+    expect(String(result)).toContain('outside the writable workspace scope');
+    expect(terminalCreateSessionFromChatMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects terminal session ids bound to a project outside the Chat workspace', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    terminalSessionsFromChat.set(
+      'session-foreign',
+      createTerminalSessionFromChatDto({
+        sessionId: 'session-foreign',
+        projectId: 'project-foreign',
+      }),
+    );
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv'),
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: 'group-1',
+          project_id: 'project-1',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Réutilise cette session.',
+    });
+
+    const onToolCall = getLatestArchitectToolHandler();
+    const runResult = await onToolCall('terminal_run', {
+      session_id: 'session-foreign',
+      command: 'pwd',
+    });
+    const readResult = await onToolCall('terminal_read', {
+      session_id: 'session-foreign',
+    });
+    const killResult = await onToolCall('terminal_kill', {
+      session_id: 'session-foreign',
+    });
+
+    for (const result of [runResult, readResult, killResult]) {
+      expect(String(result)).toContain('outside the writable workspace scope');
+    }
+    expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
+    expect(terminalKillSessionFromChatMock).not.toHaveBeenCalled();
   });
 
   it('passes enabled discovered MCP tools through Chat mode streaming options', async () => {
