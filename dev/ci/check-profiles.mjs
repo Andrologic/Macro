@@ -3,6 +3,7 @@ const step = (name, command, args) => ({ name, command, args });
 const repositoryChecks = [
   step('Check version manifests', 'bun', ['dev/version/check.mjs']),
   step('Reject generated binaries', 'bun', ['dev/check-git-binaries.mjs']),
+  step('Check Tauri updater configuration', 'bun', ['dev/release/updater-preflight.mjs']),
 ];
 
 const installStep = step('Install locked frontend dependencies', 'bun', ['install', '--frozen-lockfile']);

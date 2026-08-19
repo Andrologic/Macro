@@ -21,6 +21,7 @@ import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
 import { resolveFooterGitContext } from '../../services/footerGitContext';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
+import { UpdateStatusButton } from '../updates/UpdateStatusButton';
 import {
   presentMetadataSyncIssue,
   resolveDegradedErrorPresentation,
@@ -2145,6 +2146,7 @@ export const Footer: React.FC = () => {
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
             )}
+            <UpdateStatusButton />
             <Button
               ref={notificationCenterButtonRef}
               type="button"

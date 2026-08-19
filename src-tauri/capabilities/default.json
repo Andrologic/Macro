@@ -15,6 +15,10 @@
     "dialog:default",
     "notification:default",
     "store:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart",
     {
       "identifier": "http:default",
       "allow": [

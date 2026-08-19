@@ -67,6 +67,32 @@
     "shownOnce": "Cette note s’affiche une seule fois pour chaque version installée.",
     "continue": "Continuer vers Macro"
   },
+  "updates": {
+    "checking": "Recherche de mises à jour",
+    "downloading": "Téléchargement de la mise à jour",
+    "downloadingProgress": "Téléchargement de la mise à jour : {{progress}} %",
+    "restartToUpdate": "Redémarrer pour installer la version {{version}}",
+    "installing": "Installation de la mise à jour",
+    "retry": "La mise à jour a échoué. Réessayer",
+    "upToDate": "Macro est à jour",
+    "check": "Rechercher des mises à jour",
+    "checkFailed": "Impossible de rechercher les mises à jour",
+    "prepareFailed": "Macro n’a pas pu préparer le redémarrage",
+    "installFailed": "La mise à jour n’a pas pu être installée",
+    "activeWorkTitle": "Des agents sont encore actifs",
+    "activeWorkDescription": "{{count}} tâche active risque de perdre sa sortie actuelle si Macro redémarre maintenant.",
+    "agentActivity": "Agent",
+    "implementActivity": "Exécution Implement",
+    "wait": "Attendre",
+    "restartAnyway": "Redémarrer quand même",
+    "dialogTitle": "Mise à jour de Macro",
+    "available": "Mise à jour disponible",
+    "noNotes": "Aucune note de version n’a été fournie pour cette version.",
+    "downloadInProgress": "La mise à jour signée se télécharge en arrière-plan.",
+    "restartRequired": "Macro se rouvrira après l’installation de la mise à jour.",
+    "later": "Plus tard",
+    "restartAndUpdate": "Redémarrer et mettre à jour"
+  },
   "markdown": {
     "video": "Vidéo"
   },

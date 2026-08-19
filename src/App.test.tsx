@@ -153,6 +153,10 @@ const registerAppMocks = () => {
       enabled ? <div data-testid="mock-release-notes" /> : null,
   }));
 
+  mock.module('./components/updates/AppUpdateController', () => ({
+    default: () => null,
+  }));
+
   mock.module('./components/layout/Footer', () => ({
     Footer: () => <footer data-testid="mock-footer" />,
   }));

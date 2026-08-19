@@ -46,6 +46,32 @@
     "shownOnce": "Dieser Hinweis wird für jede installierte Version einmal angezeigt.",
     "continue": "Weiter zu Macro"
   },
+  "updates": {
+    "checking": "Nach Updates suchen",
+    "downloading": "Update wird heruntergeladen",
+    "downloadingProgress": "Update wird heruntergeladen: {{progress}} %",
+    "restartToUpdate": "Neu starten und auf v{{version}} aktualisieren",
+    "installing": "Update wird installiert",
+    "retry": "Update fehlgeschlagen. Erneut versuchen",
+    "upToDate": "Macro ist aktuell",
+    "check": "Nach Updates suchen",
+    "checkFailed": "Updates konnten nicht geprüft werden",
+    "prepareFailed": "Macro konnte den Neustart nicht vorbereiten",
+    "installFailed": "Das Update konnte nicht installiert werden",
+    "activeWorkTitle": "Agenten sind noch aktiv",
+    "activeWorkDescription": "Bei einem Neustart kann die aktuelle Ausgabe von {{count}} aktiven Aufgaben verloren gehen.",
+    "agentActivity": "Agent",
+    "implementActivity": "Implement-Ausführung",
+    "wait": "Warten",
+    "restartAnyway": "Trotzdem neu starten",
+    "dialogTitle": "Macro-Update",
+    "available": "Update verfügbar",
+    "noNotes": "Für diese Version wurden keine Versionshinweise bereitgestellt.",
+    "downloadInProgress": "Das signierte Update wird im Hintergrund heruntergeladen.",
+    "restartRequired": "Macro wird nach der Installation erneut geöffnet.",
+    "later": "Später",
+    "restartAndUpdate": "Neu starten und aktualisieren"
+  },
   "markdown": {
     "video": "Video"
   },

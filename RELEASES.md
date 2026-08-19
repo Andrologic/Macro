@@ -57,14 +57,89 @@ and Linux, then creates a GitHub Release draft named `v<version>`.
 The draft contains:
 
 - `Macro_<version>_macOS_universal.dmg`
+- `Macro_<version>_macOS_universal.app.tar.gz` and its `.sig` file
 - `Macro_<version>_Windows_x64_setup.exe`
+- `Macro_<version>_Windows_x64_setup.exe.sig`
 - `Macro_<version>_Linux_x64.AppImage`
+- `Macro_<version>_Linux_x64.AppImage.sig`
 - `Macro_<version>_Linux_x64.deb`
 - `Macro_<version>_Linux_x64.rpm`
+- `latest.json`, the signed updater manifest consumed by Macro
 - `SHA256SUMS.txt`
 - GitHub's automatic source archives.
 
 Review the draft release in GitHub before publishing it manually.
+
+## Tauri updater
+
+Macro checks the published stable release at startup. It downloads a signed
+update in the background, then waits for the user to restart the app. The
+updater endpoint is:
+
+```text
+https://github.com/Andrologic/Macro/releases/latest/download/latest.json
+```
+
+The draft release is not visible at this endpoint. Publish it only after
+checking `latest.json`, every `.sig` file, the tag-pinned URLs, and
+`SHA256SUMS.txt`.
+
+Tauri uses a separate signing key for updater artifacts. Generate it once on a
+trusted machine and keep the private key outside the repository:
+
+```bash
+bun tauri signer generate -w ~/.tauri/macro-updater.key
+```
+
+Put the generated public key in `src-tauri/tauri.conf.json`. Store the private
+key content and its password in the protected GitHub `release` environment as:
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Keep an encrypted backup of the private key. Losing it prevents installed
+versions from accepting future updates. Never commit the key, its password, or
+generated updater bundles.
+
+For a local signed bundle, expose the private key path and password only for
+the lifetime of the packaging shell:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = "C:\secure\macro-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<password>"
+bun run tauri:build
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+```
+
+Validate the endpoint, updater configuration, plugin versions, and lockfile
+before a push or a release tag:
+
+```bash
+bun run release:updater:check
+```
+
+After downloading a draft's assets, validate the manifest, all updater files,
+and their checksums locally:
+
+```bash
+bun run release:updater:verify -- \
+  --manifest release-assets/latest.json \
+  --asset-root release-assets \
+  --checksums release-assets/SHA256SUMS.txt
+```
+
+After publishing, validate the public endpoint without downloading the
+bundles:
+
+```bash
+bun run release:updater:verify -- \
+  --manifest https://github.com/Andrologic/Macro/releases/latest/download/latest.json
+```
+
+The release workflow generates `latest.json` from the four required targets:
+`windows-x86_64`, `linux-x86_64`, `darwin-x86_64`, and `darwin-aarch64`. The two
+macOS targets point to the same universal `.app.tar.gz` archive.
 
 ## Build Outputs
 
@@ -158,5 +233,31 @@ committing it and keep the release dialog usable without media playback.
 7. Review the cheap validation job, then approve the protected `release`
    environment when the tag and version are correct.
 8. Wait for `.github/workflows/release.yml` to create the draft release.
-9. Check the draft assets, signatures, notes, and checksums in GitHub.
+9. Run `bun run release:updater:check` and check the draft assets, signatures,
+   `latest.json`, notes, and checksums in GitHub.
 10. Publish the draft manually when it is ready for users.
+11. From an older installed version, verify that the published
+    `/releases/latest/download/latest.json` is reachable and that the updater
+    offers the new version before announcing the release.
+
+## Recovering a faulty release
+
+If the problem is found while the release is still a draft, keep it unpublished,
+fix the source, recreate the tag from the corrected release commit, and let the
+workflow rebuild every asset. Never reuse a signature for changed content.
+
+If the release has already been published:
+
+1. Immediately convert it back to a draft so `/releases/latest/` resolves to the
+   previous stable release for clients that have not downloaded the update.
+2. Fix the problem and publish a higher patch version signed with the same
+   updater key. Do not replace tag-pinned assets in place.
+3. Validate the new public `latest.json` and test the update from the previous
+   stable installation before announcing recovery.
+4. Provide the new installer for a manual repair if the faulty application can
+   no longer start. An already installed higher version cannot automatically
+   downgrade to the previous release.
+
+Do not rotate the updater key for an ordinary faulty release. Rotate it only
+after a confirmed key compromise; installations that trust only the old public
+key will then require a manual migration path.
