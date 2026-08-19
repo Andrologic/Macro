@@ -24,12 +24,12 @@ export interface AppUpdaterClient {
   reset: () => Promise<void>;
 }
 
-type NativeDownloadEvent =
+export type NativeDownloadEvent =
   | { event: 'Started'; data: { contentLength?: number } }
   | { event: 'Progress'; data: { chunkLength: number } }
   | { event: 'Finished' };
 
-type NativeUpdate = {
+export type NativeUpdate = {
   currentVersion: string;
   version: string;
   date?: string;
@@ -38,6 +38,14 @@ type NativeUpdate = {
   install: () => Promise<void>;
   close: () => Promise<void>;
 };
+
+export interface NativeUpdaterBindings {
+  getVersion: () => Promise<string>;
+  check: (options?: { timeout?: number }) => Promise<NativeUpdate | null>;
+  relaunch: () => Promise<void>;
+}
+
+export type LoadNativeUpdaterBindings = () => Promise<NativeUpdaterBindings>;
 
 const CHECK_TIMEOUT_MS = 30_000;
 
@@ -53,8 +61,21 @@ const closeUpdate = async (update: NativeUpdate | null): Promise<void> => {
   }
 };
 
-class TauriAppUpdaterClient implements AppUpdaterClient {
+const loadNativeUpdaterBindings: LoadNativeUpdaterBindings = async () => {
+  const [{ getVersion }, { check }, { relaunch }] = await Promise.all([
+    import('@tauri-apps/api/app'),
+    import('@tauri-apps/plugin-updater'),
+    import('@tauri-apps/plugin-process'),
+  ]);
+  return { getVersion, check, relaunch };
+};
+
+export class TauriAppUpdaterClient implements AppUpdaterClient {
   private pendingUpdate: NativeUpdate | null = null;
+
+  constructor(
+    private readonly loadBindings: LoadNativeUpdaterBindings = loadNativeUpdaterBindings,
+  ) {}
 
   async reset(): Promise<void> {
     const previousUpdate = this.pendingUpdate;
@@ -64,10 +85,7 @@ class TauriAppUpdaterClient implements AppUpdaterClient {
 
   async check(): Promise<AppUpdateCheckResult> {
     await this.reset();
-    const [{ getVersion }, { check }] = await Promise.all([
-      import('@tauri-apps/api/app'),
-      import('@tauri-apps/plugin-updater'),
-    ]);
+    const { getVersion, check } = await this.loadBindings();
     const currentVersion = await getVersion();
     const update = await check({ timeout: CHECK_TIMEOUT_MS }) as NativeUpdate | null;
     this.pendingUpdate = update;
@@ -118,7 +136,7 @@ class TauriAppUpdaterClient implements AppUpdaterClient {
     await update.install();
     this.pendingUpdate = null;
     await closeUpdate(update);
-    const { relaunch } = await import('@tauri-apps/plugin-process');
+    const { relaunch } = await this.loadBindings();
     await relaunch();
   }
 }

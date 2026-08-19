@@ -116,11 +116,20 @@ export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
     const platform = manifest.platforms?.[target];
     const assetName = platform ? assetNameFromUrl(platform.url) : null;
     if (!assetName) continue;
+    const expectedSignature = typeof platform.signature === 'string'
+      ? platform.signature.trim()
+      : null;
     assets.set(assetName, target);
     assets.set(`${assetName}.sig`, `${target} signature`);
-    const path = resolve(root, assetName);
-    if (!existsSync(path) || !statSync(path).isFile()) {
+    const artifactPath = resolve(root, assetName);
+    const signaturePath = resolve(root, `${assetName}.sig`);
+    if (!existsSync(artifactPath) || !statSync(artifactPath).isFile()) {
       errors.push(`Missing downloaded updater asset for ${target}: ${assetName}`);
+    }
+    if (!existsSync(signaturePath) || !statSync(signaturePath).isFile()) {
+      errors.push(`Missing downloaded updater signature for ${target}: ${assetName}.sig`);
+    } else if (expectedSignature && readFileSync(signaturePath, 'utf8').trim() !== expectedSignature) {
+      errors.push(`Updater signature content does not match latest.json for ${target}: ${assetName}.sig`);
     }
   }
 
@@ -131,7 +140,7 @@ export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
       const expected = entries.get(assetName);
       if (!expected) {
         errors.push(`Checksum file does not contain ${assetName}.`);
-      } else if (existsSync(path) && sha256(path) !== expected) {
+      } else if (existsSync(path) && statSync(path).isFile() && sha256(path) !== expected) {
         errors.push(`Checksum mismatch for ${assetName}.`);
       }
     }

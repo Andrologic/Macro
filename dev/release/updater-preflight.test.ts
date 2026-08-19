@@ -9,15 +9,41 @@ function fixture() {
   return {
     packageJson: {
       dependencies: {
+        '@tauri-apps/plugin-dialog': '2.6.0',
+        '@tauri-apps/plugin-http': '2.5.7',
+        '@tauri-apps/plugin-notification': '2.3.3',
+        '@tauri-apps/plugin-opener': '2.5.3',
         '@tauri-apps/plugin-updater': '2.10.1',
         '@tauri-apps/plugin-process': '2.3.1',
+        '@tauri-apps/plugin-store': '2.4.2',
       },
     },
     cargoToml: [
+      'tauri-plugin-dialog = "=2.6.0"',
+      'tauri-plugin-http = "2"',
+      'tauri-plugin-notification = "2.3.3"',
+      'tauri-plugin-opener = "2"',
       'tauri-plugin-updater = "2.10.1"',
       'tauri-plugin-process = "2.3.1"',
+      'tauri-plugin-store = "2"',
     ].join('\n'),
     cargoLock: [
+      '[[package]]',
+      'name = "tauri-plugin-dialog"',
+      'version = "2.6.0"',
+      '',
+      '[[package]]',
+      'name = "tauri-plugin-http"',
+      'version = "2.5.9"',
+      '',
+      '[[package]]',
+      'name = "tauri-plugin-notification"',
+      'version = "2.3.3"',
+      '',
+      '[[package]]',
+      'name = "tauri-plugin-opener"',
+      'version = "2.5.4"',
+      '',
       '[[package]]',
       'name = "tauri-plugin-updater"',
       'version = "2.10.1"',
@@ -25,6 +51,10 @@ function fixture() {
       '[[package]]',
       'name = "tauri-plugin-process"',
       'version = "2.3.1"',
+      '',
+      '[[package]]',
+      'name = "tauri-plugin-store"',
+      'version = "2.4.4"',
     ].join('\n'),
     tauriConfig: {
       bundle: { createUpdaterArtifacts: true },
@@ -47,7 +77,18 @@ describe('updater preflight', () => {
   test('reads exact Cargo.lock package versions', () => {
     expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-updater')).toBe('2.10.1');
     expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-process')).toBe('2.3.1');
-    expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-dialog')).toBeNull();
+    expect(cargoLockPackageVersion(fixture().cargoLock, 'tauri-plugin-dialog')).toBe('2.6.0');
+  });
+
+  test('detects version drift for every paired Tauri plugin', () => {
+    const config = fixture();
+    config.cargoLock = config.cargoLock.replace(
+      'name = "tauri-plugin-dialog"\nversion = "2.6.0"',
+      'name = "tauri-plugin-dialog"\nversion = "2.7.2"',
+    );
+    expect(validateUpdaterConfiguration(config)).toContain(
+      '@tauri-apps/plugin-dialog and the resolved tauri-plugin-dialog crate must use the same major/minor version (npm 2.6.0, lock 2.7.2).',
+    );
   });
 
   test('reports missing endpoint, placeholder key, and version drift', () => {
@@ -70,7 +111,7 @@ describe('updater preflight', () => {
     delete config.packageJson.dependencies['@tauri-apps/plugin-process'];
     expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
       'tauri.conf.json must set bundle.createUpdaterArtifacts to true.',
-      'Missing updater dependency metadata for @tauri-apps/plugin-process / tauri-plugin-process.',
+      'Missing Tauri plugin dependency metadata for @tauri-apps/plugin-process / tauri-plugin-process.',
     ]));
   });
 

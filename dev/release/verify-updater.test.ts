@@ -61,6 +61,17 @@ describe('updater release verification', () => {
       expect(verifyLocalUpdaterAssets(value, root, checksumsPath)).toEqual([]);
       writeFileSync(join(root, 'Macro_linux-x86_64.bundle'), 'changed');
       expect(verifyLocalUpdaterAssets(value, root, checksumsPath)).toContain('Checksum mismatch for Macro_linux-x86_64.bundle.');
+
+      writeFileSync(join(root, 'Macro_windows-x86_64.bundle.sig'), 'wrong-signature');
+      expect(verifyLocalUpdaterAssets(value, root, checksumsPath)).toEqual(expect.arrayContaining([
+        'Updater signature content does not match latest.json for windows-x86_64: Macro_windows-x86_64.bundle.sig',
+        'Checksum mismatch for Macro_windows-x86_64.bundle.sig.',
+      ]));
+
+      rmSync(join(root, 'Macro_windows-x86_64.bundle.sig'));
+      expect(verifyLocalUpdaterAssets(value, root)).toContain(
+        'Missing downloaded updater signature for windows-x86_64: Macro_windows-x86_64.bundle.sig',
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

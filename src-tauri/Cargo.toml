@@ -29,7 +29,7 @@ tauri-build = { version = "=2.5.5", features = [] }
 tauri = { version = "=2.10.2", features = ["macos-private-api", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-http = "2"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = "=2.6.0"
 tauri-plugin-process = "=2.3.1"
 tauri-plugin-updater = "=2.10.1"
 serde = { version = "1", features = ["derive"] }
