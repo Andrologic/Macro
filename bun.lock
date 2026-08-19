@@ -80,6 +80,7 @@
         "typescript": "5.9.3",
         "typescript-eslint": "8.59.2",
         "vite": "7.3.6",
+        "yaml": "2.8.4",
       },
     },
   },

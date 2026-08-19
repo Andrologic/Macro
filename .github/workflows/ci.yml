@@ -98,32 +98,6 @@ jobs:
         with:
           bun-version: 1.3.14
 
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Verify versions and tracked files
-        run: |
-          bun run version:check
-          bun run repo:check-binaries
-
-      - name: Typecheck frontend
-        run: bun run typecheck
-
-      - name: Lint frontend
-        run: bun run lint
-
-      - name: Audit translations
-        run: bun run i18n:audit
-
-      - name: Run frontend tests
-        run: bun run test
-
-      - name: Build frontend
-        run: bun run build
-
-      - name: Check bundle budget
-        run: bun run bundle:check
-
       - name: Install Linux native dependencies
         if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
         run: |
@@ -136,23 +110,13 @@ jobs:
         with:
           toolchain: 1.95.0
 
-      - name: Build AI runtime sidecar
-        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
-        run: bun run build:ai-runtime
+      - name: Run shared frontend validation profile
+        if: needs.classify.outputs.native != 'true' && needs.classify.outputs.configuration != 'true'
+        run: bun dev/ci/run-checks.mjs --profile frontend
 
-      - name: Configure deterministic Git identity
+      - name: Run shared native validation profile
         if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
-        run: |
-          git config --global user.name "Macro CI"
-          git config --global user.email "macro-ci@example.invalid"
-
-      - name: Run Rust tests
-        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
-
-      - name: Check headless example
-        if: needs.classify.outputs.native == 'true' || needs.classify.outputs.configuration == 'true'
-        run: cargo check --manifest-path src-tauri/Cargo.toml --example macro-headless --locked
+        run: bun dev/ci/run-checks.mjs --profile native
 
   windows:
     name: Windows native check
@@ -176,11 +140,5 @@ jobs:
         with:
           toolchain: 1.95.0
 
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build AI runtime sidecar
-        run: bun run build:ai-runtime
-
-      - name: Check Windows native targets
-        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets
+      - name: Run shared Windows validation profile
+        run: bun dev/ci/run-checks.mjs --profile windows
