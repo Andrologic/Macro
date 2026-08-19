@@ -122,6 +122,26 @@ before packaging. Universal macOS builds combine the Apple Silicon and Intel
 sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 `macro-ai-runtime` inside the app bundle.
 
+## In-app Release Notes
+
+Each stable application version must have an English and French entry in
+`src/services/releaseNotes.ts`. The body is Markdown rendered by the same secure
+renderer as chat messages. Raw HTML is ignored.
+
+Store release media under `public/release-notes/<version>/` so that images and
+videos remain available offline. Use root-relative paths in the Markdown:
+
+```markdown
+![Workspace overview](/release-notes/0.2.0/workspace.webp "Workspace overview")
+
+![video: Task execution demo](/release-notes/0.2.0/task-demo.webm)
+```
+
+Image titles become visible captions. Files ending in `.mp4`, `.webm`, `.ogv`,
+or `.mov` render as videos with native controls. The `video:` prefix also marks
+a media URL without a recognizable extension as a video. Compress media before
+committing it and keep the release dialog usable without media playback.
+
 ## Release Runbook
 
 1. Finish the feature branch and run the smallest relevant local checks.

@@ -11,8 +11,8 @@ import {
   getReleaseNote,
   normalizeSeenReleaseNoteVersions,
   shouldShowReleaseNote,
-  type ReleaseNoteSectionTone,
 } from '../../services/releaseNotes';
+import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import {
   hasFinishedCurrentOnboarding,
   type OnboardingPreferenceState,
@@ -20,28 +20,6 @@ import {
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
-
-const SECTION_STYLES: Record<
-  ReleaseNoteSectionTone,
-  { icon: string; panel: string }
-> = {
-  new: {
-    icon: 'border-primary/30 bg-primary/10 text-primary',
-    panel: 'border-primary/20 bg-primary/[0.045]',
-  },
-  improved: {
-    icon: 'border-sky-400/30 bg-sky-400/10 text-sky-300',
-    panel: 'border-sky-400/15 bg-sky-400/[0.035]',
-  },
-  fixed: {
-    icon: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
-    panel: 'border-amber-400/15 bg-amber-400/[0.035]',
-  },
-  security: {
-    icon: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
-    panel: 'border-emerald-400/15 bg-emerald-400/[0.035]',
-  },
-};
 
 export interface ReleaseNotesModalProps {
   enabled: boolean;
@@ -161,33 +139,11 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7">
-          <div className="grid gap-3 sm:grid-cols-2">
-            {note.sections.map((section) => {
-              const styles = SECTION_STYLES[section.tone];
-              return (
-                <section
-                  key={section.title}
-                  className={`rounded-xl border p-4 ${styles.panel}`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className={`flex h-8 w-8 items-center justify-center rounded-lg border ${styles.icon}`}>
-                      <Icon name={section.icon} size={15} />
-                    </div>
-                    <h3 className="text-sm font-semibold text-foreground">{section.title}</h3>
-                  </div>
-                  <ul className="mt-3 space-y-2.5">
-                    {section.items.map((item) => (
-                      <li key={item} className="flex gap-2 text-xs leading-5 text-muted-foreground">
-                        <Icon name="check" size={12} className="mt-1 shrink-0 text-primary" />
-                        <span>{item}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              );
-            })}
-          </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7 sm:py-6">
+          <MarkdownRenderer
+            content={note.content}
+            className="release-notes-markdown mx-auto max-w-2xl"
+          />
         </div>
 
         <footer className="flex shrink-0 flex-col gap-3 border-t border-border bg-background/35 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">

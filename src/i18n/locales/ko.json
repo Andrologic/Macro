@@ -45,6 +45,9 @@
     "shownOnce": "이 안내는 설치된 버전마다 한 번만 표시됩니다.",
     "continue": "Macro 계속 사용"
   },
+  "markdown": {
+    "video": "동영상"
+  },
   "common": {
     "save": "구하다",
     "cancel": "취소",

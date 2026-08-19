@@ -10,7 +10,7 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ### Added
 
-- Added an in-app release notes modal that appears once for each newly installed version.
+- Added an in-app release notes modal with rich Markdown, offline images, and native video playback that appears once for each newly installed version.
 - Added the production headless runtime example with explicit workspace roots, authentication outside loopback, and restrictive CORS controls.
 - Added broader regression coverage for task orchestration, provider state, chat streaming, file review, preferences, accessibility, and workspace recovery.
 
