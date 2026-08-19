@@ -45,6 +45,32 @@
     "shownOnce": "이 안내는 설치된 버전마다 한 번만 표시됩니다.",
     "continue": "Macro 계속 사용"
   },
+  "updates": {
+    "checking": "업데이트 확인 중",
+    "downloading": "업데이트 다운로드 중",
+    "downloadingProgress": "업데이트 다운로드 중: {{progress}}%",
+    "restartToUpdate": "다시 시작하여 v{{version}}로 업데이트",
+    "installing": "업데이트 설치 중",
+    "retry": "업데이트 실패. 다시 시도",
+    "upToDate": "Macro가 최신 상태입니다",
+    "check": "업데이트 확인",
+    "checkFailed": "업데이트를 확인할 수 없습니다",
+    "prepareFailed": "Macro가 다시 시작을 준비하지 못했습니다",
+    "installFailed": "업데이트를 설치할 수 없습니다",
+    "activeWorkTitle": "실행 중인 에이전트가 있습니다",
+    "activeWorkDescription": "지금 Macro를 다시 시작하면 {{count}}개의 실행 중인 작업 출력이 손실될 수 있습니다.",
+    "agentActivity": "에이전트",
+    "implementActivity": "Implement 실행",
+    "wait": "기다리기",
+    "restartAnyway": "그래도 다시 시작",
+    "dialogTitle": "Macro 업데이트",
+    "available": "업데이트 사용 가능",
+    "noNotes": "이 버전의 릴리스 노트가 없습니다.",
+    "downloadInProgress": "서명된 업데이트를 백그라운드에서 다운로드하고 있습니다.",
+    "restartRequired": "업데이트 설치 후 Macro가 다시 열립니다.",
+    "later": "나중에",
+    "restartAndUpdate": "다시 시작하고 업데이트"
+  },
   "markdown": {
     "video": "동영상"
   },

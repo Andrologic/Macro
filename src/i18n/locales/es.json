@@ -50,6 +50,32 @@
     "shownOnce": "Esta nota se muestra una sola vez por cada versión instalada.",
     "continue": "Continuar a Macro"
   },
+  "updates": {
+    "checking": "Buscando actualizaciones",
+    "downloading": "Descargando la actualización",
+    "downloadingProgress": "Descargando la actualización: {{progress}} %",
+    "restartToUpdate": "Reiniciar para actualizar a v{{version}}",
+    "installing": "Instalando la actualización",
+    "retry": "La actualización falló. Reintentar",
+    "upToDate": "Macro está actualizado",
+    "check": "Buscar actualizaciones",
+    "checkFailed": "No se pudieron buscar actualizaciones",
+    "prepareFailed": "Macro no pudo preparar el reinicio",
+    "installFailed": "No se pudo instalar la actualización",
+    "activeWorkTitle": "Todavía hay agentes activos",
+    "activeWorkDescription": "{{count}} tarea activa puede perder su salida actual si Macro se reinicia ahora.",
+    "agentActivity": "Agente",
+    "implementActivity": "Ejecución de Implement",
+    "wait": "Esperar",
+    "restartAnyway": "Reiniciar de todos modos",
+    "dialogTitle": "Actualización de Macro",
+    "available": "Actualización disponible",
+    "noNotes": "No se proporcionaron notas para esta versión.",
+    "downloadInProgress": "La actualización firmada se descarga en segundo plano.",
+    "restartRequired": "Macro volverá a abrirse después de instalar la actualización.",
+    "later": "Más tarde",
+    "restartAndUpdate": "Reiniciar y actualizar"
+  },
   "markdown": {
     "video": "Vídeo"
   },

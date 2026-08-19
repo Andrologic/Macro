@@ -67,6 +67,32 @@
     "shownOnce": "This note is shown once for each installed version.",
     "continue": "Continue to Macro"
   },
+  "updates": {
+    "checking": "Checking for updates",
+    "downloading": "Downloading update",
+    "downloadingProgress": "Downloading update: {{progress}}%",
+    "restartToUpdate": "Restart to update to v{{version}}",
+    "installing": "Installing update",
+    "retry": "Update failed. Retry",
+    "upToDate": "Macro is up to date",
+    "check": "Check for updates",
+    "checkFailed": "Unable to check for updates",
+    "prepareFailed": "Macro could not prepare the restart",
+    "installFailed": "The update could not be installed",
+    "activeWorkTitle": "Agents are still running",
+    "activeWorkDescription": "{{count}} active task may lose its current output if Macro restarts now.",
+    "agentActivity": "Agent",
+    "implementActivity": "Implement execution",
+    "wait": "Wait",
+    "restartAnyway": "Restart anyway",
+    "dialogTitle": "Macro update",
+    "available": "Update available",
+    "noNotes": "No release notes were provided for this version.",
+    "downloadInProgress": "The signed update is downloading in the background.",
+    "restartRequired": "Macro will reopen after the update is installed.",
+    "later": "Later",
+    "restartAndUpdate": "Restart and update"
+  },
   "markdown": {
     "video": "Video"
   },

@@ -9,6 +9,7 @@ describe('local CI profiles', () => {
     expect(names('documentation')).toEqual([
       'Check version manifests',
       'Reject generated binaries',
+      'Check Tauri updater configuration',
     ]);
   });
 

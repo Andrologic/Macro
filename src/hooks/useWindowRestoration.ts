@@ -33,7 +33,10 @@ import {
   windowSetSize,
   windowSetTheme,
 } from "../services/tauriWindow";
-import { markWindowCloseShutdown } from "../services/windowShutdown";
+import {
+  prepareWindowShutdown,
+  registerWindowStateFlushHandler,
+} from "../services/windowShutdown";
 import { getPlatformChromeState } from "../utils/desktopPlatform";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
 import { devLogger } from "../utils/devLogger";
@@ -74,7 +77,6 @@ const LEGACY_MACOS_DEFAULT_WINDOW_SIZE = {
   width: 1200,
   height: 800,
 } as const;
-const WINDOW_CLOSE_FLUSH_TIMEOUT_MS = 1_000;
 
 const monitorBoundsFromWorkArea = (
   workArea: { width: number; height: number; x: number; y: number } | null
@@ -462,6 +464,9 @@ export function useWindowRestoration() {
 
     let cancelled = false;
     let unlistenCloseRequested: (() => void) | null = null;
+    const unregisterWindowStateFlush = registerWindowStateFlushHandler(
+      saveWindowState,
+    );
 
     void windowOnCloseRequested(async (event) => {
       if (closeInProgressRef.current) {
@@ -471,20 +476,7 @@ export function useWindowRestoration() {
       event.preventDefault();
       closeInProgressRef.current = true;
       clearPendingWindowStateSave();
-      let timeout: ReturnType<typeof setTimeout> | null = null;
-      try {
-        await Promise.race([
-          saveWindowState(),
-          new Promise<void>((resolve) => {
-            timeout = setTimeout(resolve, WINDOW_CLOSE_FLUSH_TIMEOUT_MS);
-          }),
-        ]);
-      } finally {
-        if (timeout) {
-          clearTimeout(timeout);
-        }
-      }
-      markWindowCloseShutdown(
+      await prepareWindowShutdown(
         'window-close-requested',
         getSelectedProjectGroupWorkspacePaths()
       );
@@ -512,6 +504,7 @@ export function useWindowRestoration() {
     return () => {
       cancelled = true;
       unlistenCloseRequested?.();
+      unregisterWindowStateFlush();
     };
   }, [saveWindowState]);
 
