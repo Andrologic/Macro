@@ -60,6 +60,54 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  /*
+   * WebView2 can focus controls after an auxiliary mouse click and expose its
+   * native light outline. Replace that browser-dependent outline everywhere,
+   * while keeping keyboard focus visible with the application ring.
+   */
+  :where(
+    button,
+    a[href],
+    input:not([type='hidden']),
+    select,
+    textarea,
+    summary,
+    [role='button'],
+    [role='link'],
+    [role='checkbox'],
+    [role='radio'],
+    [role='switch'],
+    [role='tab'],
+    [role='menuitem'],
+    [tabindex]:not([tabindex='-1'])
+  ):focus {
+    outline: none;
+  }
+
+  :where(
+    button,
+    a[href],
+    input:not([type='hidden']),
+    select,
+    textarea,
+    summary,
+    [role='button'],
+    [role='link'],
+    [role='checkbox'],
+    [role='radio'],
+    [role='switch'],
+    [role='tab'],
+    [role='menuitem'],
+    [tabindex]:not([tabindex='-1'])
+  ):focus-visible {
+    --tw-ring-offset-shadow: 0 0 0 2px rgb(var(--background));
+    --tw-ring-shadow: 0 0 0 4px rgb(var(--ring) / 0.65);
+    box-shadow:
+      var(--tw-ring-offset-shadow),
+      var(--tw-ring-shadow),
+      var(--tw-shadow, 0 0 #0000);
+  }
+
   /* Custom scrollbar */
   ::-webkit-scrollbar {
     @apply w-2 h-2;
