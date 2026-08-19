@@ -80,6 +80,7 @@ describe('ReleaseNotesModal', () => {
     const modal = document.querySelector('[data-testid="release-notes-modal"]');
     expect(modal).not.toBeNull();
     expect(modal?.textContent ?? '').toContain('Macro 0.1 est prêt');
+    expect(modal?.querySelector('.release-notes-markdown')).not.toBeNull();
 
     const continueButton = Array.from(document.querySelectorAll('button')).find(
       (button) => button.textContent === 'Continue to Macro',

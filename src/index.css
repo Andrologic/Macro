@@ -716,6 +716,23 @@
     @apply list-none pl-0;
   }
 
+  .release-notes-markdown h2 {
+    @apply mt-6 border-b border-border/70 pb-2 text-base font-semibold tracking-tight;
+  }
+
+  .release-notes-markdown h2:first-child {
+    @apply mt-0;
+  }
+
+  .release-notes-markdown ul,
+  .release-notes-markdown ol {
+    @apply space-y-2;
+  }
+
+  .release-notes-markdown li {
+    @apply text-sm leading-6 text-muted-foreground;
+  }
+
   /* Status indicator */
   .status-dot {
     @apply w-2 h-2 rounded-full;

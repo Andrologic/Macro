@@ -50,6 +50,9 @@
     "shownOnce": "Esta nota se muestra una sola vez por cada versión instalada.",
     "continue": "Continuar a Macro"
   },
+  "markdown": {
+    "video": "Vídeo"
+  },
   "common": {
     "save": "Guardar",
     "cancel": "Cancelar",

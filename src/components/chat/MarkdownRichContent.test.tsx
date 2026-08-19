@@ -85,6 +85,47 @@ describe('MarkdownRichContent math rendering', () => {
   });
 });
 
+describe('MarkdownRichContent media rendering', () => {
+  it('renders Markdown images in a lazy, contained media frame', () => {
+    const { MarkdownRichContent } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent
+        content={'![Macro workspace](/release-notes/0.1.0/workspace.webp "The new workspace")'}
+      />
+    );
+
+    expect(markup).toContain('<img');
+    expect(markup).toContain('loading="lazy"');
+    expect(markup).toContain('src="/release-notes/0.1.0/workspace.webp"');
+    expect(markup).toContain('The new workspace');
+  });
+
+  it('renders supported video files with native controls', () => {
+    const { MarkdownRichContent } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent
+        content={'![Feature demo](/release-notes/0.1.0/demo.webm)'}
+      />
+    );
+
+    expect(markup).toContain('<video');
+    expect(markup).toContain('controls=""');
+    expect(markup).toContain('preload="metadata"');
+    expect(markup).toContain('src="/release-notes/0.1.0/demo.webm"');
+  });
+
+  it('supports the video prefix when the URL has no file extension', () => {
+    const { MarkdownRichContent, isMarkdownVideo } = markdownRichContentModule;
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'![video: Feature demo](/release-notes/demo)'} />
+    );
+
+    expect(isMarkdownVideo('/release-notes/demo', 'video: Feature demo')).toBe(true);
+    expect(markup).toContain('<video');
+    expect(markup).toContain('aria-label="Feature demo"');
+  });
+});
+
 describe('MarkdownRichContent context references', () => {
   it('renders inline skill references as chips inside normal markdown text', () => {
     const { MarkdownRichContent } = markdownRichContentModule;

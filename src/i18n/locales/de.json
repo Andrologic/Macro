@@ -46,6 +46,9 @@
     "shownOnce": "Dieser Hinweis wird für jede installierte Version einmal angezeigt.",
     "continue": "Weiter zu Macro"
   },
+  "markdown": {
+    "video": "Video"
+  },
   "common": {
     "save": "Speichern",
     "cancel": "Abbrechen",

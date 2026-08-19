@@ -67,6 +67,9 @@
     "shownOnce": "Cette note s’affiche une seule fois pour chaque version installée.",
     "continue": "Continuer vers Macro"
   },
+  "markdown": {
+    "video": "Vidéo"
+  },
   "common": {
     "save": "Enregistrer",
     "cancel": "Annuler",

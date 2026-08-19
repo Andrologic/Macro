@@ -45,6 +45,9 @@
     "shownOnce": "このノートは、インストールされたバージョンごとに一度だけ表示されます。",
     "continue": "Macro を続ける"
   },
+  "markdown": {
+    "video": "動画"
+  },
   "common": {
     "save": "保存",
     "cancel": "キャンセル",
