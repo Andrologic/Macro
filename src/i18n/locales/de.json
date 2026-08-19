@@ -41,6 +41,11 @@
     "failedDescription": "Macro konnte die lokalen Daten nicht initialisieren. Sie können den Vorgang sicher wiederholen.",
     "failedSteps": "Fehlgeschlagene Schritte"
   },
+  "releaseNotes": {
+    "dialogTitle": "Neu in Macro",
+    "shownOnce": "Dieser Hinweis wird für jede installierte Version einmal angezeigt.",
+    "continue": "Weiter zu Macro"
+  },
   "common": {
     "save": "Speichern",
     "cancel": "Abbrechen",

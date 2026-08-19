@@ -126,14 +126,17 @@ sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 
 1. Finish the feature branch and run the smallest relevant local checks.
 2. Run `bun run ci:pre-push` before updating the pull request.
-3. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
-4. Merge to `main`, fetch the resulting remote state, and run
+3. Bump to a stable `x.y.z` version and add the matching localized user-facing
+   entry to `src/services/releaseNotes.ts`.
+4. Confirm `bun run version:check` and the release notes tests pass. The tests
+   reject a package version that has no bundled release note.
+5. Merge to `main`, fetch the resulting remote state, and run
    `bun run release:preflight` from a clean checkout exactly matching
    `origin/main`.
-5. Create and push an annotated matching `vX.Y.Z` tag
+6. Create and push an annotated matching `vX.Y.Z` tag
    from that history using an authorized release-maintainer account.
-6. Review the cheap validation job, then approve the protected `release`
+7. Review the cheap validation job, then approve the protected `release`
    environment when the tag and version are correct.
-7. Wait for `.github/workflows/release.yml` to create the draft release.
-8. Check the draft assets, signatures, notes, and checksums in GitHub.
-9. Publish the draft manually when it is ready for users.
+8. Wait for `.github/workflows/release.yml` to create the draft release.
+9. Check the draft assets, signatures, notes, and checksums in GitHub.
+10. Publish the draft manually when it is ready for users.

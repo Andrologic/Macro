@@ -62,6 +62,11 @@
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
     "failedSteps": "Failed steps"
   },
+  "releaseNotes": {
+    "dialogTitle": "What’s new in Macro",
+    "shownOnce": "This note is shown once for each installed version.",
+    "continue": "Continue to Macro"
+  },
   "common": {
     "save": "Save",
     "cancel": "Cancel",

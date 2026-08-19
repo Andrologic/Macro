@@ -45,6 +45,11 @@
     "failedDescription": "Macro no pudo inicializar los datos locales. Puedes volver a intentarlo de forma segura.",
     "failedSteps": "Pasos fallidos"
   },
+  "releaseNotes": {
+    "dialogTitle": "Novedades de Macro",
+    "shownOnce": "Esta nota se muestra una sola vez por cada versión instalada.",
+    "continue": "Continuar a Macro"
+  },
   "common": {
     "save": "Guardar",
     "cancel": "Cancelar",

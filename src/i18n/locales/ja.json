@@ -40,6 +40,11 @@
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",
     "failedSteps": "失敗した手順"
   },
+  "releaseNotes": {
+    "dialogTitle": "Macro の新機能",
+    "shownOnce": "このノートは、インストールされたバージョンごとに一度だけ表示されます。",
+    "continue": "Macro を続ける"
+  },
   "common": {
     "save": "保存",
     "cancel": "キャンセル",
