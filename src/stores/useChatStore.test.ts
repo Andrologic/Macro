@@ -2534,6 +2534,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'mark_source_passage',
       'read_sources',
       'edit_source_passage',
+      'terminal_create_session',
+      'terminal_run',
+      'terminal_read',
+      'terminal_kill',
     ];
     toolsStoreState.getEnabledMCPToolIds = () => [];
     toolsStoreState.getEnabledMCPTools = () => [];
@@ -6664,6 +6668,72 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
+  it('removes terminal tools from unscoped Chat turns', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv'),
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Inspecte mon environnement.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as { allowedToolIds: string[] };
+    expect(streamOptions.allowedToolIds).not.toContain('terminal_create_session');
+    expect(streamOptions.allowedToolIds).not.toContain('terminal_run');
+  });
+
+  it('exposes terminal tools to Chat turns with a durable workspace scope', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv'),
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: 'group-1',
+          project_id: 'project-1',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Inspecte le projet avec le terminal.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as { allowedToolIds: string[] };
+    expect(streamOptions.allowedToolIds).toEqual(
+      expect.arrayContaining([
+        'terminal_create_session',
+        'terminal_run',
+        'terminal_read',
+        'terminal_kill',
+      ]),
+    );
+  });
+
   it('passes enabled discovered MCP tools through Chat mode streaming options', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
@@ -8417,7 +8487,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }
   });
 
-  it('keeps chat conversations detached from task and project context', async () => {
+  it('keeps new chat conversations detached from task and project context', async () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = 'group-1';
     appState.selectedProjectId = 'project-1';
@@ -8449,6 +8519,42 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(conversation.project_id).toBeNull();
     expect(conversation.group_id).toBeNull();
     expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBe(conversation.id);
+  });
+
+  it('updates the durable workspace scope of a chat conversation', async () => {
+    appState.mode = 'Chat';
+    tauriAvailable = true;
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-1'),
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: null,
+          project_id: null,
+        },
+      ],
+      selectedConversationId: 'chat-1',
+      selectedConversationIdsByMode: { Chat: 'chat-1' },
+      conversationRuntimeById: {},
+    });
+
+    await useChatStore.getState().setChatConversationWorkspace('chat-1', {
+      groupId: 'group-1',
+      projectId: 'project-1',
+    });
+
+    const conversation = useChatStore.getState().conversations[0];
+    expect(conversation?.group_id).toBe('group-1');
+    expect(conversation?.project_id).toBe('project-1');
+    expect(updateConversationScopeMock).toHaveBeenCalledWith({
+      id: 'chat-1',
+      scopeMode: 'Chat',
+      taskId: null,
+      groupId: 'group-1',
+      projectId: 'project-1',
+    });
   });
 
   it('recreates a fresh implement conversation after deleting the previous one', async () => {

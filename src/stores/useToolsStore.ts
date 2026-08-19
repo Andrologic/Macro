@@ -21,8 +21,15 @@ const getChatModeToolIds = (): Set<string> => {
   return chatModeToolIds;
 };
 const CHAT_SOURCE_TOOL_IDS = ['mark_source_passage', 'read_sources', 'edit_source_passage'] as const;
+const CHAT_TERMINAL_TOOL_IDS = [
+  'terminal_create_session',
+  'terminal_run',
+  'terminal_read',
+  'terminal_kill',
+] as const;
 const CHAT_TOGGLE_GROUPS: Record<string, readonly string[]> = {
   sources: CHAT_SOURCE_TOOL_IDS,
+  terminal: CHAT_TERMINAL_TOOL_IDS,
 };
 
 const getConfigBoolean = (tool: Tool, key: string): boolean | undefined => {

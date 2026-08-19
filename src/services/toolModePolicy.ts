@@ -30,6 +30,12 @@ const SHARED_CONTEXT_TOOLS = [
 
 const WORKSPACE_READ_TOOLS = ["list", "read", "glob", "grep"] as const;
 const WORKSPACE_WRITE_TOOLS = ["write", "edit", "delete", "apply_patch"] as const;
+const TERMINAL_TOOLS = [
+  "terminal_create_session",
+  "terminal_run",
+  "terminal_read",
+  "terminal_kill",
+] as const;
 const CHAT_SAFE_TOOLS = [
   "question",
   ...CONFIG_TOOLS,
@@ -41,6 +47,7 @@ const CHAT_SAFE_TOOLS = [
   "read_file",
   "web_search",
   "web_fetch",
+  ...TERMINAL_TOOLS,
 ] as const;
 const GIT_READ_TOOLS = [
   "git_status",
@@ -60,12 +67,6 @@ const GIT_WRITE_TOOLS = [
 ] as const;
 
 const GIT_TOOLS = [...GIT_READ_TOOLS, ...GIT_WRITE_TOOLS] as const;
-const TERMINAL_TOOLS = [
-  "terminal_create_session",
-  "terminal_run",
-  "terminal_read",
-  "terminal_kill",
-] as const;
 const IMPLEMENT_TASK_TODO_TOOLS = [
   "task_todo_get",
   "task_todo_update",

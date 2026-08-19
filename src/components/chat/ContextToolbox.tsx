@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { Citation } from '../../stores/useCitationsStore';
@@ -7,6 +8,7 @@ import { useProviderStore } from '../../stores/useProviderStore';
 import { useToolsStore } from '../../stores/useToolsStore';
 import { extractDomain, fetchWebPage, getFaviconUrl } from '../../services/webSearch';
 import { getWebSearchSettings } from '../../services/webSearchSettings';
+import { isProjectActionable } from '../../services/globalProjects';
 import { compareLocalized, formatRelativeTimeShort } from '../../i18n/format';
 import { cn } from '../../utils/cn';
 import { Icon, type IconName } from '../ui/Icon';
@@ -130,12 +132,16 @@ const formatByteSize = (value?: number): string | null => {
 export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => {
   const { t, i18n } = useTranslation();
   const {
+    conversations,
     selectedConversationId,
     createConversation,
+    setChatConversationWorkspace,
     composerContextRefs,
     addComposerContextRef,
     removeComposerContextRef,
   } = useChatStore();
+  const standaloneProjects = useAppStore((state) => state.standaloneProjects ?? []);
+  const projectGroups = useAppStore((state) => state.projectGroups);
   const { getChatModeTools, isChatToolEnabled, toggleChatTool } = useToolsStore();
   const citations = useCitationsStore((state) => state.citations);
   const addCitation = useCitationsStore((state) => state.addCitation);
@@ -152,6 +158,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const [sourceSort, setSourceSort] = useState<SourceSort>('recent');
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(() => new Set());
   const [failedFaviconUrls, setFailedFaviconUrls] = useState<Set<string>>(() => new Set());
+  const [isUpdatingWorkspace, setIsUpdatingWorkspace] = useState(false);
   const [contextConversationId, setContextConversationId] = useState<string | null>(
     selectedConversationId
   );
@@ -165,6 +172,42 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
       ? webSearchSettings.hasTavilySecret
       : webSearchSettings.hasBraveSecret;
   const effectiveConversationId = selectedConversationId ?? contextConversationId;
+  const activeConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === effectiveConversationId) ?? null,
+    [conversations, effectiveConversationId]
+  );
+  const agentWorkspaceOptions = useMemo(() => {
+    const standaloneOptions = standaloneProjects
+      .filter(isProjectActionable)
+      .map((project) => ({
+        value: `project:${project.id}`,
+        label: project.name,
+        groupId: null,
+        projectId: project.id,
+      }));
+    const groupOptions = projectGroups.flatMap((group) => {
+      const actionableProjects = group.projects.filter(isProjectActionable);
+      if (actionableProjects.length === 0) return [];
+      const persistedFocus = activeConversation?.project_id
+        ? actionableProjects.find((project) => project.id === activeConversation.project_id) ?? null
+        : null;
+      return [{
+        value: `group:${group.id}`,
+        label: `${group.name} (${actionableProjects.length})`,
+        groupId: group.id,
+        projectId: persistedFocus?.id ?? actionableProjects[0]!.id,
+      }];
+    });
+    return [...standaloneOptions, ...groupOptions];
+  }, [activeConversation, projectGroups, standaloneProjects]);
+  const selectedAgentWorkspaceValue = activeConversation?.group_id
+    ? `group:${activeConversation.group_id}`
+    : activeConversation?.project_id
+      ? `project:${activeConversation.project_id}`
+      : 'none';
+  const hasAgentWorkspace = agentWorkspaceOptions.some(
+    (option) => option.value === selectedAgentWorkspaceValue
+  );
 
   const contextCitations = useMemo(
     () =>
@@ -235,6 +278,27 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
     setContextConversationId(conversation.id);
     return conversation.id;
   }, [createConversation, selectedConversationId, t]);
+
+  const handleAgentWorkspaceChange = useCallback(async (value: string) => {
+    const selectedWorkspace = agentWorkspaceOptions.find((option) => option.value === value) ?? null;
+    setIsUpdatingWorkspace(true);
+    try {
+      const conversationId = await ensureConversation();
+      await setChatConversationWorkspace(conversationId, {
+        groupId: selectedWorkspace?.groupId ?? null,
+        projectId: selectedWorkspace?.projectId ?? null,
+      });
+    } catch (error) {
+      notify.error(
+        t('chat.contextToolbox.workspaceUpdateFailed', 'Unable to change the agent workspace'),
+        {
+          description: error instanceof Error ? error.message : String(error),
+        }
+      );
+    } finally {
+      setIsUpdatingWorkspace(false);
+    }
+  }, [agentWorkspaceOptions, ensureConversation, setChatConversationWorkspace, t]);
 
   const addContextCitationAndReveal = useCallback(async (
     citationData: Omit<Citation, 'id' | 'timestamp' | 'conversationId' | 'messageId' | 'scope'> & {
@@ -470,6 +534,12 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   }, [removeCitation, removeComposerContextRef]);
 
   const renderToolTooltip = (toolId: string) => {
+    if (toolId === 'terminal_create_session' && !hasAgentWorkspace) {
+      return t(
+        'chat.contextToolbox.terminalWorkspaceTooltip',
+        'Select an agent workspace before enabling the terminal.'
+      );
+    }
     if (toolId === 'web_search' && !hasSelectedWebSearchKey) {
       return t('chat.contextToolbox.webSearchKeyTooltip', 'Add an API key in Settings > Tools > Web Search');
     }
@@ -728,6 +798,39 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
         {activeTab === 'tools' && (
           <div className="space-y-4">
             {!nativeToolsSupported && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">{t('chat.contextToolbox.toolsUnavailableWarning', 'Tools are unavailable for the currently selected provider or model. Select a model with native tool calling support to enable them.')}</div>}
+            <section className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Icon name="folder" size={12} className="text-muted-foreground" />
+                <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {t('chat.contextToolbox.agentWorkspace', 'Agent workspace')}
+                </h3>
+              </div>
+              <select
+                value={selectedAgentWorkspaceValue}
+                onChange={(event) => void handleAgentWorkspaceChange(event.target.value)}
+                disabled={isUpdatingWorkspace}
+                className="h-9 w-full rounded-md border border-border bg-card px-2.5 text-sm text-foreground outline-none transition-colors focus:border-primary disabled:cursor-wait disabled:opacity-60"
+                aria-label={t('chat.contextToolbox.agentWorkspace', 'Agent workspace')}
+              >
+                <option value="none">
+                  {t('chat.contextToolbox.noAgentWorkspace', 'No workspace')}
+                </option>
+                {agentWorkspaceOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <p className="text-[11px] leading-4 text-muted-foreground">
+                {hasAgentWorkspace
+                  ? t(
+                      'chat.contextToolbox.agentWorkspaceDescription',
+                      'The agent can run approved terminal commands inside this workspace.'
+                    )
+                  : t(
+                      'chat.contextToolbox.noAgentWorkspaceDescription',
+                      'Attach a workspace to let the agent inspect and modify its files.'
+                    )}
+              </p>
+            </section>
             <section>
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">{t('chat.contextToolbox.builtInTools', 'Built-in Tools')}</h3>
               <div className="space-y-1">
