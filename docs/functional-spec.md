@@ -316,6 +316,7 @@ Son objectif est de permettre à l'utilisateur de :
 - poser des questions rapides d'ordre technique ou documentaire
 - attacher des fichiers à une conversation
 - utiliser certains outils web et MCP
+- attacher explicitement un workspace à une conversation pour y exécuter des commandes terminal
 - conserver une continuité de travail dans l'application sans entrer dans tout le workflow Macro
 
 Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
@@ -323,7 +324,7 @@ Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
 Il se distingue du mode Implement en ce que :
 - il n'est pas piloté par une stratégie de plan
 - il ne travaille pas par défaut sur un contexte d'exécution de projet
-- il ne parcourt pas un workspace complet en mode agent
+- il ne parcourt un workspace en mode agent que lorsque l'utilisateur l'attache à la conversation
 - il fonctionne conversation par conversation avec un contexte explicitement fourni
 
 Le mode Chat doit conserver un historique local des conversations.
@@ -779,20 +780,21 @@ Quand une même tâche affecte plusieurs projets :
 
 ### 17.1 Objectif
 
-Le mode Chat existe pour des interactions légères et independantes des projets.
+Le mode Chat existe pour des interactions légères et indépendantes des projets.
 
 ### 17.2 Modèle de contexte
 
-Le mode Chat ne doit pas supposer un contexte agent autonome à l'échelle d'un workspace.
+Le mode Chat ne doit pas supposer un contexte agent autonome à l'échelle d'un workspace. Une conversation démarre sans workspace. L'utilisateur peut ensuite lui attacher un projet ou un groupe depuis la boîte à outils. Cette portée est enregistrée avec la conversation et ne suit pas les changements de sélection effectués dans les autres modes.
 
 Il doit fonctionner sur :
 - la conversation courante
 - les fichiers explicitement attachés
 - les outils externes explicitement autorisés
+- le workspace explicitement attaché, le cas échéant
 
 ### 17.3 Pièces jointes
 
-Les fichiers attachés en mode Chat sont scopes à la conversation.
+Les fichiers attachés en mode Chat sont limités à la conversation.
 
 Il n'y a pas d'exigence de bibliothèque de contexte réutilisable entre plusieurs conversations.
 
@@ -808,8 +810,9 @@ Le mode Chat peut accéder :
 - au web
 - à certains outils MCP
 - aux skills activées par l'utilisateur
+- au terminal lorsque la conversation possède un workspace modifiable
 
-La disponibilité de ces outils doit être configurable.
+La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. Sans workspace attaché, ces appels ne sont pas envoyés au modèle. Chaque commande reste soumise au niveau de risque et au système d'approbation de Macro.
 
 ---
 

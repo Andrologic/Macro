@@ -98,26 +98,6 @@ const resolveSelectedScopeProjectIds = (params: {
 export const resolveProjectExecutionContext = (
   input: ResolveProjectExecutionContextInput
 ): ProjectExecutionContext => {
-  if (input.mode === 'Chat') {
-    return {
-      groupId: null,
-      groupName: null,
-      projectIds: [],
-      actionableProjectIds: [],
-      contextProjectIds: [],
-      projectMounts: [],
-      focusedProjectId: null,
-      virtualRootEnabled: false,
-      workspacePathsByProjectId: {},
-      defaultWorkspacePath: null,
-      projectId: null,
-      projectName: null,
-      taskId: null,
-      branchName: null,
-      workspacePath: null,
-    };
-  }
-
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   const taskById = new Map((input.tasks || []).map((task) => [task.id, task]));
   const projectGroups = input.projectGroups || [];
@@ -130,8 +110,10 @@ export const resolveProjectExecutionContext = (
   const selectedTaskId = cleanString(input.selectedTaskId);
   const conversationTaskId = cleanString(conversation?.task_id);
   const taskId = conversationTaskId || (input.mode === 'Implement' ? selectedTaskId : null);
-  const selectedProjectId = cleanString(input.selectedProjectId);
-  const selectedGroupId = cleanString(input.selectedGroupId);
+  // Chat scope is durable conversation state. Global project selections belong
+  // to Architect and Implement and must not silently retarget an old chat.
+  const selectedProjectId = input.mode === 'Chat' ? null : cleanString(input.selectedProjectId);
+  const selectedGroupId = input.mode === 'Chat' ? null : cleanString(input.selectedGroupId);
   const selectedKnownProjectId =
     selectedProjectId && projectById.has(selectedProjectId) ? selectedProjectId : null;
   const selectedScopeProjectIds = resolveSelectedScopeProjectIds({

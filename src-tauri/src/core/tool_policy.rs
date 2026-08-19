@@ -83,6 +83,10 @@ fn chat_allowed_tool_ids() -> &'static [&'static str] {
         "read_file",
         "web_search",
         "web_fetch",
+        "terminal_create_session",
+        "terminal_run",
+        "terminal_read",
+        "terminal_kill",
     ]
 }
 
@@ -295,7 +299,7 @@ mod tests {
     use super::{get_mode_policy, validate_tool_execution};
 
     #[test]
-    fn chat_policy_exposes_question_tool() {
+    fn chat_policy_exposes_question_and_terminal_tools() {
         let policy = get_mode_policy("Chat");
         assert_eq!(
             policy.allowed_tool_ids,
@@ -313,7 +317,11 @@ mod tests {
                 "edit_source_passage".to_string(),
                 "read_file".to_string(),
                 "web_search".to_string(),
-                "web_fetch".to_string()
+                "web_fetch".to_string(),
+                "terminal_create_session".to_string(),
+                "terminal_run".to_string(),
+                "terminal_read".to_string(),
+                "terminal_kill".to_string()
             ]
         );
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
@@ -337,7 +345,7 @@ mod tests {
             .contains(&"edit_source_passage".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"write".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"git_commit".to_string()));
-        assert!(!policy
+        assert!(policy
             .allowed_tool_ids
             .contains(&"terminal_run".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"plan_create".to_string()));

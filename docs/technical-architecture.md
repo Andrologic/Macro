@@ -675,7 +675,7 @@ L'objectif est de limiter les droits selon le contexte fonctionnel.
 Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
-- Chat reste plus restreint
+- Chat reste plus restreint, mais peut recevoir les outils terminal lorsqu'une conversation possède un workspace explicite
 - Implement a accès à davantage d'outils de workspace et Git
 
 ### 13.2 Validation d'exécution
@@ -695,6 +695,8 @@ La couche d'exécution d'outils encapsule :
 - le fallback entre transport Tauri et transport distant
 
 Cette couche unifie l'exécution des outils côté produit.
+
+En mode Chat, `projectExecutionContext` ignore les sélections globales et résout uniquement la portée durable de la conversation. La boîte à outils enregistre cette portée avec `db_update_conversation_scope`. Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` partagent un seul interrupteur visible. `useChatStore` les retire de la requête provider lorsque la conversation ne possède aucun projet modifiable. Lorsqu'ils sont présents, l'exécution réutilise le terminal Tauri et les approbations de sécurité déjà employés par Implement.
 
 ---
 
