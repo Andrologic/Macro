@@ -25,7 +25,7 @@ configured provider.
 
 ### Requirements
 
-- [Bun](https://bun.sh) >= 1.1.0. This repository currently pins `bun@1.1.42`.
+- [Bun](https://bun.sh) 1.3.14, pinned by `package.json` and the release workflow.
 - [Rust](https://rustup.rs/) with Cargo, installed through `rustup`.
 - Tauri system dependencies for your operating system.
 - Python only if you need to run `bun run i18n:generate`.

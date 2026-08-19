@@ -21,6 +21,7 @@ Macro uses Bun for frontend scripts and Rust for the Tauri backend.
 
 ```bash
 bun install
+bun run hooks:install
 bun run tauri:dev
 ```
 
@@ -32,16 +33,32 @@ cp dev/ai-keys.local.example.json dev/ai-keys.local.json
 
 ## Required Checks
 
-Use Bun 1.3.14 and the Rust toolchain pinned in `rust-toolchain.toml`. Install dependencies from the committed lockfile, then run the complete local equivalent of CI once the targeted checks are green:
+Use Bun 1.3.14 and the Rust toolchain pinned in `rust-toolchain.toml`. Install
+the repository hooks once per clone. Before every push, run the differential
+local gate; the `pre-push` hook runs the same command again and reuses the
+successful result for the exact commit range:
 
 ```bash
-bun install --frozen-lockfile
-bun run ci
+bun run ci:pre-push
 ```
 
-For frontend-only work, the relevant targeted checks are `version:check`, `repo:check-binaries`, `typecheck`, `lint`, `i18n:audit`, `test`, `build`, and `bundle:check`. Native work additionally requires the AI runtime sidecar build, locked Rust tests with one test thread, and the headless example check. Run `cargo check --manifest-path src-tauri/Cargo.toml --locked --all-targets` on Windows when native conditional compilation changed.
+The gate compares the complete pull request range against `origin/develop` for
+feature branches and against `origin/main` for release and hotfix branches. It
+uses the same classifier as GitHub Actions. Documentation stays lightweight;
+frontend changes run frontend tests and builds; native or configuration changes
+run the complete frontend and Rust profiles. On Windows, full local CI also
+checks every native target.
 
-If a check cannot run on your machine, mention the exact command and reason in the pull request. Do not use GitHub Actions as a development loop: agents and contributors must validate locally, then push one consolidated pull request update after the local checks pass.
+Use `bun run ci` when a full validation is explicitly required regardless of
+the changed paths. Use `bun run ci:workflows` after editing workflow policy.
+
+If a check cannot run on your machine, mention the exact command and reason in
+the pull request. Do not bypass hooks with `--no-verify`. Do not use GitHub
+Actions as a development loop: agents and contributors must validate locally,
+then push one consolidated pull request update after the local checks pass.
+After a remote failure, make and validate a local correction before pushing
+again. An unchanged failed job may be rerun once only when its logs demonstrate
+a transient infrastructure failure.
 
 ## CI Cost Model
 
@@ -66,5 +83,10 @@ Pull requests should include:
 - test commands run locally;
 - screenshots or recordings for meaningful UI changes;
 - notes for any limitations, follow-up work, or intentionally deferred checks.
+
+Keep a pull request in draft while work is incomplete. Mark it ready only after
+`bun run ci:pre-push` succeeds for its current HEAD. Before creating a release
+tag, run `bun run release:preflight` from a clean `main` checkout matching
+`origin/main`.
 
 By contributing, you agree that your contribution will be licensed under the repository license, AGPL-3.0-or-later.

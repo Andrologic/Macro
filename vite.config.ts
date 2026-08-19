@@ -88,8 +88,12 @@ const createMermaidParserSourcePlugin = () => {
   sourceByAbsolutePath.set(
     resolve(parserSourceRoot, "index.ts"),
     [
-      'export { parse } from "./parse.js";',
+      'export { MermaidParseError, parse } from "./parse.js";',
       'export { isEmResetFrame } from "./language/generated/ast.js";',
+      'export { createRailroadServices } from "./language/railroad/index.js";',
+      'export { createRailroadAbnfServices } from "./language/railroad-abnf/index.js";',
+      'export { createRailroadEbnfServices } from "./language/railroad-ebnf/index.js";',
+      'export { createRailroadPegServices } from "./language/railroad-peg/index.js";',
     ].join("\n")
   );
 
@@ -367,68 +371,7 @@ const manualVendorChunk = (id: string): string | undefined => {
   return undefined;
 };
 
-const manualAppChunk = (id: string): string | undefined => {
-  const moduleId = id.replace(/\\/g, "/");
-  if (moduleId.includes("/node_modules/") || !moduleId.includes("/src/")) return undefined;
-  if (moduleId.includes("/src/i18n/locales/")) return undefined;
-  if (moduleId.includes("/src/components/chat/ContextWindowIndicator.")) return "chat-context-window";
-  if (
-    moduleId.includes("/src/components/chat/CompactionTranscriptUi.") ||
-    moduleId.includes("/src/components/chat/transcriptItems.") ||
-    moduleId.includes("/src/components/chat/useAgentCodeReplayConfirmation.") ||
-    moduleId.includes("/src/components/chat/AgentCodeReplayConfirmModal.")
-  ) return "chat-transcript-support";
-  if (
-    moduleId.includes("/src/components/chat/QuestionnaireFooter.") ||
-    moduleId.includes("/src/components/chat/QuestionnaireResponseSummary.") ||
-    moduleId.includes("/src/components/chat/ToolApprovalFooter.") ||
-    moduleId.includes("/src/components/chat/ImplementTaskTodoDropdown.")
-  ) return "chat-footer-support";
-  if (moduleId.includes("/src/stores/")) return "app-stores";
-  if (
-    moduleId.includes("/src/services/architectPlan") ||
-    moduleId.includes("/src/services/architectGit") ||
-    moduleId.includes("/src/services/architectBranch") ||
-    moduleId.includes("/src/services/architectScope") ||
-    moduleId.includes("/src/services/architectStrategy") ||
-    moduleId.includes("/src/services/architectAuto") ||
-    moduleId.includes("/src/services/plan")
-  ) return "architect-services";
-  if (
-    moduleId.includes("/src/services/architectTool") ||
-    moduleId.includes("/src/services/workspaceTool") ||
-    moduleId.includes("/src/shared/macroToolRegistry")
-  ) return "tool-services";
-  if (
-    moduleId.includes("/src/services/chat") ||
-    moduleId.includes("/src/services/context") ||
-    moduleId.includes("/src/services/conversation") ||
-    moduleId.includes("/src/services/streamingChat")
-  ) return "chat-services";
-  if (
-    moduleId.includes("/src/services/provider") ||
-    moduleId.includes("/src/services/reasoning") ||
-    moduleId.includes("/src/services/aiConfig") ||
-    moduleId.includes("/src/services/metadataModel")
-  ) return "provider-services";
-  if (
-    moduleId.includes("/src/services/macro") ||
-    moduleId.includes("/src/services/merge") ||
-    moduleId.includes("/src/services/git") ||
-    moduleId.includes("/src/services/task")
-  ) return "workflow-services";
-  if (moduleId.includes("/src/services/mcp/")) return "mcp-services";
-  if (moduleId.includes("/src/services/")) return "app-services";
-  if (moduleId.includes("/src/hooks/")) return "app-hooks";
-  if (moduleId.includes("/src/i18n/")) return "app-i18n";
-  if (moduleId.includes("/src/components/ui/") || moduleId.includes("/src/components/theme/")) {
-    return "app-ui";
-  }
-  return undefined;
-};
-
-const manualChunk = (id: string): string | undefined =>
-  manualVendorChunk(id) ?? manualAppChunk(id);
+const manualChunk = (id: string): string | undefined => manualVendorChunk(id);
 
 const collectProhibitedPublicSecretFiles = (dir: string, root: string): string[] => {
   if (!existsSync(dir)) {

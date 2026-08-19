@@ -113,47 +113,13 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "release_name=Macro ${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Install frontend dependencies from lockfile
-        run: bun install --frozen-lockfile
-
-      - name: Verify versions and tracked files
-        run: |
-          bun run version:check
-          bun run repo:check-binaries
-
-      - name: Typecheck and lint frontend
-        run: |
-          bun run typecheck
-          bun run lint
-
-      - name: Audit translations
-        run: bun run i18n:audit
-
-      - name: Run frontend tests
-        run: bun run test
-
-      - name: Build frontend and check bundle budget
-        run: |
-          bun run build
-          bun run bundle:check
-
       - name: Install Linux native dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
 
-      - name: Build AI runtime sidecar
-        run: bun run build:ai-runtime
-
-      - name: Configure deterministic Git identity
-        run: |
-          git config --global user.name "Macro Release CI"
-          git config --global user.email "macro-release-ci@example.invalid"
-
-      - name: Run Rust release checks
-        run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
-          cargo check --manifest-path src-tauri/Cargo.toml --example macro-headless --locked
+      - name: Run shared release validation profile
+        run: bun dev/ci/run-checks.mjs --profile native
 
   build:
     name: Build ${{ matrix.name }}
@@ -300,7 +266,7 @@ jobs:
         with:
           tauriScript: bun dev/tauri-cli.mjs
           args: ${{ matrix.args }}
-          retryAttempts: 2
+          retryAttempts: 1
           uploadUpdaterJson: false
 
       - name: Verify macOS bundle and notarization
@@ -357,7 +323,7 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
 
   draft-release:
     name: Create draft release

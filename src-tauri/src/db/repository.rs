@@ -458,7 +458,8 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
             .execute(&mut *tx)
             .await?;
     }
-    let mut statement = sqlx::query(&query);
+    // The only generated fragments are bind placeholders; all values remain bound.
+    let mut statement = sqlx::query(sqlx::AssertSqlSafe(query));
     for id in ids {
         statement = statement.bind(id);
     }
@@ -810,7 +811,8 @@ pub async fn get_chat_bootstrap_snapshot(
             "#,
             placeholders
         );
-        let mut statement = sqlx::query(&query);
+        // The only generated fragments are bind placeholders; all values remain bound.
+        let mut statement = sqlx::query(sqlx::AssertSqlSafe(query));
         for conversation_id in &unique_preload_ids {
             statement = statement.bind(conversation_id);
         }
@@ -2055,7 +2057,8 @@ pub async fn update_provider_config(
         updates.join(", ")
     );
 
-    let mut q = sqlx::query(&query).bind(&now);
+    // Column assignments come exclusively from the fixed allowlist above.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(query)).bind(&now);
 
     if has_name {
         q = q.bind(input.name.unwrap());
@@ -2546,7 +2549,8 @@ pub async fn prune_provider_models(
         placeholders
     );
 
-    let mut statement = sqlx::query(&query).bind(provider_id);
+    // The only generated fragments are bind placeholders; all values remain bound.
+    let mut statement = sqlx::query(sqlx::AssertSqlSafe(query)).bind(provider_id);
     for model_id in keep_model_ids {
         statement = statement.bind(model_id);
     }
@@ -3942,10 +3946,10 @@ mod tests {
         set_app_setting(&pool, &checkpoint_key, "[\"old\"]")
             .await
             .expect("save checkpoints");
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TRIGGER fail_replay_checkpoint BEFORE INSERT ON app_settings WHEN NEW.key = 'agentCodeCheckpoints:{}' BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END",
             conversation.id
-        ))
+        )))
         .execute(&pool)
         .await
         .expect("install failure trigger");
@@ -4295,10 +4299,10 @@ mod tests {
         )
         .await
         .expect("prepare replay");
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE TRIGGER fail_replay_restore BEFORE UPDATE ON messages WHEN OLD.conversation_id = '{}' BEGIN SELECT RAISE(ABORT, 'injected recovery failure'); END",
             conversation.id
-        ))
+        )))
         .execute(&pool)
         .await
         .expect("install failure trigger");

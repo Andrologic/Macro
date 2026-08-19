@@ -6,6 +6,7 @@ Macro uses Bun for frontend scripts and Rust/Tauri for the desktop backend.
 
 ```bash
 bun install
+bun run hooks:install
 bun run tauri:dev
 ```
 
@@ -38,8 +39,11 @@ The repo uses:
 | `bun run lint` | Run ESLint. |
 | `bun run i18n:audit` | Audit locale coverage. |
 | `bun run test` | Run frontend and service tests. |
+| `bun run ci:pre-push` | Run the differential local gate used by the pre-push hook. |
+| `bun run ci:workflows` | Validate workflow YAML and repository Actions policy. |
 | `bun run version:check` | Verify synchronized version manifests. |
 | `bun run ci` | Run the full local CI pipeline. |
+| `bun run release:preflight` | Validate `main`, the release tag, full CI, and local native packaging. |
 
 ## Environment Variables
 
@@ -113,9 +117,10 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ## Release Workflow
 
 GitHub releases are created by `.github/workflows/release.yml`. The workflow
-runs from a stable `vX.Y.Z` tag, or manually from `main`, validates that
-`package.json` contains the same stable `x.y.z` version, builds macOS, Windows,
-and Linux packages, then creates a GitHub Release draft for manual review.
+runs only from a newly created annotated `vX.Y.Z` tag whose commit belongs to
+`main`. It validates that `package.json` contains the same stable `x.y.z`
+version, builds macOS, Windows, and Linux packages, then creates a GitHub
+Release draft for manual review.
 
 The current `0.1.0` version is eligible for an official release once its
 matching `v0.1.0` tag is created. Windows and Linux release packages are built
@@ -142,6 +147,18 @@ The full local CI command also builds the frontend and checks bundle size:
 ```bash
 bun run ci
 ```
+
+Before pushing, prefer the differential gate:
+
+```bash
+bun run ci:pre-push
+```
+
+It compares the whole proposed integration range, selects the smallest safe
+profile, and caches a successful result for that exact range and platform. The
+tracked `pre-push` hook enforces the same command. Install it with
+`bun run hooks:install`; bypassing it with `--no-verify` is reserved for an
+explicitly authorized emergency.
 
 ## Project Map
 

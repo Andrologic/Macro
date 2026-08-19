@@ -1013,12 +1013,12 @@ describe('architectGitFlowService', () => {
     expect(gitBranchCreateMock.mock.calls.map(([params]) => params)).toEqual([
       { repoPath: '/repos/web', branchName: 'release/v0.2.0', fromRef: 'develop' },
       { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', fromRef: 'release/v0.2.0' },
-      { repoPath: '/repos/api', branchName: 'release/v0.2.0', fromRef: 'develop' },
-      { repoPath: '/repos/api', branchName: 'feature/checkout/checkout-api', fromRef: 'release/v0.2.0' },
+      { repoPath: '/repos/api', branchName: 'release/0.2.0', fromRef: 'develop' },
+      { repoPath: '/repos/api', branchName: 'feature/checkout/checkout-api', fromRef: 'release/0.2.0' },
     ]);
     expect(result.plan.predictedBranches).toEqual(expect.arrayContaining([
       expect.objectContaining({ projectId: 'web', parentBranch: 'release/v0.2.0' }),
-      expect.objectContaining({ projectId: 'api', parentBranch: 'release/v0.2.0' }),
+      expect.objectContaining({ projectId: 'api', parentBranch: 'release/0.2.0' }),
     ]));
   });
 
@@ -1467,7 +1467,7 @@ describe('architectGitFlowService', () => {
     gitBranchListMock.mockImplementation(async (repoPath: string) => createGitBranches([
       'develop',
       'main',
-      'release/v0.2.0',
+      'release/0.2.0',
       repoPath === '/repos/web' ? 'feature/checkout/checkout-web' : 'feature/checkout/checkout-api',
     ]));
 
@@ -1480,7 +1480,7 @@ describe('architectGitFlowService', () => {
       {
         projectId: 'web',
         repoPath: '/repos/web',
-        planBranchName: 'release/v0.2.0',
+        planBranchName: 'release/0.2.0',
         baseBranchName: 'main',
         backmergeBranchName: 'develop',
         mergeOutput: 'merged:/repos/web',
@@ -1489,7 +1489,7 @@ describe('architectGitFlowService', () => {
       {
         projectId: 'api',
         repoPath: '/repos/api',
-        planBranchName: 'release/v0.2.0',
+        planBranchName: 'release/0.2.0',
         baseBranchName: 'main',
         backmergeBranchName: 'develop',
         mergeOutput: undefined,
@@ -1503,7 +1503,7 @@ describe('architectGitFlowService', () => {
       { repoPath: '/repos/api', branchOrCommit: 'develop', create: false },
     ]));
     expect(gitMergeMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repos/web', branchName: 'release/v0.2.0', intoBranch: 'main' },
+      { repoPath: '/repos/web', branchName: 'release/0.2.0', intoBranch: 'main' },
       { repoPath: '/repos/web', branchName: 'main', intoBranch: 'develop' },
       { repoPath: '/repos/api', branchName: 'main', intoBranch: 'develop' },
     ]);

@@ -67,3 +67,8 @@ dev/ai-keys.local.json
 *.p8
 *.p12
 *.key
+
+# Temporary visual QA reports and captures
+/design-qa.md
+/design-qa-artifacts/
+/docs/design-qa/

@@ -177,7 +177,7 @@ fn branch_worktree_path(repo: &Repository, worktree_key: &str) -> Result<PathBuf
 fn current_branch_name(repo: &Repository) -> Option<String> {
     repo.head()
         .ok()
-        .and_then(|head| head.shorthand().map(|value| value.to_string()))
+        .and_then(|head| head.shorthand().ok().map(str::to_string))
 }
 
 fn is_dirty(repo: &Repository) -> Result<bool> {
@@ -576,7 +576,7 @@ fn find_ready_worktree_for_branch(
         message: format!("Failed to list registered worktrees: {}", e),
     })?;
 
-    for candidate_name in worktree_names.iter().flatten() {
+    for candidate_name in worktree_names.iter().flatten().flatten() {
         if candidate_name == excluded_worktree_name {
             continue;
         }
