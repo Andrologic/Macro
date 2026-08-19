@@ -141,6 +141,33 @@ The release workflow generates `latest.json` from the four required targets:
 `windows-x86_64`, `linux-x86_64`, `darwin-x86_64`, and `darwin-aarch64`. The two
 macOS targets point to the same universal `.app.tar.gz` archive.
 
+### End-to-end updater test
+
+Use a disposable VM or machine. Keep the previous signed installer so the test
+can start from a real installed version rather than a development server.
+
+1. Leave the new GitHub release as a draft and download all its assets.
+2. Run `release:updater:verify` against the downloaded `latest.json`, updater
+   bundles, signatures, and `SHA256SUMS.txt`.
+3. Install and open the previous stable Macro version on the test machine.
+4. Publish the draft without announcing it. Draft releases are intentionally
+   invisible to the updater, so the network path cannot be tested earlier.
+5. Restart the old app. Confirm one automatic check occurs, the footer reports
+   download progress, and the app remains open after the update becomes ready.
+6. First test the normal restart path with no active work. Confirm the new
+   version launches and its release-note dialog appears once.
+7. Restore the old VM snapshot and repeat with a streaming conversation and an
+   active Implement command. Confirm `Wait` is focused, both activities are
+   listed, and only `Restart anyway` proceeds without cancelling them.
+8. Restart the updated app again. Confirm the release-note dialog does not open
+   a second time and the footer reports that Macro is current.
+9. Run `release:updater:verify` against the public `/releases/latest/` endpoint.
+
+For `v0.1.0`, no previous stable build contains the updater. Existing RC users
+must install `v0.1.0` manually. The first production upgrade path can therefore
+be proven either with a throwaway lower-version build made from the same updater
+source in a disposable worktree, or with the real `v0.1.0` to `v0.1.1` update.
+
 ## Build Outputs
 
 Build the desktop app locally:

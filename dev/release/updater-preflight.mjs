@@ -5,6 +5,16 @@ import { pathToFileURL } from 'node:url';
 
 export const UPDATER_ENDPOINT = 'https://github.com/Andrologic/Macro/releases/latest/download/latest.json';
 const VERSION_PARTS = /^[=^~\s]*(\d+)\.(\d+)/;
+const VERSION_MAJOR = /^[=^~\s]*(\d+)/;
+const TAURI_PLUGIN_PAIRS = Object.freeze([
+  ['@tauri-apps/plugin-dialog', 'tauri-plugin-dialog'],
+  ['@tauri-apps/plugin-http', 'tauri-plugin-http'],
+  ['@tauri-apps/plugin-notification', 'tauri-plugin-notification'],
+  ['@tauri-apps/plugin-opener', 'tauri-plugin-opener'],
+  ['@tauri-apps/plugin-process', 'tauri-plugin-process'],
+  ['@tauri-apps/plugin-store', 'tauri-plugin-store'],
+  ['@tauri-apps/plugin-updater', 'tauri-plugin-updater'],
+]);
 
 function dependencyVersion(value, label) {
   const match = String(value ?? '').match(VERSION_PARTS);
@@ -31,15 +41,27 @@ function checkPluginVersion(errors, packageJson, cargoToml, cargoLock, npmName, 
   const cargoVersion = cargoDependencyVersion(cargoToml, cargoName);
   const lockVersion = cargoLockPackageVersion(cargoLock, cargoName);
   if (!npmVersion || !cargoVersion || !lockVersion) {
-    errors.push(`Missing updater dependency metadata for ${npmName} / ${cargoName}.`);
+    errors.push(`Missing Tauri plugin dependency metadata for ${npmName} / ${cargoName}.`);
     return;
   }
   try {
     const npmLine = dependencyVersion(npmVersion, npmName);
-    const cargoLine = dependencyVersion(cargoVersion, cargoName);
     const lockLine = dependencyVersion(lockVersion, `Cargo.lock ${cargoName}`);
-    if (npmLine !== cargoLine || npmLine !== lockLine) {
-      errors.push(`${npmName} and ${cargoName} must use the same major/minor version (npm ${npmVersion}, Cargo ${cargoVersion}, lock ${lockVersion}).`);
+    if (npmLine !== lockLine) {
+      errors.push(`${npmName} and the resolved ${cargoName} crate must use the same major/minor version (npm ${npmVersion}, lock ${lockVersion}).`);
+    }
+
+    const declaredMajor = String(cargoVersion).match(VERSION_MAJOR)?.[1];
+    const lockMajor = String(lockVersion).match(VERSION_MAJOR)?.[1];
+    if (!declaredMajor || declaredMajor !== lockMajor) {
+      errors.push(`${cargoName} declaration ${cargoVersion} does not allow the resolved major version ${lockVersion}.`);
+    }
+
+    if (String(cargoVersion).trim().startsWith('=')) {
+      const cargoLine = dependencyVersion(cargoVersion, cargoName);
+      if (cargoLine !== lockLine) {
+        errors.push(`${cargoName} exact requirement ${cargoVersion} does not match Cargo.lock ${lockVersion}.`);
+      }
     }
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
@@ -85,8 +107,9 @@ export function validateUpdaterConfiguration({ packageJson, cargoToml, cargoLock
     }
   }
 
-  checkPluginVersion(errors, packageJson, cargoToml, cargoLock, '@tauri-apps/plugin-updater', 'tauri-plugin-updater');
-  checkPluginVersion(errors, packageJson, cargoToml, cargoLock, '@tauri-apps/plugin-process', 'tauri-plugin-process');
+  for (const [npmName, cargoName] of TAURI_PLUGIN_PAIRS) {
+    checkPluginVersion(errors, packageJson, cargoToml, cargoLock, npmName, cargoName);
+  }
   return errors;
 }
 
