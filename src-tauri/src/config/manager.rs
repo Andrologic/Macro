@@ -2361,6 +2361,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_registration_keeps_an_mcp_id_collision_inactive() {
+        let (_temp, manager) = manager().await;
+        let user_tools = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("user tools");
+        manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: user_tools.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/mcpServers".to_string(),
+                    from: None,
+                    value: Some(json!({
+                        "github_server": {
+                            "enabled": true,
+                            "transport": {"type": "stdio", "command": "global-mcp"}
+                        }
+                    })),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect("set global MCP server");
+
+        let metadata = _temp.path().join("collision-metadata");
+        let config_root = metadata.join("projects/collision-project/config");
+        fs::create_dir_all(&config_root).expect("project config root");
+        let mut project_tools = sparse_document(ConfigDocumentKind::Tools);
+        project_tools["mcpServers"] = json!({
+            "GitHub Server": {
+                "enabled": true,
+                "transport": {
+                    "type": "stdio",
+                    "command": "project-mcp",
+                    "env": {
+                        "API_TOKEN": "macro-secret://mcp-env/github_server/API_TOKEN"
+                    }
+                }
+            }
+        });
+        atomic_write_json(&config_root.join("tools.json"), &project_tools).expect("project tools");
+
+        manager
+            .register_project_root("collision-project", metadata)
+            .await
+            .expect("invalid project document remains registered with a safe baseline");
+        let document = manager
+            .get_document(
+                ConfigDocumentKind::Tools,
+                ConfigScope::Project {
+                    project_id: "collision-project".to_string(),
+                },
+            )
+            .await
+            .expect("invalid project document");
+        assert!(
+            document
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "config.tools.mcp_server_id_noncanonical" }),
+            "{:?}",
+            document.diagnostics
+        );
+        let snapshot = manager
+            .get_snapshot(&["collision-project".to_string()])
+            .await
+            .expect("safe project snapshot");
+        assert!(
+            snapshot.project_effective["collision-project"]["tools"]["mcpServers"]
+                .get("GitHub Server")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn snapshot_rejects_an_explicit_unregistered_project() {
         let (_temp, manager) = manager().await;
         let error = manager

@@ -1,6 +1,7 @@
 import type { MCPServer, MCPTool } from '../types';
 import { services } from './index';
 import { isMCPServerEnabled, normalizeMCPServer, normalizeMCPServerTools } from './mcp';
+import { normalizeMCPIdentifier } from './mcp/identifiers';
 
 export interface ScopedMcpRuntime {
   servers: MCPServer[];
@@ -14,6 +15,21 @@ type CacheEntry = {
 
 const CACHE_TTL_MS = 30_000;
 const discoveryCache = new Map<string, CacheEntry>();
+
+const assertCanonicalUniqueServerIds = (serverIds: readonly string[]): void => {
+  const owners = new Map<string, string>();
+  for (const serverId of serverIds) {
+    const normalized = normalizeMCPIdentifier(serverId);
+    if (serverId !== normalized) {
+      throw new Error(`MCP server id ${serverId} is not canonical.`);
+    }
+    const owner = owners.get(normalized);
+    if (owner) {
+      throw new Error(`MCP server ids ${owner} and ${serverId} collide after normalization.`);
+    }
+    owners.set(normalized, serverId);
+  }
+};
 
 const toRuntimeServer = (id: string, definition: Record<string, unknown>): MCPServer =>
   normalizeMCPServer({
@@ -68,6 +84,7 @@ export const resolveScopedMcpRuntime = async (
   fallbackServers: readonly MCPServer[],
   discover: typeof services.mcpDiscoverTools = services.mcpDiscoverTools,
 ): Promise<ScopedMcpRuntime> => {
+  assertCanonicalUniqueServerIds(Object.keys(definitions));
   const configured = Object.entries(definitions)
     .map(([id, definition]) => toRuntimeServer(id, definition))
     .filter(isMCPServerEnabled);
@@ -87,6 +104,7 @@ export const callScopedMcpTool = async (
   servers: readonly MCPServer[],
   callTool: typeof services.mcpCallTool = services.mcpCallTool,
 ): Promise<string> => {
+  assertCanonicalUniqueServerIds(servers.map((server) => server.id));
   for (const server of servers) {
     const tool = normalizeMCPServerTools(server).find((candidate) => candidate.id === toolId);
     if (!tool) continue;

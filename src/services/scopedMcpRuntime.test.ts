@@ -56,4 +56,42 @@ describe('scoped MCP runtime', () => {
     expect(discover).not.toHaveBeenCalled();
     expect(runtime.tools.map((tool) => tool.id)).toEqual(['mcp__shared_docs__read']);
   });
+
+  it('rejects noncanonical or colliding server ids before discovery', async () => {
+    const discover = mock(async () => ({ tools: [] }));
+    await expect(resolveScopedMcpRuntime({
+      github_server: {
+        enabled: true,
+        transport: { type: 'stdio', command: 'global-mcp' },
+      },
+      'GitHub Server': {
+        enabled: true,
+        transport: { type: 'stdio', command: 'project-mcp' },
+      },
+    }, [], discover)).rejects.toThrow('is not canonical');
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate runtime server ids before calling a tool', async () => {
+    const server: MCPServer = {
+      id: 'github_server',
+      name: 'GitHub',
+      description: '',
+      category: 'other',
+      icon: 'server',
+      status: 'online',
+      transport: { type: 'stdio', command: 'github-mcp' },
+      config: { enabled: true },
+      tools: [{ id: 'mcp__github_server__read', serverId: 'github_server', name: 'read' }],
+    };
+    const call = mock(async () => ({ content: 'must not run' }));
+
+    await expect(callScopedMcpTool(
+      'mcp__github_server__read',
+      {},
+      [server, { ...server }],
+      call,
+    )).rejects.toThrow('collide after normalization');
+    expect(call).not.toHaveBeenCalled();
+  });
 });

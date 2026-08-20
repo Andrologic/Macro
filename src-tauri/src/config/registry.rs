@@ -312,6 +312,18 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
     let mut normalized_server_ids = BTreeMap::<String, &str>::new();
     for (server_id, server) in servers {
         let expected_server_id = normalize_mcp_server_id(server_id);
+        if server_id != &expected_server_id {
+            diagnostics.push((
+                format!(
+                    "/mcpServers/{}",
+                    server_id.replace('~', "~0").replace('/', "~1")
+                ),
+                "config.tools.mcp_server_id_noncanonical",
+                format!(
+                    "L’identifiant MCP {server_id} doit utiliser sa forme canonique {expected_server_id}."
+                ),
+            ));
+        }
         if let Some(existing_server_id) =
             normalized_server_ids.insert(expected_server_id.clone(), server_id)
         {
@@ -1035,6 +1047,29 @@ pub fn project_overlay_is_restrictive(
     project: &Value,
 ) -> Result<(), String> {
     if kind == ConfigDocumentKind::Tools {
+        let global_mcp_ids = global_effective
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .map(|servers| {
+                servers
+                    .keys()
+                    .map(|server_id| (normalize_mcp_server_id(server_id), server_id.as_str()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        if let Some(project_servers) = project.get("mcpServers").and_then(Value::as_object) {
+            for project_id in project_servers.keys() {
+                let normalized = normalize_mcp_server_id(project_id);
+                if global_mcp_ids
+                    .get(&normalized)
+                    .is_some_and(|global_id| *global_id != project_id)
+                {
+                    return Err(format!(
+                        "Le serveur MCP projet {project_id} entre en collision avec un serveur global après normalisation."
+                    ));
+                }
+            }
+        }
         if let Some(project_risk) = project.get("riskLevel").and_then(Value::as_str) {
             let rank = |value: &str| match value {
                 "strict" => 0,
@@ -1917,7 +1952,7 @@ mod tests {
         let document_with_reference = |reference: &str| {
             let mut document = sparse_document(ConfigDocumentKind::Tools);
             document["mcpServers"] = json!({
-                "GitHub Server": {
+                "github_server": {
                     "transport": {
                         "type": "stdio",
                         "command": "github-mcp",
@@ -1949,7 +1984,7 @@ mod tests {
                     && result.diagnostics.iter().any(|entry| {
                         entry.code == "config.tools.mcp_secret_ref_invalid"
                             && entry.path.as_deref()
-                                == Some("/mcpServers/GitHub Server/transport/env/API_TOKEN")
+                                == Some("/mcpServers/github_server/transport/env/API_TOKEN")
                     }),
                 "{invalid}: {:?}",
                 result.diagnostics
@@ -1976,6 +2011,34 @@ mod tests {
             entry.code == "config.tools.mcp_server_id_collision"
                 && entry.path.as_deref() == Some("/mcpServers/github_server")
         }));
+        assert!(result.diagnostics.iter().any(|entry| {
+            entry.code == "config.tools.mcp_server_id_noncanonical"
+                && entry.path.as_deref() == Some("/mcpServers/GitHub Server")
+        }));
+    }
+
+    #[test]
+    fn project_mcp_ids_cannot_collide_with_global_ids_after_normalization() {
+        let global = json!({
+            "mcpServers": {
+                "github_server": {
+                    "enabled": true,
+                    "transport": {"type": "stdio", "command": "global-mcp"}
+                }
+            }
+        });
+        let project = json!({
+            "mcpServers": {
+                "GitHub Server": {
+                    "enabled": true,
+                    "transport": {"type": "stdio", "command": "project-mcp"}
+                }
+            }
+        });
+
+        assert!(
+            project_overlay_is_restrictive(ConfigDocumentKind::Tools, &global, &project).is_err()
+        );
     }
 
     #[test]
