@@ -401,6 +401,12 @@ const LOCKED_AGENT_TOOL_IDS = [
   "skill_read_resource",
   "skill_run_script",
 ] as const;
+const AGENT_TERMINAL_TOOL_IDS = new Set([
+  "terminal_create_session",
+  "terminal_run",
+  "terminal_read",
+  "terminal_kill",
+]);
 const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
   "strategy_generate",
   "strategy_update",
@@ -476,7 +482,7 @@ const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
 const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
   "The previous assistant turn used Plan mode. Execute the latest plan unless the user changed direction.";
 const STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION =
-  "This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. In Build mode, use workspace, git, and terminal tools against the selected task repository/worktree. In Plan mode, inspect only and return a concrete plan.";
+  "This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. In Build mode, use workspace and git tools against the selected task repository/worktree. The agent terminal remains independent from that workspace. In Plan mode, inspect only and return a concrete plan.";
 const ARCHITECT_TASK_ONLY_TOOL_IDS = new Set([
   "task_todo_get",
   "task_todo_update",
@@ -5456,6 +5462,72 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return architectToolResult;
     }
 
+    if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {
+      const serializeAgentTerminalSession = <T extends object>(session: T) => {
+        const agentSession = { ...session } as Record<string, unknown>;
+        delete agentSession.project_id;
+        delete agentSession.project_name;
+        delete agentSession.mount_name;
+        delete agentSession.workspace_path;
+        return JSON.stringify(agentSession, null, 2);
+      };
+      const readAgentTerminalSession = async (sessionId: string) => {
+        const terminalStore = useTerminalStore.getState();
+        const session =
+          terminalStore.sessions[sessionId] ??
+          (await terminalStore.readSession(sessionId));
+        if (session.project_id) {
+          return {
+            session,
+            error: "This session belongs to the manual project terminal and is unavailable to the agent terminal tool.",
+          };
+        }
+        return { session, error: null };
+      };
+
+      if (normalizedToolName === "terminal_create_session") {
+        const session = await useTerminalStore.getState().createSession({
+          projectId: null,
+          cwd: typeof args.cwd === "string" ? args.cwd : null,
+        });
+        return serializeAgentTerminalSession(session);
+      }
+
+      const sessionId =
+        typeof args.session_id === "string" ? args.session_id.trim() : "";
+      if (!sessionId) {
+        return `Missing session_id argument for ${normalizedToolName}.`;
+      }
+
+      const agentSession = await readAgentTerminalSession(sessionId);
+      if (agentSession.error) {
+        return `Error executing ${normalizedToolName}: ${agentSession.error}`;
+      }
+
+      if (normalizedToolName === "terminal_run") {
+        const command = typeof args.command === "string" ? args.command : "";
+        if (!command.trim()) {
+          return "Missing command argument for terminal_run.";
+        }
+        const session = await useTerminalStore.getState().runCommand({
+          sessionId,
+          command,
+          timeoutMs:
+            typeof args.timeout_ms === "number"
+              ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
+              : null,
+        });
+        return serializeAgentTerminalSession(session);
+      }
+
+      if (normalizedToolName === "terminal_read") {
+        return serializeAgentTerminalSession(agentSession.session);
+      }
+
+      const session = await useTerminalStore.getState().killSession(sessionId);
+      return serializeAgentTerminalSession(session);
+    }
+
     if (
       normalizedToolName === "list" ||
       normalizedToolName === "read" ||
@@ -5465,10 +5537,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === "apply_patch" ||
       normalizedToolName === "glob" ||
       normalizedToolName === "grep" ||
-      normalizedToolName === "terminal_create_session" ||
-      normalizedToolName === "terminal_run" ||
-      normalizedToolName === "terminal_read" ||
-      normalizedToolName === "terminal_kill" ||
       normalizedToolName.startsWith("git_")
     ) {
       const mode = modeAtSend;
@@ -5530,130 +5598,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           retried_tool: normalizedToolName,
         })}\n${result}`;
       };
-
-      const getTerminalProjectScopeError = (
-        projectId: string | null,
-      ): string | null => {
-        if (!projectId) {
-          return "the terminal session is not bound to an Implement project.";
-        }
-        const projectMount = executionContext.projectMounts.find(
-          (mount) => mount.projectId === projectId,
-        );
-        if (
-          !projectMount ||
-          !executionContext.actionableProjectIds.includes(projectId)
-        ) {
-          return `project "${projectId}" is outside the writable workspace scope for this conversation.`;
-        }
-        if (projectMount.isReadOnly) {
-          return `project "${projectMount.displayName}" is read-only.`;
-        }
-        return null;
-      };
-
-      const readScopedTerminalSession = async (sessionId: string) => {
-        const terminalStore = useTerminalStore.getState();
-        const session =
-          terminalStore.sessions[sessionId] ??
-          (await terminalStore.readSession(sessionId));
-        if (mode === "Chat") {
-          return {
-            session,
-            scopeError: session.project_id
-              ? "project-bound terminal sessions are unavailable in Chat mode."
-              : null,
-          };
-        }
-        const scopeError = getTerminalProjectScopeError(session.project_id);
-        return { session, scopeError };
-      };
-
-      if (normalizedToolName === "terminal_create_session") {
-        if (mode === "Chat") {
-          const session = await useTerminalStore.getState().createSession({
-            projectId: null,
-            cwd: typeof args.cwd === "string" ? args.cwd : null,
-          });
-          return JSON.stringify(session, null, 2);
-        }
-
-        const explicitProjectId =
-          typeof args.project_id === "string" &&
-          args.project_id.trim().length > 0
-            ? args.project_id.trim()
-            : null;
-        const projectId =
-          explicitProjectId ||
-          executionContext.actionableProjectIds[0];
-
-        if (!projectId) {
-          return "Missing project_id argument for terminal_create_session.";
-        }
-
-        const scopeError = getTerminalProjectScopeError(projectId);
-        if (scopeError) {
-          return `Error executing terminal_create_session: ${scopeError}`;
-        }
-
-        const session = await useTerminalStore.getState().createSession({
-          projectId,
-          cwd: typeof args.cwd === "string" ? args.cwd : null,
-        });
-        return withPromotionNotice(JSON.stringify(session, null, 2));
-      }
-
-      if (normalizedToolName === "terminal_run") {
-        const sessionId =
-          typeof args.session_id === "string" ? args.session_id.trim() : "";
-        const command = typeof args.command === "string" ? args.command : "";
-        if (!sessionId) return "Missing session_id argument for terminal_run.";
-        if (!command.trim())
-          return "Missing command argument for terminal_run.";
-
-        const scopedSession = await readScopedTerminalSession(sessionId);
-        if (scopedSession.scopeError) {
-          return `Error executing terminal_run: ${scopedSession.scopeError}`;
-        }
-
-        const session = await useTerminalStore.getState().runCommand({
-          sessionId,
-          command,
-          timeoutMs:
-            typeof args.timeout_ms === "number"
-              ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
-              : null,
-        });
-        return JSON.stringify(session, null, 2);
-      }
-
-      if (normalizedToolName === "terminal_read") {
-        const sessionId =
-          typeof args.session_id === "string" ? args.session_id.trim() : "";
-        if (!sessionId) return "Missing session_id argument for terminal_read.";
-
-        const scopedSession = await readScopedTerminalSession(sessionId);
-        if (scopedSession.scopeError) {
-          return `Error executing terminal_read: ${scopedSession.scopeError}`;
-        }
-        return JSON.stringify(scopedSession.session, null, 2);
-      }
-
-      if (normalizedToolName === "terminal_kill") {
-        const sessionId =
-          typeof args.session_id === "string" ? args.session_id.trim() : "";
-        if (!sessionId) return "Missing session_id argument for terminal_kill.";
-
-        const scopedSession = await readScopedTerminalSession(sessionId);
-        if (scopedSession.scopeError) {
-          return `Error executing terminal_kill: ${scopedSession.scopeError}`;
-        }
-
-        const session = await useTerminalStore
-          .getState()
-          .killSession(sessionId);
-        return JSON.stringify(session, null, 2);
-      }
 
       const result = await executeWorkspaceTool(normalizedToolName, args, mode, {
         signal,
@@ -6492,9 +6436,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION);
     }
 
-    if (appMode === "Chat" && allowedToolIds.includes("terminal_run")) {
+    if (allowedToolIds.includes("terminal_run")) {
       systemInstructions.push(
-        "[Chat Terminal] The terminal is general-purpose and is not bound to the attached workspace. Create it without project_id. cwd may target any existing directory. Every terminal_run command requires a separate user approval, even at YOLO risk level. Never assume that one approval covers a later command.",
+        "[Agent Terminal] The terminal is a general computer capability and is independent from every workspace and project. Its tool contract has no project_id. Choose any existing directory as cwd when useful. Every terminal_run command requires a separate user approval, even at YOLO risk level, and an approval can never cover a later command.",
       );
     }
 
@@ -6517,9 +6461,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           .map((mount) => `${mount.mountName}=>${mount.displayName}`)
           .join(", ") || "none";
       const executionTargetInstruction =
-        appMode === "Chat"
-          ? "Git operations must target exactly one project; there is no git repository at the virtual root. The general Chat terminal is independent from these project mounts."
-          : "Git and terminal operations must target exactly one project; there is no git or terminal at the virtual root.";
+        "Git operations must target exactly one project; there is no git repository at the virtual root. The agent terminal is independent from these project mounts.";
       systemInstructions.push(
         `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. ${executionTargetInstruction}`,
       );
@@ -13265,7 +13207,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       if (conversation.scope_mode !== "Chat") {
         throw new Error(
-          "Le workspace du terminal ne peut être défini que pour une conversation Chat.",
+          "Le workspace de conversation ne peut être défini que pour une conversation Chat.",
         );
       }
 
@@ -13275,7 +13217,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       if (runtime.phase !== "idle" && runtime.phase !== "error") {
         throw new Error(
-          "Attendez la fin de la réponse avant de changer le workspace du terminal.",
+          "Attendez la fin de la réponse avant de changer le workspace de la conversation.",
         );
       }
 

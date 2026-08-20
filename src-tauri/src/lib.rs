@@ -382,9 +382,6 @@ pub fn run() {
             let tool_host_config = tool_host::start(
                 workspace_metadata_root.clone(),
                 app.state::<GitState>().inner().clone(),
-                app.state::<commands::terminal::TerminalSessionStore>()
-                    .inner()
-                    .clone(),
             )?;
             app.manage(tool_host_config);
 

@@ -819,12 +819,15 @@ Une future synchronisation de cet historique peut exister plus tard, mais ne fai
 ### 17.5 Accès outils
 
 Le mode Chat peut accéder :
+
 - au web
 - à certains outils MCP
 - aux skills activées par l'utilisateur
-- au terminal généraliste, indépendamment du workspace attaché à la conversation
+- au terminal agentique généraliste
 
-La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. Il ne dépend pas du workspace attaché et peut démarrer dans n'importe quel répertoire existant. Chaque commande exige une approbation explicite et distincte dans Chat, y compris au niveau de risque YOLO. Une approbation terminal ne peut jamais être mémorisée pour la conversation.
+La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. L'outil terminal agentique n'a aucune identité de projet ou de workspace dans son contrat. Il peut démarrer dans n'importe quel répertoire existant, que la conversation possède ou non un workspace de contexte. Chaque commande exige une approbation explicite et distincte dans tous les modes où l'outil est disponible, y compris au niveau de risque YOLO. Une approbation terminal ne peut jamais être mémorisée pour la conversation.
+
+Le terminal manuel de l'application est une fonctionnalité distincte. Il peut rester rattaché à une tâche et à un projet pour les besoins de navigation de l'interface, mais ses sessions ne sont pas utilisables par l'outil terminal agentique.
 
 ---
 

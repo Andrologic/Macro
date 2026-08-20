@@ -1690,10 +1690,7 @@ const registerUseChatStoreMocks = async () => {
 
   mock.module('../services/workspaceToolExecutor', () => ({
     executeWorkspaceTool: executeWorkspaceToolMock,
-    resolveExplicitMutatingToolProjectTargets: mock((toolName: string, args: Record<string, unknown>) => {
-      if (toolName === 'terminal_create_session' && typeof args.project_id === 'string') {
-        return [args.project_id];
-      }
+    resolveExplicitMutatingToolProjectTargets: mock((_toolName: string, args: Record<string, unknown>) => {
       if (typeof args.project_id === 'string') {
         return [args.project_id];
       }
@@ -6856,11 +6853,44 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       projectId: null,
       cwd: 'C:/Users/test/Documents',
     });
-    expect(JSON.parse(String(result))).toMatchObject({
-      project_id: null,
-      workspace_path: null,
-      cwd: 'C:/Users/test/Documents',
+    const parsed = JSON.parse(String(result));
+    expect(parsed.cwd).toBe('C:/Users/test/Documents');
+    expect(parsed).not.toHaveProperty('project_id');
+    expect(parsed).not.toHaveProperty('workspace_path');
+  });
+
+  it('rejects manual project terminal sessions from the agent terminal tool', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    terminalSessionsFromChat.set(
+      'manual-project-session',
+      createTerminalSessionFromChatDto({
+        sessionId: 'manual-project-session',
+        projectId: 'project-1',
+      }),
+    );
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('chat-conv'),
+          scope_mode: 'Chat',
+        },
+      ],
+      selectedConversationId: 'chat-conv',
+      selectedConversationIdsByMode: { Chat: 'chat-conv' },
     });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-conv',
+      content: 'Lis le terminal manuel.',
+    });
+
+    const result = await getLatestArchitectToolHandler()('terminal_read', {
+      session_id: 'manual-project-session',
+    });
+
+    expect(String(result)).toContain('belongs to the manual project terminal');
   });
 
   it('requires a fresh approval for every Chat terminal command even in YOLO', async () => {
@@ -13469,7 +13499,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getConversationMessages('implement-conv')).toHaveLength(0);
   });
 
-  it('returns worktree-based terminal sessions for terminal_create_session tool calls in implement tasks', async () => {
+  it('creates a general agent terminal for Implement without binding the task worktree', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
     await savePreferenceForTest('toolRiskLevel', 'yolo');
@@ -13517,15 +13547,18 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const onToolCall = getLatestArchitectToolHandler();
     const result = await onToolCall('terminal_create_session', {
       project_id: 'project-1',
+      cwd: 'C:/Users/test/Documents',
     });
 
     expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
-      projectId: 'project-1',
-      cwd: null,
+      projectId: null,
+      cwd: 'C:/Users/test/Documents',
     });
 
     const parsed = JSON.parse(String(result));
-    expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+    expect(parsed.cwd).toBe('C:/Users/test/Documents');
+    expect(parsed).not.toHaveProperty('project_id');
+    expect(parsed).not.toHaveProperty('workspace_path');
   });
 
   it('challenges git_commit once before allowing the same assistant turn to commit', async () => {
@@ -14305,7 +14338,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     ]);
   });
 
-  it('promotes a context project before opening an explicit implement terminal session', async () => {
+  it('does not promote workspace context for an Implement agent terminal', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
     await savePreferenceForTest('toolRiskLevel', 'yolo');
@@ -14357,35 +14390,28 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const onToolCall = getLatestArchitectToolHandler();
     const result = await onToolCall('terminal_create_session', {
       project_id: 'project-2',
+      cwd: 'C:/Users/test/Desktop',
     });
 
-    expect(taskStoreState.promoteTaskContextProjects).toHaveBeenCalledWith(
-      'task-1',
-      ['project-2'],
-      { triggerTool: 'terminal_create_session' }
-    );
+    expect(taskStoreState.promoteTaskContextProjects).not.toHaveBeenCalled();
     expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
-      projectId: 'project-2',
-      cwd: null,
+      projectId: null,
+      cwd: 'C:/Users/test/Desktop',
     });
     expect(taskStoreState.getTaskById('task-1')).toMatchObject({
-      project_ids: ['project-1', 'project-2'],
-      context_project_ids: [],
+      project_ids: ['project-1'],
+      context_project_ids: ['project-2'],
       status: 'InProgress',
     });
 
-    const resultText = String(result);
-    const newlineIndex = resultText.indexOf('\n');
-    const notice = resultText.slice(0, newlineIndex);
-    const sessionJson = resultText.slice(newlineIndex + 1);
-    expect(notice).toBe(
-      '[macro_scope_promotion] {"promoted_project_ids":["project-2"],"retried_tool":"terminal_create_session"}'
-    );
-    const parsed = JSON.parse(sessionJson);
-    expect(parsed.cwd).toBe('C:/repos/api/.macro/worktrees/task-1');
+    expect(String(result)).not.toContain('[macro_scope_promotion]');
+    const parsed = JSON.parse(String(result));
+    expect(parsed.cwd).toBe('C:/Users/test/Desktop');
+    expect(parsed).not.toHaveProperty('project_id');
+    expect(parsed).not.toHaveProperty('workspace_path');
   });
 
-  it('returns a controlled tool result instead of promoting context for standalone tasks', async () => {
+  it('keeps the agent terminal independent from standalone task context', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
     await savePreferenceForTest('toolRiskLevel', 'yolo');
@@ -14429,128 +14455,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     expect(taskStoreState.promoteTaskContextProjects).not.toHaveBeenCalled();
-    expect(terminalCreateSessionFromChatMock).not.toHaveBeenCalled();
-    expect(String(result)).toContain('Cannot execute terminal_create_session');
-    expect(String(result)).toContain('context promotion is only available for Architect tasks');
-    expect(useChatStore.getState().lastError).toBeNull();
-  });
-
-  it('does not promote a standalone conversation even when the selected task is architect', async () => {
-    appState.mode = 'Implement';
-    appState.selectedTaskId = 'task-1';
-    await savePreferenceForTest('toolRiskLevel', 'yolo');
-    taskStoreState.tasks = [
-      createImplementTask({
-        id: 'task-1',
-        status: 'InProgress',
-        plan_storage_branch: 'develop',
-        plan_target_branch: 'develop',
-        project_ids: ['project-1'],
-        context_project_ids: ['project-2'],
-      }),
-      createManualFeatureTask({
-        draft: false,
-        status: 'InProgress',
-        project_ids: ['project-1'],
-        context_project_ids: ['project-2'],
-        assigned_branch: 'feature/quick-export',
-        branch_name: 'feature/quick-export',
-        execution_targets: [
-          {
-            projectId: 'project-1',
-            branchName: 'feature/quick-export',
-            worktreeKey: 'manual-task-1-web',
-          },
-        ],
-      }),
-    ];
-
-    const { useChatStore } = await loadChatStore();
-    setImplementStoreState(useChatStore, {
-      conversationId: 'manual-conv',
-      taskId: 'manual-task-1',
-      title: 'Manual feature',
-    });
-
-    await useChatStore.getState().sendMessage({
-      conversationId: 'manual-conv',
-      content: 'Ouvre un terminal sur le projet API.',
-      taskId: 'manual-task-1',
-    });
-
-    taskStoreState.promoteTaskContextProjects.mockClear();
-    terminalCreateSessionFromChatMock.mockClear();
-
-    const onToolCall = getLatestArchitectToolHandler();
-    const result = await onToolCall('terminal_create_session', {
-      project_id: 'project-2',
-    });
-
-    expect(taskStoreState.promoteTaskContextProjects).not.toHaveBeenCalled();
-    expect(terminalCreateSessionFromChatMock).not.toHaveBeenCalled();
-    expect(String(result)).toContain('Cannot execute terminal_create_session');
-  });
-
-  it('uses the conversation architect task for context promotion when selection is stale', async () => {
-    appState.mode = 'Implement';
-    appState.selectedTaskId = 'manual-task-1';
-    await savePreferenceForTest('toolRiskLevel', 'yolo');
-    taskStoreState.tasks = [
-      createManualFeatureTask({
-        draft: false,
-        status: 'InProgress',
-      }),
-      createImplementTask({
-        id: 'task-1',
-        status: 'InProgress',
-        plan_storage_branch: 'develop',
-        plan_target_branch: 'develop',
-        project_ids: ['project-1'],
-        context_project_ids: ['project-2'],
-        execution_targets: [
-          {
-            projectId: 'project-1',
-            branchName: 'feature/implement-checkout',
-            worktreeKey: 'task-1-web',
-          },
-        ],
-      }),
-    ];
-
-    const { useChatStore } = await loadChatStore();
-    setImplementStoreState(useChatStore, {
-      conversationId: 'implement-conv',
-      taskId: 'task-1',
-    });
-
-    await useChatStore.getState().sendMessage({
-      conversationId: 'implement-conv',
-      content: 'Ouvre un terminal sur le projet API.',
-      taskId: 'task-1',
-    });
-
-    taskStoreState.promoteTaskContextProjects.mockClear();
-
-    const onToolCall = getLatestArchitectToolHandler();
-    const result = await onToolCall('terminal_create_session', {
-      project_id: 'project-2',
-    });
-
-    expect(taskStoreState.promoteTaskContextProjects).toHaveBeenCalledWith(
-      'task-1',
-      ['project-2'],
-      { triggerTool: 'terminal_create_session' }
-    );
-    expect(taskStoreState.promoteTaskContextProjects).not.toHaveBeenCalledWith(
-      'manual-task-1',
-      ['project-2'],
-      { triggerTool: 'terminal_create_session' }
-    );
     expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
-      projectId: 'project-2',
+      projectId: null,
       cwd: null,
     });
-    expect(String(result)).toContain('[macro_scope_promotion]');
+    const parsed = JSON.parse(String(result));
+    expect(parsed).not.toHaveProperty('project_id');
+    expect(parsed).not.toHaveProperty('workspace_path');
+    expect(useChatStore.getState().lastError).toBeNull();
   });
 
   it('returns the user denial reason when a pending tool approval is rejected', async () => {
@@ -14610,7 +14522,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
   });
 
-  it('clears conversation-scoped approval grants when the user switches conversations', async () => {
+  it('requires a fresh approval for every Implement terminal command', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
     providerState.selectedSupportsNativeToolCalling = () => true;
@@ -14624,12 +14536,6 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           scope_mode: 'Implement',
           task_id: 'task-1',
           title: 'Task - Implement checkout',
-        },
-        {
-          ...createConversation('implement-conv-2'),
-          scope_mode: 'Implement',
-          task_id: 'task-1',
-          title: 'Task - Implement fallback',
         },
       ],
       messages: [],
@@ -14649,6 +14555,13 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       content: 'Lance une commande en terminal.',
       taskId: 'task-1',
     });
+    terminalSessionsFromChat.set(
+      'session-1',
+      createTerminalSessionFromChatDto({
+        sessionId: 'session-1',
+        projectId: null,
+      }),
+    );
 
     const onToolCall = getLatestArchitectToolHandler();
     const firstToolCall = onToolCall(
@@ -14658,18 +14571,17 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
 
     await flushAsyncWork();
+    expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toMatchObject({
+      toolCallId: 'tool-call-1',
+      canApproveForConversation: false,
+    });
     useChatStore.getState().approvePendingToolApprovalForConversation('implement-conv');
     await firstToolCall;
 
     expect(
       useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
-    ).toHaveLength(1);
-
-    useChatStore.getState().selectConversation('implement-conv-2');
-
-    expect(
-      useChatStore.getState().conversationApprovalGrantsByConversationId['implement-conv']
     ).toBeUndefined();
+    expect(terminalRunCommandFromChatMock).toHaveBeenCalledTimes(1);
 
     const secondToolCall = onToolCall(
       'terminal_run',
@@ -14685,6 +14597,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     useChatStore.getState().denyPendingToolApproval('implement-conv');
     await expect(secondToolCall).resolves.toBe('Tool terminal_run was denied by the user.');
+    expect(terminalRunCommandFromChatMock).toHaveBeenCalledTimes(1);
   });
 
   it('cancels a pending approval when the conversation stream is stopped', async () => {

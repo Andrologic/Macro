@@ -1044,8 +1044,7 @@ const isMutatingWorkspaceTool = (toolName: string): boolean =>
   toolName === "edit" ||
   toolName === "delete" ||
   toolName === "apply_patch" ||
-  gitMutatingToolIds.has(toolName) ||
-  toolName === "terminal_create_session";
+  gitMutatingToolIds.has(toolName);
 
 const getFirstActionableCandidate = (
   candidates: ProjectWorkspaceCandidate[],
@@ -1124,11 +1123,6 @@ export const resolveExplicitMutatingToolProjectTargets = (
     }
   };
 
-  if (toolName === "terminal_create_session") {
-    const explicitProjectId = getExplicitToolProjectId(args, candidates);
-    return explicitProjectId ? [explicitProjectId] : [];
-  }
-
   if (toolName === "apply_patch") {
     const patchText = toString(args.patch_text);
     if (!patchText) {
@@ -1161,9 +1155,6 @@ const buildReadOnlyToolError = (
   candidate: ProjectWorkspaceCandidate,
 ): string => {
   const label = candidate.name || candidate.mountName || candidate.id;
-  if (toolName === "terminal_create_session") {
-    return `Error executing terminal_create_session: project "${label}" is read-only.`;
-  }
   if (
     toolName === "write" ||
     toolName === "edit" ||
