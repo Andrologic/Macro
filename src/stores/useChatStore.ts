@@ -401,12 +401,6 @@ const LOCKED_AGENT_TOOL_IDS = [
   "skill_read_resource",
   "skill_run_script",
 ] as const;
-const TERMINAL_TOOL_IDS = new Set([
-  "terminal_create_session",
-  "terminal_run",
-  "terminal_read",
-  "terminal_kill",
-]);
 const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
   "strategy_generate",
   "strategy_update",
@@ -5136,6 +5130,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         detail: securityEvaluation.normalizedCall.detail,
         args,
         rememberKey: securityEvaluation.normalizedCall.rememberKey,
+        canApproveForConversation:
+          securityEvaluation.normalizedCall.canApproveForConversation,
       };
 
       const resolution = await serializeToolApproval(
@@ -5207,7 +5203,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
 
-      if (resolution.kind === "allow_conversation") {
+      if (
+        resolution.kind === "allow_conversation" &&
+        pendingApproval.canApproveForConversation !== false
+      ) {
         set((state) => {
           const currentGrants =
             state.conversationApprovalGrantsByConversationId[conversationId] ??
@@ -5532,7 +5531,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         })}\n${result}`;
       };
 
-      const getTerminalProjectScopeError = (projectId: string): string | null => {
+      const getTerminalProjectScopeError = (
+        projectId: string | null,
+      ): string | null => {
+        if (!projectId) {
+          return "the terminal session is not bound to an Implement project.";
+        }
         const projectMount = executionContext.projectMounts.find(
           (mount) => mount.projectId === projectId,
         );
@@ -5553,11 +5557,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const session =
           terminalStore.sessions[sessionId] ??
           (await terminalStore.readSession(sessionId));
+        if (mode === "Chat") {
+          return {
+            session,
+            scopeError: session.project_id
+              ? "project-bound terminal sessions are unavailable in Chat mode."
+              : null,
+          };
+        }
         const scopeError = getTerminalProjectScopeError(session.project_id);
         return { session, scopeError };
       };
 
       if (normalizedToolName === "terminal_create_session") {
+        if (mode === "Chat") {
+          const session = await useTerminalStore.getState().createSession({
+            projectId: null,
+            cwd: typeof args.cwd === "string" ? args.cwd : null,
+          });
+          return JSON.stringify(session, null, 2);
+        }
+
         const explicitProjectId =
           typeof args.project_id === "string" &&
           args.project_id.trim().length > 0
@@ -6421,7 +6441,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.unshift(modePrompt);
     }
 
-    systemInstructions.push(buildToolRiskLevelSystemInstruction(riskLevel));
+    systemInstructions.push(buildToolRiskLevelSystemInstruction(riskLevel, appMode));
 
     const internalAgentProfilePromptKey =
       getInternalAgentProfilePromptPreferenceKey(internalAgentProfile);
@@ -6472,6 +6492,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION);
     }
 
+    if (appMode === "Chat" && allowedToolIds.includes("terminal_run")) {
+      systemInstructions.push(
+        "[Chat Terminal] The terminal is general-purpose and is not bound to the attached workspace. Create it without project_id. cwd may target any existing directory. Every terminal_run command requires a separate user approval, even at YOLO risk level. Never assume that one approval covers a later command.",
+      );
+    }
+
     if (
       executionContext.groupName ||
       executionContext.projectName ||
@@ -6490,8 +6516,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         executionContext.projectMounts
           .map((mount) => `${mount.mountName}=>${mount.displayName}`)
           .join(", ") || "none";
+      const executionTargetInstruction =
+        appMode === "Chat"
+          ? "Git operations must target exactly one project; there is no git repository at the virtual root. The general Chat terminal is independent from these project mounts."
+          : "Git and terminal operations must target exactly one project; there is no git or terminal at the virtual root.";
       systemInstructions.push(
-        `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. Git and terminal operations must target exactly one project; there is no git or terminal at the virtual root.`,
+        `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. ${executionTargetInstruction}`,
       );
     }
 
@@ -7268,6 +7298,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const riskFilteredToolIds = filterDeniedToolIdsForRiskLevel(
         filteredToolIds,
         riskLevel,
+        mode,
       );
       const availableToolIds = filterSkillToolsForAvailability(riskFilteredToolIds, {
         tauriAvailable: chatPersistenceAdapters.isTauriAvailable(),
@@ -8286,18 +8317,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         baseAllowedToolIds,
         taskForToolScope,
       );
-    } else if (params.modeAtSend === "Chat") {
-      const conversation = get().conversations.find(
-        (candidate) => candidate.id === params.conversationId,
-      );
-      const hasExplicitWorkspaceScope = Boolean(
-        conversation?.group_id || conversation?.project_id,
-      );
-      if (!hasExplicitWorkspaceScope || executionContext.actionableProjectIds.length === 0) {
-        taskAllowedToolIds = baseAllowedToolIds.filter(
-          (toolId) => !TERMINAL_TOOL_IDS.has(toolId),
-        );
-      }
     }
     const toolsState = useToolsStore.getState();
     const scopedMcpRuntime = scopedTurnConfiguration
@@ -13759,7 +13778,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             pendingApproval.toolCallId,
           ),
         )
-        ?.({ kind: "allow_conversation" });
+        ?.({
+          kind:
+            pendingApproval.canApproveForConversation === false
+              ? "allow_once"
+              : "allow_conversation",
+        });
     },
 
     denyPendingToolApproval: (conversationId, reason) => {

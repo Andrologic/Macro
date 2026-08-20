@@ -687,6 +687,7 @@ export interface PendingToolApproval {
   detail?: string;
   args?: Record<string, unknown>;
   rememberKey: string;
+  canApproveForConversation?: boolean;
 }
 
 export interface AgentCodeCheckpointFileSnapshot {

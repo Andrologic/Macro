@@ -161,31 +161,25 @@ async fn tool_execute(
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| CommandError {
-                    message: "Missing project_id argument for terminal_create_session.".to_string(),
-                })
                 .map(str::to_string);
 
-            match project_id {
-                Ok(project_id) => create_legacy_session_internal(
-                    workspace_root.clone(),
-                    state.git_state.clone(),
-                    state.terminal_store.clone(),
-                    project_id,
-                    payload
-                        .args
-                        .get("cwd")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                )
-                .await
-                .and_then(|dto| {
-                    serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                        message: error.to_string(),
-                    })
-                }),
-                Err(error) => Err(error),
-            }
+            create_legacy_session_internal(
+                workspace_root.clone(),
+                state.git_state.clone(),
+                state.terminal_store.clone(),
+                project_id,
+                payload
+                    .args
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            )
+            .await
+            .and_then(|dto| {
+                serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
+                    message: error.to_string(),
+                })
+            })
         }
         "terminal_run" => {
             let session_id = payload

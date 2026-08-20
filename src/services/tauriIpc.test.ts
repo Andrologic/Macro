@@ -768,6 +768,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
       projectId: "project-1",
       cwd: "packages/api",
     });
+    await tauriIpc.terminalCreateSession({ cwd: "C:/Users/test" });
     await tauriIpc.terminalRun({
       sessionId: "terminal-1",
       command: "git status",
@@ -782,6 +783,13 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           projectId: "project-1",
           cwd: "packages/api",
+        },
+      },
+      {
+        command: "terminal_create_session",
+        payload: {
+          projectId: null,
+          cwd: "C:/Users/test",
         },
       },
       {

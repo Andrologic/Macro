@@ -86,6 +86,18 @@ describe('macroToolRegistry', () => {
     expect(() => requireMacroToolRegistryEntry('delete')).not.toThrow();
   });
 
+  it('keeps project binding optional for general Chat terminal sessions', () => {
+    const terminal = requireMacroToolRegistryEntry('terminal_create_session');
+
+    expect(terminal.parameters.type).toBe('object');
+    if (terminal.parameters.type !== 'object') {
+      throw new Error('Expected terminal_create_session to use an object schema');
+    }
+    expect(terminal.parameters.required).toEqual([]);
+    expect(terminal.parameters.properties).toHaveProperty('cwd');
+    expect(terminal.description).toContain('general-purpose');
+  });
+
   it('filters Copilot tools to the currently supported Macro runtime surface', () => {
     expect(
       filterCopilotSupportedToolIds([

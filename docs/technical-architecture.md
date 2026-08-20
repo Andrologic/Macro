@@ -683,7 +683,7 @@ L'objectif est de limiter les droits selon le contexte fonctionnel.
 Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
-- Chat reste plus restreint, mais peut recevoir les outils terminal lorsqu'une conversation possède un workspace explicite
+- Chat reste plus restreint, mais peut recevoir les outils terminal indépendamment du workspace attaché
 - Implement a accès à davantage d'outils de workspace et Git
 
 ### 13.2 Validation d'exécution
@@ -704,7 +704,7 @@ La couche d'exécution d'outils encapsule :
 
 Cette couche unifie l'exécution des outils côté produit.
 
-En mode Chat, `projectExecutionContext` ignore les sélections globales et résout uniquement la portée durable de la conversation. La boîte à outils enregistre cette portée avec `db_update_conversation_scope`. Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` partagent un seul interrupteur visible. `useChatStore` les retire de la requête provider lorsque la conversation ne possède aucun projet modifiable. Lorsqu'ils sont présents, l'exécution réutilise le terminal Tauri et les approbations de sécurité déjà employées par Implement. La création refuse tout projet extérieur à la portée modifiable figée pour le tour. Les appels suivants relisent le `project_id` de la session et appliquent la même vérification avant toute exécution. Le bridge Copilot relaie ces quatre appels au frontend afin qu'ils traversent exactement le même contrôle d'approbation.
+En mode Chat, les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` partagent un seul interrupteur visible. Ils restent disponibles sans workspace attaché. La création omet `project_id` et le backend ouvre une session généraliste dont le répertoire initial est le dossier personnel ou tout répertoire existant demandé. Les sessions Implement conservent leur rattachement à un projet et à son worktree. `toolSecurityPolicy` force chaque `terminal_run` de Chat à demander une approbation, avant toute exécution, quel que soit le niveau de risque. Cette décision ignore les autorisations mémorisées et l'interface masque l'action qui autorise des appels similaires pour toute la conversation. Le bridge Copilot relaie les quatre appels au frontend afin qu'ils traversent le même contrôle.
 
 ---
 

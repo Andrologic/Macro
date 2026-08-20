@@ -1441,7 +1441,7 @@ const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>):
   }
 
   if (toolName === 'terminal_create_session') {
-    return typeof args.project_id === 'string' ? args.project_id.trim() : undefined;
+    return typeof args.cwd === 'string' ? args.cwd.trim() : undefined;
   }
 
   if (toolName === 'terminal_run') {

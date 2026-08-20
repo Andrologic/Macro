@@ -1207,10 +1207,10 @@ export interface SkillResourceReadResponseDto {
 
 export interface TerminalSessionDto {
   id: string;
-  project_id: string;
-  project_name: string;
-  mount_name: string;
-  workspace_path: string;
+  project_id: string | null;
+  project_name: string | null;
+  mount_name: string | null;
+  workspace_path: string | null;
   cwd: string;
   status: string;
   last_command: string | null;
@@ -3650,11 +3650,11 @@ export async function skillsRunScript(params: {
 }
 
 export async function terminalCreateSession(params: {
-  projectId: string;
+  projectId?: string | null;
   cwd?: string | null;
 }): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_create_session", {
-    projectId: params.projectId,
+    projectId: params.projectId ?? null,
     cwd: params.cwd ?? null,
   });
 }

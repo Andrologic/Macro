@@ -311,17 +311,24 @@ const terminalClearTabMock = mock(async (tabId: string): Promise<TerminalTabDto>
 const terminalCloseTabMock = mock(async () => undefined);
 const terminalCreateSessionMock = mock(
   async (params: {
-    projectId: string;
+    projectId?: string | null;
     cwd?: string | null;
   }) => ({
-    id: `session-${params.projectId}`,
-    project_id: params.projectId,
-    project_name: params.projectId === 'project-2' ? 'API' : 'Web',
-    mount_name: params.projectId === 'project-2' ? 'api' : 'web',
-    workspace_path: params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
+    id: params.projectId ? `session-${params.projectId}` : 'session-general',
+    project_id: params.projectId ?? null,
+    project_name: params.projectId == null ? null : params.projectId === 'project-2' ? 'API' : 'Web',
+    mount_name: params.projectId == null ? null : params.projectId === 'project-2' ? 'api' : 'web',
+    workspace_path:
+      params.projectId == null
+        ? null
+        : params.projectId === 'project-2'
+          ? 'C:/repos/api'
+          : 'C:/repos/web',
     cwd:
       params.cwd ??
-      (params.projectId === 'project-2'
+      (params.projectId == null
+        ? 'C:/Users/test'
+        : params.projectId === 'project-2'
         ? 'C:/repos/api'
         : 'C:/repos/web'),
     status: 'idle',
@@ -511,15 +518,24 @@ describe('useTerminalStore', () => {
     });
     terminalListTabsMock.mockImplementation(async () => []);
     terminalCreateSessionMock.mockImplementation(
-      async (params: { projectId: string; cwd?: string | null }) => ({
-        id: `session-${params.projectId}`,
-        project_id: params.projectId,
-        project_name: params.projectId === 'project-2' ? 'API' : 'Web',
-        mount_name: params.projectId === 'project-2' ? 'api' : 'web',
-        workspace_path: params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
+      async (params: { projectId?: string | null; cwd?: string | null }) => ({
+        id: params.projectId ? `session-${params.projectId}` : 'session-general',
+        project_id: params.projectId ?? null,
+        project_name:
+          params.projectId == null ? null : params.projectId === 'project-2' ? 'API' : 'Web',
+        mount_name:
+          params.projectId == null ? null : params.projectId === 'project-2' ? 'api' : 'web',
+        workspace_path:
+          params.projectId == null
+            ? null
+            : params.projectId === 'project-2'
+              ? 'C:/repos/api'
+              : 'C:/repos/web',
         cwd:
           params.cwd ??
-          (params.projectId === 'project-2'
+          (params.projectId == null
+            ? 'C:/Users/test'
+            : params.projectId === 'project-2'
             ? 'C:/repos/api'
             : 'C:/repos/web'),
         status: 'idle',
@@ -681,6 +697,26 @@ describe('useTerminalStore', () => {
       cwd: 'C:/repos/web/.macro/worktrees/task-1',
     });
     expect(session.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('creates general terminal sessions without resolving a project', async () => {
+    const { useTerminalStore } = await loadTerminalStore();
+
+    const session = await useTerminalStore.getState().createSession({
+      projectId: null,
+      cwd: 'C:/Users/test/Documents',
+    });
+
+    expect(terminalCreateSessionMock).toHaveBeenCalledWith({
+      projectId: null,
+      cwd: 'C:/Users/test/Documents',
+    });
+    expect(session).toMatchObject({
+      project_id: null,
+      workspace_path: null,
+      cwd: 'C:/Users/test/Documents',
+    });
+    expect(useTerminalStore.getState().lastSessionIdByProjectId).toEqual({});
   });
 
   it('retargets stale standalone task project ids when creating a terminal session', async () => {

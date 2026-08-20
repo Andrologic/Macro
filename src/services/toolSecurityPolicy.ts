@@ -28,6 +28,8 @@ type ToolSecurityDefinition = {
   destructiveStrategy: DestructiveStrategy;
   summary: string;
   attachmentOnly?: boolean;
+  alwaysAskInChat?: boolean;
+  chatActionGroup?: ToolSecurityActionGroup;
 };
 
 export const TOOL_RISK_LEVELS = [
@@ -329,6 +331,7 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
   },
   terminal_create_session: {
     actionGroup: "escape",
+    chatActionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Open a terminal session",
@@ -338,15 +341,18 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "always",
     summary: "Run a terminal command",
+    alwaysAskInChat: true,
   },
   terminal_read: {
     actionGroup: "escape",
+    chatActionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Read terminal output",
   },
   terminal_kill: {
     actionGroup: "escape",
+    chatActionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Stop a terminal session",
@@ -400,6 +406,7 @@ export interface NormalizedToolSecurityCall {
   rememberKey: string;
   isDestructive: boolean;
   isExternalToWorkspace: boolean;
+  canApproveForConversation: boolean;
 }
 
 export interface ToolSecurityEvaluation {
@@ -572,7 +579,7 @@ const getPrimaryDetail = (
     return cleanString(args.command) ?? undefined;
   }
   if (toolId === "terminal_create_session") {
-    return cleanString(args.cwd) ?? cleanString(args.project_id) ?? undefined;
+    return cleanString(args.cwd) ?? undefined;
   }
   if (toolId === "terminal_read" || toolId === "terminal_kill") {
     return cleanString(args.session_id) ?? undefined;
@@ -609,6 +616,10 @@ const isCallExternalToWorkspace = (
   args: Record<string, unknown>,
   options: EvaluateToolSecurityOptions,
 ): boolean => {
+  if (toolId === "terminal_create_session" && options.mode === "Chat") {
+    return false;
+  }
+
   const definition = TOOL_SECURITY_DEFINITIONS[toolId];
   if (definition?.attachmentOnly) {
     return false;
@@ -706,7 +717,7 @@ const normalizeToolSecurityCall = (
   options: EvaluateToolSecurityOptions,
 ): NormalizedToolSecurityCall => {
   const mcpToolIdentity = parseMCPToolId(toolId);
-  const definition =
+  const definition: ToolSecurityDefinition =
     TOOL_SECURITY_DEFINITIONS[toolId] ??
     (mcpToolIdentity
       ? {
@@ -723,15 +734,20 @@ const normalizeToolSecurityCall = (
         });
 
   const pathCandidates = getPathCandidates(toolId, args);
+  const actionGroup =
+    options.mode === "Chat" && definition.chatActionGroup
+      ? definition.chatActionGroup
+      : definition.actionGroup;
 
   return {
     toolId,
-    actionGroup: definition.actionGroup,
+    actionGroup,
     summary: definition.summary,
     detail: getPrimaryDetail(toolId, args, pathCandidates),
     rememberKey: getRememberKey(toolId, args),
     isDestructive: isCallDestructive(toolId, args),
     isExternalToWorkspace: isCallExternalToWorkspace(toolId, args, options),
+    canApproveForConversation: !(definition.alwaysAskInChat && options.mode === "Chat"),
   };
 };
 
@@ -807,6 +823,9 @@ export const evaluateToolSecurity = (
   }
 
   const normalizedCall = normalizeToolSecurityCall(toolId, args, options);
+  if (!normalizedCall.canApproveForConversation) {
+    return { decision: "ask", normalizedCall };
+  }
   const evaluation = evaluateDecisionForRiskLevel(
     normalizedCall,
     options.riskLevel,
@@ -828,6 +847,7 @@ export const evaluateToolSecurity = (
 export const filterDeniedToolIdsForRiskLevel = (
   toolIds: string[],
   riskLevel: ToolRiskLevel,
+  mode?: AppMode,
 ): string[] => {
   if (riskLevel !== "strict") {
     return [...new Set(toolIds)];
@@ -838,20 +858,32 @@ export const filterDeniedToolIdsForRiskLevel = (
       return false;
     }
     const definition = TOOL_SECURITY_DEFINITIONS[toolId];
-    return !definition || definition.actionGroup !== "escape";
+    if (mode === "Chat" && definition?.alwaysAskInChat) {
+      return true;
+    }
+    const actionGroup =
+      mode === "Chat" && definition?.chatActionGroup
+        ? definition.chatActionGroup
+        : definition?.actionGroup;
+    return !definition || actionGroup !== "escape";
   });
 };
 
 export const buildToolRiskLevelSystemInstruction = (
   riskLevel: ToolRiskLevel,
+  mode?: AppMode,
 ): string => {
+  const terminalInstruction =
+    mode === "Chat"
+      ? " Every terminal command requires explicit user approval, and approvals cannot be remembered."
+      : "";
   if (riskLevel === "strict") {
-    return "Tool risk level is STRICT. Stay inside the current workspace. Observe tools are allowed. Change tools require user approval. Escape tools, destructive actions, terminal actions, web access, and outside-workspace access are blocked.";
+    return `Tool risk level is STRICT. Stay inside the current workspace. Observe tools are allowed. Change tools require user approval. Escape tools, destructive actions, web access, and outside-workspace access are blocked.${terminalInstruction}`;
   }
 
   if (riskLevel === "yolo") {
-    return "Tool risk level is YOLO. Macro will not add extra approval prompts, but you must still respect tool-native safeguards and stay aligned with the user's request.";
+    return `Tool risk level is YOLO. Macro will not add extra approval prompts, but you must still respect tool-native safeguards and stay aligned with the user's request.${terminalInstruction}`;
   }
 
-  return "Tool risk level is BALANCED. Stay inside the current workspace. Observe tools are allowed. Most change tools are allowed automatically. Escape tools and destructive actions require user approval.";
+  return `Tool risk level is BALANCED. Stay inside the current workspace. Observe tools are allowed. Most change tools are allowed automatically. Escape tools and destructive actions require user approval.${terminalInstruction}`;
 };

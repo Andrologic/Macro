@@ -433,7 +433,7 @@ export const BUILT_IN_TOOLS: Tool[] = [
     name: 'Terminal',
     category: 'terminal',
     status: 'enabled',
-    description: 'Run commands and modify files in a selected workspace',
+    description: 'Run individually approved commands on the computer',
     icon: 'terminal',
     config: {
       enabled: true,

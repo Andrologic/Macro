@@ -811,26 +811,26 @@ export const MACRO_TOOL_REGISTRY = [
   }),
   objectTool(
     "terminal_create_session",
-    "Create a terminal session bound to exactly one project. project_id is required. There is no terminal at the virtual group root.",
+    "Create a terminal session. In Chat, the session is general-purpose and independent from the attached workspace. In Implement, pass project_id to bind the session to a task project.",
     {
       type: "object",
       properties: {
         project_id: {
           type: "string",
-          description: "Required project identifier.",
+          description: "Project identifier required by project-scoped modes such as Implement. Omit it in Chat.",
         },
         cwd: {
           type: "string",
           description:
-            "Optional directory under the selected project or worktree.",
+            "Optional initial directory. In Chat, it may be any existing directory and defaults to the user home directory. In project-scoped modes, it must remain under the selected project or worktree.",
         },
       },
-      required: ["project_id"],
+      required: [],
     },
   ),
   objectTool(
     "terminal_run",
-    "Run a shell command inside an existing terminal session.",
+    "Run a shell command inside an existing terminal session. In Chat, every command requires a separate user approval that cannot be remembered.",
     {
       type: "object",
       properties: {

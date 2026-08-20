@@ -49,7 +49,8 @@ export const ToolsView: React.FC = () => {
       ...getToolModePolicy('Chat'),
       allowedToolIds: filterDeniedToolIdsForRiskLevel(
         getToolModePolicy('Chat').allowedToolIds,
-        toolRiskLevel
+        toolRiskLevel,
+        'Chat'
       ),
     }),
     [toolRiskLevel]
@@ -59,7 +60,8 @@ export const ToolsView: React.FC = () => {
       ...getToolModePolicy('Architect'),
       allowedToolIds: filterDeniedToolIdsForRiskLevel(
         getToolModePolicy('Architect').allowedToolIds,
-        toolRiskLevel
+        toolRiskLevel,
+        'Architect'
       ),
     }),
     [toolRiskLevel]
@@ -69,7 +71,8 @@ export const ToolsView: React.FC = () => {
       ...getToolModePolicy('Implement'),
       allowedToolIds: filterDeniedToolIdsForRiskLevel(
         getToolModePolicy('Implement').allowedToolIds,
-        toolRiskLevel
+        toolRiskLevel,
+        'Implement'
       ),
     }),
     [toolRiskLevel]
