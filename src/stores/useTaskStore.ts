@@ -1546,7 +1546,8 @@ interface OptimisticTaskStatusSnapshot {
 
 const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
-  branchWorktrees: Record<string, string>
+  branchWorktrees: Record<string, string>,
+  commandRegistryOverride?: Awaited<ReturnType<typeof loadTaskProjectCommandRegistry>>,
 ): Promise<{
   createdWorktrees: Record<string, string>;
   preparedTargets: PreparedTaskExecutionTarget[];
@@ -1564,7 +1565,9 @@ const ensureTaskExecutionTargetsReady = async (
 
   const createdWorktrees: Record<string, string> = {};
   const preparedTargets: PreparedTaskExecutionTarget[] = [];
-  const commandRegistry = await loadTaskProjectCommandRegistry();
+  const commandRegistry = commandRegistryOverride ?? await loadTaskProjectCommandRegistry(
+    executionTargets.map((target) => target.projectId),
+  );
 
   for (const target of executionTargets) {
     const worktreePath = await ensureTargetWorktreePath(executionTask, target, branchWorktrees);
@@ -3782,10 +3785,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }));
 
     try {
-      const registry = await loadTaskProjectCommandRegistry();
+      const executionTask = retargetTaskForCurrentAppScope(task);
+      const registry = await loadTaskProjectCommandRegistry(
+        getExecutionTargets(executionTask).map((target) => target.projectId),
+      );
       const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
         task,
-        get().branchWorktrees
+        get().branchWorktrees,
+        registry,
       );
 
       set((state) => ({

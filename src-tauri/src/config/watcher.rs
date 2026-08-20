@@ -85,13 +85,37 @@ impl ConfigWatcher {
             .watched_roots
             .lock()
             .map_err(|_| "Le verrou du watcher de configuration est empoisonné.".to_string())?;
-        if !watched_roots.insert(canonical.clone()) {
+        if watched_roots.contains(&canonical) {
             return Ok(());
         }
         self.watcher
             .lock()
             .map_err(|_| "Le verrou du watcher de configuration est empoisonné.".to_string())?
             .watch(&canonical, RecursiveMode::Recursive)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        watched_roots.insert(canonical);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_watch_is_not_remembered() {
+        let watcher = RecommendedWatcher::new(
+            |_| {},
+            Config::default().with_poll_interval(Duration::from_millis(100)),
+        )
+        .expect("watcher");
+        let state = ConfigWatcher {
+            watcher: Mutex::new(watcher),
+            watched_roots: Mutex::new(BTreeSet::new()),
+        };
+        let missing = tempfile::tempdir().expect("tempdir").path().join("missing");
+
+        assert!(state.watch_project_root("project", &missing).is_err());
+        assert!(state.watched_roots.lock().expect("roots").is_empty());
     }
 }

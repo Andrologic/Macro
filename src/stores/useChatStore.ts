@@ -20,6 +20,7 @@ import {
   CompactionPass,
   CompactionSummarySource,
   MCPTool,
+  MCPServer,
   PendingToolApproval,
   PersistedContextReference,
   PlanNode,
@@ -146,6 +147,10 @@ import { buildArchitectPlanToolFollowUpInstruction } from "../services/architect
 import { normalizeArchitectToolId } from "../services/architectToolNames";
 import { selectInjectableMCPToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
+import {
+  callScopedMcpTool,
+  resolveScopedMcpRuntime,
+} from "../services/scopedMcpRuntime";
 import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
@@ -846,6 +851,8 @@ interface FrozenToolCallContext {
   taskId: string;
   executionContext: ProjectExecutionContext;
   scopedTurnConfiguration: ScopedTurnConfiguration | null;
+  allowedToolIds: readonly string[];
+  mcpServers: readonly MCPServer[];
   riskLevel: ToolRiskLevel;
   signal: AbortSignal;
 }
@@ -3115,12 +3122,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`;
   };
 
-  const getToolDefinitionsForIds = (toolIds: string[]) => {
+  const getToolDefinitionsForIds = (
+    toolIds: string[],
+    frozenMcpTools?: readonly MCPTool[],
+  ) => {
     const allowedIdSet = new Set(toolIds);
     const macroDefinitions = MACRO_TOOL_REGISTRY.filter((entry) => allowedIdSet.has(entry.id));
-    const mcpDefinitions: MacroToolRegistryEntry[] = useToolsStore
-      .getState()
-      .getEnabledMCPTools()
+    const mcpDefinitions: MacroToolRegistryEntry[] = (
+      frozenMcpTools ?? useToolsStore.getState().getEnabledMCPTools()
+    )
       .filter((tool) => allowedIdSet.has(tool.id))
       .map((tool) => ({
         id: tool.id,
@@ -4254,6 +4264,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getModePolicyForCurrentMode = async (
     modeOverride?: AppMode,
+    projectIdOverride?: string | null,
   ): Promise<{
     allowedToolIds: string[];
     enforceMacroOnlyWrites: boolean;
@@ -4280,17 +4291,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (canUseRemoteKernel()) {
+      const projectId = projectIdOverride ?? useAppStore.getState().selectedProjectId;
+      if (!projectId) {
+        return { allowedToolIds: [], enforceMacroOnlyWrites: true };
+      }
       try {
-        const backendPolicy = await getRemoteToolModePolicy(mode);
+        const backendPolicy = await getRemoteToolModePolicy(mode, projectId);
         return {
           allowedToolIds: adjustAllowedToolIds(backendPolicy.allowed_tool_ids),
           enforceMacroOnlyWrites: backendPolicy.enforce_macro_only_writes,
         };
       } catch (error) {
         console.warn(
-          "Failed to load remote backend tool policy, using local fallback:",
+          "Failed to load remote backend tool policy; tools remain disabled:",
           error,
         );
+        return { allowedToolIds: [], enforceMacroOnlyWrites: true };
       }
     }
 
@@ -4994,6 +5010,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const normalizedToolName = normalizeArchitectToolId(toolName);
     const assistantTurnId = operation.turnId;
 
+    if (!operation.allowedToolIds.includes(normalizedToolName)) {
+      return `Tool ${normalizedToolName} is not available for this turn.`;
+    }
+
     if (
       applyScopedToolRestrictions(
         [normalizedToolName],
@@ -5019,6 +5039,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
+      !isMCPToolId(normalizedToolName) &&
       !(await isSourceToolEnabled(
         normalizedToolName,
         modeAtSend,
@@ -5297,7 +5318,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (isMCPToolId(normalizedToolName)) {
-      const result = await useToolsStore.getState().callMCPTool(normalizedToolName, args);
+      const result = await callScopedMcpTool(
+        normalizedToolName,
+        args,
+        operation.mcpServers,
+      );
       return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
     }
 
@@ -7135,6 +7160,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       modelId: string;
     },
     riskLevelOverride?: ToolRiskLevel,
+    projectIdOverride?: string | null,
   ): Promise<string[]> => {
     if (
       providerSnapshot
@@ -7208,7 +7234,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       mode === "Implement"
         ? (agentTypeOverride ?? appState.agentType)
         : null;
-    const modePolicy = await getModePolicyForCurrentMode(mode);
+    const modePolicy = await getModePolicyForCurrentMode(mode, projectIdOverride);
     const lockedAgentToolIds = LOCKED_AGENT_TOOL_IDS.filter((toolId) =>
       modePolicy.allowedToolIds.includes(toolId),
     );
@@ -8196,15 +8222,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: params.modelId,
       },
       riskLevel,
+      executionContext.focusedProjectId,
     );
     const taskAllowedToolIds =
       params.modeAtSend === "Implement"
         ? filterToolIdsForImplementTask(baseAllowedToolIds, taskForToolScope)
         : baseAllowedToolIds;
+    const toolsState = useToolsStore.getState();
+    const scopedMcpRuntime = scopedTurnConfiguration
+      ? await resolveScopedMcpRuntime(
+          scopedTurnConfiguration.mcpServers,
+          toolsState.mcpServers,
+        )
+      : {
+          servers: toolsState.mcpServers,
+          tools: toolsState.getEnabledMCPTools(),
+        };
+    const scopedMcpTools = scopedMcpRuntime.tools;
+    const frozenMcpToolIds = new Set(scopedMcpTools.map((tool) => tool.id));
     const allowedToolIds = applyScopedToolRestrictions(
       taskAllowedToolIds,
       scopedTurnConfiguration,
-    );
+    ).filter((toolId) => !isMCPToolId(toolId) || frozenMcpToolIds.has(toolId));
+    const mcpTools = scopedMcpTools.filter((tool) => allowedToolIds.includes(tool.id));
     const showToolTraces = false;
     const skillPermissionSnapshot = useSkillsStore
       .getState()
@@ -8230,7 +8270,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       return { skillTurnFeedbackByMessageId: nextFeedback };
     });
-    const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
+    const toolDefinitions = getToolDefinitionsForIds(allowedToolIds, mcpTools);
     await useProviderStore
       .getState()
       .ensureSelectedModelContextMetadata(
@@ -8456,10 +8496,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       : normalizeChatMaxTurns(
           await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
         );
-    const mcpTools: MCPTool[] = useToolsStore
-      .getState()
-      .getEnabledMCPTools()
-      .filter((tool) => allowedToolIds.includes(tool.id));
     const { skillToolIds, runnableSkillToolIds } =
       getSkillToolIdsForRequest(
         allowedToolIds,
@@ -8486,7 +8522,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: params.modelId,
         ...footprintFields,
         allowedToolIds,
-        toolDefinitions: getToolDefinitionsForIds(allowedToolIds),
+        toolDefinitions: getToolDefinitionsForIds(allowedToolIds, mcpTools),
         messagesForRequest: compactedRequest.messages.map(cloneStreamMessage),
         citations: preparedRequest.citations.map(cloneCitationForDiagnostics),
         compactionDecision: compactedRequest.decision,
@@ -8498,6 +8534,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       enableWebFetch,
       webSearchOptions,
       mcpTools,
+      mcpServers: scopedMcpRuntime.servers,
       skillToolIds,
       runnableSkillToolIds,
       guidedToolRetry,
@@ -9021,6 +9058,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         enableWebFetch: streamLaunch.enableWebFetch,
         webSearchOptions: streamLaunch.webSearchOptions,
         mcpTools: streamLaunch.mcpTools,
+        mcpServers: streamLaunch.mcpServers,
         maxTurns: streamLaunch.maxTurns,
         compactionDecision: streamLaunch.compactionDecision,
         abortController: params.abortController,
@@ -9573,6 +9611,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       typeof getStreamingWebSearchConfig
     >["webSearchOptions"];
     mcpTools: MCPTool[];
+    mcpServers: MCPServer[];
     skillToolIds: string[];
     runnableSkillToolIds: string[];
     maxTurns: ChatMaxTurnsPreference;
@@ -9868,6 +9907,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           enableWebFetch: streamLaunch.enableWebFetch,
           webSearchOptions: streamLaunch.webSearchOptions,
           mcpTools: streamLaunch.mcpTools,
+          mcpServers: streamLaunch.mcpServers,
           internalAgentProfile: streamLaunch.internalAgentProfile,
           maxTurns: streamLaunch.maxTurns,
           compactionDecision: streamLaunch.compactionDecision,
@@ -9946,7 +9986,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.providerConfig.providerType,
       );
       const budgetPolicy = await loadContextBudgetPolicy();
-      const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const toolDefinitions = getToolDefinitionsForIds(
+        params.allowedToolIds,
+        params.mcpTools,
+      );
       const preparedMessagesForContext = normalizeMessagesForProviderContext(
         params.providerConfig.providerType,
         preparedMessages,
@@ -10195,7 +10238,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.executionContext,
         params.riskLevel,
       );
-      const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const toolDefinitions = getToolDefinitionsForIds(
+        params.allowedToolIds,
+        params.mcpTools,
+      );
       const preparedMessagesForContext = normalizeMessagesForProviderContext(
         params.providerConfig.providerType,
         preparedRequest.preparedMessages,
@@ -10581,6 +10627,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             taskId: params.resolvedTaskId,
             executionContext: params.executionContext,
             scopedTurnConfiguration: params.scopedTurnConfiguration,
+            allowedToolIds: params.allowedToolIds,
+            mcpServers: params.mcpServers,
             riskLevel: params.riskLevel,
             signal: abortController.signal,
           },
@@ -14345,6 +14393,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             enableWebFetch: streamLaunch.enableWebFetch,
             webSearchOptions: streamLaunch.webSearchOptions,
             mcpTools: streamLaunch.mcpTools,
+            mcpServers: streamLaunch.mcpServers,
             maxTurns: streamLaunch.maxTurns,
             compactionDecision: streamLaunch.compactionDecision,
             abortController: preparationAbortController,

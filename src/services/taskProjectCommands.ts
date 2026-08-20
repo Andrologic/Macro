@@ -1,4 +1,6 @@
-import { getEffectiveConfigDocument, patchUserConfigTopLevel } from './configDocuments';
+import type { ConfigSnapshot } from '../types/generated/config';
+import { patchUserConfigTopLevel } from './configDocuments';
+import { configurationGetSnapshot } from './configurationClient';
 const TASK_PROJECT_COMMANDS_VERSION = 3;
 
 export interface TaskProjectCommandEntry {
@@ -90,8 +92,6 @@ interface ToolsProjectCommandsDocument extends Record<string, unknown> {
   projectCommands?: Record<string, TaskProjectCommandEntry>;
 }
 
-let transientRegistry = defaultRegistry();
-
 export const mergeTaskProjectCommandRegistry = (
   current: TaskProjectCommandRegistry,
   drafts: TaskProjectCommandDraft[]
@@ -128,20 +128,48 @@ export const mergeTaskProjectCommandRegistry = (
   };
 };
 
-export const loadTaskProjectCommandRegistry = async (): Promise<TaskProjectCommandRegistry> => {
-  const document = await getEffectiveConfigDocument<ToolsProjectCommandsDocument>('tools');
-  transientRegistry = normalizeRegistry({
-    version: TASK_PROJECT_COMMANDS_VERSION,
-    commandsByProjectPath: document.projectCommands ?? {},
-  });
-  return transientRegistry;
+const normalizeProjectIds = (projectIds: readonly string[]): string[] =>
+  Array.from(new Set(projectIds.map((projectId) => projectId.trim()).filter(Boolean))).sort();
+
+export const resolveTaskProjectCommandRegistry = (
+  snapshot: ConfigSnapshot,
+  projectIds: readonly string[],
+): TaskProjectCommandRegistry => {
+  const commandsByProjectPath: Record<string, TaskProjectCommandEntry> = {};
+  for (const projectId of normalizeProjectIds(projectIds)) {
+    const projectEffective = snapshot.projectEffective[projectId];
+    if (!projectEffective) continue;
+    const tools = isRecord(projectEffective.tools) ? projectEffective.tools : {};
+    const document = tools as ToolsProjectCommandsDocument;
+    const projectRegistry = normalizeRegistry({
+      version: TASK_PROJECT_COMMANDS_VERSION,
+      commandsByProjectPath: document.projectCommands ?? {},
+    });
+    for (const [projectPath, command] of Object.entries(projectRegistry.commandsByProjectPath)) {
+      if (command.projectId === projectId) commandsByProjectPath[projectPath] = command;
+    }
+  }
+  return { version: TASK_PROJECT_COMMANDS_VERSION, commandsByProjectPath };
+};
+
+export const loadTaskProjectCommandRegistry = async (
+  projectIds: readonly string[],
+  snapshotLoader: (projectIds: string[]) => Promise<ConfigSnapshot> = configurationGetSnapshot,
+): Promise<TaskProjectCommandRegistry> => {
+  const normalizedProjectIds = normalizeProjectIds(projectIds);
+  if (normalizedProjectIds.length === 0) return defaultRegistry();
+  const snapshot = await snapshotLoader(normalizedProjectIds);
+  return resolveTaskProjectCommandRegistry(snapshot, normalizedProjectIds);
 };
 
 export const saveTaskProjectCommandDrafts = async (
   drafts: TaskProjectCommandDraft[]
 ): Promise<TaskProjectCommandRegistry> => {
+  const projectIds = drafts
+    .map((draft) => draft.projectId?.trim() ?? '')
+    .filter(Boolean);
   const nextRegistry = mergeTaskProjectCommandRegistry(
-    await loadTaskProjectCommandRegistry(),
+    await loadTaskProjectCommandRegistry(projectIds),
     drafts
   );
 
@@ -150,7 +178,6 @@ export const saveTaskProjectCommandDrafts = async (
     'projectCommands',
     nextRegistry.commandsByProjectPath,
   );
-  transientRegistry = nextRegistry;
   return nextRegistry;
 };
 

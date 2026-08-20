@@ -166,6 +166,76 @@ describe('scoped turn configuration', () => {
     });
   });
 
+  it('uses the effective focused-project MCP servers and keeps global disables restrictive', () => {
+    const input = snapshot({
+      agents: {},
+      tools: {
+        modes: {},
+        mcpServers: {
+          github: { enabled: true, transport: { type: 'stdio', command: 'global-github' } },
+          linear: { enabled: false },
+        },
+      },
+    });
+    input.projectEffective = {
+      'project-a': {
+        tools: {
+          mcpServers: {
+            github: { enabled: true, transport: { type: 'stdio', command: 'global-github' } },
+            linear: { enabled: true },
+            projectOnly: { enabled: true, transport: { type: 'stdio', command: 'project-tool' } },
+          },
+        },
+      },
+    };
+
+    const config = resolveScopedTurnConfiguration(input, {
+      projectIds: ['project-a'],
+      focusProjectId: 'project-a',
+      mode: 'Chat',
+    });
+
+    expect(config.allowedMcpServerIds).toEqual(['github', 'projectOnly']);
+    expect(config.mcpServers.projectOnly).toMatchObject({
+      transport: { command: 'project-tool' },
+    });
+  });
+
+  it('intersects MCP servers across every project and fails closed for a missing project snapshot', () => {
+    const input = snapshot({
+      agents: {},
+      tools: {
+        modes: {},
+        mcpServers: {
+          github: { enabled: true },
+          linear: { enabled: true },
+        },
+      },
+    });
+    input.projectEffective = {
+      'project-a': {
+        tools: { mcpServers: { github: { enabled: true }, linear: { enabled: true } } },
+      },
+      'project-b': {
+        tools: { mcpServers: { github: { enabled: true }, linear: { enabled: false } } },
+      },
+    };
+
+    const shared = resolveScopedTurnConfiguration(input, {
+      projectIds: ['project-a', 'project-b'],
+      focusProjectId: 'project-a',
+      mode: 'Chat',
+    });
+    const incomplete = resolveScopedTurnConfiguration(input, {
+      projectIds: ['project-a', 'project-missing'],
+      focusProjectId: null,
+      mode: 'Chat',
+    });
+
+    expect(shared.allowedMcpServerIds).toEqual(['github']);
+    expect(incomplete.allowedMcpServerIds).toEqual([]);
+  });
+
   it('routes agent and interface patches through distinct trusted IPC commands', async () => {
     const invoke = installTauriRuntimeMock(mock(async () => ({
       status: 'applied',

@@ -2173,6 +2173,7 @@ const sendArchitectMessageAndGetToolHandler = async (
     content: string;
   }
 ) => {
+  providerState.selectedSupportsNativeToolCalling = () => true;
   const preferences = await import('../services/preferences');
   await preferences.savePreference(preferences.PREF_KEYS.TOOL_RISK_LEVEL, 'yolo');
   await useChatStore.getState().sendMessage({
@@ -2414,7 +2415,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     providerState.selectedProviderId = 'provider-1';
     providerState.selectedModelId = 'model-1';
     providerState.selectedReasoningEffort = null;
-    providerState.selectedSupportsNativeToolCalling = () => false;
+    providerState.selectedSupportsNativeToolCalling = () => true;
     providerState.commitRestoredSelection = createCommitRestoredSelectionMock();
     providerState.loadProviderModels.mockClear();
     providerState.scanModelsForProvider.mockClear();
@@ -6614,6 +6615,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       maxTurns: 6,
       builtInTools: {},
       modeTools: {},
+      allowedMcpServerIds: [],
+      mcpServers: {},
       models: {
         chat: {
           providerId: 'project-provider',
@@ -7383,6 +7386,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   it('routes skill tool calls through the skills store', async () => {
+    tauriAvailable = true;
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
@@ -7456,12 +7460,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
 
     const streamOptions = getLatestStreamOptions<{
+      allowedToolIds: string[];
       onToolCall?: (
         toolName: string,
         args: Record<string, unknown>,
         toolCallId?: string,
       ) => Promise<unknown>;
     }>();
+    expect(streamOptions.allowedToolIds).toContain('skill_activate');
     expect(streamOptions.onToolCall).toBeDefined();
     if (!streamOptions.onToolCall) {
       throw new Error('Expected skill tool handler');
@@ -9283,6 +9289,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     providerState.selectedProviderId = 'copilot-provider';
     providerState.selectedModelId = 'copilot-model';
     providerState.selectedReasoningEffort = null;
+    providerState.selectedSupportsNativeToolCalling = () => false;
     queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
         currentObjective: 'Continue after compacting Copilot chat history.',
@@ -13473,7 +13480,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     );
   });
 
-  it('returns a clear unavailable result for legacy Architect task tools on standalone tasks', async () => {
+  it('rejects legacy Architect task tools that were not exposed for standalone tasks', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Implement';
     appState.agentType = 'build';
@@ -13528,8 +13535,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const todoResult = await onToolCall('task_todo_get', {});
     const artifactResult = await onToolCall('task_artifact_list', {});
 
-    expect(String(todoResult)).toContain('unavailable for standalone tasks');
-    expect(String(artifactResult)).toContain('unavailable for standalone tasks');
+    expect(String(todoResult)).toContain('not available for this turn');
+    expect(String(artifactResult)).toContain('not available for this turn');
   });
 
   it('denies forced mutating tool calls during implement plan agent turns', async () => {
@@ -13552,8 +13559,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'call-plan-commit',
     );
 
-    expect(String(patchResult)).toContain('Plan mode is read-only');
-    expect(String(commitResult)).toContain('Plan mode is read-only');
+    expect(String(patchResult)).toContain('not available for this turn');
+    expect(String(commitResult)).toContain('not available for this turn');
     expect(executeWorkspaceToolMock).not.toHaveBeenCalled();
   });
 

@@ -278,6 +278,8 @@ Pour isoler une exécution :
 
 ```powershell
 $env:MACRO_CONFIG_DIR = "C:\chemin\absolu\vers\macro-config"
+$env:MACRO_HEADLESS_BEARER_TOKEN = "jeton-agent-long-et-aléatoire"
+$env:MACRO_HEADLESS_APPROVAL_TOKEN = "jeton-utilisateur-distinct-long-et-aléatoire"
 bun run tauri:headless
 ```
 
@@ -286,7 +288,18 @@ autorisées. Une adresse d’écoute non loopback est classée sensible.
 
 Le transport headless attribue toujours la provenance `agent` aux patches : un
 client HTTP ne peut pas se déclarer `userInterface` pour contourner une
-approbation. La version 1 du serveur headless n’installe pas de watcher de
+approbation. Le bearer agent ne peut ni accepter ni rejeter un changement
+sensible. Ces décisions exigent `MACRO_HEADLESS_APPROVAL_TOKEN`, qui doit être
+distinct du bearer agent et rester sous le contrôle de l’utilisateur. En son
+absence, les décisions sensibles sont indisponibles et restent en attente.
+
+Les endpoints de politique d’outils exigent un identifiant de projet. Une
+exécution est refusée si le projet n’est pas chargé. Lorsqu’elle porte sur
+plusieurs montages, chaque politique projet doit autoriser l’outil ; une seule
+interdiction suffit à bloquer l’exécution. Le client remote reste également en
+mode fermé si la politique headless est inaccessible.
+
+La version 1 du serveur headless n’installe pas de watcher de
 fichiers autonome. Après une édition externe, un client doit appeler
 `/api/v1/config/reload` ; les écritures effectuées via l’API sont appliquées
 immédiatement. Le desktop conserve son watcher avec debounce et rescan coalescé.

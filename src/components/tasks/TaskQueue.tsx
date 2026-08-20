@@ -1296,7 +1296,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const buildTaskCommandModalState = async (task: ImplementTask) => {
     const executionTask = retargetTaskForCurrentScope(task);
-    const registry = await loadTaskProjectCommandRegistry();
     const taskProjectIds = getTaskCommandProjectIds(executionTask);
     const taskGroup =
       getProjectGroupByProjectId(projectGroups, executionTask.project_id) ||
@@ -1306,6 +1305,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       taskProjectIds
         .map((projectId) => getProjectById(projectId))
         .filter((project): project is NonNullable<ReturnType<typeof getProjectById>> => Boolean(project));
+    const registry = await loadTaskProjectCommandRegistry(
+      modalProjectsSource.map((project) => project.id),
+    );
 
     return {
       taskId: executionTask.id,
