@@ -109,6 +109,12 @@ import {
 } from "../services/remoteKernelApi";
 import * as tauriIpc from "../services/tauriIpc";
 import {
+  applyScopedToolRestrictions,
+  loadScopedTurnConfiguration,
+  resolveScopedModelSelection,
+  type ScopedTurnConfiguration,
+} from "../services/configurationClient";
+import {
   type ArchitectPlanActivationPayload,
   type ArchitectPlanRecord,
   bindArchitectPlanConversation,
@@ -839,8 +845,33 @@ interface FrozenToolCallContext {
   agentType: AgentType | null;
   taskId: string;
   executionContext: ProjectExecutionContext;
+  scopedTurnConfiguration: ScopedTurnConfiguration | null;
+  riskLevel: ToolRiskLevel;
   signal: AbortSignal;
 }
+
+const scopedModelPreferenceKeys = (
+  mode: AppMode,
+  agentType: AgentType | null | undefined,
+  internalAgentProfile: InternalAgentProfile | null | undefined,
+): string[] => {
+  if (internalAgentProfile === "plan_explorer") {
+    return ["planExplorer", "plan_explorer", "architect"];
+  }
+  if (internalAgentProfile === "task_reviewer") {
+    return ["taskReviewer", "task_reviewer", "implement"];
+  }
+  if (internalAgentProfile === "repo_auditor") {
+    return ["repoAuditor", "repo_auditor", "implement"];
+  }
+  if (mode === "Architect") return ["architect"];
+  if (mode === "Implement") {
+    return agentType === "plan"
+      ? ["implementPlan", "implement"]
+      : ["implementBuild", "implement"];
+  }
+  return ["chat"];
+};
 
 interface ArchitectTranscriptState {
   dbCount: number;
@@ -4964,6 +4995,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const assistantTurnId = operation.turnId;
 
     if (
+      applyScopedToolRestrictions(
+        [normalizedToolName],
+        operation.scopedTurnConfiguration,
+      ).length === 0
+    ) {
+      return `Tool ${normalizedToolName} is disabled for this turn's project scope.`;
+    }
+
+    if (
       modeAtSend === "Implement" &&
       agentTypeAtSend === "plan" &&
       !isToolAllowedForImplementAgent("plan", normalizedToolName)
@@ -4992,7 +5032,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     let executionContext = operation.executionContext;
-    const riskLevel = await loadToolRiskLevelPreference();
+    const riskLevel = operation.riskLevel;
     if (!isCurrentOperation()) {
       return TOOL_EXECUTION_ABORTED_RESULT;
     }
@@ -5995,11 +6035,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageWithImagesId?: string,
     skillPermissionSnapshot?: SkillPermissionSnapshot | null,
     executionContextOverride?: ProjectExecutionContext,
+    riskLevelOverride?: ToolRiskLevel,
   ) => {
     const appState = useAppStore.getState();
     const executionContext =
       executionContextOverride ?? resolveConversationExecutionContext(conversationId);
-    const riskLevel = await loadToolRiskLevelPreference();
+    const riskLevel = riskLevelOverride ?? await loadToolRiskLevelPreference();
     const contextCitations = useCitationsStore
       .getState()
       .getConversationContextCitations(conversationId);
@@ -7093,6 +7134,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       >;
       modelId: string;
     },
+    riskLevelOverride?: ToolRiskLevel,
   ): Promise<string[]> => {
     if (
       providerSnapshot
@@ -7102,7 +7144,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return [];
     }
 
-    const riskLevel = await loadToolRiskLevelPreference();
+    const riskLevel = riskLevelOverride ?? await loadToolRiskLevelPreference();
     const providerState = useProviderStore.getState();
     const selectedProvider =
       providerSnapshot?.providerConfig ??
@@ -8096,6 +8138,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     >;
     internalAgentProfile?: InternalAgentProfile | null;
     executionContext?: ProjectExecutionContext;
+    scopedTurnConfigurationOverride?: ScopedTurnConfiguration | null;
     providerSupportsNativeToolCalling?: boolean;
     compactionMode?: ContextCompactionKind;
     forceCompaction?: boolean;
@@ -8130,6 +8173,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const taskForToolScope = params.resolvedTaskId
       ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
       : undefined;
+    const executionContext =
+      params.executionContext ?? resolveConversationExecutionContext(params.conversationId);
+    const scopedTurnConfiguration = params.scopedTurnConfigurationOverride !== undefined
+      ? params.scopedTurnConfigurationOverride
+      : await loadScopedTurnConfiguration({
+          projectIds: executionContext.projectIds,
+          focusProjectId: executionContext.focusedProjectId,
+          mode: params.modeAtSend,
+        });
+    const riskLevel =
+      scopedTurnConfiguration?.riskLevel ?? await loadToolRiskLevelPreference();
     const baseAllowedToolIds = await getAllowedToolIdsForCurrentMode(
       internalAgentProfile,
       params.modeAtSend,
@@ -8141,11 +8195,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerConfig: params.providerConfig,
         modelId: params.modelId,
       },
+      riskLevel,
     );
-    const allowedToolIds =
+    const taskAllowedToolIds =
       params.modeAtSend === "Implement"
         ? filterToolIdsForImplementTask(baseAllowedToolIds, taskForToolScope)
         : baseAllowedToolIds;
+    const allowedToolIds = applyScopedToolRestrictions(
+      taskAllowedToolIds,
+      scopedTurnConfiguration,
+    );
     const showToolTraces = false;
     const skillPermissionSnapshot = useSkillsStore
       .getState()
@@ -8158,7 +8217,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.agentTypeAtSend,
       params.replyToMessageId,
       skillPermissionSnapshot,
-      params.executionContext,
+      executionContext,
+      riskLevel,
     );
     set((state) => {
       const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
@@ -8390,9 +8450,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       supportsNativeToolCalling: params.providerSupportsNativeToolCalling,
       fileToolContext,
     });
-    const maxTurns = normalizeChatMaxTurns(
-      await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
-    );
+    const maxTurns = scopedTurnConfiguration?.maxTurns !== null
+      && scopedTurnConfiguration?.maxTurns !== undefined
+      ? normalizeChatMaxTurns(scopedTurnConfiguration.maxTurns)
+      : normalizeChatMaxTurns(
+          await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
+        );
     const mcpTools: MCPTool[] = useToolsStore
       .getState()
       .getEnabledMCPTools()
@@ -8410,6 +8473,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     return {
       allowedToolIds,
+      riskLevel,
+      scopedTurnConfiguration,
       showToolTraces,
       messagesForRequest: compactedRequest.messages,
       contextDiagnosticsBaselineSeed: {
@@ -8946,6 +9011,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.providerSupportsNativeToolCalling,
         fileToolContext: streamLaunch.fileToolContext,
         allowedToolIds: streamLaunch.allowedToolIds,
+        riskLevel: streamLaunch.riskLevel,
+        scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
         skillToolIds: streamLaunch.skillToolIds,
         runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
         guidedToolRetry: streamLaunch.guidedToolRetry,
@@ -9492,6 +9559,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       content?: string;
     }>;
     allowedToolIds: string[];
+    riskLevel: ToolRiskLevel;
+    scopedTurnConfiguration: ScopedTurnConfiguration | null;
     guidedToolRetry?: {
       requiredToolNames: string[];
       retrySystemPrompt: string;
@@ -9728,6 +9797,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           providerConfig: params.providerConfig,
           internalAgentProfile: params.internalAgentProfile,
           executionContext: params.executionContext,
+          scopedTurnConfigurationOverride: params.scopedTurnConfiguration,
           providerSupportsNativeToolCalling:
             params.providerSupportsNativeToolCalling,
           compactionMode: "stream_overflow",
@@ -9788,6 +9858,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             params.providerSupportsNativeToolCalling,
           fileToolContext: streamLaunch.fileToolContext,
           allowedToolIds: streamLaunch.allowedToolIds,
+          riskLevel: streamLaunch.riskLevel,
+          scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
           skillToolIds: streamLaunch.skillToolIds,
           runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
           guidedToolRetry: streamLaunch.guidedToolRetry,
@@ -10117,6 +10189,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.allowedToolIds,
         params.internalAgentProfile,
         params.modeAtSend,
+        params.agentTypeAtSend,
+        undefined,
+        undefined,
+        params.executionContext,
+        params.riskLevel,
       );
       const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
       const preparedMessagesForContext = normalizeMessagesForProviderContext(
@@ -10503,6 +10580,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             agentType: params.agentTypeAtSend ?? null,
             taskId: params.resolvedTaskId,
             executionContext: params.executionContext,
+            scopedTurnConfiguration: params.scopedTurnConfiguration,
+            riskLevel: params.riskLevel,
             signal: abortController.signal,
           },
           toolName,
@@ -13844,7 +13923,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ...provider,
         })),
         resolveProviderApiKey: providerState.resolveProviderApiKey,
-        supportsNativeToolCalling: providerState.selectedSupportsNativeToolCalling(),
+        supportsNativeToolCalling: (providerId: string, modelId: string) =>
+          typeof providerState.supportsNativeToolCalling === "function"
+            ? providerState.supportsNativeToolCalling(providerId, modelId)
+            : providerState.selectedSupportsNativeToolCalling(),
       };
       const conversationAtSend = get().conversations.find(
         (conversation) => conversation.id === conversationId,
@@ -13968,12 +14050,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
             { globalLastError: null },
           );
         }
-        const {
-          selectedProviderId,
-          selectedModelId,
-          selectedReasoningEffort,
-          providerConfigs,
-        } = providerSelectionAtSend;
+        const scopedTurnConfigurationAtSend = await loadScopedTurnConfiguration({
+          projectIds: executionContextAtSend.projectIds,
+          focusProjectId: executionContextAtSend.focusedProjectId,
+          mode: modeAtSend,
+        });
+        if (!isCurrentPreparation()) {
+          return cancelledResult();
+        }
+        const scopedModelSelection = resolveScopedModelSelection(
+          scopedTurnConfigurationAtSend,
+          scopedModelPreferenceKeys(modeAtSend, agentTypeAtSend, internalAgentProfile),
+        );
+        const selectedProviderId = scopedModelSelection?.providerId
+          ?? providerSelectionAtSend.selectedProviderId;
+        const selectedModelId = scopedModelSelection?.modelId
+          ?? providerSelectionAtSend.selectedModelId;
+        const selectedReasoningEffort = scopedModelSelection
+          ? scopedModelSelection.reasoningEffort
+          : providerSelectionAtSend.selectedReasoningEffort;
+        const { providerConfigs } = providerSelectionAtSend;
         persistSelectionForContext(modeAtSend, conversationId);
 
         if (providerSelectionAtSend.isLoading) {
@@ -13989,8 +14085,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const providerConfig = providerConfigs.find(
           (p) => p.id === selectedProviderId,
         );
-        if (!providerConfig) {
-          throw buildSendError("Provider configuration not found.");
+        if (!providerConfig || !providerConfig.isEnabled) {
+          throw buildSendError(
+            scopedModelSelection
+              ? "The model configured for this project uses an unavailable provider."
+              : "Provider configuration not found.",
+          );
         }
         const resolvedApiKey =
           providerConfig.isLocal || providerHasAuthSession(providerConfig)
@@ -14149,8 +14249,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerConfig: providerConfigForUse,
             internalAgentProfile,
             executionContext: executionContextAtSend,
+            scopedTurnConfigurationOverride: scopedTurnConfigurationAtSend,
             providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling,
+              providerSelectionAtSend.supportsNativeToolCalling(
+                selectedProviderId,
+                selectedModelId,
+              ),
           });
           if (!isCurrentPreparation()) {
             return sentWithoutAssistantResult();
@@ -14225,9 +14329,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
               streamLaunch.contextDiagnosticsBaselineSeed,
             executionContext: executionContextAtSend,
             providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling,
+              providerSelectionAtSend.supportsNativeToolCalling(
+                selectedProviderId,
+                selectedModelId,
+              ),
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
+            riskLevel: streamLaunch.riskLevel,
+            scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
             skillToolIds: streamLaunch.skillToolIds,
             runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
             guidedToolRetry: streamLaunch.guidedToolRetry,

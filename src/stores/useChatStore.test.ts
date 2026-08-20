@@ -12,12 +12,14 @@ import type {
   WorkspaceFileReference,
 } from '../types';
 import type { Citation } from './useCitationsStore';
+import type { ScopedTurnConfiguration } from '../services/configurationClient';
 import {
   ARCHITECT_STRATEGY_LOCKED_AFTER_VALIDATION_MESSAGE,
   type ArchitectPlanRecord,
   type ArchitectPlanStatus,
 } from '../services/architectPlanService';
 const actualTauriIpc = await import('../services/tauriIpc');
+const actualConfigurationClient = await import('../services/configurationClient');
 
 interface LocalStorageMock {
   clear: () => void;
@@ -672,6 +674,7 @@ const taskStoreState = {
 const architectPlans = new Map<string, ArchitectPlanRecord>();
 const architectPlanMessages = new Map<string, Array<{ id: string; role: 'user' | 'assistant'; content: string; createdAt: string }>>();
 let tauriAvailable = false;
+let scopedTurnConfigurationForTest: ScopedTurnConfiguration | null = null;
 let gitBranchesByRepo: Record<string, { local: Array<{ name: string; is_head: boolean; commit: string }>; remote: Array<{ name: string; is_head: boolean; commit: string }>; current: string | null }> = {};
 type ChatSnapshotConversationRecord = {
   id: string;
@@ -1375,11 +1378,19 @@ useTaskStoreMock.subscribe = (
 };
 
 const registerUseChatStoreMocks = async () => {
+  mock.restore();
+
+  // Scoped configuration has focused tests of its own. Keep this broad chat
+  // suite on its existing preference harness so native-only tests do not need
+  // to emulate the complete configuration IPC surface.
+  mock.module('../services/configurationClient', () => ({
+    ...actualConfigurationClient,
+    isConfigurationClientAvailable: () => false,
+    loadScopedTurnConfiguration: async () => scopedTurnConfigurationForTest,
+  }));
   const actualPreferences = await import(
     `../services/preferences.ts?chat-store-preferences-test=${importCounter + 1}`
   );
-
-  mock.restore();
 
   mock.module('./useProviderStore', () => ({
     useProviderStore: useProviderStoreMock,
@@ -2439,6 +2450,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       citationRecords.find((citation) => citation.id === id) ?? null
     );
     tauriAvailable = false;
+    scopedTurnConfigurationForTest = null;
     dbConversationCounter = 0;
     dbMessageCounter = 0;
     chatSnapshotConversations = [];
@@ -6578,6 +6590,75 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       allowedToolIds: string[];
     };
     expect(streamOptions.allowedToolIds).toContain('question');
+  });
+
+  it('freezes the focused project model selection for the complete turn', async () => {
+    appState.mode = 'Chat';
+    providerState.providerConfigs.push({
+      id: 'project-provider',
+      name: 'Project provider',
+      providerType: 'openai',
+      isEnabled: true,
+      isLocal: true,
+      hasStoredApiKey: false,
+      apiKeyLoaded: true,
+      apiKey: '',
+    });
+    providerState.modelsByProvider['project-provider'] = [
+      { id: 'project-model', name: 'Project model', isEnabled: true },
+    ];
+    scopedTurnConfigurationForTest = {
+      projectIds: ['project-1'],
+      focusProjectId: 'project-1',
+      riskLevel: 'balanced',
+      maxTurns: 6,
+      builtInTools: {},
+      modeTools: {},
+      models: {
+        chat: {
+          providerId: 'project-provider',
+          modelId: 'project-model',
+          reasoningEffort: 'high',
+        },
+      },
+    };
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [{
+        ...createConversation('chat-project-model'),
+        scope_mode: 'Chat',
+      }],
+      messages: [],
+      selectedConversationId: 'chat-project-model',
+      selectedConversationIdsByMode: { Chat: 'chat-project-model' },
+      isLoading: false,
+      isStreaming: false,
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'chat-project-model',
+      content: 'Use the project model.',
+    });
+
+    const streamOptions = ((streamChatMock as unknown as {
+      mock: { calls: Array<Array<unknown>> };
+    }).mock.calls[0]?.[0] ?? null) as {
+      providerId: string;
+      modelId: string;
+      reasoningEffort: string | null;
+      maxTurns: number;
+    };
+    expect(streamOptions).toMatchObject({
+      providerId: 'project-provider',
+      modelId: 'project-model',
+      reasoningEffort: 'high',
+      maxTurns: 6,
+    });
   });
 
   it('passes enabled discovered MCP tools through Chat mode streaming options', async () => {
@@ -15766,7 +15847,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const send = useChatStore.getState().sendMessage({
       conversationId: 'chat-a', content: 'Persisted before Stop.',
     });
-    await Promise.resolve();
+    await flushAsyncWork();
+    expect(createMessageMock).toHaveBeenCalled();
     useChatStore.getState().stopConversationStream('chat-a');
     persistedUser.resolve({
       id: 'persisted-user',

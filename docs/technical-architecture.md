@@ -120,6 +120,18 @@ l’application. Les surcharges projet autorisées vivent sous
 les caches et données métier dans SQLite, et les secrets dans le fichier privé
 `provider-secrets.json`.
 
+Une zone privée `.runtime` conserve les baselines approuvées et les propositions
+sensibles en attente. Le snapshot effectif est toujours construit depuis la
+baseline approuvée, y compris après un redémarrage. Les verrous locaux sont
+complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
+verrou avant toute écriture. Le watcher desktop coalesce les événements puis
+rescane les documents chargés et les nouveaux documents projet.
+
+Chaque tour agent charge un snapshot correspondant à ses identifiants de projet
+et à son projet de focus. Le modèle, le niveau de risque, les outils autorisés
+et les limites issus de ce snapshot sont figés pour toute la durée du tour,
+y compris lors d’un retry après overflow.
+
 Les détails normatifs sont décrits dans `docs/configuration.md`.
 
 ---

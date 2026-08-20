@@ -13,8 +13,8 @@ use macro_lib::commands::workspace_tools::{
 use macro_lib::commands::{execute_workspace_tool, git, WorkspaceProjectMount};
 use macro_lib::config::{
     delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
-    resolve_standalone_config_root, ConfigApiError, ConfigDocumentKind, ConfigManager,
-    ConfigPatchRequest, ConfigScope, DeleteOrphanSecretRequest,
+    resolve_standalone_config_root, ConfigApiError, ConfigChangeSource, ConfigDocumentKind,
+    ConfigManager, ConfigPatchRequest, ConfigScope, DeleteOrphanSecretRequest, JsonPatchOperation,
 };
 use macro_lib::core::error::BackendError;
 use macro_lib::core::http_auth::BearerTokenDigest;
@@ -105,6 +105,16 @@ struct ConfigValidationRequest {
     #[serde(default)]
     scope: ConfigScope,
     document: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct HeadlessConfigPatchRequest {
+    kind: ConfigDocumentKind,
+    #[serde(default)]
+    scope: ConfigScope,
+    expected_etag: String,
+    patch: Vec<JsonPatchOperation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,12 +345,19 @@ async fn config_validate_document(
 async fn config_apply_patch(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Json(payload): Json<ConfigPatchRequest>,
+    Json(payload): Json<HeadlessConfigPatchRequest>,
 ) -> impl IntoResponse {
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
     }
-    match state.config_manager.apply_patch(payload).await {
+    let request = ConfigPatchRequest {
+        kind: payload.kind,
+        scope: payload.scope,
+        expected_etag: payload.expected_etag,
+        patch: payload.patch,
+        source: ConfigChangeSource::Agent,
+    };
+    match state.config_manager.apply_patch(request).await {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => config_error_response(error),
     }
@@ -1000,4 +1017,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn headless_patch_payload_cannot_claim_user_interface_provenance() {
+        let payload = json!({
+            "kind": "tools",
+            "scope": { "type": "user" },
+            "expectedEtag": "sha256:test",
+            "patch": [],
+            "source": "userInterface"
+        });
+        assert!(serde_json::from_value::<HeadlessConfigPatchRequest>(payload).is_err());
+    }
 }

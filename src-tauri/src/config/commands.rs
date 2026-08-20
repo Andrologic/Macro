@@ -42,15 +42,12 @@ fn collect_secret_references(value: &Value, target: &mut BTreeSet<String>) {
     }
 }
 
-fn referenced_secret_ids(snapshot: &ConfigSnapshot) -> (BTreeSet<String>, BTreeSet<String>) {
+fn referenced_secret_ids(documents: &[Value]) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut api_keys = BTreeSet::new();
     let mut sessions = BTreeSet::new();
     let mut references = BTreeSet::new();
-    for kind in [ConfigDocumentKind::Providers, ConfigDocumentKind::Tools] {
-        let key = kind.file_name().trim_end_matches(".json");
-        if let Some(document) = snapshot.effective.get(key) {
-            collect_secret_references(document, &mut references);
-        }
+    for document in documents {
+        collect_secret_references(document, &mut references);
     }
     for reference in references {
         if let Some(id) = reference.strip_prefix("macro-secret://web-search/") {
@@ -65,25 +62,17 @@ fn referenced_secret_ids(snapshot: &ConfigSnapshot) -> (BTreeSet<String>, BTreeS
             sessions.insert(id.to_string());
         }
     }
-    if let Some(providers) = snapshot
-        .effective
-        .get("providers")
-        .and_then(|value| value.get("providers"))
-        .and_then(Value::as_object)
-    {
-        for provider_id in providers.keys() {
-            api_keys.insert(provider_id.clone());
-            sessions.insert(provider_id.clone());
+    for document in documents {
+        if let Some(providers) = document.get("providers").and_then(Value::as_object) {
+            for provider_id in providers.keys() {
+                api_keys.insert(provider_id.clone());
+                sessions.insert(provider_id.clone());
+            }
         }
-    }
-    if let Some(speech_providers) = snapshot
-        .effective
-        .get("providers")
-        .and_then(|value| value.get("speechProviders"))
-        .and_then(Value::as_object)
-    {
-        for provider_id in speech_providers.keys() {
-            api_keys.insert(format!("speech-provider:{provider_id}"));
+        if let Some(speech_providers) = document.get("speechProviders").and_then(Value::as_object) {
+            for provider_id in speech_providers.keys() {
+                api_keys.insert(format!("speech-provider:{provider_id}"));
+            }
         }
     }
     (api_keys, sessions)
@@ -92,8 +81,8 @@ fn referenced_secret_ids(snapshot: &ConfigSnapshot) -> (BTreeSet<String>, BTreeS
 pub async fn list_orphan_secrets(
     manager: &ConfigManager,
 ) -> Result<Vec<OrphanSecretDto>, ConfigApiError> {
-    let snapshot = manager.get_snapshot(&[]).await?;
-    let (api_keys, sessions) = referenced_secret_ids(&snapshot);
+    let documents = manager.secret_reference_documents().await;
+    let (api_keys, sessions) = referenced_secret_ids(&documents);
     let entries = crate::secrets::list_secret_metadata().map_err(|error| ConfigApiError {
         code: "config.secrets.read_failed".to_string(),
         message: format!("Impossible de lire les métadonnées des secrets : {error}"),
@@ -146,6 +135,7 @@ pub async fn delete_orphan_secret(
             diagnostics: Vec::new(),
         });
     }
+    let _reference_guard = manager.lock_secret_references().await;
     let is_orphan = list_orphan_secrets(manager)
         .await?
         .into_iter()
@@ -215,8 +205,9 @@ pub fn config_validate_document(
 pub async fn config_apply_patch(
     app: AppHandle,
     manager: State<'_, ConfigManager>,
-    request: ConfigPatchRequest,
+    mut request: ConfigPatchRequest,
 ) -> Result<ConfigPatchResult, ConfigApiError> {
+    request.source = ConfigChangeSource::UserInterface;
     let result = manager.apply_patch(request).await?;
     emit_patch_events(&app, &result);
     Ok(result)
@@ -380,5 +371,39 @@ fn emit_patch_events(app: &AppHandle, result: &ConfigPatchResult) {
     }
     if result.restart_required {
         let _ = app.emit(EVENT_RESTART, &result.document);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn project_and_pending_documents_keep_referenced_secrets_alive() {
+        let documents = vec![
+            json!({
+                "mcpServers": {
+                    "project-server": {
+                        "transport": {
+                            "env": {
+                                "TOKEN": "macro-secret://mcp-env/project-server/TOKEN"
+                            }
+                        }
+                    }
+                }
+            }),
+            json!({
+                "providers": { "custom-provider": { "enabled": true } },
+                "speechProviders": { "dictation": { "enabled": true } },
+                "webSearch": { "secretRef": "macro-secret://web-search/brave" }
+            }),
+        ];
+        let (api_keys, sessions) = referenced_secret_ids(&documents);
+        assert!(api_keys.contains("mcp-env:project-server:TOKEN"));
+        assert!(api_keys.contains("custom-provider"));
+        assert!(sessions.contains("custom-provider"));
+        assert!(api_keys.contains("speech-provider:dictation"));
+        assert!(api_keys.contains("web-search:brave"));
     }
 }

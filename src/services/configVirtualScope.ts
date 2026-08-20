@@ -35,8 +35,12 @@ const normalizeVirtualPath = (value: unknown): string =>
     .replace(/^\.\//, '')
     .replace(/\/+$/, '');
 
-const isSafeProjectId = (value: string): boolean =>
-  value.length > 0 && value !== '.' && value !== '..' && !value.includes('/') && !value.includes('\\');
+const isSafeProjectId = (value: string): boolean => {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)) return false;
+  const upper = value.toUpperCase();
+  return !['CON', 'PRN', 'AUX', 'NUL'].includes(upper)
+    && !/^(COM|LPT)[1-9]$/.test(upper);
+};
 
 export const parseConfigVirtualPath = (value: unknown): ConfigVirtualTarget | null => {
   const path = normalizeVirtualPath(value);

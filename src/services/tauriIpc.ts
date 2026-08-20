@@ -3750,6 +3750,12 @@ export async function configApplyPatch(
   return invoke<ConfigPatchResult>("config_apply_patch", { request });
 }
 
+export async function configApplyAgentPatch(
+  request: ConfigPatchRequest,
+): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>("config_patch", { request });
+}
+
 export async function configResetPath(input: {
   kind: ConfigDocumentKind;
   scope?: ConfigScope;

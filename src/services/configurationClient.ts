@@ -8,6 +8,7 @@ import type {
   ConfigValidationResult,
   PendingSensitiveConfigChange,
 } from '../types/generated/config';
+import type { AppMode, ReasoningEffort, ToolRiskLevel } from '../types';
 import { remoteRequest, resolveRemoteConfig } from './providers/remoteHttp';
 import type { OrphanSecretDto } from './tauriIpc';
 import * as tauriIpc from './tauriIpc';
@@ -29,6 +30,143 @@ export const configurationGetSnapshot = (projectIds: string[] = []): Promise<Con
         body: JSON.stringify({ projectIds }),
       });
 
+export interface ScopedTurnConfiguration {
+  projectIds: string[];
+  focusProjectId: string | null;
+  riskLevel: ToolRiskLevel;
+  maxTurns: number | null;
+  models: Readonly<Record<string, ScopedModelSelection>>;
+  builtInTools: Readonly<Record<string, boolean>>;
+  modeTools: Readonly<Record<string, boolean>>;
+}
+
+export interface ScopedModelSelection {
+  providerId: string;
+  modelId: string;
+  reasoningEffort: ReasoningEffort | null;
+}
+
+const asBooleanMap = (value: unknown): Record<string, boolean> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, boolean] => typeof entry[1] === 'boolean',
+    ),
+  );
+};
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+
+const REASONING_EFFORTS = new Set<ReasoningEffort>([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+]);
+
+const asModelSelections = (value: unknown): Record<string, ScopedModelSelection> => {
+  const selections: Record<string, ScopedModelSelection> = {};
+  for (const [key, candidate] of Object.entries(asRecord(value))) {
+    const selection = asRecord(candidate);
+    if (typeof selection.providerId !== 'string' || typeof selection.modelId !== 'string') {
+      continue;
+    }
+    const reasoningEffort = typeof selection.reasoningEffort === 'string'
+      && REASONING_EFFORTS.has(selection.reasoningEffort as ReasoningEffort)
+      ? selection.reasoningEffort as ReasoningEffort
+      : null;
+    selections[key] = {
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      reasoningEffort,
+    };
+  }
+  return selections;
+};
+
+const normalizeProjectIds = (projectIds: string[]): string[] =>
+  Array.from(new Set(projectIds.map((id) => id.trim()).filter(Boolean))).sort();
+
+export const resolveScopedTurnConfiguration = (
+  snapshot: ConfigSnapshot,
+  context: {
+    projectIds: string[];
+    focusProjectId?: string | null;
+    mode: AppMode;
+  },
+): ScopedTurnConfiguration => {
+  const projectIds = normalizeProjectIds(context.projectIds);
+  const focusProjectId =
+    context.focusProjectId && projectIds.includes(context.focusProjectId)
+      ? context.focusProjectId
+      : projectIds.length === 1
+        ? projectIds[0]
+        : null;
+  const tools = asRecord(snapshot.effective.tools);
+  const agents = asRecord(snapshot.effective.agents);
+  const focusedProject = focusProjectId
+    ? snapshot.projectEffective[focusProjectId]
+    : undefined;
+  const focusedAgents = focusedProject ? asRecord(focusedProject.agents) : agents;
+  const modes = asRecord(tools.modes);
+  const rawRiskLevel = tools.riskLevel;
+  const riskLevel: ToolRiskLevel =
+    rawRiskLevel === 'strict' || rawRiskLevel === 'yolo' ? rawRiskLevel : 'balanced';
+  const rawMaxTurns = agents.maxTurns;
+  const maxTurns =
+    typeof rawMaxTurns === 'number' && Number.isInteger(rawMaxTurns) && rawMaxTurns > 0
+      ? rawMaxTurns
+      : null;
+
+  return {
+    projectIds,
+    focusProjectId,
+    riskLevel,
+    maxTurns,
+    models: asModelSelections(focusedAgents.models),
+    builtInTools: asBooleanMap(tools.builtIn),
+    modeTools: asBooleanMap(modes[context.mode]),
+  };
+};
+
+export const resolveScopedModelSelection = (
+  config: ScopedTurnConfiguration | null,
+  preferenceKeys: readonly string[],
+): ScopedModelSelection | null => {
+  if (!config) return null;
+  for (const key of preferenceKeys) {
+    const selection = config.models[key];
+    if (selection) return selection;
+  }
+  return null;
+};
+
+export const loadScopedTurnConfiguration = async (context: {
+  projectIds: string[];
+  focusProjectId?: string | null;
+  mode: AppMode;
+}, snapshotLoader?: (projectIds: string[]) => Promise<ConfigSnapshot>): Promise<ScopedTurnConfiguration | null> => {
+  if (!snapshotLoader && !isConfigurationClientAvailable()) return null;
+  const projectIds = normalizeProjectIds(context.projectIds);
+  const snapshot = await (snapshotLoader ?? configurationGetSnapshot)(projectIds);
+  return resolveScopedTurnConfiguration(snapshot, { ...context, projectIds });
+};
+
+export const applyScopedToolRestrictions = (
+  toolIds: string[],
+  config: ScopedTurnConfiguration | null,
+): string[] => {
+  if (!config) return toolIds;
+  return toolIds.filter(
+    (toolId) => config.builtInTools[toolId] !== false && config.modeTools[toolId] !== false,
+  );
+};
+
 export const configurationGetDocument = (
   kind: ConfigDocumentKind,
   scope: ConfigScope = { type: 'user' },
@@ -42,10 +180,17 @@ export const configurationGetDocument = (
 export const configurationApplyPatch = (
   request: ConfigPatchRequest,
 ): Promise<ConfigPatchResult> => isNativeConfigClientAvailable()
-  ? tauriIpc.configApplyPatch(request)
+  ? request.source === 'agent'
+    ? tauriIpc.configApplyAgentPatch(request)
+    : tauriIpc.configApplyPatch(request)
   : remoteRequest<ConfigPatchResult>('/config/patch', {
       method: 'POST',
-      body: JSON.stringify(request),
+      body: JSON.stringify({
+        kind: request.kind,
+        scope: request.scope,
+        expectedEtag: request.expectedEtag,
+        patch: request.patch,
+      }),
     });
 
 export const configurationValidateDocument = (input: {

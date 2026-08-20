@@ -67,6 +67,77 @@ const translationMock = createTranslationMock({
     'Wait a moment, then retry. If this keeps happening, close extra project windows or terminals.',
 });
 
+const installFileChangesRuntimeMock = () => {
+  const documentKinds = ['runtime', 'settings', 'agents', 'providers', 'tools', 'skills', 'git'] as const;
+  const documents = new Map(documentKinds.map((kind) => [kind, {
+    kind,
+    scope: { type: 'user' },
+    value: { $schema: `./schemas/v1/${kind}.schema.json`, schemaVersion: 1 } as Record<string, unknown>,
+    etag: `${kind}-etag-0`,
+    readOnly: false,
+    invalid: false,
+    filePath: `${kind}.json`,
+    diagnostics: [],
+  }]));
+  let etagRevision = 0;
+
+  installTauriRuntimeMock(mock(async (command: string, payload?: Record<string, unknown>) => {
+    if (command === 'plugin:store|load') return 1;
+    if (command === 'plugin:store|get') return [undefined, false];
+    if (command === 'config_get_snapshot') {
+      return {
+        schemaVersion: 1,
+        effective: {
+          runtime: {},
+          settings: {},
+          agents: {},
+          providers: {},
+          tools: {},
+          skills: {},
+          git: {},
+        },
+        documents: [...documents.values()],
+        provenance: [],
+        diagnostics: [],
+        pendingRestartPaths: [],
+      };
+    }
+    if (command === 'config_get_document') {
+      return documents.get(String(payload?.kind) as typeof documentKinds[number]);
+    }
+    if (command === 'config_apply_patch') {
+      const request = payload?.request as {
+        kind: typeof documentKinds[number];
+        patch: Array<{ op: string; path: string; value?: unknown }>;
+      };
+      const current = documents.get(request.kind);
+      if (!current) return undefined;
+      const value = { ...current.value };
+      for (const operation of request.patch) {
+        const key = operation.path.replace(/^\//, '').replaceAll('~1', '/').replaceAll('~0', '~');
+        if (operation.op === 'remove') delete value[key];
+        else value[key] = operation.value;
+      }
+      etagRevision += 1;
+      const document = { ...current, value, etag: `${request.kind}-etag-${etagRevision}` };
+      documents.set(request.kind, document);
+      return {
+        status: 'applied',
+        document,
+        pendingChange: null,
+        restartRequired: false,
+      };
+    }
+    if (command === 'state_get_snapshot' || command === 'state_clear') {
+      return { schemaVersion: 1, values: {} };
+    }
+    if (command === 'state_set_value') {
+      return { schemaVersion: 1, values: { [String(payload?.key)]: payload?.value } };
+    }
+    return undefined;
+  }));
+};
+
 class ResizeObserverTestMock {
   private callback: ResizeObserverCallback;
 
@@ -686,11 +757,7 @@ describe('FileChangesPanel', () => {
 
   beforeEach(async () => {
     mock.restore();
-    installTauriRuntimeMock(mock(async (command: string) => {
-      if (command === 'plugin:store|load') return 1;
-      if (command === 'plugin:store|get') return [undefined, false];
-      return undefined;
-    }));
+    installFileChangesRuntimeMock();
     resizeObserverWidth = 640;
     globalThis.ResizeObserver = ResizeObserverTestMock as unknown as typeof ResizeObserver;
     notifySuccessMock = mock(() => undefined);

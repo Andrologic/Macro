@@ -64,7 +64,14 @@ interface ConfigStore {
   ) => Promise<ConfigDocument>;
 }
 
-let hydrationPromise: Promise<ConfigSnapshot | null> | null = null;
+/**
+ * A snapshot depends on the project scope passed to the backend. Keep in-flight
+ * requests separate so a request for project A can never satisfy project B.
+ */
+type HydrationResult = readonly [ConfigSnapshot, PendingSensitiveConfigChange[]];
+
+const hydrationPromises = new Map<string, Promise<HydrationResult>>();
+let hydrationGeneration = 0;
 let listenerPromise: Promise<void> | null = null;
 let eventUnlisteners: UnlistenFn[] = [];
 
@@ -95,30 +102,48 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 
   hydrate: async (projectIds = get().activeProjectIds) => {
     const normalizedProjectIds = [...new Set(projectIds)].sort();
-    set({ activeProjectIds: normalizedProjectIds });
     if (!isConfigurationClientAvailable()) {
       set({ status: 'ready', error: null });
       return null;
     }
-    if (hydrationPromise) return hydrationPromise;
-
+    const scopeKey = JSON.stringify(normalizedProjectIds);
+    const generation = ++hydrationGeneration;
     set({ status: 'loading', error: null });
-    hydrationPromise = Promise.all([
-      configurationGetSnapshot(normalizedProjectIds),
-      configurationListPendingChanges(),
-    ])
+    let request = hydrationPromises.get(scopeKey);
+    if (!request) {
+      request = Promise.all([
+        configurationGetSnapshot(normalizedProjectIds),
+        configurationListPendingChanges(),
+      ]).finally(() => {
+        if (hydrationPromises.get(scopeKey) === request) {
+          hydrationPromises.delete(scopeKey);
+        }
+      });
+      hydrationPromises.set(scopeKey, request);
+    }
+
+    return request
       .then(([snapshot, pendingChanges]) => {
-        set({ snapshot, pendingChanges, status: 'ready', error: null });
+        // A different scope may have become active while this request was in
+        // flight. Its response must not replace the newer snapshot or pending
+        // approval list.
+        if (generation === hydrationGeneration) {
+          set({
+            snapshot,
+            pendingChanges,
+            activeProjectIds: normalizedProjectIds,
+            status: 'ready',
+            error: null,
+          });
+        }
         return snapshot;
       })
       .catch((error: unknown) => {
-        set({ status: 'error', error: errorMessage(error) });
+        if (generation === hydrationGeneration) {
+          set({ status: 'error', error: errorMessage(error) });
+        }
         throw error;
-      })
-      .finally(() => {
-        hydrationPromise = null;
       });
-    return hydrationPromise;
   },
 
   refresh: () => get().hydrate(get().activeProjectIds),
@@ -254,5 +279,6 @@ export const disposeConfigRuntimeForTests = (): void => {
   for (const unlisten of eventUnlisteners) unlisten();
   eventUnlisteners = [];
   listenerPromise = null;
-  hydrationPromise = null;
+  hydrationPromises.clear();
+  hydrationGeneration = 0;
 };
