@@ -2280,7 +2280,10 @@ pub async fn delete_manual_feature_draft(
         )));
     }
     let normalized_task_id = task_id.trim().to_string();
-    if !state.deleted_manual_feature_ids.contains(&normalized_task_id) {
+    if !state
+        .deleted_manual_feature_ids
+        .contains(&normalized_task_id)
+    {
         state.deleted_manual_feature_ids.push(normalized_task_id);
     }
 
@@ -4624,9 +4627,7 @@ fn legacy_workspace_state_path(metadata_root: &Path) -> PathBuf {
         .join(WORKSPACE_STATE_FILE)
 }
 
-fn latest_valid_workspace_temp_sync(
-    metadata_root: &Path,
-) -> Option<(PathBuf, WorkspaceState)> {
+fn latest_valid_workspace_temp_sync(metadata_root: &Path) -> Option<(PathBuf, WorkspaceState)> {
     let prefix = format!(".{WORKSPACE_STATE_FILE}.macro-tmp-");
     let mut candidates = std::fs::read_dir(metadata_root)
         .ok()?
@@ -5131,7 +5132,12 @@ fn merge_manual_feature_snapshots_from_project_roots(
     let projects = state
         .standalone_projects
         .iter()
-        .chain(state.project_groups.iter().flat_map(|group| group.projects.iter()))
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
         .map(|project| (project.id.clone(), PathBuf::from(&project.path)))
         .collect::<Vec<_>>();
     for (project_id, project_path) in projects {
@@ -5149,10 +5155,19 @@ fn merge_manual_feature_snapshots_from_project_roots(
         merge_manual_feature_snapshots_from_metadata_root(state, &root);
         state.manual_features.retain(|feature| {
             existing_ids.contains(&feature.id)
-                || feature.project_ids.iter().any(|candidate| candidate == &project_id)
-                || feature.execution_targets.iter().any(|target| target.project_id == project_id)
+                || feature
+                    .project_ids
+                    .iter()
+                    .any(|candidate| candidate == &project_id)
+                || feature
+                    .execution_targets
+                    .iter()
+                    .any(|target| target.project_id == project_id)
         });
-        added += state.manual_features.len().saturating_sub(existing_ids.len());
+        added += state
+            .manual_features
+            .len()
+            .saturating_sub(existing_ids.len());
     }
     added
 }
@@ -5164,8 +5179,16 @@ fn replace_workspace_state_file(source: &Path, destination: &Path) -> std::io::R
         use windows_sys::Win32::Storage::FileSystem::{
             MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
         };
-        let source_wide = source.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
-        let destination_wide = destination.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+        let source_wide = source
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let destination_wide = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
         let replaced = unsafe {
             MoveFileExW(
                 source_wide.as_ptr(),
@@ -6666,7 +6689,8 @@ async fn persist_sanitized_state(
         .unwrap_or(0);
     if persisted_revision != sanitized_state.workspace_revision {
         return Err(BackendError::Validation(
-            "Le workspace a été modifié par une autre instance. Actualisez puis réessayez.".to_string(),
+            "Le workspace a été modifié par une autre instance. Actualisez puis réessayez."
+                .to_string(),
         ));
     }
     sanitized_state.workspace_revision = sanitized_state.workspace_revision.saturating_add(1);
@@ -8207,12 +8231,7 @@ mod tests {
             &[],
         )
         .expect("mainline feature should remain available");
-        validate_manual_task_kind_for_projects(
-            "hotfix",
-            &[mainline.id.clone()],
-            &[mainline],
-            &[],
-        )
+        validate_manual_task_kind_for_projects("hotfix", &[mainline.id.clone()], &[mainline], &[])
             .expect("mainline hotfix should remain available");
         validate_manual_task_kind_for_projects("bugfix", &[develop.id.clone()], &[develop], &[])
             .expect("develop-based bugfix should remain available");
@@ -9858,7 +9877,9 @@ mod tests {
     fn stale_manual_feature_snapshot_does_not_override_a_tombstone() {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".macro");
-        let snapshot_root = metadata_root.join(MANUAL_FEATURES_METADATA_DIR).join("deleted-task");
+        let snapshot_root = metadata_root
+            .join(MANUAL_FEATURES_METADATA_DIR)
+            .join("deleted-task");
         stdfs::create_dir_all(&snapshot_root).expect("snapshot root");
         stdfs::write(
             snapshot_root.join(MANUAL_FEATURE_METADATA_FILE),
@@ -9883,7 +9904,9 @@ mod tests {
         let metadata_root = temp.path().join(".macro");
         let initial = WorkspaceState::default();
         persist_state_sync(&metadata_root, &initial).expect("seed state");
-        let first = load_raw_state_sync(&metadata_root).expect("load").expect("state");
+        let first = load_raw_state_sync(&metadata_root)
+            .expect("load")
+            .expect("state");
         let stale = first.clone();
         persist_sanitized_state(temp.path(), &metadata_root, first, "first_writer")
             .await
@@ -9910,10 +9933,8 @@ mod tests {
             standalone_projects: vec![make_project("project-recovered", "/tmp/recovered")],
             ..WorkspaceState::default()
         };
-        let temp_path = metadata_root.join(format!(
-            ".{}.macro-tmp-recovery-test",
-            WORKSPACE_STATE_FILE
-        ));
+        let temp_path =
+            metadata_root.join(format!(".{}.macro-tmp-recovery-test", WORKSPACE_STATE_FILE));
         stdfs::write(&temp_path, serde_json::to_string(&recovered).expect("json"))
             .expect("temp state");
 
@@ -9944,15 +9965,21 @@ mod tests {
             ".{}.macro-tmp-newer-mtime-stale-revision",
             WORKSPACE_STATE_FILE
         ));
-        stdfs::write(&temp_path, serde_json::to_string(&stale_temp).expect("json"))
-            .expect("stale temp");
+        stdfs::write(
+            &temp_path,
+            serde_json::to_string(&stale_temp).expect("json"),
+        )
+        .expect("stale temp");
 
         let loaded = load_raw_state_sync(&metadata_root)
             .expect("load")
             .expect("workspace state");
         assert_eq!(loaded.workspace_revision, 8);
         assert_eq!(loaded.standalone_projects[0].id, "project-current");
-        assert!(temp_path.exists(), "an unselected temp remains available for diagnostics");
+        assert!(
+            temp_path.exists(),
+            "an unselected temp remains available for diagnostics"
+        );
     }
 
     #[test]
@@ -9999,10 +10026,8 @@ mod tests {
             standalone_projects: vec![make_project("project-revision-11", "/tmp/revision-11")],
             ..WorkspaceState::default()
         };
-        let revision_11_path = metadata_root.join(format!(
-            ".{}.macro-tmp-revision-11",
-            WORKSPACE_STATE_FILE
-        ));
+        let revision_11_path =
+            metadata_root.join(format!(".{}.macro-tmp-revision-11", WORKSPACE_STATE_FILE));
         stdfs::write(
             &revision_11_path,
             serde_json::to_string(&newest_revision).expect("json"),

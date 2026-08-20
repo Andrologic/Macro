@@ -4,19 +4,24 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use macro_lib::commands::workspace_tools::{
     validate_headless_project_mounts, validate_headless_workspace_path,
 };
 use macro_lib::commands::{execute_workspace_tool, git, WorkspaceProjectMount};
+use macro_lib::config::{
+    delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
+    resolve_standalone_config_root, ConfigApiError, ConfigDocumentKind, ConfigManager,
+    ConfigPatchRequest, ConfigScope, DeleteOrphanSecretRequest,
+};
 use macro_lib::core::error::BackendError;
 use macro_lib::core::http_auth::BearerTokenDigest;
-use macro_lib::core::load_config;
 use macro_lib::core::tool_policy::{
     get_mode_policy, validate_tool_execution, ToolModePolicyResult, ToolValidationResult,
 };
+use macro_lib::core::{apply_runtime_workspace, load_config};
 use macro_lib::git::GitState;
 use macro_lib::project_path::parse_wsl_unc_path;
 use macro_lib::workspace;
@@ -34,6 +39,7 @@ struct HeadlessState {
     allowed_roots: Vec<PathBuf>,
     workspace_path: PathBuf,
     git_state: GitState,
+    config_manager: ConfigManager,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +81,38 @@ struct ToolExecuteRequest {
 #[derive(Debug, Serialize)]
 struct ApiError {
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigSnapshotRequest {
+    #[serde(default)]
+    project_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigDocumentRequest {
+    kind: ConfigDocumentKind,
+    #[serde(default)]
+    scope: ConfigScope,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigValidationRequest {
+    kind: ConfigDocumentKind,
+    #[serde(default)]
+    scope: ConfigScope,
+    document: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigPendingDecisionRequest {
+    id: String,
+    #[serde(default)]
+    restore_approved: bool,
 }
 
 const DEFAULT_HEADLESS_CORS_ORIGINS: [&str; 6] = [
@@ -123,8 +161,20 @@ fn validate_listen_security(addr: SocketAddr, bearer_token: Option<&str>) -> Res
     ))
 }
 
-fn configured_headless_allowed_roots(workspace_path: &PathBuf) -> Result<Vec<PathBuf>, String> {
+fn configured_headless_allowed_roots(
+    workspace_path: &PathBuf,
+    runtime_roots: &[String],
+) -> Result<Vec<PathBuf>, String> {
     let mut configured = vec![workspace_path.clone()];
+    for root in runtime_roots {
+        let path = PathBuf::from(root);
+        if !path.is_absolute() {
+            return Err(format!(
+                "runtime.json.allowedRoots doit contenir des chemins absolus : {root}"
+            ));
+        }
+        configured.push(path);
+    }
     if let Ok(raw_roots) = std::env::var("MACRO_HEADLESS_ALLOWED_ROOTS") {
         configured
             .extend(std::env::split_paths(&raw_roots).filter(|path| !path.as_os_str().is_empty()));
@@ -200,6 +250,198 @@ fn backend_error_to_status(error: &BackendError) -> StatusCode {
         BackendError::Validation(_) => StatusCode::BAD_REQUEST,
         BackendError::FilesystemPathOutsideWorkspace { .. } => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn config_error_response(error: ConfigApiError) -> Response {
+    let status = match error.code.as_str() {
+        "config.document.not_found" | "config.project.not_registered" => StatusCode::NOT_FOUND,
+        "config.etag.conflict" => StatusCode::CONFLICT,
+        "config.document.future_version" => StatusCode::PRECONDITION_FAILED,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    (status, Json(error)).into_response()
+}
+
+async fn config_snapshot(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigSnapshotRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match state
+        .config_manager
+        .get_snapshot(&payload.project_ids)
+        .await
+    {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_document(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigDocumentRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match state
+        .config_manager
+        .get_document(payload.kind, payload.scope)
+        .await
+    {
+        Ok(document) => (StatusCode::OK, Json(document)).into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_schema(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigDocumentRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match state.config_manager.get_schema(payload.kind) {
+        Ok(schema) => (StatusCode::OK, Json(schema)).into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_validate_document(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigValidationRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(
+            state
+                .config_manager
+                .validate(payload.kind, payload.scope, &payload.document),
+        ),
+    )
+        .into_response()
+}
+
+async fn config_apply_patch(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigPatchRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match state.config_manager.apply_patch(payload).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_reload_document(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigDocumentRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match state
+        .config_manager
+        .reload(
+            payload.kind,
+            payload.scope,
+            macro_lib::config::ConfigChangeSource::ExternalEditor,
+        )
+        .await
+    {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_pending_changes(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(state.config_manager.list_pending_changes().await),
+    )
+        .into_response()
+}
+
+async fn config_orphan_secrets(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match list_orphan_secrets(&state.config_manager).await {
+        Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_delete_orphan_secret(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<DeleteOrphanSecretRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match delete_orphan_secret(&state.config_manager, payload).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_accept_pending(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigPendingDecisionRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match state
+        .config_manager
+        .accept_pending_change(&payload.id)
+        .await
+    {
+        Ok(document) => (StatusCode::OK, Json(document)).into_response(),
+        Err(error) => config_error_response(error),
+    }
+}
+
+async fn config_reject_pending(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfigPendingDecisionRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    match state
+        .config_manager
+        .reject_pending_change(&payload.id, payload.restore_approved)
+        .await
+    {
+        Ok(document) => (StatusCode::OK, Json(document)).into_response(),
+        Err(error) => config_error_response(error),
     }
 }
 
@@ -624,26 +866,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compact()
         .init();
 
-    let host = std::env::var("MACRO_HEADLESS_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let config_root = resolve_standalone_config_root()
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let config_manager = ConfigManager::initialize(config_root)
+        .await
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    install_runtime_config_manager(config_manager.clone())
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let snapshot = config_manager
+        .get_snapshot(&[])
+        .await
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let runtime = snapshot
+        .effective
+        .get("runtime")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    let host = std::env::var("MACRO_HEADLESS_HOST").unwrap_or_else(|_| {
+        runtime
+            .pointer("/headless/bindAddress")
+            .and_then(Value::as_str)
+            .unwrap_or("127.0.0.1")
+            .to_string()
+    });
     let port = std::env::var("MACRO_HEADLESS_PORT")
         .ok()
         .and_then(|raw| raw.parse::<u16>().ok())
-        .unwrap_or(8787);
+        .or_else(|| {
+            runtime
+                .pointer("/headless/port")
+                .and_then(Value::as_u64)
+                .and_then(|port| u16::try_from(port).ok())
+        })
+        .unwrap_or(43117);
     let addr = parse_listen_addr(&host, port)?;
     let bearer_token = normalize_bearer_token(std::env::var("MACRO_HEADLESS_BEARER_TOKEN").ok());
     validate_listen_security(addr, bearer_token.as_deref())?;
-    let config = load_config()?;
+    let mut config = load_config()?;
+    apply_runtime_workspace(&mut config, &runtime)?;
     let workspace_path = config
         .workspace_path
         .canonicalize()
         .map_err(|error| format!("Headless workspace path is not accessible: {}", error))?;
-    let allowed_roots = configured_headless_allowed_roots(&workspace_path)?;
+    let runtime_roots = runtime
+        .get("allowedRoots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let allowed_roots = configured_headless_allowed_roots(&workspace_path, &runtime_roots)?;
 
     let state = Arc::new(HeadlessState {
         bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
         allowed_roots,
         workspace_path,
         git_state: GitState::new(),
+        config_manager,
     });
 
     let app = Router::new()
@@ -654,6 +935,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/tools/mode-policy", get(tool_mode_policy))
         .route("/api/v1/tools/validate", post(tool_validate))
         .route("/api/v1/tools/execute", post(tool_execute))
+        .route("/api/v1/config/snapshot", post(config_snapshot))
+        .route("/api/v1/config/document", post(config_document))
+        .route("/api/v1/config/schema", post(config_schema))
+        .route("/api/v1/config/validate", post(config_validate_document))
+        .route("/api/v1/config/patch", post(config_apply_patch))
+        .route("/api/v1/config/reload", post(config_reload_document))
+        .route("/api/v1/config/pending", get(config_pending_changes))
+        .route("/api/v1/config/orphan-secrets", get(config_orphan_secrets))
+        .route(
+            "/api/v1/config/orphan-secrets/delete",
+            post(config_delete_orphan_secret),
+        )
+        .route("/api/v1/config/pending/accept", post(config_accept_pending))
+        .route("/api/v1/config/pending/reject", post(config_reject_pending))
         .route("/api/v1/workspace/bootstrap", get(workspace_bootstrap))
         .route(
             "/api/v1/workspaces/{workspace_id}/bootstrap",

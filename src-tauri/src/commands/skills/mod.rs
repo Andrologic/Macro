@@ -1,6 +1,9 @@
 use crate::commands::{command_error, CommandResult};
+use crate::config::{ConfigDocumentKind, ConfigManager, SkillsDocument};
 use crate::core::process::background_tokio_command;
+use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs;
@@ -13,10 +16,8 @@ use tokio::time::timeout;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-mod cache;
 mod types;
 
-use cache::load_skill_catalog;
 pub use types::*;
 
 const SKILL_FILE: &str = "SKILL.md";
@@ -53,7 +54,6 @@ struct ParsedSkillFile {
     diagnostics: Vec<SkillDiagnosticDto>,
     spec_compliant: bool,
     is_valid: bool,
-    content_hash: String,
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -70,13 +70,56 @@ fn skill_diagnostic(severity: &str, code: &str, message: impl Into<String>) -> S
     }
 }
 
-fn stable_string_hash(value: &str) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in value.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
+fn hash_skill_tree(root: &Path) -> String {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited_dirs = 0usize;
+    while let Some(current) = stack.pop() {
+        visited_dirs += 1;
+        if visited_dirs > MAX_DISCOVERY_DIRS {
+            break;
+        }
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            if has_hidden_path_component(relative) || path_has_ignored_discovery_component(relative)
+            {
+                continue;
+            }
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file() {
+                files.push(path);
+            }
+        }
     }
-    format!("{:016x}", hash)
+    files.sort();
+    let mut hasher = Sha256::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        hasher.update((relative.len() as u64).to_le_bytes());
+        hasher.update(relative.as_bytes());
+        if let Ok(contents) = fs::read(&path) {
+            hasher.update((contents.len() as u64).to_le_bytes());
+            hasher.update(contents);
+        }
+    }
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn normalize_skill_name(value: &str, fallback: &str) -> String {
@@ -139,12 +182,6 @@ fn normalize_created_skill_description(value: &str) -> CommandResult<String> {
         return Err(command_error("Skill description must fit on one line."));
     }
     Ok(description.to_string())
-}
-
-fn stable_path_hash(path: &Path) -> String {
-    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let normalized = canonical.to_string_lossy().replace('\\', "/");
-    stable_string_hash(&normalized)
 }
 
 fn has_hidden_path_component(path: &Path) -> bool {
@@ -511,7 +548,6 @@ fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
                 diagnostics,
                 spec_compliant: false,
                 is_valid: false,
-                content_hash: String::new(),
             };
         }
     };
@@ -639,7 +675,6 @@ fn parse_skill_file(skill_file: &Path) -> ParsedSkillFile {
         diagnostics,
         spec_compliant,
         is_valid,
-        content_hash: stable_string_hash(&raw),
     }
 }
 
@@ -752,20 +787,28 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
         &parsed.name,
         root.file_name().and_then(OsStr::to_str).unwrap_or("skill"),
     );
-    let path_hash = stable_path_hash(&skill_file);
+    let relative_path = root
+        .strip_prefix(&source.skill_root_path)
+        .unwrap_or(root)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string();
+    let relative_identity = if relative_path.is_empty() {
+        normalized_name.clone()
+    } else {
+        relative_path
+    };
     let id = match source.kind.as_str() {
         "project" => format!(
-            "project:{}:{}:{}:{}",
+            "project:{}:{}:{}",
             source.project_id.as_deref().unwrap_or("unknown"),
-            source.namespace,
-            normalized_name,
-            path_hash,
+            source.root_id,
+            relative_identity,
         ),
-        _ => format!(
-            "global:{}:{}:{}",
-            source.namespace, normalized_name, path_hash,
-        ),
+        _ => format!("global:{}:{}", source.root_id, relative_identity),
     };
+    let content_hash = hash_skill_tree(root);
 
     let mut diagnostics = parsed.diagnostics;
     let (mut references, reference_errors) = collect_resources(root, "references");
@@ -805,7 +848,7 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
         diagnostics,
         spec_compliant: parsed.spec_compliant,
         shadowed_by_skill_id: None,
-        content_hash: parsed.content_hash,
+        content_hash,
         validation_errors,
         is_valid,
     }
@@ -861,31 +904,43 @@ fn discover_skill_roots(base: &Path) -> Vec<PathBuf> {
 }
 
 struct SkillSearchRoot {
-    namespace: &'static str,
+    id: String,
+    namespace: String,
     path: PathBuf,
+    priority: i32,
 }
 
 fn project_skill_search_roots(project_path: &Path) -> Vec<SkillSearchRoot> {
     vec![
         SkillSearchRoot {
-            namespace: "agents",
+            id: "agents".to_string(),
+            namespace: "agents".to_string(),
             path: project_path.join(AGENTS_SKILLS_DIR),
+            priority: 400,
         },
         SkillSearchRoot {
-            namespace: "codex",
+            id: "codex".to_string(),
+            namespace: "codex".to_string(),
             path: project_path.join(".codex").join("skills"),
+            priority: 300,
         },
         SkillSearchRoot {
-            namespace: "opencode",
+            id: "opencode-skills".to_string(),
+            namespace: "opencode".to_string(),
             path: project_path.join(".opencode").join("skills"),
+            priority: 200,
         },
         SkillSearchRoot {
-            namespace: "opencode",
+            id: "opencode-skill".to_string(),
+            namespace: "opencode".to_string(),
             path: project_path.join(".opencode").join("skill"),
+            priority: 190,
         },
         SkillSearchRoot {
-            namespace: "claude",
+            id: "claude".to_string(),
+            namespace: "claude".to_string(),
             path: project_path.join(".claude").join("skills"),
+            priority: 100,
         },
     ]
 }
@@ -893,34 +948,254 @@ fn project_skill_search_roots(project_path: &Path) -> Vec<SkillSearchRoot> {
 fn global_skill_search_roots(home: &Path) -> Vec<SkillSearchRoot> {
     vec![
         SkillSearchRoot {
-            namespace: "agents",
+            id: "agents".to_string(),
+            namespace: "agents".to_string(),
             path: home.join(AGENTS_SKILLS_DIR),
+            priority: 400,
         },
         SkillSearchRoot {
-            namespace: "codex",
+            id: "codex".to_string(),
+            namespace: "codex".to_string(),
             path: home.join(".codex").join("skills"),
+            priority: 300,
         },
         SkillSearchRoot {
-            namespace: "opencode",
+            id: "opencode-config-skills".to_string(),
+            namespace: "opencode".to_string(),
             path: home.join(".config").join("opencode").join("skills"),
+            priority: 210,
         },
         SkillSearchRoot {
-            namespace: "opencode",
+            id: "opencode-config-skill".to_string(),
+            namespace: "opencode".to_string(),
             path: home.join(".config").join("opencode").join("skill"),
+            priority: 200,
         },
         SkillSearchRoot {
-            namespace: "opencode",
+            id: "opencode-skills".to_string(),
+            namespace: "opencode".to_string(),
             path: home.join(".opencode").join("skills"),
+            priority: 190,
         },
         SkillSearchRoot {
-            namespace: "opencode",
+            id: "opencode-skill".to_string(),
+            namespace: "opencode".to_string(),
             path: home.join(".opencode").join("skill"),
+            priority: 180,
         },
         SkillSearchRoot {
-            namespace: "claude",
+            id: "claude".to_string(),
+            namespace: "claude".to_string(),
             path: home.join(".claude").join("skills"),
+            priority: 100,
         },
     ]
+}
+
+fn conventional_root_enabled(document: &SkillsDocument, namespace: &str) -> bool {
+    let roots = document.conventional_roots.as_ref();
+    match namespace {
+        "agents" => roots.and_then(|value| value.agents).unwrap_or(true),
+        "codex" => roots.and_then(|value| value.codex).unwrap_or(true),
+        "opencode" => roots.and_then(|value| value.opencode).unwrap_or(true),
+        "claude" => roots.and_then(|value| value.claude).unwrap_or(true),
+        _ => false,
+    }
+}
+
+fn expand_configured_skill_path(
+    template: &str,
+    config_dir: &Path,
+    project_root: Option<&Path>,
+) -> CommandResult<PathBuf> {
+    let home =
+        home_dir().ok_or_else(|| command_error("Could not resolve the user home directory."))?;
+    let mut expanded = template
+        .replace("${home}", &home.to_string_lossy())
+        .replace("${configDir}", &config_dir.to_string_lossy());
+    if let Some(project_root) = project_root {
+        expanded = expanded.replace("${projectRoot}", &project_root.to_string_lossy());
+    }
+    if expanded.contains("${") {
+        return Err(command_error(format!(
+            "Unresolved variable in skill path: {template}"
+        )));
+    }
+    let candidate = PathBuf::from(expanded);
+    if candidate.is_absolute() {
+        Ok(candidate)
+    } else if let Some(project_root) = project_root {
+        Ok(project_root.join(candidate))
+    } else {
+        Ok(config_dir.join(candidate))
+    }
+}
+
+fn configured_roots_for_document(
+    document: &SkillsDocument,
+    config_dir: &Path,
+    project: Option<&SkillProjectRootDto>,
+) -> Vec<(SkillSearchRoot, SkillSourceDto)> {
+    let mut result = Vec::new();
+    let project_path = project.map(|value| PathBuf::from(&value.path));
+    let conventional = if let Some(project_path) = project_path.as_deref() {
+        project_skill_search_roots(project_path)
+    } else if let Some(home) = home_dir() {
+        global_skill_search_roots(&home)
+    } else {
+        Vec::new()
+    };
+    for root in conventional {
+        if !conventional_root_enabled(document, &root.namespace) {
+            continue;
+        }
+        let source = SkillSourceDto {
+            kind: if project.is_some() {
+                "project"
+            } else {
+                "global"
+            }
+            .to_string(),
+            namespace: root.namespace.clone(),
+            root_id: root.id.clone(),
+            priority: root.priority,
+            project_id: project.map(|value| value.project_id.clone()),
+            project_name: project.map(|value| value.project_name.clone()),
+            root_path: project
+                .map(|value| value.path.clone())
+                .unwrap_or_else(|| root.path.to_string_lossy().to_string()),
+            skill_root_path: root.path.to_string_lossy().to_string(),
+        };
+        result.push((root, source));
+    }
+
+    for (root_id, definition) in document.roots.as_ref().into_iter().flatten() {
+        if definition.enabled == Some(false) {
+            continue;
+        }
+        let is_project_path = definition.path.contains("${projectRoot}")
+            || (!Path::new(&definition.path).is_absolute()
+                && !definition.path.starts_with("${home}")
+                && !definition.path.starts_with("${configDir}"));
+        if project.is_some() != is_project_path {
+            continue;
+        }
+        let Ok(path) =
+            expand_configured_skill_path(&definition.path, config_dir, project_path.as_deref())
+        else {
+            continue;
+        };
+        let root = SkillSearchRoot {
+            id: root_id.clone(),
+            namespace: root_id.clone(),
+            path: path.clone(),
+            priority: definition.priority.unwrap_or(0),
+        };
+        let source = SkillSourceDto {
+            kind: if project.is_some() {
+                "project"
+            } else {
+                "global"
+            }
+            .to_string(),
+            namespace: root.namespace.clone(),
+            root_id: root.id.clone(),
+            priority: root.priority,
+            project_id: project.map(|value| value.project_id.clone()),
+            project_name: project.map(|value| value.project_name.clone()),
+            root_path: project
+                .map(|value| value.path.clone())
+                .unwrap_or_else(|| path.to_string_lossy().to_string()),
+            skill_root_path: path.to_string_lossy().to_string(),
+        };
+        result.push((root, source));
+    }
+    result
+}
+
+async fn discover_configured_skills(
+    manager: &ConfigManager,
+    project_roots: &[SkillProjectRootDto],
+) -> CommandResult<Vec<SkillManifestDto>> {
+    let project_ids = project_roots
+        .iter()
+        .map(|project| project.project_id.clone())
+        .collect::<Vec<_>>();
+    let snapshot = manager
+        .get_snapshot(&project_ids)
+        .await
+        .map_err(|error| command_error(error.message))?;
+    let global_value = snapshot
+        .effective
+        .get("skills")
+        .cloned()
+        .unwrap_or_else(|| JsonValue::Object(Default::default()));
+    let global_document =
+        serde_json::from_value::<SkillsDocument>(global_value).map_err(|error| {
+            command_error(format!("Invalid effective skills configuration: {error}"))
+        })?;
+    let mut roots = configured_roots_for_document(&global_document, manager.root(), None);
+    for project in project_roots {
+        let project_value = snapshot
+            .project_effective
+            .get(&project.project_id)
+            .and_then(|documents| documents.get("skills"))
+            .cloned();
+        let Some(project_value) = project_value else {
+            continue;
+        };
+        let project_document =
+            serde_json::from_value::<SkillsDocument>(project_value).map_err(|error| {
+                command_error(format!("Invalid project skills configuration: {error}"))
+            })?;
+        roots.extend(configured_roots_for_document(
+            &project_document,
+            manager.root(),
+            Some(project),
+        ));
+    }
+
+    roots.sort_by(|(left, left_source), (right, right_source)| {
+        left_source
+            .kind
+            .cmp(&right_source.kind)
+            .then_with(|| left_source.project_id.cmp(&right_source.project_id))
+            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    roots.dedup_by(|(left, left_source), (right, right_source)| {
+        left_source.kind == right_source.kind
+            && left_source.project_id == right_source.project_id
+            && left.id == right.id
+            && left.path == right.path
+    });
+
+    let mut skills = Vec::new();
+    for (root, source) in roots {
+        for skill_root in discover_skill_roots(&root.path) {
+            skills.push(build_manifest(&skill_root, source.clone()));
+        }
+    }
+    resolve_skill_collisions(&mut skills);
+    skills.sort_by(|left, right| {
+        skill_collision_rank(left)
+            .cmp(&skill_collision_rank(right))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(skills)
+}
+
+async fn resolve_configured_skill(
+    manager: &ConfigManager,
+    skill_id: &str,
+    project_roots: &[SkillProjectRootDto],
+) -> CommandResult<SkillManifestDto> {
+    discover_configured_skills(manager, project_roots)
+        .await?
+        .into_iter()
+        .find(|skill| skill.id == skill_id)
+        .ok_or_else(|| command_error(format!("Skill not found: {skill_id}")))
 }
 
 fn namespace_precedence(namespace: &str) -> u8 {
@@ -945,9 +1220,12 @@ fn skill_collision_key(skill: &SkillManifestDto) -> String {
     normalize_nfkc(skill.name.trim()).to_lowercase()
 }
 
-fn skill_collision_rank(skill: &SkillManifestDto) -> (u8, u8, String, String) {
+fn skill_collision_rank(
+    skill: &SkillManifestDto,
+) -> (u8, std::cmp::Reverse<i32>, u8, String, String) {
     (
         source_precedence(&skill.source.kind),
+        std::cmp::Reverse(skill.source.priority),
         namespace_precedence(&skill.source.namespace),
         skill.root_path.clone(),
         skill.id.clone(),
@@ -1019,6 +1297,8 @@ fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDt
                     SkillSourceDto {
                         kind: "project".to_string(),
                         namespace: search_root.namespace.to_string(),
+                        root_id: search_root.id.clone(),
+                        priority: search_root.priority,
                         project_id: Some(project.project_id.clone()),
                         project_name: Some(project.project_name.clone()),
                         root_path: project.path.clone(),
@@ -1037,6 +1317,8 @@ fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDt
                     SkillSourceDto {
                         kind: "global".to_string(),
                         namespace: search_root.namespace.to_string(),
+                        root_id: search_root.id.clone(),
+                        priority: search_root.priority,
                         project_id: None,
                         project_name: None,
                         root_path: search_root.path.to_string_lossy().to_string(),
@@ -1070,11 +1352,34 @@ fn resolve_skill(
     skill_id: &str,
     project_roots: &[SkillProjectRootDto],
 ) -> CommandResult<SkillManifestDto> {
-    load_skill_catalog(project_roots, false)
-        .skills_by_id
-        .get(skill_id)
-        .cloned()
+    discover_skills(project_roots)
+        .into_iter()
+        .find(|skill| skill.id == skill_id)
         .ok_or_else(|| command_error(format!("Skill not found: {}", skill_id)))
+}
+
+async fn configured_skill_permission(
+    manager: &ConfigManager,
+    skill_id: &str,
+) -> CommandResult<Option<crate::config::SkillPermission>> {
+    let document = manager
+        .effective_user_document(ConfigDocumentKind::Skills)
+        .await;
+    let document = serde_json::from_value::<SkillsDocument>(document)
+        .map_err(|error| command_error(format!("Invalid skills configuration: {error}")))?;
+    Ok(document
+        .permissions
+        .and_then(|permissions| permissions.get(skill_id).cloned()))
+}
+
+async fn require_skill_enabled(manager: &ConfigManager, skill_id: &str) -> CommandResult<()> {
+    let permission = configured_skill_permission(manager, skill_id).await?;
+    if permission.and_then(|value| value.enabled) != Some(true) {
+        return Err(command_error(
+            "This skill is disabled in the effective skills configuration.",
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_resource_path(
@@ -1189,19 +1494,22 @@ fn resolve_workspace_cwd(
 
 #[tauri::command]
 pub async fn skills_list(
+    manager: tauri::State<'_, ConfigManager>,
     project_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<SkillListResponse> {
     Ok(SkillListResponse {
-        skills: load_skill_catalog(&project_roots, true).skills,
+        skills: discover_configured_skills(manager.inner(), &project_roots).await?,
     })
 }
 
 #[tauri::command]
 pub async fn skills_get(
+    manager: tauri::State<'_, ConfigManager>,
     skill_id: String,
     project_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<SkillDetailResponse> {
-    let skill = resolve_skill(&skill_id, &project_roots)?;
+    require_skill_enabled(manager.inner(), &skill_id).await?;
+    let skill = resolve_configured_skill(manager.inner(), &skill_id, &project_roots).await?;
     let parsed = parse_skill_file(Path::new(&skill.skill_file_path));
     Ok(SkillDetailResponse {
         skill,
@@ -1211,11 +1519,13 @@ pub async fn skills_get(
 
 #[tauri::command]
 pub async fn skills_read_resource(
+    manager: tauri::State<'_, ConfigManager>,
     skill_id: String,
     resource_path: String,
     project_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<SkillResourceReadResponse> {
-    let skill = resolve_skill(&skill_id, &project_roots)?;
+    require_skill_enabled(manager.inner(), &skill_id).await?;
+    let skill = resolve_configured_skill(manager.inner(), &skill_id, &project_roots).await?;
     let path = resolve_resource_path(&skill, &resource_path, &["references", "assets"])?;
     let metadata = fs::metadata(&path)
         .map_err(|error| command_error(format!("Failed to inspect skill resource: {}", error)))?;
@@ -1237,6 +1547,7 @@ pub async fn skills_read_resource(
 
 #[tauri::command]
 pub async fn skills_install_from_local_path(
+    manager: tauri::State<'_, ConfigManager>,
     source_path: String,
 ) -> CommandResult<SkillManifestDto> {
     let source = PathBuf::from(source_path.trim());
@@ -1262,9 +1573,8 @@ pub async fn skills_install_from_local_path(
         )));
     }
 
-    let home =
-        home_dir().ok_or_else(|| command_error("Could not resolve the user home directory."))?;
-    let destination_base = home.join(AGENTS_SKILLS_DIR);
+    let (destination_base, source_descriptor) =
+        resolve_configured_destination(manager.inner(), "global", None, None, &[]).await?;
     let destination = destination_base.join(&parsed.name);
     if destination.exists() {
         return Err(command_error(format!(
@@ -1273,99 +1583,172 @@ pub async fn skills_install_from_local_path(
         )));
     }
     copy_dir_recursive(&source, &destination)?;
-    Ok(build_manifest(
-        &destination,
-        SkillSourceDto {
-            kind: "global".to_string(),
-            namespace: "agents".to_string(),
-            project_id: None,
-            project_name: None,
-            root_path: destination_base.to_string_lossy().to_string(),
-            skill_root_path: destination_base.to_string_lossy().to_string(),
-        },
-    ))
+    Ok(build_manifest(&destination, source_descriptor))
 }
 
-fn resolve_template_destination(
+async fn resolve_configured_destination(
+    manager: &ConfigManager,
+    destination_kind: &str,
+    destination_id: Option<&str>,
+    project_id: Option<&str>,
+    project_roots: &[SkillProjectRootDto],
+) -> CommandResult<(PathBuf, SkillSourceDto)> {
+    let project = match destination_kind {
+        "global" => None,
+        "project" => {
+            let project_id = project_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| command_error("Project destination is required."))?;
+            Some(
+                project_roots
+                    .iter()
+                    .find(|root| root.project_id == project_id)
+                    .ok_or_else(|| command_error("Project destination is not available."))?,
+            )
+        }
+        other => {
+            return Err(command_error(format!(
+                "Unsupported skill destination: {other}"
+            )))
+        }
+    };
+    let project_ids = project
+        .map(|value| vec![value.project_id.clone()])
+        .unwrap_or_default();
+    let snapshot = manager
+        .get_snapshot(&project_ids)
+        .await
+        .map_err(|error| command_error(error.message))?;
+    let document_value = project
+        .and_then(|value| snapshot.project_effective.get(&value.project_id))
+        .and_then(|documents| documents.get("skills"))
+        .or_else(|| snapshot.effective.get("skills"))
+        .cloned()
+        .ok_or_else(|| command_error("Effective skills configuration is unavailable."))?;
+    let document = serde_json::from_value::<SkillsDocument>(document_value)
+        .map_err(|error| command_error(format!("Invalid skills configuration: {error}")))?;
+    let selected_id = destination_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            if project.is_some() {
+                document.default_project_destination.clone()
+            } else {
+                document.default_global_destination.clone()
+            }
+        })
+        .ok_or_else(|| command_error("No default skill installation destination is configured."))?;
+    let destination = document
+        .install_destinations
+        .as_ref()
+        .and_then(|destinations| destinations.get(&selected_id))
+        .ok_or_else(|| command_error(format!("Unknown skill destination: {selected_id}")))?;
+    let required_scope = if project.is_some() { "project" } else { "user" };
+    if destination.scope != required_scope {
+        return Err(command_error(format!(
+            "Skill destination {selected_id} does not belong to the requested scope."
+        )));
+    }
+    let project_path = project.map(|value| PathBuf::from(&value.path));
+    let destination_base =
+        expand_configured_skill_path(&destination.path, manager.root(), project_path.as_deref())?;
+    if let Some(project_path) = project_path.as_deref() {
+        let project_canonical = fs::canonicalize(project_path)
+            .map_err(|error| command_error(format!("Project path is not available: {error}")))?;
+        let parent = destination_base.parent().unwrap_or(project_path);
+        fs::create_dir_all(parent).map_err(|error| {
+            command_error(format!(
+                "Failed to create skill destination parent: {error}"
+            ))
+        })?;
+        let parent_canonical = fs::canonicalize(parent).map_err(|error| {
+            command_error(format!(
+                "Failed to resolve skill destination parent: {error}"
+            ))
+        })?;
+        if !path_is_inside(&project_canonical, &parent_canonical) {
+            return Err(command_error(
+                "A project skill destination must stay inside the canonical project root.",
+            ));
+        }
+    }
+    let source = SkillSourceDto {
+        kind: if project.is_some() {
+            "project"
+        } else {
+            "global"
+        }
+        .to_string(),
+        namespace: selected_id.clone(),
+        root_id: selected_id,
+        priority: 500,
+        project_id: project.map(|value| value.project_id.clone()),
+        project_name: project.map(|value| value.project_name.clone()),
+        root_path: project
+            .map(|value| value.path.clone())
+            .unwrap_or_else(|| destination_base.to_string_lossy().to_string()),
+        skill_root_path: destination_base.to_string_lossy().to_string(),
+    };
+    Ok((destination_base, source))
+}
+
+#[cfg(test)]
+fn resolve_template_destination_for_tests(
     request: &SkillTemplateCreateRequest,
 ) -> CommandResult<(PathBuf, SkillSourceDto)> {
-    match request.destination_kind.trim() {
+    let (kind, project, destination_base) = match request.destination_kind.as_str() {
         "global" => {
             let home = home_dir()
                 .ok_or_else(|| command_error("Could not resolve the user home directory."))?;
-            let destination_base = home.join(AGENTS_SKILLS_DIR);
-            Ok((
-                destination_base.clone(),
-                SkillSourceDto {
-                    kind: "global".to_string(),
-                    namespace: "agents".to_string(),
-                    project_id: None,
-                    project_name: None,
-                    root_path: destination_base.to_string_lossy().to_string(),
-                    skill_root_path: destination_base.to_string_lossy().to_string(),
-                },
-            ))
+            ("global", None, home.join(AGENTS_SKILLS_DIR))
         }
         "project" => {
             let project_id = request
                 .project_id
                 .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
                 .ok_or_else(|| command_error("Project destination is required."))?;
-            let project_root = request
+            let project = request
                 .project_roots
                 .iter()
                 .find(|root| root.project_id == project_id)
                 .ok_or_else(|| command_error("Project destination is not available."))?;
-            let project_path = PathBuf::from(project_root.path.trim());
-            if project_path.as_os_str().is_empty() {
-                return Err(command_error("Project path is missing."));
-            }
-            let project_canonical = fs::canonicalize(&project_path).map_err(|error| {
-                command_error(format!(
-                    "Project path is not available for skill creation: {}",
-                    error
-                ))
+            let root = fs::canonicalize(&project.path).map_err(|error| {
+                command_error(format!("Project path is not available: {error}"))
             })?;
-            let destination_base = project_canonical.join(AGENTS_SKILLS_DIR);
-            Ok((
-                destination_base.clone(),
-                SkillSourceDto {
-                    kind: "project".to_string(),
-                    namespace: "agents".to_string(),
-                    project_id: Some(project_root.project_id.clone()),
-                    project_name: Some(project_root.project_name.clone()),
-                    root_path: destination_base.to_string_lossy().to_string(),
-                    skill_root_path: destination_base.to_string_lossy().to_string(),
-                },
-            ))
+            ("project", Some(project), root.join(AGENTS_SKILLS_DIR))
         }
-        other => Err(command_error(format!(
-            "Unsupported skill destination: {}",
-            other
-        ))),
-    }
+        other => {
+            return Err(command_error(format!(
+                "Unsupported skill destination: {other}"
+            )))
+        }
+    };
+    Ok((
+        destination_base.clone(),
+        SkillSourceDto {
+            kind: kind.to_string(),
+            namespace: "agents".to_string(),
+            root_id: "agents".to_string(),
+            priority: 400,
+            project_id: project.map(|value| value.project_id.clone()),
+            project_name: project.map(|value| value.project_name.clone()),
+            root_path: project
+                .map(|value| value.path.clone())
+                .unwrap_or_else(|| destination_base.to_string_lossy().to_string()),
+            skill_root_path: destination_base.to_string_lossy().to_string(),
+        },
+    ))
 }
 
-#[tauri::command]
-pub async fn skills_create_template(
-    name: String,
-    description: String,
-    destination_kind: String,
-    project_id: Option<String>,
-    project_roots: Vec<SkillProjectRootDto>,
+fn create_skill_template_at(
+    request: &SkillTemplateCreateRequest,
+    destination_base: PathBuf,
+    source: SkillSourceDto,
 ) -> CommandResult<SkillTemplateCreateResponse> {
-    let request = SkillTemplateCreateRequest {
-        name,
-        description,
-        destination_kind,
-        project_id,
-        project_roots,
-    };
     let name = normalize_created_skill_name(&request.name)?;
     let description = normalize_created_skill_description(&request.description)?;
-    let (destination_base, source) = resolve_template_destination(&request)?;
 
     fs::create_dir_all(&destination_base).map_err(|error| {
         command_error(format!(
@@ -1422,13 +1805,42 @@ pub async fn skills_create_template(
 }
 
 #[tauri::command]
+pub async fn skills_create_template(
+    manager: tauri::State<'_, ConfigManager>,
+    name: String,
+    description: String,
+    destination_kind: String,
+    destination_id: Option<String>,
+    project_id: Option<String>,
+    project_roots: Vec<SkillProjectRootDto>,
+) -> CommandResult<SkillTemplateCreateResponse> {
+    let request = SkillTemplateCreateRequest {
+        name,
+        description,
+        destination_kind,
+        project_id,
+        project_roots,
+    };
+    let (destination_base, source) = resolve_configured_destination(
+        manager.inner(),
+        &request.destination_kind,
+        destination_id.as_deref(),
+        request.project_id.as_deref(),
+        &request.project_roots,
+    )
+    .await?;
+    create_skill_template_at(&request, destination_base, source)
+}
+
+#[tauri::command]
 pub async fn skills_open_location(
     app: AppHandle,
+    manager: tauri::State<'_, ConfigManager>,
     skill_id: String,
     target: String,
     project_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<()> {
-    let skill = resolve_skill(&skill_id, &project_roots)?;
+    let skill = resolve_configured_skill(manager.inner(), &skill_id, &project_roots).await?;
     let skill_root = fs::canonicalize(&skill.root_path)
         .map_err(|error| command_error(format!("Skill folder is not available: {}", error)))?;
     let target_path = match target.trim() {
@@ -1453,6 +1865,7 @@ pub async fn skills_open_location(
 
 #[tauri::command]
 pub async fn skills_run_script(
+    manager: tauri::State<'_, ConfigManager>,
     skill_id: String,
     script_path: String,
     args: Vec<String>,
@@ -1461,7 +1874,49 @@ pub async fn skills_run_script(
     workspace_path: Option<String>,
     project_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<SkillScriptRunResponse> {
-    let skill = resolve_skill(&skill_id, &project_roots)?;
+    let skill = resolve_configured_skill(manager.inner(), &skill_id, &project_roots).await?;
+    let permission = configured_skill_permission(manager.inner(), &skill_id)
+        .await?
+        .ok_or_else(|| command_error("This skill has no local permission record."))?;
+    if permission.enabled != Some(true) || permission.scripts_enabled != Some(true) {
+        return Err(command_error(
+            "Skill scripts are disabled in the effective skills configuration.",
+        ));
+    }
+    let trusted_hash = permission
+        .trust
+        .as_ref()
+        .filter(|trust| trust.granted_by == "user")
+        .map(|trust| trust.content_hash.as_str());
+    if trusted_hash != Some(skill.content_hash.as_str()) {
+        return Err(command_error(
+            "The skill content changed or has not been trusted. Approve its current content hash before running scripts.",
+        ));
+    }
+
+    run_skill_script_with_manifest(
+        skill,
+        skill_id,
+        script_path,
+        args,
+        timeout_ms,
+        allow_workspace,
+        workspace_path,
+        project_roots,
+    )
+    .await
+}
+
+async fn run_skill_script_with_manifest(
+    skill: SkillManifestDto,
+    skill_id: String,
+    script_path: String,
+    args: Vec<String>,
+    timeout_ms: Option<u64>,
+    allow_workspace: bool,
+    workspace_path: Option<String>,
+    project_roots: Vec<SkillProjectRootDto>,
+) -> CommandResult<SkillScriptRunResponse> {
     let script = resolve_resource_path(&skill, &script_path, &["scripts"])?;
     let timeout_ms = timeout_ms
         .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_MS)
@@ -1569,6 +2024,82 @@ pub async fn skills_run_script(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    async fn test_skills_list(
+        project_roots: Vec<SkillProjectRootDto>,
+    ) -> CommandResult<SkillListResponse> {
+        Ok(SkillListResponse {
+            skills: discover_skills(&project_roots),
+        })
+    }
+
+    async fn test_skills_get(
+        skill_id: String,
+        project_roots: Vec<SkillProjectRootDto>,
+    ) -> CommandResult<SkillDetailResponse> {
+        let skill = resolve_skill(&skill_id, &project_roots)?;
+        let parsed = parse_skill_file(Path::new(&skill.skill_file_path));
+        Ok(SkillDetailResponse {
+            skill,
+            body: parsed.body,
+        })
+    }
+
+    async fn test_skills_read_resource(
+        skill_id: String,
+        resource_path: String,
+        project_roots: Vec<SkillProjectRootDto>,
+    ) -> CommandResult<SkillResourceReadResponse> {
+        let skill = resolve_skill(&skill_id, &project_roots)?;
+        let path = resolve_resource_path(&skill, &resource_path, &["references", "assets"])?;
+        let content = fs::read_to_string(path).map_err(|error| command_error(error.to_string()))?;
+        Ok(SkillResourceReadResponse {
+            skill_id,
+            path: resource_path,
+            content,
+        })
+    }
+
+    async fn test_skills_create_template(
+        name: String,
+        description: String,
+        destination_kind: String,
+        project_id: Option<String>,
+        project_roots: Vec<SkillProjectRootDto>,
+    ) -> CommandResult<SkillTemplateCreateResponse> {
+        let request = SkillTemplateCreateRequest {
+            name,
+            description,
+            destination_kind,
+            project_id,
+            project_roots,
+        };
+        let (destination_base, source) = resolve_template_destination_for_tests(&request)?;
+        create_skill_template_at(&request, destination_base, source)
+    }
+
+    async fn test_skills_run_script(
+        skill_id: String,
+        script_path: String,
+        args: Vec<String>,
+        timeout_ms: Option<u64>,
+        allow_workspace: bool,
+        workspace_path: Option<String>,
+        project_roots: Vec<SkillProjectRootDto>,
+    ) -> CommandResult<SkillScriptRunResponse> {
+        let skill = resolve_skill(&skill_id, &project_roots)?;
+        run_skill_script_with_manifest(
+            skill,
+            skill_id,
+            script_path,
+            args,
+            timeout_ms,
+            allow_workspace,
+            workspace_path,
+            project_roots,
+        )
+        .await
+    }
 
     fn write_skill(root: &Path, name: &str) {
         fs::create_dir_all(root).expect("mkdir skill");
@@ -1853,7 +2384,7 @@ mod tests {
             .iter()
             .find(|skill| skill.name == "local")
             .expect("local skill");
-        assert!(local.id.starts_with("project:p1:agents:local:"));
+        assert_eq!(local.id, "project:p1:agents:local");
         assert_eq!(local.source.namespace, "agents");
         assert_eq!(
             local.source.skill_root_path,
@@ -1954,15 +2485,18 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }]);
 
-        for (namespace, _, name) in sources {
+        for (namespace, root, name) in sources {
             let skill = skills
                 .iter()
                 .find(|skill| skill.source.kind == "project" && skill.name == name)
                 .expect("skill source");
             assert_eq!(skill.source.namespace, namespace);
-            assert!(skill
-                .id
-                .starts_with(&format!("project:p1:{}:{}:", namespace, name)));
+            let expected_root_id = match root {
+                ".opencode/skills" => "opencode-skills",
+                ".opencode/skill" => "opencode-skill",
+                _ => namespace,
+            };
+            assert_eq!(skill.id, format!("project:p1:{expected_root_id}:{name}"));
         }
     }
 
@@ -1995,7 +2529,7 @@ mod tests {
             .iter()
             .map(|root| {
                 (
-                    root.namespace,
+                    root.namespace.as_str(),
                     root.path.to_string_lossy().replace('\\', "/"),
                 )
             })
@@ -2032,6 +2566,8 @@ mod tests {
             SkillSourceDto {
                 kind: "global".to_string(),
                 namespace: "agents".to_string(),
+                root_id: "agents".to_string(),
+                priority: 400,
                 project_id: None,
                 project_name: None,
                 root_path: dir.path().to_string_lossy().to_string(),
@@ -2081,6 +2617,8 @@ mod tests {
             SkillSourceDto {
                 kind: "project".to_string(),
                 namespace: "agents".to_string(),
+                root_id: "agents".to_string(),
+                priority: 400,
                 project_id: Some("p1".to_string()),
                 project_name: Some("Project".to_string()),
                 root_path: project.path().to_string_lossy().to_string(),
@@ -2096,7 +2634,7 @@ mod tests {
         let project_root = dir.path().join("project");
         fs::create_dir_all(&project_root).expect("mkdir project");
 
-        let created = skills_create_template(
+        let created = test_skills_create_template(
             "Project Helper".to_string(),
             "Use when project work needs focused guidance.".to_string(),
             "project".to_string(),
@@ -2128,7 +2666,7 @@ mod tests {
         let project_root = dir.path().join("project");
         fs::create_dir_all(&project_root).expect("mkdir project");
 
-        let invalid_name = skills_create_template(
+        let invalid_name = test_skills_create_template(
             "../".to_string(),
             "Use when needed.".to_string(),
             "project".to_string(),
@@ -2142,7 +2680,7 @@ mod tests {
         .await;
         assert!(invalid_name.is_err());
 
-        let unavailable_project = skills_create_template(
+        let unavailable_project = test_skills_create_template(
             "helper".to_string(),
             "Use when needed.".to_string(),
             "project".to_string(),
@@ -2187,7 +2725,7 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
-        let discovered = skills_list(project_roots.clone())
+        let discovered = test_skills_list(project_roots.clone())
             .await
             .expect("skills list");
         let skill_id = discovered
@@ -2197,15 +2735,15 @@ mod tests {
             .expect("test skill")
             .id
             .clone();
-        assert!(skill_id.starts_with("project:p1:agents:test-skill:"));
+        assert_eq!(skill_id, "project:p1:agents:test-skill");
 
-        let detail = skills_get(skill_id.clone(), project_roots.clone())
+        let detail = test_skills_get(skill_id.clone(), project_roots.clone())
             .await
             .expect("skill detail");
         assert_eq!(detail.skill.name, "test-skill");
         assert!(detail.body.contains("Reponds court"));
 
-        let resource = skills_read_resource(
+        let resource = test_skills_read_resource(
             skill_id.clone(),
             "references/style.md".to_string(),
             project_roots.clone(),
@@ -2214,7 +2752,7 @@ mod tests {
         .expect("resource");
         assert!(resource.content.contains("ton concis"));
 
-        let script = skills_run_script(
+        let script = test_skills_run_script(
             skill_id,
             check_script_path.to_string(),
             vec![],
@@ -2246,7 +2784,7 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
-        let listed = skills_list(project_roots.clone()).await.expect("list");
+        let listed = test_skills_list(project_roots.clone()).await.expect("list");
         let skill_id = listed
             .skills
             .iter()
@@ -2262,7 +2800,9 @@ mod tests {
         )
         .expect("rewrite skill");
 
-        let detail = skills_get(skill_id, project_roots).await.expect("detail");
+        let detail = test_skills_get(skill_id, project_roots)
+            .await
+            .expect("detail");
         assert_eq!(detail.skill.description, "Updated docs skill");
         assert!(detail.body.contains("Updated body"));
     }
@@ -2278,12 +2818,12 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
-        let listed = skills_list(project_roots.clone()).await.expect("list");
+        let listed = test_skills_list(project_roots.clone()).await.expect("list");
         let skill_id = listed.skills[0].id.clone();
         std::thread::sleep(Duration::from_millis(10));
         fs::remove_dir_all(&skill_dir).expect("remove skill");
 
-        let result = skills_get(skill_id, project_roots).await;
+        let result = test_skills_get(skill_id, project_roots).await;
         assert!(result.is_err());
     }
 
@@ -2298,13 +2838,15 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
-        let listed = skills_list(project_roots.clone()).await.expect("list");
+        let listed = test_skills_list(project_roots.clone()).await.expect("list");
         let skill_id = listed.skills[0].id.clone();
         std::thread::sleep(Duration::from_millis(10));
         fs::create_dir_all(skill_dir.join("references")).expect("mkdir references");
         fs::write(skill_dir.join("references/new.md"), "new resource").expect("write resource");
 
-        let detail = skills_get(skill_id, project_roots).await.expect("detail");
+        let detail = test_skills_get(skill_id, project_roots)
+            .await
+            .expect("detail");
         assert!(detail
             .skill
             .resources
@@ -2322,7 +2864,7 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
-        let first = skills_list(project_roots.clone())
+        let first = test_skills_list(project_roots.clone())
             .await
             .expect("first list");
         assert!(first.skills.iter().any(|skill| {
@@ -2338,7 +2880,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
         write_skill(&project.path().join(AGENTS_SKILLS_DIR).join("two"), "two");
 
-        let second = skills_list(project_roots).await.expect("second list");
+        let second = test_skills_list(project_roots).await.expect("second list");
         assert!(second.skills.iter().any(|skill| {
             skill.source.kind == "project"
                 && skill.source.project_id.as_deref() == Some("p1")
@@ -2384,7 +2926,7 @@ mod tests {
             path: project.path().to_string_lossy().to_string(),
         }];
 
-        let discovered = skills_list(project_roots.clone())
+        let discovered = test_skills_list(project_roots.clone())
             .await
             .expect("skills list");
         let skill_id = discovered
@@ -2395,7 +2937,7 @@ mod tests {
             .id
             .clone();
 
-        let timed_out = skills_run_script(
+        let timed_out = test_skills_run_script(
             skill_id.clone(),
             slow_script_path.to_string(),
             vec![],
@@ -2413,7 +2955,7 @@ mod tests {
         );
         assert!(timed_out.stderr.contains("timed out"));
 
-        let truncated = skills_run_script(
+        let truncated = test_skills_run_script(
             skill_id,
             noisy_script_path.to_string(),
             vec![],

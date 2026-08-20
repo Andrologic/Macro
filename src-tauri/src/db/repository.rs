@@ -1947,7 +1947,7 @@ pub async fn delete_architect_plan_conversation_sync(
 
 // ============ PROVIDER CONFIGS ============
 
-pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
+async fn list_legacy_provider_status(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
     let rows = sqlx::query(
         r#"
         SELECT id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
@@ -1984,37 +1984,81 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
     Ok(configs)
 }
 
-pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option<ProviderConfig>> {
-    let row = sqlx::query(
-        r#"
-        SELECT id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
-               auth_status, auth_source, plan_type, account_label, token_expires_at,
-               created_at, updated_at
-        FROM provider_configs
-        WHERE id = ?
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
+    let legacy = list_legacy_provider_status(pool).await?;
+    let Some(manager) = crate::config::runtime_config_manager() else {
+        return Ok(legacy);
+    };
+    let definitions = manager
+        .effective_user_document(crate::config::ConfigDocumentKind::Providers)
+        .await;
+    let definitions = definitions
+        .get("providers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| DbError::Validation("providers.json est invalide.".to_string()))?;
+    let legacy = legacy
+        .into_iter()
+        .map(|provider| (provider.id.clone(), provider))
+        .collect::<HashMap<_, _>>();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut configured = Vec::with_capacity(definitions.len());
+    for (id, definition) in definitions {
+        let status = legacy.get(id);
+        configured.push(ProviderConfig {
+            id: id.clone(),
+            name: definition
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(id)
+                .to_string(),
+            provider_type: definition
+                .get("providerType")
+                .and_then(Value::as_str)
+                .unwrap_or("openai")
+                .to_string(),
+            base_url: definition
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            api_key: None,
+            has_stored_api_key: crate::secrets::get_api_key(id)
+                .map_err(|error| DbError::Validation(error.to_string()))?
+                .is_some(),
+            is_enabled: definition
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_local: definition
+                .get("isLocal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            auth_status: status.and_then(|value| value.auth_status.clone()),
+            auth_source: status.and_then(|value| value.auth_source.clone()),
+            plan_type: status.and_then(|value| value.plan_type.clone()),
+            account_label: status.and_then(|value| value.account_label.clone()),
+            token_expires_at: status.and_then(|value| value.token_expires_at.clone()),
+            created_at: status
+                .map(|value| value.created_at.clone())
+                .unwrap_or_else(|| now.clone()),
+            updated_at: status
+                .map(|value| value.updated_at.clone())
+                .unwrap_or_else(|| now.clone()),
+        });
+    }
+    configured.sort_by(|left, right| {
+        left.is_local
+            .cmp(&right.is_local)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(configured)
+}
 
-    Ok(row.map(|row| ProviderConfig {
-        id: row.get("id"),
-        name: row.get("name"),
-        provider_type: row.get("provider_type"),
-        base_url: row.get("base_url"),
-        api_key: None,
-        has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
-        is_enabled: row.get::<i32, _>("is_enabled") != 0,
-        is_local: row.get::<i32, _>("is_local") != 0,
-        auth_status: row.get("auth_status"),
-        auth_source: row.get("auth_source"),
-        plan_type: row.get("plan_type"),
-        account_label: row.get("account_label"),
-        token_expires_at: row.get("token_expires_at"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }))
+pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option<ProviderConfig>> {
+    Ok(list_provider_configs(pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id))
 }
 
 pub async fn update_provider_config(

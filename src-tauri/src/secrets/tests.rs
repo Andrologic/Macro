@@ -98,6 +98,40 @@ fn local_store_roundtrips_api_keys_and_chatgpt_sessions() {
         Some("test-api-key")
     );
     assert_eq!(data.chatgpt_sessions.get("chatgpt"), Some(&chatgpt_secret));
+
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("provider-secrets.json")).expect("persisted secrets"),
+    )
+    .expect("valid JSON");
+    assert_eq!(persisted["version"], serde_json::json!(2));
+    assert_eq!(
+        persisted.pointer("/namespaces/providers/openai"),
+        Some(&serde_json::json!("test-api-key"))
+    );
+    assert!(persisted.get("api_keys").is_none());
+}
+
+#[test]
+fn init_backs_up_a_legacy_secret_file_before_upgrading_it() {
+    let _guard = PUBLIC_SECRET_HELPER_TEST_LOCK
+        .lock()
+        .expect("public secret helper test lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("provider-secrets.json");
+    let legacy = r#"{"version":1,"api_keys":{"openai":"kept"},"chatgpt_sessions":{}}"#;
+    std::fs::write(&path, legacy).expect("legacy secrets");
+
+    init(temp.path()).expect("upgrade secret store");
+
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("provider-secrets.json.v1.bak"))
+            .expect("version backup"),
+        legacy
+    );
+    assert_eq!(
+        get_api_key("openai").expect("migrated secret").as_deref(),
+        Some("kept")
+    );
 }
 
 #[test]

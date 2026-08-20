@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
 const SECRET_FILE_NAME: &str = "provider-secrets.json";
-const SECRET_FILE_VERSION: u8 = 1;
+const SECRET_FILE_VERSION: u8 = 2;
 
 static SECRET_STORE_PATH: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
 static STORE_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -52,10 +52,26 @@ pub(super) struct SecretEnvelope<T> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct ProviderSecretsFile {
     pub(super) version: u8,
-    #[serde(default)]
+    #[serde(skip)]
     pub(super) api_keys: BTreeMap<String, String>,
     #[serde(default)]
+    namespaces: SecretNamespaces,
+    #[serde(default)]
     pub(super) chatgpt_sessions: BTreeMap<String, ChatGptSecret>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct SecretNamespaces {
+    #[serde(default)]
+    providers: BTreeMap<String, String>,
+    #[serde(default)]
+    speech: BTreeMap<String, String>,
+    #[serde(default)]
+    mcp: BTreeMap<String, String>,
+    #[serde(default, rename = "webSearch")]
+    web_search: BTreeMap<String, String>,
+    #[serde(default)]
+    system: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +81,8 @@ struct RawProviderSecretsFile {
     #[serde(default)]
     api_keys: BTreeMap<String, String>,
     #[serde(default)]
+    namespaces: SecretNamespaces,
+    #[serde(default)]
     chatgpt_sessions: BTreeMap<String, serde_json::Value>,
 }
 
@@ -73,6 +91,7 @@ impl Default for ProviderSecretsFile {
         Self {
             version: SECRET_FILE_VERSION,
             api_keys: BTreeMap::new(),
+            namespaces: SecretNamespaces::default(),
             chatgpt_sessions: BTreeMap::new(),
         }
     }
@@ -118,6 +137,7 @@ impl LocalSecretStore {
 
         let mut persisted = data.clone();
         persisted.version = SECRET_FILE_VERSION;
+        persisted.namespaces = SecretNamespaces::from_flat(&persisted.api_keys);
         let serialized = serde_json::to_string_pretty(&persisted)?;
         let tmp_path = self.path.with_file_name(format!(
             "{}.tmp-{}",
@@ -127,7 +147,7 @@ impl LocalSecretStore {
 
         write_private_file(&tmp_path, serialized.as_bytes())?;
         set_private_file_permissions(&tmp_path)?;
-        std::fs::rename(&tmp_path, &self.path)?;
+        replace_file(&tmp_path, &self.path)?;
         set_private_file_permissions(&self.path)?;
         sync_parent_directory(&self.path)?;
         Ok(())
@@ -158,10 +178,58 @@ impl LocalSecretStore {
         );
         Ok(())
     }
+
+    fn backup_before_version_change(&self, from_version: u8) -> Result<(), SecretError> {
+        if from_version >= SECRET_FILE_VERSION || !self.path.exists() {
+            return Ok(());
+        }
+        let backup = self
+            .path
+            .with_file_name(format!("{SECRET_FILE_NAME}.v{from_version}.bak"));
+        if !backup.exists() {
+            std::fs::copy(&self.path, &backup)?;
+            set_private_file_permissions(&backup)?;
+        }
+        Ok(())
+    }
+}
+
+impl SecretNamespaces {
+    fn from_flat(values: &BTreeMap<String, String>) -> Self {
+        let mut namespaces = Self::default();
+        for (id, value) in values {
+            let target = if id.starts_with("speech-provider:") || id.starts_with("speech:") {
+                &mut namespaces.speech
+            } else if id.starts_with("mcp-env:") {
+                &mut namespaces.mcp
+            } else if id.starts_with("web-search:") {
+                &mut namespaces.web_search
+            } else if id.starts_with("macro-installation:") {
+                &mut namespaces.system
+            } else {
+                &mut namespaces.providers
+            };
+            target.insert(id.clone(), value.clone());
+        }
+        namespaces
+    }
+
+    fn into_flat(self) -> BTreeMap<String, String> {
+        self.providers
+            .into_iter()
+            .chain(self.speech)
+            .chain(self.mcp)
+            .chain(self.web_search)
+            .chain(self.system)
+            .collect()
+    }
 }
 
 fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, serde_json::Error> {
     let raw = serde_json::from_str::<RawProviderSecretsFile>(contents)?;
+    let version = raw._version;
+    let mut api_keys = raw.namespaces.into_flat();
+    api_keys.extend(raw.api_keys);
     let mut chatgpt_sessions = BTreeMap::new();
 
     for (provider_id, value) in raw.chatgpt_sessions {
@@ -176,8 +244,9 @@ fn parse_provider_secrets_file(contents: &str) -> Result<ProviderSecretsFile, se
     }
 
     Ok(ProviderSecretsFile {
-        version: SECRET_FILE_VERSION,
-        api_keys: raw.api_keys,
+        version,
+        api_keys,
+        namespaces: SecretNamespaces::default(),
         chatgpt_sessions,
     })
 }
@@ -216,6 +285,42 @@ fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error
     file.sync_all()
 }
 
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    std::fs::rename(source, destination)
+}
+
 #[cfg(not(unix))]
 fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
     let mut file = std::fs::OpenOptions::new()
@@ -248,7 +353,102 @@ fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
     std::fs::set_permissions(path, permissions)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_INSUFFICIENT_BUFFER};
+    use windows_sys::Win32::Security::Authorization::{
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, SE_FILE_OBJECT,
+        TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, NO_INHERITANCE,
+        PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let result = (|| {
+        let mut required = 0u32;
+        unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+        }
+        let sizing_error = std::io::Error::last_os_error();
+        if sizing_error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) || required == 0 {
+            return Err(sizing_error);
+        }
+
+        let mut buffer = vec![0u8; required as usize];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast::<c_void>(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let trustee = TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: token_user.User.Sid.cast(),
+        };
+        let access = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_ALL_ACCESS,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: NO_INHERITANCE,
+            Trustee: trustee,
+        };
+        let mut acl = std::ptr::null_mut();
+        let acl_status = unsafe { SetEntriesInAclW(1, &access, std::ptr::null(), &mut acl) };
+        if acl_status != 0 {
+            return Err(std::io::Error::from_raw_os_error(acl_status as i32));
+        }
+
+        let wide_path = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                wide_path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                acl,
+                std::ptr::null(),
+            )
+        };
+        unsafe {
+            LocalFree(acl.cast());
+        }
+        if status != 0 {
+            return Err(std::io::Error::from_raw_os_error(status as i32));
+        }
+        Ok(())
+    })();
+
+    unsafe {
+        CloseHandle(token);
+    }
+    result
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
@@ -260,6 +460,7 @@ pub(super) fn init_store(app_data_dir: &Path) -> Result<(), SecretError> {
     let store = LocalSecretStore::new(path);
     let _guard = STORE_MUTEX.lock().expect("secret store lock");
     let data = store.read_file()?;
+    store.backup_before_version_change(data.version)?;
     store.write_file(&data)?;
     Ok(())
 }
@@ -300,6 +501,21 @@ pub(super) fn delete_provider_secret_entry(provider_id: &str) -> Result<(), Secr
         store.update_file(|data| {
             data.api_keys.remove(provider_id);
         })
+    })
+}
+
+pub(super) fn list_provider_secret_ids() -> Result<Vec<String>, SecretError> {
+    with_store_lock(|store| Ok(store.read_file()?.api_keys.keys().cloned().collect()))
+}
+
+pub(super) fn list_chatgpt_secret_ids() -> Result<Vec<String>, SecretError> {
+    with_store_lock(|store| {
+        Ok(store
+            .read_file()?
+            .chatgpt_sessions
+            .keys()
+            .cloned()
+            .collect())
     })
 }
 
