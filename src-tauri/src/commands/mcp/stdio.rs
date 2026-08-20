@@ -1,5 +1,5 @@
 use super::env_secrets::resolve_env_secrets;
-use super::ids::{build_mcp_tool_id, normalize_identifier};
+use super::ids::{build_mcp_tool_id, is_canonical_mcp_server_id, normalize_identifier};
 use super::protocol::{initialize, read_response, write_frame};
 use super::result_format::format_tool_call_result;
 use super::types::{McpCallToolResponse, McpServerDto, McpToolDto, McpTransportDto};
@@ -28,6 +28,12 @@ fn server_enabled(server: &McpServerDto) -> bool {
 pub(crate) fn resolve_stdio_transport(
     server: &McpServerDto,
 ) -> CommandResult<(String, Vec<String>, HashMap<String, String>)> {
+    if !is_canonical_mcp_server_id(&server.id) {
+        return Err(command_error(format!(
+            "MCP server id '{}' is not canonical.",
+            server.id
+        )));
+    }
     if !server_enabled(server) {
         return Err(command_error(format!(
             "MCP server '{}' is disabled.",
@@ -304,7 +310,7 @@ time.sleep(5)
 
     fn test_server(path: PathBuf, python: String) -> McpServerDto {
         McpServerDto {
-            id: "Test Server".to_string(),
+            id: "test_server".to_string(),
             name: "Test Server".to_string(),
             transport: Some(McpTransportDto::Stdio {
                 command: python,
@@ -350,6 +356,25 @@ time.sleep(5)
             .await
             .expect_err("disabled server should be rejected");
         assert!(error.message.contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn rejects_noncanonical_server_ids_before_launch() {
+        let server = McpServerDto {
+            id: "GitHub Server".to_string(),
+            name: "GitHub Server".to_string(),
+            transport: Some(McpTransportDto::Stdio {
+                command: "should-not-launch".to_string(),
+                args: Vec::new(),
+                env: HashMap::new(),
+            }),
+            config: Some(json!({ "enabled": true })),
+        };
+
+        let error = discover_stdio_tools(&server, Some(50))
+            .await
+            .expect_err("noncanonical server id should be rejected");
+        assert!(error.message.contains("not canonical"));
     }
 
     #[tokio::test]

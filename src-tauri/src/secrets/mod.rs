@@ -10,6 +10,16 @@ pub use chatgpt::{delete_provider_secret, get_chatgpt_secret, set_chatgpt_secret
 use std::path::Path;
 pub use store::{ChatGptSecret, SecretError};
 
+#[cfg(test)]
+static SECRET_STORE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn lock_test_store() -> std::sync::MutexGuard<'static, ()> {
+    SECRET_STORE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretMetadata {
