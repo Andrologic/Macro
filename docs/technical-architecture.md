@@ -683,7 +683,7 @@ L'objectif est de limiter les droits selon le contexte fonctionnel.
 Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
-- Chat reste plus restreint, mais peut recevoir les outils terminal indépendamment du workspace attaché
+- Chat reste plus restreint, mais peut recevoir l'outil terminal agentique généraliste
 - Implement a accès à davantage d'outils de workspace et Git
 
 ### 13.2 Validation d'exécution
@@ -704,7 +704,11 @@ La couche d'exécution d'outils encapsule :
 
 Cette couche unifie l'exécution des outils côté produit.
 
-En mode Chat, les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` partagent un seul interrupteur visible. Ils restent disponibles sans workspace attaché. La création omet `project_id` et le backend ouvre une session généraliste dont le répertoire initial est le dossier personnel ou tout répertoire existant demandé. Les sessions Implement conservent leur rattachement à un projet et à son worktree. `toolSecurityPolicy` force chaque `terminal_run` de Chat à demander une approbation, avant toute exécution, quel que soit le niveau de risque. Cette décision ignore les autorisations mémorisées et l'interface masque l'action qui autorise des appels similaires pour toute la conversation. Le bridge Copilot relaie les quatre appels au frontend afin qu'ils traversent le même contrôle.
+Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` forment l'outil terminal agentique et partagent un seul interrupteur visible. Ce terminal ne passe pas par l'exécuteur de workspace et son schéma n'expose aucun `project_id`. Le frontend crée toujours ses sessions avec `project_id: null`; son répertoire initial est le dossier personnel ou tout répertoire existant demandé. Une session rattachée à un projet par le terminal manuel de l'application est refusée par l'outil agentique.
+
+Dans chaque mode qui expose l'outil, `toolSecurityPolicy` force chaque `terminal_run` à demander une approbation avant l'exécution, quel que soit le niveau de risque, y compris YOLO et Strict. Cette décision précède l'évaluation habituelle du niveau de risque, ignore les autorisations mémorisées et désactive l'action qui autorise des appels similaires pour toute la conversation. La création, la lecture et l'arrêt d'une session agentique restent des opérations d'observation. Le bridge Copilot relaie les quatre appels au frontend afin qu'ils traversent le même contrôle. Le tool host natif refuse explicitement les appels terminal directs, car ce chemin ne possède pas de mécanisme de review utilisateur.
+
+Le terminal manuel reste un sous-système distinct et peut conserver un rattachement à la tâche, au projet et au worktree pour la navigation de l'interface.
 
 ---
 

@@ -811,18 +811,14 @@ export const MACRO_TOOL_REGISTRY = [
   }),
   objectTool(
     "terminal_create_session",
-    "Create a terminal session. In Chat, the session is general-purpose and independent from the attached workspace. In Implement, pass project_id to bind the session to a task project.",
+    "Create a general agent terminal session that is independent from projects and workspaces.",
     {
       type: "object",
       properties: {
-        project_id: {
-          type: "string",
-          description: "Project identifier required by project-scoped modes such as Implement. Omit it in Chat.",
-        },
         cwd: {
           type: "string",
           description:
-            "Optional initial directory. In Chat, it may be any existing directory and defaults to the user home directory. In project-scoped modes, it must remain under the selected project or worktree.",
+            "Optional initial directory anywhere on the computer. Defaults to the user home directory.",
         },
       },
       required: [],
@@ -830,7 +826,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "terminal_run",
-    "Run a shell command inside an existing terminal session. In Chat, every command requires a separate user approval that cannot be remembered.",
+    "Run a shell command inside an existing agent terminal session. Every command requires a separate user review that cannot be remembered, including in YOLO mode.",
     {
       type: "object",
       properties: {

@@ -28,8 +28,7 @@ type ToolSecurityDefinition = {
   destructiveStrategy: DestructiveStrategy;
   summary: string;
   attachmentOnly?: boolean;
-  alwaysAskInChat?: boolean;
-  chatActionGroup?: ToolSecurityActionGroup;
+  alwaysAsk?: boolean;
 };
 
 export const TOOL_RISK_LEVELS = [
@@ -330,8 +329,7 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     summary: "Stash git changes",
   },
   terminal_create_session: {
-    actionGroup: "escape",
-    chatActionGroup: "observe",
+    actionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Open a terminal session",
@@ -341,18 +339,16 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "always",
     summary: "Run a terminal command",
-    alwaysAskInChat: true,
+    alwaysAsk: true,
   },
   terminal_read: {
-    actionGroup: "escape",
-    chatActionGroup: "observe",
+    actionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Read terminal output",
   },
   terminal_kill: {
-    actionGroup: "escape",
-    chatActionGroup: "observe",
+    actionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Stop a terminal session",
@@ -616,7 +612,7 @@ const isCallExternalToWorkspace = (
   args: Record<string, unknown>,
   options: EvaluateToolSecurityOptions,
 ): boolean => {
-  if (toolId === "terminal_create_session" && options.mode === "Chat") {
+  if (toolId === "terminal_create_session") {
     return false;
   }
 
@@ -734,20 +730,15 @@ const normalizeToolSecurityCall = (
         });
 
   const pathCandidates = getPathCandidates(toolId, args);
-  const actionGroup =
-    options.mode === "Chat" && definition.chatActionGroup
-      ? definition.chatActionGroup
-      : definition.actionGroup;
-
   return {
     toolId,
-    actionGroup,
+    actionGroup: definition.actionGroup,
     summary: definition.summary,
     detail: getPrimaryDetail(toolId, args, pathCandidates),
     rememberKey: getRememberKey(toolId, args),
     isDestructive: isCallDestructive(toolId, args),
     isExternalToWorkspace: isCallExternalToWorkspace(toolId, args, options),
-    canApproveForConversation: !(definition.alwaysAskInChat && options.mode === "Chat"),
+    canApproveForConversation: !definition.alwaysAsk,
   };
 };
 
@@ -847,7 +838,7 @@ export const evaluateToolSecurity = (
 export const filterDeniedToolIdsForRiskLevel = (
   toolIds: string[],
   riskLevel: ToolRiskLevel,
-  mode?: AppMode,
+  _mode?: AppMode,
 ): string[] => {
   if (riskLevel !== "strict") {
     return [...new Set(toolIds)];
@@ -858,14 +849,10 @@ export const filterDeniedToolIdsForRiskLevel = (
       return false;
     }
     const definition = TOOL_SECURITY_DEFINITIONS[toolId];
-    if (mode === "Chat" && definition?.alwaysAskInChat) {
+    if (definition?.alwaysAsk) {
       return true;
     }
-    const actionGroup =
-      mode === "Chat" && definition?.chatActionGroup
-        ? definition.chatActionGroup
-        : definition?.actionGroup;
-    return !definition || actionGroup !== "escape";
+    return !definition || definition.actionGroup !== "escape";
   });
 };
 
@@ -874,15 +861,15 @@ export const buildToolRiskLevelSystemInstruction = (
   mode?: AppMode,
 ): string => {
   const terminalInstruction =
-    mode === "Chat"
-      ? " Every terminal command requires explicit user approval, and approvals cannot be remembered."
+    mode && getToolModePolicy(mode).allowedToolIds.includes("terminal_run")
+      ? " The workspace constraint does not apply to the agent terminal, which is independent from every workspace. Every terminal command requires explicit user approval, and approvals cannot be remembered."
       : "";
   if (riskLevel === "strict") {
     return `Tool risk level is STRICT. Stay inside the current workspace. Observe tools are allowed. Change tools require user approval. Escape tools, destructive actions, web access, and outside-workspace access are blocked.${terminalInstruction}`;
   }
 
   if (riskLevel === "yolo") {
-    return `Tool risk level is YOLO. Macro will not add extra approval prompts, but you must still respect tool-native safeguards and stay aligned with the user's request.${terminalInstruction}`;
+    return `Tool risk level is YOLO. Macro will not add extra approval prompts for other tools, but you must still respect tool-native safeguards and stay aligned with the user's request.${terminalInstruction}`;
   }
 
   return `Tool risk level is BALANCED. Stay inside the current workspace. Observe tools are allowed. Most change tools are allowed automatically. Escape tools and destructive actions require user approval.${terminalInstruction}`;

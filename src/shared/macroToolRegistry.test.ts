@@ -86,7 +86,7 @@ describe('macroToolRegistry', () => {
     expect(() => requireMacroToolRegistryEntry('delete')).not.toThrow();
   });
 
-  it('keeps project binding optional for general Chat terminal sessions', () => {
+  it('keeps project identity out of the agent terminal contract', () => {
     const terminal = requireMacroToolRegistryEntry('terminal_create_session');
 
     expect(terminal.parameters.type).toBe('object');
@@ -95,7 +95,8 @@ describe('macroToolRegistry', () => {
     }
     expect(terminal.parameters.required).toEqual([]);
     expect(terminal.parameters.properties).toHaveProperty('cwd');
-    expect(terminal.description).toContain('general-purpose');
+    expect(terminal.parameters.properties).not.toHaveProperty('project_id');
+    expect(terminal.description).toContain('independent');
   });
 
   it('filters Copilot tools to the currently supported Macro runtime surface', () => {
