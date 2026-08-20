@@ -662,6 +662,14 @@ Cette séparation permet :
 - d'exposer un état clair dans l'interface
 - de gérer les conflits metadata de façon explicite
 
+### 12.7 Exécution directe sans dépôt Git
+
+Un projet `not_git` peut être marqué `directEdit`. Il est alors modifiable dans Implement, mais reste non actionnable dans Architect. Les tâches directes s'exécutent dans le chemin du projet, sans provisionnement de branche ou de worktree, et le filtre de capacités retire tous les outils Git du runtime agent.
+
+La revue repose sur un dépôt de point de restauration privé stocké dans les données applicatives de Macro. Son worktree pointe vers le dossier du projet, sans y créer de `.git`. Le premier démarrage capture une base ; les commandes natives de revue, validation, dévalidation, restauration et acceptation réutilisent ensuite le modèle de diff existant. Le dépôt privé exclut notamment `.git`, `.macro`, les dépendances, les sorties de build et les secrets usuels. L'identité du point de restauration combine l'identifiant de tâche et le chemin canonique du projet.
+
+Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`.
+
 ---
 
 ## 13. Outils, politiques d'accès et exécution

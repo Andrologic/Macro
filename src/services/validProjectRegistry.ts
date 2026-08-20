@@ -1,8 +1,9 @@
 import type { Project, ProjectGroup } from '../types';
 import {
-  getScopedActionableProjectIds,
+  getScopedArchitectContextProjectIds,
+  getScopedGitActionableProjectIds,
   getScopedProjectIds,
-  getScopedReadOnlyProjectIds,
+  isProjectGitActionable,
 } from './globalProjects';
 import { getRegisteredAppState } from './appStateRuntime';
 
@@ -79,7 +80,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
       validProjectIds.push(projectId);
       validProjectIdSet.add(projectId);
       gitFlowSettingsByProjectId.set(projectId, project.gitFlowSettings);
-      if (project.isReadOnly) {
+      if (!isProjectGitActionable(project)) {
         readOnlyProjectIds.push(projectId);
         readOnlyProjectIdSet.add(projectId);
         continue;
@@ -103,7 +104,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
   );
   const scopedActionableProjectIds = Array.from(
     new Set(
-      getScopedActionableProjectIds(
+      getScopedGitActionableProjectIds(
         {
           standaloneProjects: params.standaloneProjects ?? [],
           projectGroups: params.projectGroups,
@@ -115,7 +116,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
   );
   const scopedReadOnlyProjectIds = Array.from(
     new Set(
-      getScopedReadOnlyProjectIds(
+      getScopedArchitectContextProjectIds(
         {
           standaloneProjects: params.standaloneProjects ?? [],
           projectGroups: params.projectGroups,

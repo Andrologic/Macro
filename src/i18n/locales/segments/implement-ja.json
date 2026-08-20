@@ -288,6 +288,8 @@
   "standaloneBadge": "独立",
   "taskKindPending": "エージェントが分類中",
   "taskKindFeature": "Feature",
+  "taskKindDirectEdit": "ダイレクト編集",
+  "taskKindDirectEditHelp": "Git ブランチ、worktree、コミットを使わずにソースフォルダーを編集します。同時に実行できるタスクは 1 つだけです。",
   "taskKindBugfix": "Bugfix",
   "taskKindHotfix": "Hotfix",
   "taskKindFeatureHelp": "Feature は設定済みの開発ブランチからブランチを作成し、同じブランチへマージします。",
@@ -356,6 +358,7 @@
     "full": "完全なファイルコンテキスト"
   },
   "errors": {
+    "directTaskCompletionFailed": "直接編集タスクを完了できませんでした。",
     "unknownTask": "不明なタスク:{{taskId}}",
     "taskAlreadyCompleted": "タスクはすでに完了しています。",
     "taskBlockedByDependencies": "タスクは未解決の依存関係によってブロックされています:{{reason}}",
@@ -414,6 +417,8 @@
   "diffModalReadyOnly": "{{validated}} staged and ready",
   "diffModalPendingOnly": "{{pending}} pending file(s)",
   "stagedBadge": "Staged",
+  "validatedBadge": "検証済み",
+  "acceptDirectChanges": "変更を承認",
   "validatedStageLegend": "Validated lines are shown with a softer highlight until commit.",
   "repositoryPendingAndReady": "{{pending}} pending, {{validated}} ready",
   "validateChangesSuccess": "Changes validated and staged.",

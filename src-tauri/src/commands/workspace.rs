@@ -585,6 +585,7 @@ pub async fn workspace_create_project(
     group_name: Option<String>,
     path: Option<String>,
     git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+    direct_edit: Option<bool>,
     request_id: Option<String>,
 ) -> Result<ProjectDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
@@ -598,6 +599,7 @@ pub async fn workspace_create_project(
         group_name,
         path,
         git_flow_settings,
+        direct_edit: direct_edit.unwrap_or(false),
     };
 
     workspace::create_project_with_cancel(
@@ -638,6 +640,7 @@ pub async fn workspace_create_project_with_git_setup(
         group_name,
         path: Some(path),
         git_flow_settings,
+        direct_edit: false,
     };
 
     workspace::create_project_with_git_setup(
@@ -838,6 +841,7 @@ pub async fn workspace_update_project_access(
     terminal_store: State<'_, TerminalSessionStore>,
     project_id: String,
     user_read_only: bool,
+    direct_edit: Option<bool>,
     confirmed_migration: bool,
 ) -> Result<ProjectDto> {
     tracing::info!(
@@ -855,11 +859,18 @@ pub async fn workspace_update_project_access(
         .map_err(to_backend_db_error)?;
     let live_terminal_project_ids =
         load_live_terminal_project_ids(&db_pool, terminal_store.inner()).await?;
+    let current_project = workspace::get_project(&workspace_path, &metadata_root, &project_id)
+        .await?
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+    let next_direct_edit = direct_edit.unwrap_or(current_project.direct_edit);
+    let target_read_only = user_read_only
+        || (current_project.git_setup_state != "ready"
+            && !(current_project.git_setup_state == "not_git" && next_direct_edit));
     let access_preview = workspace::preview_project_access_change(
         &workspace_path,
         &metadata_root,
         &project_id,
-        user_read_only,
+        target_read_only,
         &worktrees,
         &live_terminal_project_ids,
     )
@@ -880,11 +891,12 @@ pub async fn workspace_update_project_access(
         &metadata_root,
         &project_id,
         user_read_only,
+        Some(next_direct_edit),
         confirmed_migration,
         Some(&access_preview),
     )
     .await?;
-    if user_read_only {
+    if target_read_only {
         repository::update_git_worktree_project_access(&db_pool, &project_id, false, true)
             .await
             .map_err(to_backend_db_error)?;

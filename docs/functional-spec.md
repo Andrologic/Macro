@@ -308,6 +308,10 @@ Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
 Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord le projet, puis un type de tâche compatible avec son workflow Git. La fenêtre ne demande pas le contenu de la tâche : celui-ci est fourni ensuite dans la conversation. Le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Un projet mainline, sans branche de développement distincte de la branche principale, permet `Feature` et `Hotfix`, mais pas `Bugfix`. La disponibilité est recalculée lorsque le projet cible change et tout choix devenu incompatible est effacé. Le type `release` reste réservé aux plans Architect.
 
+Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche d'édition directe peut être active par projet. Ces tâches utilisent le type `feature` interne, présenté comme `Édition directe`, et les outils Git ne sont pas exposés à l'agent.
+
+L'édition directe ne remplace pas le workflow planifié : un projet sans Git reste un contexte de lecture dans Architect et ne peut pas porter de plan exécutable. L'utilisateur peut initialiser Git ultérieurement pour retrouver les branches, les worktrees, le parallélisme et les plans Architect.
+
 ### 7.3 Mode Chat
 
 Le mode Chat est un mode de support indépendant.
@@ -500,6 +504,10 @@ L'import doit permettre au minimum de définir :
 - la branche cible
 - le groupe cible optionnel
 - un chemin local optionnel
+
+### 10.2.1 Import d'un dossier sans Git
+
+Lorsqu'un dossier importé ne contient pas de dépôt Git, Macro propose trois choix explicites : initialiser Git, activer l'édition directe ou conserver le projet en lecture seule. Le choix est enregistré dans le registre du projet et peut être modifié depuis ses réglages. L'édition directe ne crée jamais de dossier `.git` dans le projet.
 
 ### 10.3 Gestion du projet
 
@@ -773,6 +781,10 @@ Quand une même tâche affecte plusieurs projets :
 - la validation reste une seule action cohérente du point de vue du produit
 - les commits peuvent être créés séparément par projet
 - chaque message de commit doit refléter les changements effectifs du projet concerné
+
+### 16.4 Points de restauration pour l'édition directe
+
+Le point de restauration d'un projet sans Git appartient à Macro et n'est pas présenté comme l'historique Git du projet. Il couvre les fichiers de travail utiles à la revue, tout en excluant les dépendances générées, les sorties de build, les métadonnées Macro et les secrets usuels. Accepter les changements avance ce point de restauration privé ; terminer la tâche n'exécute aucun merge.
 
 ---
 

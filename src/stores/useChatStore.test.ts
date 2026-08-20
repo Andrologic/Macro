@@ -2440,6 +2440,11 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     };
     appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
+    const defaultProject = projectGroups[0]?.projects[0];
+    if (defaultProject) {
+      delete defaultProject.directEdit;
+      delete defaultProject.gitSetupState;
+    }
     const { useSkillsStore } = await import('./useSkillsStore');
     useSkillsStore.setState({
       skills: [],
@@ -4794,6 +4799,41 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'conversation-pending-cleanup',
     );
     expect(useChatStore.getState().getConversationMessages('conversation-pending-cleanup')).toEqual([]);
+  });
+
+  it('keeps a linked conversation visible while a direct return to draft is recovering', async () => {
+    tauriAvailable = true;
+    appSettingValues.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: 'task-returning-to-draft',
+        conversationId: 'conversation-returning-to-draft',
+        phase: 'draft_reverting',
+        targetBranch: '@direct-draft-revert',
+        executionTargets: [],
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    chatSnapshotConversations = [
+      createChatSnapshotConversation('conversation-returning-to-draft', {
+        message_count: 1,
+      }),
+    ];
+    chatSnapshotMessages = [
+      createChatMessageRecord({
+        id: 'message-returning-to-draft',
+        conversation_id: 'conversation-returning-to-draft',
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initialize();
+
+    expect(useChatStore.getState().conversations.map((conversation: { id: string }) => conversation.id)).toContain(
+      'conversation-returning-to-draft',
+    );
+    expect(deleteConversationMock).not.toHaveBeenCalledWith('conversation-returning-to-draft');
   });
 
   it('reports a semantically invalid deletion saga instead of silently tombstoning its conversation', async () => {
@@ -13649,6 +13689,72 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       'This is a standalone implementation task',
     );
     expect(String(streamOptions.messages[0]?.content)).not.toContain('[Task Todos]');
+  });
+
+  it('hides Git tools while keeping workspace edits for direct-edit tasks', async () => {
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Implement';
+    appState.agentType = 'build';
+    appState.selectedTaskId = 'task-1';
+    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    Object.assign(projectGroups[0]?.projects[0] ?? {}, {
+      directEdit: true,
+      gitSetupState: 'not_git',
+    });
+    taskStoreState.tasks = [
+      createImplementTask({
+        status: 'InProgress',
+        task_source: 'standalone',
+        plan_id: '',
+        project_id: 'project-1',
+        project_ids: ['project-1'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'direct',
+            worktreeKey: 'project-1::direct',
+          },
+        ],
+      }),
+    ];
+
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      conversations: [
+        {
+          ...createConversation('implement-conv'),
+          scope_mode: 'Implement',
+          task_id: 'task-1',
+          title: 'Direct edit',
+        },
+      ],
+      messages: [],
+      selectedConversationId: 'implement-conv',
+      selectedConversationIdsByMode: { Implement: 'implement-conv' },
+      isLoading: false,
+      isStreaming: false,
+      sendState: 'idle',
+      lastError: null,
+      abortController: null,
+      messageImagesByMessageId: {},
+      composerContextRefs: [],
+    });
+
+    await useChatStore.getState().sendMessage({
+      conversationId: 'implement-conv',
+      content: 'Modifie ce dossier sans Git.',
+      taskId: 'task-1',
+    });
+
+    const streamOptions = getLatestStreamOptions<{ allowedToolIds: string[] }>();
+    expect(streamOptions.allowedToolIds).toContain('read');
+    expect(streamOptions.allowedToolIds).toContain('write');
+    expect(streamOptions.allowedToolIds).toContain('edit');
+    expect(streamOptions.allowedToolIds).toContain('terminal_run');
+    expect(streamOptions.allowedToolIds).not.toContain('git_status');
+    expect(streamOptions.allowedToolIds).not.toContain('git_diff');
+    expect(streamOptions.allowedToolIds).not.toContain('git_add');
+    expect(streamOptions.allowedToolIds).not.toContain('git_commit');
   });
 
   it('keeps standalone Plan mode read-only without Architect task tools', async () => {

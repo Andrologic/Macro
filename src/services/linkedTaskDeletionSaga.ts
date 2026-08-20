@@ -7,6 +7,8 @@ export type LinkedConversationDeletionPhase =
   | 'prepared'
   | 'task_deleting'
   | 'task_deleted'
+  | 'draft_reverting'
+  | 'draft_reverted'
   | 'plan_conversation_created'
   | 'plan_deleting';
 
@@ -17,6 +19,9 @@ export interface LinkedTaskDeletionTarget {
   branchExisted: boolean;
   worktreeRemoved: boolean;
   branchRemoved: boolean;
+  cleanupKind?: 'git' | 'direct';
+  checkpointRemoved?: boolean;
+  checkpointId?: string;
 }
 
 export interface LinkedConversationDeletionSaga {
@@ -27,6 +32,8 @@ export interface LinkedConversationDeletionSaga {
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   targetBranch?: string;
+  revertTitle?: string | null;
+  revertDescription?: string | null;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -39,6 +46,8 @@ export interface LinkedTaskDeletionSaga {
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   targetBranch?: string;
+  revertTitle?: string | null;
+  revertDescription?: string | null;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -62,7 +71,8 @@ const isAllowedOwnerPhase = (
   phase: LinkedConversationDeletionPhase,
 ): boolean => {
   if (ownerType === 'task') {
-    return phase === 'prepared' || phase === 'task_deleting' || phase === 'task_deleted';
+    return phase === 'prepared' || phase === 'task_deleting' || phase === 'task_deleted' ||
+      phase === 'draft_reverting' || phase === 'draft_reverted';
   }
   if (ownerType === 'plan') {
     return phase === 'task_deleted' || phase === 'plan_conversation_created' || phase === 'plan_deleting';
@@ -101,6 +111,8 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
         (candidate.phase !== 'prepared' &&
           candidate.phase !== 'task_deleting' &&
           candidate.phase !== 'task_deleted' &&
+          candidate.phase !== 'draft_reverting' &&
+          candidate.phase !== 'draft_reverted' &&
           candidate.phase !== 'plan_conversation_created' &&
           candidate.phase !== 'plan_deleting') ||
         !isAllowedOwnerPhase(ownerType, candidate.phase)
@@ -186,6 +198,8 @@ export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionS
           draft: saga.draft,
           executionTargets: saga.executionTargets,
           targetBranch: saga.targetBranch,
+          revertTitle: saga.revertTitle,
+          revertDescription: saga.revertDescription,
           createdAt: saga.createdAt,
           updatedAt: saga.updatedAt,
           lastError: saga.lastError,

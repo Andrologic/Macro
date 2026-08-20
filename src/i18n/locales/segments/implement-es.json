@@ -288,6 +288,8 @@
   "standaloneBadge": "Independiente",
   "taskKindPending": "Clasificación del agente",
   "taskKindFeature": "Feature",
+  "taskKindDirectEdit": "Edición directa",
+  "taskKindDirectEditHelp": "Edita la carpeta de origen sin ramas, worktrees ni commits de Git. Solo puede ejecutarse una tarea a la vez.",
   "taskKindBugfix": "Bugfix",
   "taskKindHotfix": "Hotfix",
   "taskKindFeatureHelp": "Feature crea una rama desde la rama de desarrollo configurada y vuelve a fusionarla en esa rama.",
@@ -356,6 +358,7 @@
     "full": "Contexto completo del archivo"
   },
   "errors": {
+    "directTaskCompletionFailed": "No se pudo completar la tarea de edición directa.",
     "unknownTask": "Tarea desconocida: {{taskId}}",
     "taskAlreadyCompleted": "La tarea ya está completada.",
     "taskBlockedByDependencies": "La tarea está bloqueada por dependencias no resueltas: {{reason}}",
@@ -414,6 +417,8 @@
   "diffModalReadyOnly": "{{validated}} staged and ready",
   "diffModalPendingOnly": "{{pending}} pending file(s)",
   "stagedBadge": "Staged",
+  "validatedBadge": "Validado",
+  "acceptDirectChanges": "Aceptar cambios",
   "validatedStageLegend": "Validated lines are shown with a softer highlight until commit.",
   "repositoryPendingAndReady": "{{pending}} pending, {{validated}} ready",
   "validateChangesSuccess": "Changes validated and staged.",

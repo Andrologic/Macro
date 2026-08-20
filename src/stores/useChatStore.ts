@@ -85,6 +85,7 @@ import { useTaskStore, type ImplementTask } from "./useTaskStore";
 import {
   getImplementAgentToolPolicy,
   getToolModePolicy as getLocalToolModePolicy,
+  isGitToolId,
   isToolAllowedForImplementAgent,
 } from "../services/toolModePolicy";
 import {
@@ -213,8 +214,9 @@ import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
   getProjectGroupByProjectId,
-  getScopedActionableProjectIds,
+  getScopedGitActionableProjectIds,
   getScopedProjectIds,
+  isProjectGitActionable,
 } from "../services/globalProjects";
 import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
@@ -1711,11 +1713,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!isStandaloneImplementTask(task)) {
       return toolIds;
     }
-    return toolIds.filter((toolId) => !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId));
+    const projectIds = Array.from(new Set([
+      ...(task.project_ids || []),
+      ...(task.execution_targets || []).map((target) => target.projectId),
+      task.project_id,
+    ].filter((projectId): projectId is string => Boolean(projectId))));
+    const usesDirectEditing = projectIds.length > 0 && projectIds.every((projectId) => {
+      const project = useAppStore.getState().getProjectById(projectId);
+      return Boolean(project?.directEdit && project.gitSetupState === 'not_git');
+    });
+    return toolIds.filter((toolId) =>
+      !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId) &&
+      !(usesDirectEditing && isGitToolId(toolId))
+    );
   };
 
   const formatStandaloneArchitectToolUnavailable = (toolName: string): string =>
-    `${toolName} is unavailable for standalone tasks. Use the conversation, workspace tools, git, and terminal tools for this independent task instead.`;
+    `${toolName} is unavailable for standalone tasks. Use the conversation and the tools available for this independent task instead.`;
 
   const assertStandaloneTaskExecutionContextReady = (
     task: ImplementTask | undefined,
@@ -7698,9 +7712,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ): Array<{ projectId: string; branchName: string }> => {
       const projectIdsToCheck =
         projectIds.length > 0
-          ? projectIds
+          ? projectIds.filter((projectId) =>
+              isProjectGitActionable(appState.getProjectById(projectId)),
+            )
           : appState.selectedGroupId
-            ? getScopedActionableProjectIds(
+            ? getScopedGitActionableProjectIds(
                 {
                   standaloneProjects: appState.standaloneProjects,
                   projectGroups: appState.projectGroups,
@@ -7709,7 +7725,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 null,
               )
             : appState.selectedProjectId
-              ? getScopedActionableProjectIds(
+              ? getScopedGitActionableProjectIds(
                   {
                     standaloneProjects: appState.standaloneProjects,
                     projectGroups: appState.projectGroups,
@@ -11812,7 +11828,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
     const pendingConversationIds = new Set(
       pendingLinkedTaskDeletions
-        .filter((saga) => saga.phase !== "prepared")
+        .filter((saga) =>
+          saga.phase !== "prepared" &&
+          saga.phase !== "draft_reverting" &&
+          saga.phase !== "draft_reverted"
+        )
         .map((saga) => saga.conversationId),
     );
     completedPendingConversationDeletionIds.forEach((conversationId) => {
