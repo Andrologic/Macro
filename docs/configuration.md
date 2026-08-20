@@ -45,7 +45,16 @@ installations portables.
       tools.schema.json
       skills.schema.json
       git.schema.json
+  .runtime/
+    approved/
+    pending/
 ```
+
+Le sous-dossier `.runtime` est interne à Macro. Il conserve, par document et
+par scope, la dernière version approuvée ainsi que les propositions sensibles
+en attente. Macro peut ainsi redémarrer sans rendre une proposition sensible
+effective par accident. Ce dossier n’est jamais exposé sous `@config` et ne
+doit pas être édité manuellement.
 
 `MACRO_CONFIG` reste accepté comme alias déprécié du bootstrap headless. Toute
 nouvelle intégration doit utiliser `MACRO_CONFIG_DIR`.
@@ -126,6 +135,14 @@ et par tous les projets affectés. Les limites numériques prennent la valeur la
 plus restrictive. Un modèle projet n’est utilisé que si le projet cible ou le
 projet de focus est sans ambiguïté.
 
+Les entrées de `agents.models` utilisent une sélection `{ "providerId",
+"modelId", "reasoningEffort" }`. Les clés reconnues pour les tours sont
+`chat`, `architect`, `implement`, `implementPlan`, `implementBuild`,
+`planExplorer`, `taskReviewer` et `repoAuditor`. Les alias historiques
+`plan_explorer`, `task_reviewer` et `repo_auditor` restent acceptés. Une clé
+spécialisée est prioritaire sur la clé générique du mode. `metadata` reste la
+sélection dédiée à la génération de métadonnées.
+
 Le snapshot contient la provenance de chaque valeur : `default`, `user`,
 `project` ou `session`. L’interface l’affiche sans recopier les valeurs héritées
 dans les fichiers.
@@ -177,8 +194,12 @@ d’un agent ou d’un éditeur externe :
 - relâchement d’une restriction héritée.
 
 L’approbation porte sur le document complet proposé. Elle ne peut pas être
-mémorisée comme autorisation générale. En cas de refus, l’utilisateur peut
-demander la restauration explicite de la dernière version approuvée.
+mémorisée comme autorisation générale. Tant que la décision n’est pas prise,
+les autres écritures structurées vers ce document sont bloquées afin qu’une
+édition ordinaire ne puisse pas approuver implicitement le diff sensible. Un
+refus exige la confirmation explicite de la restauration de la dernière version
+approuvée ; il n’existe pas de refus silencieux laissant le fichier proposé
+devenir effectif au prochain lancement.
 
 ## 7. Secrets
 
@@ -262,6 +283,13 @@ bun run tauri:headless
 
 Le fichier `runtime.json` détermine les réglages headless et les racines
 autorisées. Une adresse d’écoute non loopback est classée sensible.
+
+Le transport headless attribue toujours la provenance `agent` aux patches : un
+client HTTP ne peut pas se déclarer `userInterface` pour contourner une
+approbation. La version 1 du serveur headless n’installe pas de watcher de
+fichiers autonome. Après une édition externe, un client doit appeler
+`/api/v1/config/reload` ; les écritures effectuées via l’API sont appliquées
+immédiatement. Le desktop conserve son watcher avec debounce et rescan coalescé.
 
 ## 11. Diagnostics courants
 

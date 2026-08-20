@@ -215,4 +215,66 @@ describe('preferences JSON configuration adapter', () => {
     unsubscribe();
     expect(listener).toHaveBeenCalledTimes(2);
   });
+
+  it('rejects a failed JSON configuration write without retaining a phantom preference', async () => {
+    const calls: string[] = [];
+    installTauriRuntimeMock(mock(async (command) => {
+      calls.push(command);
+      if (command === 'config_get_document') return baseDocuments.settings;
+      if (command === 'config_apply_patch') throw new Error('disk is read-only');
+      if (command === 'config_get_snapshot') {
+        return {
+          schemaVersion: 1,
+          effective: {
+            settings: { appearance: { theme: 'macro-dark' } },
+            agents: {}, providers: {}, tools: {}, skills: {}, git: {}, runtime: {},
+          },
+          projectEffective: {},
+          documents: Object.values(baseDocuments),
+          provenance: [], diagnostics: [], pendingRestartPaths: [],
+        };
+      }
+      if (command === 'config_list_pending_changes') return [];
+      return undefined;
+    }));
+    const {
+      getCachedPreference,
+      loadPreference,
+      PREF_KEYS,
+      savePreference,
+      subscribePreferencePersistenceErrors,
+    } = await loadPreferencesModule();
+    const persistenceError = mock((_error: unknown, _key: unknown) => undefined);
+    const unsubscribe = subscribePreferencePersistenceErrors(persistenceError);
+
+    await expect(savePreference(PREF_KEYS.THEME, 'light')).rejects.toThrow('disk is read-only');
+    unsubscribe();
+    expect(persistenceError).toHaveBeenCalledWith(expect.any(Error), PREF_KEYS.THEME);
+    expect(getCachedPreference(PREF_KEYS.THEME)).toBe('macro-dark');
+    expect(await loadPreference(PREF_KEYS.THEME)).toBe('macro-dark');
+    expect(calls).toContain('config_apply_patch');
+  });
+
+  it('reports a failed debounced JSON configuration write without caching it as saved', async () => {
+    installTauriRuntimeMock(mock(async (command) => {
+      if (command === 'config_get_document') return baseDocuments.settings;
+      if (command === 'config_apply_patch') throw new Error('write failed');
+      return undefined;
+    }));
+    const {
+      getCachedPreference,
+      PREF_KEYS,
+      savePreferenceDebounced,
+      subscribePreferencePersistenceErrors,
+    } = await loadPreferencesModule();
+    const listener = mock((_error: unknown, _key: unknown) => undefined);
+    const unsubscribe = subscribePreferencePersistenceErrors(listener);
+
+    savePreferenceDebounced(PREF_KEYS.THEME, 'light', 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    unsubscribe();
+    expect(listener).toHaveBeenCalledWith(expect.any(Error), PREF_KEYS.THEME);
+    expect(getCachedPreference(PREF_KEYS.THEME)).toBe('macro-dark');
+  });
 });

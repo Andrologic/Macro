@@ -45,6 +45,17 @@ interface LoadArchitectPlanServiceOptions {
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
   const appSettings = new Map<string, string>();
+  const configDocuments = new Map(['runtime', 'settings', 'agents', 'providers', 'tools', 'skills', 'git'].map((kind) => [kind, {
+    kind,
+    scope: { type: 'user' },
+    value: { $schema: `./schemas/v1/${kind}.schema.json`, schemaVersion: 1 } as Record<string, unknown>,
+    etag: `${kind}-etag-0`,
+    readOnly: false,
+    invalid: false,
+    filePath: `${kind}.json`,
+    diagnostics: [],
+  }]));
+  let configRevision = 0;
   const workspaceFilesByWorkspacePath = options.filesByWorkspacePath ?? {};
   const normalizeMockPath = (value: string): string =>
     value.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -96,6 +107,40 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     ...actualTauriIpc,
     aiGetDevProviderOverrides: async () => null,
     isTauriAvailable: () => options.tauriAvailable === true,
+    configGetDocument: async (kind: string) => configDocuments.get(kind),
+    configGetSnapshot: async () => ({
+      schemaVersion: 1,
+      effective: Object.fromEntries(
+        [...configDocuments.entries()].map(([kind, document]) => [kind, document.value]),
+      ),
+      documents: [...configDocuments.values()],
+      provenance: [],
+      diagnostics: [],
+      pendingRestartPaths: [],
+    }),
+    configListPendingChanges: async () => [],
+    configApplyPatch: async (request: {
+      kind: string;
+      patch: Array<{ op: string; path: string; value?: unknown }>;
+    }) => {
+      const current = configDocuments.get(request.kind);
+      if (!current) throw new Error(`Missing configuration document ${request.kind}`);
+      const value = { ...current.value };
+      for (const operation of request.patch) {
+        const key = operation.path.replace(/^\//, '').replaceAll('~1', '/').replaceAll('~0', '~');
+        if (operation.op === 'remove') delete value[key];
+        else value[key] = operation.value;
+      }
+      configRevision += 1;
+      const document = { ...current, value, etag: `${request.kind}-etag-${configRevision}` };
+      configDocuments.set(request.kind, document);
+      return {
+        status: 'applied',
+        document,
+        pendingChange: null,
+        restartRequired: false,
+      };
+    },
     dbGetAppSetting: async (key: string) => {
       const value = appSettings.get(key);
       return value === undefined ? null : { key, value_json: value, updated_at: '' };

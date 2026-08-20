@@ -20,6 +20,13 @@ describe('configVirtualScope', () => {
       .toThrow('cannot use project scope');
   });
 
+  it('rejects project identifiers that cannot be used as safe directory names', () => {
+    for (const projectId of ['..', 'project name', 'project.name', 'CON', 'LPT1']) {
+      expect(() => parseConfigVirtualPath(`@config/projects/${projectId}/tools.json`))
+        .toThrow('Invalid project id');
+    }
+  });
+
   it('ignores ordinary workspace paths', () => {
     expect(parseConfigVirtualPath('src/config/settings.json')).toBeNull();
   });

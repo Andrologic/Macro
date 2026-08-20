@@ -1,13 +1,22 @@
-import { applyConfiguredLanguage, resolveSupportedLanguage } from '../i18n';
+import i18n, { applyConfiguredLanguage, resolveSupportedLanguage } from '../i18n';
+import { notify } from '../components/ui/toastService';
 import { useAppStore } from '../stores/useAppStore';
 import { useConfigStore, selectConfigValue } from '../stores/useConfigStore';
 import { useProviderStore } from '../stores/useProviderStore';
 import { useSkillsStore } from '../stores/useSkillsStore';
 import { useToolsStore } from '../stores/useToolsStore';
 import type { ConfigDocumentKind, ConfigSnapshot } from '../types/generated/config';
+import { subscribePreferencePersistenceErrors } from './preferences';
 import { refreshWebSearchSettings } from './webSearchSettings';
 
-let unsubscribe: (() => void) | null = null;
+let unsubscribeStore: (() => void) | null = null;
+let unsubscribePersistenceErrors: (() => void) | null = null;
+let cleanup: (() => void) | null = null;
+
+const errorMessage = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  return typeof error === 'string' ? error : String(error);
+};
 
 const documentFingerprint = (
   snapshot: ConfigSnapshot | null,
@@ -52,9 +61,15 @@ const applySettings = (snapshot: ConfigSnapshot): void => {
 };
 
 export const installConfigRuntimeEffects = (): (() => void) => {
-  if (unsubscribe) return unsubscribe;
+  if (cleanup) return cleanup;
+  unsubscribePersistenceErrors = subscribePreferencePersistenceErrors((error) => {
+    notify.error(
+      i18n.t('settings.configuration.saveFailed', 'Could not save configuration'),
+      { description: errorMessage(error) },
+    );
+  });
   let previousSnapshot = useConfigStore.getState().snapshot;
-  unsubscribe = useConfigStore.subscribe((state) => {
+  unsubscribeStore = useConfigStore.subscribe((state) => {
     const nextSnapshot = state.snapshot;
     if (!nextSnapshot || nextSnapshot === previousSnapshot) return;
     const previous = previousSnapshot;
@@ -72,10 +87,16 @@ export const installConfigRuntimeEffects = (): (() => void) => {
       void useSkillsStore.getState().refreshSkills();
     }
   });
-  return unsubscribe;
+  cleanup = () => {
+    unsubscribeStore?.();
+    unsubscribeStore = null;
+    unsubscribePersistenceErrors?.();
+    unsubscribePersistenceErrors = null;
+    cleanup = null;
+  };
+  return cleanup;
 };
 
 export const disposeConfigRuntimeEffectsForTests = (): void => {
-  unsubscribe?.();
-  unsubscribe = null;
+  cleanup?.();
 };

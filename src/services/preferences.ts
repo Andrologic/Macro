@@ -116,8 +116,10 @@ export const PREF_KEYS = {
 export type PrefKey = (typeof PREF_KEYS)[keyof typeof PREF_KEYS];
 export type MetadataMissingUpstreamPolicy = "ask" | "ignore";
 export type PreferenceChangeListener<T = unknown> = (value: T, key: PrefKey) => void;
+export type PreferencePersistenceErrorListener = (error: unknown, key: PrefKey) => void;
 
 const preferenceListeners = new Map<PrefKey, Set<PreferenceChangeListener>>();
+const preferencePersistenceErrorListeners = new Set<PreferencePersistenceErrorListener>();
 
 const emitPreferenceChange = <T>(key: PrefKey, value: T) => {
   const listeners = preferenceListeners.get(key);
@@ -560,6 +562,23 @@ export async function purgeLegacyImplementExecutionModePreference(): Promise<voi
   // La migration JSON n’importe, ne lit et ne modifie aucun ancien réglage.
 }
 
+/**
+ * Consumers can surface failed durable writes here. This also covers callers
+ * that intentionally fire-and-forget an immediate preference update.
+ */
+export function subscribePreferencePersistenceErrors(
+  listener: PreferencePersistenceErrorListener,
+): () => void {
+  preferencePersistenceErrorListeners.add(listener);
+  return () => preferencePersistenceErrorListeners.delete(listener);
+}
+
+const emitPreferencePersistenceError = (key: PrefKey, error: unknown): void => {
+  for (const listener of preferencePersistenceErrorListeners) {
+    listener(error, key);
+  }
+};
+
 const memoryPreferenceValues = new Map<PrefKey, unknown>();
 let stateSnapshot: StateSnapshotDto = { schemaVersion: 1, values: {} };
 let stateHydrationPromise: Promise<StateSnapshotDto> | null = null;
@@ -654,8 +673,7 @@ const persistConfigPreference = async <T>(
   const store = useConfigStore.getState();
   const document = await store.getDocument(target.document);
   if (!document || typeof document.etag !== 'string') {
-    memoryPreferenceValues.set(key, value);
-    return;
+    throw new Error(`Configuration document ${target.document} is unavailable.`);
   }
   const sparse = isRecord(document.value) ? document.value : {};
   const topLevelKey = target.path[0];
@@ -713,11 +731,7 @@ const persistPreference = async <T>(key: PrefKey, value: T): Promise<void> => {
   }
   const configTarget = CONFIG_PREFERENCE_TARGETS[key];
   if (configTarget && isConfigurationClientAvailable()) {
-    try {
-      await persistConfigPreference(key, value, configTarget);
-    } catch {
-      memoryPreferenceValues.set(key, value);
-    }
+    await persistConfigPreference(key, value, configTarget);
     return;
   }
   if (!isStateManagerAvailable()) {
@@ -739,10 +753,17 @@ const persistPreference = async <T>(key: PrefKey, value: T): Promise<void> => {
 /**
  * Save a preference value
  */
-export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
+export function savePreference<T>(key: PrefKey, value: T): Promise<void> {
   cancelDebouncedSave(key);
-  await persistPreference(key, value);
-  emitPreferenceChange(key, value);
+  const operation = persistPreference(key, value).then(() => {
+    emitPreferenceChange(key, value);
+  });
+  // Attach a sibling rejection handler so existing fire-and-forget callers do
+  // not create unhandled rejections. Awaiting callers still receive the error.
+  void operation.catch((error: unknown) => {
+    emitPreferencePersistenceError(key, error);
+  });
+  return operation;
 }
 
 export function savePreferenceDebounced<T>(
@@ -758,6 +779,7 @@ export function savePreferenceDebounced<T>(
     debouncedSaveTimers.delete(key);
     void persistPreference(key, value).catch((error: unknown) => {
       console.error(`Failed to save preference ${key}:`, error);
+      emitPreferencePersistenceError(key, error);
     });
   }, delayMs);
 
@@ -777,10 +799,7 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
     if (configTarget && isConfigurationClientAvailable()) {
       const snapshot = await useConfigStore.getState().hydrate();
       if (!snapshot) {
-        const memoryValue = memoryPreferenceValues.get(key);
-        return memoryValue !== undefined && isValidPreferenceValue(key, memoryValue)
-          ? memoryValue as T
-          : defaultValue;
+        return defaultValue;
       }
       const value = selectConfigValue(
         snapshot,
@@ -800,6 +819,9 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
     return defaultValue;
   } catch (error) {
     console.error(`Failed to load preference ${key}:`, error);
+    if (CONFIG_PREFERENCE_TARGETS[key] && isConfigurationClientAvailable()) {
+      return defaultValue;
+    }
     const memoryValue = memoryPreferenceValues.get(key);
     return memoryValue !== undefined && isValidPreferenceValue(key, memoryValue)
       ? memoryValue as T
@@ -829,6 +851,9 @@ export async function loadPersistedPreference<T>(
     return (state.values[key] ?? memoryPreferenceValues.get(key)) as T | undefined;
   } catch (error) {
     console.error(`Failed to load persisted preference ${key}:`, error);
+    if (CONFIG_PREFERENCE_TARGETS[key] && isConfigurationClientAvailable()) {
+      return undefined;
+    }
     return memoryPreferenceValues.get(key) as T | undefined;
   }
 }
@@ -886,11 +911,8 @@ export async function clearPreferences(): Promise<void> {
 
 export function getCachedPreference<T>(key: PrefKey): T {
   const defaultValue = PREF_DEFAULTS[key] as T;
-  if (memoryPreferenceValues.has(key)) {
-    return memoryPreferenceValues.get(key) as T;
-  }
   const configTarget = CONFIG_PREFERENCE_TARGETS[key];
-  if (configTarget) {
+  if (configTarget && isConfigurationClientAvailable()) {
     const value = selectConfigValue(
       useConfigStore.getState().snapshot,
       configTarget.document,
@@ -898,6 +920,9 @@ export function getCachedPreference<T>(key: PrefKey): T {
       defaultValue,
     );
     return isValidPreferenceValue(key, value) ? value : defaultValue;
+  }
+  if (memoryPreferenceValues.has(key)) {
+    return memoryPreferenceValues.get(key) as T;
   }
   const value = stateSnapshot.values[key];
   return value !== undefined && isValidPreferenceValue(key, value)
