@@ -1,4 +1,4 @@
-use super::ids::{build_mcp_env_secret_id, parse_mcp_env_secret_ref};
+use super::ids::{build_mcp_env_secret_id, normalize_identifier, parse_mcp_env_secret_ref};
 use super::types::McpServerDto;
 use crate::commands::{command_error, CommandResult};
 use crate::secrets;
@@ -11,6 +11,13 @@ pub(crate) fn resolve_env_secrets(
     let mut resolved = HashMap::new();
     for (key, value) in env {
         if let Some((secret_server_id, secret_key)) = parse_mcp_env_secret_ref(value) {
+            let expected_server_id = normalize_identifier(&server.id, "server");
+            if secret_server_id != expected_server_id || secret_key != key {
+                return Err(command_error(format!(
+                    "MCP env secret reference for '{}' must target the same server and environment key.",
+                    key
+                )));
+            }
             let secret_id = build_mcp_env_secret_id(secret_server_id, secret_key);
             let secret = secrets::get_api_key(&secret_id).map_err(|error| {
                 command_error(format!(
@@ -25,6 +32,11 @@ pub(crate) fn resolve_env_secrets(
                 )));
             };
             resolved.insert(key.clone(), secret);
+        } else if value.starts_with("macro-secret://") {
+            return Err(command_error(format!(
+                "MCP env secret reference for '{}' is malformed.",
+                key
+            )));
         } else {
             resolved.insert(key.clone(), value.clone());
         }
@@ -68,5 +80,36 @@ mod tests {
             resolved_env.get("API_TOKEN").map(String::as_str),
             Some("hidden-token")
         );
+    }
+
+    #[test]
+    fn rejects_cross_server_cross_key_and_malformed_secret_refs() {
+        let dir = tempfile::tempdir().expect("secret temp dir");
+        crate::secrets::init(dir.path()).expect("initialize secret store");
+        for secret_id in [
+            "mcp-env:secret_server:OTHER_TOKEN",
+            "mcp-env:other_server:API_TOKEN",
+        ] {
+            crate::secrets::set_api_key(secret_id, "hidden-token").expect("store MCP env secret");
+        }
+
+        for reference in [
+            "macro-secret://mcp-env/secret_server/OTHER_TOKEN",
+            "macro-secret://mcp-env/other_server/API_TOKEN",
+            "macro-secret://mcp-env:secret_server:API_TOKEN",
+        ] {
+            let server = McpServerDto {
+                id: "Secret Server".to_string(),
+                name: "Secret Server".to_string(),
+                transport: Some(McpTransportDto::Stdio {
+                    command: "echo".to_string(),
+                    args: Vec::new(),
+                    env: HashMap::from([("API_TOKEN".to_string(), reference.to_string())]),
+                }),
+                config: Some(json!({ "enabled": true })),
+            };
+
+            assert!(resolve_stdio_transport(&server).is_err(), "{reference}");
+        }
     }
 }

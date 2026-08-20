@@ -2261,6 +2261,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_preserves_focused_project_models_and_uses_global_models_when_ambiguous() {
+        let (_temp, manager) = manager().await;
+        let user_agents = manager
+            .get_document(ConfigDocumentKind::Agents, ConfigScope::User)
+            .await
+            .expect("user agents");
+        manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Agents,
+                scope: ConfigScope::User,
+                expected_etag: user_agents.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/models".to_string(),
+                    from: None,
+                    value: Some(json!({"chat": {
+                        "providerId": "provider",
+                        "modelId": "global-model"
+                    }})),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect("set global model");
+
+        for (project_id, model_id) in [
+            ("project-a", "project-a-model"),
+            ("project-b", "project-b-model"),
+        ] {
+            let metadata = tempfile::tempdir().expect("metadata");
+            // Keep each metadata directory alive for the duration of registration and patching.
+            let metadata_path = metadata.keep();
+            manager
+                .register_project_root(project_id, metadata_path)
+                .await
+                .expect("register project");
+            let scope = ConfigScope::Project {
+                project_id: project_id.to_string(),
+            };
+            let project_agents = manager
+                .get_document(ConfigDocumentKind::Agents, scope.clone())
+                .await
+                .expect("project agents");
+            manager
+                .apply_patch(ConfigPatchRequest {
+                    kind: ConfigDocumentKind::Agents,
+                    scope,
+                    expected_etag: project_agents.etag,
+                    patch: vec![JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/models".to_string(),
+                        from: None,
+                        value: Some(json!({"chat": {
+                            "providerId": "provider",
+                            "modelId": model_id
+                        }})),
+                    }],
+                    source: ConfigChangeSource::UserInterface,
+                })
+                .await
+                .expect("set project model");
+        }
+
+        let focused = manager
+            .get_snapshot(&["project-a".to_string()])
+            .await
+            .expect("focused project snapshot");
+        assert_eq!(
+            focused.effective["agents"].pointer("/models/chat/modelId"),
+            Some(&json!("project-a-model"))
+        );
+        assert_eq!(
+            focused.project_effective["project-a"]["agents"].pointer("/models/chat/modelId"),
+            Some(&json!("project-a-model"))
+        );
+        assert!(focused.provenance.iter().any(|entry| {
+            entry.json_pointer == "/agents/models/chat/modelId"
+                && entry.origin == ConfigOrigin::Project
+                && entry.project_id.as_deref() == Some("project-a")
+        }));
+
+        let ambiguous = manager
+            .get_snapshot(&["project-a".to_string(), "project-b".to_string()])
+            .await
+            .expect("ambiguous multi-project snapshot");
+        assert_eq!(
+            ambiguous.effective["agents"].pointer("/models/chat/modelId"),
+            Some(&json!("global-model"))
+        );
+        assert_eq!(
+            ambiguous.project_effective["project-a"]["agents"].pointer("/models/chat/modelId"),
+            Some(&json!("project-a-model"))
+        );
+        assert_eq!(
+            ambiguous.project_effective["project-b"]["agents"].pointer("/models/chat/modelId"),
+            Some(&json!("project-b-model"))
+        );
+    }
+
+    #[tokio::test]
     async fn snapshot_rejects_an_explicit_unregistered_project() {
         let (_temp, manager) = manager().await;
         let error = manager
