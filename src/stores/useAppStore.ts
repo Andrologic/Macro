@@ -112,6 +112,7 @@ export type SettingsTab =
   | "speech"
   | "tools"
   | "skills"
+  | "configuration"
   | "shortcuts"
   | "prompts"
   | "architect";
@@ -1520,10 +1521,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectModalOpen: false,
   projectModalGroupId: null,
   projectGitFlowModalProjectId: null,
-  activeThemeId:
-    (typeof window !== "undefined"
-      ? window.localStorage.getItem("theme-id")
-      : null) || "macro-dark",
+  activeThemeId: "macro-dark",
   leftPanelWidth: 280,
   architectLeftPanelWidth: 320,
   rightPanelWidth: 320,
@@ -1587,10 +1585,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.AGENT_TYPE, agentType);
   },
   setTheme: (themeId) => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("theme-id", themeId);
-    }
     set({ activeThemeId: themeId });
+    void savePreference(PREF_KEYS.THEME, themeId);
   },
 
   setCurrentPlan: (plan) => set({ currentPlan: plan }),
@@ -4479,6 +4475,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await purgeLegacyImplementExecutionModePreference();
       // Load persisted panel preferences
       const [
+        activeThemeId,
         leftWidth,
         architectLeftWidth,
         rightWidth,
@@ -4501,6 +4498,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         storedProjectSwitchPolicy,
         sessionContext,
       ] = await Promise.all([
+        loadPreference<string>(PREF_KEYS.THEME),
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
@@ -4708,6 +4706,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	      );
 
       set({
+        activeThemeId,
         mode: resolvedMode,
         agentType: resolvedAgentType,
 	        currentPlan: bootstrapPlan,

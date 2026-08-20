@@ -1,12 +1,17 @@
 ﻿/**
  * Preferences Service
  *
- * Handles persistent storage of user preferences using Tauri Store plugin
- * with localStorage fallback for non-Tauri environments.
+ * Compatibility facade over ConfigManager and StateManager.
+ * Durable settings are stored in the typed JSON documents. Ephemeral UI state
+ * is stored in app_data_dir/state.json. Legacy stores are intentionally ignored.
  */
 
-import { load, Store } from "@tauri-apps/plugin-store";
 import type { AppMode, ToolRiskLevel } from "../types";
+import type { ConfigDocumentKind } from '../types/generated/config';
+import { useConfigStore, selectConfigValue } from '../stores/useConfigStore';
+import { isConfigurationClientAvailable } from './configurationClient';
+import type { StateSnapshotDto } from './tauriIpc';
+import * as tauriIpc from './tauriIpc';
 import { MACRO_AI_SPEECH_PROVIDER_ID } from "../config/macroAi";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
@@ -82,6 +87,7 @@ export const PREF_KEYS = {
   ARCHITECT_SYNC_TARGET_BEFORE_FINISH: "architectSyncTargetBeforeFinish",
   METADATA_AUTO_PUSH: "metadataAutoPush",
   METADATA_MISSING_UPSTREAM_POLICY: "metadataMissingUpstreamPolicy",
+  PROJECT_SWITCH_POLICY: "projectSwitchPolicy",
   TERMINAL_PANEL_HEIGHT: "terminalPanelHeight",
   TERMINAL_ACTIVE_TAB_ID: "terminalActiveTabId",
   TERMINAL_LAST_MANUAL_PROJECT_BY_TASK: "terminalLastManualProjectByTask",
@@ -320,6 +326,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: true,
   [PREF_KEYS.METADATA_AUTO_PUSH]: false,
   [PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY]: "ask",
+  [PREF_KEYS.PROJECT_SWITCH_POLICY]: "resume_per_project",
   [PREF_KEYS.TERMINAL_PANEL_HEIGHT]: 280,
   [PREF_KEYS.TERMINAL_ACTIVE_TAB_ID]: null,
   [PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK]: {},
@@ -350,13 +357,155 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED]: false,
 };
 
-// Store instance (singleton)
-let storeInstance: Store | null = null;
-let initPromise: Promise<Store> | null = null;
+type ConfigPreferenceTarget = {
+  document: ConfigDocumentKind;
+  path: readonly string[];
+};
+
+const CONFIG_PREFERENCE_TARGETS: Partial<Record<PrefKey, ConfigPreferenceTarget>> = {
+  [PREF_KEYS.THEME]: { document: 'settings', path: ['appearance', 'theme'] },
+  [PREF_KEYS.LANGUAGE]: { document: 'settings', path: ['language'] },
+  [PREF_KEYS.UI_ZOOM_MODE]: { document: 'settings', path: ['appearance', 'zoomMode'] },
+  [PREF_KEYS.UI_ZOOM_LEVEL]: { document: 'settings', path: ['appearance', 'zoomLevel'] },
+  [PREF_KEYS.CODE_OVERFLOW_MODE]: { document: 'settings', path: ['code', 'overflowMode'] },
+  [PREF_KEYS.SHORTCUT_BINDINGS]: { document: 'settings', path: ['shortcuts'] },
+  [PREF_KEYS.PROMPT_HISTORY_NAV_MODE]: {
+    document: 'settings',
+    path: ['promptHistoryNavigationMode'],
+  },
+  [PREF_KEYS.IN_APP_NOTIFICATIONS_ENABLED]: {
+    document: 'settings',
+    path: ['notifications', 'inAppEnabled'],
+  },
+  [PREF_KEYS.NOTIFICATION_CHANNEL_MODES]: {
+    document: 'settings',
+    path: ['notifications', 'channelModes'],
+  },
+  [PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG]: {
+    document: 'settings',
+    path: ['appearance', 'nativeMacosTitlebarBackground'],
+  },
+  [PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME]: {
+    document: 'settings',
+    path: ['appearance', 'nativeMacosTitlebarTheme'],
+  },
+  [PREF_KEYS.PROJECT_OPEN_EDITOR_APP]: {
+    document: 'settings',
+    path: ['applications', 'editorApp'],
+  },
+  [PREF_KEYS.PROJECT_OPEN_TERMINAL_APP]: {
+    document: 'settings',
+    path: ['applications', 'terminalApp'],
+  },
+  [PREF_KEYS.PROJECT_OPEN_FILES_APP]: {
+    document: 'settings',
+    path: ['applications', 'filesApp'],
+  },
+  [PREF_KEYS.PROJECT_OPEN_EDITOR_COMMAND]: {
+    document: 'settings',
+    path: ['applications', 'editorCommand'],
+  },
+  [PREF_KEYS.PROJECT_OPEN_TERMINAL_COMMAND]: {
+    document: 'settings',
+    path: ['applications', 'terminalCommand'],
+  },
+  [PREF_KEYS.PROJECT_OPEN_FILES_COMMAND]: {
+    document: 'settings',
+    path: ['applications', 'filesCommand'],
+  },
+  [PREF_KEYS.PROMPT_ARCHITECT]: { document: 'agents', path: ['prompts', 'architect'] },
+  [PREF_KEYS.PROMPT_IMPLEMENT]: { document: 'agents', path: ['prompts', 'implement'] },
+  [PREF_KEYS.PROMPT_CHAT]: { document: 'agents', path: ['prompts', 'chat'] },
+  [PREF_KEYS.PROMPT_PLAN_EXPLORER]: {
+    document: 'agents',
+    path: ['prompts', 'plan_explorer'],
+  },
+  [PREF_KEYS.PROMPT_TASK_REVIEWER]: {
+    document: 'agents',
+    path: ['prompts', 'task_reviewer'],
+  },
+  [PREF_KEYS.PROMPT_REPO_AUDITOR]: {
+    document: 'agents',
+    path: ['prompts', 'repo_auditor'],
+  },
+  [PREF_KEYS.CHAT_MAX_TURNS]: { document: 'agents', path: ['maxTurns'] },
+  [PREF_KEYS.COMPACTION_AUTO]: { document: 'agents', path: ['compaction', 'automatic'] },
+  [PREF_KEYS.COMPACTION_PRUNE]: { document: 'agents', path: ['compaction', 'prune'] },
+  [PREF_KEYS.COMPACTION_RESERVED_TOKENS]: {
+    document: 'agents',
+    path: ['compaction', 'reservedTokens'],
+  },
+  [PREF_KEYS.COMPACTION_MANUAL_VISIBLE]: {
+    document: 'agents',
+    path: ['compaction', 'manualVisible'],
+  },
+  [PREF_KEYS.IMPLEMENT_DIFF_PRESENTATION_MODE]: {
+    document: 'agents',
+    path: ['reviewPresentation'],
+  },
+  [PREF_KEYS.METADATA_MODEL_CONFIG]: { document: 'agents', path: ['models', 'metadata'] },
+  [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: {
+    document: 'agents',
+    path: ['models', 'smartCommit'],
+  },
+  [PREF_KEYS.SMART_COMMIT_PROMPT]: { document: 'agents', path: ['smartCommitPrompt'] },
+  [PREF_KEYS.TOOL_RISK_LEVEL]: { document: 'tools', path: ['riskLevel'] },
+  [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: { document: 'git', path: ['baseBranch'] },
+  [PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: { document: 'git', path: ['mainBranch'] },
+  [PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY]: {
+    document: 'git',
+    path: ['completionMergePolicy'],
+  },
+  [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: {
+    document: 'git',
+    path: ['branchTemplates', 'plan'],
+  },
+  [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: {
+    document: 'git',
+    path: ['branchTemplates', 'feature'],
+  },
+  [PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE]: {
+    document: 'git',
+    path: ['branchTemplates', 'standaloneFeature'],
+  },
+  [PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE]: {
+    document: 'git',
+    path: ['branchTemplates', 'release'],
+  },
+  [PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE]: {
+    document: 'git',
+    path: ['branchTemplates', 'hotfix'],
+  },
+  [PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE]: {
+    document: 'git',
+    path: ['branchTemplates', 'bugfix'],
+  },
+  [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: {
+    document: 'git',
+    path: ['syncTargetBeforeFinish'],
+  },
+  [PREF_KEYS.METADATA_AUTO_PUSH]: { document: 'git', path: ['metadataAutoPush'] },
+  [PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY]: {
+    document: 'git',
+    path: ['metadataMissingUpstreamPolicy'],
+  },
+  [PREF_KEYS.PROJECT_SWITCH_POLICY]: {
+    document: 'tools',
+    path: ['projectSwitchPolicy'],
+  },
+  [PREF_KEYS.SPEECH_PROVIDER_ID]: { document: 'providers', path: ['speech', 'providerId'] },
+  [PREF_KEYS.SPEECH_LANGUAGE]: { document: 'providers', path: ['speech', 'language'] },
+  [PREF_KEYS.SPEECH_MAX_DURATION_SECONDS]: {
+    document: 'providers',
+    path: ['speech', 'maxDurationSeconds'],
+  },
+  [PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED]: {
+    document: 'providers',
+    path: ['speech', 'enhancementEnabled'],
+  },
+};
+
 const debouncedSaveTimers = new Map<PrefKey, ReturnType<typeof setTimeout>>();
-const LEGACY_IMPLEMENT_EXECUTION_MODE_KEY = "implementExecutionMode";
-const LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY =
-  "architectToolAutonomyProfile";
 
 const cancelDebouncedSave = (key: PrefKey): void => {
   const timer = debouncedSaveTimers.get(key);
@@ -407,94 +556,184 @@ const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
   return true;
 };
 
-const migrateLegacyArchitectToolAutonomyProfile = (
-  value: unknown,
-): ToolRiskLevel | null => {
-  if (value === "guarded") {
-    return "strict";
-  }
-  if (value === "full") {
-    return "balanced";
-  }
-  return null;
-};
-
-/**
- * Check if running in Tauri environment
- */
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
-
-/**
- * Get or create the store instance
- */
-async function getStore(): Promise<Store | null> {
-  if (!isTauri()) {
-    return null;
-  }
-
-  if (storeInstance) {
-    return storeInstance;
-  }
-
-  if (!initPromise) {
-    initPromise = load("preferences.json");
-  }
-
-  storeInstance = await initPromise;
-  return storeInstance;
-}
-
-const removePersistedPreferenceKey = async (key: string): Promise<void> => {
-  localStorage.removeItem(`macro_${key}`);
-
-  try {
-    const store = await getStore();
-    if (store) {
-      await store.delete(key);
-      await store.save();
-    }
-  } catch (error) {
-    console.error(`Failed to remove preference ${key}:`, error);
-  }
-};
-
 export async function purgeLegacyImplementExecutionModePreference(): Promise<void> {
-  await removePersistedPreferenceKey(LEGACY_IMPLEMENT_EXECUTION_MODE_KEY);
+  // La migration JSON n’importe, ne lit et ne modifie aucun ancien réglage.
 }
 
-const loadLegacyArchitectToolAutonomyProfilePreference = async (): Promise<
-  ToolRiskLevel | null
-> => {
-  try {
-    const localValue = localStorage.getItem(
-      `macro_${LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY}`
-    );
-    if (localValue !== null) {
-      const migrated = migrateLegacyArchitectToolAutonomyProfile(
-        JSON.parse(localValue)
-      );
-      if (migrated) {
-        return migrated;
-      }
-    }
+const memoryPreferenceValues = new Map<PrefKey, unknown>();
+let stateSnapshot: StateSnapshotDto = { schemaVersion: 1, values: {} };
+let stateHydrationPromise: Promise<StateSnapshotDto> | null = null;
 
-    const store = await getStore();
-    if (store) {
-      const persisted = await store.get<unknown>(
-        LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY
-      );
-      return migrateLegacyArchitectToolAutonomyProfile(persisted);
+const rememberStatePreference = (key: PrefKey, value: unknown): void => {
+  memoryPreferenceValues.set(key, value);
+  stateSnapshot = {
+    ...stateSnapshot,
+    values: { ...stateSnapshot.values, [key]: value },
+  };
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isStateSnapshot = (value: unknown): value is StateSnapshotDto =>
+  isRecord(value) && value.schemaVersion === 1 && isRecord(value.values);
+
+const readPath = (value: unknown, path: readonly string[]): unknown => {
+  let current = value;
+  for (const segment of path) {
+    if (!isRecord(current) || !(segment in current)) return undefined;
+    current = current[segment];
+  }
+  return current;
+};
+
+const jsonEqual = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+const escapeJsonPointer = (segment: string): string =>
+  segment.replace(/~/g, '~0').replace(/\//g, '~1');
+
+const getStateSnapshot = async (): Promise<StateSnapshotDto> => {
+  if (!isStateManagerAvailable()) return stateSnapshot;
+  if (!stateHydrationPromise) {
+    stateHydrationPromise = tauriIpc.stateGetSnapshot()
+      .then((snapshot) => {
+        if (!isStateSnapshot(snapshot)) return stateSnapshot;
+        stateSnapshot = snapshot;
+        return snapshot;
+      })
+      .catch(() => stateSnapshot)
+      .finally(() => {
+        stateHydrationPromise = null;
+      });
+  }
+  return stateHydrationPromise;
+};
+
+const writeNestedValue = (
+  target: Record<string, unknown>,
+  path: readonly string[],
+  value: unknown,
+): void => {
+  let current = target;
+  path.slice(0, -1).forEach((segment) => {
+    const child = current[segment];
+    const next = isRecord(child) ? { ...child } : {};
+    current[segment] = next;
+    current = next;
+  });
+  current[path[path.length - 1]] = value;
+};
+
+const deleteNestedValue = (
+  target: Record<string, unknown>,
+  path: readonly string[],
+): void => {
+  const parents: Array<[Record<string, unknown>, string]> = [];
+  let current = target;
+  for (const segment of path.slice(0, -1)) {
+    const child = current[segment];
+    if (!isRecord(child)) return;
+    const next = { ...child };
+    current[segment] = next;
+    parents.push([current, segment]);
+    current = next;
+  }
+  delete current[path[path.length - 1]];
+  for (const [parent, segment] of parents.reverse()) {
+    const child = parent[segment];
+    if (isRecord(child) && Object.keys(child).length === 0) delete parent[segment];
+  }
+};
+
+const persistConfigPreference = async <T>(
+  key: PrefKey,
+  value: T,
+  target: ConfigPreferenceTarget,
+): Promise<void> => {
+  const store = useConfigStore.getState();
+  const document = await store.getDocument(target.document);
+  if (!document || typeof document.etag !== 'string') {
+    memoryPreferenceValues.set(key, value);
+    return;
+  }
+  const sparse = isRecord(document.value) ? document.value : {};
+  const topLevelKey = target.path[0];
+  const defaultValue = PREF_DEFAULTS[key];
+  const shouldInherit = jsonEqual(value, defaultValue);
+  const existingTopLevel = sparse[topLevelKey];
+  let operation: 'add' | 'remove' | null = null;
+  let operationValue: unknown;
+
+  if (target.path.length === 1) {
+    if (shouldInherit) {
+      operation = topLevelKey in sparse ? 'remove' : null;
+    } else if (!jsonEqual(existingTopLevel, value)) {
+      operation = 'add';
+      operationValue = value;
     }
-  } catch (error) {
-    console.error(
-      "Failed to load legacy architect autonomy preference:",
-      error
-    );
+  } else {
+    const nextTopLevel = isRecord(existingTopLevel) ? { ...existingTopLevel } : {};
+    const nestedPath = target.path.slice(1);
+    if (shouldInherit) {
+      deleteNestedValue(nextTopLevel, nestedPath);
+    } else {
+      writeNestedValue(nextTopLevel, nestedPath, value);
+    }
+    if (Object.keys(nextTopLevel).length === 0) {
+      operation = topLevelKey in sparse ? 'remove' : null;
+    } else if (!jsonEqual(nextTopLevel, existingTopLevel)) {
+      operation = 'add';
+      operationValue = nextTopLevel;
+    }
   }
 
-  return null;
+  if (!operation) return;
+  await store.patch({
+    kind: target.document,
+    expectedEtag: document.etag,
+    patch: [{
+      op: operation,
+      path: `/${escapeJsonPointer(topLevelKey)}`,
+      value: operation === 'add' ? operationValue : null,
+      from: null,
+    }],
+  });
+};
+
+const isStateManagerAvailable = (): boolean =>
+  (tauriIpc.isTauriAvailable?.() ?? false)
+  && typeof tauriIpc.stateGetSnapshot === 'function'
+  && typeof tauriIpc.stateSetValue === 'function'
+  && typeof tauriIpc.stateClear === 'function';
+
+const persistPreference = async <T>(key: PrefKey, value: T): Promise<void> => {
+  if (!isValidPreferenceValue(key, value)) {
+    throw new Error(`Invalid preference value for ${key}.`);
+  }
+  const configTarget = CONFIG_PREFERENCE_TARGETS[key];
+  if (configTarget && isConfigurationClientAvailable()) {
+    try {
+      await persistConfigPreference(key, value, configTarget);
+    } catch {
+      memoryPreferenceValues.set(key, value);
+    }
+    return;
+  }
+  if (!isStateManagerAvailable()) {
+    rememberStatePreference(key, value);
+    return;
+  }
+  try {
+    const nextSnapshot = await tauriIpc.stateSetValue(key, value);
+    if (isStateSnapshot(nextSnapshot)) {
+      stateSnapshot = nextSnapshot;
+    } else {
+      rememberStatePreference(key, value);
+    }
+  } catch {
+    rememberStatePreference(key, value);
+  }
 };
 
 /**
@@ -502,38 +741,24 @@ const loadLegacyArchitectToolAutonomyProfilePreference = async (): Promise<
  */
 export async function savePreference<T>(key: PrefKey, value: T): Promise<void> {
   cancelDebouncedSave(key);
-  // Always mirror to localStorage synchronously for crash/close resilience
-  localStorage.setItem(`macro_${key}`, JSON.stringify(value));
+  await persistPreference(key, value);
   emitPreferenceChange(key, value);
-
-  await persistPreferenceToStore(key, value);
 }
-
-const persistPreferenceToStore = async <T>(key: PrefKey, value: T): Promise<void> => {
-  try {
-    const store = await getStore();
-    if (store) {
-      await store.set(key, value);
-      await store.save();
-    }
-  } catch (error) {
-    console.error(`Failed to save preference ${key}:`, error);
-  }
-};
 
 export function savePreferenceDebounced<T>(
   key: PrefKey,
   value: T,
   delayMs: number = 180
 ): void {
-  localStorage.setItem(`macro_${key}`, JSON.stringify(value));
   emitPreferenceChange(key, value);
 
   cancelDebouncedSave(key);
 
   const timer = setTimeout(() => {
     debouncedSaveTimers.delete(key);
-    void persistPreferenceToStore(key, value);
+    void persistPreference(key, value).catch((error: unknown) => {
+      console.error(`Failed to save preference ${key}:`, error);
+    });
   }, delayMs);
 
   debouncedSaveTimers.set(key, timer);
@@ -544,53 +769,41 @@ export function savePreferenceDebounced<T>(
  */
 export async function loadPreference<T>(key: PrefKey): Promise<T> {
   const defaultValue = PREF_DEFAULTS[key] as T;
-  const localStorageKey = `macro_${key}`;
-
   try {
-    const localValue = localStorage.getItem(localStorageKey);
-    if (localValue) {
-      const parsed = JSON.parse(localValue) as T;
-      if (isValidPreferenceValue(key, parsed)) {
-        return parsed;
-      }
+    if (!isConfigurationClientAvailable() && memoryPreferenceValues.has(key)) {
+      return memoryPreferenceValues.get(key) as T;
     }
-
-    const store = await getStore();
-    if (store) {
-      const latestLocalValue = localStorage.getItem(localStorageKey);
-      if (latestLocalValue !== null) {
-        const parsedLatestValue = JSON.parse(latestLocalValue) as T;
-        if (isValidPreferenceValue(key, parsedLatestValue)) {
-          return parsedLatestValue;
-        }
+    const configTarget = CONFIG_PREFERENCE_TARGETS[key];
+    if (configTarget && isConfigurationClientAvailable()) {
+      const snapshot = await useConfigStore.getState().hydrate();
+      if (!snapshot) {
+        const memoryValue = memoryPreferenceValues.get(key);
+        return memoryValue !== undefined && isValidPreferenceValue(key, memoryValue)
+          ? memoryValue as T
+          : defaultValue;
       }
-
-      const value = await store.get<T>(key);
-      if (
-        value !== null &&
-        value !== undefined &&
-        isValidPreferenceValue(key, value)
-      ) {
-        return value;
-      }
+      const value = selectConfigValue(
+        snapshot,
+        configTarget.document,
+        configTarget.path,
+        defaultValue,
+      );
+      return isValidPreferenceValue(key, value) ? value : defaultValue;
     }
-
-    if (key === PREF_KEYS.TOOL_RISK_LEVEL) {
-      const migratedValue =
-        await loadLegacyArchitectToolAutonomyProfilePreference();
-      if (migratedValue && isToolRiskLevel(migratedValue)) {
-        await savePreference(PREF_KEYS.TOOL_RISK_LEVEL, migratedValue);
-        await removePersistedPreferenceKey(
-          LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY
-        );
-        return migratedValue as T;
-      }
+    if (isStateManagerAvailable()) {
+      const state = await getStateSnapshot();
+      const value = state.values[key];
+      return value !== undefined && isValidPreferenceValue(key, value)
+        ? value as T
+        : defaultValue;
     }
-
     return defaultValue;
   } catch (error) {
     console.error(`Failed to load preference ${key}:`, error);
-    return defaultValue;
+    const memoryValue = memoryPreferenceValues.get(key);
+    return memoryValue !== undefined && isValidPreferenceValue(key, memoryValue)
+      ? memoryValue as T
+      : defaultValue;
   }
 }
 
@@ -600,29 +813,23 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
 export async function loadPersistedPreference<T>(
   key: PrefKey
 ): Promise<T | undefined> {
-  const localStorageKey = `macro_${key}`;
-
   try {
-    const localValue = localStorage.getItem(localStorageKey);
-    if (localValue !== null) {
-      return JSON.parse(localValue) as T;
+    if (!isStateManagerAvailable() && !isConfigurationClientAvailable()) {
+      return memoryPreferenceValues.get(key) as T | undefined;
     }
-
-    const store = await getStore();
-    if (store) {
-      const latestLocalValue = localStorage.getItem(localStorageKey);
-      if (latestLocalValue !== null) {
-        return JSON.parse(latestLocalValue) as T;
-      }
-
-      const value = await store.get<T>(key);
-      return value !== null && value !== undefined ? value : undefined;
+    const configTarget = CONFIG_PREFERENCE_TARGETS[key];
+    if (configTarget && isConfigurationClientAvailable()) {
+      const document = await useConfigStore
+        .getState()
+        .getDocument(configTarget.document);
+      if (!document) return memoryPreferenceValues.get(key) as T | undefined;
+      return readPath(document.value, configTarget.path) as T | undefined;
     }
-
-    return undefined;
+    const state = await getStateSnapshot();
+    return (state.values[key] ?? memoryPreferenceValues.get(key)) as T | undefined;
   } catch (error) {
     console.error(`Failed to load persisted preference ${key}:`, error);
-    return undefined;
+    return memoryPreferenceValues.get(key) as T | undefined;
   }
 }
 
@@ -649,11 +856,9 @@ export async function loadPreferences<T extends Partial<Record<PrefKey, unknown>
 export async function savePreferences(
   preferences: Partial<Record<PrefKey, unknown>>
 ): Promise<void> {
-  await Promise.all(
-    Object.entries(preferences).map(([key, value]) =>
-      savePreference(key as PrefKey, value)
-    )
-  );
+  for (const [key, value] of Object.entries(preferences)) {
+    await savePreference(key as PrefKey, value);
+  }
 }
 
 /**
@@ -663,22 +868,39 @@ export async function clearPreferences(): Promise<void> {
   debouncedSaveTimers.forEach((timer) => clearTimeout(timer));
   debouncedSaveTimers.clear();
 
-  const persistedKeys = new Set([
-    ...Object.values(PREF_KEYS),
-    LEGACY_IMPLEMENT_EXECUTION_MODE_KEY,
-    LEGACY_ARCHITECT_TOOL_AUTONOMY_PROFILE_KEY,
-  ]);
-  persistedKeys.forEach((key) => {
-    localStorage.removeItem(`macro_${key}`);
-  });
-
-  try {
-    const store = await getStore();
-    if (store) {
-      await store.clear();
-      await store.save();
+  memoryPreferenceValues.clear();
+  if (isStateManagerAvailable()) {
+    try {
+      const nextSnapshot = await tauriIpc.stateClear();
+      if (isStateSnapshot(nextSnapshot)) stateSnapshot = nextSnapshot;
+    } catch {
+      stateSnapshot = { schemaVersion: 1, values: {} };
     }
-  } catch (error) {
-    console.error("Failed to clear preferences:", error);
   }
+  for (const key of Object.keys(CONFIG_PREFERENCE_TARGETS) as PrefKey[]) {
+    if (isConfigurationClientAvailable()) {
+      await persistPreference(key, PREF_DEFAULTS[key]);
+    }
+  }
+}
+
+export function getCachedPreference<T>(key: PrefKey): T {
+  const defaultValue = PREF_DEFAULTS[key] as T;
+  if (memoryPreferenceValues.has(key)) {
+    return memoryPreferenceValues.get(key) as T;
+  }
+  const configTarget = CONFIG_PREFERENCE_TARGETS[key];
+  if (configTarget) {
+    const value = selectConfigValue(
+      useConfigStore.getState().snapshot,
+      configTarget.document,
+      configTarget.path,
+      defaultValue,
+    );
+    return isValidPreferenceValue(key, value) ? value : defaultValue;
+  }
+  const value = stateSnapshot.values[key];
+  return value !== undefined && isValidPreferenceValue(key, value)
+    ? value as T
+    : defaultValue;
 }

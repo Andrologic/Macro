@@ -4,6 +4,8 @@ import type { Tool, MCPServer, MCPTool } from '../types';
 import { toServiceError } from '../services/contracts/errors';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { getToolModePolicy } from '../services/toolModePolicy';
+import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../services/configDocuments';
+import { isConfigurationClientAvailable } from '../services/configurationClient';
 import {
   isMCPServerEnabled,
   isMCPToolId,
@@ -12,7 +14,7 @@ import {
   toMCPServerSettingsMap,
 } from '../services/mcp';
 
-const CHAT_MODE_TOOL_SETTINGS_KEY = 'macro_chat_mode_tool_settings';
+export const CHAT_MODE_TOOL_SETTINGS_KEY = 'macro_chat_mode_tool_settings';
 let chatModeToolIds: Set<string> | null = null;
 const getChatModeToolIds = (): Set<string> => {
   chatModeToolIds ??= new Set(getToolModePolicy('Chat').allowedToolIds);
@@ -50,25 +52,40 @@ const getChatToggleGroupIds = (tool: Tool): readonly string[] => {
   return group ? CHAT_TOGGLE_GROUPS[group] ?? [tool.id] : [tool.id];
 };
 
-const loadChatModeToolSettings = (): Record<string, boolean> => {
-  try {
-    const raw = localStorage.getItem(CHAT_MODE_TOOL_SETTINGS_KEY);
-    if (!raw || raw === 'undefined') return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return Object.fromEntries(
-      (Object.entries(parsed)
-        .filter(([, value]) => typeof value === 'boolean') as Array<[string, boolean]>).map(([id, enabled]) => [
-        normalizeArchitectToolId(id),
-        enabled,
-      ])
-    );
-  } catch {
-    return {};
-  }
+interface ToolsModeConfigDocument extends Record<string, unknown> {
+  modes?: Record<string, Record<string, boolean>>;
+}
+
+let chatModeSettingsCache: Record<string, boolean> = {};
+
+const normalizeChatModeSettings = (value: unknown): Record<string, boolean> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    (Object.entries(value)
+      .filter(([, enabled]) => typeof enabled === 'boolean') as Array<[string, boolean]>).map(
+      ([id, enabled]) => [normalizeArchitectToolId(id), enabled],
+    ),
+  );
+};
+
+const loadChatModeToolSettings = async (): Promise<Record<string, boolean>> => {
+  if (!isConfigurationClientAvailable()) return chatModeSettingsCache;
+  const config = await getEffectiveConfigDocument<ToolsModeConfigDocument>('tools');
+  chatModeSettingsCache = normalizeChatModeSettings(config.modes?.Chat);
+  return chatModeSettingsCache;
 };
 
 const persistChatModeToolSettings = (settings: Record<string, boolean>): void => {
-  localStorage.setItem(CHAT_MODE_TOOL_SETTINGS_KEY, JSON.stringify(settings));
+  chatModeSettingsCache = normalizeChatModeSettings(settings);
+  if (!isConfigurationClientAvailable()) return;
+  void getEffectiveConfigDocument<ToolsModeConfigDocument>('tools')
+    .then((config) => patchUserConfigTopLevel('tools', 'modes', {
+      ...(config.modes ?? {}),
+      Chat: chatModeSettingsCache,
+    }))
+    .catch((error: unknown) => {
+      useToolsStore.setState({ lastError: toServiceError(error).message });
+    });
 };
 
 let settingsMutationVersion = 0;
@@ -125,7 +142,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       ]);
 
       const loadedTools = toolsDto.tools as unknown as Record<string, Tool>;
-      const persistedChatStates = loadChatModeToolSettings();
+      const persistedChatStates = await loadChatModeToolSettings();
       const chatToolStates: Record<string, boolean> = {};
       Object.values(loadedTools).forEach((tool) => {
         if (!isChatEligibleTool(tool)) return;
@@ -180,8 +197,6 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         shouldPreserveLocalState && currentState.mcpServers.length > 0
           ? currentState.mcpServers
           : loadedMcpServers;
-
-      persistChatModeToolSettings(nextChatToolStates);
 
       set({
         internalTools: nextInternalTools,

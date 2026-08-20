@@ -1,7 +1,4 @@
-import * as tauriIpc from './tauriIpc';
-
-const APP_SETTING_TASK_PROJECT_COMMANDS_KEY = 'task_project_commands';
-const LEGACY_TASK_PROJECT_COMMANDS_KEY = 'macro_task_project_commands';
+import { getEffectiveConfigDocument, patchUserConfigTopLevel } from './configDocuments';
 const TASK_PROJECT_COMMANDS_VERSION = 3;
 
 export interface TaskProjectCommandEntry {
@@ -89,30 +86,11 @@ const normalizeRegistry = (value: unknown): TaskProjectCommandRegistry => {
   };
 };
 
-const safeJsonParse = (raw: string | null): unknown => {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-};
+interface ToolsProjectCommandsDocument extends Record<string, unknown> {
+  projectCommands?: Record<string, TaskProjectCommandEntry>;
+}
 
-const readLegacyRegistry = (): TaskProjectCommandRegistry => {
-  if (typeof window === 'undefined') {
-    return defaultRegistry();
-  }
-
-  return normalizeRegistry(safeJsonParse(window.localStorage.getItem(LEGACY_TASK_PROJECT_COMMANDS_KEY)));
-};
-
-const writeLegacyRegistry = (registry: TaskProjectCommandRegistry): void => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  window.localStorage.setItem(LEGACY_TASK_PROJECT_COMMANDS_KEY, JSON.stringify(registry));
-};
+let transientRegistry = defaultRegistry();
 
 export const mergeTaskProjectCommandRegistry = (
   current: TaskProjectCommandRegistry,
@@ -151,18 +129,12 @@ export const mergeTaskProjectCommandRegistry = (
 };
 
 export const loadTaskProjectCommandRegistry = async (): Promise<TaskProjectCommandRegistry> => {
-  if (tauriIpc.isTauriAvailable()) {
-    try {
-      const record = await tauriIpc.dbGetAppSetting(APP_SETTING_TASK_PROJECT_COMMANDS_KEY);
-      if (record?.value_json) {
-        return normalizeRegistry(safeJsonParse(record.value_json));
-      }
-    } catch {
-      // Fall through to the local fallback.
-    }
-  }
-
-  return readLegacyRegistry();
+  const document = await getEffectiveConfigDocument<ToolsProjectCommandsDocument>('tools');
+  transientRegistry = normalizeRegistry({
+    version: TASK_PROJECT_COMMANDS_VERSION,
+    commandsByProjectPath: document.projectCommands ?? {},
+  });
+  return transientRegistry;
 };
 
 export const saveTaskProjectCommandDrafts = async (
@@ -173,20 +145,12 @@ export const saveTaskProjectCommandDrafts = async (
     drafts
   );
 
-  if (tauriIpc.isTauriAvailable()) {
-    try {
-      await tauriIpc.dbSetAppSetting({
-        key: APP_SETTING_TASK_PROJECT_COMMANDS_KEY,
-        valueJson: JSON.stringify(nextRegistry),
-      });
-      writeLegacyRegistry(nextRegistry);
-      return nextRegistry;
-    } catch {
-      // Fall back to the local cache below.
-    }
-  }
-
-  writeLegacyRegistry(nextRegistry);
+  await patchUserConfigTopLevel(
+    'tools',
+    'projectCommands',
+    nextRegistry.commandsByProjectPath,
+  );
+  transientRegistry = nextRegistry;
   return nextRegistry;
 };
 

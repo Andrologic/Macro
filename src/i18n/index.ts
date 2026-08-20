@@ -1,7 +1,7 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import { notify } from "../components/ui/toastService";
-import { PREF_KEYS, savePreference } from "../services/preferences";
+import { loadPreference, PREF_KEYS, savePreference } from "../services/preferences";
 import {
   DEFAULT_LANGUAGE,
   SUPPORTED_LANGUAGE_CODES,
@@ -19,25 +19,11 @@ const syncDocumentLanguage = (language: string | null | undefined) => {
   document.documentElement.lang = resolveSupportedLanguage(language, DEFAULT_LANGUAGE);
 };
 
-const resolveInitialLanguage = (): SupportedLanguage => {
-  const storedLanguage =
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem("macro_language")
-      : null;
-  if (storedLanguage) {
-    return resolveSupportedLanguage(storedLanguage, DEFAULT_LANGUAGE);
-  }
-
-  const navigatorLanguage =
-    typeof navigator !== "undefined" ? navigator.language : null;
-  if (navigatorLanguage) {
-    return resolveSupportedLanguage(navigatorLanguage, DEFAULT_LANGUAGE);
-  }
-
-  const documentLanguage =
-    typeof document !== "undefined" ? document.documentElement.lang : null;
-  return resolveSupportedLanguage(documentLanguage, DEFAULT_LANGUAGE);
-};
+const resolveInitialLanguage = async (): Promise<SupportedLanguage> =>
+  resolveSupportedLanguage(
+    await loadPreference<string>(PREF_KEYS.LANGUAGE),
+    DEFAULT_LANGUAGE,
+  );
 
 const ensureLanguageResources = async (language: SupportedLanguage): Promise<void> => {
   if (i18n.hasResourceBundle(language, "translation")) {
@@ -76,7 +62,7 @@ export const initializeI18n = (): Promise<void> => {
   }
 
   const currentInitialization = (async () => {
-    const initialLanguage = resolveInitialLanguage();
+    const initialLanguage = await resolveInitialLanguage();
     await ensureLanguageResources(DEFAULT_LANGUAGE);
 
     if (initialLanguage !== DEFAULT_LANGUAGE) {
@@ -116,7 +102,14 @@ export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
   try {
     await savePreference(PREF_KEYS.LANGUAGE, lang);
   } catch {
-    // localStorage persistence remains as fallback.
+    // La langue active reste utilisable pour la session si l’écriture échoue.
+  }
+}
+
+export async function applyConfiguredLanguage(lang: SupportedLanguage): Promise<void> {
+  await ensureLanguageResources(lang);
+  if (i18n.resolvedLanguage !== lang) {
+    await i18n.changeLanguage(lang);
   }
 }
 

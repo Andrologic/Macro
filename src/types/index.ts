@@ -359,7 +359,7 @@ export interface MCPServerSettings {
 }
 
 export type SkillSourceKind = 'global' | 'project';
-export type SkillSourceNamespace = 'agents' | 'codex' | 'opencode' | 'claude';
+export type SkillSourceNamespace = 'agents' | 'codex' | 'opencode' | 'claude' | string;
 export type SkillLocationKind = 'local' | 'remote' | 'bundled';
 export type SkillDiagnosticSeverity = 'error' | 'warning' | 'info';
 
@@ -372,6 +372,8 @@ export interface SkillProjectRoot {
 export interface SkillSource {
   kind: SkillSourceKind;
   namespace?: SkillSourceNamespace;
+  rootId?: string;
+  priority?: number;
   projectId?: string | null;
   projectName?: string | null;
   rootPath: string;
@@ -422,6 +424,11 @@ export interface SkillManifest {
 export interface SkillSettings {
   enabled: boolean;
   scriptsEnabled: boolean;
+  trust?: {
+    contentHash: string;
+    grantedAt: string;
+    grantedBy: 'user';
+  };
 }
 
 export interface SkillPermissionSnapshotEntry {
@@ -429,6 +436,8 @@ export interface SkillPermissionSnapshotEntry {
   enabled: boolean;
   scriptsEnabled: boolean;
   hasScripts: boolean;
+  contentHash?: string;
+  trustedContentHash?: string;
 }
 
 export interface SkillPermissionSnapshot {
@@ -493,6 +502,7 @@ export interface SkillTemplateCreateRequest {
   name: string;
   description: string;
   destinationKind: 'global' | 'project';
+  destinationId?: string | null;
   projectId?: string | null;
   projectRoots?: SkillProjectRoot[];
 }

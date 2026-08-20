@@ -13,8 +13,15 @@ const SKILL_READ_TOOLS = [
   "skill_read_resource",
 ] as const;
 const SKILL_EXECUTION_TOOLS = ["skill_run_script"] as const;
+const CONFIG_TOOLS = [
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
+] as const;
 const SHARED_CONTEXT_TOOLS = [
   "question",
+  ...CONFIG_TOOLS,
   ...SKILL_READ_TOOLS,
   "read_file",
   "web_search",
@@ -25,6 +32,7 @@ const WORKSPACE_READ_TOOLS = ["list", "read", "glob", "grep"] as const;
 const WORKSPACE_WRITE_TOOLS = ["write", "edit", "delete", "apply_patch"] as const;
 const CHAT_SAFE_TOOLS = [
   "question",
+  ...CONFIG_TOOLS,
   ...SKILL_READ_TOOLS,
   ...SKILL_EXECUTION_TOOLS,
   "mark_source_passage",
