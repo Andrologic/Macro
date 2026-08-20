@@ -46,6 +46,9 @@ By default, the kernel listens on:
 - `MACRO_HEADLESS_CORS_ORIGINS` - optional comma-separated list of additional
   exact browser origins allowed by CORS. Wildcard origins are rejected. Common
   local Vite and Tauri origins are allowed by default.
+- `MACRO_CONFIG_DIR` - absolute path to the JSON configuration directory. It is
+  intended for headless, portable, and test installations. `MACRO_CONFIG`
+  remains a deprecated bootstrap alias for the legacy headless settings file.
 
 ## Available Endpoints
 
@@ -70,6 +73,17 @@ Current endpoints include:
 - `POST /api/v1/workspaces/{workspace_id}/architect/plans/activate-chat`
 - `GET /api/v1/projects/{project_id}/git/tree`
 - `GET /api/v1/projects/{project_id}/git/commits`
+- `POST /api/v1/config/snapshot`
+- `POST /api/v1/config/document`
+- `POST /api/v1/config/schema`
+- `POST /api/v1/config/validate`
+- `POST /api/v1/config/patch`
+- `POST /api/v1/config/reload`
+- `GET /api/v1/config/pending`
+- `POST /api/v1/config/pending/accept`
+- `POST /api/v1/config/pending/reject`
+- `GET /api/v1/config/orphan-secrets`
+- `POST /api/v1/config/orphan-secrets/delete`
 
 When `MACRO_HEADLESS_BEARER_TOKEN` is set, authentication applies to `/health`
 as well as every API endpoint. On the default loopback listener without a token,
@@ -97,9 +111,9 @@ VITE_REMOTE_TIMEOUT_MS=15000
 
 The adapter currently implements workspace bootstrap, task catalog, Architect
 plan listing and activation, Git tree and history, remote tool policy, remote
-tool validation, remote tool execution, and local browser persistence for tool
-and MCP preferences. This inventory describes implemented prototype paths; it
-does not make `VITE_BACKEND_TRANSPORT=remote` a supported Macro 0.1 capability.
+tool validation, remote tool execution, and the shared JSON configuration API.
+This inventory describes implemented prototype paths; it does not make
+`VITE_BACKEND_TRANSPORT=remote` a supported Macro 0.1 capability.
 
 ## Current Limits
 
@@ -109,5 +123,5 @@ these remain desktop-only:
 - project creation, import, rename, archive, and access changes;
 - Git worktree creation and removal;
 - file preview from the Git tree;
-- provider configuration through the native desktop store;
+- provider authentication flows that still require native desktop integration;
 - local implementation task mutations and task project commands.

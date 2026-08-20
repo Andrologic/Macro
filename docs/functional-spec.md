@@ -87,6 +87,27 @@ Macro suppose que l'utilisateur agit comme un décideur technique, même lorsqu'
 
 ## 5. Modèle fonctionnel général
 
+### 5.0 Configuration éditable et sûre
+
+Macro expose ses réglages durables sous forme de fichiers JSON stricts,
+validables et modifiables depuis l’interface, un éditeur ou un agent. Les
+réglages utilisateur et les surcharges projet sont séparés. L’interface indique
+la provenance des valeurs effectives et permet de rétablir l’héritage sans
+dupliquer les valeurs par défaut.
+
+Une configuration invalide ne doit pas rendre l’application inutilisable. Le
+dernier snapshot valide reste actif et le diagnostic identifie le fichier, la
+propriété et la cause. Un agent ne peut pas augmenter seul ses permissions :
+les changements sensibles attendent toujours une décision utilisateur locale.
+
+Les secrets restent hors des fichiers exposés et des outils agents. Les racines
+de découverte, les destinations d’installation et les permissions de skills
+sont configurables, tandis que la confiance est invalidée dès que le contenu
+d’une skill change.
+
+Le contrat complet des fichiers, scopes et règles de sécurité est défini dans
+`docs/configuration.md`.
+
 ### 5.1 Modèle mental principal
 
 Macro organise le travail de la façon suivante :

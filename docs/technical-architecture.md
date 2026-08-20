@@ -103,6 +103,25 @@ Il fournit les capacités natives suivantes :
 - providers IA côté backend
 - fondation expérimentale du kernel headless HTTP
 
+### 3.6 Registre de configuration
+
+Le module Rust `config` est l’unique autorité pour les réglages durables. Il
+regroupe les contrats Serde, les valeurs par défaut, les JSON Schema, le
+catalogue de paramètres, les migrations, la fusion, la provenance, les ETags,
+les écritures atomiques, le watcher et le classement de sécurité.
+
+Le frontend consomme un snapshot typé via `useConfigStore`. Les stores métier
+ne doivent pas conserver une copie persistante concurrente d’un réglage. Le
+transport utilise les mêmes contrats via IPC Tauri ou via l’API headless.
+
+Les documents globaux vivent dans le dossier de configuration de
+l’application. Les surcharges projet autorisées vivent sous
+`@macro/projects/<project-id>/config`. L’état temporaire vit dans `state.json`,
+les caches et données métier dans SQLite, et les secrets dans le fichier privé
+`provider-secrets.json`.
+
+Les détails normatifs sont décrits dans `docs/configuration.md`.
+
 ---
 
 ## 4. Stack technique
