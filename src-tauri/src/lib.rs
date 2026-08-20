@@ -1,6 +1,7 @@
 mod app_quit_state;
 #[path = "commands.rs"]
 pub mod commands;
+pub mod config;
 pub mod core;
 mod db;
 mod dev_overrides;
@@ -10,6 +11,7 @@ mod macos_traffic_lights;
 mod macos_window_menu;
 mod secrets;
 mod speech;
+mod state_manager;
 
 // Placeholder modules for critical manual implementation
 mod fs;
@@ -23,7 +25,10 @@ pub mod workspace;
 use ai::AiState;
 use app_quit_state::AppQuitState;
 use commands::DbPool;
-use core::{finalize_desktop_workspace_path, init_logging, init_process_environment, load_config};
+use core::{
+    apply_runtime_workspace, finalize_desktop_workspace_path, init_logging,
+    init_process_environment, load_config,
+};
 use fs::watcher::init_watcher;
 use git::GitState;
 use serde::Serialize;
@@ -281,6 +286,61 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
             let app_data_dir = app_handle.path().app_data_dir()?;
+            let state_manager =
+                state_manager::StateManager::initialize(&app_data_dir).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to initialize Macro state storage: {error}"
+                    ))
+                })?;
+            app.manage(state_manager);
+            let app_config_dir = app_handle.path().app_config_dir()?;
+            let config_root = config::resolve_config_root(&app_config_dir).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to resolve Macro configuration directory: {}",
+                    error.message
+                ))
+            })?;
+            let config_manager = tauri::async_runtime::block_on(config::ConfigManager::initialize(
+                config_root.clone(),
+            ))
+            .map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to initialize Macro configuration: {}",
+                    error.message
+                ))
+            })?;
+            let config_snapshot = tauri::async_runtime::block_on(config_manager.get_snapshot(&[]))
+                .map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to read Macro runtime configuration: {}",
+                        error.message
+                    ))
+                })?;
+            if let Some(runtime) = config_snapshot.effective.get("runtime") {
+                apply_runtime_workspace(&mut config, runtime).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to apply Macro runtime configuration: {error}"
+                    ))
+                })?;
+            }
+            config::install_runtime_config_manager(config_manager.clone()).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to install Macro configuration manager: {}",
+                    error.message
+                ))
+            })?;
+            let config_watcher = config::ConfigWatcher::start(
+                config_root,
+                config_manager.clone(),
+                app_handle.clone(),
+            )
+            .map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to initialize Macro configuration watcher: {error}"
+                ))
+            })?;
+            app.manage(config_manager);
+            app.manage(config_watcher);
             secrets::init(&app_data_dir).map_err(|error| {
                 std::io::Error::other(format!(
                     "Failed to initialize provider secret storage: {}",
@@ -353,6 +413,27 @@ pub fn run() {
             // Database commands
             commands::db_get_initialization_status,
             commands::db_retry_initialize,
+            config::config_get_snapshot,
+            config::config_get_document,
+            config::config_get_schema,
+            config::config_validate_document,
+            config::config_apply_patch,
+            config::config_reset_path,
+            config::config_reload,
+            config::config_open_directory,
+            config::config_accept_pending_change,
+            config::config_reject_pending_change,
+            config::config_list_pending_changes,
+            config::config_list_orphan_secrets,
+            config::config_delete_orphan_secret,
+            config::config_list,
+            config::config_get,
+            config::config_validate,
+            config::config_patch,
+            state_manager::state_get_snapshot,
+            state_manager::state_set_value,
+            state_manager::state_delete_value,
+            state_manager::state_clear,
             frontend_log,
             show_main_window,
             window_close,
@@ -485,6 +566,9 @@ pub fn run() {
             commands::mcp::mcp_call_tool,
             commands::mcp::mcp_store_env_secret,
             commands::mcp::mcp_delete_env_secret,
+            commands::web_search::web_search_get_secret_status,
+            commands::web_search::web_search_set_secret,
+            commands::web_search::web_search_execute,
             commands::skills::skills_list,
             commands::skills::skills_get,
             commands::skills::skills_install_from_local_path,

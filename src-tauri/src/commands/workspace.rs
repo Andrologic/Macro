@@ -1,5 +1,9 @@
 use crate::commands::terminal::TerminalSessionStore;
 use crate::commands::{CommandError, DbPool};
+use crate::config::{
+    ConfigChangeSource, ConfigDocumentKind, ConfigManager, ConfigPatchRequest, ConfigScope,
+    ConfigWatcherState, JsonPatchOperation,
+};
 use crate::core::error::{BackendError, Result};
 use crate::db::repository;
 use crate::git::GitState;
@@ -22,6 +26,7 @@ use crate::workspace::metadata::{
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
 use serde::Deserialize;
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,6 +79,132 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
             Ok(fallback)
         }
         Err(error) => Err(error),
+    }
+}
+
+async fn register_project_config_roots(
+    projects: impl IntoIterator<Item = ProjectDto>,
+    git_state: GitState,
+    config_manager: &ConfigManager,
+    config_watcher: &ConfigWatcherState,
+) {
+    for project in projects {
+        let project_path = PathBuf::from(&project.path);
+        if parse_wsl_unc_path(&project.path).is_some() {
+            continue;
+        }
+        let metadata_root =
+            match resolve_metadata_root(project_path.clone(), git_state.clone()).await {
+                Ok(root) => root,
+                Err(error) => {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "Impossible de résoudre la configuration @macro du projet"
+                    );
+                    continue;
+                }
+            };
+        let config_file = metadata_root
+            .join("projects")
+            .join(&project.id)
+            .join("config")
+            .join("git.json");
+        let initialize_git_config = !config_file.exists();
+        match config_manager
+            .register_project_root(&project.id, metadata_root)
+            .await
+        {
+            Ok(config_root) => {
+                if initialize_git_config {
+                    let detection = workspace::detect_project_git_flow(
+                        &project_path,
+                        Some(project.path.as_str()),
+                    );
+                    let state = if detection.repo_detected && !detection.requires_confirmation {
+                        "ready"
+                    } else {
+                        "configuration_required"
+                    };
+                    let mut operations = vec![JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/configurationState".to_string(),
+                        from: None,
+                        value: Some(json!(state)),
+                    }];
+                    if state == "ready" {
+                        if let Some(main_branch) = detection.suggested_main_branch {
+                            operations.push(JsonPatchOperation {
+                                op: "add".to_string(),
+                                path: "/mainBranch".to_string(),
+                                from: None,
+                                value: Some(json!(main_branch)),
+                            });
+                        }
+                        if let Some(base_branch) = detection.suggested_base_branch {
+                            operations.push(JsonPatchOperation {
+                                op: "add".to_string(),
+                                path: "/baseBranch".to_string(),
+                                from: None,
+                                value: Some(json!(base_branch)),
+                            });
+                        }
+                    }
+                    match config_manager
+                        .get_document(
+                            ConfigDocumentKind::Git,
+                            ConfigScope::Project {
+                                project_id: project.id.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(document) => {
+                            if let Err(error) = config_manager
+                                .apply_patch(ConfigPatchRequest {
+                                    kind: ConfigDocumentKind::Git,
+                                    scope: ConfigScope::Project {
+                                        project_id: project.id.clone(),
+                                    },
+                                    expected_etag: document.etag,
+                                    patch: operations,
+                                    source: ConfigChangeSource::UserInterface,
+                                })
+                                .await
+                            {
+                                tracing::warn!(
+                                    project_id = %project.id,
+                                    code = %error.code,
+                                    message = %error.message,
+                                    "Impossible d’initialiser la configuration Git détectée du projet"
+                                );
+                            }
+                        }
+                        Err(error) => tracing::warn!(
+                            project_id = %project.id,
+                            code = %error.code,
+                            message = %error.message,
+                            "Impossible de préparer le document Git du projet"
+                        ),
+                    }
+                }
+                if let Err(error) = config_watcher.watch_project_root(&project.id, &config_root) {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "Impossible de surveiller la configuration du projet"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    project_id = %project.id,
+                    code = %error.code,
+                    message = %error.message,
+                    "Impossible de charger la configuration du projet"
+                );
+            }
+        }
     }
 }
 
@@ -180,22 +311,58 @@ async fn load_live_terminal_project_ids(
 pub async fn workspace_get_bootstrap(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
 ) -> Result<WorkspaceBootstrapDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::get_bootstrap(&workspace_path, &metadata_root).await
+    let bootstrap = workspace::get_bootstrap(&workspace_path, &metadata_root).await?;
+    let projects = bootstrap
+        .standalone_projects
+        .iter()
+        .chain(
+            bootstrap
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .cloned()
+        .collect::<Vec<_>>();
+    register_project_config_roots(
+        projects,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(bootstrap)
 }
 
 #[tauri::command]
 pub async fn workspace_list_projects(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
 ) -> Result<Vec<ProjectGroupDto>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::list_projects(&workspace_path, &metadata_root).await
+    let groups = workspace::list_projects(&workspace_path, &metadata_root).await?;
+    let projects = groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    register_project_config_roots(
+        projects,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(groups)
 }
 
 #[tauri::command]

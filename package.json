@@ -30,6 +30,8 @@
   "scripts": {
     "dev": "NODE_ENV=development bun ./dev/prepare-vite-dev.mjs && NODE_ENV=development bun node_modules/vite/bin/vite.js --host",
     "build:ai-runtime": "bun ./dev/build-ai-runtime.mjs",
+    "config:generate": "cargo run --manifest-path src-tauri/Cargo.toml --example generate_config",
+    "config:check": "cargo run --manifest-path src-tauri/Cargo.toml --example generate_config -- --check",
     "build": "NODE_ENV=production bun node_modules/typescript/bin/tsc && NODE_ENV=production bun node_modules/vite/bin/vite.js build",
     "build:analyze": "NODE_ENV=production bun node_modules/vite/bin/vite.js build --mode analyze",
     "bundle:check": "bun ./dev/check-bundle-size.mjs",

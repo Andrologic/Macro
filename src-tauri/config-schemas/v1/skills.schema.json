@@ -1,0 +1,211 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SkillsDocument",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "conventionalRoots": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ConventionalSkillRoots"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "defaultGlobalDestination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "defaultProjectDestination": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "extensions": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    },
+    "installDestinations": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/SkillInstallDestination"
+      }
+    },
+    "permissions": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/SkillPermission"
+      }
+    },
+    "roots": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/SkillRootDefinition"
+      }
+    },
+    "schemaVersion": {
+      "default": 1,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "ContentApproval": {
+      "type": "object",
+      "required": [
+        "contentHash",
+        "grantedAt",
+        "grantedBy"
+      ],
+      "properties": {
+        "contentHash": {
+          "type": "string"
+        },
+        "grantedAt": {
+          "type": "string"
+        },
+        "grantedBy": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConventionalSkillRoots": {
+      "type": "object",
+      "properties": {
+        "agents": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "claude": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "codex": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "opencode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillInstallDestination": {
+      "type": "object",
+      "required": [
+        "path",
+        "scope"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillPermission": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "scriptsEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "trust": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContentApproval"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillRootDefinition": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "priority": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "sourceType": {
+          "default": "local",
+          "allOf": [
+            {
+              "$ref": "#/definitions/SkillSourceType"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillSourceType": {
+      "type": "string",
+      "enum": [
+        "local"
+      ]
+    }
+  }
+}

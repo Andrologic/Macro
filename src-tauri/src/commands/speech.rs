@@ -1,7 +1,12 @@
 use super::{command_error, get_pool, provider_mutation_lock, CommandResult, DbPool};
-use crate::db::{models::*, repository};
+use crate::config::{
+    ConfigChangeSource, ConfigDocumentKind, ConfigManager, ConfigPatchRequest, ConfigScope,
+    JsonPatchOperation,
+};
+use crate::db::models::*;
 use crate::{ai::macro_ai, secrets, speech};
 use serde::Deserialize;
+use serde_json::Value;
 use tauri::{ipc::InvokeBody, ipc::Request, State};
 
 const SECRET_PREFIX: &str = "speech:";
@@ -12,6 +17,91 @@ fn secret_id(provider_id: &str) -> String {
 
 fn is_managed_provider(provider_id: &str) -> bool {
     provider_id == macro_ai::SPEECH_PROVIDER_ID
+}
+
+async fn configured_speech_providers(
+    manager: &ConfigManager,
+) -> CommandResult<Vec<SpeechProviderConfig>> {
+    let document = manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let definitions = document
+        .get("speechProviders")
+        .and_then(Value::as_object)
+        .ok_or_else(|| command_error("providers.json ne contient pas de registre vocal valide."))?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut providers = Vec::with_capacity(definitions.len());
+    for (id, definition) in definitions {
+        let has_stored_api_key = if is_managed_provider(id) {
+            macro_ai::access_token().map_err(command_error)?.is_some()
+        } else {
+            secrets::get_api_key(&secret_id(id))
+                .map_err(|error| command_error(error.to_string()))?
+                .is_some()
+        };
+        providers.push(SpeechProviderConfig {
+            id: id.clone(),
+            name: definition
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(id)
+                .to_string(),
+            provider_type: definition
+                .get("providerType")
+                .and_then(Value::as_str)
+                .unwrap_or("openai-compatible")
+                .to_string(),
+            base_url: definition
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            model: definition
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            has_stored_api_key,
+            is_enabled: definition
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_local: definition
+                .get("isLocal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        });
+    }
+    providers.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(providers)
+}
+
+async fn patch_speech_providers(
+    manager: &ConfigManager,
+    providers: serde_json::Map<String, Value>,
+) -> CommandResult<()> {
+    let document = manager
+        .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
+        .await
+        .map_err(|error| command_error(error.message))?;
+    manager
+        .apply_patch(ConfigPatchRequest {
+            kind: ConfigDocumentKind::Providers,
+            scope: ConfigScope::User,
+            expected_etag: document.etag,
+            patch: vec![JsonPatchOperation {
+                op: "add".to_string(),
+                path: "/speechProviders".to_string(),
+                from: None,
+                value: Some(Value::Object(providers)),
+            }],
+            source: ConfigChangeSource::UserInterface,
+        })
+        .await
+        .map_err(|error| command_error(error.message))?;
+    Ok(())
 }
 
 fn validate_provider_fields(
@@ -60,38 +150,6 @@ fn validate_provider_fields(
     Ok(())
 }
 
-async fn apply_api_key_change(
-    pool: &sqlx::SqlitePool,
-    provider_id: &str,
-    api_key: Option<&str>,
-    previous_api_key: Option<&str>,
-) -> CommandResult<Option<bool>> {
-    let Some(api_key) = api_key else {
-        return Ok(None);
-    };
-    let has_key = !api_key.trim().is_empty();
-    let key_id = secret_id(provider_id);
-    let secret_result = if has_key {
-        secrets::set_api_key(&key_id, api_key.trim())
-    } else {
-        secrets::delete_api_key(&key_id)
-    };
-    secret_result.map_err(|error| {
-        command_error(format!("Failed to update speech provider API key: {error}"))
-    })?;
-
-    if let Err(error) =
-        repository::set_speech_provider_has_stored_api_key(pool, provider_id, has_key).await
-    {
-        let _ = match previous_api_key {
-            Some(previous) => secrets::set_api_key(&key_id, previous),
-            None => secrets::delete_api_key(&key_id),
-        };
-        return Err(super::CommandError::from(error));
-    }
-    Ok(Some(has_key))
-}
-
 fn header(request: &Request<'_>, name: &str) -> CommandResult<String> {
     request
         .headers()
@@ -106,34 +164,16 @@ fn header(request: &Request<'_>, name: &str) -> CommandResult<String> {
 #[tauri::command]
 pub async fn speech_list_provider_configs(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
 ) -> CommandResult<Vec<SpeechProviderConfig>> {
-    let pool = get_pool(&pool).await?;
-    let mut providers = repository::list_speech_provider_configs(&pool)
-        .await
-        .map_err(super::CommandError::from)?;
-
-    for provider in &mut providers {
-        let has_key = if is_managed_provider(&provider.id) {
-            macro_ai::access_token().map_err(command_error)?.is_some()
-        } else {
-            secrets::get_api_key(&secret_id(&provider.id))
-                .map_err(|error| command_error(error.to_string()))?
-                .is_some()
-        };
-        if has_key != provider.has_stored_api_key {
-            repository::set_speech_provider_has_stored_api_key(&pool, &provider.id, has_key)
-                .await
-                .map_err(super::CommandError::from)?;
-            provider.has_stored_api_key = has_key;
-        }
-    }
-
-    Ok(providers)
+    let _pool = get_pool(&pool).await?;
+    configured_speech_providers(config_manager.inner()).await
 }
 
 #[tauri::command]
 pub async fn speech_create_provider_config(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     name: String,
     provider_type: String,
     base_url: String,
@@ -143,30 +183,43 @@ pub async fn speech_create_provider_config(
     is_enabled: bool,
 ) -> CommandResult<SpeechProviderConfig> {
     validate_provider_fields(&name, &provider_type, &base_url, &model, is_local)?;
-    let pool = get_pool(&pool).await?;
+    let _pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock("speech:create");
     let _guard = lock.lock().await;
-    let mut created = repository::create_speech_provider_config(
-        &pool,
-        name.trim(),
-        provider_type.trim(),
-        base_url.trim(),
-        model.trim(),
-        is_local,
-        is_enabled,
-    )
-    .await
-    .map_err(super::CommandError::from)?;
+    let id = format!("speech-{}", uuid::Uuid::new_v4().simple());
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut providers = document
+        .get("speechProviders")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    providers.insert(
+        id.clone(),
+        serde_json::json!({
+            "providerType": provider_type.trim(),
+            "name": name.trim(),
+            "baseUrl": base_url.trim(),
+            "model": model.trim(),
+            "enabled": is_enabled,
+            "isLocal": is_local
+        }),
+    );
+    patch_speech_providers(config_manager.inner(), providers).await?;
 
     if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
-        if let Err(error) = apply_api_key_change(&pool, &created.id, Some(&api_key), None).await {
-            let _ = repository::delete_speech_provider_config(&pool, &created.id).await;
-            return Err(error);
+        if let Err(error) = secrets::set_api_key(&secret_id(&id), api_key.trim()) {
+            return Err(command_error(format!(
+                "Failed to persist speech provider API key: {error}"
+            )));
         }
-        created.has_stored_api_key = true;
     }
-
-    Ok(created)
+    configured_speech_providers(config_manager.inner())
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id)
+        .ok_or_else(|| command_error("Le fournisseur vocal créé est introuvable."))
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +238,7 @@ pub struct UpdateSpeechProviderParams {
 #[tauri::command]
 pub async fn speech_update_provider_config(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     params: UpdateSpeechProviderParams,
 ) -> CommandResult<()> {
     if is_managed_provider(&params.id) {
@@ -192,12 +246,13 @@ pub async fn speech_update_provider_config(
             "The managed Andrologic speech provider cannot be edited.",
         ));
     }
-    let pool = get_pool(&pool).await?;
+    let _pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock(&secret_id(&params.id));
     let _guard = lock.lock().await;
-    let previous = repository::get_speech_provider_config(&pool, &params.id)
-        .await
-        .map_err(super::CommandError::from)?
+    let previous = configured_speech_providers(config_manager.inner())
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == params.id)
         .ok_or_else(|| command_error(format!("Speech provider {} not found.", params.id)))?;
     let next_name = params.name.as_deref().unwrap_or(&previous.name);
     let next_type = params
@@ -221,42 +276,41 @@ pub async fn speech_update_provider_config(
     } else {
         None
     };
-    repository::update_speech_provider_config(
-        &pool,
-        UpdateSpeechProviderConfigInput {
-            id: params.id.clone(),
-            name: params.name.map(|value| value.trim().to_string()),
-            provider_type: params.provider_type.map(|value| value.trim().to_string()),
-            base_url: params.base_url.map(|value| value.trim().to_string()),
-            model: params.model.map(|value| value.trim().to_string()),
-            is_local: params.is_local,
-            is_enabled: params.is_enabled,
-        },
-    )
-    .await
-    .map_err(super::CommandError::from)?;
+    if let Some(api_key) = params.api_key.as_deref() {
+        if api_key.trim().is_empty() {
+            secrets::delete_api_key(&secret_id(&params.id))
+        } else {
+            secrets::set_api_key(&secret_id(&params.id), api_key.trim())
+        }
+        .map_err(|error| command_error(format!("Failed to update speech secret: {error}")))?;
+    }
 
-    if let Err(error) = apply_api_key_change(
-        &pool,
-        &params.id,
-        params.api_key.as_deref(),
-        previous_api_key.as_deref(),
-    )
-    .await
-    {
-        let _ = repository::update_speech_provider_config(
-            &pool,
-            UpdateSpeechProviderConfigInput {
-                id: previous.id,
-                name: Some(previous.name),
-                provider_type: Some(previous.provider_type),
-                base_url: Some(previous.base_url),
-                model: Some(previous.model),
-                is_local: Some(previous.is_local),
-                is_enabled: Some(previous.is_enabled),
-            },
-        )
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
         .await;
+    let mut providers = document
+        .get("speechProviders")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    providers.insert(
+        params.id.clone(),
+        serde_json::json!({
+            "providerType": next_type.trim(),
+            "name": next_name.trim(),
+            "baseUrl": next_base_url.trim(),
+            "model": next_model.trim(),
+            "enabled": params.is_enabled.unwrap_or(previous.is_enabled),
+            "isLocal": next_is_local
+        }),
+    );
+    if let Err(error) = patch_speech_providers(config_manager.inner(), providers).await {
+        if params.api_key.is_some() {
+            let _ = match previous_api_key {
+                Some(previous) => secrets::set_api_key(&secret_id(&params.id), &previous),
+                None => secrets::delete_api_key(&secret_id(&params.id)),
+            };
+        }
         return Err(error);
     }
 
@@ -319,6 +373,7 @@ mod tests {
 #[tauri::command]
 pub async fn speech_delete_provider_config(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     id: String,
 ) -> CommandResult<()> {
     if id == "openai-speech" || is_managed_provider(&id) {
@@ -326,31 +381,30 @@ pub async fn speech_delete_provider_config(
             "Default and managed speech providers cannot be deleted.",
         ));
     }
-    let pool = get_pool(&pool).await?;
+    let _pool = get_pool(&pool).await?;
     let lock = provider_mutation_lock(&secret_id(&id));
     let _guard = lock.lock().await;
-    repository::get_speech_provider_config(&pool, &id)
-        .await
-        .map_err(super::CommandError::from)?
+    configured_speech_providers(config_manager.inner())
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id)
         .ok_or_else(|| command_error(format!("Speech provider {id} not found.")))?;
-    let previous_api_key = secrets::get_api_key(&secret_id(&id)).map_err(|error| {
-        command_error(format!("Failed to access speech provider API key: {error}"))
-    })?;
-    secrets::delete_api_key(&secret_id(&id)).map_err(|error| {
-        command_error(format!("Failed to delete speech provider API key: {error}"))
-    })?;
-    if let Err(error) = repository::delete_speech_provider_config(&pool, &id).await {
-        if let Some(previous_api_key) = previous_api_key {
-            let _ = secrets::set_api_key(&secret_id(&id), &previous_api_key);
-        }
-        return Err(super::CommandError::from(error));
-    }
-    Ok(())
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut providers = document
+        .get("speechProviders")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    providers.remove(&id);
+    patch_speech_providers(config_manager.inner(), providers).await
 }
 
 #[tauri::command]
 pub async fn speech_transcribe(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     request: Request<'_>,
 ) -> CommandResult<speech::TranscriptionResult> {
     let provider_id = header(&request, "x-macro-speech-provider-id")?;
@@ -373,9 +427,10 @@ pub async fn speech_transcribe(
     };
 
     let pool = get_pool(&pool).await?;
-    let provider = repository::get_speech_provider_config(&pool, &provider_id)
-        .await
-        .map_err(super::CommandError::from)?
+    let provider = configured_speech_providers(config_manager.inner())
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == provider_id)
         .ok_or_else(|| command_error(format!("Speech provider {provider_id} not found.")))?;
     let api_key = if is_managed_provider(&provider_id) {
         Some(

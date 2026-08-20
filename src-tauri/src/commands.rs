@@ -14,6 +14,8 @@ pub mod skills;
 pub mod speech;
 #[path = "commands/terminal.rs"]
 pub mod terminal;
+#[path = "commands/web_search.rs"]
+pub mod web_search;
 #[path = "commands/workspace.rs"]
 pub mod workspace;
 #[path = "commands/workspace_tools.rs"]
@@ -26,6 +28,10 @@ pub use external_apps::{
 };
 pub use workspace_tools::WorkspaceProjectMount;
 
+use crate::config::{
+    ConfigChangeSource, ConfigDocumentKind, ConfigManager, ConfigPatchRequest, ConfigScope,
+    JsonPatchOperation,
+};
 use crate::core::tool_policy::{
     get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
     ToolValidationResult,
@@ -2934,10 +2940,239 @@ pub async fn db_delete_architect_plan_conversation_sync(
 
 // ============ PROVIDER CONFIGS ============
 
+async fn configured_provider_configs(
+    manager: &ConfigManager,
+    pool: &SqlitePool,
+) -> CommandResult<Vec<ProviderConfig>> {
+    let document = manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let definitions = document
+        .get("providers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            command_error("providers.json ne contient pas de registre providers valide.")
+        })?;
+    let legacy_status = repository::list_provider_configs(pool)
+        .await
+        .map_err(CommandError::from)?
+        .into_iter()
+        .map(|provider| (provider.id.clone(), provider))
+        .collect::<HashMap<_, _>>();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut providers = Vec::with_capacity(definitions.len());
+    for (id, definition) in definitions {
+        let status = legacy_status.get(id);
+        let provider_type = definition
+            .get("providerType")
+            .and_then(Value::as_str)
+            .unwrap_or("openai")
+            .to_string();
+        let has_stored_api_key = secrets::get_api_key(id)
+            .map_err(|error| command_error(format!("Failed to inspect provider secret: {error}")))?
+            .is_some();
+        providers.push(ProviderConfig {
+            id: id.clone(),
+            name: definition
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(id)
+                .to_string(),
+            provider_type,
+            base_url: definition
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            api_key: None,
+            has_stored_api_key,
+            is_enabled: definition
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_local: definition
+                .get("isLocal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            auth_status: status.and_then(|value| value.auth_status.clone()),
+            auth_source: status.and_then(|value| value.auth_source.clone()),
+            plan_type: status.and_then(|value| value.plan_type.clone()),
+            account_label: status.and_then(|value| value.account_label.clone()),
+            token_expires_at: status.and_then(|value| value.token_expires_at.clone()),
+            created_at: status
+                .map(|value| value.created_at.clone())
+                .unwrap_or_else(|| now.clone()),
+            updated_at: status
+                .map(|value| value.updated_at.clone())
+                .unwrap_or_else(|| now.clone()),
+        });
+    }
+    Ok(providers)
+}
+
+async fn patch_provider_definition(
+    manager: &ConfigManager,
+    provider_id: &str,
+    definition: Option<Value>,
+) -> CommandResult<()> {
+    let document = manager
+        .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
+        .await
+        .map_err(|error| command_error(error.message))?;
+    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+    let current_exists = document
+        .value
+        .pointer(&format!("/providers/{escaped}"))
+        .is_some();
+    let operation = match definition {
+        Some(value) => JsonPatchOperation {
+            op: "add".to_string(),
+            path: format!("/providers/{escaped}"),
+            from: None,
+            value: Some(value),
+        },
+        None if current_exists => JsonPatchOperation {
+            op: "remove".to_string(),
+            path: format!("/providers/{escaped}"),
+            from: None,
+            value: None,
+        },
+        None => return Ok(()),
+    };
+    manager
+        .apply_patch(ConfigPatchRequest {
+            kind: ConfigDocumentKind::Providers,
+            scope: ConfigScope::User,
+            expected_etag: document.etag,
+            patch: vec![operation],
+            source: ConfigChangeSource::UserInterface,
+        })
+        .await
+        .map_err(|error| command_error(error.message))?;
+    Ok(())
+}
+
+async fn patch_provider_document_top_level(
+    manager: &ConfigManager,
+    key: &str,
+    value: Value,
+) -> CommandResult<()> {
+    let document = manager
+        .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
+        .await
+        .map_err(|error| command_error(error.message))?;
+    manager
+        .apply_patch(ConfigPatchRequest {
+            kind: ConfigDocumentKind::Providers,
+            scope: ConfigScope::User,
+            expected_etag: document.etag,
+            patch: vec![JsonPatchOperation {
+                op: "add".to_string(),
+                path: format!("/{}", key.replace('~', "~0").replace('/', "~1")),
+                from: None,
+                value: Some(value),
+            }],
+            source: ConfigChangeSource::UserInterface,
+        })
+        .await
+        .map_err(|error| command_error(error.message))?;
+    Ok(())
+}
+
+async fn configured_provider_models(
+    manager: &ConfigManager,
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> CommandResult<Vec<AiModel>> {
+    let mut models = repository::list_models_by_provider(pool, provider_id)
+        .await
+        .map_err(CommandError::from)?
+        .into_iter()
+        .filter(|model| !model.is_manual)
+        .collect::<Vec<_>>();
+    let document = manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(manual_models) = document.get("manualModels").and_then(Value::as_object) {
+        for (stable_id, definition) in manual_models {
+            if definition.get("providerId").and_then(Value::as_str) != Some(provider_id) {
+                continue;
+            }
+            let Some(model_id) = definition.get("modelId").and_then(Value::as_str) else {
+                continue;
+            };
+            models.push(AiModel {
+                id: format!("config:{stable_id}"),
+                provider_id: provider_id.to_string(),
+                model_id: model_id.to_string(),
+                name: definition
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .unwrap_or(model_id)
+                    .to_string(),
+                description: None,
+                owned_by: None,
+                pricing_prompt: None,
+                pricing_completion: None,
+                pricing_request: None,
+                reasoning_efforts: None,
+                default_reasoning_effort: None,
+                context_window_tokens: definition
+                    .get("contextWindow")
+                    .and_then(Value::as_i64)
+                    .and_then(|value| i32::try_from(value).ok()),
+                input_limit_tokens: None,
+                output_limit_tokens: None,
+                context_window_source: definition
+                    .get("contextWindow")
+                    .is_some()
+                    .then(|| "user_override".to_string()),
+                context_limits_updated_at: None,
+                is_enabled: definition
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                is_manual: true,
+                first_seen_at: now.clone(),
+                last_seen_at: now.clone(),
+            });
+        }
+    }
+    if let Some(overrides) = document.get("modelOverrides").and_then(Value::as_object) {
+        for model in &mut models {
+            let composite = format!("{provider_id}/{}", model.model_id);
+            let Some(overlay) = overrides
+                .get(&composite)
+                .or_else(|| overrides.get(&model.model_id))
+            else {
+                continue;
+            };
+            if let Some(name) = overlay.get("displayName").and_then(Value::as_str) {
+                model.name = name.to_string();
+            }
+            if let Some(enabled) = overlay.get("enabled").and_then(Value::as_bool) {
+                model.is_enabled = enabled;
+            }
+            if let Some(tokens) = overlay
+                .get("contextWindow")
+                .and_then(Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok())
+            {
+                model.context_window_tokens = Some(tokens);
+                model.context_window_source = Some("user_override".to_string());
+            }
+        }
+    }
+    models.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(models)
+}
+
 #[tauri::command]
 pub async fn db_list_provider_configs(
     pool: State<'_, DbPool>,
     workspace_metadata_root: State<'_, WorkspaceMetadataRoot>,
+    config_manager: State<'_, ConfigManager>,
 ) -> CommandResult<Vec<ProviderConfig>> {
     let pool = get_pool(&pool).await?;
     if tauri::is_dev() {
@@ -2947,9 +3182,7 @@ pub async fn db_list_provider_configs(
             .map_err(CommandError::from)?;
     }
 
-    let mut configs = repository::list_provider_configs(&pool)
-        .await
-        .map_err(CommandError::from)?;
+    let mut configs = configured_provider_configs(config_manager.inner(), &pool).await?;
 
     for config in configs.iter_mut() {
         reconcile_provider_secret_metadata(&pool, config).await?;
@@ -3104,24 +3337,27 @@ async fn restore_provider_config(
 #[tauri::command]
 pub async fn db_get_provider_config(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     id: String,
 ) -> CommandResult<Option<ProviderConfig>> {
     let pool = get_pool(&pool).await?;
-
-    repository::get_provider_config(&pool, &id)
-        .await
-        .map_err(CommandError::from)
+    Ok(configured_provider_configs(config_manager.inner(), &pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id))
 }
 
 #[tauri::command]
 pub async fn db_reveal_provider_api_key(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     id: String,
 ) -> CommandResult<Option<String>> {
     let pool = get_pool(&pool).await?;
-    let config = repository::get_provider_config(&pool, &id)
-        .await
-        .map_err(CommandError::from)?;
+    let config = configured_provider_configs(config_manager.inner(), &pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id);
 
     if config.is_none() {
         return Err(CommandError {
@@ -3135,10 +3371,6 @@ pub async fn db_reveal_provider_api_key(
             id, error
         ),
     })?;
-
-    repository::set_provider_has_stored_api_key(&pool, &id, api_key.is_some())
-        .await
-        .map_err(CommandError::from)?;
 
     Ok(api_key)
 }
@@ -3158,6 +3390,7 @@ pub struct DbUpdateProviderConfigParams {
 #[tauri::command]
 pub async fn db_update_provider_config(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     params: DbUpdateProviderConfigParams,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
@@ -3170,9 +3403,10 @@ pub async fn db_update_provider_config(
     let provider_id = params.id.clone();
     let lock = provider_mutation_lock(&provider_id);
     let _guard = lock.lock().await;
-    let previous_config = repository::get_provider_config(&pool, &provider_id)
-        .await
-        .map_err(CommandError::from)?
+    let previous_config = configured_provider_configs(config_manager.inner(), &pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == provider_id)
         .ok_or_else(|| command_error(format!("Provider {} not found", provider_id)))?;
     let previous_api_key = if params.api_key.is_some() {
         secrets::get_api_key(&provider_id).map_err(|error| {
@@ -3184,39 +3418,32 @@ pub async fn db_update_provider_config(
     } else {
         None
     };
-    let api_key_for_store = params.api_key.clone();
+    if let Some(api_key) = params.api_key.as_deref() {
+        if api_key.trim().is_empty() {
+            secrets::delete_api_key(&provider_id)
+        } else {
+            secrets::set_api_key(&provider_id, api_key.trim())
+        }
+        .map_err(|error| command_error(format!("Failed to update provider secret: {error}")))?;
+    }
 
-    repository::update_provider_config(
-        &pool,
-        UpdateProviderConfigInput {
-            id: params.id,
-            name: params.name,
-            provider_type: params.provider_type,
-            base_url: params.base_url,
-            api_key: params.api_key,
-            is_local: params.is_local,
-            is_enabled: params.is_enabled,
-        },
-    )
-    .await
-    .map_err(CommandError::from)?;
-
-    if let Err(error) = apply_provider_api_key_change(
-        &pool,
-        &provider_id,
-        api_key_for_store.as_deref(),
-        previous_api_key.as_deref(),
-    )
-    .await
+    let definition = serde_json::json!({
+        "providerType": params.provider_type.unwrap_or(previous_config.provider_type),
+        "name": params.name.unwrap_or(previous_config.name),
+        "enabled": params.is_enabled.unwrap_or(previous_config.is_enabled),
+        "baseUrl": params.base_url.unwrap_or(previous_config.base_url),
+        "isLocal": params.is_local.unwrap_or(previous_config.is_local),
+    });
+    if let Err(error) =
+        patch_provider_definition(config_manager.inner(), &provider_id, Some(definition)).await
     {
-        let suffix = restore_provider_config(&pool, &previous_config, previous_api_key.is_some())
-            .await
-            .err()
-            .map(|compensation_error| {
-                format!(" SQLite compensation also failed: {compensation_error}")
-            })
-            .unwrap_or_default();
-        return Err(command_error(format!("{}{}", error.message, suffix)));
+        if params.api_key.is_some() {
+            let _ = match previous_api_key {
+                Some(previous) => secrets::set_api_key(&provider_id, &previous),
+                None => secrets::delete_api_key(&provider_id),
+            };
+        }
+        return Err(error);
     }
 
     Ok(())
@@ -3225,6 +3452,7 @@ pub async fn db_update_provider_config(
 #[tauri::command]
 pub async fn db_create_provider_config(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     name: String,
     provider_type: String,
     base_url: String,
@@ -3233,41 +3461,36 @@ pub async fn db_create_provider_config(
     is_enabled: bool,
 ) -> CommandResult<ProviderConfig> {
     let pool = get_pool(&pool).await?;
-
-    let mut created = repository::create_provider_config(
-        &pool,
-        &name,
-        &provider_type,
-        &base_url,
-        None,
-        is_local,
-        is_enabled,
-    )
-    .await
-    .map_err(CommandError::from)?;
-
-    if let Some(key) = api_key {
-        match apply_provider_api_key_change(&pool, &created.id, Some(&key), None).await {
-            Ok(Some(has_stored_api_key)) => created.has_stored_api_key = has_stored_api_key,
-            Ok(None) => {}
-            Err(error) => {
-                let suffix = repository::delete_provider_config(&pool, &created.id)
-                    .await
-                    .err()
-                    .map(|compensation_error| {
-                        format!(" SQLite compensation also failed: {compensation_error}")
-                    })
-                    .unwrap_or_default();
-                return Err(command_error(format!("{}{}", error.message, suffix)));
-            }
+    let id = format!("provider-{}", uuid::Uuid::new_v4().simple());
+    let definition = serde_json::json!({
+        "providerType": provider_type,
+        "name": name,
+        "enabled": is_enabled,
+        "baseUrl": base_url,
+        "isLocal": is_local,
+    });
+    patch_provider_definition(config_manager.inner(), &id, Some(definition)).await?;
+    if let Some(key) = api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+        if let Err(error) = secrets::set_api_key(&id, key.trim()) {
+            let _ = patch_provider_definition(config_manager.inner(), &id, None).await;
+            return Err(command_error(format!(
+                "Failed to persist provider secret: {error}"
+            )));
         }
     }
-
-    Ok(created)
+    configured_provider_configs(config_manager.inner(), &pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id)
+        .ok_or_else(|| command_error("Le fournisseur créé est introuvable dans providers.json."))
 }
 
 #[tauri::command]
-pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> CommandResult<()> {
+pub async fn db_delete_provider_config(
+    pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
+    id: String,
+) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
     if id == crate::ai::macro_ai::PROVIDER_ID {
         return Err(CommandError {
@@ -3277,65 +3500,35 @@ pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> C
 
     let lock = provider_mutation_lock(&id);
     let _guard = lock.lock().await;
-    let previous_config = repository::get_provider_config(&pool, &id)
-        .await
-        .map_err(CommandError::from)?
+    let previous_config = configured_provider_configs(config_manager.inner(), &pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id)
         .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
-    let previous_api_key = secrets::get_api_key(&id).map_err(|error| {
-        command_error(format!(
-            "Failed to read the local provider API key for {}: {}",
-            id, error
-        ))
-    })?;
-    let previous_linked_secret = secrets::get_chatgpt_secret(&id).map_err(|error| {
-        command_error(format!(
-            "Failed to read the local linked-provider session for {}: {}",
-            id, error
-        ))
-    })?;
-    secrets::delete_api_key(&id).map_err(|error| CommandError {
-        message: format!(
-            "Failed to delete the local provider API key for {}: {}",
-            id, error
-        ),
-    })?;
-    if let Err(error) = secrets::delete_provider_secret(&id) {
-        let suffix = match previous_api_key.as_deref() {
-            Some(value) => secrets::set_api_key(&id, value),
-            None => secrets::delete_api_key(&id),
-        }
-        .err()
-        .map(|compensation_error| {
-            format!(" API-key compensation also failed: {compensation_error}")
-        })
-        .unwrap_or_default();
-        return Err(command_error(format!(
-            "Failed to delete the local linked-provider session for {}: {}.{}",
-            id, error, suffix
-        )));
-    }
-    if let Err(error) = repository::delete_provider_config(&pool, &id).await {
-        let restore_key = match previous_api_key {
-            Some(ref value) => secrets::set_api_key(&id, value),
-            None => secrets::delete_api_key(&id),
-        };
-        let restore_session = match previous_linked_secret {
-            Some(ref value) => secrets::set_chatgpt_secret(&id, value),
-            None => secrets::delete_provider_secret(&id),
-        };
-        let suffix = restore_key
-            .err()
-            .map(|restore_error| format!(" API-key compensation also failed: {restore_error}"))
-            .or_else(|| {
-                restore_session.err().map(|restore_error| {
-                    format!(" Session compensation also failed: {restore_error}")
-                })
-            })
-            .unwrap_or_default();
-        return Err(command_error(format!(
-            "Failed to delete provider {} from SQLite: {}.{}",
-            previous_config.name, error, suffix
-        )));
+    let document = config_manager
+        .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
+        .await
+        .map_err(|error| command_error(error.message))?;
+    let escaped = id.replace('~', "~0").replace('/', "~1");
+    if document
+        .value
+        .pointer(&format!("/providers/{escaped}"))
+        .is_some()
+    {
+        patch_provider_definition(config_manager.inner(), &id, None).await?;
+    } else {
+        patch_provider_definition(
+            config_manager.inner(),
+            &id,
+            Some(serde_json::json!({
+                "providerType": previous_config.provider_type,
+                "name": previous_config.name,
+                "enabled": false,
+                "baseUrl": previous_config.base_url,
+                "isLocal": previous_config.is_local,
+            })),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -3345,30 +3538,65 @@ pub async fn db_delete_provider_config(pool: State<'_, DbPool>, id: String) -> C
 #[tauri::command]
 pub async fn db_list_provider_models(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
-
-    repository::list_models_by_provider(&pool, &provider_id)
-        .await
-        .map_err(Into::into)
+    configured_provider_models(config_manager.inner(), &pool, &provider_id).await
 }
 
 #[tauri::command]
 pub async fn db_upsert_provider_models(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
     models: Vec<ProviderModelInput>,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
 
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut overrides = document
+        .get("modelOverrides")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut overrides_changed = false;
+    for model in &models {
+        let key = format!("{provider_id}/{}", model.model_id);
+        let mut overlay = overrides
+            .remove(&key)
+            .unwrap_or_else(|| serde_json::json!({}));
+        if model.context_window_source.as_deref() == Some("user_override") {
+            if let Some(tokens) = model.context_window_tokens {
+                overlay["contextWindow"] = Value::from(tokens);
+                overrides_changed = true;
+            }
+        } else if overlay.get("contextWindow").is_some() {
+            overlay
+                .as_object_mut()
+                .map(|object| object.remove("contextWindow"));
+            overrides_changed = true;
+        }
+        if overlay.as_object().is_some_and(|object| !object.is_empty()) {
+            overrides.insert(key, overlay);
+        }
+    }
+    if overrides_changed {
+        patch_provider_document_top_level(
+            config_manager.inner(),
+            "modelOverrides",
+            Value::Object(overrides),
+        )
+        .await?;
+    }
+
     repository::upsert_provider_models(&pool, &provider_id, &models)
         .await
         .map_err(CommandError::from)?;
 
-    repository::list_models_by_provider(&pool, &provider_id)
-        .await
-        .map_err(Into::into)
+    configured_provider_models(config_manager.inner(), &pool, &provider_id).await
 }
 
 #[tauri::command]
@@ -3422,24 +3650,52 @@ pub async fn db_delete_conversation_compaction_state(
 #[tauri::command]
 pub async fn db_register_manual_model(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
     model_id: String,
     name: String,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
 
-    repository::register_manual_model(&pool, &provider_id, &model_id, &name)
-        .await
-        .map_err(CommandError::from)?;
-
-    repository::list_models_by_provider(&pool, &provider_id)
-        .await
-        .map_err(Into::into)
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut manual_models = document
+        .get("manualModels")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if manual_models.values().any(|definition| {
+        definition.get("providerId").and_then(Value::as_str) == Some(provider_id.as_str())
+            && definition.get("modelId").and_then(Value::as_str) == Some(model_id.as_str())
+    }) {
+        return Err(command_error(format!(
+            "Model {model_id} already exists for provider {provider_id}."
+        )));
+    }
+    let stable_id = format!("{}:{}", provider_id, uuid::Uuid::new_v4().simple());
+    manual_models.insert(
+        stable_id,
+        serde_json::json!({
+            "providerId": provider_id,
+            "modelId": model_id,
+            "displayName": name,
+            "enabled": true
+        }),
+    );
+    patch_provider_document_top_level(
+        config_manager.inner(),
+        "manualModels",
+        Value::Object(manual_models),
+    )
+    .await?;
+    configured_provider_models(config_manager.inner(), &pool, &provider_id).await
 }
 
 #[tauri::command]
 pub async fn db_update_manual_model(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
     current_model_id: String,
     next_model_id: String,
@@ -3447,63 +3703,179 @@ pub async fn db_update_manual_model(
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
 
-    repository::update_manual_model(
-        &pool,
-        &provider_id,
-        &current_model_id,
-        &next_model_id,
-        &name,
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut manual_models = document
+        .get("manualModels")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let target = manual_models.iter().find_map(|(id, definition)| {
+        (definition.get("providerId").and_then(Value::as_str) == Some(provider_id.as_str())
+            && definition.get("modelId").and_then(Value::as_str) == Some(current_model_id.as_str()))
+        .then(|| id.clone())
+    });
+    let target = target.ok_or_else(|| command_error("Manual model not found"))?;
+    if manual_models.iter().any(|(id, definition)| {
+        id != &target
+            && definition.get("providerId").and_then(Value::as_str) == Some(provider_id.as_str())
+            && definition.get("modelId").and_then(Value::as_str) == Some(next_model_id.as_str())
+    }) {
+        return Err(command_error(format!(
+            "Model {next_model_id} already exists for provider {provider_id}."
+        )));
+    }
+    let enabled = manual_models[&target]
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    manual_models.insert(
+        target,
+        serde_json::json!({
+            "providerId": provider_id,
+            "modelId": next_model_id,
+            "displayName": name,
+            "enabled": enabled
+        }),
+    );
+    patch_provider_document_top_level(
+        config_manager.inner(),
+        "manualModels",
+        Value::Object(manual_models),
     )
-    .await
-    .map_err(CommandError::from)?;
-
-    repository::list_models_by_provider(&pool, &provider_id)
-        .await
-        .map_err(Into::into)
+    .await?;
+    configured_provider_models(config_manager.inner(), &pool, &provider_id).await
 }
 
 #[tauri::command]
 pub async fn db_delete_manual_model(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
     model_id: String,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
 
-    repository::delete_manual_model(&pool, &provider_id, &model_id)
-        .await
-        .map_err(CommandError::from)?;
-
-    repository::list_models_by_provider(&pool, &provider_id)
-        .await
-        .map_err(Into::into)
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut manual_models = document
+        .get("manualModels")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    manual_models.retain(|_, definition| {
+        definition.get("providerId").and_then(Value::as_str) != Some(provider_id.as_str())
+            || definition.get("modelId").and_then(Value::as_str) != Some(model_id.as_str())
+    });
+    patch_provider_document_top_level(
+        config_manager.inner(),
+        "manualModels",
+        Value::Object(manual_models),
+    )
+    .await?;
+    configured_provider_models(config_manager.inner(), &pool, &provider_id).await
 }
 
 #[tauri::command]
 pub async fn db_set_provider_model_enabled(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
     model_id: String,
     enabled: bool,
 ) -> CommandResult<()> {
-    let pool = get_pool(&pool).await?;
+    let _pool = get_pool(&pool).await?;
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut manual_models = document
+        .get("manualModels")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some((stable_id, mut definition)) = manual_models.iter().find_map(|(id, definition)| {
+        (definition.get("providerId").and_then(Value::as_str) == Some(provider_id.as_str())
+            && definition.get("modelId").and_then(Value::as_str) == Some(model_id.as_str()))
+        .then(|| (id.clone(), definition.clone()))
+    }) {
+        definition["enabled"] = Value::Bool(enabled);
+        manual_models.insert(stable_id, definition);
+        return patch_provider_document_top_level(
+            config_manager.inner(),
+            "manualModels",
+            Value::Object(manual_models),
+        )
+        .await;
+    }
 
-    repository::set_model_enabled(&pool, &provider_id, &model_id, enabled)
-        .await
-        .map_err(Into::into)
+    let mut overrides = document
+        .get("modelOverrides")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let key = format!("{provider_id}/{model_id}");
+    let mut overlay = overrides
+        .remove(&key)
+        .unwrap_or_else(|| serde_json::json!({}));
+    overlay["enabled"] = Value::Bool(enabled);
+    overrides.insert(key, overlay);
+    patch_provider_document_top_level(
+        config_manager.inner(),
+        "modelOverrides",
+        Value::Object(overrides),
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn db_set_all_provider_models_enabled(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
     enabled: bool,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
-
-    repository::set_all_models_enabled(&pool, &provider_id, enabled)
-        .await
-        .map_err(Into::into)
+    let models = configured_provider_models(config_manager.inner(), &pool, &provider_id).await?;
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let mut manual_models = document
+        .get("manualModels")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for definition in manual_models.values_mut() {
+        if definition.get("providerId").and_then(Value::as_str) == Some(provider_id.as_str()) {
+            definition["enabled"] = Value::Bool(enabled);
+        }
+    }
+    let mut overrides = document
+        .get("modelOverrides")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for model in models.into_iter().filter(|model| !model.is_manual) {
+        let key = format!("{provider_id}/{}", model.model_id);
+        let mut overlay = overrides
+            .remove(&key)
+            .unwrap_or_else(|| serde_json::json!({}));
+        overlay["enabled"] = Value::Bool(enabled);
+        overrides.insert(key, overlay);
+    }
+    patch_provider_document_top_level(
+        config_manager.inner(),
+        "manualModels",
+        Value::Object(manual_models),
+    )
+    .await?;
+    patch_provider_document_top_level(
+        config_manager.inner(),
+        "modelOverrides",
+        Value::Object(overrides),
+    )
+    .await
 }
 
 // ============ PROVIDER SETTINGS ============
@@ -3511,32 +3883,80 @@ pub async fn db_set_all_provider_models_enabled(
 #[tauri::command]
 pub async fn db_get_provider_settings(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
 ) -> CommandResult<ProviderSettings> {
-    let pool = get_pool(&pool).await?;
-
-    repository::get_provider_settings(&pool, &provider_id)
-        .await
-        .map_err(Into::into)
+    let _pool = get_pool(&pool).await?;
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let definition = document
+        .pointer(&format!(
+            "/providers/{}",
+            provider_id.replace('~', "~0").replace('/', "~1")
+        ))
+        .ok_or_else(|| command_error(format!("Provider {provider_id} not found")))?;
+    Ok(ProviderSettings {
+        provider_id,
+        filter_free_models: definition
+            .pointer("/options/filterFreeModels")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        copilot_send_timeout_ms: definition
+            .pointer("/options/copilotSendTimeoutMs")
+            .and_then(Value::as_i64),
+    })
 }
 
 #[tauri::command]
 pub async fn db_update_provider_settings(
     pool: State<'_, DbPool>,
+    config_manager: State<'_, ConfigManager>,
     provider_id: String,
     filter_free_models: Option<bool>,
     copilot_send_timeout_ms: Option<Option<i64>>,
 ) -> CommandResult<()> {
     let pool = get_pool(&pool).await?;
-
-    repository::update_provider_settings(
-        &pool,
+    let current = configured_provider_configs(config_manager.inner(), &pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == provider_id)
+        .ok_or_else(|| command_error(format!("Provider {provider_id} not found")))?;
+    let document = config_manager
+        .effective_user_document(ConfigDocumentKind::Providers)
+        .await;
+    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+    let mut options = document
+        .pointer(&format!("/providers/{escaped}/options"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(value) = filter_free_models {
+        options.insert("filterFreeModels".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = copilot_send_timeout_ms {
+        match value {
+            Some(timeout) => {
+                options.insert("copilotSendTimeoutMs".to_string(), Value::from(timeout));
+            }
+            None => {
+                options.remove("copilotSendTimeoutMs");
+            }
+        }
+    }
+    patch_provider_definition(
+        config_manager.inner(),
         &provider_id,
-        filter_free_models,
-        copilot_send_timeout_ms,
+        Some(serde_json::json!({
+            "providerType": current.provider_type,
+            "name": current.name,
+            "enabled": current.is_enabled,
+            "baseUrl": current.base_url,
+            "isLocal": current.is_local,
+            "options": options
+        })),
     )
     .await
-    .map_err(Into::into)
 }
 
 #[tauri::command]

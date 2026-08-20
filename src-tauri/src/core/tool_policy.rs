@@ -16,6 +16,10 @@ pub struct ToolModePolicyResult {
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "config_list",
+        "config_get",
+        "config_validate",
+        "config_patch",
         "skill_activate",
         "skill_read_resource",
         "skill_run_script",
@@ -66,6 +70,10 @@ fn normalize_architect_tool_id(tool_id: &str) -> &str {
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "config_list",
+        "config_get",
+        "config_validate",
+        "config_patch",
         "skill_activate",
         "skill_read_resource",
         "skill_run_script",
@@ -81,6 +89,10 @@ fn chat_allowed_tool_ids() -> &'static [&'static str] {
 fn implement_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "config_list",
+        "config_get",
+        "config_validate",
+        "config_patch",
         "skill_activate",
         "skill_read_resource",
         "skill_run_script",
@@ -289,6 +301,10 @@ mod tests {
             policy.allowed_tool_ids,
             vec![
                 "question".to_string(),
+                "config_list".to_string(),
+                "config_get".to_string(),
+                "config_validate".to_string(),
+                "config_patch".to_string(),
                 "skill_activate".to_string(),
                 "skill_read_resource".to_string(),
                 "skill_run_script".to_string(),
