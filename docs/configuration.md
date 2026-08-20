@@ -133,7 +133,9 @@ Les surcharges projet sont volontairement limitées :
 Dans un contexte multi-projet, un outil doit être autorisé par le scope global
 et par tous les projets affectés. Les limites numériques prennent la valeur la
 plus restrictive. Un modèle projet n’est utilisé que si le projet cible ou le
-projet de focus est sans ambiguïté.
+projet de focus est sans ambiguïté. Un serveur MCP n’est actif dans l’agrégat
+multi-projet que si sa définition effective est activée et identique dans tous
+les projets concernés.
 
 Les entrées de `agents.models` utilisent une sélection `{ "providerId",
 "modelId", "reasoningEffort" }`. Les clés reconnues pour les tours sont
@@ -206,6 +208,12 @@ devenir effectif au prochain lancement.
 Les secrets utilisent des références `macro-secret://...`. Les champs tels que
 `apiKey`, `token` et `password` en clair sont refusés par la validation. Les
 agents voient seulement les références et les indicateurs `hasSecret`.
+
+Une variable d’environnement MCP secrète utilise exactement
+`macro-secret://mcp-env/<identifiant-normalisé-du-serveur>/<nom-de-variable>`.
+Elle ne peut cibler ni un autre serveur ni une autre variable. Les en-têtes des
+transports MCP distants n’acceptent pas encore de références secrètes : ils
+sont refusés tant qu’un résolveur dédié n’est pas disponible.
 
 `provider-secrets.json` reste sous le dossier de données privé de
 l’application. Il est écrit atomiquement, avec une sauvegarde avant changement

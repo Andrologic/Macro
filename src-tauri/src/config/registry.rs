@@ -273,6 +273,139 @@ fn collect_plain_secret_fields(
     }
 }
 
+fn normalize_mcp_server_id(value: &str) -> String {
+    let mut normalized = String::new();
+    for character in value.trim().to_ascii_lowercase().chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+            normalized.push(character);
+        } else if !normalized.ends_with('_') {
+            normalized.push('_');
+        }
+        if normalized.len() >= 64 {
+            break;
+        }
+    }
+    let normalized = normalized.trim_matches('_');
+    if normalized.is_empty() {
+        "server".to_string()
+    } else {
+        normalized.to_string()
+    }
+}
+
+fn valid_mcp_env_key(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)> {
+    const PREFIX: &str = "macro-secret://mcp-env/";
+    let mut diagnostics = Vec::new();
+    let Some(servers) = value.get("mcpServers").and_then(Value::as_object) else {
+        return diagnostics;
+    };
+
+    let mut normalized_server_ids = BTreeMap::<String, &str>::new();
+    for (server_id, server) in servers {
+        let expected_server_id = normalize_mcp_server_id(server_id);
+        if let Some(existing_server_id) =
+            normalized_server_ids.insert(expected_server_id.clone(), server_id)
+        {
+            diagnostics.push((
+                format!(
+                    "/mcpServers/{}",
+                    server_id.replace('~', "~0").replace('/', "~1")
+                ),
+                "config.tools.mcp_server_id_collision",
+                format!(
+                    "Les serveurs MCP {existing_server_id} et {server_id} partagent l’identifiant normalisé {expected_server_id}."
+                ),
+            ));
+        }
+        if let Some(headers) = server
+            .pointer("/transport/headers")
+            .and_then(Value::as_object)
+        {
+            for (header_name, header_value) in headers {
+                if header_value
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("macro-secret://"))
+                {
+                    diagnostics.push((
+                        format!(
+                            "/mcpServers/{}/transport/headers/{}",
+                            server_id.replace('~', "~0").replace('/', "~1"),
+                            header_name.replace('~', "~0").replace('/', "~1")
+                        ),
+                        "config.tools.mcp_secret_ref_unsupported",
+                        "Les références de secrets dans les en-têtes MCP distants ne sont pas prises en charge dans cette version."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        let Some(env) = server.pointer("/transport/env").and_then(Value::as_object) else {
+            continue;
+        };
+        for (env_key, env_value) in env {
+            let Some(reference) = env_value.as_str() else {
+                continue;
+            };
+            if !reference.starts_with("macro-secret://") {
+                continue;
+            }
+
+            let suffix = reference.strip_prefix(PREFIX);
+            let parsed = suffix.and_then(|suffix| {
+                let mut segments = suffix.split('/');
+                let referenced_server = segments.next()?;
+                let secret_key = segments.next()?;
+                if segments.next().is_some()
+                    || referenced_server.is_empty()
+                    || !valid_mcp_env_key(secret_key)
+                {
+                    return None;
+                }
+                Some((referenced_server, secret_key))
+            });
+            let path = format!(
+                "/mcpServers/{}/transport/env/{}",
+                server_id.replace('~', "~0").replace('/', "~1"),
+                env_key.replace('~', "~0").replace('/', "~1")
+            );
+            let Some((referenced_server, secret_key)) = parsed else {
+                diagnostics.push((
+                    path,
+                    "config.tools.mcp_secret_ref_invalid",
+                    "Une référence de secret MCP doit respecter macro-secret://mcp-env/<serveur>/<clé>."
+                        .to_string(),
+                ));
+                continue;
+            };
+            if referenced_server != expected_server_id {
+                diagnostics.push((
+                    path,
+                    "config.tools.mcp_secret_ref_invalid",
+                    format!(
+                        "Le serveur MCP {server_id} ne peut référencer que ses propres secrets, sous {expected_server_id}."
+                    ),
+                ));
+            } else if secret_key != env_key {
+                diagnostics.push((
+                    path,
+                    "config.tools.mcp_secret_ref_invalid",
+                    format!("La variable MCP {env_key} doit référencer le secret de même nom."),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
 fn validate_skill_paths(value: &Value, scope: &ConfigScope) -> Vec<(String, String)> {
     let mut diagnostics = Vec::new();
     let allowed_variables = ["${home}", "${projectRoot}", "${configDir}"];
@@ -420,6 +553,14 @@ pub fn validate_document(
             message,
         )
     }));
+
+    if kind == ConfigDocumentKind::Tools {
+        diagnostics.extend(
+            validate_mcp_secret_refs(value)
+                .into_iter()
+                .map(|(path, code, message)| diagnostic(kind, scope, Some(path), code, message)),
+        );
+    }
 
     if kind == ConfigDocumentKind::Skills {
         diagnostics.extend(validate_skill_paths(value, scope).into_iter().map(
@@ -911,7 +1052,7 @@ pub fn project_overlay_is_restrictive(
                 );
             }
         }
-        for section in ["builtIn", "modes"] {
+        for section in ["builtIn", "modes", "mcpServers"] {
             if re_enables_false(global_effective.get(section), project.get(section)) {
                 return Err(format!(
                     "Un projet ne peut pas réactiver une entrée désactivée globalement dans {section}."
@@ -983,6 +1124,42 @@ fn set_project_provenance(
     );
 }
 
+fn config_provenance_pointer(kind: ConfigDocumentKind, pointer: &str) -> String {
+    format!("/{}{}", kind.file_name().trim_end_matches(".json"), pointer)
+}
+
+fn canonical_mcp_server_definition(value: Value) -> Option<Value> {
+    let mut definition = serde_json::from_value::<McpServerDefinition>(value).ok()?;
+    definition.enabled.get_or_insert(true);
+    serde_json::to_value(definition).ok()
+}
+
+fn effective_mcp_server_for_project(
+    user_effective: &Value,
+    project_documents: &BTreeMap<ConfigDocumentKind, Value>,
+    server_id: &str,
+) -> Option<Value> {
+    let global = user_effective
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .and_then(|servers| servers.get(server_id));
+    let project = project_documents
+        .get(&ConfigDocumentKind::Tools)
+        .and_then(|document| document.get("mcpServers"))
+        .and_then(Value::as_object)
+        .and_then(|servers| servers.get(server_id));
+
+    let mut effective = match (global, project) {
+        (Some(global), _) => global.clone(),
+        (None, Some(project)) => project.clone(),
+        (None, None) => return None,
+    };
+    if let Some(project) = project {
+        merge_values(&mut effective, project);
+    }
+    canonical_mcp_server_definition(effective)
+}
+
 fn apply_project_restrictions(
     kind: ConfigDocumentKind,
     value: &mut Value,
@@ -996,8 +1173,26 @@ fn apply_project_restrictions(
     }
 
     if kind == ConfigDocumentKind::Agents {
-        if let Some(models) = user_effective.pointer("/models") {
-            value["models"] = models.clone();
+        if project_documents.len() > 1 {
+            if let Some(models) = user_effective.pointer("/models") {
+                value["models"] = models.clone();
+            }
+            provenance.retain(|(document, pointer), _| {
+                *document != ConfigDocumentKind::Agents || !pointer.starts_with("/models/")
+            });
+            for pointer in
+                collect_leaf_pointers(user_effective.pointer("/models").unwrap_or(&Value::Null))
+            {
+                let model_pointer = format!("/models{pointer}");
+                provenance.insert(
+                    (kind, model_pointer.clone()),
+                    ConfigProvenance {
+                        json_pointer: format!("/agents{model_pointer}"),
+                        origin: ConfigOrigin::User,
+                        project_id: None,
+                    },
+                );
+            }
         }
         let max_turns = std::iter::once(
             user_effective
@@ -1034,7 +1229,7 @@ fn apply_project_restrictions(
     }
 
     let restrictive_roots: &[&str] = match kind {
-        ConfigDocumentKind::Tools => &["/builtIn", "/modes"],
+        ConfigDocumentKind::Tools => &["/builtIn", "/modes", "/mcpServers"],
         ConfigDocumentKind::Skills => &["/conventionalRoots"],
         _ => &[],
     };
@@ -1104,6 +1299,55 @@ fn apply_project_restrictions(
         if let Some(project_id) = selected_project {
             set_project_provenance(provenance, kind, "/riskLevel", project_id);
         }
+
+        if project_documents.len() > 1 {
+            let server_ids = value
+                .pointer("/mcpServers")
+                .and_then(Value::as_object)
+                .map(|servers| servers.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            for server_id in server_ids {
+                let mut expected_definition = None;
+                let mut blocked_by = None;
+
+                for (project_id, documents) in project_documents {
+                    let Some(project_definition) =
+                        effective_mcp_server_for_project(user_effective, documents, &server_id)
+                    else {
+                        blocked_by = Some(*project_id);
+                        break;
+                    };
+                    if project_definition.get("enabled").and_then(Value::as_bool) == Some(false) {
+                        blocked_by = Some(*project_id);
+                        break;
+                    }
+                    if expected_definition
+                        .as_ref()
+                        .is_some_and(|expected| expected != &project_definition)
+                    {
+                        blocked_by = Some(*project_id);
+                        break;
+                    }
+                    expected_definition.get_or_insert(project_definition);
+                }
+
+                if let Some(project_id) = blocked_by {
+                    if let Some(server) = value
+                        .get_mut("mcpServers")
+                        .and_then(Value::as_object_mut)
+                        .and_then(|servers| servers.get_mut(&server_id))
+                        .and_then(Value::as_object_mut)
+                    {
+                        server.insert("enabled".to_string(), Value::Bool(false));
+                        let pointer = format!(
+                            "/mcpServers/{}/enabled",
+                            server_id.replace('~', "~0").replace('/', "~1")
+                        );
+                        set_project_provenance(provenance, kind, &pointer, project_id);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1121,10 +1365,7 @@ pub fn effective_documents(
             provenance.insert(
                 (kind, pointer.clone()),
                 ConfigProvenance {
-                    json_pointer: format!(
-                        "/{}/{pointer}",
-                        kind.file_name().trim_end_matches(".json")
-                    ),
+                    json_pointer: config_provenance_pointer(kind, &pointer),
                     origin: ConfigOrigin::Default,
                     project_id: None,
                 },
@@ -1137,10 +1378,7 @@ pub fn effective_documents(
                 provenance.insert(
                     (kind, pointer.clone()),
                     ConfigProvenance {
-                        json_pointer: format!(
-                            "/{}/{pointer}",
-                            kind.file_name().trim_end_matches(".json")
-                        ),
+                        json_pointer: config_provenance_pointer(kind, &pointer),
                         origin: ConfigOrigin::User,
                         project_id: None,
                     },
@@ -1156,10 +1394,7 @@ pub fn effective_documents(
                     provenance.insert(
                         (kind, pointer.clone()),
                         ConfigProvenance {
-                            json_pointer: format!(
-                                "/{}/{pointer}",
-                                kind.file_name().trim_end_matches(".json")
-                            ),
+                            json_pointer: config_provenance_pointer(kind, &pointer),
                             origin: ConfigOrigin::Project,
                             project_id: Some((*project_id).to_string()),
                         },
@@ -1181,10 +1416,7 @@ pub fn effective_documents(
                 provenance.insert(
                     (kind, pointer.clone()),
                     ConfigProvenance {
-                        json_pointer: format!(
-                            "/{}/{pointer}",
-                            kind.file_name().trim_end_matches(".json")
-                        ),
+                        json_pointer: config_provenance_pointer(kind, &pointer),
                         origin: ConfigOrigin::Session,
                         project_id: None,
                     },
@@ -1376,6 +1608,67 @@ mod tests {
     }
 
     #[test]
+    fn one_project_keeps_its_agent_model_override() {
+        let user = BTreeMap::from([(
+            ConfigDocumentKind::Agents,
+            json!({"models":{"chat":{"modelId":"global"}}}),
+        )]);
+        let project = BTreeMap::from([(
+            ConfigDocumentKind::Agents,
+            json!({"models":{"chat":{"modelId":"project"}}}),
+        )]);
+
+        let (effective, provenance) =
+            effective_documents(&user, &[("project", &project)], &BTreeMap::new());
+
+        assert_eq!(
+            effective["agents"].pointer("/models/chat/modelId"),
+            Some(&json!("project"))
+        );
+        assert!(provenance.iter().any(|entry| {
+            entry.json_pointer == "/agents/models/chat/modelId"
+                && entry.origin == ConfigOrigin::Project
+                && entry.project_id.as_deref() == Some("project")
+        }));
+    }
+
+    #[test]
+    fn ambiguous_multi_project_models_restore_global_provenance() {
+        let user = BTreeMap::from([(
+            ConfigDocumentKind::Agents,
+            json!({"models":{"chat":{"modelId":"global"}}}),
+        )]);
+        let first = BTreeMap::from([(
+            ConfigDocumentKind::Agents,
+            json!({"models":{"chat":{"modelId":"first"}}}),
+        )]);
+        let second = BTreeMap::from([(
+            ConfigDocumentKind::Agents,
+            json!({"models":{"chat":{"modelId":"second"}}}),
+        )]);
+
+        let (effective, provenance) = effective_documents(
+            &user,
+            &[("first", &first), ("second", &second)],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            effective["agents"].pointer("/models/chat/modelId"),
+            Some(&json!("global"))
+        );
+        assert!(provenance.iter().any(|entry| {
+            entry.json_pointer == "/agents/models/chat/modelId"
+                && entry.origin == ConfigOrigin::User
+                && entry.project_id.is_none()
+        }));
+        assert!(!provenance.iter().any(|entry| {
+            entry.json_pointer.starts_with("/agents/models/")
+                && entry.origin == ConfigOrigin::Project
+        }));
+    }
+
+    #[test]
     fn one_project_cannot_relax_globally_hardened_limits() {
         let user = BTreeMap::from([
             (
@@ -1397,6 +1690,186 @@ mod tests {
         assert_eq!(effective["tools"]["riskLevel"], json!("strict"));
         assert_eq!(effective["tools"]["builtIn"]["write_file"], json!(false));
         assert_eq!(effective["agents"]["maxTurns"], json!(8));
+    }
+
+    #[test]
+    fn project_cannot_reactivate_a_globally_disabled_mcp_server() {
+        let global = json!({
+            "mcpServers": {
+                "github": {
+                    "enabled": false,
+                    "transport": {"type": "stdio", "command": "github-mcp"}
+                }
+            }
+        });
+        let project = json!({
+            "mcpServers": {
+                "github": {
+                    "enabled": true,
+                    "transport": {"type": "stdio", "command": "project-github-mcp"}
+                }
+            }
+        });
+
+        assert!(
+            project_overlay_is_restrictive(ConfigDocumentKind::Tools, &global, &project).is_err()
+        );
+    }
+
+    #[test]
+    fn effective_merge_defensively_keeps_a_global_mcp_server_disabled() {
+        let user = BTreeMap::from([(
+            ConfigDocumentKind::Tools,
+            json!({
+                "mcpServers": {
+                    "github": {
+                        "enabled": false,
+                        "transport": {"type": "stdio", "command": "github-mcp"}
+                    }
+                }
+            }),
+        )]);
+        let project = BTreeMap::from([(
+            ConfigDocumentKind::Tools,
+            json!({
+                "mcpServers": {
+                    "github": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "project-github-mcp"}
+                    }
+                }
+            }),
+        )]);
+
+        let (effective, provenance) =
+            effective_documents(&user, &[("project", &project)], &BTreeMap::new());
+
+        assert_eq!(
+            effective["tools"].pointer("/mcpServers/github/enabled"),
+            Some(&json!(false))
+        );
+        assert!(provenance.iter().any(|entry| {
+            entry.json_pointer == "/tools/mcpServers/github/enabled"
+                && entry.origin == ConfigOrigin::User
+        }));
+    }
+
+    #[test]
+    fn multi_project_mcp_servers_require_compatible_declarations_everywhere() {
+        let first = BTreeMap::from([(
+            ConfigDocumentKind::Tools,
+            json!({
+                "mcpServers": {
+                    "shared": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "shared-mcp"}
+                    },
+                    "missing": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "missing-mcp"}
+                    },
+                    "conflict": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "first-mcp"}
+                    }
+                }
+            }),
+        )]);
+        let second = BTreeMap::from([(
+            ConfigDocumentKind::Tools,
+            json!({
+                "mcpServers": {
+                    "shared": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "shared-mcp"}
+                    },
+                    "conflict": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "second-mcp"}
+                    }
+                }
+            }),
+        )]);
+
+        let (effective, _) = effective_documents(
+            &BTreeMap::new(),
+            &[("first", &first), ("second", &second)],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            effective["tools"].pointer("/mcpServers/shared/enabled"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            effective["tools"].pointer("/mcpServers/missing/enabled"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            effective["tools"].pointer("/mcpServers/conflict/enabled"),
+            Some(&json!(false))
+        );
+    }
+
+    #[test]
+    fn multi_project_mcp_intersection_uses_each_projects_effective_definition() {
+        let user = BTreeMap::from([(
+            ConfigDocumentKind::Tools,
+            json!({
+                "mcpServers": {
+                    "inherited": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "inherited-mcp"}
+                    },
+                    "modified": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "global-mcp"}
+                    },
+                    "disabled": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "disabled-mcp"}
+                    }
+                }
+            }),
+        )]);
+        let first = BTreeMap::from([(
+            ConfigDocumentKind::Tools,
+            json!({
+                "mcpServers": {
+                    "modified": {
+                        "enabled": true,
+                        "transport": {"type": "stdio", "command": "project-mcp"}
+                    },
+                    "disabled": {
+                        "enabled": false,
+                        "transport": {"type": "stdio", "command": "disabled-mcp"}
+                    }
+                }
+            }),
+        )]);
+        let second = BTreeMap::new();
+
+        let (effective, _) = effective_documents(
+            &user,
+            &[("first", &first), ("second", &second)],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            effective["tools"].pointer("/mcpServers/inherited/enabled"),
+            Some(&json!(true)),
+            "une définition globale héritée à l’identique reste active"
+        );
+        assert_eq!(
+            effective["tools"].pointer("/mcpServers/modified/enabled"),
+            Some(&json!(false)),
+            "une modification limitée à un projet crée une divergence"
+        );
+        assert_eq!(
+            effective["tools"].pointer("/mcpServers/disabled/enabled"),
+            Some(&json!(false)),
+            "la désactivation dans un seul projet gagne"
+        );
     }
 
     #[test]
@@ -1432,11 +1905,101 @@ mod tests {
             );
 
             document["mcpServers"]["server"]["transport"]["env"][name] =
-                json!("macro-secret://mcp-env:server:credential");
+                json!(format!("macro-secret://mcp-env/server/{name}"));
             let result =
                 validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
             assert!(result.valid, "{name}: {:?}", result.diagnostics);
         }
+    }
+
+    #[test]
+    fn mcp_secret_references_use_strict_same_server_paths() {
+        let document_with_reference = |reference: &str| {
+            let mut document = sparse_document(ConfigDocumentKind::Tools);
+            document["mcpServers"] = json!({
+                "GitHub Server": {
+                    "transport": {
+                        "type": "stdio",
+                        "command": "github-mcp",
+                        "env": {"API_TOKEN": reference}
+                    }
+                }
+            });
+            document
+        };
+
+        let valid = document_with_reference("macro-secret://mcp-env/github_server/API_TOKEN");
+        let result = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &valid);
+        assert!(result.valid, "{:?}", result.diagnostics);
+
+        for invalid in [
+            "macro-secret://mcp-env:github_server:API_TOKEN",
+            "macro-secret://mcp-env/github_server",
+            "macro-secret://mcp-env/github_server/API_TOKEN/extra",
+            "macro-secret://mcp-env/github_server/invalid-key",
+            "macro-secret://providers/github",
+            "macro-secret://mcp-env/another_server/API_TOKEN",
+            "macro-secret://mcp-env/github_server/OTHER_TOKEN",
+        ] {
+            let document = document_with_reference(invalid);
+            let result =
+                validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+            assert!(
+                !result.valid
+                    && result.diagnostics.iter().any(|entry| {
+                        entry.code == "config.tools.mcp_secret_ref_invalid"
+                            && entry.path.as_deref()
+                                == Some("/mcpServers/GitHub Server/transport/env/API_TOKEN")
+                    }),
+                "{invalid}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_server_ids_must_be_unique_after_normalization() {
+        let mut document = sparse_document(ConfigDocumentKind::Tools);
+        document["mcpServers"] = json!({
+            "GitHub Server": {
+                "transport": {"type": "stdio", "command": "first-mcp"}
+            },
+            "github_server": {
+                "transport": {"type": "stdio", "command": "second-mcp"}
+            }
+        });
+
+        let result = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+
+        assert!(!result.valid);
+        assert!(result.diagnostics.iter().any(|entry| {
+            entry.code == "config.tools.mcp_server_id_collision"
+                && entry.path.as_deref() == Some("/mcpServers/github_server")
+        }));
+    }
+
+    #[test]
+    fn remote_mcp_headers_reject_unresolved_secret_references() {
+        let mut document = sparse_document(ConfigDocumentKind::Tools);
+        document["mcpServers"] = json!({
+            "remote": {
+                "transport": {
+                    "type": "streamable_http",
+                    "url": "https://mcp.example.test",
+                    "headers": {
+                        "Authorization": "macro-secret://mcp-env/remote/AUTHORIZATION"
+                    }
+                }
+            }
+        });
+
+        let result = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(!result.valid);
+        assert!(result.diagnostics.iter().any(|entry| {
+            entry.code == "config.tools.mcp_secret_ref_unsupported"
+                && entry.path.as_deref()
+                    == Some("/mcpServers/remote/transport/headers/Authorization")
+        }));
     }
 
     #[test]
