@@ -58,7 +58,7 @@ const chatTools = [
   {
     id: 'terminal_create_session',
     name: 'Terminal',
-    description: 'Run commands in a workspace',
+    description: 'Run individually approved commands',
     category: 'terminal',
     icon: 'terminal',
     status: 'enabled',
@@ -637,6 +637,10 @@ describe('ContextToolbox', () => {
       expect(container?.textContent).not.toContain(label);
     }
     expect(container?.querySelectorAll('[role="switch"]').length).toBe(6);
+    expect(
+      findCardForText(container!, 'Terminal').querySelector('[role="switch"]')
+        ?.hasAttribute('disabled'),
+    ).toBe(false);
 
     await act(async () => {
       findButtonByText(container!, 'Sources').click();

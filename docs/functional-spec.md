@@ -320,7 +320,7 @@ Son objectif est de permettre à l'utilisateur de :
 - poser des questions rapides d'ordre technique ou documentaire
 - attacher des fichiers à une conversation
 - utiliser certains outils web et MCP
-- attacher explicitement un workspace à une conversation pour y exécuter des commandes terminal
+- activer un terminal généraliste pour exécuter des commandes approuvées sur l'ordinateur
 - conserver une continuité de travail dans l'application sans entrer dans tout le workflow Macro
 
 Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
@@ -822,9 +822,9 @@ Le mode Chat peut accéder :
 - au web
 - à certains outils MCP
 - aux skills activées par l'utilisateur
-- au terminal lorsque la conversation possède un workspace modifiable
+- au terminal généraliste, indépendamment du workspace attaché à la conversation
 
-La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. Sans workspace attaché, ces appels ne sont pas envoyés au modèle. Chaque commande reste soumise au niveau de risque et au système d'approbation de Macro.
+La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. Il ne dépend pas du workspace attaché et peut démarrer dans n'importe quel répertoire existant. Chaque commande exige une approbation explicite et distincte dans Chat, y compris au niveau de risque YOLO. Une approbation terminal ne peut jamais être mémorisée pour la conversation.
 
 ---
 

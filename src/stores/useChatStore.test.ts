@@ -1257,17 +1257,26 @@ const importMessagesMock = mock(
 );
 const createTerminalSessionFromChatDto = (params: {
   sessionId: string;
-  projectId: string;
+  projectId?: string | null;
   cwd?: string | null;
 }) => ({
   id: params.sessionId,
-  project_id: params.projectId,
-  project_name: params.projectId === 'project-2' ? 'API' : 'Web',
-  mount_name: params.projectId === 'project-2' ? 'api' : 'web',
-  workspace_path: params.projectId === 'project-2' ? 'C:/repos/api' : 'C:/repos/web',
+  project_id: params.projectId ?? null,
+  project_name:
+    params.projectId == null ? null : params.projectId === 'project-2' ? 'API' : 'Web',
+  mount_name:
+    params.projectId == null ? null : params.projectId === 'project-2' ? 'api' : 'web',
+  workspace_path:
+    params.projectId == null
+      ? null
+      : params.projectId === 'project-2'
+        ? 'C:/repos/api'
+        : 'C:/repos/web',
   cwd:
     params.cwd ??
-    (params.projectId === 'project-2'
+    (params.projectId == null
+      ? 'C:/Users/test'
+      : params.projectId === 'project-2'
       ? 'C:/repos/api/.macro/worktrees/task-1'
       : 'C:/repos/web/.macro/worktrees/task-1'),
   status: 'idle',
@@ -1282,9 +1291,15 @@ const terminalSessionsFromChat = new Map<
   ReturnType<typeof createTerminalSessionFromChatDto>
 >();
 const terminalCreateSessionFromChatMock = mock(
-  async ({ projectId, cwd }: { projectId: string; cwd?: string | null }) => {
+  async ({
+    projectId,
+    cwd,
+  }: {
+    projectId?: string | null;
+    cwd?: string | null;
+  }) => {
     const session = createTerminalSessionFromChatDto({
-      sessionId: `session-${projectId}`,
+      sessionId: projectId ? `session-${projectId}` : 'session-general',
       projectId,
       cwd,
     });
@@ -6762,7 +6777,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     });
   });
 
-  it('removes terminal tools from unscoped Chat turns', async () => {
+  it('exposes terminal tools to unscoped Chat turns', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     const { useChatStore } = await loadChatStore();
@@ -6788,11 +6803,17 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const streamOptions = ((streamChatMock as unknown as {
       mock: { calls: Array<Array<unknown>> };
     }).mock.calls[0]?.[0] ?? null) as { allowedToolIds: string[] };
-    expect(streamOptions.allowedToolIds).not.toContain('terminal_create_session');
-    expect(streamOptions.allowedToolIds).not.toContain('terminal_run');
+    expect(streamOptions.allowedToolIds).toEqual(
+      expect.arrayContaining([
+        'terminal_create_session',
+        'terminal_run',
+        'terminal_read',
+        'terminal_kill',
+      ]),
+    );
   });
 
-  it('exposes terminal tools to Chat turns with a durable workspace scope', async () => {
+  it('creates a general Chat terminal without binding it to the attached workspace', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     const { useChatStore } = await loadChatStore();
@@ -6826,49 +6847,31 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         'terminal_kill',
       ]),
     );
-  });
-
-  it('rejects terminal sessions outside the durable Chat workspace scope', async () => {
-    providerState.selectedSupportsNativeToolCalling = () => true;
-    appState.mode = 'Chat';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
-    const { useChatStore } = await loadChatStore();
-    useChatStore.setState({
-      conversations: [
-        {
-          ...createConversation('chat-conv'),
-          scope_mode: 'Chat',
-          task_id: null,
-          group_id: 'group-1',
-          project_id: 'project-1',
-        },
-      ],
-      selectedConversationId: 'chat-conv',
-      selectedConversationIdsByMode: { Chat: 'chat-conv' },
-    });
-
-    await useChatStore.getState().sendMessage({
-      conversationId: 'chat-conv',
-      content: 'Ouvre un terminal dans un autre projet.',
-    });
 
     const result = await getLatestArchitectToolHandler()('terminal_create_session', {
-      project_id: 'project-foreign',
+      cwd: 'C:/Users/test/Documents',
     });
 
-    expect(String(result)).toContain('outside the writable workspace scope');
-    expect(terminalCreateSessionFromChatMock).not.toHaveBeenCalled();
+    expect(terminalCreateSessionFromChatMock).toHaveBeenCalledWith({
+      projectId: null,
+      cwd: 'C:/Users/test/Documents',
+    });
+    expect(JSON.parse(String(result))).toMatchObject({
+      project_id: null,
+      workspace_path: null,
+      cwd: 'C:/Users/test/Documents',
+    });
   });
 
-  it('rejects terminal session ids bound to a project outside the Chat workspace', async () => {
+  it('requires a fresh approval for every Chat terminal command even in YOLO', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
     terminalSessionsFromChat.set(
-      'session-foreign',
+      'session-general',
       createTerminalSessionFromChatDto({
-        sessionId: 'session-foreign',
-        projectId: 'project-foreign',
+        sessionId: 'session-general',
+        projectId: null,
       }),
     );
     const { useChatStore } = await loadChatStore();
@@ -6878,8 +6881,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
           ...createConversation('chat-conv'),
           scope_mode: 'Chat',
           task_id: null,
-          group_id: 'group-1',
-          project_id: 'project-1',
+          group_id: null,
+          project_id: null,
         },
       ],
       selectedConversationId: 'chat-conv',
@@ -6888,26 +6891,42 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     await useChatStore.getState().sendMessage({
       conversationId: 'chat-conv',
-      content: 'Réutilise cette session.',
+      content: 'Lance deux commandes.',
     });
 
     const onToolCall = getLatestArchitectToolHandler();
-    const runResult = await onToolCall('terminal_run', {
-      session_id: 'session-foreign',
-      command: 'pwd',
-    });
-    const readResult = await onToolCall('terminal_read', {
-      session_id: 'session-foreign',
-    });
-    const killResult = await onToolCall('terminal_kill', {
-      session_id: 'session-foreign',
-    });
+    const firstCommand = onToolCall(
+      'terminal_run',
+      { session_id: 'session-general', command: 'pwd' },
+      'chat-terminal-1',
+    );
+    await flushAsyncWork();
 
-    for (const result of [runResult, readResult, killResult]) {
-      expect(String(result)).toContain('outside the writable workspace scope');
-    }
-    expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
-    expect(terminalKillSessionFromChatMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().getPendingToolApproval('chat-conv')).toMatchObject({
+      toolCallId: 'chat-terminal-1',
+      canApproveForConversation: false,
+    });
+    useChatStore.getState().approvePendingToolApprovalForConversation('chat-conv');
+    await firstCommand;
+
+    expect(
+      useChatStore.getState().conversationApprovalGrantsByConversationId['chat-conv'],
+    ).toBeUndefined();
+    expect(terminalRunCommandFromChatMock).toHaveBeenCalledTimes(1);
+
+    const secondCommand = onToolCall(
+      'terminal_run',
+      { session_id: 'session-general', command: 'pwd' },
+      'chat-terminal-2',
+    );
+    await flushAsyncWork();
+
+    expect(useChatStore.getState().getPendingToolApproval('chat-conv')?.toolCallId).toBe(
+      'chat-terminal-2',
+    );
+    useChatStore.getState().denyPendingToolApproval('chat-conv');
+    await expect(secondCommand).resolves.toBe('Tool terminal_run was denied by the user.');
+    expect(terminalRunCommandFromChatMock).toHaveBeenCalledTimes(1);
   });
 
   it('passes enabled discovered MCP tools through Chat mode streaming options', async () => {

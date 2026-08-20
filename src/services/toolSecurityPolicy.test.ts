@@ -187,6 +187,60 @@ describe("toolSecurityPolicy", () => {
     expect(result.normalizedCall.rememberKey).toBe("terminal:npm run");
   });
 
+  it("requires a fresh approval for every Chat terminal command at every risk level", () => {
+    for (const riskLevel of ["strict", "balanced", "yolo"] as const) {
+      const result = evaluateToolSecurity(
+        "terminal_run",
+        { session_id: "session-1", command: "npm test" },
+        {
+          mode: "Chat",
+          riskLevel,
+          workspacePath: "/repo",
+          grants: [
+            {
+              toolId: "terminal_run",
+              rememberKey: "terminal:npm test",
+              createdAt: "2026-04-21T00:00:00.000Z",
+            },
+          ],
+        },
+      );
+
+      expect(result.decision).toBe("ask");
+      expect(result.normalizedCall.canApproveForConversation).toBe(false);
+    }
+  });
+
+  it("allows Chat to create a general terminal outside an attached workspace", () => {
+    const result = evaluateToolSecurity(
+      "terminal_create_session",
+      { cwd: "/outside" },
+      {
+        mode: "Chat",
+        riskLevel: "strict",
+        workspacePath: "/repo",
+      },
+    );
+
+    expect(result.decision).toBe("allow");
+    expect(result.normalizedCall.isExternalToWorkspace).toBe(false);
+  });
+
+  it("keeps the per-command Chat terminal on the strict model surface", () => {
+    const strictIds = filterDeniedToolIdsForRiskLevel(
+      ["terminal_create_session", "terminal_run", "terminal_read", "terminal_kill"],
+      "strict",
+      "Chat",
+    );
+
+    expect(strictIds).toEqual([
+      "terminal_create_session",
+      "terminal_run",
+      "terminal_read",
+      "terminal_kill",
+    ]);
+  });
+
   it("allows attached read_file calls in strict mode even when the file path is outside the workspace", () => {
     const result = evaluateToolSecurity(
       "read_file",

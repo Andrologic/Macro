@@ -534,12 +534,6 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   }, [removeCitation, removeComposerContextRef]);
 
   const renderToolTooltip = (toolId: string) => {
-    if (toolId === 'terminal_create_session' && !hasAgentWorkspace) {
-      return t(
-        'chat.contextToolbox.terminalWorkspaceTooltip',
-        'Select an agent workspace before enabling the terminal.'
-      );
-    }
     if (toolId === 'web_search' && !hasSelectedWebSearchKey) {
       return t('chat.contextToolbox.webSearchKeyTooltip', 'Add an API key in Settings > Tools > Web Search');
     }
@@ -823,11 +817,11 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
                 {hasAgentWorkspace
                   ? t(
                       'chat.contextToolbox.agentWorkspaceDescription',
-                      'The agent can run approved terminal commands inside this workspace.'
+                      'This workspace is attached as project context. It does not restrict the general terminal.'
                     )
                   : t(
                       'chat.contextToolbox.noAgentWorkspaceDescription',
-                      'Attach a workspace to let the agent inspect and modify its files.'
+                      'No project workspace is attached. The general terminal remains available when enabled.'
                     )}
               </p>
             </section>
