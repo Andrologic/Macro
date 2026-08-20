@@ -162,8 +162,8 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const webSearchSettings = getWebSearchSettings();
   const hasSelectedWebSearchKey =
     webSearchSettings.provider === 'tavily'
-      ? webSearchSettings.tavilyApiKey.trim().length > 0
-      : webSearchSettings.braveApiKey.trim().length > 0;
+      ? webSearchSettings.hasTavilySecret
+      : webSearchSettings.hasBraveSecret;
   const effectiveConversationId = selectedConversationId ?? contextConversationId;
 
   const contextCitations = useMemo(

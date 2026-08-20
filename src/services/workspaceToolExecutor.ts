@@ -102,7 +102,7 @@ export const assertPathAllowed = (mode: AppMode, path: string): void => {
 const toString = (value: unknown): string =>
   typeof value === "string" ? value : "";
 
-type ParsedPatchOperation =
+export type ParsedPatchOperation =
   | { kind: "add"; path: string; lines: string[] }
   | {
       kind: "update";
@@ -483,7 +483,7 @@ const commitPatchWriteChangesWithRollback = async (
   return snapshots;
 };
 
-const parseApplyPatch = (patchText: string): ParsedPatchOperation[] => {
+export const parseApplyPatch = (patchText: string): ParsedPatchOperation[] => {
   const lines = patchText.split("\n");
   if (lines[0] !== "*** Begin Patch") {
     throw new Error(
@@ -623,7 +623,7 @@ const findLineSequence = (
   return -1;
 };
 
-const applyPatchHunksToContent = (
+export const applyPatchHunksToContent = (
   path: string,
   currentContent: string,
   hunks: Array<Array<{ kind: " " | "+" | "-"; content: string }>>,

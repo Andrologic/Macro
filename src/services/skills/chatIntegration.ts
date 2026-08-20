@@ -41,7 +41,9 @@ const isSkillScriptRunnableInSnapshot = (
   const permission = snapshotSkillPermission(snapshot, skillId);
   return permission?.enabled === true &&
     permission.scriptsEnabled === true &&
-    permission.hasScripts === true;
+    permission.hasScripts === true &&
+    Boolean(permission.contentHash) &&
+    permission.contentHash === permission.trustedContentHash;
 };
 
 export const handleSkillToolCall = async (

@@ -40,6 +40,10 @@ export const DEFAULT_TOOL_RISK_LEVEL: ToolRiskLevel = "balanced";
 
 export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "question",
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
@@ -58,6 +62,30 @@ export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
 ]);
 
 const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
+  config_list: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "List Macro configuration",
+  },
+  config_get: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Read Macro configuration",
+  },
+  config_validate: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Validate Macro configuration",
+  },
+  config_patch: {
+    actionGroup: "change",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Edit Macro configuration",
+  },
   question: {
     actionGroup: "observe",
     rememberStrategy: "tool",

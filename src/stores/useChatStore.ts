@@ -70,6 +70,8 @@ import {
 } from "../services/chatStreamOrchestrator";
 import { createChatStreamLifecycleRuntime } from "../services/chatStreamLifecycleRuntime";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
+import { handleConfigToolCall } from "../services/configToolIntegration";
+import { handleConfigVirtualScopeToolCall } from "../services/configVirtualScope";
 import {
   fetchWebPage,
   formatSearchResultsAsContext,
@@ -378,6 +380,10 @@ const conversationCompactionStateCache = new Map<
 const conversationCompactionInProgress = new Set<string>();
 const gitStageCommitChallengesByAssistantTurn = new Set<string>();
 const LOCKED_AGENT_TOOL_IDS = [
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
@@ -5171,7 +5177,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { enableWebSearch, webSearchOptions } = getStreamingWebSearchConfig();
       if (
         !enableWebSearch ||
-        (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)
+        (!webSearchOptions?.configured &&
+          !webSearchOptions?.tavilyApiKey &&
+          !webSearchOptions?.braveApiKey)
       ) {
         return "Web search is not configured for this provider.";
       }
@@ -5215,6 +5223,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (normalizedToolName === "read_file") {
       return readConversationFileContext(conversationId, args);
+    }
+
+    const configToolResult = await handleConfigToolCall(normalizedToolName, args);
+    if (!isCurrentOperation()) {
+      return TOOL_EXECUTION_ABORTED_RESULT;
+    }
+    if (configToolResult !== undefined) {
+      return configToolResult;
+    }
+
+    const configVirtualScopeResult = await handleConfigVirtualScopeToolCall(
+      normalizedToolName,
+      args,
+    );
+    if (!isCurrentOperation()) {
+      return TOOL_EXECUTION_ABORTED_RESULT;
+    }
+    if (configVirtualScopeResult !== undefined) {
+      return configVirtualScopeResult;
     }
 
     const skillToolResult = await handleSkillToolCall(
@@ -5347,6 +5374,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === "write" ||
       normalizedToolName === "edit" ||
       normalizedToolName === "delete" ||
+      normalizedToolName === "apply_patch" ||
       normalizedToolName === "glob" ||
       normalizedToolName === "grep" ||
       normalizedToolName === "terminal_create_session" ||

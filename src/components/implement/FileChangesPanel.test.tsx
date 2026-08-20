@@ -25,6 +25,9 @@ let useTaskStore!: typeof UseTaskStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
 let useProviderStore!: typeof UseProviderStoreHook;
 let useFileChangesStore!: typeof UseFileChangesStoreHook;
+let clearPreferencesForTest!: typeof import('../../services/preferences').clearPreferences;
+let loadPersistedPreferenceForTest!: typeof import('../../services/preferences').loadPersistedPreference;
+let savePreferenceForTest!: typeof import('../../services/preferences').savePreference;
 let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
 let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
 let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
@@ -113,6 +116,9 @@ const loadFileChangesPanelModules = async () => {
   const preferencesModule = await import(
     `../../services/preferences.ts?file-changes-panel-preferences-test=${importCounter}`
   );
+  clearPreferencesForTest = preferencesModule.clearPreferences;
+  loadPersistedPreferenceForTest = preferencesModule.loadPersistedPreference;
+  savePreferenceForTest = preferencesModule.savePreference;
   mock.module('../../services/preferences', () => ({
     ...preferencesModule,
   }));
@@ -732,7 +738,8 @@ describe('FileChangesPanel', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify({ mode: 'conversation' }));
+    await clearPreferencesForTest();
+    await savePreferenceForTest('metadataModelConfig', { mode: 'conversation' });
   });
 
   afterEach(async () => {
@@ -759,7 +766,7 @@ describe('FileChangesPanel', () => {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
     delete process.env.VITE_BACKEND_TRANSPORT;
-    window.localStorage.removeItem('macro_metadataModelConfig');
+    await clearPreferencesForTest();
     mock.restore();
   });
 
@@ -1282,7 +1289,7 @@ describe('FileChangesPanel', () => {
   });
 
   it('asks for the metadata model choice the first time a commit is generated', async () => {
-    window.localStorage.removeItem('macro_metadataModelConfig');
+    await clearPreferencesForTest();
     const repository = buildRepository(true);
     seedStores(repository);
 
@@ -1314,7 +1321,9 @@ describe('FileChangesPanel', () => {
     });
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
-    expect(window.localStorage.getItem('macro_metadataModelConfig')).toContain('conversation');
+    expect(await loadPersistedPreferenceForTest<{ mode: string }>('metadataModelConfig')).toEqual({
+      mode: 'conversation',
+    });
   });
 
   it('shows the backend commit error message when the commit rejects with an object payload', async () => {
@@ -1484,15 +1493,12 @@ describe('FileChangesPanel', () => {
 
   it('uses the latest saved metadata model config when retrying after generation fails', async () => {
     const repository = buildRepository(true);
-    window.localStorage.setItem(
-      'macro_metadataModelConfig',
-      JSON.stringify({
-        mode: 'dedicated',
-        providerId: 'provider-a',
-        modelId: 'model-a',
-        reasoningEffort: null,
-      })
-    );
+    await savePreferenceForTest('metadataModelConfig', {
+      mode: 'dedicated',
+      providerId: 'provider-a',
+      modelId: 'model-a',
+      reasoningEffort: null,
+    });
     commitAllReadyTaskRepositoriesMock = mock(async () => {
       const error = new Error('model unavailable');
       error.name = 'SmartCommitMessageGenerationError';

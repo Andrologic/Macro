@@ -1861,6 +1861,14 @@ const saveAiSelectionsPreference = async (value: unknown) => {
   await preferences.savePreference(preferences.PREF_KEYS.AI_CONTEXT_SELECTIONS, value);
 };
 
+const savePreferenceForTest = async (key: string, value: unknown) => {
+  const preferences = await import('../services/preferences');
+  await preferences.savePreference(
+    key as (typeof preferences.PREF_KEYS)[keyof typeof preferences.PREF_KEYS],
+    value,
+  );
+};
+
 const createConversation = (id: string, projectId = 'project-1'): Conversation => ({
   id,
   title: `Conversation ${id}`,
@@ -2154,7 +2162,8 @@ const sendArchitectMessageAndGetToolHandler = async (
     content: string;
   }
 ) => {
-  localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+  const preferences = await import('../services/preferences');
+  await preferences.savePreference(preferences.PREF_KEYS.TOOL_RISK_LEVEL, 'yolo');
   await useChatStore.getState().sendMessage({
     conversationId: params.conversationId ?? 'plan-conv',
     content: params.content,
@@ -2235,6 +2244,7 @@ const createSkillManifest = (
   id: 'global:agents:test-skill:aaa111',
   name: 'test-skill',
   description: 'Skill de test pour vérifier l’activation dans Macro.',
+  contentHash: 'sha256:test-skill-content',
   rootPath: '/Users/test/.agents/skills/test-skill',
   skillFilePath: '/Users/test/.agents/skills/test-skill/SKILL.md',
   source: {
@@ -2294,7 +2304,7 @@ const startImplementToolConversation = async (
   appState.mode = 'Implement';
   appState.agentType = options.agentType ?? 'build';
   appState.selectedTaskId = 'task-1';
-  localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+  await savePreferenceForTest('toolRiskLevel', 'yolo');
   taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
 
   const { useChatStore } = await loadChatStore();
@@ -2627,9 +2637,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem(
-      'macro_chatArchivedConversationIds',
-      JSON.stringify(['archived-chat']),
+    const preferences = await import('../services/preferences');
+    await preferences.savePreference(
+      preferences.PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
+      ['archived-chat'],
     );
     const { useChatStore } = await loadChatStore();
     useChatStore.setState(
@@ -5048,15 +5059,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       ...providerState.modelsByProvider,
       'provider-2': [{ id: 'metadata-model', name: 'Metadata Model', isEnabled: true }],
     };
-    localStorage.setItem(
-      'macro_metadataModelConfig',
-      JSON.stringify({
-        mode: 'dedicated',
-        providerId: 'provider-2',
-        modelId: 'metadata-model',
-        reasoningEffort: null,
-      })
-    );
+    await savePreferenceForTest('metadataModelConfig', {
+      mode: 'dedicated',
+      providerId: 'provider-2',
+      modelId: 'metadata-model',
+      reasoningEffort: null,
+    });
     const plan = createPlan({
       id: '1710000000000',
       slug: '1710000000000',
@@ -6346,9 +6354,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
   it('launches Architect conversations with the plan explorer internal profile', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
-    localStorage.setItem(
-      'macro_promptPlanExplorer',
-      JSON.stringify('Custom PLAN_EXPLORER prompt for tests.')
+    await savePreferenceForTest(
+      'promptPlanExplorer',
+      'Custom PLAN_EXPLORER prompt for tests.',
     );
 
     const { useChatStore } = await loadChatStore();
@@ -6433,7 +6441,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
   });
 
-  it('migrates the legacy guarded autonomy profile to strict tool risk filtering', async () => {
+  it('ignores the legacy guarded autonomy profile instead of importing it', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     localStorage.setItem(
       'macro_architectToolAutonomyProfile',
@@ -6465,7 +6473,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     }).mock.calls[0]?.[0] ?? null) as {
       allowedToolIds: string[];
     };
-    expect(streamOptions.allowedToolIds).not.toContain('strategy_delete');
+    expect(streamOptions.allowedToolIds).toContain('strategy_delete');
   });
 
   it('keeps Architect action tools available for Copilot in strict mode', async () => {
@@ -6487,7 +6495,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       copilot: [{ id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', isEnabled: true }],
     };
     providerState.selectedSupportsNativeToolCalling = () => true;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('strict'));
+    await savePreferenceForTest('toolRiskLevel', 'strict');
 
     const { useChatStore } = await loadChatStore();
     activateArchitectPlanForTest({ conversationId: 'plan-conv' });
@@ -6993,6 +7001,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       },
       resources: [{ path: 'references/style.md', kind: 'reference', sizeBytes: 120 }],
       scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 80 }],
+      contentHash: 'sha256:test-skill-content',
       validationErrors: [],
       isValid: true,
     };
@@ -7066,6 +7075,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       id: 'global:agents:test-skill:aaa111',
       name: 'test-skill',
       description: 'Skill de test pour vérifier l’activation dans Macro.',
+      contentHash: 'sha256:test-skill-content',
       rootPath: '/Users/test/.agents/skills/test-skill',
       skillFilePath: '/Users/test/.agents/skills/test-skill/SKILL.md',
       source: {
@@ -7084,7 +7094,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, scriptsEnabled: true },
+        [skill.id]: {
+          enabled: true,
+          scriptsEnabled: true,
+          trust: {
+            contentHash: skill.contentHash!,
+            grantedAt: '2026-08-20T12:00:00.000Z',
+            grantedBy: 'user',
+          },
+        },
       },
     });
     installSkillActivationMock(useSkillsStore);
@@ -7215,7 +7233,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('strict'));
+    await savePreferenceForTest('toolRiskLevel', 'strict');
     const skill = createSkillManifest();
 
     const { useChatStore } = await loadChatStore();
@@ -7223,7 +7241,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, scriptsEnabled: true },
+        [skill.id]: {
+          enabled: true,
+          scriptsEnabled: true,
+          trust: {
+            contentHash: skill.contentHash!,
+            grantedAt: '2026-08-20T12:00:00.000Z',
+            grantedBy: 'user',
+          },
+        },
       },
     });
     installSkillActivationMock(useSkillsStore);
@@ -7280,7 +7306,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
 
     const { useChatStore } = await loadChatStore();
     const { useSkillsStore } = await import('./useSkillsStore');
@@ -7302,7 +7328,15 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     useSkillsStore.setState({
       skills: [skill],
       settingsBySkillId: {
-        [skill.id]: { enabled: true, scriptsEnabled: true },
+        [skill.id]: {
+          enabled: true,
+          scriptsEnabled: true,
+          trust: {
+            contentHash: skill.contentHash!,
+            grantedAt: '2026-08-20T12:00:00.000Z',
+            grantedBy: 'user',
+          },
+        },
       },
       activateSkill,
       readSkillResource,
@@ -7403,7 +7437,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
@@ -7515,7 +7549,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
@@ -7578,7 +7612,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
@@ -7667,7 +7701,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
@@ -7765,7 +7799,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
 
     const { useChatStore } = await loadChatStore();
     useChatStore.setState({
@@ -7858,7 +7892,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
     appState.selectedProjectId = null;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     streamingWebSearchConfig = {
       enableWebSearch: true,
       enableWebFetch: true,
@@ -8398,15 +8432,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       ...providerState.modelsByProvider,
       'provider-2': [{ id: 'metadata-model', name: 'Metadata Model', isEnabled: true }],
     };
-    localStorage.setItem(
-      'macro_metadataModelConfig',
-      JSON.stringify({
-        mode: 'dedicated',
-        providerId: 'provider-2',
-        modelId: 'metadata-model',
-        reasoningEffort: null,
-      })
-    );
+    await savePreferenceForTest('metadataModelConfig', {
+      mode: 'dedicated',
+      providerId: 'provider-2',
+      modelId: 'metadata-model',
+      reasoningEffort: null,
+    });
 
     queueSendChatNonStreamingImplementation(async () =>
       JSON.stringify({
@@ -10395,7 +10426,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('passes Architect mode and the post-tool recap instruction into streaming requests', async () => {
     appState.mode = 'Architect';
     appState.selectedTaskId = null;
-    localStorage.setItem('macro_chatMaxTurns', JSON.stringify(7));
+    await savePreferenceForTest('chatMaxTurns', 7);
 
     const { streamChat } = await import('../services/streamingChat');
     (
@@ -12844,9 +12875,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
     taskStoreState.tasks = [createImplementTask({ status: 'InReview' })];
-    localStorage.setItem(
-      'macro_promptTaskReviewer',
-      JSON.stringify('Custom TASK_REVIEWER prompt for tests.')
+    await savePreferenceForTest(
+      'promptTaskReviewer',
+      'Custom TASK_REVIEWER prompt for tests.',
     );
 
     const { useChatStore } = await loadChatStore();
@@ -12905,9 +12936,9 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Implement';
     appState.selectedTaskId = null;
-    localStorage.setItem(
-      'macro_promptRepoAuditor',
-      JSON.stringify('Custom REPO_AUDITOR prompt for tests.')
+    await savePreferenceForTest(
+      'promptRepoAuditor',
+      'Custom REPO_AUDITOR prompt for tests.',
     );
 
     const { useChatStore } = await loadChatStore();
@@ -13052,7 +13083,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('returns worktree-based terminal sessions for terminal_create_session tool calls in implement tasks', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
@@ -13224,7 +13255,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Implement';
     appState.agentType = 'build';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
@@ -13295,7 +13326,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Implement';
     appState.agentType = 'plan';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
@@ -13366,7 +13397,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.mode = 'Implement';
     appState.agentType = 'build';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
@@ -13621,7 +13652,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('lets implement agents read and update the selected task todos', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     architectPlans.set(
       'plan-1',
       createPlan({
@@ -13724,7 +13755,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('reports legacy missing task todos and initializes them with add', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     architectPlans.set(
       'plan-1',
       createPlan({
@@ -13822,7 +13853,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('promotes a context project before opening an explicit implement terminal session', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createImplementTask({
         status: 'InProgress',
@@ -13902,7 +13933,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('returns a controlled tool result instead of promoting context for standalone tasks', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createManualFeatureTask({
         draft: false,
@@ -13952,7 +13983,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('does not promote a standalone conversation even when the selected task is architect', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createImplementTask({
         id: 'task-1',
@@ -14008,7 +14039,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   it('uses the conversation architect task for context promotion when selection is stale', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'manual-task-1';
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [
       createManualFeatureTask({
         draft: false,
@@ -15495,7 +15526,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.agentType = 'build';
     appState.selectedTaskId = 'task-1';
     tauriAvailable = true;
-    localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+    await savePreferenceForTest('toolRiskLevel', 'yolo');
     taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
     const deferredA = createDeferred<Array<ReturnType<typeof createChatMessageRecord>>>();
     listMessagesMock.mockImplementationOnce(async () => deferredA.promise);

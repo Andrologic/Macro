@@ -130,6 +130,34 @@ const loadSkillsView = async () => {
   };
   mock.module('../../../stores/useAppStore', () => ({ useAppStore }));
 
+  const skillsConfig = {
+    installDestinations: {
+      'global-default': { scope: 'user', path: '${home}/.agents/skills' },
+      'project-default': { scope: 'project', path: '.agents/skills' },
+    },
+    defaultGlobalDestination: 'global-default',
+    defaultProjectDestination: 'project-default',
+  };
+  const configStoreState = {
+    snapshot: {
+      effective: { skills: skillsConfig },
+      projectEffective: { 'project-1': { skills: skillsConfig } },
+    },
+    getDocument: mock(async () => ({ etag: 'skills-etag' })),
+    patch: mock(async () => ({})),
+  };
+  const useConfigStore = ((selector: (state: typeof configStoreState) => unknown) =>
+    selector(configStoreState)) as unknown as {
+    <T>(selector: (state: typeof configStoreState) => T): T;
+  };
+  const configStoreModule = await import(
+    `../../../stores/useConfigStore.ts?skills-view-config-store-test=${importCounter}`
+  );
+  mock.module('../../../stores/useConfigStore', () => ({
+    ...configStoreModule,
+    useConfigStore,
+  }));
+
   mock.module('../../../services', () => ({
     getServiceRuntimeCapabilities: () => ({
       skills: runtimeSkillsSupported,
@@ -181,13 +209,16 @@ const loadSkillsView = async () => {
       checked,
       disabled,
       onCheckedChange,
+      'aria-label': ariaLabel,
     }: {
       checked: boolean;
       disabled?: boolean;
       onCheckedChange: (value: boolean) => void;
+      'aria-label'?: string;
     }) => (
       <input
         type="checkbox"
+        aria-label={ariaLabel}
         checked={checked}
         disabled={disabled}
         onChange={(event) => onCheckedChange(event.target.checked)}
@@ -409,13 +440,13 @@ describe('SkillsView', () => {
       await Promise.resolve();
     });
 
-    const switches = Array.from(
-      container?.querySelectorAll('input[type="checkbox"]') ?? [],
-    ) as HTMLInputElement[];
-    expect(switches).toHaveLength(1);
+    const globalSwitch = container?.querySelector(
+      'input[type="checkbox"][aria-label="Enable"]',
+    ) as HTMLInputElement | null;
+    expect(globalSwitch).toBeTruthy();
 
     await act(async () => {
-      switches[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      globalSwitch!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
 
@@ -429,13 +460,13 @@ describe('SkillsView', () => {
       await Promise.resolve();
     });
 
-    const expandedSwitches = Array.from(
-      container?.querySelectorAll('input[type="checkbox"]') ?? [],
-    ) as HTMLInputElement[];
-    expect(expandedSwitches).toHaveLength(2);
+    const scriptsSwitch = container?.querySelector(
+      'input[type="checkbox"][aria-label="Scripts"]',
+    ) as HTMLInputElement | null;
+    expect(scriptsSwitch).toBeTruthy();
 
     await act(async () => {
-      expandedSwitches[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      scriptsSwitch!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
 
@@ -518,7 +549,9 @@ describe('SkillsView', () => {
       (input) => (input as HTMLInputElement).value === 'new-skill',
     ) as HTMLInputElement | undefined;
     const descriptionInput = container?.querySelector('textarea') as HTMLTextAreaElement | null;
-    const locationSelect = container?.querySelector('select') as HTMLSelectElement | null;
+    const locationSelect = container?.querySelector(
+      'select[aria-label="Location"]',
+    ) as HTMLSelectElement | null;
     expect(nameInput).toBeTruthy();
     expect(descriptionInput).toBeTruthy();
     expect(locationSelect).toBeTruthy();
@@ -550,6 +583,7 @@ describe('SkillsView', () => {
       name: 'project-helper',
       description: 'Use when project work needs focused guidance.',
       destinationKind: 'project',
+      destinationId: 'project-default',
       projectId: 'project-1',
     });
     expect(openSkillLocationMock).toHaveBeenCalledWith(createdSkillTemplate!.id, 'skillFile');
@@ -574,7 +608,7 @@ describe('SkillsView', () => {
     });
 
     const globalSwitch = container?.querySelector(
-      'input[type="checkbox"]'
+      'input[type="checkbox"][aria-label="Enable"]'
     ) as HTMLInputElement | null;
     expect(globalSwitch).toBeTruthy();
 
@@ -594,21 +628,24 @@ describe('SkillsView', () => {
       await Promise.resolve();
     });
 
-    const switchesWhileDisabled = Array.from(
-      container?.querySelectorAll('input[type="checkbox"]') ?? [],
-    ) as HTMLInputElement[];
-    expect(switchesWhileDisabled).toHaveLength(2);
-    expect(switchesWhileDisabled[1]?.checked).toBe(true);
+    const globalSwitchWhileDisabled = container?.querySelector(
+      'input[type="checkbox"][aria-label="Enable"]',
+    ) as HTMLInputElement | null;
+    const scriptsSwitchWhileDisabled = container?.querySelector(
+      'input[type="checkbox"][aria-label="Scripts"]',
+    ) as HTMLInputElement | null;
+    expect(globalSwitchWhileDisabled).toBeTruthy();
+    expect(scriptsSwitchWhileDisabled?.checked).toBe(true);
 
     await act(async () => {
-      switchesWhileDisabled[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      scriptsSwitchWhileDisabled?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
 
     expect(setSkillScriptsEnabledMock).toHaveBeenCalledWith(skill.id, false);
 
     await act(async () => {
-      switchesWhileDisabled[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      globalSwitchWhileDisabled?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
 

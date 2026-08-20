@@ -16,6 +16,9 @@ export type JsonSchema =
       type: "string" | "number" | "boolean";
       description?: string;
       enum?: string[];
+    }
+  | {
+      description?: string;
     };
 
 export interface MacroToolRegistryEntry {
@@ -32,6 +35,10 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "read_sources",
   "edit_source_passage",
   "question",
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
@@ -245,6 +252,86 @@ export const MACRO_TOOL_REGISTRY = [
         },
       },
       required: ["title", "passage"],
+    },
+  ),
+  objectTool(
+    "config_list",
+    "List Macro configuration documents and effective values. Secret values are never included.",
+    {
+      type: "object",
+      properties: {
+        project_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional project ids whose effective configuration should be included.",
+        },
+      },
+    },
+  ),
+  objectTool(
+    "config_get",
+    "Read one sparse Macro JSON configuration document, including its ETag and diagnostics.",
+    {
+      type: "object",
+      properties: {
+        document: {
+          type: "string",
+          enum: ["runtime", "settings", "agents", "providers", "tools", "skills", "git"],
+        },
+        scope: { type: "string", enum: ["user", "project"] },
+        project_id: { type: "string" },
+      },
+      required: ["document"],
+    },
+  ),
+  objectTool(
+    "config_validate",
+    "Validate a complete Macro configuration document without writing it.",
+    {
+      type: "object",
+      properties: {
+        document: {
+          type: "string",
+          enum: ["runtime", "settings", "agents", "providers", "tools", "skills", "git"],
+        },
+        scope: { type: "string", enum: ["user", "project"] },
+        project_id: { type: "string" },
+        value: {
+          type: "object",
+          description: "Complete JSON document to validate.",
+        },
+      },
+      required: ["document", "value"],
+    },
+  ),
+  objectTool(
+    "config_patch",
+    "Apply an RFC 6902 JSON Patch to a Macro configuration document. Supply the latest ETag from config_get. Sensitive changes remain pending until the user explicitly approves them.",
+    {
+      type: "object",
+      properties: {
+        document: {
+          type: "string",
+          enum: ["runtime", "settings", "agents", "providers", "tools", "skills", "git"],
+        },
+        scope: { type: "string", enum: ["user", "project"] },
+        project_id: { type: "string" },
+        expected_etag: { type: "string" },
+        patch: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              op: { type: "string", enum: ["add", "remove", "replace", "move", "copy", "test"] },
+              path: { type: "string" },
+              from: { type: "string" },
+              value: {},
+            },
+            required: ["op", "path"],
+          },
+        },
+      },
+      required: ["document", "expected_etag", "patch"],
     },
   ),
   objectTool(

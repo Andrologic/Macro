@@ -8,6 +8,10 @@ import {
 
 const CHAT_ALLOWED_TOOL_IDS = [
   "question",
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
@@ -20,7 +24,7 @@ const CHAT_ALLOWED_TOOL_IDS = [
 ];
 
 describe("toolModePolicy", () => {
-  it("disallows mutating and workspace tools in chat mode", () => {
+  it("disallows workspace mutations while retaining validated configuration tools in chat mode", () => {
     const policy = getToolModePolicy("Chat");
     expect(policy.allowedToolIds).toEqual(CHAT_ALLOWED_TOOL_IDS);
     expect(policy.allowedToolIds.includes("write")).toBe(false);
@@ -109,6 +113,10 @@ describe("toolModePolicy", () => {
 
     expect(policy.allowedToolIds).toEqual([
       "question",
+      "config_list",
+      "config_get",
+      "config_validate",
+      "config_patch",
       "skill_activate",
       "skill_read_resource",
       "read_file",
