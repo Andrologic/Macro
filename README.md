@@ -123,6 +123,12 @@ commands, read [INSTALL.md](INSTALL.md).
 
 Product and architecture reference documents live in [docs/](docs/).
 
+## Acknowledgements
+
+Macro draws inspiration from and incorporates adapted code from
+[T3 Code](https://github.com/pingdotgg/t3code) and
+[OpenAI Codex](https://github.com/openai/codex). We thank their contributors.
+
 ## License
 
 Macro is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).

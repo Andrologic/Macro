@@ -25,6 +25,7 @@ import { notify } from '../ui/toastService';
 import { cn } from '../../utils/cn';
 import { isDevelopmentBuild } from '../../utils/devLogger';
 import type { Project, ProjectGroup } from '../../types';
+import { ProjectIcon } from '../project/ProjectIcon';
 import {
   getEmptyProjectOpenSelection,
   loadProjectOpenSettings,
@@ -218,8 +219,9 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
             project.status === 'active' ? 'bg-primary/10' : 'bg-muted'
           )}
         >
-          <Icon
-            name={projectIconName}
+          <ProjectIcon
+            project={project}
+            fallbackIcon={projectIconName}
             size={14}
             className={cn(
               project.status === 'active'
@@ -362,7 +364,12 @@ const InlineDraftProjectRow: React.FC<{ project: Project }> = ({ project }) => {
       )}
     >
       <Icon name="grip-vertical" size={13} className="text-muted-foreground/70" />
-      <Icon name={projectIconName} size={14} className="text-muted-foreground" />
+      <ProjectIcon
+        project={project}
+        fallbackIcon={projectIconName}
+        size={14}
+        className="text-muted-foreground"
+      />
       <span className="truncate">{project.name}</span>
     </div>
   );
@@ -1480,8 +1487,9 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
             {draggedProject && (
               <div data-drag-overlay="true" className="px-3 py-2 rounded-lg bg-card border border-primary shadow-lg">
                 <div className="flex items-center gap-2">
-                  <Icon
-                    name={projectHasGitIntegration(draggedProject) ? 'folder-git-2' : 'folder'}
+                  <ProjectIcon
+                    project={draggedProject}
+                    fallbackIcon={projectHasGitIntegration(draggedProject) ? 'folder-git-2' : 'folder'}
                     size={14}
                     className="text-primary"
                   />

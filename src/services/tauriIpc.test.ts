@@ -408,6 +408,19 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("resolves project icons by project id", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.workspaceResolveProjectIcon("project-1");
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "workspace_resolve_project_icon",
+        payload: { projectId: "project-1" },
+      },
+    ]);
+  });
+
   it("submits Copilot tool results through ai_submit_tool_result", async () => {
     const tauriIpc = await loadTauriIpc();
 
