@@ -5,9 +5,6 @@ use super::{
     set_chatgpt_secret, ChatGptSecret,
 };
 use std::collections::BTreeMap;
-use std::sync::Mutex;
-
-static PUBLIC_SECRET_HELPER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn secret() -> ChatGptSecret {
     ChatGptSecret {
@@ -21,9 +18,7 @@ fn secret() -> ChatGptSecret {
 
 #[test]
 fn public_secret_helpers_roundtrip_api_keys_and_chatgpt_sessions() {
-    let _guard = PUBLIC_SECRET_HELPER_TEST_LOCK
-        .lock()
-        .expect("public secret helper test lock");
+    let _guard = super::lock_test_store();
     let temp = tempfile::tempdir().expect("tempdir");
     init(temp.path()).expect("initialize local secret store");
     let api_provider_id = format!("api-{}", uuid::Uuid::new_v4());
@@ -55,9 +50,7 @@ fn public_secret_helpers_roundtrip_api_keys_and_chatgpt_sessions() {
 
 #[test]
 fn init_clears_public_secret_caches_when_store_path_changes() {
-    let _guard = PUBLIC_SECRET_HELPER_TEST_LOCK
-        .lock()
-        .expect("public secret helper test lock");
+    let _guard = super::lock_test_store();
     let first = tempfile::tempdir().expect("first tempdir");
     let second = tempfile::tempdir().expect("second tempdir");
     let provider_id = format!("provider-{}", uuid::Uuid::new_v4());
@@ -113,9 +106,7 @@ fn local_store_roundtrips_api_keys_and_chatgpt_sessions() {
 
 #[test]
 fn init_backs_up_a_legacy_secret_file_before_upgrading_it() {
-    let _guard = PUBLIC_SECRET_HELPER_TEST_LOCK
-        .lock()
-        .expect("public secret helper test lock");
+    let _guard = super::lock_test_store();
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("provider-secrets.json");
     let legacy = r#"{"version":1,"api_keys":{"openai":"kept"},"chatgpt_sessions":{}}"#;

@@ -4015,16 +4015,7 @@ mod tests {
     use crate::secrets;
     use serde_json::json;
     use std::fs;
-    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
-
-    static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_secret_store() -> MutexGuard<'static, ()> {
-        SECRET_STORE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 
     #[tokio::test]
     async fn db_pool_propagates_failure_without_polling() {
@@ -4089,7 +4080,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_secret_metadata_reconciliation_clears_stale_database_flags() {
-        let _guard = lock_secret_store();
+        let _guard = secrets::lock_test_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -4187,7 +4178,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_api_key_change_updates_secret_store_before_database_flag() {
-        let _guard = lock_secret_store();
+        let _guard = secrets::lock_test_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let pool = test_provider_pool().await;
@@ -4239,7 +4230,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_api_key_change_does_not_mark_database_when_secret_write_fails() {
-        let _guard = lock_secret_store();
+        let _guard = secrets::lock_test_store();
         let temp_dir = TempDir::new().expect("temp dir");
         secrets::init(temp_dir.path()).expect("initialize secret store");
         let secret_file = temp_dir.path().join("provider-secrets.json");

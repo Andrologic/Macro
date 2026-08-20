@@ -55,6 +55,7 @@ mod tests {
 
     #[test]
     fn resolves_env_secret_refs_from_secret_store() {
+        let _guard = crate::secrets::lock_test_store();
         let dir = tempfile::tempdir().expect("secret temp dir");
         crate::secrets::init(dir.path()).expect("initialize secret store");
         crate::secrets::set_api_key("mcp-env:secret_server:API_TOKEN", "hidden-token")
@@ -86,6 +87,7 @@ mod tests {
 
     #[test]
     fn rejects_cross_server_cross_key_and_malformed_secret_refs() {
+        let _guard = crate::secrets::lock_test_store();
         let dir = tempfile::tempdir().expect("secret temp dir");
         crate::secrets::init(dir.path()).expect("initialize secret store");
         for secret_id in [
