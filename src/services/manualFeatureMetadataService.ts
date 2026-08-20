@@ -5,6 +5,7 @@ import {
   flushMacroMetadata,
   recordMacroMetadataMutation,
 } from './macroMetadataCoordinator';
+import { isProjectGitActionable } from './globalProjects';
 import { filterNonWslProjectPaths } from './wslPaths';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
@@ -53,9 +54,19 @@ const resolveMetadataWorkspacePaths = (
 ): string[] => {
   const appState = useAppStore.getState();
   const projectIds = getTaskProjectIds(task);
+  const gitProjectIdSet = new Set(
+    projectIds.filter((projectId) => {
+      const project = appState.getProjectById(projectId);
+      return isProjectGitActionable(project);
+    })
+  );
   return filterNonWslProjectPaths(unique([
-    ...(task.execution_targets || []).map((target) => target.repoPath ?? null),
-    ...projectIds.map((projectId) => appState.getProjectById(projectId)?.path ?? null),
+    ...(task.execution_targets || [])
+      .filter((target) => gitProjectIdSet.has(target.projectId))
+      .map((target) => target.repoPath ?? null),
+    ...projectIds
+      .filter((projectId) => gitProjectIdSet.has(projectId))
+      .map((projectId) => appState.getProjectById(projectId)?.path ?? null),
   ]));
 };
 

@@ -1393,6 +1393,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const unreviewedPendingCount =
     unreviewedPendingFileCount + unreviewedPendingArtifactCount;
   const hasReadyToCommit = reviewSummary.actionCounts.ready_to_commit > 0;
+  const isDirectEditReview = repositories.length > 0 &&
+    repositories.every((repository) => repository.executionMode === 'direct');
   const showValidateChangesButton = currentTask !== null && currentTask.status !== 'Completed';
   const allTaskRepositoriesResolved = Boolean(
     currentTask &&
@@ -1514,6 +1516,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleCommit = async () => {
+    if (isDirectEditReview) {
+      await runCommit();
+      return;
+    }
     const persisted = await loadMetadataModelConfig();
     const sourceConfig = metadataModelConfig === undefined ? persisted : persisted ?? metadataModelConfig;
     const normalizedConfig = normalizeCommitModelConfig(sourceConfig);
@@ -1758,10 +1764,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     finishingTaskIdRef.current = currentTask.id;
     setIsFinishingTask(true);
     try {
-      const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
-      if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
-        resetReviewState();
-        return;
+      if (!isDirectEditReview) {
+        const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
+        if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
+          resetReviewState();
+          return;
+        }
       }
       await finishTask(currentTask.id);
       resetReviewState();
@@ -1790,15 +1798,21 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const primaryActionTitle = !canFinishTask && isCommitDisabled
     ? commitDisabledReason
     : undefined;
-  const primaryActionIcon = canFinishTask ? 'git-merge' as const : 'git-commit' as const;
+  const primaryActionIcon = isDirectEditReview
+    ? 'check-circle' as const
+    : canFinishTask ? 'git-merge' as const : 'git-commit' as const;
   const primaryActionLabel = canFinishTask
     ? t('implement.finishTask', 'Finish task')
     : isGeneratingCommitMessages
       ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
-      : t('implement.commitChangesGeneric', 'Commit');
+      : isDirectEditReview
+        ? t('implement.acceptDirectChanges', 'Accept changes')
+        : t('implement.commitChangesGeneric', 'Commit');
 
   const actionLabels = {
-    staged: t('implement.stagedBadge', 'Staged'),
+    staged: isDirectEditReview
+      ? t('implement.validatedBadge', 'Validated')
+      : t('implement.stagedBadge', 'Staged'),
     validate: t('implement.validateAction', 'Validate'),
     unstage: t('implement.unstageAction', 'Unstage'),
     revert: t('implement.revertAction', 'Revert'),

@@ -197,6 +197,10 @@ export interface TaskExecutionTarget {
   projectId: string;
   branchName: string;
   targetBranchName?: string;
+  // Persist the mode selected when the task is created. A project can gain a
+  // Git repository later without changing how an existing task must run.
+  executionMode?: 'git' | 'direct';
+  checkpointId?: string;
   // `worktree` tasks run in dedicated task worktrees, while
   // `repository_root` targets operate directly in the parent repository.
   executionKind?: 'worktree' | 'repository_root';
@@ -539,6 +543,7 @@ export interface Project {
   status: ProjectStatus;
   gitFlowSettings?: ProjectGitFlowSettings;
   userReadOnly?: boolean;
+  directEdit?: boolean;
   gitSetupState?: Extract<ProjectGitSetupState, 'ready' | 'not_git' | 'unborn'>;
   isReadOnly?: boolean;
   readOnlyReason?: 'manual' | 'missing_git' | 'missing_initial_commit' | 'manual_and_missing_git' | null;

@@ -369,6 +369,7 @@ export const createProject = async (data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  directEdit?: boolean;
   requestId?: string | null;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceCreateProject({
@@ -378,6 +379,7 @@ export const createProject = async (data: {
     groupName: data.groupName,
     path: data.path,
     gitFlowSettings: data.gitFlowSettings,
+    directEdit: data.directEdit,
     requestId: data.requestId ?? null,
   });
 
@@ -532,11 +534,13 @@ export const updateProjectGitFlowWithSetup = async (data: {
 export const updateProjectAccess = async (data: {
   projectId: string;
   userReadOnly: boolean;
+  directEdit?: boolean;
   confirmedMigration?: boolean;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceUpdateProjectAccess({
     projectId: data.projectId,
     userReadOnly: data.userReadOnly,
+    directEdit: data.directEdit,
     confirmedMigration: data.confirmedMigration ?? false,
   });
 

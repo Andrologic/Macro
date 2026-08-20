@@ -429,6 +429,32 @@ export const ProjectModal: React.FC = () => {
     }
   };
 
+  const handleChooseDirectEditing = async () => {
+    if (
+      !pendingProjectSetupPrompt ||
+      !activeProjectSetupPrompt ||
+      activeProjectSetupPrompt.kind !== 'init_git' ||
+      isSubmitting
+    ) {
+      return;
+    }
+
+    setError('');
+    setIsSubmitting(true);
+    try {
+      const payload = buildDeclinedProjectSetupPayload(
+        pendingProjectSetupPrompt.createPayload,
+        activeProjectSetupPrompt
+      );
+      setPendingProjectSetupPrompt(null);
+      await persistProject({ ...payload, directEdit: true });
+    } catch (submitError: unknown) {
+      setError(toServiceError(submitError).message || t('project.saveFailed', 'Failed to save project'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (isSubmitting) return;
     setError('');
@@ -916,10 +942,16 @@ export const ProjectModal: React.FC = () => {
           description={getProjectSetupPromptDescription(t, activeProjectSetupPrompt, 'project_creation')}
           confirmLabel={getProjectSetupPromptConfirmLabel(t, activeProjectSetupPrompt)}
           cancelLabel={getProjectSetupPromptCancelLabel(t, activeProjectSetupPrompt)}
+          secondaryLabel={activeProjectSetupPrompt.kind === 'init_git'
+            ? t('project.editDirectly', 'Edit directly')
+            : undefined}
           isSubmitting={isSubmitting}
           onCancel={() => {
             void handleDeclineProjectSetupPrompt();
           }}
+          onSecondary={activeProjectSetupPrompt.kind === 'init_git'
+            ? () => void handleChooseDirectEditing()
+            : undefined}
           onConfirm={() => {
             void handleConfirmProjectSetupPrompt();
           }}

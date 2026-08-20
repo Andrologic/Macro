@@ -109,12 +109,20 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     );
   }, [editableProjects, query]);
   const selectedProject = editableProjects.find((project) => project.id === selectedProjectId) ?? null;
+  const isDirectEditProject = Boolean(
+    selectedProject?.directEdit && selectedProject.gitSetupState === 'not_git'
+  );
   const creatableTaskKinds = useMemo(
     () => selectedProject
-      ? getCreatableStandaloneTaskKinds(selectedProject.gitFlowSettings)
+      ? isDirectEditProject
+        ? ['feature'] as StandaloneTaskKind[]
+        : getCreatableStandaloneTaskKinds(selectedProject.gitFlowSettings)
       : [],
-    [selectedProject],
+    [isDirectEditProject, selectedProject],
   );
+  const visibleTaskKindOptions = isDirectEditProject
+    ? TASK_KIND_OPTIONS.filter(({ kind }) => kind === 'feature')
+    : TASK_KIND_OPTIONS;
   const selectedTaskKindIsCreatable = selectedTaskKind
     ? creatableTaskKinds.includes(selectedTaskKind)
     : false;
@@ -155,10 +163,14 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   }, [tooltipAnchor, tooltipSize.height, tooltipSize.width]);
 
   useEffect(() => {
+    if (isDirectEditProject && selectedTaskKind !== 'feature') {
+      setSelectedTaskKind('feature');
+      return;
+    }
     if (selectedTaskKind && !creatableTaskKinds.includes(selectedTaskKind)) {
       setSelectedTaskKind(null);
     }
-  }, [creatableTaskKinds, selectedTaskKind]);
+  }, [creatableTaskKinds, isDirectEditProject, selectedTaskKind]);
 
   return (
     <Dialog
@@ -221,7 +233,11 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                     : 'border-transparent hover:border-border hover:bg-accent/60'
                 )}
               >
-                <Icon name="folder-git-2" size={15} className="shrink-0 text-muted-foreground" />
+                <Icon
+                  name={project.directEdit ? 'folder' : 'folder-git-2'}
+                  size={15}
+                  className="shrink-0 text-muted-foreground"
+                />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-foreground">{project.name}</span>
                   <span className="block truncate text-[11px] text-muted-foreground">
@@ -243,10 +259,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <legend className="text-xs font-medium text-foreground">
             {t('implement.taskKindLabel', 'Task type')}
           </legend>
-          <div className="grid grid-cols-3 gap-2">
-            {TASK_KIND_OPTIONS.map(({ kind, icon }) => {
+          <div className={cn('grid gap-2', isDirectEditProject ? 'grid-cols-1' : 'grid-cols-3')}>
+            {visibleTaskKindOptions.map(({ kind, icon }) => {
               const selected = selectedTaskKind === kind;
-              const label = kind === 'feature'
+              const label = isDirectEditProject
+                ? t('implement.taskKindDirectEdit', 'Direct edit')
+                : kind === 'feature'
                 ? t('implement.taskKindFeature', 'Feature')
                 : kind === 'bugfix'
                   ? t('implement.taskKindBugfix', 'Bugfix')
@@ -299,9 +317,14 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
               );
             })}
           </div>
-          {TASK_KIND_OPTIONS.map(({ kind }) => (
+          {visibleTaskKindOptions.map(({ kind }) => (
             <span key={kind} id={`implement-task-kind-${kind}-description`} className="sr-only">
-              {getTaskKindDescription(kind)}
+              {isDirectEditProject
+                ? t(
+                    'implement.taskKindDirectEditHelp',
+                    'Macro edits the project folder directly without branches, worktrees, or Git commits.'
+                  )
+                : getTaskKindDescription(kind)}
             </span>
           ))}
         </fieldset>

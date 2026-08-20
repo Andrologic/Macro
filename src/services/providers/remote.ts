@@ -208,6 +208,7 @@ export const createProject = async (_data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  directEdit?: boolean;
   requestId?: string | null;
 }): Promise<ProjectDto> => remoteUnsupported('createProject');
 
@@ -282,6 +283,7 @@ export const updateProjectGitFlowWithSetup = async (_data: {
 export const updateProjectAccess = async (_data: {
   projectId: string;
   userReadOnly: boolean;
+  directEdit?: boolean;
   confirmedMigration?: boolean;
 }): Promise<ProjectDto> => remoteUnsupported('updateProjectAccess');
 

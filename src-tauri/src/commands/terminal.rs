@@ -3078,6 +3078,7 @@ mod tests {
             created_at: "2026-06-05T00:00:00.000Z".to_string(),
             status: "active".to_string(),
             user_read_only: false,
+            direct_edit: false,
             git_setup_state: "ready".to_string(),
             is_read_only: false,
             read_only_reason: None,

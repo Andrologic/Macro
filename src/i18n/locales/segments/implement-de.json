@@ -288,6 +288,8 @@
   "standaloneBadge": "Eigenständig",
   "taskKindPending": "Agentenklassifizierung",
   "taskKindFeature": "Feature",
+  "taskKindDirectEdit": "Direkte Bearbeitung",
+  "taskKindDirectEditHelp": "Bearbeitet den Quellordner ohne Git-Branches, Worktrees oder Commits. Es kann jeweils nur eine Aufgabe ausgeführt werden.",
   "taskKindBugfix": "Bugfix",
   "taskKindHotfix": "Hotfix",
   "taskKindFeatureHelp": "Feature erstellt einen Branch vom konfigurierten Entwicklungsbranch und mergt ihn wieder in diesen Branch.",
@@ -356,6 +358,7 @@
     "full": "Vollständiger Dateikontext"
   },
   "errors": {
+    "directTaskCompletionFailed": "Die Aufgabe im Direktbearbeitungsmodus konnte nicht abgeschlossen werden.",
     "unknownTask": "Unbekannte Aufgabe: {{taskId}}",
     "taskAlreadyCompleted": "Die Aufgabe ist bereits abgeschlossen.",
     "taskBlockedByDependencies": "Aufgabe wird durch ungelöste Abhängigkeiten blockiert: {{reason}}",
@@ -414,6 +417,8 @@
   "diffModalReadyOnly": "{{validated}} staged and ready",
   "diffModalPendingOnly": "{{pending}} pending file(s)",
   "stagedBadge": "Staged",
+  "validatedBadge": "Validiert",
+  "acceptDirectChanges": "Änderungen übernehmen",
   "validatedStageLegend": "Validated lines are shown with a softer highlight until commit.",
   "repositoryPendingAndReady": "{{pending}} pending, {{validated}} ready",
   "validateChangesSuccess": "Changes validated and staged.",

@@ -1292,6 +1292,7 @@ interface AppStore {
     projectId: string,
     userReadOnly: boolean,
     confirmedMigration?: boolean,
+    directEdit?: boolean,
   ) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
@@ -1393,6 +1394,7 @@ interface CreateProjectData {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings;
+  directEdit?: boolean;
   requestId?: string | null;
 }
 
@@ -2681,6 +2683,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     projectId,
     userReadOnly,
     confirmedMigration = false,
+    directEdit,
   ) => {
     set({ isLoading: true, lastError: null });
     try {
@@ -2722,6 +2725,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await services.updateProjectAccess({
         projectId: canonicalProject.id,
         userReadOnly,
+        directEdit,
         confirmedMigration,
       });
 

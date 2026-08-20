@@ -410,6 +410,10 @@ export interface GitReviewSnapshotDto {
   isClean: boolean;
 }
 
+export interface DirectReviewSnapshotDto extends GitReviewSnapshotDto {
+  hasAcceptedChanges: boolean;
+}
+
 export interface GitReviewFileDto {
   path: string;
   status: "added" | "modified" | "deleted" | string;
@@ -2356,6 +2360,80 @@ export async function gitReviewSnapshot(repoPath: string): Promise<GitReviewSnap
   return invoke<GitReviewSnapshotDto>("git_review_snapshot", { repoPath });
 }
 
+export async function directCheckpointEnsure(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<string> {
+  return invoke<string>('direct_checkpoint_ensure', params);
+}
+
+export async function directCheckpointRemove(params: {
+  checkpointId: string;
+}): Promise<boolean> {
+  return invoke<boolean>('direct_checkpoint_remove', params);
+}
+
+export async function directCheckpointResolveId(params: {
+  taskId: string;
+  projectPath: string;
+}): Promise<string> {
+  return invoke<string>('direct_checkpoint_resolve_id', params);
+}
+
+export async function directReviewSnapshot(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<DirectReviewSnapshotDto> {
+  return invoke<DirectReviewSnapshotDto>('direct_review_snapshot', params);
+}
+
+export async function directReviewFile(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  path: string;
+  status: string;
+}): Promise<GitReviewFileDto> {
+  return invoke<GitReviewFileDto>('direct_review_file', params);
+}
+
+export async function directStagePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_stage_paths', params);
+}
+
+export async function directUnstagePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_unstage_paths', params);
+}
+
+export async function directRestoreWorktreePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_restore_worktree_paths', params);
+}
+
+export async function directAcceptChanges(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<string> {
+  return invoke<string>('direct_accept_changes', params);
+}
+
 export async function gitReviewFile(params: {
   repoPath: string;
   path: string;
@@ -2795,6 +2873,7 @@ export async function workspaceCreateProject(params: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings | null;
+  directEdit?: boolean;
   requestId?: string | null;
 }): Promise<Project> {
   return invoke<Project>("workspace_create_project", {
@@ -2804,6 +2883,7 @@ export async function workspaceCreateProject(params: {
     groupName: params.groupName ?? null,
     path: params.path ?? null,
     gitFlowSettings: params.gitFlowSettings ?? null,
+    ...(params.directEdit !== undefined ? { directEdit: params.directEdit } : {}),
     requestId: params.requestId ?? null,
   });
 }
@@ -2901,11 +2981,13 @@ export async function workspaceUpdateProjectGitFlow(params: {
 export async function workspaceUpdateProjectAccess(params: {
   projectId: string;
   userReadOnly: boolean;
+  directEdit?: boolean;
   confirmedMigration?: boolean;
 }): Promise<Project> {
   return invoke<Project>("workspace_update_project_access", {
     projectId: params.projectId,
     userReadOnly: params.userReadOnly,
+    ...(params.directEdit !== undefined ? { directEdit: params.directEdit } : {}),
     confirmedMigration: params.confirmedMigration ?? false,
   });
 }
