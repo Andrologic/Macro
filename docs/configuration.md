@@ -215,6 +215,12 @@ Elle ne peut cibler ni un autre serveur ni une autre variable. Les en-têtes des
 transports MCP distants n’acceptent pas encore de références secrètes : ils
 sont refusés tant qu’un résolveur dédié n’est pas disponible.
 
+Les identifiants de serveurs MCP sont eux-mêmes canoniques : minuscules, lettres
+ASCII, chiffres, tirets ou traits de soulignement, sur 64 caractères au plus.
+Le nom d’affichage reste libre dans la propriété `name`. Cette séparation évite
+qu’un serveur utilisateur et un serveur projet partagent par normalisation le
+même namespace de secrets ou le même préfixe d’outils.
+
 `provider-secrets.json` reste sous le dossier de données privé de
 l’application. Il est écrit atomiquement, avec une sauvegarde avant changement
 de version, des permissions Unix `0600` et une ACL Windows limitée à

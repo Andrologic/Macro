@@ -1,4 +1,4 @@
-use super::ids::{build_mcp_env_secret_id, normalize_identifier, parse_mcp_env_secret_ref};
+use super::ids::{build_mcp_env_secret_id, is_canonical_mcp_server_id, parse_mcp_env_secret_ref};
 use super::types::McpServerDto;
 use crate::commands::{command_error, CommandResult};
 use crate::secrets;
@@ -11,8 +11,10 @@ pub(crate) fn resolve_env_secrets(
     let mut resolved = HashMap::new();
     for (key, value) in env {
         if let Some((secret_server_id, secret_key)) = parse_mcp_env_secret_ref(value) {
-            let expected_server_id = normalize_identifier(&server.id, "server");
-            if secret_server_id != expected_server_id || secret_key != key {
+            if !is_canonical_mcp_server_id(&server.id)
+                || secret_server_id != server.id
+                || secret_key != key
+            {
                 return Err(command_error(format!(
                     "MCP env secret reference for '{}' must target the same server and environment key.",
                     key
@@ -64,7 +66,7 @@ mod tests {
             "macro-secret://mcp-env/secret_server/API_TOKEN".to_string(),
         );
         let server = McpServerDto {
-            id: "Secret Server".to_string(),
+            id: "secret_server".to_string(),
             name: "Secret Server".to_string(),
             transport: Some(McpTransportDto::Stdio {
                 command: "echo".to_string(),
@@ -99,7 +101,7 @@ mod tests {
             "macro-secret://mcp-env:secret_server:API_TOKEN",
         ] {
             let server = McpServerDto {
-                id: "Secret Server".to_string(),
+                id: "secret_server".to_string(),
                 name: "Secret Server".to_string(),
                 transport: Some(McpTransportDto::Stdio {
                     command: "echo".to_string(),

@@ -45,7 +45,7 @@ pub(crate) fn build_mcp_env_secret_ref(server_id: &str, key: &str) -> String {
     )
 }
 
-fn is_valid_mcp_env_key(value: &str) -> bool {
+pub(crate) fn is_valid_mcp_env_key(value: &str) -> bool {
     let mut characters = value.chars();
     characters
         .next()
@@ -54,13 +54,14 @@ fn is_valid_mcp_env_key(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+pub(crate) fn is_canonical_mcp_server_id(value: &str) -> bool {
+    !value.is_empty() && value == normalize_identifier(value, "server")
+}
+
 pub(crate) fn parse_mcp_env_secret_ref(value: &str) -> Option<(&str, &str)> {
     let suffix = value.strip_prefix(MCP_ENV_SECRET_REF_PREFIX)?;
     let (server_id, key) = suffix.split_once('/')?;
-    if server_id != normalize_identifier(server_id, "server")
-        || !is_valid_mcp_env_key(key)
-        || key.contains('/')
-    {
+    if !is_canonical_mcp_server_id(server_id) || !is_valid_mcp_env_key(key) || key.contains('/') {
         return None;
     }
     Some((server_id, key))
@@ -92,5 +93,12 @@ mod tests {
         ] {
             assert_eq!(parse_mcp_env_secret_ref(invalid), None, "{invalid}");
         }
+    }
+
+    #[test]
+    fn rejects_noncanonical_server_ids() {
+        assert!(is_canonical_mcp_server_id("github_server"));
+        assert!(!is_canonical_mcp_server_id("GitHub Server"));
+        assert!(!is_canonical_mcp_server_id(""));
     }
 }
