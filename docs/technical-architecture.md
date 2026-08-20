@@ -830,10 +830,10 @@ Le kernel headless expose une API HTTP basée sur axum.
 Cette API couvre au minimum :
 
 - `GET /health`
-- `GET /v1/tools/mode-policy`
+- `GET /v1/tools/mode-policy?mode=<mode>&projectId=<project-id>`
 - `POST /v1/tools/validate`
 - `POST /v1/tools/execute`
-- `GET /api/v1/tools/mode-policy`
+- `GET /api/v1/tools/mode-policy?mode=<mode>&projectId=<project-id>`
 - `POST /api/v1/tools/validate`
 - `POST /api/v1/tools/execute`
 - `GET /api/v1/workspace/bootstrap`
@@ -854,6 +854,8 @@ Les capabilities runtime séparent les skills en deux niveaux : `skills` pour la
 ### 16.3 Protection expérimentale
 
 Le kernel headless peut être protégé par un bearer token. Le token est facultatif uniquement sur une adresse loopback et obligatoire sur toute autre adresse. Lorsqu'il est configuré, il protège aussi `/health`. Sans token sur loopback, `/health` est public comme le reste du prototype local.
+
+Les patches de configuration headless sont toujours attribués à une source agent. L’acceptation ou le rejet d’un changement sensible exige un second bearer défini par `MACRO_HEADLESS_APPROVAL_TOKEN`, différent de `MACRO_HEADLESS_BEARER_TOKEN`. Ce second secret représente une décision utilisateur ponctuelle et n’est jamais remplacé par le bearer agent. Les décisions de politique d’outils sont fermées par défaut : elles exigent un projet chargé et une exécution multi-projet doit être autorisée par chaque projet affecté.
 
 Le tool host desktop est toujours limité à `127.0.0.1`, génère un token éphémère et exige ce token pour tous ses endpoints d'outils. Son endpoint `/health` reste volontairement public : il n'expose qu'un état de vie non sensible et ne doit pas devenir accessible hors localhost.
 

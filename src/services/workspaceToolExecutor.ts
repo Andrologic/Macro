@@ -1710,6 +1710,7 @@ export const executeWorkspaceTool = async (
       mode,
       toolId: backendToolName,
       path,
+      projectId: focusedProjectId ?? '',
     });
   };
 

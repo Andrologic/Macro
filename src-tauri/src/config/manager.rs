@@ -181,12 +181,6 @@ impl ConfigManager {
             )
         })?;
 
-        self.state
-            .write()
-            .await
-            .project_roots
-            .insert(project_id.to_string(), config_root.clone());
-
         for kind in ConfigDocumentKind::ALL
             .into_iter()
             .filter(|kind| kind.supports_project_scope())
@@ -196,10 +190,29 @@ impl ConfigManager {
             };
             let path = config_root.join(kind.file_name());
             if path.exists() {
-                self.load_document_from_path(kind, scope, path, false)
-                    .await?;
+                if let Err(error) = self.load_document_from_path(kind, scope, path, false).await {
+                    let mut state = self.state.write().await;
+                    state.documents.retain(|key, _| {
+                        key.scope
+                            != (ConfigScope::Project {
+                                project_id: project_id.to_string(),
+                            })
+                    });
+                    state.pending_changes.retain(|_, pending| {
+                        pending.pending.scope
+                            != (ConfigScope::Project {
+                                project_id: project_id.to_string(),
+                            })
+                    });
+                    return Err(error);
+                }
             }
         }
+        self.state
+            .write()
+            .await
+            .project_roots
+            .insert(project_id.to_string(), config_root.clone());
         Ok(config_root)
     }
 
@@ -501,20 +514,21 @@ impl ConfigManager {
     ) -> Result<(), ConfigApiError> {
         let roots = {
             let state = self.state.read().await;
-            project_ids
-                .iter()
-                .filter_map(|project_id| {
-                    state
-                        .project_roots
-                        .get(project_id)
-                        .cloned()
-                        .map(|root| (project_id.clone(), root))
-                })
-                .collect::<Vec<_>>()
+            let mut roots = Vec::with_capacity(project_ids.len());
+            for project_id in project_ids {
+                validate_project_id(project_id)?;
+                let root = state.project_roots.get(project_id).cloned().ok_or_else(|| {
+                    ConfigApiError::new(
+                        "config.project.not_registered",
+                        format!(
+                            "La configuration du projet {project_id} n’a pas été enregistrée ou chargée."
+                        ),
+                    )
+                })?;
+                roots.push((project_id.clone(), root));
+            }
+            roots
         };
-        for project_id in project_ids {
-            validate_project_id(project_id)?;
-        }
         for (project_id, root) in roots {
             for kind in ConfigDocumentKind::ALL
                 .into_iter()
@@ -697,6 +711,25 @@ impl ConfigManager {
             stored
         };
         let _file_guard = lock_document_file_async(stored.path.clone()).await?;
+        let (approved, disk_pending) = read_runtime_state(self.root(), &key)?;
+        if let Some(durable) = disk_pending {
+            let mut state = self.state.write().await;
+            if let Some(current) = state.documents.get_mut(&key) {
+                current.last_valid_value = approved;
+            }
+            state.pending_changes.retain(|_, pending| {
+                pending.pending.document != key.kind || pending.pending.scope != key.scope
+            });
+            state
+                .pending_changes
+                .insert(durable.pending.id.clone(), durable);
+            let current = state.documents.get(&key).expect("loaded document");
+            return Err(ConfigApiError::new(
+                "config.pending.unresolved",
+                "Une modification sensible de ce document attend une décision. Acceptez-la ou rejetez-la avant une nouvelle écriture.",
+            )
+            .with_document(to_document(&key, current)));
+        }
         let current_raw = fs::read(&stored.path).map_err(|error| {
             ConfigApiError::new(
                 "config.document.read_failed",
@@ -788,7 +821,7 @@ impl ConfigManager {
 
         // Classify the actual semantic diff, not the patch envelope. In particular,
         // a root-level replacement must not hide sensitive descendant changes.
-        let changed_paths = diff_leaf_paths(&stored.last_valid_value, &proposed);
+        let changed_paths = diff_leaf_paths(&approved, &proposed);
         let (sensitive_paths, reasons) = classify_sensitive_paths(request.kind, &changed_paths);
         let apply_modes = apply_modes_for_paths(request.kind, &changed_paths);
         let needs_approval =
@@ -813,7 +846,7 @@ impl ConfigManager {
                 proposed_etag: new_etag.clone(),
                 created_at: Utc::now().to_rfc3339(),
             },
-            approved_etag: etag(&stored.last_valid_value),
+            approved_etag: etag(&approved),
             all_changed_paths: changed_paths.clone(),
             apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
         });
@@ -945,6 +978,7 @@ impl ConfigManager {
                 )
             })?;
         let _file_guard = lock_document_file_async(current.path.clone()).await?;
+        let (approved, disk_pending) = read_runtime_state(self.root(), &key)?;
 
         let raw = fs::read(&current.path).map_err(|error| {
             ConfigApiError::new(
@@ -957,6 +991,33 @@ impl ConfigManager {
             .as_ref()
             .map(etag)
             .unwrap_or_else(|_| etag_bytes(&raw));
+        if let Some(durable) = disk_pending
+            .as_ref()
+            .filter(|pending| pending.pending.proposed_etag == proposed_etag)
+        {
+            let mut state = self.state.write().await;
+            let document = {
+                let stored = state.documents.get_mut(&key).expect("loaded document");
+                stored.disk_value = durable.pending.proposed_document.clone();
+                stored.etag = proposed_etag;
+                stored.last_valid_value = approved;
+                stored.invalid = false;
+                to_document(&key, stored)
+            };
+            state.pending_changes.retain(|_, pending| {
+                pending.pending.document != key.kind || pending.pending.scope != key.scope
+            });
+            state
+                .pending_changes
+                .insert(durable.pending.id.clone(), durable.clone());
+            return Ok(ReloadOutcome {
+                changed: current.etag != document.etag,
+                invalid: false,
+                pending: Some(durable.pending.clone()),
+                restart_required: false,
+                document,
+            });
+        }
         if current.last_internal_hash.as_deref() == Some(proposed_etag.as_str()) {
             let mut state = self.state.write().await;
             if let Some(stored) = state.documents.get_mut(&key) {
@@ -1077,7 +1138,7 @@ impl ConfigManager {
             }
         }
 
-        let changed_paths = diff_leaf_paths(&current.last_valid_value, &proposed);
+        let changed_paths = diff_leaf_paths(&approved, &proposed);
         let (sensitive_paths, reasons) = classify_sensitive_paths(kind, &changed_paths);
         let apply_modes = apply_modes_for_paths(kind, &changed_paths);
         let durable_pending = (source != ConfigChangeSource::UserInterface
@@ -1094,7 +1155,7 @@ impl ConfigManager {
                 proposed_etag: proposed_etag.clone(),
                 created_at: Utc::now().to_rfc3339(),
             },
-            approved_etag: etag(&current.last_valid_value),
+            approved_etag: etag(&approved),
             all_changed_paths: changed_paths.clone(),
             apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
         });
@@ -1182,6 +1243,15 @@ impl ConfigManager {
                 )
             })?;
         let _file_guard = lock_document_file_async(stored.path.clone()).await?;
+        let (approved, disk_pending) = read_runtime_state(self.root(), &key)?;
+        let durable = disk_pending
+            .filter(|pending| pending.pending.id == id)
+            .ok_or_else(|| {
+                ConfigApiError::new(
+                    "config.pending.conflict",
+                    "La modification sensible persistée a changé depuis sa lecture.",
+                )
+            })?;
         let canonical = read_json_value(&stored.path)?;
         let canonical_etag = etag(&canonical);
         if canonical_etag != durable.pending.proposed_etag
@@ -1193,14 +1263,13 @@ impl ConfigManager {
             )
             .with_document(to_document(&key, &stored)));
         }
-        let approved_path = approved_document_path(self.root(), &key);
-        let approved = read_json_value(&approved_path)?;
         if etag(&approved) != durable.approved_etag {
             return Err(ConfigApiError::new(
                 "config.pending.baseline_conflict",
                 "La copie approuvée a changé depuis la demande d’approbation.",
             ));
         }
+        let approved_path = approved_document_path(self.root(), &key);
         atomic_write_json(&approved_path, &durable.pending.proposed_document).map_err(|error| {
             ConfigApiError::new(
                 "config.approved.write_failed",
@@ -1276,8 +1345,15 @@ impl ConfigManager {
                 )
             })?;
         let _file_guard = lock_document_file_async(stored.path.clone()).await?;
-        let approved_path = approved_document_path(self.root(), &key);
-        let approved = read_json_value(&approved_path)?;
+        let (approved, disk_pending) = read_runtime_state(self.root(), &key)?;
+        let durable = disk_pending
+            .filter(|pending| pending.pending.id == id)
+            .ok_or_else(|| {
+                ConfigApiError::new(
+                    "config.pending.conflict",
+                    "La modification sensible persistée a changé depuis sa lecture.",
+                )
+            })?;
         if etag(&approved) != durable.approved_etag {
             return Err(ConfigApiError::new(
                 "config.pending.baseline_conflict",
@@ -1466,6 +1542,37 @@ fn read_durable_pending(
             format!("La demande sensible durable est invalide : {error}"),
         )
     })
+}
+
+fn read_runtime_state(
+    root: &Path,
+    key: &DocumentKey,
+) -> Result<(Value, Option<DurablePendingSensitiveChange>), ConfigApiError> {
+    let approved = read_json_value(&approved_document_path(root, key)).map_err(|_| {
+        ConfigApiError::new(
+            "config.approved.invalid",
+            "La copie approuvée est absente ou invalide. L’écriture est bloquée par sécurité.",
+        )
+    })?;
+    let validation = validate_document(key.kind, &key.scope, &approved);
+    if !validation.valid || validation.read_only {
+        return Err(ConfigApiError::new(
+            "config.approved.invalid",
+            "La copie approuvée ne respecte pas le schéma courant. L’écriture est bloquée par sécurité.",
+        )
+        .with_diagnostics(validation.diagnostics));
+    }
+
+    let pending = read_durable_pending(&pending_document_path(root, key))?;
+    if pending.as_ref().is_some_and(|pending| {
+        pending.pending.document != key.kind || pending.pending.scope != key.scope
+    }) {
+        return Err(ConfigApiError::new(
+            "config.pending.invalid",
+            "La modification sensible persistée ne correspond pas au document verrouillé.",
+        ));
+    }
+    Ok((approved, pending))
 }
 
 fn write_durable_pending(
@@ -2055,6 +2162,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn second_manager_cannot_promote_an_existing_sensitive_proposal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("config");
+        let first = ConfigManager::initialize(root.clone())
+            .await
+            .expect("first");
+        let second = ConfigManager::initialize(root).await.expect("second");
+        let document = first
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("tools");
+        let proposal = first
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/riskLevel".to_string(),
+                    from: None,
+                    value: Some(json!("yolo")),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .expect("pending proposal");
+
+        let error = second
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: proposal.document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/builtIn/write_file".to_string(),
+                    from: None,
+                    value: Some(json!(false)),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect_err("durable pending proposal must block the second writer");
+
+        assert_eq!(error.code, "config.pending.unresolved");
+        assert_eq!(
+            second.get_snapshot(&[]).await.expect("snapshot").effective["tools"]["riskLevel"],
+            json!("balanced")
+        );
+        assert_eq!(second.list_pending_changes().await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn project_ids_cannot_escape_the_metadata_root() {
         let (_temp, manager) = manager().await;
         let metadata = tempfile::tempdir().expect("metadata");
@@ -2099,6 +2258,43 @@ mod tests {
                         project_id: "project-123".to_string(),
                     }
         }));
+    }
+
+    #[tokio::test]
+    async fn snapshot_rejects_an_explicit_unregistered_project() {
+        let (_temp, manager) = manager().await;
+        let error = manager
+            .get_snapshot(&["missing-project".to_string()])
+            .await
+            .expect_err("unknown project must fail closed");
+        assert_eq!(error.code, "config.project.not_registered");
+    }
+
+    #[tokio::test]
+    async fn failed_project_registration_does_not_leave_an_executable_project() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().expect("metadata");
+        let config_root = metadata
+            .path()
+            .join("projects")
+            .join("unsafe-project")
+            .join("config");
+        fs::create_dir_all(&config_root).expect("config root");
+        let mut tools = sparse_document(ConfigDocumentKind::Tools);
+        tools["riskLevel"] = json!("yolo");
+        atomic_write_json(&config_root.join("tools.json"), &tools).expect("unsafe tools");
+
+        let registration = manager
+            .register_project_root("unsafe-project", metadata.path().to_path_buf())
+            .await
+            .expect_err("relaxing project configuration must fail registration");
+        assert_eq!(registration.code, "config.project.relaxation_forbidden");
+
+        let snapshot = manager
+            .get_snapshot(&["unsafe-project".to_string()])
+            .await
+            .expect_err("failed registration must stay unavailable");
+        assert_eq!(snapshot.code, "config.project.not_registered");
     }
 
     #[tokio::test]

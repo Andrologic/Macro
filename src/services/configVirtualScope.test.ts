@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { parseConfigVirtualPath } from './configVirtualScope';
+import { listConfigPath, parseConfigVirtualPath } from './configVirtualScope';
 
 describe('configVirtualScope', () => {
   it('maps user and project virtual documents without revealing physical paths', () => {
@@ -29,5 +29,18 @@ describe('configVirtualScope', () => {
 
   it('ignores ordinary workspace paths', () => {
     expect(parseConfigVirtualPath('src/config/settings.json')).toBeNull();
+  });
+
+  it('lists known projects from the project registry without requiring a config snapshot', async () => {
+    let registryLoads = 0;
+    const result = await listConfigPath('@config/projects', async () => {
+      registryLoads += 1;
+      return {
+        validProjectIds: ['project-b', 'project-a'],
+      } as Awaited<ReturnType<typeof import('./validProjectRegistry').loadValidProjectRegistrySnapshot>>;
+    });
+
+    expect(registryLoads).toBe(1);
+    expect(result).toBe('@config/projects/project-a/\n@config/projects/project-b/');
   });
 });

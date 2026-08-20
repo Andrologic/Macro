@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,7 +15,8 @@ use macro_lib::commands::{execute_workspace_tool, git, WorkspaceProjectMount};
 use macro_lib::config::{
     delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
     resolve_standalone_config_root, ConfigApiError, ConfigChangeSource, ConfigDocumentKind,
-    ConfigManager, ConfigPatchRequest, ConfigScope, DeleteOrphanSecretRequest, JsonPatchOperation,
+    ConfigManager, ConfigPatchRequest, ConfigScope, ConfigSnapshot, DeleteOrphanSecretRequest,
+    JsonPatchOperation,
 };
 use macro_lib::core::error::BackendError;
 use macro_lib::core::http_auth::BearerTokenDigest;
@@ -36,6 +38,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 #[derive(Clone)]
 struct HeadlessState {
     bearer_token: Option<BearerTokenDigest>,
+    approval_token: Option<BearerTokenDigest>,
     allowed_roots: Vec<PathBuf>,
     workspace_path: PathBuf,
     git_state: GitState,
@@ -51,6 +54,8 @@ struct HealthResponse {
 #[derive(Debug, Deserialize)]
 struct ModePolicyQuery {
     mode: String,
+    #[serde(alias = "projectId")]
+    project_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +63,8 @@ struct ToolValidationRequest {
     mode: String,
     tool_id: String,
     path: Option<String>,
+    #[serde(alias = "projectId")]
+    project_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +146,23 @@ fn normalize_bearer_token(raw: Option<String>) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+fn validate_approval_authority(
+    bearer_token: Option<&str>,
+    approval_token: Option<&str>,
+) -> Result<(), String> {
+    let (Some(bearer_token), Some(approval_token)) = (bearer_token, approval_token) else {
+        return Ok(());
+    };
+    let approval_header = format!("Bearer {approval_token}");
+    if BearerTokenDigest::new(bearer_token).authorizes(Some(&approval_header)) {
+        return Err(
+            "MACRO_HEADLESS_APPROVAL_TOKEN must differ from MACRO_HEADLESS_BEARER_TOKEN"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn parse_listen_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
@@ -431,8 +455,8 @@ async fn config_accept_pending(
     headers: HeaderMap,
     Json(payload): Json<ConfigPendingDecisionRequest>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, &state) {
-        return unauthorized_response().into_response();
+    if !approval_authorized(&headers, &state) {
+        return approval_unauthorized_response().into_response();
     }
     match state
         .config_manager
@@ -449,8 +473,8 @@ async fn config_reject_pending(
     headers: HeaderMap,
     Json(payload): Json<ConfigPendingDecisionRequest>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, &state) {
-        return unauthorized_response().into_response();
+    if !approval_authorized(&headers, &state) {
+        return approval_unauthorized_response().into_response();
     }
     match state
         .config_manager
@@ -525,6 +549,60 @@ async fn resolve_project_repo_path(
     Ok(project.path)
 }
 
+async fn register_headless_project_config_roots(state: &HeadlessState) -> Result<(), BackendError> {
+    let workspace_metadata_root = resolve_metadata_root_for_workspace(state)?;
+    let bootstrap =
+        workspace::get_bootstrap(&state.workspace_path, &workspace_metadata_root).await?;
+    let projects = bootstrap
+        .standalone_projects
+        .into_iter()
+        .chain(
+            bootstrap
+                .project_groups
+                .into_iter()
+                .flat_map(|group| group.projects),
+        )
+        .collect::<Vec<_>>();
+
+    for project in projects {
+        if parse_wsl_unc_path(&project.path).is_some() {
+            tracing::warn!(
+                project_id = %project.id,
+                "Skipping headless project policy registration for an unsupported WSL project"
+            );
+            continue;
+        }
+        let project_state = HeadlessState {
+            workspace_path: PathBuf::from(&project.path),
+            ..state.clone()
+        };
+        let metadata_root = match resolve_metadata_root_for_workspace(&project_state) {
+            Ok(root) => root,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = %project.id,
+                    %error,
+                    "Unable to resolve the headless project policy root"
+                );
+                continue;
+            }
+        };
+        if let Err(error) = state
+            .config_manager
+            .register_project_root(&project.id, metadata_root)
+            .await
+        {
+            tracing::warn!(
+                project_id = %project.id,
+                code = %error.code,
+                message = %error.message,
+                "Unable to register the headless project policy root"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn authorized(headers: &HeaderMap, state: &HeadlessState) -> bool {
     let Some(expected) = state.bearer_token.as_ref() else {
         return true;
@@ -550,6 +628,191 @@ fn unauthorized_response() -> impl IntoResponse {
     )
 }
 
+fn approval_authorized(headers: &HeaderMap, state: &HeadlessState) -> bool {
+    approval_token_authorizes(headers, state.approval_token.as_ref())
+}
+
+fn approval_token_authorizes(headers: &HeaderMap, expected: Option<&BearerTokenDigest>) -> bool {
+    let Some(expected) = expected else {
+        return false;
+    };
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    expected.authorizes(authorization)
+}
+
+fn approval_unauthorized_response() -> impl IntoResponse {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ApiError {
+            message: "A distinct user approval bearer token is required".to_string(),
+        }),
+    )
+}
+
+fn policy_denied_response(message: impl Into<String>) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiError {
+            message: message.into(),
+        }),
+    )
+        .into_response()
+}
+
+fn is_strict_observe_tool(tool_id: &str) -> bool {
+    matches!(
+        tool_id,
+        "question"
+            | "config_list"
+            | "config_get"
+            | "config_validate"
+            | "skill_activate"
+            | "skill_read_resource"
+            | "read_file"
+            | "read_sources"
+            | "mark_source_passage"
+            | "list"
+            | "read"
+            | "glob"
+            | "grep"
+            | "git_status"
+            | "git_log"
+            | "git_branch_list"
+            | "git_diff"
+            | "git_get_tree"
+            | "plan_list"
+            | "plan_get"
+            | "strategy_get"
+            | "task_todo_get"
+            | "task_artifact_list"
+            | "task_artifact_get"
+    )
+}
+
+fn configured_mode_policy(mode: &str, tools: &Value) -> Result<ToolModePolicyResult, String> {
+    let tools = tools
+        .as_object()
+        .ok_or_else(|| "The scoped tools policy is missing or invalid".to_string())?;
+    let risk_level = tools
+        .get("riskLevel")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "strict" | "balanced" | "yolo"))
+        .ok_or_else(|| "The scoped tools.riskLevel policy is missing or invalid".to_string())?;
+    let built_in = tools
+        .get("builtIn")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "The scoped tools.builtIn policy is missing or invalid".to_string())?;
+    let modes = tools
+        .get("modes")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "The scoped tools.modes policy is missing or invalid".to_string())?;
+    let mode_overrides = match modes.get(mode) {
+        Some(value) => Some(
+            value
+                .as_object()
+                .ok_or_else(|| format!("The scoped tools.modes.{mode} policy is invalid"))?,
+        ),
+        None => None,
+    };
+
+    let mut policy = get_mode_policy(mode);
+    policy.allowed_tool_ids.retain(|tool_id| {
+        built_in.get(tool_id).and_then(Value::as_bool) != Some(false)
+            && mode_overrides
+                .and_then(|overrides| overrides.get(tool_id))
+                .and_then(Value::as_bool)
+                != Some(false)
+            && (risk_level != "strict" || is_strict_observe_tool(tool_id))
+    });
+    Ok(policy)
+}
+
+fn configured_tool_validation(
+    mode: &str,
+    tool_id: &str,
+    path: Option<&str>,
+    tools: &Value,
+) -> Result<ToolValidationResult, String> {
+    let static_validation = validate_tool_execution(mode, tool_id, path);
+    if !static_validation.allowed {
+        return Ok(static_validation);
+    }
+
+    let configured = configured_mode_policy(mode, tools)?;
+    if configured
+        .allowed_tool_ids
+        .iter()
+        .any(|allowed| allowed == tool_id.trim())
+    {
+        return Ok(static_validation);
+    }
+
+    Ok(ToolValidationResult {
+        allowed: false,
+        reason: Some(format!(
+            "Tool '{}' is disabled by the scoped project policy",
+            tool_id.trim()
+        )),
+        enforce_macro_only_writes: static_validation.enforce_macro_only_writes,
+    })
+}
+
+fn project_tools_from_snapshot<'a>(
+    snapshot: &'a ConfigSnapshot,
+    project_id: &str,
+) -> Result<&'a Value, String> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err("A project_id is required for tool policy decisions".to_string());
+    }
+    snapshot
+        .project_effective
+        .get(project_id)
+        .and_then(|documents| documents.get("tools"))
+        .ok_or_else(|| format!("No scoped tools policy is loaded for project '{project_id}'"))
+}
+
+async fn load_project_tools_policy(
+    state: &HeadlessState,
+    project_id: &str,
+) -> Result<Value, String> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err("A project_id is required for tool policy decisions".to_string());
+    }
+    let snapshot = state
+        .config_manager
+        .get_snapshot(&[project_id.to_string()])
+        .await
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    project_tools_from_snapshot(&snapshot, project_id).cloned()
+}
+
+async fn load_project_tools_policies(
+    state: &HeadlessState,
+    project_ids: &BTreeSet<String>,
+) -> Result<Vec<(String, Value)>, String> {
+    if project_ids.is_empty() {
+        return Err("At least one project is required for tool policy decisions".to_string());
+    }
+    let requested_ids = project_ids.iter().cloned().collect::<Vec<_>>();
+    let snapshot = state
+        .config_manager
+        .get_snapshot(&requested_ids)
+        .await
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    requested_ids
+        .into_iter()
+        .map(|project_id| {
+            project_tools_from_snapshot(&snapshot, &project_id)
+                .cloned()
+                .map(|tools| (project_id, tools))
+        })
+        .collect()
+}
+
 async fn health(State(state): State<Arc<HeadlessState>>, headers: HeaderMap) -> impl IntoResponse {
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
@@ -571,8 +834,14 @@ async fn tool_mode_policy(
         return unauthorized_response().into_response();
     }
 
-    let result: ToolModePolicyResult = get_mode_policy(&params.mode);
-    (StatusCode::OK, Json(result)).into_response()
+    let tools = match load_project_tools_policy(&state, &params.project_id).await {
+        Ok(tools) => tools,
+        Err(error) => return policy_denied_response(error),
+    };
+    match configured_mode_policy(&params.mode, &tools) {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => policy_denied_response(error),
+    }
 }
 
 async fn tool_validate(
@@ -584,9 +853,19 @@ async fn tool_validate(
         return unauthorized_response().into_response();
     }
 
-    let result: ToolValidationResult =
-        validate_tool_execution(&payload.mode, &payload.tool_id, payload.path.as_deref());
-    (StatusCode::OK, Json(result)).into_response()
+    let tools = match load_project_tools_policy(&state, &payload.project_id).await {
+        Ok(tools) => tools,
+        Err(error) => return policy_denied_response(error),
+    };
+    match configured_tool_validation(
+        &payload.mode,
+        &payload.tool_id,
+        payload.path.as_deref(),
+        &tools,
+    ) {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => policy_denied_response(error),
+    }
 }
 
 async fn tool_execute(
@@ -596,6 +875,53 @@ async fn tool_execute(
 ) -> impl IntoResponse {
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
+    }
+
+    let Some(project_id) = payload
+        .focused_project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|project_id| !project_id.is_empty())
+    else {
+        return policy_denied_response(
+            "A focused_project_id is required for tool execution policy decisions",
+        );
+    };
+    let mut affected_project_ids = payload
+        .project_mounts
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|mount| mount.project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty())
+        .collect::<BTreeSet<_>>();
+    affected_project_ids.insert(project_id.to_string());
+    let policies = match load_project_tools_policies(&state, &affected_project_ids).await {
+        Ok(policies) => policies,
+        Err(error) => return policy_denied_response(error),
+    };
+    let candidate_path = payload
+        .args
+        .get("path")
+        .or_else(|| payload.args.get("repo_path"))
+        .and_then(Value::as_str);
+    for (policy_project_id, tools) in policies {
+        match configured_tool_validation(&payload.mode, &payload.tool_id, candidate_path, &tools) {
+            Ok(validation) if validation.allowed => {}
+            Ok(validation) => {
+                return policy_denied_response(format!(
+                    "Project '{policy_project_id}' denied the tool: {}",
+                    validation
+                        .reason
+                        .unwrap_or_else(|| "Tool execution is denied by policy".to_string()),
+                ))
+            }
+            Err(error) => {
+                return policy_denied_response(format!(
+                    "Project '{policy_project_id}' has an invalid tool policy: {error}",
+                ))
+            }
+        }
     }
 
     payload.workspace_path = match validate_headless_workspace_path(
@@ -918,7 +1244,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .unwrap_or(43117);
     let addr = parse_listen_addr(&host, port)?;
+    // The agent bearer authenticates ordinary API calls. Sensitive pending-change
+    // decisions require the separate user-held approval bearer and never fall
+    // back to the agent bearer when it is absent.
     let bearer_token = normalize_bearer_token(std::env::var("MACRO_HEADLESS_BEARER_TOKEN").ok());
+    let approval_token =
+        normalize_bearer_token(std::env::var("MACRO_HEADLESS_APPROVAL_TOKEN").ok());
+    validate_approval_authority(bearer_token.as_deref(), approval_token.as_deref())?;
     validate_listen_security(addr, bearer_token.as_deref())?;
     let mut config = load_config()?;
     apply_runtime_workspace(&mut config, &runtime)?;
@@ -936,13 +1268,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Vec<_>>();
     let allowed_roots = configured_headless_allowed_roots(&workspace_path, &runtime_roots)?;
 
-    let state = Arc::new(HeadlessState {
+    let state = HeadlessState {
         bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
+        approval_token: approval_token.as_deref().map(BearerTokenDigest::new),
         allowed_roots,
         workspace_path,
         git_state: GitState::new(),
         config_manager,
-    });
+    };
+    register_headless_project_config_roots(&state).await?;
+    let state = Arc::new(state);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -1023,6 +1358,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn bearer_headers(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("authorization header"),
+        );
+        headers
+    }
 
     #[test]
     fn headless_patch_payload_cannot_claim_user_interface_provenance() {
@@ -1034,5 +1379,69 @@ mod tests {
             "source": "userInterface"
         });
         assert!(serde_json::from_value::<HeadlessConfigPatchRequest>(payload).is_err());
+    }
+
+    #[test]
+    fn pending_accept_refuses_the_agent_bearer() {
+        let headers = bearer_headers("agent-secret");
+        let approval = BearerTokenDigest::new("user-approval-secret");
+
+        assert!(!approval_token_authorizes(&headers, Some(&approval)));
+        assert!(validate_approval_authority(Some("agent-secret"), Some("agent-secret")).is_err());
+    }
+
+    #[test]
+    fn pending_accept_allows_a_distinct_user_approval_bearer() {
+        let headers = bearer_headers("user-approval-secret");
+        let approval = BearerTokenDigest::new("user-approval-secret");
+
+        assert!(approval_token_authorizes(&headers, Some(&approval)));
+        assert!(
+            validate_approval_authority(Some("agent-secret"), Some("user-approval-secret")).is_ok()
+        );
+        assert!(!approval_token_authorizes(&headers, None));
+    }
+
+    #[test]
+    fn configured_policy_denies_disabled_and_strict_tools() {
+        let disabled = json!({
+            "riskLevel": "balanced",
+            "builtIn": { "write": false },
+            "modes": {}
+        });
+        let disabled_validation =
+            configured_tool_validation("Implement", "write", Some("file.txt"), &disabled)
+                .expect("valid policy");
+        assert!(!disabled_validation.allowed);
+
+        let strict = json!({
+            "riskLevel": "strict",
+            "builtIn": {},
+            "modes": {}
+        });
+        let strict_write =
+            configured_tool_validation("Implement", "write", Some("file.txt"), &strict)
+                .expect("valid strict policy");
+        let strict_read =
+            configured_tool_validation("Implement", "read", Some("file.txt"), &strict)
+                .expect("valid strict policy");
+        assert!(!strict_write.allowed);
+        assert!(strict_read.allowed);
+    }
+
+    #[test]
+    fn missing_project_policy_fails_closed() {
+        let snapshot = ConfigSnapshot {
+            schema_version: 1,
+            effective: BTreeMap::new(),
+            project_effective: BTreeMap::new(),
+            documents: Vec::new(),
+            provenance: Vec::new(),
+            diagnostics: Vec::new(),
+            pending_restart_paths: Vec::new(),
+        };
+
+        assert!(project_tools_from_snapshot(&snapshot, "missing-project").is_err());
+        assert!(project_tools_from_snapshot(&snapshot, "").is_err());
     }
 }

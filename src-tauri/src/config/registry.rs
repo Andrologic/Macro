@@ -237,8 +237,14 @@ fn collect_plain_secret_fields(
                 let escaped = key.replace('~', "~0").replace('/', "~1");
                 let child_pointer = format!("{pointer}/{escaped}");
                 let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
-                if matches!(normalized.as_str(), "apikey" | "token" | "password")
-                    && child.as_str().is_some_and(|secret| !secret.is_empty())
+                let sensitive_name = normalized == "secret"
+                    || normalized.ends_with("apikey")
+                    || normalized.ends_with("token")
+                    || normalized.ends_with("password");
+                if sensitive_name
+                    && child.as_str().is_some_and(|secret| {
+                        !secret.is_empty() && !secret.starts_with("macro-secret://")
+                    })
                 {
                     diagnostics.push((
                         child_pointer.clone(),
@@ -977,18 +983,14 @@ fn set_project_provenance(
     );
 }
 
-fn apply_multi_project_restrictions(
+fn apply_project_restrictions(
     kind: ConfigDocumentKind,
     value: &mut Value,
     user_effective: &Value,
     project_documents: &[(&str, &BTreeMap<ConfigDocumentKind, Value>)],
     provenance: &mut BTreeMap<(ConfigDocumentKind, String), ConfigProvenance>,
 ) {
-    if project_documents.len() < 2 {
-        return;
-    }
-
-    if kind == ConfigDocumentKind::Git {
+    if kind == ConfigDocumentKind::Git && project_documents.len() > 1 {
         *value = user_effective.clone();
         return;
     }
@@ -1036,6 +1038,27 @@ fn apply_multi_project_restrictions(
         ConfigDocumentKind::Skills => &["/conventionalRoots"],
         _ => &[],
     };
+    for root in restrictive_roots {
+        let mut false_pointers = Vec::new();
+        collect_false_pointers(user_effective.pointer(root), root, &mut false_pointers);
+        for pointer in false_pointers {
+            if let Some(target) = value.pointer_mut(&pointer) {
+                *target = Value::Bool(false);
+                provenance.insert(
+                    (kind, pointer.clone()),
+                    ConfigProvenance {
+                        json_pointer: format!(
+                            "/{}/{}",
+                            kind.file_name().trim_end_matches(".json"),
+                            pointer.trim_start_matches('/')
+                        ),
+                        origin: ConfigOrigin::User,
+                        project_id: None,
+                    },
+                );
+            }
+        }
+    }
     for (project_id, documents) in project_documents {
         let Some(project) = documents.get(&kind) else {
             continue;
@@ -1144,7 +1167,7 @@ pub fn effective_documents(
                 }
             }
         }
-        apply_multi_project_restrictions(
+        apply_project_restrictions(
             kind,
             &mut value,
             &user_effective,
@@ -1350,6 +1373,70 @@ mod tests {
             effective["agents"].pointer("/models/chat/modelId"),
             Some(&json!("global"))
         );
+    }
+
+    #[test]
+    fn one_project_cannot_relax_globally_hardened_limits() {
+        let user = BTreeMap::from([
+            (
+                ConfigDocumentKind::Tools,
+                json!({"riskLevel":"strict","builtIn":{"write_file":false}}),
+            ),
+            (ConfigDocumentKind::Agents, json!({"maxTurns":8})),
+        ]);
+        let project = BTreeMap::from([
+            (
+                ConfigDocumentKind::Tools,
+                json!({"riskLevel":"yolo","builtIn":{"write_file":true}}),
+            ),
+            (ConfigDocumentKind::Agents, json!({"maxTurns":20})),
+        ]);
+
+        let (effective, _) = effective_documents(&user, &[("project", &project)], &BTreeMap::new());
+
+        assert_eq!(effective["tools"]["riskLevel"], json!("strict"));
+        assert_eq!(effective["tools"]["builtIn"]["write_file"], json!(false));
+        assert_eq!(effective["agents"]["maxTurns"], json!(8));
+    }
+
+    #[test]
+    fn mcp_environment_secrets_require_secret_references() {
+        for name in [
+            "API_TOKEN",
+            "api-token",
+            "GH_TOKEN",
+            "ACCESS_TOKEN",
+            "DB_PASSWORD",
+            "db-password",
+        ] {
+            let mut document = sparse_document(ConfigDocumentKind::Tools);
+            document["mcpServers"] = json!({
+                "server": {
+                    "transport": {
+                        "type": "stdio",
+                        "command": "server",
+                        "args": [],
+                        "env": { name: "plaintext" }
+                    }
+                }
+            });
+            let result =
+                validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+            assert!(
+                result.diagnostics.iter().any(|entry| {
+                    entry.code == "config.secret.plaintext_forbidden"
+                        && entry.path.as_deref()
+                            == Some(format!("/mcpServers/server/transport/env/{name}").as_str())
+                }),
+                "{name} must be rejected"
+            );
+
+            document["mcpServers"]["server"]["transport"]["env"][name] =
+                json!("macro-secret://mcp-env:server:credential");
+            let result =
+                validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+            assert!(result.valid, "{name}: {:?}", result.diagnostics);
+        }
     }
 
     #[test]

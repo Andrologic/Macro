@@ -11,6 +11,7 @@ import {
 import { getToolRiskLevelPresentation } from '../../../services/toolApprovalPresentation';
 import { DEFAULT_TOOL_RISK_LEVEL } from '../../../services/toolSecurityPolicy';
 import type { ToolRiskLevel } from '../../../types';
+import { notify } from '../../ui/toastService';
 
 type ToolSecuritySettingsSectionProps = {
   className?: string;
@@ -23,6 +24,7 @@ export const ToolSecuritySettingsSection: React.FC<
   const [toolRiskLevel, setToolRiskLevel] =
     useState<ToolRiskLevel>(DEFAULT_TOOL_RISK_LEVEL);
   const riskTouchedRef = useRef(false);
+  const riskSaveRevisionRef = useRef(0);
   const [isYoloConfirmOpen, setIsYoloConfirmOpen] = useState(false);
 
   useEffect(() => {
@@ -41,15 +43,32 @@ export const ToolSecuritySettingsSection: React.FC<
     };
   }, []);
 
+  const persistToolRiskLevel = async (
+    level: ToolRiskLevel,
+    previousLevel: ToolRiskLevel,
+  ) => {
+    const revision = ++riskSaveRevisionRef.current;
+    riskTouchedRef.current = true;
+    setToolRiskLevel(level);
+    try {
+      await savePreference(PREF_KEYS.TOOL_RISK_LEVEL, level);
+    } catch (error) {
+      if (riskSaveRevisionRef.current === revision) {
+        setToolRiskLevel(previousLevel);
+      }
+      notify.error(t('settings.configuration.saveFailed', 'Could not save configuration'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const updateToolRiskLevel = (level: ToolRiskLevel) => {
     if (level === 'yolo' && toolRiskLevel !== 'yolo') {
       setIsYoloConfirmOpen(true);
       return;
     }
 
-    riskTouchedRef.current = true;
-    setToolRiskLevel(level);
-    void savePreference(PREF_KEYS.TOOL_RISK_LEVEL, level);
+    void persistToolRiskLevel(level, toolRiskLevel);
   };
 
   return (
@@ -212,10 +231,8 @@ export const ToolSecuritySettingsSection: React.FC<
         cancelLabel={t('common.cancel', 'Cancel')}
         onCancel={() => setIsYoloConfirmOpen(false)}
         onConfirm={() => {
-          riskTouchedRef.current = true;
           setIsYoloConfirmOpen(false);
-          setToolRiskLevel('yolo');
-          void savePreference(PREF_KEYS.TOOL_RISK_LEVEL, 'yolo');
+          void persistToolRiskLevel('yolo', toolRiskLevel);
         }}
       />
     </>

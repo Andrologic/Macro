@@ -6,8 +6,8 @@ import type {
 import {
   configurationApplyPatch,
   configurationGetDocument,
-  configurationGetSnapshot,
 } from './configurationClient';
+import { loadValidProjectRegistrySnapshot } from './validProjectRegistry';
 import type { ParsedPatchOperation } from './workspaceToolExecutor';
 import * as workspaceToolExecutor from './workspaceToolExecutor';
 
@@ -108,19 +108,22 @@ const minimalDocument = (kind: ConfigDocumentKind): Record<string, unknown> => (
   schemaVersion: 1,
 });
 
-const listConfigPath = async (value: unknown): Promise<string> => {
+export const listConfigPath = async (
+  value: unknown,
+  projectRegistryLoader: typeof loadValidProjectRegistrySnapshot = loadValidProjectRegistrySnapshot,
+): Promise<string> => {
   const path = normalizeVirtualPath(value) || '@config';
   if (path === '@config') return '@config/user/\n@config/projects/';
   if (path === '@config/user') {
     return [...USER_DOCUMENTS].map((kind) => `@config/user/${kind}.json`).join('\n');
   }
   if (path === '@config/projects') {
-    const snapshot = await configurationGetSnapshot();
-    const projectIds = new Set<string>(Object.keys(snapshot.projectEffective));
-    for (const document of snapshot.documents) {
-      if (document.scope.type === 'project') projectIds.add(document.scope.projectId);
-    }
-    return [...projectIds].sort().map((projectId) => `@config/projects/${projectId}/`).join('\n');
+    const registry = await projectRegistryLoader();
+    return registry.validProjectIds
+      .filter(isSafeProjectId)
+      .sort()
+      .map((projectId) => `@config/projects/${projectId}/`)
+      .join('\n');
   }
   const projectMatch = /^@config\/projects\/([^/]+)$/.exec(path);
   if (projectMatch && isSafeProjectId(projectMatch[1])) {

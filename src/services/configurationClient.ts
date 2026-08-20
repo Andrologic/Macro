@@ -38,6 +38,8 @@ export interface ScopedTurnConfiguration {
   models: Readonly<Record<string, ScopedModelSelection>>;
   builtInTools: Readonly<Record<string, boolean>>;
   modeTools: Readonly<Record<string, boolean>>;
+  allowedMcpServerIds: readonly string[];
+  mcpServers: Readonly<Record<string, Record<string, unknown>>>;
 }
 
 export interface ScopedModelSelection {
@@ -92,6 +94,58 @@ const asModelSelections = (value: unknown): Record<string, ScopedModelSelection>
 const normalizeProjectIds = (projectIds: string[]): string[] =>
   Array.from(new Set(projectIds.map((id) => id.trim()).filter(Boolean))).sort();
 
+const getEnabledMcpServerIds = (tools: Record<string, unknown>): Set<string> => {
+  const servers = asRecord(tools.mcpServers);
+  return new Set(
+    Object.entries(servers)
+      .filter(([, value]) => asRecord(value).enabled === true)
+      .map(([serverId]) => serverId),
+  );
+};
+
+const resolveAllowedMcpServerIds = (
+  snapshot: ConfigSnapshot,
+  projectIds: string[],
+): string[] => {
+  const globallyEnabled = getEnabledMcpServerIds(asRecord(snapshot.effective.tools));
+  if (projectIds.length === 0) return [...globallyEnabled].sort();
+  const globalServers = asRecord(asRecord(snapshot.effective.tools).mcpServers);
+
+  const projectServerSets = projectIds.map((projectId) => {
+    const projectEffective = snapshot.projectEffective[projectId];
+    return projectEffective
+      ? getEnabledMcpServerIds(asRecord(projectEffective.tools))
+      : new Set<string>();
+  });
+
+  const firstProjectServers = projectServerSets[0] ?? new Set<string>();
+  return [...firstProjectServers]
+    .filter((serverId) => !(serverId in globalServers) || globallyEnabled.has(serverId))
+    .filter((serverId) => projectServerSets.slice(1).every((servers) => servers.has(serverId)))
+    .sort();
+};
+
+const resolveScopedMcpServers = (
+  snapshot: ConfigSnapshot,
+  projectIds: string[],
+  allowedServerIds: readonly string[],
+): Record<string, Record<string, unknown>> => {
+  const toolDocuments = projectIds.length === 0
+    ? [asRecord(snapshot.effective.tools)]
+    : projectIds.map((projectId) => asRecord(snapshot.projectEffective[projectId]?.tools));
+  const serverMaps = toolDocuments.map((tools) => asRecord(tools.mcpServers));
+  const result: Record<string, Record<string, unknown>> = {};
+  for (const serverId of allowedServerIds) {
+    const definitions = serverMaps.map((servers) => asRecord(servers[serverId]));
+    const canonical = JSON.stringify(definitions[0] ?? {});
+    if (definitions.slice(1).some((definition) => JSON.stringify(definition) !== canonical)) {
+      continue;
+    }
+    result[serverId] = definitions[0] ?? {};
+  }
+  return result;
+};
+
 export const resolveScopedTurnConfiguration = (
   snapshot: ConfigSnapshot,
   context: {
@@ -122,6 +176,8 @@ export const resolveScopedTurnConfiguration = (
     typeof rawMaxTurns === 'number' && Number.isInteger(rawMaxTurns) && rawMaxTurns > 0
       ? rawMaxTurns
       : null;
+  const allowedMcpServerIds = resolveAllowedMcpServerIds(snapshot, projectIds);
+  const mcpServers = resolveScopedMcpServers(snapshot, projectIds, allowedMcpServerIds);
 
   return {
     projectIds,
@@ -131,6 +187,8 @@ export const resolveScopedTurnConfiguration = (
     models: asModelSelections(focusedAgents.models),
     builtInTools: asBooleanMap(tools.builtIn),
     modeTools: asBooleanMap(modes[context.mode]),
+    allowedMcpServerIds: Object.keys(mcpServers).sort(),
+    mcpServers,
   };
 };
 

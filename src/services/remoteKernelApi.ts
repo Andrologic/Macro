@@ -24,9 +24,12 @@ export const canUseRemoteKernel = (): boolean => {
   }
 };
 
-export const getRemoteToolModePolicy = async (mode: AppMode): Promise<RemoteToolModePolicy> => {
+export const getRemoteToolModePolicy = async (
+  mode: AppMode,
+  projectId: string,
+): Promise<RemoteToolModePolicy> => {
   return remoteKernelRequest<RemoteToolModePolicy>(
-    `/tools/mode-policy?mode=${encodeURIComponent(mode)}`,
+    `/tools/mode-policy?mode=${encodeURIComponent(mode)}&projectId=${encodeURIComponent(projectId)}`,
     { method: 'GET' }
   );
 };
@@ -35,6 +38,7 @@ export const validateRemoteToolExecution = async (params: {
   mode: AppMode;
   toolId: string;
   path?: string;
+  projectId: string;
 }): Promise<RemoteToolValidation> => {
   return remoteKernelRequest<RemoteToolValidation>('/tools/validate', {
     method: 'POST',
@@ -42,6 +46,7 @@ export const validateRemoteToolExecution = async (params: {
       mode: params.mode,
       tool_id: params.toolId,
       path: params.path,
+      projectId: params.projectId,
     }),
   });
 };
