@@ -114,6 +114,8 @@ commands, read [INSTALL.md](INSTALL.md).
 - [RELEASES.md](RELEASES.md) - versioning and the multiplatform release
   process.
 - [HEADLESS.md](HEADLESS.md) - internal experimental notes for a possible future remote runtime.
+- [docs/configuration.md](docs/configuration.md) - JSON configuration files,
+  scopes, schemas, agent tools, skills, and security rules.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contribution guidelines.
 - [SECURITY.md](SECURITY.md) - security reporting and security model notes.
 - [SUPPORT.md](SUPPORT.md) - supported workflows for the current release line.
