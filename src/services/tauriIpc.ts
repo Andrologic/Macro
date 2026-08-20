@@ -988,6 +988,12 @@ export interface WorkspaceBootstrapDto {
   predictedBranches: PredictedBranch[];
 }
 
+export interface ProjectIconDto {
+  dataUrl: string;
+  sourcePath: string;
+  revision: string;
+}
+
 export interface WorkspaceArchitectPlanReplicaDto {
   scopeKey: string;
   projectId: string | null;
@@ -2676,6 +2682,10 @@ export async function macroBranchPull(params?: {
 
 export async function workspaceGetBootstrap(): Promise<WorkspaceBootstrapDto> {
   return invoke<WorkspaceBootstrapDto>("workspace_get_bootstrap");
+}
+
+export async function workspaceResolveProjectIcon(projectId: string): Promise<ProjectIconDto | null> {
+  return invoke<ProjectIconDto | null>("workspace_resolve_project_icon", { projectId });
 }
 
 export async function workspaceListProjects(): Promise<ProjectGroup[]> {

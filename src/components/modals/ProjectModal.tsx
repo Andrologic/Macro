@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { services } from '../../services';
 import { Icon } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 import { Button } from '../ui/Button';
 import { GroupCombobox } from '../ui/GroupCombobox';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -831,7 +832,12 @@ export const ProjectModal: React.FC = () => {
                                   onChange={() => toggleNewGroupProject(project.id)}
                                   className="h-3.5 w-3.5 accent-primary"
                                 />
-                                <Icon name="folder" size={14} className="text-muted-foreground" />
+                                <ProjectIcon
+                                  project={project}
+                                  fallbackIcon="folder"
+                                  size={14}
+                                  className="text-muted-foreground"
+                                />
                                 <span className="truncate">{project.name}</span>
                               </label>
                             );

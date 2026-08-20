@@ -34,6 +34,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
@@ -1012,7 +1013,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                       className="flex h-8 min-w-0 flex-1 items-center gap-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70 disabled:opacity-60"
                     >
                       <span className={cn('flex h-5 w-5 shrink-0 items-center justify-center rounded', isSelected ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-                        <Icon name="folder" size={13} />
+                        {scope.kind === 'project' && scope.projects[0] ? (
+                          <ProjectIcon project={scope.projects[0]} fallbackIcon="folder" size={13} />
+                        ) : (
+                          <Icon name="folder" size={13} />
+                        )}
                       </span>
                       <span className={cn('min-w-0 flex-1 truncate text-xs font-medium', isSelected ? 'text-foreground' : 'text-foreground/90')}>{scope.label}</span>
                       {scopeEntries.length > 0 && (

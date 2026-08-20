@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { services } from '../../services';
 import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import {
   getDefaultProjectGitFlowSettings,
@@ -573,7 +574,10 @@ export const ProjectGitFlowModal: React.FC = () => {
                 'projects.projectSettingsSubtitle',
                 'Manage access mode and override the branch naming used by this project.'
               )}{' '}
-              <span className="text-foreground">{project.name}</span>
+              <span className="inline-flex items-center gap-1.5 text-foreground">
+                <ProjectIcon project={project} size={12} className="text-muted-foreground" />
+                {project.name}
+              </span>
             </p>
           </div>
           <button

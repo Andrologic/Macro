@@ -7,7 +7,8 @@ use crate::config::{
 use crate::core::error::{BackendError, Result};
 use crate::db::repository;
 use crate::git::GitState;
-use crate::project_path::parse_wsl_unc_path;
+use crate::project_icon::{resolve_project_icon, ProjectIconDto};
+use crate::project_path::{classify_project_path, parse_wsl_unc_path};
 use crate::workspace;
 use crate::workspace::metadata::{
     CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
@@ -337,6 +338,31 @@ pub async fn workspace_get_bootstrap(
     )
     .await;
     Ok(bootstrap)
+}
+
+#[tauri::command]
+pub async fn workspace_resolve_project_icon(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+) -> Result<Option<ProjectIconDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let bootstrap = workspace::get_bootstrap(&workspace_path, &metadata_root).await?;
+    let project = bootstrap
+        .standalone_projects
+        .iter()
+        .chain(
+            bootstrap
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project: {}", project_id)))?;
+    let project_path = classify_project_path(&workspace_path, &project.path);
+    resolve_project_icon(project_path).await
 }
 
 #[tauri::command]

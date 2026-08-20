@@ -7,6 +7,7 @@ import { getCreatableStandaloneTaskKinds } from '../../services/standaloneTaskKi
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 import type { TaskProjectFilterOption } from './TaskProjectFilter';
 
 interface CreateImplementTaskDialogProps {
@@ -233,8 +234,9 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                     : 'border-transparent hover:border-border hover:bg-accent/60'
                 )}
               >
-                <Icon
-                  name={project.directEdit ? 'folder' : 'folder-git-2'}
+                <ProjectIcon
+                  project={project}
+                  fallbackIcon={project.directEdit ? 'folder' : 'folder-git-2'}
                   size={15}
                   className="shrink-0 text-muted-foreground"
                 />
