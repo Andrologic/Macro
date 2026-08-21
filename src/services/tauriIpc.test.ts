@@ -408,15 +408,15 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
-  it("resolves project icons by project id", async () => {
+  it("resolves project icons in one batch", async () => {
     const tauriIpc = await loadTauriIpc();
 
-    await tauriIpc.workspaceResolveProjectIcon("project-1");
+    await tauriIpc.workspaceResolveProjectIcons(["project-1", "project-2"]);
 
     expect(invokeCalls).toEqual([
       {
-        command: "workspace_resolve_project_icon",
-        payload: { projectId: "project-1" },
+        command: "workspace_resolve_project_icons",
+        payload: { projectIds: ["project-1", "project-2"] },
       },
     ]);
   });

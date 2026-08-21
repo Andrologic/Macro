@@ -994,6 +994,11 @@ export interface ProjectIconDto {
   revision: string;
 }
 
+export interface ProjectIconResolutionDto {
+  projectId: string;
+  icon: ProjectIconDto | null;
+}
+
 export interface WorkspaceArchitectPlanReplicaDto {
   scopeKey: string;
   projectId: string | null;
@@ -2684,8 +2689,8 @@ export async function workspaceGetBootstrap(): Promise<WorkspaceBootstrapDto> {
   return invoke<WorkspaceBootstrapDto>("workspace_get_bootstrap");
 }
 
-export async function workspaceResolveProjectIcon(projectId: string): Promise<ProjectIconDto | null> {
-  return invoke<ProjectIconDto | null>("workspace_resolve_project_icon", { projectId });
+export async function workspaceResolveProjectIcons(projectIds: string[]): Promise<ProjectIconResolutionDto[]> {
+  return invoke<ProjectIconResolutionDto[]>("workspace_resolve_project_icons", { projectIds });
 }
 
 export async function workspaceListProjects(): Promise<ProjectGroup[]> {
