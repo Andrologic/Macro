@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export const UPDATER_ENDPOINT = 'https://github.com/Andrologic/Macro/releases/latest/download/latest.json';
+export const LOCAL_TAURI_CONFIG_PATH = 'src-tauri/tauri.local.conf.json';
 const VERSION_PARTS = /^[=^~\s]*(\d+)\.(\d+)/;
 const VERSION_MAJOR = /^[=^~\s]*(\d+)/;
 const TAURI_PLUGIN_PAIRS = Object.freeze([
@@ -80,12 +81,41 @@ function isValidUpdaterPublicKey(value) {
   }
 }
 
-export function validateUpdaterConfiguration({ packageJson, cargoToml, cargoLock, tauriConfig }) {
+export function validateUpdaterConfiguration({
+  packageJson,
+  cargoToml,
+  cargoLock,
+  tauriConfig,
+  localTauriConfig,
+}) {
   const errors = [];
   const updater = tauriConfig?.plugins?.updater;
 
   if (tauriConfig?.bundle?.createUpdaterArtifacts !== true) {
     errors.push('tauri.conf.json must set bundle.createUpdaterArtifacts to true.');
+  }
+  if (localTauriConfig?.bundle?.createUpdaterArtifacts !== false) {
+    errors.push(`${LOCAL_TAURI_CONFIG_PATH} must disable updater artifacts for ordinary local builds.`);
+  }
+
+  const scripts = packageJson?.scripts ?? {};
+  const localBuildScripts = [
+    'tauri:build',
+    'tauri:build:nsis',
+    'tauri:build:dmg',
+    'tauri:build:dmg:mac-arm64:test',
+    'tauri:build:dmg:mac-universal:test',
+    'tauri:build:debug',
+  ];
+  for (const scriptName of localBuildScripts) {
+    if (!String(scripts[scriptName] ?? '').includes(`--config ${LOCAL_TAURI_CONFIG_PATH}`)) {
+      errors.push(`package.json script ${scriptName} must use ${LOCAL_TAURI_CONFIG_PATH}.`);
+    }
+  }
+  if (!scripts['tauri:build:updater']) {
+    errors.push('package.json must define tauri:build:updater for an explicitly signed updater build.');
+  } else if (String(scripts['tauri:build:updater']).includes(LOCAL_TAURI_CONFIG_PATH)) {
+    errors.push('package.json script tauri:build:updater must keep updater artifacts enabled.');
   }
   if (!updater || typeof updater !== 'object') {
     errors.push('tauri.conf.json must configure plugins.updater.');
@@ -120,6 +150,7 @@ export function readProjectUpdaterConfiguration(root = process.cwd()) {
     cargoToml: readFileSync(`${root}/src-tauri/Cargo.toml`, 'utf8'),
     cargoLock: readFileSync(`${root}/src-tauri/Cargo.lock`, 'utf8'),
     tauriConfig: readJson(`${root}/src-tauri/tauri.conf.json`),
+    localTauriConfig: readJson(`${root}/${LOCAL_TAURI_CONFIG_PATH}`),
   };
 }
 

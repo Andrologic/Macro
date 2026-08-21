@@ -1,19 +1,15 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import {
   getReleaseNote,
+  normalizePendingUpdateReleaseNote,
   normalizeSeenReleaseNoteVersions,
+  resolveReleaseNote,
   shouldShowReleaseNote,
 } from './releaseNotes';
 
 describe('release notes', () => {
-  it('ships a note for the current application version', () => {
-    const packageJson = JSON.parse(
-      readFileSync(resolve(import.meta.dir, '../../package.json'), 'utf8'),
-    ) as { version: string };
-
-    expect(getReleaseNote(packageJson.version, 'en')).not.toBeNull();
+  it('ships a bootstrap note for the first updater-capable version', () => {
+    expect(getReleaseNote('0.1.0', 'en')).not.toBeNull();
   });
 
   it('selects French content and falls back to English for other locales', () => {
@@ -38,5 +34,30 @@ describe('release notes', () => {
     expect(shouldShowReleaseNote(note, seenVersions)).toBe(true);
     expect(shouldShowReleaseNote(note, [...seenVersions, '0.1.0'])).toBe(false);
     expect(shouldShowReleaseNote(null, seenVersions)).toBe(false);
+  });
+
+  it('uses persisted updater notes for the installed version', () => {
+    const note = resolveReleaseNote('0.2.0', 'de-DE', {
+      version: '0.2.0',
+      content: '## Changes\n\n![Preview](https://example.com/preview.png)',
+    });
+
+    expect(note).toEqual({
+      version: '0.2.0',
+      eyebrow: '',
+      title: 'Macro 0.2.0',
+      summary: '',
+      content: '## Changes\n\n![Preview](https://example.com/preview.png)',
+    });
+    expect(resolveReleaseNote('0.2.1', 'en', {
+      version: '0.2.0',
+      content: 'stale',
+    })).toBeNull();
+  });
+
+  it('rejects malformed pending updater notes', () => {
+    expect(normalizePendingUpdateReleaseNote(null)).toBeNull();
+    expect(normalizePendingUpdateReleaseNote({ version: '0.2.0', content: '  ' })).toBeNull();
+    expect(normalizePendingUpdateReleaseNote({ version: 2, content: 'Changes' })).toBeNull();
   });
 });

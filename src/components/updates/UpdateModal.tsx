@@ -10,6 +10,7 @@ import {
   type RestartSafetySnapshot,
 } from '../../services/restartSafety';
 import { prepareForPotentialShutdown } from '../../services/windowShutdown';
+import { PREF_KEYS, savePreference } from '../../services/preferences';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
@@ -61,7 +62,7 @@ export const UpdateModal: React.FC = () => {
     closeDetails();
   };
 
-  const install = async () => {
+  const install = async (force: boolean) => {
     try {
       await prepareForPotentialShutdown(getSelectedWorkspacePaths());
     } catch (prepareError) {
@@ -69,6 +70,25 @@ export const UpdateModal: React.FC = () => {
         description: prepareError instanceof Error ? prepareError.message : String(prepareError),
       });
       return;
+    }
+
+    if (!force) {
+      const safety = getRestartSafetySnapshot();
+      if (safety.hasActiveWork) {
+        setRestartWarning(safety);
+        return;
+      }
+    }
+
+    if (update.notes.trim()) {
+      try {
+        await savePreference(PREF_KEYS.RELEASE_NOTES_PENDING_UPDATE, {
+          version: update.version,
+          content: update.notes,
+        });
+      } catch (releaseNoteError) {
+        console.warn('Failed to preserve updater release notes:', releaseNoteError);
+      }
     }
 
     const installed = await installAndRestart();
@@ -85,12 +105,12 @@ export const UpdateModal: React.FC = () => {
       setRestartWarning(safety);
       return;
     }
-    void install();
+    void install(false);
   };
 
   const forceRestart = () => {
     setRestartWarning(getRestartSafetySnapshot());
-    void install();
+    void install(true);
   };
 
   const isInstalling = phase === 'installing';

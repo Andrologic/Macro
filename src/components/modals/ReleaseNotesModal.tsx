@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppVersion } from '../../hooks/useAppVersion';
 import {
@@ -8,9 +8,11 @@ import {
   subscribePreference,
 } from '../../services/preferences';
 import {
-  getReleaseNote,
+  normalizePendingUpdateReleaseNote,
   normalizeSeenReleaseNoteVersions,
+  resolveReleaseNote,
   shouldShowReleaseNote,
+  type ReleaseNote,
 } from '../../services/releaseNotes';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import {
@@ -28,10 +30,9 @@ export interface ReleaseNotesModalProps {
 export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled }) => {
   const { t, i18n } = useTranslation();
   const appVersion = useAppVersion();
-  const note = useMemo(
-    () => getReleaseNote(appVersion, i18n.resolvedLanguage ?? i18n.language),
-    [appVersion, i18n.language, i18n.resolvedLanguage],
-  );
+  const language = i18n.resolvedLanguage ?? i18n.language;
+  const [note, setNote] = useState<ReleaseNote | null>(null);
+  const [pendingNoteVersion, setPendingNoteVersion] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [seenVersions, setSeenVersions] = useState<string[]>([]);
   const [isReady, setIsReady] = useState(false);
@@ -43,13 +44,20 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
     let cancelled = false;
     let onboardingFinished = false;
     let loadedSeenVersions: string[] = [];
+    let loadedNote: ReleaseNote | null = null;
     let preferencesLoaded = false;
+
+    setIsReady(false);
+    setIsOpen(false);
+    setNote(null);
+    setPendingNoteVersion(null);
 
     const refreshVisibility = () => {
       if (cancelled || !preferencesLoaded || !onboardingFinished) return;
       setSeenVersions(loadedSeenVersions);
+      setNote(loadedNote);
       setIsReady(true);
-      setIsOpen(shouldShowReleaseNote(note, loadedSeenVersions));
+      setIsOpen(shouldShowReleaseNote(loadedNote, loadedSeenVersions));
     };
 
     const unsubscribe = subscribePreference<OnboardingPreferenceState>(
@@ -63,9 +71,13 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
     void Promise.all([
       loadPreference<unknown>(PREF_KEYS.RELEASE_NOTES_SEEN_VERSIONS),
       loadPreference<OnboardingPreferenceState>(PREF_KEYS.ONBOARDING_STATE),
-    ]).then(([persistedSeenVersions, onboardingState]) => {
+      loadPreference<unknown>(PREF_KEYS.RELEASE_NOTES_PENDING_UPDATE),
+    ]).then(([persistedSeenVersions, onboardingState, pendingValue]) => {
       if (cancelled) return;
       loadedSeenVersions = normalizeSeenReleaseNoteVersions(persistedSeenVersions);
+      const pendingNote = normalizePendingUpdateReleaseNote(pendingValue);
+      loadedNote = resolveReleaseNote(appVersion, language, pendingNote);
+      setPendingNoteVersion(pendingNote?.version === appVersion ? appVersion : null);
       onboardingFinished = hasFinishedCurrentOnboarding(onboardingState);
       preferencesLoaded = true;
       refreshVisibility();
@@ -75,7 +87,7 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
       cancelled = true;
       unsubscribe();
     };
-  }, [enabled, note]);
+  }, [appVersion, enabled, language]);
 
   const close = useCallback(() => {
     if (!note) {
@@ -86,8 +98,15 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
     const nextSeenVersions = Array.from(new Set([...seenVersions, note.version]));
     setSeenVersions(nextSeenVersions);
     setIsOpen(false);
-    void savePreference(PREF_KEYS.RELEASE_NOTES_SEEN_VERSIONS, nextSeenVersions);
-  }, [note, seenVersions]);
+    const saves = [
+      savePreference(PREF_KEYS.RELEASE_NOTES_SEEN_VERSIONS, nextSeenVersions),
+    ];
+    if (pendingNoteVersion === note.version) {
+      setPendingNoteVersion(null);
+      saves.push(savePreference(PREF_KEYS.RELEASE_NOTES_PENDING_UPDATE, null));
+    }
+    void Promise.all(saves);
+  }, [note, pendingNoteVersion, seenVersions]);
 
   if (!enabled || !isReady || !isOpen || !note) return null;
 
@@ -111,9 +130,11 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
               </div>
               <div className="min-w-0">
                 <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-                    {note.eyebrow}
-                  </span>
+                  {note.eyebrow ? (
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+                      {note.eyebrow}
+                    </span>
+                  ) : null}
                   <span className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                     v{note.version}
                   </span>
@@ -121,9 +142,11 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
                 <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
                   {note.title}
                 </h2>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  {note.summary}
-                </p>
+                {note.summary ? (
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                    {note.summary}
+                  </p>
+                ) : null}
               </div>
             </div>
 

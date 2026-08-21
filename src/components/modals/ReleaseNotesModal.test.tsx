@@ -6,10 +6,12 @@ import type { OnboardingPreferenceState } from '../onboarding/onboardingPreferen
 const preferenceKeys = {
   ONBOARDING_STATE: 'onboardingState',
   RELEASE_NOTES_SEEN_VERSIONS: 'releaseNotesSeenVersions',
+  RELEASE_NOTES_PENDING_UPDATE: 'releaseNotesPendingUpdate',
 } as const;
 
 let onboardingState: OnboardingPreferenceState;
 let seenVersions: string[];
+let pendingUpdateNote: unknown;
 let onboardingListener: ((value: OnboardingPreferenceState) => void) | null;
 const savePreferenceMock = mock(async (_key: string, _value: unknown) => undefined);
 
@@ -27,7 +29,11 @@ mock.module('react-i18next', () => ({
 mock.module('../../services/preferences', () => ({
   PREF_KEYS: preferenceKeys,
   loadPreference: async (key: string) =>
-    key === preferenceKeys.ONBOARDING_STATE ? onboardingState : seenVersions,
+    key === preferenceKeys.ONBOARDING_STATE
+      ? onboardingState
+      : key === preferenceKeys.RELEASE_NOTES_PENDING_UPDATE
+        ? pendingUpdateNote
+        : seenVersions,
   savePreference: savePreferenceMock,
   subscribePreference: (
     key: string,
@@ -55,6 +61,7 @@ describe('ReleaseNotesModal', () => {
       lastStepId: 'finish',
     };
     seenVersions = [];
+    pendingUpdateNote = null;
     onboardingListener = null;
     savePreferenceMock.mockClear();
     container = document.createElement('div');
@@ -74,6 +81,11 @@ describe('ReleaseNotesModal', () => {
     });
   };
 
+  const buttonByText = (text: string): HTMLButtonElement | undefined =>
+    Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === text,
+    );
+
   it('shows the current localized note and remembers it when closed', async () => {
     await renderModal();
 
@@ -82,9 +94,7 @@ describe('ReleaseNotesModal', () => {
     expect(modal?.textContent ?? '').toContain('Macro 0.1 est prêt');
     expect(modal?.querySelector('.release-notes-markdown')).not.toBeNull();
 
-    const continueButton = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Continue to Macro',
-    );
+    const continueButton = buttonByText('Continue to Macro');
     expect(continueButton).toBeDefined();
 
     await act(async () => continueButton?.click());
@@ -101,6 +111,22 @@ describe('ReleaseNotesModal', () => {
     await renderModal();
 
     expect(document.querySelector('[data-testid="release-notes-modal"]')).toBeNull();
+  });
+
+  it('shows release notes preserved by the updater and clears them after use', async () => {
+    pendingUpdateNote = {
+      version: '0.1.0',
+      content: '## Notes received from latest.json',
+    };
+    await renderModal();
+
+    expect(document.body.textContent).toContain('Notes received from latest.json');
+    await act(async () => buttonByText('Continue to Macro')?.click());
+
+    expect(savePreferenceMock).toHaveBeenCalledWith(
+      preferenceKeys.RELEASE_NOTES_PENDING_UPDATE,
+      null,
+    );
   });
 
   it('waits until onboarding is completed or dismissed', async () => {

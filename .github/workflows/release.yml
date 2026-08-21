@@ -404,6 +404,12 @@ jobs:
             -f target_commitish="${GITHUB_SHA}" \
             --jq '.body' || true)"
 
+          if [ -n "$GENERATED_NOTES" ]; then
+            printf '%s\n' "$GENERATED_NOTES" > updater-notes.md
+          else
+            echo "No user-facing changes were provided for this release." > updater-notes.md
+          fi
+
           {
             echo "## Downloads"
             echo
@@ -419,11 +425,7 @@ jobs:
             echo
             echo "## Changes"
             echo
-            if [ -n "$GENERATED_NOTES" ]; then
-              printf '%s\n' "$GENERATED_NOTES"
-            else
-              echo "GitHub release notes were not generated for this run."
-            fi
+            cat updater-notes.md
           } > release-notes.md
 
       - name: Generate updater manifest and checksums
@@ -436,7 +438,7 @@ jobs:
             --version "$VERSION" \
             --tag "$TAG" \
             --repository "$GITHUB_REPOSITORY" \
-            --notes-file release-notes.md \
+            --notes-file updater-notes.md \
             --pub-date "$PUB_DATE" \
             --output release-assets/latest.json \
             --artifact windows-x86_64 \

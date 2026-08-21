@@ -101,13 +101,15 @@ Keep an encrypted backup of the private key. Losing it prevents installed
 versions from accepting future updates. Never commit the key, its password, or
 generated updater bundles.
 
-For a local signed bundle, expose the private key path and password only for
-the lifetime of the packaging shell:
+Ordinary local builds use `src-tauri/tauri.local.conf.json` and do not create
+updater artifacts, so they do not need the private key. For a local signed
+updater bundle, expose the private key path and password only for the lifetime
+of the packaging shell:
 
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY = "C:\secure\macro-updater.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<password>"
-bun run tauri:build
+bun run tauri:build:updater
 Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY
 Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 ```
@@ -226,9 +228,12 @@ sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 
 ## In-app Release Notes
 
-Each stable application version must have an English and French entry in
-`src/services/releaseNotes.ts`. The body is Markdown rendered by the same secure
-renderer as chat messages. Raw HTML is ignored.
+Automatic updates preserve the Markdown notes from `latest.json` before
+installation. After the relaunch, the release-note dialog reads that local copy
+and removes it once the user closes the dialog. This avoids a source-code change
+for every updater release. `src/services/releaseNotes.ts` keeps the English and
+French `v0.1.0` note as a bootstrap fallback for installations that did not pass
+through the updater. Raw HTML is ignored.
 
 Store release media under `public/release-notes/<version>/` so that images and
 videos remain available offline. Use root-relative paths in the Markdown:
@@ -248,10 +253,9 @@ committing it and keep the release dialog usable without media playback.
 
 1. Finish the feature branch and run the smallest relevant local checks.
 2. Run `bun run ci:pre-push` before updating the pull request.
-3. Bump to a stable `x.y.z` version and add the matching localized user-facing
-   entry to `src/services/releaseNotes.ts`.
-4. Confirm `bun run version:check` and the release notes tests pass. The tests
-   reject a package version that has no bundled release note.
+3. Bump to a stable `x.y.z` version and review the user-facing notes that GitHub
+   will place in `latest.json`. Keep implementation-only details out of PR titles.
+4. Confirm `bun run version:check` and the release notes tests pass.
 5. Merge to `main`, fetch the resulting remote state, and run
    `bun run release:preflight` from a clean checkout exactly matching
    `origin/main`.

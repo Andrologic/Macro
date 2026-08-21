@@ -85,4 +85,22 @@ describe('TauriAppUpdaterClient', () => {
       'No update is available to download.',
     );
   });
+
+  test('retries only the relaunch after the update was installed', async () => {
+    const fixture = createFixture();
+    fixture.relaunch
+      .mockImplementationOnce(async () => {
+        throw new Error('relaunch failed');
+      })
+      .mockImplementationOnce(async () => undefined);
+    const client = new TauriAppUpdaterClient(async () => fixture.bindings);
+
+    await client.check();
+    await expect(client.installAndRelaunch()).rejects.toThrow('relaunch failed');
+    await expect(client.installAndRelaunch()).resolves.toBeUndefined();
+
+    expect(fixture.install).toHaveBeenCalledTimes(1);
+    expect(fixture.close).toHaveBeenCalledTimes(1);
+    expect(fixture.relaunch).toHaveBeenCalledTimes(2);
+  });
 });

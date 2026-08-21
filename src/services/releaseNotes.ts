@@ -6,6 +6,11 @@ export interface ReleaseNote {
   content: string;
 }
 
+export interface PendingUpdateReleaseNote {
+  version: string;
+  content: string;
+}
+
 type ReleaseNoteLocale = 'en' | 'fr';
 
 const RELEASE_NOTES: Record<string, Record<ReleaseNoteLocale, ReleaseNote>> = {
@@ -70,6 +75,34 @@ export const getReleaseNote = (
 ): ReleaseNote | null => {
   const localizedNotes = RELEASE_NOTES[version];
   return localizedNotes?.[normalizeLanguage(language)] ?? null;
+};
+
+export const normalizePendingUpdateReleaseNote = (
+  value: unknown,
+): PendingUpdateReleaseNote | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<PendingUpdateReleaseNote>;
+  const version = typeof candidate.version === 'string' ? candidate.version.trim() : '';
+  const content = typeof candidate.content === 'string' ? candidate.content.trim() : '';
+  return version && content ? { version, content } : null;
+};
+
+export const resolveReleaseNote = (
+  version: string,
+  language: string | null | undefined,
+  pendingValue: unknown,
+): ReleaseNote | null => {
+  const bundledNote = getReleaseNote(version, language);
+  const pendingNote = normalizePendingUpdateReleaseNote(pendingValue);
+  if (!pendingNote || pendingNote.version !== version) return bundledNote;
+
+  return {
+    version,
+    eyebrow: bundledNote?.eyebrow ?? '',
+    title: bundledNote?.title ?? `Macro ${version}`,
+    summary: bundledNote?.summary ?? '',
+    content: pendingNote.content,
+  };
 };
 
 export const normalizeSeenReleaseNoteVersions = (value: unknown): string[] => {

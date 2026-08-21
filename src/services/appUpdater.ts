@@ -72,6 +72,7 @@ const loadNativeUpdaterBindings: LoadNativeUpdaterBindings = async () => {
 
 export class TauriAppUpdaterClient implements AppUpdaterClient {
   private pendingUpdate: NativeUpdate | null = null;
+  private installedAwaitingRelaunch = false;
 
   constructor(
     private readonly loadBindings: LoadNativeUpdaterBindings = loadNativeUpdaterBindings,
@@ -80,6 +81,7 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
   async reset(): Promise<void> {
     const previousUpdate = this.pendingUpdate;
     this.pendingUpdate = null;
+    this.installedAwaitingRelaunch = false;
     await closeUpdate(previousUpdate);
   }
 
@@ -128,6 +130,11 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
   }
 
   async installAndRelaunch(): Promise<void> {
+    if (this.installedAwaitingRelaunch) {
+      await this.relaunchInstalledUpdate();
+      return;
+    }
+
     const update = this.pendingUpdate;
     if (!update) {
       throw new Error('No downloaded update is ready to install.');
@@ -135,9 +142,15 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
 
     await update.install();
     this.pendingUpdate = null;
+    this.installedAwaitingRelaunch = true;
     await closeUpdate(update);
+    await this.relaunchInstalledUpdate();
+  }
+
+  private async relaunchInstalledUpdate(): Promise<void> {
     const { relaunch } = await this.loadBindings();
     await relaunch();
+    this.installedAwaitingRelaunch = false;
   }
 }
 
