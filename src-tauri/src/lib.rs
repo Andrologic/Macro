@@ -1,5 +1,4 @@
 mod app_quit_state;
-#[path = "commands.rs"]
 pub mod commands;
 pub mod config;
 pub mod core;

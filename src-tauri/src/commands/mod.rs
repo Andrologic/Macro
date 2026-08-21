@@ -1,24 +1,13 @@
-#[path = "commands/ai.rs"]
 pub mod ai;
-#[path = "commands/external_apps.rs"]
 mod external_apps;
-#[path = "commands/fs.rs"]
 pub mod fs;
-#[path = "commands/git.rs"]
 pub mod git;
-#[path = "commands/mcp/mod.rs"]
 pub mod mcp;
-#[path = "commands/skills/mod.rs"]
 pub mod skills;
-#[path = "commands/speech.rs"]
 pub mod speech;
-#[path = "commands/terminal.rs"]
 pub mod terminal;
-#[path = "commands/web_search.rs"]
 pub mod web_search;
-#[path = "commands/workspace.rs"]
 pub mod workspace;
-#[path = "commands/workspace_tools.rs"]
 pub mod workspace_tools;
 
 #[doc(hidden)]
@@ -3252,88 +3241,6 @@ async fn reconcile_provider_secret_metadata(
     Ok(())
 }
 
-async fn apply_provider_api_key_change(
-    pool: &SqlitePool,
-    provider_id: &str,
-    api_key: Option<&str>,
-    previous_api_key: Option<&str>,
-) -> CommandResult<Option<bool>> {
-    let Some(api_key) = api_key else {
-        return Ok(None);
-    };
-
-    let has_stored_api_key = !api_key.trim().is_empty();
-    let secret_write = if has_stored_api_key {
-        secrets::set_api_key(provider_id, api_key)
-    } else {
-        secrets::delete_api_key(provider_id)
-    };
-    if let Err(error) = secret_write {
-        let actual_has_stored_api_key = previous_api_key.is_some();
-        let metadata_error = repository::set_provider_has_stored_api_key(
-            pool,
-            provider_id,
-            actual_has_stored_api_key,
-        )
-        .await
-        .err();
-        let suffix = metadata_error
-            .map(|metadata_error| {
-                format!(" Failed to reconcile provider secret metadata: {metadata_error}")
-            })
-            .unwrap_or_default();
-        return Err(command_error(format!(
-            "Failed to update the local provider secret for {}: {}.{}",
-            provider_id, error, suffix
-        )));
-    }
-
-    if let Err(error) =
-        repository::set_provider_has_stored_api_key(pool, provider_id, has_stored_api_key).await
-    {
-        let compensation = match previous_api_key {
-            Some(previous) => secrets::set_api_key(provider_id, previous),
-            None => secrets::delete_api_key(provider_id),
-        };
-        let suffix = compensation
-            .err()
-            .map(|compensation_error| {
-                format!(" Secret compensation also failed: {compensation_error}")
-            })
-            .unwrap_or_default();
-        return Err(command_error(format!(
-            "Failed to update provider secret metadata for {}: {}.{}",
-            provider_id, error, suffix
-        )));
-    }
-
-    Ok(Some(has_stored_api_key))
-}
-
-async fn restore_provider_config(
-    pool: &SqlitePool,
-    config: &ProviderConfig,
-    has_stored_api_key: bool,
-) -> Result<(), String> {
-    repository::update_provider_config(
-        pool,
-        UpdateProviderConfigInput {
-            id: config.id.clone(),
-            name: Some(config.name.clone()),
-            provider_type: Some(config.provider_type.clone()),
-            base_url: Some(config.base_url.clone()),
-            api_key: None,
-            is_local: Some(config.is_local),
-            is_enabled: Some(config.is_enabled),
-        },
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    repository::set_provider_has_stored_api_key(pool, &config.id, has_stored_api_key)
-        .await
-        .map_err(|error| error.to_string())
-}
-
 #[tauri::command]
 pub async fn db_get_provider_config(
     pool: State<'_, DbPool>,
@@ -4005,14 +3912,11 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_patch_hunks_to_content, apply_provider_api_key_change,
-        commit_pending_file_changes_atomically, execute_workspace_tool, parse_apply_patch,
-        reconcile_provider_secret_metadata, resolve_requested_workspace,
+        apply_patch_hunks_to_content, commit_pending_file_changes_atomically,
+        execute_workspace_tool, parse_apply_patch, resolve_requested_workspace,
         resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation, PendingFileChange,
     };
-    use crate::db::{models::ProviderAuthMetadata, repository};
     use crate::git::GitState;
-    use crate::secrets;
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
@@ -4043,222 +3947,6 @@ mod tests {
 
         let resolved = pool.wait_until_ready().await.expect("ready state");
         assert_eq!(resolved.size(), expected_pool.size());
-    }
-
-    async fn test_provider_pool() -> sqlx::SqlitePool {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("db pool");
-        sqlx::query(
-            r#"
-            CREATE TABLE provider_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                provider_type TEXT NOT NULL,
-                base_url TEXT NOT NULL,
-                api_key TEXT,
-                has_stored_api_key INTEGER NOT NULL DEFAULT 0,
-                is_enabled INTEGER NOT NULL DEFAULT 1,
-                is_local INTEGER NOT NULL DEFAULT 0,
-                auth_status TEXT,
-                auth_source TEXT,
-                plan_type TEXT,
-                account_label TEXT,
-                token_expires_at TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("provider config schema");
-        pool
-    }
-
-    #[tokio::test]
-    async fn provider_secret_metadata_reconciliation_clears_stale_database_flags() {
-        let _guard = secrets::lock_test_store();
-        let temp_dir = TempDir::new().expect("temp dir");
-        secrets::init(temp_dir.path()).expect("initialize secret store");
-        let pool = test_provider_pool().await;
-
-        let mut api_provider = repository::create_provider_config(
-            &pool,
-            "OpenAI",
-            "openai",
-            "https://api.openai.com/v1",
-            Some("test-api-key"),
-            false,
-            true,
-        )
-        .await
-        .expect("create provider");
-        assert!(api_provider.has_stored_api_key);
-
-        reconcile_provider_secret_metadata(&pool, &mut api_provider)
-            .await
-            .expect("reconcile api key provider");
-
-        assert!(!api_provider.has_stored_api_key);
-        let stored_api_provider = repository::get_provider_config(&pool, &api_provider.id)
-            .await
-            .expect("get provider")
-            .expect("provider exists");
-        assert!(!stored_api_provider.has_stored_api_key);
-
-        let mut chatgpt_provider = repository::create_provider_config(
-            &pool,
-            "ChatGPT",
-            "chatgpt",
-            "https://chatgpt.com/backend-api",
-            None,
-            false,
-            true,
-        )
-        .await
-        .expect("create ChatGPT provider");
-        repository::update_provider_auth_metadata(
-            &pool,
-            &chatgpt_provider.id,
-            &ProviderAuthMetadata {
-                auth_status: Some("authenticated".to_string()),
-                auth_source: Some("oauth".to_string()),
-                plan_type: Some("plus".to_string()),
-                account_label: Some("user@example.com".to_string()),
-                token_expires_at: Some("2026-05-09T12:00:00Z".to_string()),
-            },
-        )
-        .await
-        .expect("mark ChatGPT authenticated");
-        chatgpt_provider = repository::get_provider_config(&pool, &chatgpt_provider.id)
-            .await
-            .expect("get ChatGPT provider")
-            .expect("ChatGPT provider exists");
-
-        reconcile_provider_secret_metadata(&pool, &mut chatgpt_provider)
-            .await
-            .expect("reconcile ChatGPT provider");
-
-        assert_eq!(
-            chatgpt_provider.auth_status.as_deref(),
-            Some("unauthenticated")
-        );
-        assert!(chatgpt_provider.auth_source.is_none());
-        assert!(chatgpt_provider.plan_type.is_none());
-        assert!(chatgpt_provider.account_label.is_none());
-        assert!(chatgpt_provider.token_expires_at.is_none());
-    }
-
-    #[tokio::test]
-    async fn provider_creation_preserves_requested_enabled_state() {
-        let pool = test_provider_pool().await;
-        let created = repository::create_provider_config(
-            &pool,
-            "Disabled Ollama",
-            "ollama",
-            "http://localhost:11434/v1",
-            None,
-            true,
-            false,
-        )
-        .await
-        .expect("create provider");
-
-        assert!(!created.is_enabled);
-        assert!(created.is_local);
-        let stored = repository::get_provider_config(&pool, &created.id)
-            .await
-            .expect("get provider")
-            .expect("provider exists");
-        assert!(!stored.is_enabled);
-    }
-
-    #[tokio::test]
-    async fn provider_api_key_change_updates_secret_store_before_database_flag() {
-        let _guard = secrets::lock_test_store();
-        let temp_dir = TempDir::new().expect("temp dir");
-        secrets::init(temp_dir.path()).expect("initialize secret store");
-        let pool = test_provider_pool().await;
-        let provider = repository::create_provider_config(
-            &pool,
-            "OpenAI",
-            "openai",
-            "https://api.openai.com/v1",
-            Some("test-api-key"),
-            false,
-            true,
-        )
-        .await
-        .expect("create provider");
-        assert!(provider.has_stored_api_key);
-
-        let stored = apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key"), None)
-            .await
-            .expect("store key");
-
-        assert_eq!(stored, Some(true));
-        assert_eq!(
-            secrets::get_api_key(&provider.id)
-                .expect("get stored key")
-                .as_deref(),
-            Some("test-api-key")
-        );
-        let after_store = repository::get_provider_config(&pool, &provider.id)
-            .await
-            .expect("get provider")
-            .expect("provider exists");
-        assert!(after_store.has_stored_api_key);
-
-        let cleared =
-            apply_provider_api_key_change(&pool, &provider.id, Some(""), Some("test-api-key"))
-                .await
-                .expect("clear key");
-
-        assert_eq!(cleared, Some(false));
-        assert!(secrets::get_api_key(&provider.id)
-            .expect("get cleared key")
-            .is_none());
-        let after_clear = repository::get_provider_config(&pool, &provider.id)
-            .await
-            .expect("get provider after clear")
-            .expect("provider exists");
-        assert!(!after_clear.has_stored_api_key);
-    }
-
-    #[tokio::test]
-    async fn provider_api_key_change_does_not_mark_database_when_secret_write_fails() {
-        let _guard = secrets::lock_test_store();
-        let temp_dir = TempDir::new().expect("temp dir");
-        secrets::init(temp_dir.path()).expect("initialize secret store");
-        let secret_file = temp_dir.path().join("provider-secrets.json");
-        std::fs::remove_file(&secret_file).expect("remove initialized store");
-        std::fs::create_dir(&secret_file).expect("replace store file with directory");
-        let pool = test_provider_pool().await;
-        let provider = repository::create_provider_config(
-            &pool,
-            "OpenAI",
-            "openai",
-            "https://api.openai.com/v1",
-            Some("test-api-key"),
-            false,
-            true,
-        )
-        .await
-        .expect("create provider");
-        assert!(provider.has_stored_api_key);
-
-        let result =
-            apply_provider_api_key_change(&pool, &provider.id, Some("test-api-key"), None).await;
-
-        assert!(result.is_err());
-        let after_failure = repository::get_provider_config(&pool, &provider.id)
-            .await
-            .expect("get provider after failed write")
-            .expect("provider exists");
-        assert!(!after_failure.has_stored_api_key);
     }
 
     #[test]

@@ -336,17 +336,6 @@ pub struct UpdateProviderConfigInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateSpeechProviderConfigInput {
-    pub id: String,
-    pub name: Option<String>,
-    pub provider_type: Option<String>,
-    pub base_url: Option<String>,
-    pub model: Option<String>,
-    pub is_local: Option<bool>,
-    pub is_enabled: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitRepositoryRecord {
     pub id: String,
     pub project_id: String,

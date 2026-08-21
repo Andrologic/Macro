@@ -1285,6 +1285,7 @@ fn resolve_skill_collisions(skills: &mut [SkillManifestDto]) {
     }
 }
 
+#[cfg(test)]
 fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDto> {
     let mut skills = Vec::new();
 
@@ -1348,6 +1349,7 @@ fn discover_skills(project_roots: &[SkillProjectRootDto]) -> Vec<SkillManifestDt
     skills
 }
 
+#[cfg(test)]
 fn resolve_skill(
     skill_id: &str,
     project_roots: &[SkillProjectRootDto],
