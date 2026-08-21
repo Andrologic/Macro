@@ -513,7 +513,7 @@ pub fn run() {
             commands::db_list_git_worktrees,
             // Workspace commands
             commands::workspace::workspace_get_bootstrap,
-            commands::workspace::workspace_resolve_project_icon,
+            commands::workspace::workspace_resolve_project_icons,
             commands::workspace::workspace_list_projects,
             commands::workspace::workspace_list_tasks,
             commands::workspace::workspace_get_metadata,

@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { Project } from '../../types';
 import * as tauriIpc from '../../services/tauriIpc';
 import type { ProjectIconDto } from '../../services/tauriIpc';
+import { createProjectIconBatch } from '../../services/projectIconBatch';
 import { cn } from '../../utils/cn';
 import { Icon, type IconName } from '../ui/Icon';
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 64;
 
 type ProjectIconResolver = (projectId: string) => Promise<ProjectIconDto | null>;
 
@@ -16,30 +18,52 @@ interface ProjectIconCacheEntry {
 }
 
 const projectIconCache = new Map<string, ProjectIconCacheEntry>();
+const resolveDefaultProjectIcon = createProjectIconBatch((projectIds) =>
+  tauriIpc.workspaceResolveProjectIcons(projectIds));
+
+const pruneProjectIconCache = (): void => {
+  const now = Date.now();
+  for (const [cacheKey, entry] of projectIconCache) {
+    if (entry.expiresAt <= now) projectIconCache.delete(cacheKey);
+  }
+  while (projectIconCache.size > MAX_CACHE_ENTRIES) {
+    const oldestResolvedKey = Array.from(projectIconCache.entries())
+      .find(([, entry]) => !entry.promise)?.[0];
+    if (!oldestResolvedKey) break;
+    projectIconCache.delete(oldestResolvedKey);
+  }
+};
+
+const setProjectIconCache = (cacheKey: string, entry: ProjectIconCacheEntry): void => {
+  projectIconCache.delete(cacheKey);
+  projectIconCache.set(cacheKey, entry);
+  pruneProjectIconCache();
+};
 
 const resolveCachedProjectIcon = (
-  projectId: string,
-  resolver: ProjectIconResolver,
+  cacheKey: string,
+  resolver: () => Promise<ProjectIconDto | null>,
 ): Promise<ProjectIconDto | null> => {
-  const cached = projectIconCache.get(projectId);
-  if (cached && cached.expiresAt > Date.now()) {
+  pruneProjectIconCache();
+  const cached = projectIconCache.get(cacheKey);
+  if (cached) {
     if (cached.promise) return cached.promise;
     if ('result' in cached) return Promise.resolve(cached.result ?? null);
   }
 
-  const promise = resolver(projectId)
+  const promise = resolver()
     .then((result) => {
-      projectIconCache.set(projectId, {
+      setProjectIconCache(cacheKey, {
         expiresAt: Date.now() + CACHE_TTL_MS,
         result,
       });
       return result;
     })
     .catch((error) => {
-      projectIconCache.delete(projectId);
+      projectIconCache.delete(cacheKey);
       throw error;
     });
-  projectIconCache.set(projectId, {
+  setProjectIconCache(cacheKey, {
     expiresAt: Date.now() + CACHE_TTL_MS,
     promise,
   });
@@ -47,7 +71,7 @@ const resolveCachedProjectIcon = (
 };
 
 interface ProjectIconProps {
-  project: Pick<Project, 'id'>;
+  project: Pick<Project, 'id' | 'path'>;
   size?: number;
   className?: string;
   fallbackIcon?: IconName;
@@ -61,8 +85,12 @@ export const ProjectIcon: React.FC<ProjectIconProps> = ({
   fallbackIcon = 'folder-git-2',
   resolveIcon,
 }) => {
+  const cacheKey = useMemo(
+    () => `${project.id}\0${project.path.trim().replace(/\\/g, '/')}`,
+    [project.id, project.path],
+  );
   const [resolvedIcon, setResolvedIcon] = useState<{
-    projectId: string;
+    cacheKey: string;
     icon: ProjectIconDto | null;
   } | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
@@ -70,26 +98,28 @@ export const ProjectIcon: React.FC<ProjectIconProps> = ({
   useEffect(() => {
     setResolvedIcon(null);
     setImageFailed(false);
-    const defaultResolver = tauriIpc.workspaceResolveProjectIcon;
     if (
       !resolveIcon
-      && (!tauriIpc.isTauriAvailable() || typeof defaultResolver !== 'function')
+      && (!tauriIpc.isTauriAvailable() || typeof tauriIpc.workspaceResolveProjectIcons !== 'function')
     ) return;
 
     let active = true;
-    resolveCachedProjectIcon(project.id, resolveIcon ?? defaultResolver)
+    resolveCachedProjectIcon(
+      cacheKey,
+      () => resolveIcon?.(project.id) ?? resolveDefaultProjectIcon(project.id),
+    )
       .then((result) => {
-        if (active) setResolvedIcon({ projectId: project.id, icon: result });
+        if (active) setResolvedIcon({ cacheKey, icon: result });
       })
       .catch(() => {
-        if (active) setResolvedIcon({ projectId: project.id, icon: null });
+        if (active) setResolvedIcon({ cacheKey, icon: null });
       });
     return () => {
       active = false;
     };
-  }, [project.id, resolveIcon]);
+  }, [cacheKey, project.id, resolveIcon]);
 
-  const icon = resolvedIcon?.projectId === project.id ? resolvedIcon.icon : null;
+  const icon = resolvedIcon?.cacheKey === cacheKey ? resolvedIcon.icon : null;
   if (!icon || imageFailed) {
     return <Icon name={fallbackIcon} size={size} className={className} />;
   }

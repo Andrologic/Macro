@@ -7,7 +7,7 @@ use crate::config::{
 use crate::core::error::{BackendError, Result};
 use crate::db::repository;
 use crate::git::GitState;
-use crate::project_icon::{resolve_project_icon, ProjectIconDto};
+use crate::project_icon::{resolve_project_icon, ProjectIconResolutionDto};
 use crate::project_path::{classify_project_path, parse_wsl_unc_path};
 use crate::workspace;
 use crate::workspace::metadata::{
@@ -26,6 +26,7 @@ use crate::workspace::metadata::{
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
+use futures::{stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -341,16 +342,22 @@ pub async fn workspace_get_bootstrap(
 }
 
 #[tauri::command]
-pub async fn workspace_resolve_project_icon(
+pub async fn workspace_resolve_project_icons(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
-    project_id: String,
-) -> Result<Option<ProjectIconDto>> {
+    project_ids: Vec<String>,
+) -> Result<Vec<ProjectIconResolutionDto>> {
+    if project_ids.len() > 256 {
+        return Err(BackendError::Validation(
+            "At most 256 project icons can be resolved at once.".to_string(),
+        ));
+    }
+
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     let bootstrap = workspace::get_bootstrap(&workspace_path, &metadata_root).await?;
-    let project = bootstrap
+    let projects_by_id = bootstrap
         .standalone_projects
         .iter()
         .chain(
@@ -359,10 +366,41 @@ pub async fn workspace_resolve_project_icon(
                 .iter()
                 .flat_map(|group| group.projects.iter()),
         )
-        .find(|project| project.id == project_id)
-        .ok_or_else(|| BackendError::Validation(format!("Unknown project: {}", project_id)))?;
-    let project_path = classify_project_path(&workspace_path, &project.path);
-    resolve_project_icon(project_path).await
+        .map(|project| (project.id.clone(), project.path.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut seen = HashSet::new();
+    let requested_ids = project_ids
+        .into_iter()
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty() && seen.insert(project_id.clone()))
+        .collect::<Vec<_>>();
+
+    Ok(stream::iter(requested_ids)
+        .map(|project_id| {
+            let project_path = projects_by_id
+                .get(&project_id)
+                .map(|path| classify_project_path(&workspace_path, path));
+            async move {
+                let icon = match project_path {
+                    Some(project_path) => match resolve_project_icon(project_path).await {
+                        Ok(icon) => icon,
+                        Err(error) => {
+                            tracing::warn!(
+                                action = "workspace_resolve_project_icon_failed",
+                                project_id = %project_id,
+                                error = %error
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                ProjectIconResolutionDto { project_id, icon }
+            }
+        })
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await)
 }
 
 #[tauri::command]
