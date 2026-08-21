@@ -8,6 +8,15 @@ function fixture() {
   ].join('\n')).toString('base64');
   return {
     packageJson: {
+      scripts: {
+        'tauri:build': 'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json',
+        'tauri:build:updater': 'bun dev/tauri-cli.mjs build',
+        'tauri:build:nsis': 'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json --bundles nsis',
+        'tauri:build:dmg': 'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json --bundles dmg',
+        'tauri:build:dmg:mac-arm64:test': 'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json --target aarch64-apple-darwin',
+        'tauri:build:dmg:mac-universal:test': 'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json --target universal-apple-darwin',
+        'tauri:build:debug': 'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json --debug',
+      },
       dependencies: {
         '@tauri-apps/plugin-dialog': '2.6.0',
         '@tauri-apps/plugin-http': '2.5.7',
@@ -66,6 +75,9 @@ function fixture() {
         },
       },
     },
+    localTauriConfig: {
+      bundle: { createUpdaterArtifacts: false },
+    },
   };
 }
 
@@ -112,6 +124,20 @@ describe('updater preflight', () => {
     expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
       'tauri.conf.json must set bundle.createUpdaterArtifacts to true.',
       'Missing Tauri plugin dependency metadata for @tauri-apps/plugin-process / tauri-plugin-process.',
+    ]));
+  });
+
+  test('keeps ordinary local builds independent from the updater signing key', () => {
+    const config = fixture();
+    config.localTauriConfig.bundle.createUpdaterArtifacts = true;
+    config.packageJson.scripts['tauri:build:nsis'] = 'bun dev/tauri-cli.mjs build --bundles nsis';
+    config.packageJson.scripts['tauri:build:updater'] =
+      'bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json';
+
+    expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
+      'src-tauri/tauri.local.conf.json must disable updater artifacts for ordinary local builds.',
+      'package.json script tauri:build:nsis must use src-tauri/tauri.local.conf.json.',
+      'package.json script tauri:build:updater must keep updater artifacts enabled.',
     ]));
   });
 

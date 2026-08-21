@@ -6,6 +6,7 @@ import type { RestartSafetySnapshot } from '../../services/restartSafety';
 const closeDetailsMock = mock(() => undefined);
 const installAndRestartMock = mock(async () => true);
 const prepareForPotentialShutdownMock = mock(async () => undefined);
+const savePreferenceMock = mock(async () => undefined);
 const notifyErrorMock = mock(() => undefined);
 
 let restartSafetySnapshot: RestartSafetySnapshot;
@@ -54,6 +55,11 @@ mock.module('../../services/windowShutdown', () => ({
   prepareForPotentialShutdown: prepareForPotentialShutdownMock,
 }));
 
+mock.module('../../services/preferences', () => ({
+  PREF_KEYS: { RELEASE_NOTES_PENDING_UPDATE: 'releaseNotesPendingUpdate' },
+  savePreference: savePreferenceMock,
+}));
+
 mock.module('../chat/MarkdownRenderer', () => ({
   MarkdownRenderer: ({ content }: { content: string }) => <div>{content}</div>,
 }));
@@ -96,6 +102,8 @@ describe('UpdateModal', () => {
     closeDetailsMock.mockClear();
     installAndRestartMock.mockClear();
     prepareForPotentialShutdownMock.mockClear();
+    prepareForPotentialShutdownMock.mockImplementation(async () => undefined);
+    savePreferenceMock.mockClear();
     notifyErrorMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -121,7 +129,35 @@ describe('UpdateModal', () => {
     await act(async () => buttonByText('Restart and update')?.click());
 
     expect(prepareForPotentialShutdownMock).toHaveBeenCalledTimes(1);
+    expect(savePreferenceMock).toHaveBeenCalledWith('releaseNotesPendingUpdate', {
+      version: '0.1.1',
+      content: '## Changes',
+    });
     expect(installAndRestartMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks for newly active work again after preparing the restart', async () => {
+    prepareForPotentialShutdownMock.mockImplementationOnce(async () => {
+      restartSafetySnapshot = {
+        ...emptySafetySnapshot(),
+        activeAgents: [{
+          id: 'conversation-late',
+          kind: 'agent',
+          phase: 'preparing',
+          title: 'Late agent',
+        }],
+        activeAgentCount: 1,
+        activeWorkCount: 1,
+        hasActiveWork: true,
+      };
+    });
+    await renderModal();
+
+    await act(async () => buttonByText('Restart and update')?.click());
+
+    expect(document.body.textContent).toContain('Late agent');
+    expect(savePreferenceMock).not.toHaveBeenCalled();
+    expect(installAndRestartMock).not.toHaveBeenCalled();
   });
 
   it('warns about active agents and keeps waiting as the safe action', async () => {

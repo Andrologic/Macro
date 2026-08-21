@@ -97,4 +97,19 @@ describe('app update store', () => {
       availableUpdate: { version: '0.1.1' },
     });
   });
+
+  test('allows retrying a failed install or relaunch operation', async () => {
+    const { client } = buildClient();
+    client.installAndRelaunch = mock()
+      .mockImplementationOnce(async () => {
+        throw new Error('relaunch failed');
+      })
+      .mockImplementationOnce(async () => undefined);
+    const store = createAppUpdateStore(client);
+    await store.getState().checkForUpdates();
+
+    expect(await store.getState().installAndRestart()).toBe(false);
+    expect(await store.getState().installAndRestart()).toBe(true);
+    expect(client.installAndRelaunch).toHaveBeenCalledTimes(2);
+  });
 });
