@@ -14,7 +14,7 @@ export function packageCommandForPlatform(platform) {
     case 'darwin':
       return ['bun', ['run', 'tauri:build:dmg:mac-universal:test']];
     case 'linux':
-      return ['bun', ['dev/tauri-cli.mjs', 'build', '--bundles', 'appimage,deb,rpm']];
+      return ['bun', ['run', 'tauri:build:linux-packages']];
     default:
       throw new Error(`Release packaging is unsupported on platform "${platform}".`);
   }

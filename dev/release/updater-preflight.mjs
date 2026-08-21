@@ -105,6 +105,7 @@ export function validateUpdaterConfiguration({
     'tauri:build:dmg',
     'tauri:build:dmg:mac-arm64:test',
     'tauri:build:dmg:mac-universal:test',
+    'tauri:build:linux-packages',
     'tauri:build:debug',
   ];
   for (const scriptName of localBuildScripts) {
