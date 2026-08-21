@@ -196,6 +196,12 @@ Universal macOS bundles are written under:
 src-tauri/target/universal-apple-darwin/release/bundle/
 ```
 
+Build Linux packages (AppImage, deb, rpm):
+
+```bash
+bun run tauri:build:linux-packages
+```
+
 ## macOS Release Requirements
 
 macOS release builds are universal (`arm64 + x86_64`), signed, notarized, and
