@@ -18,6 +18,36 @@ const translationMock = createTranslationMock({
   'common.close': 'Close',
 });
 
+describe('MermaidRenderer cache', () => {
+  it('never grows beyond its configured limit and evicts the least recently used entry', async () => {
+    const { __testables } = await import(`./MermaidRenderer.tsx?cache-limit-test=${Date.now()}`);
+    const cache = __testables.createBoundedLruCache(__testables.MAX_MERMAID_CACHE_ENTRIES);
+
+    for (let index = 0; index <= __testables.MAX_MERMAID_CACHE_ENTRIES; index += 1) {
+      cache.set(`diagram-${index}`, `<svg>${index}</svg>`);
+    }
+
+    expect(cache.size).toBe(__testables.MAX_MERMAID_CACHE_ENTRIES);
+    expect(cache.get('diagram-0')).toBeUndefined();
+    expect(cache.get('diagram-1')).toBe('<svg>1</svg>');
+  });
+
+  it('keeps a cache hit by refreshing its recency', async () => {
+    const { __testables } = await import(`./MermaidRenderer.tsx?cache-recency-test=${Date.now()}`);
+    const cache = __testables.createBoundedLruCache(3);
+
+    cache.set('first', '<svg>first</svg>');
+    cache.set('second', '<svg>second</svg>');
+    cache.set('third', '<svg>third</svg>');
+    expect(cache.get('first')).toBe('<svg>first</svg>');
+    cache.set('fourth', '<svg>fourth</svg>');
+
+    expect(cache.size).toBe(3);
+    expect(cache.get('second')).toBeUndefined();
+    expect(cache.get('first')).toBe('<svg>first</svg>');
+  });
+});
+
 describe('MermaidRenderer security', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
