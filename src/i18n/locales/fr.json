@@ -2129,6 +2129,47 @@
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
   },
+  "goal": {
+    "bannerLabel": "Objectif de la conversation",
+    "modeLabel": "Mode Goal",
+    "status": {
+      "executorRunning": "L’agent travaille",
+      "executorRunningDescription": "L’agent travaille pour atteindre l’objectif.",
+      "auditPending": "Vérification en attente",
+      "auditPendingDescription": "Le dernier tour de l’agent doit encore faire l’objet d’une vérification indépendante.",
+      "auditing": "Vérification de l’objectif en cours",
+      "auditingDescription": "Un agent distinct, en lecture seule, examine les preuves.",
+      "continuationPending": "Reprise en attente",
+      "continuationPendingDescription": "La vérification a identifié du travail supplémentaire pour l’agent.",
+      "awaitingUser": "Votre réponse est nécessaire",
+      "awaitingUserDescription": "Répondez dans la zone de saisie pour poursuivre l’objectif.",
+      "paused": "Objectif suspendu",
+      "pausedDescription": "Macro ne poursuivra pas cet objectif avant sa reprise.",
+      "achieved": "Objectif atteint",
+      "achievedDescription": "Un agent indépendant a vérifié que l’objectif était atteint.",
+      "error": "Objectif interrompu",
+      "errorDescription": "Macro a interrompu l’objectif à cause d’une erreur.",
+      "active": "Objectif actif",
+      "activeDescription": "L’objectif est prêt pour le prochain tour de l’agent."
+    },
+    "lastReview": "Dernière vérification",
+    "criterionStatus": {
+      "met": "Atteint",
+      "unmet": "Non atteint",
+      "uncertain": "Incertain"
+    },
+    "pauseHint": "Suspendre la poursuite automatique",
+    "pause": "Suspendre",
+    "resumeHint": "Reprendre le suivi de l’objectif",
+    "resume": "Reprendre le suivi",
+    "stopHint": "Quitter le mode Goal pour cette conversation",
+    "stop": "Arrêter",
+    "commandMissingObjectiveTitle": "Le mode Goal requiert un objectif",
+    "commandMissingObjectiveDescription": "Écrivez /goal, puis décrivez le résultat que l’agent doit atteindre.",
+    "executionFailed": "Le tour de l’agent a échoué.",
+    "commandDescription": "Poursuivre le travail jusqu’à la validation de l’objectif par un agent indépendant",
+    "commandHint": "Démarrer le mode Goal et décrire l’objectif"
+  },
   "composer": {
     "searchingFiles": "Recherche de fichiers...",
     "noMatchingSlashContext": "Aucun contexte correspondant.",

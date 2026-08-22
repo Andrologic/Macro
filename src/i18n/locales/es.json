@@ -2113,6 +2113,47 @@
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
   },
+  "goal": {
+    "bannerLabel": "Objetivo de la conversación",
+    "modeLabel": "Modo Goal",
+    "status": {
+      "executorRunning": "El agente está trabajando",
+      "executorRunningDescription": "El agente está trabajando para alcanzar el objetivo.",
+      "auditPending": "Revisión pendiente",
+      "auditPendingDescription": "El último turno del agente aún necesita una revisión independiente del objetivo.",
+      "auditing": "Revisión del objetivo en curso",
+      "auditingDescription": "Un agente separado y de solo lectura está revisando las pruebas.",
+      "continuationPending": "Continuación pendiente",
+      "continuationPendingDescription": "La revisión encontró más trabajo para el agente.",
+      "awaitingUser": "Se necesita tu respuesta",
+      "awaitingUserDescription": "Responde en el editor para continuar con el objetivo.",
+      "paused": "Objetivo en pausa",
+      "pausedDescription": "Macro no continuará con este objetivo hasta que lo reanudes.",
+      "achieved": "Objetivo alcanzado",
+      "achievedDescription": "Un revisor independiente verificó el objetivo.",
+      "error": "Objetivo interrumpido",
+      "errorDescription": "Macro interrumpió el objetivo debido a un error.",
+      "active": "Objetivo activo",
+      "activeDescription": "El objetivo está listo para el siguiente turno del agente."
+    },
+    "lastReview": "Última revisión",
+    "criterionStatus": {
+      "met": "Cumplido",
+      "unmet": "No cumplido",
+      "uncertain": "Incierto"
+    },
+    "pauseHint": "Pausar la continuación automática",
+    "pause": "Pausar",
+    "resumeHint": "Reanudar el seguimiento del objetivo",
+    "resume": "Reanudar seguimiento",
+    "stopHint": "Salir del modo Goal en esta conversación",
+    "stop": "Detener",
+    "commandMissingObjectiveTitle": "El modo Goal necesita un objetivo",
+    "commandMissingObjectiveDescription": "Escribe /goal seguido del resultado que quieres que alcance el agente.",
+    "executionFailed": "El turno del agente falló.",
+    "commandDescription": "Seguir trabajando hasta que una revisión independiente acepte el objetivo",
+    "commandHint": "Iniciar el modo Goal y describir el objetivo"
+  },
   "composer": {
     "searchingFiles": "Buscando archivos...",
     "noMatchingSlashContext": "No hay contexto coincidente.",

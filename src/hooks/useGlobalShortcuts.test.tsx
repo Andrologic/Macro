@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { shortcutDefinitions, type ShortcutId } from '../shortcuts/catalog';
 import { shortcutHandlers, shortcutRuntimeDefinitions } from '../shortcuts/runtime';
+import { useConversationGoalStore } from '../stores/useConversationGoalStore';
 
 type StoreHook<T extends object> = ((selector?: (state: T) => unknown) => unknown) & {
   emit: () => void;
@@ -195,6 +196,7 @@ describe('useGlobalShortcuts', () => {
       cycleProvider: mock(() => undefined),
       cycleModel: mock(() => undefined),
     };
+    useConversationGoalStore.setState({ goalsByConversationId: {} });
     promptHistoryDirections = [];
     const handlePromptHistory = (event: Event) => {
       const customEvent = event as CustomEvent<{ direction?: string }>;
@@ -321,6 +323,24 @@ describe('useGlobalShortcuts', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(chatState.stopStreaming.mock.calls).toHaveLength(1);
+  });
+
+  it('pauses a running goal when its stream is stopped by shortcut', async () => {
+    chatState.getConversationRuntime = mock(() => ({ phase: 'streaming' }));
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the migration',
+    });
+    useConversationGoalStore
+      .getState()
+      .setOperationalStatus('conv-1', 'executor_running');
+    await renderHook();
+
+    await dispatchShortcut('chat.stopStreaming');
+
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status,
+    ).toBe('paused');
   });
 
   it('focuses the chat composer input', async () => {

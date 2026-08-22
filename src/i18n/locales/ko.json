@@ -2108,6 +2108,47 @@
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
   },
+  "goal": {
+    "bannerLabel": "대화 목표",
+    "modeLabel": "Goal 모드",
+    "status": {
+      "executorRunning": "에이전트 작업 중",
+      "executorRunningDescription": "에이전트가 목표를 달성하기 위해 작업하고 있습니다.",
+      "auditPending": "검토 대기 중",
+      "auditPendingDescription": "마지막 에이전트 턴은 독립적인 목표 검토가 필요합니다.",
+      "auditing": "목표 검토 중",
+      "auditingDescription": "별도의 읽기 전용 에이전트가 근거를 검토하고 있습니다.",
+      "continuationPending": "계속 진행 대기 중",
+      "continuationPendingDescription": "검토 결과 에이전트가 수행할 추가 작업이 확인되었습니다.",
+      "awaitingUser": "답변이 필요합니다",
+      "awaitingUserDescription": "목표를 계속하려면 입력창에서 답변하세요.",
+      "paused": "목표 일시 중지됨",
+      "pausedDescription": "다시 시작할 때까지 Macro가 이 목표를 계속하지 않습니다.",
+      "achieved": "목표 달성",
+      "achievedDescription": "독립적인 검토 에이전트가 목표 달성을 확인했습니다.",
+      "error": "목표 중단됨",
+      "errorDescription": "오류가 발생해 Macro가 목표를 중단했습니다.",
+      "active": "목표 활성화됨",
+      "activeDescription": "다음 에이전트 턴을 시작할 준비가 되었습니다."
+    },
+    "lastReview": "최근 검토",
+    "criterionStatus": {
+      "met": "충족",
+      "unmet": "미충족",
+      "uncertain": "불확실"
+    },
+    "pauseHint": "자동 계속 진행 일시 중지",
+    "pause": "일시 중지",
+    "resumeHint": "목표 추적 다시 시작",
+    "resume": "추적 다시 시작",
+    "stopHint": "이 대화에서 Goal 모드 종료",
+    "stop": "종료",
+    "commandMissingObjectiveTitle": "Goal 모드에 목표가 필요합니다",
+    "commandMissingObjectiveDescription": "/goal 뒤에 에이전트가 달성할 결과를 입력하세요.",
+    "executionFailed": "에이전트 턴이 실패했습니다.",
+    "commandDescription": "독립적인 검토에서 목표를 승인할 때까지 작업 계속",
+    "commandHint": "Goal 모드를 시작하고 목표 설명"
+  },
   "composer": {
     "searchingFiles": "파일 검색 중...",
     "noMatchingSlashContext": "일치하는 컨텍스트가 없습니다.",

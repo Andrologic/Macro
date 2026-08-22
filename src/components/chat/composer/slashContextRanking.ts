@@ -1,6 +1,6 @@
 import type { AppMode } from '../../../types';
 
-export type SlashContextCandidateKind = 'skill' | 'file' | 'source';
+export type SlashContextCandidateKind = 'skill' | 'file' | 'source' | 'command';
 
 export interface SlashContextRankCandidate {
   key: string;
@@ -98,6 +98,9 @@ export const scoreSlashContextCandidate = (
   }
   if (candidate.kind === 'source' && !fileIntent) {
     score += 15;
+  }
+  if (candidate.kind === 'command') {
+    score += 30;
   }
   if (candidate.kind === 'skill' && candidate.skillEnabled) {
     score += 10;
