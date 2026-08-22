@@ -836,6 +836,8 @@ describe('ComposerEditor context references', () => {
       '[data-slash-context-option="command:/goal"]',
     );
     expect(goalOption).not.toBeNull();
+    expect(goalOption?.textContent).toContain('Goal');
+    expect(goalOption?.textContent).not.toContain('/goal');
     expect(goalOption?.className).toContain('border-primary/35');
     expect(goalOption?.textContent).not.toContain('Goal mode');
     expect(goalOption?.querySelectorAll('svg')).toHaveLength(1);

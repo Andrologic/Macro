@@ -475,7 +475,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
       key: 'command:goal',
       kind: 'command',
       id: 'goal',
-      title: '/goal',
+      title: t('goal.shortLabel', 'Goal'),
       subtitle: t('goal.commandDescription', 'Keep working until an independent review accepts the objective'),
       tooltip: t('goal.commandHint', 'Start Goal mode and describe the objective'),
       icon: 'target',
@@ -703,7 +703,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
             const active = index === activeIndex;
             const referenceTitle = item.kind === 'command' ? null : item.referenceTitle;
             const itemLabel = item.kind === 'command' ? null : item.label;
-            const optionKey = `${item.kind}:${referenceTitle ?? item.title}`;
+            const optionKey = item.kind === 'command'
+              ? `command:/${item.id}`
+              : `${item.kind}:${referenceTitle ?? item.title}`;
             const tooltip = item.tooltip ?? item.subtitle ?? itemLabel ?? item.title;
 
             if (item.disabled) {
