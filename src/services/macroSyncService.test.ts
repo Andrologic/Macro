@@ -74,6 +74,7 @@ const createAppState = (overrides?: {
   activePlanContext?: { targetBranch: string } | null;
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
+  directEditProjectId?: string | null;
 }) => ({
   metadataAutoPush: overrides?.metadataAutoPush ?? false,
   metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy ?? 'ask',
@@ -92,6 +93,7 @@ const createAppState = (overrides?: {
           name: 'Web',
           mountName: 'web',
           path: '/repos/web',
+          directEdit: overrides?.directEditProjectId === 'web',
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -107,6 +109,7 @@ const createAppState = (overrides?: {
           name: 'API',
           mountName: 'api',
           path: '/repos/api',
+          directEdit: overrides?.directEditProjectId === 'api',
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -127,6 +130,7 @@ const createAppState = (overrides?: {
 const loadMacroSyncService = (overrides?: {
   metadataAutoPush?: boolean;
   metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
+  directEditProjectId?: string | null;
 }) => createMacroSyncService({
   tauriIpc: {
     isTauriAvailable: () => true,
@@ -139,6 +143,7 @@ const loadMacroSyncService = (overrides?: {
   getAppState: () => createAppState({
     metadataAutoPush: overrides?.metadataAutoPush,
     metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy,
+    directEditProjectId: overrides?.directEditProjectId,
   }),
   resolveTargets: async () => metadataTargets,
   toServiceError,
@@ -233,6 +238,16 @@ describe('macroSyncService', () => {
         },
       ],
     });
+  });
+
+  it('does not invoke Git metadata sync for direct-edit projects', async () => {
+    const service = loadMacroSyncService({ directEditProjectId: 'web' });
+
+    await service.refreshMacroSyncStatus();
+
+    expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+    ]);
   });
 
   it('skips WSL repositories when syncing @macro metadata', async () => {
