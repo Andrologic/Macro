@@ -81,7 +81,7 @@ describe('slashContextRanking', () => {
     expect(ranked[0]?.key).toBe('skill:test-enabled');
   });
 
-  it('keeps the Goal command prominent and supports fuzzy matching', () => {
+  it('keeps the Goal command prominent and supports fuzzy matching in every mode', () => {
     const candidates: SlashContextRankCandidate[] = [
       {
         key: 'command:goal',
@@ -98,18 +98,20 @@ describe('slashContextRanking', () => {
       },
     ];
 
-    const unfiltered = rankSlashContextCandidates(candidates, {
-      query: '',
-      mode: 'Chat',
-      hasActivePlan: false,
-    });
-    const fuzzy = rankSlashContextCandidates(candidates, {
-      query: 'gal',
-      mode: 'Chat',
-      hasActivePlan: false,
-    });
+    for (const mode of ['Chat', 'Architect', 'Implement'] as const) {
+      const unfiltered = rankSlashContextCandidates(candidates, {
+        query: '',
+        mode,
+        hasActivePlan: false,
+      });
+      const fuzzy = rankSlashContextCandidates(candidates, {
+        query: 'gal',
+        mode,
+        hasActivePlan: false,
+      });
 
-    expect(unfiltered[0]?.key).toBe('command:goal');
-    expect(fuzzy.map((candidate) => candidate.key)).toContain('command:goal');
+      expect(unfiltered[0]?.key).toBe('command:goal');
+      expect(fuzzy.map((candidate) => candidate.key)).toContain('command:goal');
+    }
   });
 });

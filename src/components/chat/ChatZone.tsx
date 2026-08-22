@@ -2233,6 +2233,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const handleStartExecution = useCallback(async (params?: {
     notesOverride?: string;
+    goalObjective?: string;
   }): Promise<boolean> => {
     if (!runtimeCapabilities.implementExecution) return false;
     if (mode !== 'Implement' || !selectedTask || isBusySending || isConversationPending) return false;
@@ -2243,6 +2244,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
+    let goalActivated = false;
 
     try {
       conversationId = await ensureConversation();
@@ -2260,6 +2262,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         }
       }
 
+      if (params?.goalObjective) {
+        activateConversationGoal({
+          conversationId,
+          objective: params.goalObjective,
+          providerId: selectedProviderId,
+          modelId: selectedModelId,
+          reasoningEffort: selectedReasoningEffort,
+        });
+        goalActivated = true;
+      }
+
       const content = buildImplementKickoffPrompt({
         title: selectedTask.title,
         description: selectedTask.description,
@@ -2270,11 +2283,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         notes: params?.notesOverride ?? composerEditorRef.current?.getTextContent() ?? '',
       });
 
-      await sendMessage({
+      const result = await sendMessage({
         conversationId,
         content,
         taskId: selectedTask.id,
       });
+      if (goalActivated) {
+        setConversationGoalStatus(
+          conversationId,
+          result.status === 'sent' ? 'executor_running' : 'paused',
+        );
+      }
       clearComposerDraftForContext(composerDraftContextKey);
       clearComposerDraftForContext(`conversation:${conversationId}`);
       composerEditorRef.current?.clear();
@@ -2284,6 +2303,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     } catch (error) {
       if (conversationId) {
         delete executionKickoffByConversationRef.current[conversationId];
+        if (goalActivated) {
+          setConversationGoalStatus(
+            conversationId,
+            'error',
+            toServiceError(error).message,
+          );
+        }
       }
       throw error;
     } finally {
@@ -2291,6 +2317,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [
     ensureConversation,
+    activateConversationGoal,
     clearComposerDraftForContext,
     composerDraftContextKey,
     isConversationPending,
@@ -2298,10 +2325,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     mode,
     selectedModelId,
     selectedProviderId,
+    selectedReasoningEffort,
     selectedTask,
     selectedTaskProjectSummary,
     selectedTaskRequiresKickoff,
     sendMessage,
+    setConversationGoalStatus,
     startTask,
     resetPromptHistoryNavigation,
     runtimeCapabilities.implementExecution,
@@ -2440,18 +2469,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       });
       return;
     }
-    if (isImplementComposerInKickoffMode) {
-      if (!text || isBusySending) return;
-      try {
-        await handleStartExecution({ notesOverride: text });
-      } catch {
-        // Keep the draft intact. The visible error feedback comes from the chat store.
-      }
-      return;
-    }
-    const goalCommand = mode === 'Chat'
-      ? parseConversationGoalCommand(text)
-      : null;
+    const goalCommand = parseConversationGoalCommand(text);
     if (goalCommand?.kind === 'missing_objective') {
       notify.warning(t('goal.commandMissingObjectiveTitle', 'Goal needs an objective'), {
         description: t(
@@ -2459,6 +2477,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           'Write /goal followed by the outcome you want the agent to reach.',
         ),
       });
+      return;
+    }
+    if (isImplementComposerInKickoffMode) {
+      if (!text || isBusySending) return;
+      try {
+        const goalObjective = goalCommand?.kind === 'activate'
+          ? goalCommand.objective
+          : undefined;
+        await handleStartExecution({
+          notesOverride: goalObjective ?? text,
+          goalObjective,
+        });
+      } catch {
+        // Keep the draft intact. The visible error feedback comes from the chat store.
+      }
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
@@ -3295,9 +3328,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   </div>
                   <button
                     type="button"
-                    onClick={() => void handleStartExecution({
-                      notesOverride: composerEditorRef.current?.getTextContent() ?? '',
-                    }).catch(() => undefined)}
+                    onClick={() => void sendComposerMessage()}
                     data-tour-id="implement-start-execution"
                     disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
                     title={

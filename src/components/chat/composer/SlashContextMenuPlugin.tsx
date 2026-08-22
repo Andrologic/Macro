@@ -466,25 +466,22 @@ export const SlashContextMenuPlugin: React.FC = () => {
       };
     });
 
-    const goalCommandItem: SlashCommandMenuItem | null =
-      mode === 'Chat'
-        ? {
-            key: 'command:goal',
-            kind: 'command',
-            id: 'goal',
-            title: '/goal',
-            subtitle: t('goal.commandDescription', 'Keep working until an independent review accepts the objective'),
-            tooltip: t('goal.commandHint', 'Start Goal mode and describe the objective'),
-            icon: 'target',
-            iconClassName: 'text-primary',
-            searchText: 'goal objective autonomous review',
-            commandText: '/goal ',
-          }
-        : null;
+    const goalCommandItem: SlashCommandMenuItem = {
+      key: 'command:goal',
+      kind: 'command',
+      id: 'goal',
+      title: '/goal',
+      subtitle: t('goal.commandDescription', 'Keep working until an independent review accepts the objective'),
+      tooltip: t('goal.commandHint', 'Start Goal mode and describe the objective'),
+      icon: 'target',
+      iconClassName: 'text-primary',
+      searchText: 'goal objective autonomous review',
+      commandText: '/goal ',
+    };
 
     return rankSlashContextCandidates(
       [
-        ...(goalCommandItem ? [goalCommandItem] : []),
+        goalCommandItem,
         ...sourceItems,
         ...skillItems,
         ...fileItems,
