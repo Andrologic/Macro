@@ -1012,7 +1012,6 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('[data-chat-composer-goal="true"]'),
     ).not.toBeNull();
-    expect(latestComposerProps?.className).toContain('goal-composer-editor');
     await clickSendButton();
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({
@@ -1030,6 +1029,34 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('[data-conversation-goal-banner]')?.textContent,
     ).toContain('Finish the authentication migration');
+  });
+
+  it('keeps the Goal control outside the composer and removes the command', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await setComposerText('/goal Finish the authentication migration');
+    const composer = requireContainer().querySelector('[data-tour-id="chat-composer"]');
+    const control = requireContainer().querySelector(
+      '[data-chat-goal-command-control="true"]',
+    );
+    expect(control).not.toBeNull();
+    expect(control?.nextElementSibling).toBe(composer);
+    expect(control?.classList.contains('self-center')).toBe(true);
+
+    await act(async () => {
+      control?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(composerEditorSetTextCalls.at(-1)).toBe('Finish the authentication migration');
+    expect(
+      requireContainer().querySelector('[data-chat-goal-command-control="true"]'),
+    ).toBeNull();
+    expect(
+      requireContainer().querySelector('[data-chat-composer-goal="true"]'),
+    ).toBeNull();
   });
 
   it('reopens the active objective as a Goal draft from the compact bar', async () => {
