@@ -56,6 +56,7 @@ fn referenced_secret_ids(documents: &[Value]) -> (BTreeSet<String>, BTreeSet<Str
             api_keys.insert(format!("mcp-env:{}", id.replacen('/', ":", 1)));
         } else if let Some(id) = reference.strip_prefix("macro-secret://speech/") {
             api_keys.insert(format!("speech-provider:{id}"));
+            api_keys.insert(format!("speech:{id}"));
         } else if let Some(id) = reference.strip_prefix("macro-secret://providers/") {
             api_keys.insert(id.to_string());
         } else if let Some(id) = reference.strip_prefix("macro-secret://chatgpt/") {
@@ -72,6 +73,7 @@ fn referenced_secret_ids(documents: &[Value]) -> (BTreeSet<String>, BTreeSet<Str
         if let Some(speech_providers) = document.get("speechProviders").and_then(Value::as_object) {
             for provider_id in speech_providers.keys() {
                 api_keys.insert(format!("speech-provider:{provider_id}"));
+                api_keys.insert(format!("speech:{provider_id}"));
             }
         }
     }
@@ -404,6 +406,7 @@ mod tests {
         assert!(api_keys.contains("custom-provider"));
         assert!(sessions.contains("custom-provider"));
         assert!(api_keys.contains("speech-provider:dictation"));
+        assert!(api_keys.contains("speech:dictation"));
         assert!(api_keys.contains("web-search:brave"));
     }
 }
