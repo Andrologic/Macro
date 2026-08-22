@@ -160,6 +160,9 @@ Notes on validation cost and behavior:
 - `bun run build` type-checks then bundles; it is meant for humans and release
   packaging (`tauri:build`). Local CI profiles typecheck once and then build
   with Vite only (`build:vite`), so tsc never runs twice.
+- Native profiles run Rust tests with `--all-targets`, then reuse the same Cargo
+  artifacts for documentation tests instead of recompiling examples through a
+  separate `cargo check` pass.
 
 Before pushing, prefer the differential gate:
 
