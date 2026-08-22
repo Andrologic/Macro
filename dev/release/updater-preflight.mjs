@@ -5,6 +5,14 @@ import { pathToFileURL } from 'node:url';
 
 export const UPDATER_ENDPOINT = 'https://github.com/Andrologic/Macro/releases/latest/download/latest.json';
 export const LOCAL_TAURI_CONFIG_PATH = 'src-tauri/tauri.local.conf.json';
+export const TAURI_CAPABILITIES_PATH = 'src-tauri/capabilities/default.json';
+const REQUIRED_UPDATER_PERMISSIONS = Object.freeze([
+  'core:app:allow-version',
+  'updater:allow-check',
+  'updater:allow-download',
+  'updater:allow-install',
+  'process:allow-restart',
+]);
 const VERSION_PARTS = /^[=^~\s]*(\d+)\.(\d+)/;
 const VERSION_MAJOR = /^[=^~\s]*(\d+)/;
 const TAURI_PLUGIN_PAIRS = Object.freeze([
@@ -87,6 +95,7 @@ export function validateUpdaterConfiguration({
   cargoLock,
   tauriConfig,
   localTauriConfig,
+  tauriCapabilities,
 }) {
   const errors = [];
   const updater = tauriConfig?.plugins?.updater;
@@ -96,6 +105,15 @@ export function validateUpdaterConfiguration({
   }
   if (localTauriConfig?.bundle?.createUpdaterArtifacts !== false) {
     errors.push(`${LOCAL_TAURI_CONFIG_PATH} must disable updater artifacts for ordinary local builds.`);
+  }
+
+  const permissions = Array.isArray(tauriCapabilities?.permissions)
+    ? tauriCapabilities.permissions
+    : [];
+  for (const permission of REQUIRED_UPDATER_PERMISSIONS) {
+    if (!permissions.includes(permission)) {
+      errors.push(`${TAURI_CAPABILITIES_PATH} must grant ${permission}.`);
+    }
   }
 
   const scripts = packageJson?.scripts ?? {};
@@ -152,6 +170,7 @@ export function readProjectUpdaterConfiguration(root = process.cwd()) {
     cargoLock: readFileSync(`${root}/src-tauri/Cargo.lock`, 'utf8'),
     tauriConfig: readJson(`${root}/src-tauri/tauri.conf.json`),
     localTauriConfig: readJson(`${root}/${LOCAL_TAURI_CONFIG_PATH}`),
+    tauriCapabilities: readJson(`${root}/${TAURI_CAPABILITIES_PATH}`),
   };
 }
 

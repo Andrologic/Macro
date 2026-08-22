@@ -79,6 +79,15 @@ function fixture() {
     localTauriConfig: {
       bundle: { createUpdaterArtifacts: false },
     },
+    tauriCapabilities: {
+      permissions: [
+        'core:app:allow-version',
+        'updater:allow-check',
+        'updater:allow-download',
+        'updater:allow-install',
+        'process:allow-restart',
+      ],
+    },
   };
 }
 
@@ -125,6 +134,18 @@ describe('updater preflight', () => {
     expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
       'tauri.conf.json must set bundle.createUpdaterArtifacts to true.',
       'Missing Tauri plugin dependency metadata for @tauri-apps/plugin-process / tauri-plugin-process.',
+    ]));
+  });
+
+  test('reports every missing runtime permission required by the updater flow', () => {
+    const config = fixture();
+    config.tauriCapabilities.permissions = ['updater:allow-check'];
+
+    expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
+      'src-tauri/capabilities/default.json must grant core:app:allow-version.',
+      'src-tauri/capabilities/default.json must grant updater:allow-download.',
+      'src-tauri/capabilities/default.json must grant updater:allow-install.',
+      'src-tauri/capabilities/default.json must grant process:allow-restart.',
     ]));
   });
 
