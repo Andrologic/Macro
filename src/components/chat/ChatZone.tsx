@@ -3448,7 +3448,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onClick={handleRemoveGoalComposerCommand}
                     aria-label={t('goal.removeCommand', 'Remove Goal command')}
                     title={t('goal.removeCommand', 'Remove Goal command')}
-                    className="group relative flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-lg border border-primary/20 bg-primary/[0.045] text-primary/80 transition-[border-color,background-color,color] hover:border-primary/35 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+                    className="group relative flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-lg text-primary/80 transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
                   >
                     <Icon
                       name="target"
