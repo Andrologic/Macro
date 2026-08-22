@@ -17,9 +17,15 @@ range, runs `dev/ci/classify-changes.mjs`, and selects a shared local profile:
 | Change | Local profile |
 | --- | --- |
 | Documentation only | Version manifests and tracked-binary policy |
-| Frontend | Locked install, workflow policy, frontend tests, build, and bundle budget |
+| Frontend | Locked install, workflow policy, typecheck, tests, Vite build, and bundle budget |
 | Native or configuration | Complete frontend and Rust validation |
 | Full profile on Windows | Complete validation plus `cargo check --all-targets` |
+
+Every local profile prints the duration of each step and of the whole run.
+Frontend profiles typecheck once and build with Vite only; `tsc` is not run a
+second time inside the build step. Frontend tests run with bounded parallelism
+and per-file isolation, and coverage instrumentation stays opt-in so ordinary
+runs pay no coverage cost.
 
 The successful result is cached outside the worktree for the exact HEAD, target
 base, platform, and profile. Running `bun run ci:pre-push` manually immediately

@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { CHECK_PROFILES, stepsForProfile } from './check-profiles.mjs';
+import { formatDuration } from '../format-duration.mjs';
 
 function hasFlag(name) {
   return process.argv.includes(name);
@@ -30,29 +31,33 @@ export function runProfile(profile, options = {}) {
   };
 
   console.log(`Running local CI profile: ${profile}`);
+  const profileStartedAt = Date.now();
   for (const check of steps) {
     const githubGroup = process.env.GITHUB_ACTIONS === 'true';
     console.log(githubGroup ? `::group::${check.name}` : `\n==> ${check.name}`);
     console.log(displayCommand(check.command, check.args));
 
+    const stepStartedAt = Date.now();
     const result = spawnSync(check.command, check.args, {
       cwd: options.cwd || process.cwd(),
       env: environment,
       stdio: 'inherit',
       windowsHide: true,
     });
+    const stepDuration = formatDuration(Date.now() - stepStartedAt);
 
     if (githubGroup) {
       console.log('::endgroup::');
     }
+    console.log(`<== ${check.name} (${stepDuration})`);
     if (result.error) {
       throw result.error;
     }
     if (result.status !== 0) {
-      throw new Error(`${check.name} failed with exit code ${result.status ?? 'unknown'}.`);
+      throw new Error(`${check.name} failed with exit code ${result.status ?? 'unknown'} after ${stepDuration}.`);
     }
   }
-  console.log(`\nLocal CI profile "${profile}" passed.`);
+  console.log(`\nLocal CI profile "${profile}" passed in ${formatDuration(Date.now() - profileStartedAt)}.`);
 }
 
 function main() {

@@ -38,7 +38,8 @@ The repo uses:
 | `bun run typecheck` | Run TypeScript type checking. |
 | `bun run lint` | Run ESLint. |
 | `bun run i18n:audit` | Audit locale coverage. |
-| `bun run test` | Run frontend and service tests. |
+| `bun run test` | Run frontend and service tests with bounded parallelism. |
+| `bun run test:coverage` | Run the same tests with per-file coverage reports under `coverage/tests/`. |
 | `bun run ci:pre-push` | Run the differential local gate used by the pre-push hook. |
 | `bun run ci:workflows` | Validate workflow YAML and repository Actions policy. |
 | `bun run version:check` | Verify synchronized version manifests. |
@@ -147,6 +148,18 @@ The full local CI command also builds the frontend and checks bundle size:
 ```bash
 bun run ci
 ```
+
+Notes on validation cost and behavior:
+
+- Tests run one `bun test` process per file for isolation, with a bounded
+  concurrency (6 by default, overridable with `--concurrency=<n>` or
+  `MACRO_TEST_CONCURRENCY`). Pass a filter such as `bun run test composer` to
+  run a subset, or `--list` to print the selected files.
+- Coverage is opt-in through `bun run test:coverage`; plain runs skip
+  instrumentation entirely. Reports land in `coverage/tests/<file>/`.
+- `bun run build` type-checks then bundles; it is meant for humans and release
+  packaging (`tauri:build`). Local CI profiles typecheck once and then build
+  with Vite only (`build:vite`), so tsc never runs twice.
 
 Before pushing, prefer the differential gate:
 
