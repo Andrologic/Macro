@@ -2999,6 +2999,47 @@ async fn configured_provider_configs(
     Ok(providers)
 }
 
+fn provider_definition_patch_operations(
+    document: &Value,
+    provider_id: &str,
+    definition: Option<Value>,
+) -> Option<Vec<JsonPatchOperation>> {
+    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+    let provider_path = format!("/providers/{escaped}");
+    let current_exists = document.pointer(&provider_path).is_some();
+    let Some(value) = definition else {
+        return current_exists.then(|| {
+            vec![JsonPatchOperation {
+                op: "remove".to_string(),
+                path: provider_path,
+                from: None,
+                value: None,
+            }]
+        });
+    };
+
+    let mut operations = Vec::with_capacity(2);
+    if document
+        .get("providers")
+        .and_then(Value::as_object)
+        .is_none()
+    {
+        operations.push(JsonPatchOperation {
+            op: "add".to_string(),
+            path: "/providers".to_string(),
+            from: None,
+            value: Some(serde_json::json!({})),
+        });
+    }
+    operations.push(JsonPatchOperation {
+        op: "add".to_string(),
+        path: provider_path,
+        from: None,
+        value: Some(value),
+    });
+    Some(operations)
+}
+
 async fn patch_provider_definition(
     manager: &ConfigManager,
     provider_id: &str,
@@ -3008,32 +3049,17 @@ async fn patch_provider_definition(
         .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
         .await
         .map_err(|error| command_error(error.message))?;
-    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
-    let current_exists = document
-        .value
-        .pointer(&format!("/providers/{escaped}"))
-        .is_some();
-    let operation = match definition {
-        Some(value) => JsonPatchOperation {
-            op: "add".to_string(),
-            path: format!("/providers/{escaped}"),
-            from: None,
-            value: Some(value),
-        },
-        None if current_exists => JsonPatchOperation {
-            op: "remove".to_string(),
-            path: format!("/providers/{escaped}"),
-            from: None,
-            value: None,
-        },
-        None => return Ok(()),
+    let Some(patch) =
+        provider_definition_patch_operations(&document.value, provider_id, definition)
+    else {
+        return Ok(());
     };
     manager
         .apply_patch(ConfigPatchRequest {
             kind: ConfigDocumentKind::Providers,
             scope: ConfigScope::User,
             expected_etag: document.etag,
-            patch: vec![operation],
+            patch,
             source: ConfigChangeSource::UserInterface,
         })
         .await
@@ -3913,11 +3939,12 @@ pub async fn db_set_setting(
 mod tests {
     use super::{
         apply_patch_hunks_to_content, commit_pending_file_changes_atomically,
-        execute_workspace_tool, parse_apply_patch, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation, PendingFileChange,
+        execute_workspace_tool, parse_apply_patch, provider_definition_patch_operations,
+        resolve_requested_workspace, resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation,
+        PendingFileChange,
     };
     use crate::git::GitState;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::fs;
     use tempfile::TempDir;
 
@@ -4028,6 +4055,59 @@ mod tests {
             }
             _ => panic!("expected delete operation"),
         }
+    }
+
+    #[test]
+    fn provider_definition_patch_initializes_a_sparse_provider_registry() {
+        let document = json!({
+            "$schema": "./schemas/v1/providers.schema.json",
+            "schemaVersion": 1
+        });
+        let operations = provider_definition_patch_operations(
+            &document,
+            "opencode-go",
+            Some(json!({
+                "providerType": "openai",
+                "name": "OpenCode Go",
+                "enabled": true
+            })),
+        )
+        .expect("provider definition patch");
+        assert_eq!(operations.len(), 2);
+        assert_eq!(operations[0].path, "/providers");
+        assert_eq!(operations[1].path, "/providers/opencode-go");
+
+        let patch: json_patch::Patch = serde_json::from_value(
+            serde_json::to_value(&operations).expect("serialize provider patch"),
+        )
+        .expect("parse provider patch");
+        let mut proposed = document;
+        json_patch::patch(&mut proposed, &patch).expect("apply provider patch");
+        assert_eq!(
+            proposed
+                .pointer("/providers/opencode-go/providerType")
+                .and_then(Value::as_str),
+            Some("openai")
+        );
+    }
+
+    #[test]
+    fn provider_definition_patch_removes_only_an_existing_definition() {
+        let document = json!({
+            "schemaVersion": 1,
+            "providers": {
+                "opencode-go": { "providerType": "openai" },
+                "openai": { "providerType": "openai" }
+            }
+        });
+        let operations = provider_definition_patch_operations(&document, "opencode-go", None)
+            .expect("provider removal patch");
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].op, "remove");
+        assert_eq!(operations[0].path, "/providers/opencode-go");
+
+        let sparse = json!({ "schemaVersion": 1 });
+        assert!(provider_definition_patch_operations(&sparse, "opencode-go", None).is_none());
     }
 
     #[test]
