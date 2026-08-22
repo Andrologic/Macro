@@ -759,7 +759,10 @@ export const SlashContextMenuPlugin: React.FC = () => {
                 title={tooltip}
                 onClick={() => insertItem(item)}
                 className={cn(
-                  'grid w-full grid-cols-[1.75rem_minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
+                  'grid w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
+                  item.kind === 'command'
+                    ? 'grid-cols-[1.75rem_minmax(0,1fr)]'
+                    : 'grid-cols-[1.75rem_minmax(0,1fr)_1.5rem]',
                   item.kind === 'command' ? 'my-0.5 min-h-[3.25rem] border' : 'min-h-10',
                   item.kind === 'command'
                     ? active
@@ -772,9 +775,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
               >
                 <span
                   className={cn(
-                    'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
+                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
                     item.kind === 'command'
-                      ? 'border border-primary/25 bg-primary/15 text-primary'
+                      ? 'text-primary'
                       : 'bg-muted/70',
                   )}
                 >
@@ -783,26 +786,17 @@ export const SlashContextMenuPlugin: React.FC = () => {
                     size={14}
                     className={cn('shrink-0', item.iconClassName)}
                   />
-                  {item.kind === 'command' && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-primary ring-1 ring-card"
-                    />
-                  )}
                 </span>
                 <span className="min-w-0">
-                  {item.kind === 'command' ? (
-                    <span className="flex items-center gap-2 leading-5">
-                      <span className="font-semibold text-primary">{item.title}</span>
-                      <span className="rounded border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-primary/80">
-                        {t('goal.modeLabel', 'Goal mode')}
-                      </span>
-                    </span>
-                  ) : (
-                    <span className="block truncate font-medium leading-5" title={item.title}>
-                      {item.title}
-                    </span>
-                  )}
+                  <span
+                    className={cn(
+                      'block truncate font-medium leading-5',
+                      item.kind === 'command' && 'font-semibold text-primary',
+                    )}
+                    title={item.title}
+                  >
+                    {item.title}
+                  </span>
                   {(item.subtitle || itemLabel) && (
                     <span
                       className={cn(
@@ -815,13 +809,11 @@ export const SlashContextMenuPlugin: React.FC = () => {
                     </span>
                   )}
                 </span>
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center">
-                  {item.kind === 'command' ? (
-                    <Icon name="chevron-right" size={13} className="text-primary/70" />
-                  ) : (
-                    selected && <Icon name="check" size={14} className="shrink-0" />
-                  )}
-                </span>
+                {item.kind !== 'command' && (
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center">
+                    {selected && <Icon name="check" size={14} className="shrink-0" />}
+                  </span>
+                )}
               </button>
             );
           })

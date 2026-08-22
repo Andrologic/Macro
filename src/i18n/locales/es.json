@@ -2115,7 +2115,6 @@
   },
   "goal": {
     "bannerLabel": "Objetivo de la conversación",
-    "modeLabel": "Modo Goal",
     "shortLabel": "Goal",
     "edit": "Editar objetivo",
     "editHint": "Editar el objetivo actual en el editor",
