@@ -2111,6 +2111,9 @@
   "goal": {
     "bannerLabel": "会話の目標",
     "modeLabel": "Goalモード",
+    "shortLabel": "Goal",
+    "edit": "目標を編集",
+    "editHint": "入力欄で現在の目標を編集",
     "status": {
       "executorRunning": "エージェントが作業中",
       "executorRunningDescription": "エージェントが目標の達成に向けて作業しています。",

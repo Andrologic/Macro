@@ -2132,6 +2132,9 @@
   "goal": {
     "bannerLabel": "Objectif de la conversation",
     "modeLabel": "Mode Goal",
+    "shortLabel": "Goal",
+    "edit": "Modifier l’objectif",
+    "editHint": "Modifier l’objectif actuel dans la zone de saisie",
     "status": {
       "executorRunning": "L’agent travaille",
       "executorRunningDescription": "L’agent travaille pour atteindre l’objectif.",

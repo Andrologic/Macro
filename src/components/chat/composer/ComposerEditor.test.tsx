@@ -786,6 +786,8 @@ describe('ComposerEditor context references', () => {
 
     const chip = container.querySelector('[data-goal-command-chip="true"]');
     expect(chip).not.toBeNull();
+    expect(chip?.textContent).toContain('Goal mode');
+    expect(chip?.classList.contains('h-7')).toBe(true);
     expect(chip?.textContent).toContain('Goal');
     expect(editorRef.current?.getTextContent()).toBe(
       '/goal Finish the authentication migration',

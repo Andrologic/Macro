@@ -41,25 +41,19 @@ export const GoalCommandChip: React.FC<GoalCommandChipProps> = ({ nodeKey }) => 
   return (
     <span
       data-goal-command-chip="true"
-      className="mx-0.5 inline-flex h-[1.45rem] select-none items-center gap-1 rounded-md border border-primary/35 bg-primary/10 px-1.5 align-[-0.05em] text-[11px] font-semibold leading-none text-primary shadow-[0_0_0_1px_rgb(var(--primary)/0.06),0_0_16px_rgb(var(--primary)/0.08)]"
+      className="mx-1 inline-flex h-7 select-none items-center gap-1.5 rounded-lg bg-primary px-2 align-middle text-xs font-semibold leading-none text-primary-foreground shadow-sm"
       title={t('goal.commandHint', 'Start Goal mode and describe the objective')}
     >
-      <span className="relative flex h-4 w-4 items-center justify-center rounded bg-primary/15">
-        <Icon name="target" size={10} />
-        <span
-          aria-hidden="true"
-          className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-primary ring-1 ring-background"
-        />
-      </span>
-      <span>Goal</span>
+      <Icon name="target" size={12} />
+      <span>{t('goal.modeLabel', 'Goal mode')}</span>
       <button
         type="button"
         onMouseDown={handleRemove}
-        className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-sm text-primary/55 transition-colors hover:bg-primary/15 hover:text-primary"
+        className="-mr-1 inline-flex h-5 w-5 items-center justify-center rounded-md text-primary-foreground/70 transition-colors hover:bg-primary-foreground/15 hover:text-primary-foreground"
         tabIndex={-1}
         aria-label={t('goal.removeCommand', 'Remove Goal command')}
       >
-        <Icon name="x" size={9} />
+        <Icon name="x" size={11} />
       </button>
     </span>
   );

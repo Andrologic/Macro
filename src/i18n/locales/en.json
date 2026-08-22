@@ -2178,6 +2178,9 @@
   "goal": {
     "bannerLabel": "Conversation goal",
     "modeLabel": "Goal mode",
+    "shortLabel": "Goal",
+    "edit": "Edit goal",
+    "editHint": "Edit the current goal in the composer",
     "status": {
       "executorRunning": "Agent working",
       "executorRunningDescription": "The agent is working toward the objective.",

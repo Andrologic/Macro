@@ -55,6 +55,7 @@ describe('ConversationGoalBanner', () => {
       root.render(
         <ConversationGoalBanner
           goal={buildGoal(status)}
+          onEdit={() => undefined}
           onPause={() => undefined}
           onResume={onResume}
           onStop={() => undefined}
@@ -67,12 +68,20 @@ describe('ConversationGoalBanner', () => {
   it('shows the goal objective and the pending audit state', async () => {
     await renderBanner('audit_pending');
 
-    expect(container.textContent).toContain('Goal mode');
+    expect(container.textContent).toContain('Goal');
     expect(container.textContent).toContain('Review pending');
     expect(container.textContent).toContain('Finish the authentication migration');
     expect(
       container.querySelector('[data-conversation-goal-banner]')?.getAttribute('data-goal-status'),
     ).toBe('audit_pending');
+    expect(
+      container.querySelector('[data-conversation-goal-banner]')?.getAttribute(
+        'data-goal-compact-bar',
+      ),
+    ).toBe('true');
+    expect(
+      container.querySelector('[data-conversation-goal-banner] > div')?.classList.contains('h-9'),
+    ).toBe(true);
   });
 
   it('offers resume instead of pause for a paused goal', async () => {
@@ -81,18 +90,23 @@ describe('ConversationGoalBanner', () => {
 
     expect(buttons.some((button) => button.textContent?.trim() === 'Pause')).toBe(false);
     const resumeButton = buttons.find(
-      (button) => button.textContent?.trim() === 'Resume tracking',
+      (button) => button.getAttribute('aria-label') === 'Resume tracking',
     );
     expect(resumeButton).toBeTruthy();
+    expect(resumeButton?.textContent?.trim()).toBe('');
     await act(async () => resumeButton?.click());
     expect(onResume).toHaveBeenCalledTimes(1);
   });
 
-  it('does not offer controls that can change an achieved goal', async () => {
+  it('only keeps goal editing available after the goal is achieved', async () => {
     await renderBanner('achieved');
 
     expect(container.textContent).toContain('Goal achieved');
-    expect(container.querySelectorAll('button')).toHaveLength(0);
+    expect(
+      Array.from(container.querySelectorAll('button')).map((button) =>
+        button.getAttribute('aria-label'),
+      ),
+    ).toEqual(['Edit goal']);
   });
 
   it('announces criterion statuses without relying on color', async () => {
@@ -115,6 +129,7 @@ describe('ConversationGoalBanner', () => {
       root.render(
         <ConversationGoalBanner
           goal={goal}
+          onEdit={() => undefined}
           onPause={() => undefined}
           onResume={() => undefined}
           onStop={() => undefined}

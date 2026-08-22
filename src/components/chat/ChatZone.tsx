@@ -2580,6 +2580,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setConversationGoalStatus(selectedConversationId, 'active_ready');
   }, [selectedConversationId, setConversationGoalStatus]);
 
+  const handleEditGoal = useCallback(() => {
+    if (!activeConversationGoal) return;
+    const goalDraft = `/goal ${activeConversationGoal.objective}`;
+    setInputValue(goalDraft);
+    composerEditorRef.current?.setText(goalDraft);
+    window.requestAnimationFrame(() => composerEditorRef.current?.focus());
+  }, [activeConversationGoal]);
+
   const handleStopGoal = useCallback(() => {
     if (!selectedConversationId) return;
     if (isBusySending) stopStreaming();
@@ -3018,6 +3026,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           <Suspense fallback={null}>
             <ConversationGoalBanner
               goal={activeConversationGoal}
+              onEdit={handleEditGoal}
               onPause={handlePauseGoal}
               onResume={handleResumeGoal}
               onStop={handleStopGoal}
