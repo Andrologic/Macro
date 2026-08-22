@@ -6,6 +6,7 @@ import { Icon, type IconName } from '../ui/Icon';
 
 interface ConversationGoalBannerProps {
   goal: ConversationGoalRecord;
+  onEdit: () => void;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
@@ -95,6 +96,7 @@ const useGoalStatusPresentation = (
 
 export const ConversationGoalBanner: React.FC<ConversationGoalBannerProps> = ({
   goal,
+  onEdit,
   onPause,
   onResume,
   onStop,
@@ -108,149 +110,140 @@ export const ConversationGoalBanner: React.FC<ConversationGoalBannerProps> = ({
   return (
     <section
       data-conversation-goal-banner
+      data-goal-compact-bar="true"
       data-goal-status={goal.status}
       aria-label={t('goal.bannerLabel', 'Conversation goal')}
-      className="border-b border-primary/10 bg-primary/[0.018] px-4 py-3"
+      className="relative z-20 border-b border-border/50 bg-background/35"
     >
-      <div className="relative mx-auto max-w-5xl overflow-hidden rounded-xl border border-primary/20 bg-card/75 shadow-[0_12px_34px_-28px_rgb(var(--primary)/0.75),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-sm">
-        <div
-          aria-hidden="true"
-          className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/55 to-transparent"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -left-12 -top-16 h-36 w-48 rounded-full bg-primary/[0.075] blur-3xl"
-        />
+      <div className="flex h-9 min-w-0 items-center gap-2 px-4">
+        <span className="flex shrink-0 items-center gap-1.5 text-[10px] font-semibold text-primary">
+          <Icon name="target" size={11} />
+          <span>{t('goal.shortLabel', 'Goal')}</span>
+        </span>
 
-        <div className="relative flex items-start gap-3 p-3">
-          <span className="relative mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 shadow-[inset_0_1px_0_rgb(var(--primary)/0.16),0_0_18px_rgb(var(--primary)/0.08)]">
-            <Icon
-              name={presentation.icon}
-              size={16}
-              className={cn(
-                presentation.iconClassName,
-                presentation.animateIcon && 'animate-spin motion-reduce:animate-none',
-              )}
-            />
-            <span
-              aria-hidden="true"
-              className={cn(
-                'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-card',
-                goal.status === 'achieved'
-                  ? 'bg-emerald-400'
-                  : goal.status === 'error'
-                    ? 'bg-destructive'
-                    : goal.status === 'paused'
-                      ? 'bg-muted-foreground'
-                      : 'bg-primary',
-              )}
-            />
-          </span>
+        <span className="h-4 w-px shrink-0 bg-border/70" aria-hidden="true" />
 
-          <div className="min-w-0 flex-1">
-            <div
-              className="flex flex-wrap items-center gap-1.5"
-              aria-live="polite"
-              aria-atomic="true"
+        <p
+          className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/90"
+          title={goal.objective}
+        >
+          {goal.objective}
+        </p>
+
+        <span
+          className="inline-flex max-w-44 shrink-0 items-center gap-1.5 text-[10px] font-medium text-muted-foreground"
+          aria-live="polite"
+          aria-atomic="true"
+          title={presentation.description}
+        >
+          <Icon
+            name={presentation.icon}
+            size={11}
+            className={cn(
+              'shrink-0',
+              presentation.iconClassName,
+              presentation.animateIcon && 'animate-spin motion-reduce:animate-none',
+            )}
+          />
+          <span className="truncate">{presentation.label}</span>
+          <span className="sr-only">{presentation.description}</span>
+        </span>
+
+        {hasAuditDetails && goal.latestVerdict && (
+          <details className="group relative shrink-0 text-xs text-muted-foreground">
+            <summary
+              className="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 [&::-webkit-details-marker]:hidden"
+              title={t('goal.lastReview', 'Last review')}
+              aria-label={t('goal.lastReview', 'Last review')}
             >
-              <span className="inline-flex h-5 items-center gap-1 rounded-md border border-primary/25 bg-primary/10 px-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-primary">
-                <Icon name="target" size={9} />
-                {t('goal.modeLabel', 'Goal mode')}
-              </span>
-              <span className="inline-flex h-5 items-center rounded-md border border-border/60 bg-background/45 px-1.5 text-[10px] font-medium text-foreground/85">
-                {presentation.label}
-              </span>
+              <Icon name="shield" size={12} />
+            </summary>
+            <div className="absolute right-0 top-9 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-border/70 bg-card/95 p-3 text-xs shadow-2xl backdrop-blur">
+              <div className="mb-2 flex items-center gap-2 text-foreground">
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <Icon name="shield" size={12} />
+                </span>
+                <span className="font-medium">{t('goal.lastReview', 'Last review')}</span>
+              </div>
+              <p className="leading-relaxed text-foreground/80">{goal.latestVerdict.summary}</p>
+              {goal.latestVerdict.criteria.length > 0 && (
+                <ul className="mt-2 space-y-1.5">
+                  {goal.latestVerdict.criteria.map((criterion, index) => (
+                    <li
+                      key={`${criterion.criterion}-${index}`}
+                      className="flex gap-2 rounded-md border border-border/45 bg-background/35 px-2 py-1.5"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          'mt-1 h-1.5 w-1.5 shrink-0 rounded-full',
+                          criterion.status === 'met'
+                            ? 'bg-emerald-400'
+                            : criterion.status === 'unmet'
+                              ? 'bg-destructive'
+                              : 'bg-amber-400',
+                        )}
+                      />
+                      <span className="sr-only">
+                        {criterion.status === 'met'
+                          ? t('goal.criterionStatus.met', 'Met')
+                          : criterion.status === 'unmet'
+                            ? t('goal.criterionStatus.unmet', 'Not met')
+                            : t('goal.criterionStatus.uncertain', 'Uncertain')}
+                        {': '}
+                      </span>
+                      <span className="min-w-0 leading-snug">{criterion.criterion}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
-            <p className="mt-1.5 break-words text-[13px] font-medium leading-snug text-foreground">
-              {goal.objective}
-            </p>
-            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              {presentation.description}
-            </p>
+          </details>
+        )}
 
-            {hasAuditDetails && goal.latestVerdict && (
-              <details className="group mt-2.5 text-xs text-muted-foreground">
-                <summary className="flex w-fit cursor-pointer list-none select-none items-center gap-1.5 rounded-md border border-border/60 bg-background/35 px-2 py-1 font-medium text-foreground/80 transition-colors hover:border-primary/25 hover:bg-primary/[0.045] [&::-webkit-details-marker]:hidden">
-                  <Icon
-                    name="chevron-right"
-                    size={11}
-                    className="transition-transform group-open:rotate-90 motion-reduce:transition-none"
-                  />
-                  {t('goal.lastReview', 'Last review')}
-                </summary>
-                <div className="mt-2 rounded-lg border border-border/60 bg-background/45 px-2.5 py-2.5 shadow-inner">
-                  <p className="leading-relaxed text-foreground/80">{goal.latestVerdict.summary}</p>
-                  {goal.latestVerdict.criteria.length > 0 && (
-                    <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">
-                      {goal.latestVerdict.criteria.map((criterion, index) => (
-                        <li
-                          key={`${criterion.criterion}-${index}`}
-                          className="flex min-w-0 gap-2 rounded-md border border-border/45 bg-card/45 px-2 py-1.5"
-                        >
-                          <span
-                            aria-hidden="true"
-                            className={cn(
-                              'mt-1 h-1.5 w-1.5 shrink-0 rounded-full ring-2 ring-background',
-                              criterion.status === 'met'
-                                ? 'bg-emerald-400'
-                                : criterion.status === 'unmet'
-                                  ? 'bg-destructive'
-                                  : 'bg-amber-400',
-                            )}
-                          />
-                          <span className="sr-only">
-                            {criterion.status === 'met'
-                              ? t('goal.criterionStatus.met', 'Met')
-                              : criterion.status === 'unmet'
-                                ? t('goal.criterionStatus.unmet', 'Not met')
-                                : t('goal.criterionStatus.uncertain', 'Uncertain')}
-                            {': '}
-                          </span>
-                          <span className="min-w-0 leading-snug">{criterion.criterion}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </details>
-            )}
-          </div>
-
-          <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border/55 bg-background/35 p-0.5">
-            {canPause && (
-              <button
-                type="button"
-                onClick={onPause}
-                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                title={t('goal.pauseHint', 'Pause automatic continuation')}
-              >
-                <Icon name="pause" size={11} />
-                {t('goal.pause', 'Pause')}
-              </button>
-            )}
-            {canResume && (
-              <button
-                type="button"
-                onClick={onResume}
-                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
-                title={t('goal.resumeHint', 'Resume goal tracking')}
-              >
-                <Icon name="play" size={11} />
-                {t('goal.resume', 'Resume tracking')}
-              </button>
-            )}
-            {goal.status !== 'achieved' && (
-              <button
-                type="button"
-                onClick={onStop}
-                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                title={t('goal.stopHint', 'Leave Goal mode for this conversation')}
-              >
-                <Icon name="x" size={11} />
-                {t('goal.stop', 'Stop')}
-              </button>
-            )}
-          </div>
+        <div className="flex shrink-0 items-center border-l border-border/60 pl-1">
+          <button
+            type="button"
+            onClick={onEdit}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+            title={t('goal.editHint', 'Edit the current goal in the composer')}
+            aria-label={t('goal.edit', 'Edit goal')}
+          >
+            <Icon name="edit" size={12} />
+          </button>
+          {canPause && (
+            <button
+              type="button"
+              onClick={onPause}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+              title={t('goal.pauseHint', 'Pause automatic continuation')}
+              aria-label={t('goal.pause', 'Pause')}
+            >
+              <Icon name="pause" size={12} />
+            </button>
+          )}
+          {canResume && (
+            <button
+              type="button"
+              onClick={onResume}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+              title={t('goal.resumeHint', 'Resume goal tracking')}
+              aria-label={t('goal.resume', 'Resume tracking')}
+            >
+              <Icon name="play" size={12} />
+            </button>
+          )}
+          {goal.status !== 'achieved' && (
+            <button
+              type="button"
+              onClick={onStop}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-destructive/50"
+              title={t('goal.stopHint', 'Leave Goal mode for this conversation')}
+              aria-label={t('goal.stop', 'Stop')}
+            >
+              <Icon name="square" size={10} />
+            </button>
+          )}
         </div>
       </div>
     </section>

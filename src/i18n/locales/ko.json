@@ -2111,6 +2111,9 @@
   "goal": {
     "bannerLabel": "대화 목표",
     "modeLabel": "Goal 모드",
+    "shortLabel": "Goal",
+    "edit": "목표 편집",
+    "editHint": "입력창에서 현재 목표 편집",
     "status": {
       "executorRunning": "에이전트 작업 중",
       "executorRunningDescription": "에이전트가 목표를 달성하기 위해 작업하고 있습니다.",

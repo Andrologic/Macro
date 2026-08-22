@@ -2112,6 +2112,9 @@
   "goal": {
     "bannerLabel": "Konversationsziel",
     "modeLabel": "Goal-Modus",
+    "shortLabel": "Goal",
+    "edit": "Ziel bearbeiten",
+    "editHint": "Aktuelles Ziel im Eingabefeld bearbeiten",
     "status": {
       "executorRunning": "Agent arbeitet",
       "executorRunningDescription": "Der Agent arbeitet auf das Ziel hin.",

@@ -1031,6 +1031,34 @@ describe('ChatZone', () => {
     ).toContain('Finish the authentication migration');
   });
 
+  it('reopens the active objective as a Goal draft from the compact bar', async () => {
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const editGoalButton = requireContainer().querySelector(
+      'button[aria-label="Edit goal"]',
+    );
+    expect(editGoalButton).not.toBeNull();
+
+    await act(async () => {
+      editGoalButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(composerEditorSetTextCalls.at(-1)).toBe(
+      '/goal Finish the authentication migration',
+    );
+    expect(getComposerEditor().value).toBe(
+      '/goal Finish the authentication migration',
+    );
+  });
+
   it('activates Goal mode from the Architect composer with the current provider selection', async () => {
     appState = {
       ...appState,
