@@ -1044,6 +1044,8 @@ describe('ChatZone', () => {
     expect(control).not.toBeNull();
     expect(control?.nextElementSibling).toBe(composer);
     expect(control?.classList.contains('self-center')).toBe(true);
+    expect(control?.classList.contains('border')).toBe(false);
+    expect(control?.classList.contains('bg-primary/[0.045]')).toBe(false);
 
     await act(async () => {
       control?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
