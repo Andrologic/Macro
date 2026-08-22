@@ -837,6 +837,9 @@ describe('ComposerEditor context references', () => {
     );
     expect(goalOption).not.toBeNull();
     expect(goalOption?.className).toContain('border-primary/35');
+    expect(goalOption?.textContent).not.toContain('Goal mode');
+    expect(goalOption?.querySelectorAll('svg')).toHaveLength(1);
+    expect(goalOption?.querySelector('.rounded-full')).toBeNull();
 
     await act(async () => {
       goalOption?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));

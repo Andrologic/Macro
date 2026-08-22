@@ -2110,7 +2110,6 @@
   },
   "goal": {
     "bannerLabel": "会話の目標",
-    "modeLabel": "Goalモード",
     "shortLabel": "Goal",
     "edit": "目標を編集",
     "editHint": "入力欄で現在の目標を編集",

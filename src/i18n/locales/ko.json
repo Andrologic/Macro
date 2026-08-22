@@ -2110,7 +2110,6 @@
   },
   "goal": {
     "bannerLabel": "대화 목표",
-    "modeLabel": "Goal 모드",
     "shortLabel": "Goal",
     "edit": "목표 편집",
     "editHint": "입력창에서 현재 목표 편집",
