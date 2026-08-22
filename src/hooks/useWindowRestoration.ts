@@ -41,6 +41,7 @@ import { getPlatformChromeState } from "../utils/desktopPlatform";
 import { isPageShuttingDown } from "../utils/pageLifecycle";
 import { devLogger } from "../utils/devLogger";
 import { sanitizeWindowBounds, type MonitorBounds } from '../services/windowBounds';
+import { isProjectGitActionable } from '../services/globalProjects';
 
 type WindowApi = {
   setSize: (width: number, height: number) => Promise<void>;
@@ -67,7 +68,9 @@ const getSelectedProjectGroupWorkspacePaths = (): string[] => {
   return (
     projectGroups
       .find((group) => group.id === selectedGroupId)
-      ?.projects.map((project) => project.path)
+      ?.projects
+      .filter((project) => isProjectGitActionable(project))
+      .map((project) => project.path)
       .filter((path) => path.trim().length > 0) ?? []
   );
 };

@@ -3,7 +3,11 @@ import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
-import { getProjectGroupByProjectId, getScopedProjectIds } from './globalProjects';
+import {
+  getProjectGroupByProjectId,
+  getScopedProjectIds,
+  isProjectGitActionable,
+} from './globalProjects';
 import {
   flushMacroMetadata,
   recordMacroMetadataMutation,
@@ -49,7 +53,7 @@ interface MacroSyncAppState {
   selectedProjectId: string | null;
   standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
-  getProjectById: (projectId: string) => { path: string } | undefined;
+  getProjectById: (projectId: string) => Project | undefined;
   setMetadataSyncStatus: (params: {
     state: tauriIpc.MacroSyncState;
     error?: string | null;
@@ -166,6 +170,32 @@ const resolveProjectPath = (
       .find((project) => project.id === projectId)
       ?.path ?? null
   );
+};
+
+const resolveProject = (
+  appState: MacroSyncAppState,
+  projectId: string | null | undefined
+): Project | null => {
+  if (!projectId) return null;
+
+  return (
+    appState.getProjectById(projectId) ??
+    appState.standaloneProjects?.find((project) => project.id === projectId) ??
+    appState.projectGroups
+      .flatMap((group) => group.projects)
+      .find((project) => project.id === projectId) ??
+    null
+  );
+};
+
+const isGitActionableTarget = (
+  appState: MacroSyncAppState,
+  target: MetadataSyncTarget
+): boolean => {
+  if (!target.projectId) return true;
+
+  const project = resolveProject(appState, target.projectId);
+  return !project || isProjectGitActionable(project);
 };
 
 const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<MetadataSyncTarget[]> => {
@@ -624,7 +654,9 @@ export const createMacroSyncService = (
   const resolveTargets = async (): Promise<MetadataSyncTarget[]> => {
     const appState = dependencies.getAppState();
     const resolver = dependencies.resolveTargets || resolveMacroSyncTargets;
-    return dedupeTargets(await resolver(appState));
+    return dedupeTargets(await resolver(appState)).filter((target) =>
+      isGitActionableTarget(appState, target)
+    );
   };
 
   const runAcrossTargets = async (
