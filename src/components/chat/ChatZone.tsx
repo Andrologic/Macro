@@ -3454,7 +3454,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       ref={composerEditorRef}
                       editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                       readOnly={isSpeechEnhancing}
-                      className={isSpeechEnhancing ? 'speech-cleanup-text' : undefined}
+                      className={cn(
+                        isSpeechEnhancing && 'speech-cleanup-text',
+                        isGoalComposerDraft && 'goal-composer-editor',
+                      )}
                       placeholder={
                         composerEditSession
                           ? t('chat.editMessagePlaceholder', 'Edit message...')

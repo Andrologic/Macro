@@ -1012,6 +1012,7 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('[data-chat-composer-goal="true"]'),
     ).not.toBeNull();
+    expect(latestComposerProps?.className).toContain('goal-composer-editor');
     await clickSendButton();
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({

@@ -5,11 +5,11 @@ import { useTranslation } from 'react-i18next';
 import { Icon } from '../../ui/Icon';
 import { $isGoalCommandNode } from './GoalCommandNode';
 
-interface GoalCommandChipProps {
+interface GoalCommandMarkerProps {
   nodeKey: string;
 }
 
-export const GoalCommandChip: React.FC<GoalCommandChipProps> = ({ nodeKey }) => {
+export const GoalCommandMarker: React.FC<GoalCommandMarkerProps> = ({ nodeKey }) => {
   const [editor] = useLexicalComposerContext();
   const { t } = useTranslation();
 
@@ -39,22 +39,16 @@ export const GoalCommandChip: React.FC<GoalCommandChipProps> = ({ nodeKey }) => 
   };
 
   return (
-    <span
-      data-goal-command-chip="true"
-      className="mx-1 inline-flex h-7 select-none items-center gap-1.5 rounded-lg bg-primary px-2 align-middle text-xs font-semibold leading-none text-primary-foreground shadow-sm"
+    <button
+      type="button"
+      data-goal-command-marker="true"
+      onMouseDown={handleRemove}
+      className="inline-flex h-5 w-5 select-none items-center justify-center align-middle text-primary/80 transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+      tabIndex={-1}
       title={t('goal.commandHint', 'Start Goal mode and describe the objective')}
+      aria-label={t('goal.removeCommand', 'Remove Goal command')}
     >
-      <Icon name="target" size={12} />
-      <span>{t('goal.modeLabel', 'Goal mode')}</span>
-      <button
-        type="button"
-        onMouseDown={handleRemove}
-        className="-mr-1 inline-flex h-5 w-5 items-center justify-center rounded-md text-primary-foreground/70 transition-colors hover:bg-primary-foreground/15 hover:text-primary-foreground"
-        tabIndex={-1}
-        aria-label={t('goal.removeCommand', 'Remove Goal command')}
-      >
-        <Icon name="x" size={11} />
-      </button>
-    </span>
+      <Icon name="target" size={14} />
+    </button>
   );
 };

@@ -764,7 +764,7 @@ describe('ComposerEditor context references', () => {
     ).toBeNull();
   });
 
-  it('renders a Goal command chip while preserving the command text', async () => {
+  it('renders a Goal command marker while preserving the command text', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 
     await act(async () => {
@@ -784,11 +784,10 @@ describe('ComposerEditor context references', () => {
       await Promise.resolve();
     });
 
-    const chip = container.querySelector('[data-goal-command-chip="true"]');
-    expect(chip).not.toBeNull();
-    expect(chip?.textContent).toContain('Goal mode');
-    expect(chip?.classList.contains('h-7')).toBe(true);
-    expect(chip?.textContent).toContain('Goal');
+    const marker = container.querySelector('[data-goal-command-marker="true"]');
+    expect(marker).not.toBeNull();
+    expect(marker?.textContent?.trim()).toBe('');
+    expect(marker?.classList.contains('bg-primary')).toBe(false);
     expect(editorRef.current?.getTextContent()).toBe(
       '/goal Finish the authentication migration',
     );
@@ -813,17 +812,17 @@ describe('ComposerEditor context references', () => {
       editorRef.current?.setText('/goals list');
       await Promise.resolve();
     });
-    expect(container.querySelector('[data-goal-command-chip="true"]')).toBeNull();
+    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
 
     await act(async () => {
       editorRef.current?.setText('Explain /goal behavior');
       await Promise.resolve();
     });
-    expect(container.querySelector('[data-goal-command-chip="true"]')).toBeNull();
+    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
     expect(editorRef.current?.getTextContent()).toBe('Explain /goal behavior');
   });
 
-  it('inserts the highlighted Goal command as a chip from the slash menu', async () => {
+  it('inserts the highlighted Goal command as a marker from the slash menu', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 
     await act(async () => {
@@ -843,18 +842,18 @@ describe('ComposerEditor context references', () => {
       '[data-slash-context-option="command:/goal"]',
     );
     expect(goalOption).not.toBeNull();
-    expect(goalOption?.className).toContain('border-primary/20');
+    expect(goalOption?.className).toContain('border-primary/35');
 
     await act(async () => {
       goalOption?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[data-goal-command-chip="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-goal-command-marker="true"]')).not.toBeNull();
     expect(editorRef.current?.getTextContent()).toBe('/goal ');
   });
 
-  it('removes the Goal chip without leaving its separator behind', async () => {
+  it('removes the Goal marker without leaving its separator behind', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 
     await act(async () => {
@@ -875,14 +874,14 @@ describe('ComposerEditor context references', () => {
     });
 
     const removeButton = container.querySelector(
-      '[data-goal-command-chip="true"] button',
+      '[data-goal-command-marker="true"]',
     );
     await act(async () => {
       removeButton?.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[data-goal-command-chip="true"]')).toBeNull();
+    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
     expect(editorRef.current?.getTextContent()).toBe('Finish the migration');
   });
 
@@ -1089,12 +1088,12 @@ describe('ComposerEditor context references', () => {
   });
 
   it('navigates slash context with arrows and selects with Enter', async () => {
-    const alphaSkill = buildSkill('global:agents:alpha:aaa', { name: 'alpha' });
-    const betaSkill = buildSkill('global:agents:beta:bbb', { name: 'beta' });
-    skills = [alphaSkill, betaSkill];
+    const betaSkill = buildSkill('global:agents:beta:aaa', { name: 'beta' });
+    const betterSkill = buildSkill('global:agents:better:bbb', { name: 'better' });
+    skills = [betaSkill, betterSkill];
     settingsBySkillId = {
-      [alphaSkill.id]: { enabled: true, scriptsEnabled: false },
       [betaSkill.id]: { enabled: true, scriptsEnabled: false },
+      [betterSkill.id]: { enabled: true, scriptsEnabled: false },
     };
     const onPromptHistory = mock(() => undefined);
     const editorRef = React.createRef<ComposerEditorHandle>();
@@ -1112,7 +1111,7 @@ describe('ComposerEditor context references', () => {
       );
     });
 
-    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    expect(await openSlashMenu(editorRef, '/be')).not.toBeNull();
     const editable = container.querySelector('[data-shortcut-chat-input="true"]');
 
     await act(async () => {
@@ -1121,7 +1120,7 @@ describe('ComposerEditor context references', () => {
     });
 
     expect(
-      document.body.querySelector('[data-slash-context-option="skill:beta"]')?.getAttribute('aria-selected')
+      document.body.querySelector('[data-slash-context-option="skill:better"]')?.getAttribute('aria-selected')
     ).toBe('true');
     expect(onPromptHistory).not.toHaveBeenCalled();
 
@@ -1130,7 +1129,7 @@ describe('ComposerEditor context references', () => {
       await Promise.resolve();
     });
 
-    expect(editorRef.current?.getTextContent().trim()).toBe('[skill: beta]');
+    expect(editorRef.current?.getTextContent().trim()).toBe('[skill: better]');
   });
 
   it('selects the active slash context option with Tab', async () => {
@@ -1153,7 +1152,7 @@ describe('ComposerEditor context references', () => {
       );
     });
 
-    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    expect(await openSlashMenu(editorRef, '/al')).not.toBeNull();
     const editable = container.querySelector('[data-shortcut-chat-input="true"]');
 
     await act(async () => {

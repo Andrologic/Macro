@@ -8,7 +8,7 @@ import type {
   SerializedLexicalNode,
 } from 'lexical';
 import { $applyNodeReplacement, DecoratorNode } from 'lexical';
-import { GoalCommandChip } from './GoalCommandChip';
+import { GoalCommandMarker } from './GoalCommandMarker';
 
 export class GoalCommandNode extends DecoratorNode<ReactNode> {
   static getType(): string {
@@ -69,7 +69,7 @@ export class GoalCommandNode extends DecoratorNode<ReactNode> {
   }
 
   decorate(_editor: LexicalEditor, _config: EditorConfig): ReactNode {
-    return <GoalCommandChip nodeKey={this.__key} />;
+    return <GoalCommandMarker nodeKey={this.__key} />;
   }
 }
 
