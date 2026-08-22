@@ -72,6 +72,9 @@ describe('ConversationGoalBanner', () => {
     expect(container.textContent).toContain('Review pending');
     expect(container.textContent).toContain('Finish the authentication migration');
     expect(
+      container.querySelector('[aria-live="polite"]')?.classList.contains('sr-only'),
+    ).toBe(true);
+    expect(
       container.querySelector('[data-conversation-goal-banner]')?.getAttribute('data-goal-status'),
     ).toBe('audit_pending');
     expect(
