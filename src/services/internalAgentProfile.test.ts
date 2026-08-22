@@ -114,6 +114,33 @@ describe("internalAgentProfile", () => {
     expect(filtered).toEqual(["list", "read", "git_status", "git_diff"]);
   });
 
+  it("keeps goal auditor on the same read-only surface as repo auditor", () => {
+    const candidateToolIds = [
+      "list",
+      "read",
+      "glob",
+      "grep",
+      "git_status",
+      "git_diff",
+      "terminal_create_session",
+      "terminal_run",
+      "terminal_read",
+      "apply_patch",
+      "delete",
+      "write",
+      "web_search",
+    ];
+
+    expect(
+      filterToolIdsForInternalAgentProfile(candidateToolIds, "goal_auditor")
+    ).toEqual(["list", "read", "glob", "grep", "git_status", "git_diff"]);
+    expect(
+      filterToolIdsForInternalAgentProfile(candidateToolIds, "goal_auditor")
+    ).toEqual(
+      filterToolIdsForInternalAgentProfile(candidateToolIds, "repo_auditor")
+    );
+  });
+
   it("provides distinct system guidance for specialized profiles", () => {
     expect(buildInternalAgentProfileSystemPrompt("plan_explorer")).toContain(
       "PLAN_EXPLORER"
@@ -123,6 +150,9 @@ describe("internalAgentProfile", () => {
     );
     expect(buildInternalAgentProfileSystemPrompt("repo_auditor")).toContain(
       "REPO_AUDITOR"
+    );
+    expect(buildInternalAgentProfileSystemPrompt("goal_auditor")).toContain(
+      "GOAL_AUDITOR"
     );
     expect(
       buildInternalAgentProfileSystemPrompt("default_executor")
@@ -138,6 +168,9 @@ describe("internalAgentProfile", () => {
     );
     expect(getInternalAgentProfilePromptPreferenceKey("repo_auditor")).toBe(
       "promptRepoAuditor"
+    );
+    expect(getInternalAgentProfilePromptPreferenceKey("goal_auditor")).toBe(
+      "promptGoalAuditor"
     );
     expect(getInternalAgentProfilePromptPreferenceKey("default_executor")).toBe(
       null

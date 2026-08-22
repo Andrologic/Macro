@@ -980,6 +980,117 @@ export interface ConversationRuntimeState {
   lastErrorDisplayTarget?: 'composer' | 'transcript' | null;
 }
 
+// Conversation goal tracking and read-only goal audit
+
+export type ConversationGoalStatus =
+  | 'active_ready'
+  | 'executor_running'
+  | 'audit_pending'
+  | 'auditing'
+  | 'continuation_pending'
+  | 'awaiting_user'
+  | 'paused'
+  | 'achieved'
+  | 'error';
+
+export type ConversationGoalOperationalStatus = Exclude<
+  ConversationGoalStatus,
+  'achieved'
+>;
+
+export type ConversationGoalVerdictKind = 'continue' | 'achieved' | 'needs_user' | 'cannot_progress';
+export type ConversationGoalCriterionStatus = 'met' | 'unmet' | 'uncertain';
+
+export interface ConversationGoalEvidence {
+  source: string;
+  finding: string;
+}
+
+export interface ConversationGoalCriterionResult {
+  criterion: string;
+  status: ConversationGoalCriterionStatus;
+  evidence: ConversationGoalEvidence[];
+}
+
+export interface ConversationGoalVerdict {
+  verdict: ConversationGoalVerdictKind;
+  summary: string;
+  criteria: ConversationGoalCriterionResult[];
+  feedback: string;
+  questionForUser: string | null;
+  confidence: number;
+}
+
+export interface ConversationGoalRecord {
+  conversationId: string;
+  goalId: string;
+  revision: number;
+  status: ConversationGoalStatus;
+  objective: string;
+  providerId: string | null;
+  modelId: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  createdAt: string;
+  updatedAt: string;
+  lastAuditedAt: string | null;
+  lastExecutorTurnAt: string | null;
+  awaitingUserSinceAt: string | null;
+  executorTurnCount: number;
+  auditCount: number;
+  continuationCount: number;
+  latestVerdict: ConversationGoalVerdict | null;
+  lastError: string | null;
+}
+
+export interface ConversationGoalAuditRecord {
+  auditId: string;
+  conversationId: string;
+  goalId: string;
+  goalRevision: number;
+  executorTurnId: string;
+  verdict: ConversationGoalVerdict;
+  providerId: string | null;
+  modelId: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  createdAt: string;
+  durationMs: number | null;
+  evidenceCount: number;
+}
+
+export type ConversationGoalVerdictInput = ConversationGoalVerdict;
+
+export interface CreateConversationGoalInput {
+  conversationId: string;
+  goalId: string;
+  objective: string;
+  providerId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+}
+
+export interface UpdateConversationGoalStatusInput {
+  conversationId: string;
+  goalId: string;
+  expectedRevision: number;
+  status: ConversationGoalOperationalStatus;
+  reason?: string | null;
+  updatedAt?: string;
+}
+
+export interface RecordConversationGoalAuditInput {
+  auditId: string;
+  conversationId: string;
+  goalId: string;
+  expectedRevision: number;
+  executorTurnId: string;
+  verdict: ConversationGoalVerdictInput;
+  providerId?: string | null;
+  modelId?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+  createdAt?: string;
+  durationMs?: number | null;
+}
+
 export interface ChatMessage {
   id: string;
   turn_id?: string | null;

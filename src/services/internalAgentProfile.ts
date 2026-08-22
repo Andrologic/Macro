@@ -11,7 +11,8 @@ export type InternalAgentProfile =
   | "default_executor"
   | "plan_explorer"
   | "task_reviewer"
-  | "repo_auditor";
+  | "repo_auditor"
+  | "goal_auditor";
 
 interface ResolveInternalAgentProfileParams {
   mode: AppMode;
@@ -76,10 +77,13 @@ const REPO_AUDITOR_TOOL_IDS = new Set([
   "git_get_tree",
 ]);
 
+const GOAL_AUDITOR_TOOL_IDS = new Set(REPO_AUDITOR_TOOL_IDS);
+
 const PROFILE_TOOL_ALLOWLISTS: Partial<Record<InternalAgentProfile, Set<string>>> = {
   plan_explorer: PLAN_EXPLORER_TOOL_IDS,
   task_reviewer: TASK_REVIEWER_TOOL_IDS,
   repo_auditor: REPO_AUDITOR_TOOL_IDS,
+  goal_auditor: GOAL_AUDITOR_TOOL_IDS,
 };
 
 export const resolveInternalAgentProfile = (
