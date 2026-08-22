@@ -3452,7 +3452,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   >
                     <Icon
                       name="target"
-                      size={15}
+                      size={18}
                       className="transition-[opacity,transform] group-hover:scale-75 group-hover:opacity-0 group-focus-visible:scale-75 group-focus-visible:opacity-0"
                     />
                     <Icon
