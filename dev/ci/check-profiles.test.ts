@@ -26,6 +26,12 @@ describe('local CI profiles', () => {
     expect(names('full', 'linux')).not.toContain('Check all Windows native targets');
   });
 
+  test('frontend checks typecheck once and build without a second tsc pass', () => {
+    const steps = stepsForProfile('frontend');
+    expect(steps.filter((entry) => entry.name === 'Typecheck frontend')).toHaveLength(1);
+    expect(steps.find((entry) => entry.name === 'Build frontend')?.args).toEqual(['run', 'build:vite']);
+  });
+
   test('classification selects the smallest safe profile', () => {
     expect(profileForClassification({ documentation_only: true })).toBe('documentation');
     expect(profileForClassification({ frontend: true })).toBe('frontend');

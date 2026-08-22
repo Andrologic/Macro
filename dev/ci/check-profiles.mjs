@@ -14,7 +14,7 @@ const frontendChecks = [
   step('Lint frontend', 'bun', ['run', 'lint']),
   step('Audit translations', 'bun', ['run', 'i18n:audit']),
   step('Run frontend tests', 'bun', ['run', 'test']),
-  step('Build frontend', 'bun', ['run', 'build']),
+  step('Build frontend', 'bun', ['run', 'build:vite']),
   step('Check bundle budgets', 'bun', ['run', 'bundle:check']),
 ];
 
