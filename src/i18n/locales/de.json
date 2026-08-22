@@ -2109,6 +2109,47 @@
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
   },
+  "goal": {
+    "bannerLabel": "Konversationsziel",
+    "modeLabel": "Goal-Modus",
+    "status": {
+      "executorRunning": "Agent arbeitet",
+      "executorRunningDescription": "Der Agent arbeitet auf das Ziel hin.",
+      "auditPending": "Überprüfung ausstehend",
+      "auditPendingDescription": "Der letzte Agentenlauf benötigt noch eine unabhängige Zielüberprüfung.",
+      "auditing": "Zielüberprüfung läuft",
+      "auditingDescription": "Ein separater Agent mit Lesezugriff prüft die Nachweise.",
+      "continuationPending": "Fortsetzung ausstehend",
+      "continuationPendingDescription": "Die Überprüfung hat weitere Arbeit für den Agenten gefunden.",
+      "awaitingUser": "Deine Antwort wird benötigt",
+      "awaitingUserDescription": "Antworte im Eingabefeld, damit das Ziel fortgesetzt werden kann.",
+      "paused": "Ziel pausiert",
+      "pausedDescription": "Macro setzt dieses Ziel erst fort, wenn du es wieder aufnimmst.",
+      "achieved": "Ziel erreicht",
+      "achievedDescription": "Ein unabhängiger Prüfer hat das Ziel bestätigt.",
+      "error": "Ziel unterbrochen",
+      "errorDescription": "Macro hat das Ziel wegen eines Fehlers unterbrochen.",
+      "active": "Ziel aktiv",
+      "activeDescription": "Das Ziel ist für den nächsten Agentenlauf bereit."
+    },
+    "lastReview": "Letzte Überprüfung",
+    "criterionStatus": {
+      "met": "Erfüllt",
+      "unmet": "Nicht erfüllt",
+      "uncertain": "Unklar"
+    },
+    "pauseHint": "Automatische Fortsetzung pausieren",
+    "pause": "Pausieren",
+    "resumeHint": "Zielverfolgung fortsetzen",
+    "resume": "Verfolgung fortsetzen",
+    "stopHint": "Goal-Modus für diese Konversation beenden",
+    "stop": "Beenden",
+    "commandMissingObjectiveTitle": "Der Goal-Modus benötigt ein Ziel",
+    "commandMissingObjectiveDescription": "Schreibe /goal gefolgt vom gewünschten Ergebnis.",
+    "executionFailed": "Der Agentenlauf ist fehlgeschlagen.",
+    "commandDescription": "Weiterarbeiten, bis eine unabhängige Überprüfung das Ziel akzeptiert",
+    "commandHint": "Goal-Modus starten und das Ziel beschreiben"
+  },
   "composer": {
     "searchingFiles": "Dateien werden gesucht...",
     "noMatchingSlashContext": "Kein passender Kontext.",

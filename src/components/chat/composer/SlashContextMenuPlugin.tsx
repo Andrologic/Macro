@@ -43,7 +43,7 @@ interface SlashTriggerState {
 
 type SlashContextKind = 'skill' | 'file' | 'source';
 
-interface SlashContextMenuItem extends SlashContextRankCandidate {
+interface SlashReferenceMenuItem extends SlashContextRankCandidate {
   key: string;
   kind: SlashContextKind;
   refKind: ContextRefKind;
@@ -60,6 +60,21 @@ interface SlashContextMenuItem extends SlashContextRankCandidate {
   data: SkillManifest | WorkspaceFileReference | Citation;
   score?: number;
 }
+
+interface SlashCommandMenuItem extends SlashContextRankCandidate {
+  key: string;
+  kind: 'command';
+  id: string;
+  title: string;
+  subtitle: string;
+  tooltip: string;
+  icon: IconName;
+  iconClassName?: string;
+  searchText: string;
+  commandText: string;
+}
+
+type SlashContextMenuItem = SlashReferenceMenuItem | SlashCommandMenuItem;
 
 interface SlashContextUsageRecord {
   useCount: number;
@@ -343,7 +358,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
 
   const menuItems = useMemo<SlashContextMenuItem[]>(() => {
     const query = trigger?.query.trim() ?? '';
-    const skillItems: SlashContextMenuItem[] = allSkills
+    const skillItems: SlashReferenceMenuItem[] = allSkills
       .filter((skill) => {
         if (!skill.isValid) return false;
         const enabled = settingsBySkillId[skill.id]?.enabled === true;
@@ -381,7 +396,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
         };
       });
 
-    const fileItems: SlashContextMenuItem[] = fileResults.map((file) => {
+    const fileItems: SlashReferenceMenuItem[] = fileResults.map((file) => {
       const key = `file:${file.id}`;
       const location = formatFileLocation(file);
       return {
@@ -426,7 +441,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
           )
       : [];
 
-    const sourceItems: SlashContextMenuItem[] = sourceCitations.map((citation) => {
+    const sourceItems: SlashReferenceMenuItem[] = sourceCitations.map((citation) => {
       const key = `source:${citation.id}`;
       return {
         key,
@@ -451,8 +466,26 @@ export const SlashContextMenuPlugin: React.FC = () => {
       };
     });
 
+    const goalCommandItem: SlashCommandMenuItem = {
+      key: 'command:goal',
+      kind: 'command',
+      id: 'goal',
+      title: '/goal',
+      subtitle: t('goal.commandDescription', 'Keep working until an independent review accepts the objective'),
+      tooltip: t('goal.commandHint', 'Start Goal mode and describe the objective'),
+      icon: 'target',
+      iconClassName: 'text-primary',
+      searchText: 'goal objective autonomous review',
+      commandText: '/goal ',
+    };
+
     return rankSlashContextCandidates(
-      [...sourceItems, ...skillItems, ...fileItems],
+      [
+        goalCommandItem,
+        ...sourceItems,
+        ...skillItems,
+        ...fileItems,
+      ],
       {
         query,
         mode,
@@ -499,6 +532,22 @@ export const SlashContextMenuPlugin: React.FC = () => {
 
   const insertItem = useCallback((item: SlashContextMenuItem) => {
     if (!trigger || item.disabled) return;
+    if (item.kind === 'command') {
+      let didInsertCommand = false;
+      editor.update(() => {
+        const node = $getNodeByKey(trigger.nodeKey);
+        if (!$isTextNode(node)) return;
+
+        const selection = node.select(trigger.startOffset, trigger.endOffset);
+        selection.insertNodes([$createTextNode(item.commandText)]);
+        didInsertCommand = true;
+      });
+      if (!didInsertCommand) return;
+      closeMenu();
+      editor.focus();
+      return;
+    }
+
     const referenceTitle = item.referenceTitle ?? item.title;
     let didInsertMention = false;
 
@@ -644,10 +693,13 @@ export const SlashContextMenuPlugin: React.FC = () => {
           </div>
         ) : (
           menuItems.map((item, index) => {
-            const selected = selectedRefKeys.has(`${item.refKind}:${item.id}`);
+            const selected = item.kind !== 'command' &&
+              selectedRefKeys.has(`${item.refKind}:${item.id}`);
             const active = index === activeIndex;
-            const optionKey = `${item.kind}:${item.referenceTitle ?? item.title}`;
-            const tooltip = item.tooltip ?? item.subtitle ?? item.label ?? item.title;
+            const referenceTitle = item.kind === 'command' ? null : item.referenceTitle;
+            const itemLabel = item.kind === 'command' ? null : item.label;
+            const optionKey = `${item.kind}:${referenceTitle ?? item.title}`;
+            const tooltip = item.tooltip ?? item.subtitle ?? itemLabel ?? item.title;
 
             if (item.disabled) {
               return (
@@ -675,9 +727,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
                     <span className="block truncate font-medium leading-5" title={item.title}>
                       {item.title}
                     </span>
-                    {(item.subtitle || item.label) && (
+                    {(item.subtitle || itemLabel) && (
                       <span className="block truncate text-xs leading-4 opacity-80" title={tooltip}>
-                        {item.subtitle ?? item.label}
+                        {item.subtitle ?? itemLabel}
                       </span>
                     )}
                   </span>
@@ -720,9 +772,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
                   <span className="block truncate font-medium leading-5" title={item.title}>
                     {item.title}
                   </span>
-                  {(item.subtitle || item.label) && (
+                  {(item.subtitle || itemLabel) && (
                     <span className="block truncate text-xs leading-4 text-muted-foreground" title={tooltip}>
-                      {item.subtitle ?? item.label}
+                      {item.subtitle ?? itemLabel}
                     </span>
                   )}
                 </span>

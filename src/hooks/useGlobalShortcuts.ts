@@ -6,6 +6,7 @@ import { useShortcutsStore } from '../stores/useShortcutsStore';
 import { useAppStore } from '../stores/useAppStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useProviderStore } from '../stores/useProviderStore';
+import { useConversationGoalStore } from '../stores/useConversationGoalStore';
 import { hasOpenDialog } from '../components/ui/Dialog';
 
 export const useGlobalShortcuts = (): void => {
@@ -58,6 +59,16 @@ export const useGlobalShortcuts = (): void => {
         window,
       });
       if (executed) {
+        if (matchingShortcut.id === 'chat.stopStreaming') {
+          const conversationId = useChatStore.getState().selectedConversationId;
+          const goalState = useConversationGoalStore.getState();
+          if (
+            conversationId &&
+            goalState.goalsByConversationId[conversationId]?.status === 'executor_running'
+          ) {
+            goalState.setOperationalStatus(conversationId, 'paused');
+          }
+        }
         event.preventDefault();
         event.stopPropagation();
       }
