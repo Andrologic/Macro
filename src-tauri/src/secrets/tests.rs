@@ -1,8 +1,8 @@
 use super::chatgpt::parse_serialized_chatgpt_secret;
 use super::store::test_store;
 use super::{
-    delete_api_key, delete_provider_secret, get_api_key, get_chatgpt_secret, init, set_api_key,
-    set_chatgpt_secret, ChatGptSecret,
+    delete_api_key, delete_provider_secret, get_api_key, get_chatgpt_secret, init,
+    metadata_for_api_key, set_api_key, set_chatgpt_secret, ChatGptSecret,
 };
 use std::collections::BTreeMap;
 
@@ -46,6 +46,15 @@ fn public_secret_helpers_roundtrip_api_keys_and_chatgpt_sessions() {
     assert!(get_chatgpt_secret(&chatgpt_provider_id)
         .expect("get deleted ChatGPT secret")
         .is_none());
+}
+
+#[test]
+fn speech_secret_metadata_accepts_current_and_legacy_prefixes() {
+    for id in ["speech-provider:dictation", "speech:dictation"] {
+        let metadata = metadata_for_api_key(id.to_string());
+        assert_eq!(metadata.namespace, "speech");
+        assert_eq!(metadata.secret_ref, "macro-secret://speech/dictation");
+    }
 }
 
 #[test]
