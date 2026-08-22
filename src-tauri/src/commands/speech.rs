@@ -206,10 +206,19 @@ pub async fn speech_create_provider_config(
             "isLocal": is_local
         }),
     );
-    patch_speech_providers(config_manager.inner(), providers).await?;
+    patch_speech_providers(config_manager.inner(), providers.clone()).await?;
 
     if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
         if let Err(error) = secrets::set_api_key(&secret_id(&id), api_key.trim()) {
+            providers.remove(&id);
+            if let Err(patch_error) =
+                patch_speech_providers(config_manager.inner(), providers).await
+            {
+                tracing::error!(
+                    "Failed to roll back speech provider {} after API key persistence error: {patch_error:?}",
+                    id
+                );
+            }
             return Err(command_error(format!(
                 "Failed to persist speech provider API key: {error}"
             )));
@@ -398,7 +407,22 @@ pub async fn speech_delete_provider_config(
         .cloned()
         .unwrap_or_default();
     providers.remove(&id);
-    patch_speech_providers(config_manager.inner(), providers).await
+    let previous_secret = secrets::get_api_key(&secret_id(&id)).map_err(|error| {
+        command_error(format!("Failed to access speech provider API key: {error}"))
+    })?;
+    secrets::delete_api_key(&secret_id(&id))
+        .map_err(|error| command_error(format!("Failed to delete speech secret: {error}")))?;
+    if let Err(error) = patch_speech_providers(config_manager.inner(), providers).await {
+        if let Some(previous_secret) = previous_secret.as_deref() {
+            if let Err(restore_error) = secrets::set_api_key(&secret_id(&id), previous_secret) {
+                tracing::error!(
+                    "Failed to restore speech secret for {id} after failed config update: {restore_error}"
+                );
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[tauri::command]

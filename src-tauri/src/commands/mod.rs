@@ -2999,6 +2999,47 @@ async fn configured_provider_configs(
     Ok(providers)
 }
 
+fn provider_definition_patch_operations(
+    document: &Value,
+    provider_id: &str,
+    definition: Option<Value>,
+) -> Option<Vec<JsonPatchOperation>> {
+    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+    let provider_path = format!("/providers/{escaped}");
+    let current_exists = document.pointer(&provider_path).is_some();
+    let Some(value) = definition else {
+        return current_exists.then(|| {
+            vec![JsonPatchOperation {
+                op: "remove".to_string(),
+                path: provider_path,
+                from: None,
+                value: None,
+            }]
+        });
+    };
+
+    let mut operations = Vec::with_capacity(2);
+    if document
+        .get("providers")
+        .and_then(Value::as_object)
+        .is_none()
+    {
+        operations.push(JsonPatchOperation {
+            op: "add".to_string(),
+            path: "/providers".to_string(),
+            from: None,
+            value: Some(serde_json::json!({})),
+        });
+    }
+    operations.push(JsonPatchOperation {
+        op: "add".to_string(),
+        path: provider_path,
+        from: None,
+        value: Some(value),
+    });
+    Some(operations)
+}
+
 async fn patch_provider_definition(
     manager: &ConfigManager,
     provider_id: &str,
@@ -3008,37 +3049,43 @@ async fn patch_provider_definition(
         .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
         .await
         .map_err(|error| command_error(error.message))?;
-    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
-    let current_exists = document
-        .value
-        .pointer(&format!("/providers/{escaped}"))
-        .is_some();
-    let operation = match definition {
-        Some(value) => JsonPatchOperation {
-            op: "add".to_string(),
-            path: format!("/providers/{escaped}"),
-            from: None,
-            value: Some(value),
-        },
-        None if current_exists => JsonPatchOperation {
-            op: "remove".to_string(),
-            path: format!("/providers/{escaped}"),
-            from: None,
-            value: None,
-        },
-        None => return Ok(()),
+    let Some(patch) =
+        provider_definition_patch_operations(&document.value, provider_id, definition)
+    else {
+        return Ok(());
     };
     manager
         .apply_patch(ConfigPatchRequest {
             kind: ConfigDocumentKind::Providers,
             scope: ConfigScope::User,
             expected_etag: document.etag,
-            patch: vec![operation],
+            patch,
             source: ConfigChangeSource::UserInterface,
         })
         .await
         .map_err(|error| command_error(error.message))?;
     Ok(())
+}
+
+fn restore_deleted_provider_secrets(
+    provider_id: &str,
+    api_key: Option<&str>,
+    chatgpt_secret: Option<&secrets::ChatGptSecret>,
+) {
+    if let Some(api_key) = api_key {
+        if let Err(error) = secrets::set_api_key(provider_id, api_key) {
+            tracing::error!(
+                "Failed to restore API key for provider {provider_id} after failed deletion: {error}"
+            );
+        }
+    }
+    if let Some(chatgpt_secret) = chatgpt_secret {
+        if let Err(error) = secrets::set_chatgpt_secret(provider_id, chatgpt_secret) {
+            tracing::error!(
+                "Failed to restore ChatGPT session for provider {provider_id} after failed deletion: {error}"
+            );
+        }
+    }
 }
 
 async fn patch_provider_document_top_level(
@@ -3417,25 +3464,48 @@ pub async fn db_delete_provider_config(
         .await
         .map_err(|error| command_error(error.message))?;
     let escaped = id.replace('~', "~0").replace('/', "~1");
-    if document
+    let previous_api_key = secrets::get_api_key(&id)
+        .map_err(|error| command_error(format!("Failed to read provider secret: {error}")))?;
+    let previous_chatgpt_secret = secrets::get_chatgpt_secret(&id).map_err(|error| {
+        command_error(format!("Failed to read provider ChatGPT session: {error}"))
+    })?;
+    if let Err(error) = secrets::delete_api_key(&id) {
+        return Err(command_error(format!(
+            "Failed to delete provider secret: {error}"
+        )));
+    }
+    if let Err(error) = secrets::delete_provider_secret(&id) {
+        restore_deleted_provider_secrets(
+            &id,
+            previous_api_key.as_deref(),
+            previous_chatgpt_secret.as_ref(),
+        );
+        return Err(command_error(format!(
+            "Failed to delete provider ChatGPT session: {error}"
+        )));
+    }
+    let definition = if document
         .value
         .pointer(&format!("/providers/{escaped}"))
         .is_some()
     {
-        patch_provider_definition(config_manager.inner(), &id, None).await?;
+        None
     } else {
-        patch_provider_definition(
-            config_manager.inner(),
+        Some(serde_json::json!({
+            "providerType": previous_config.provider_type,
+            "name": previous_config.name,
+            "enabled": false,
+            "baseUrl": previous_config.base_url,
+            "isLocal": previous_config.is_local,
+        }))
+    };
+    if let Err(error) = patch_provider_definition(config_manager.inner(), &id, definition).await {
+        restore_deleted_provider_secrets(
             &id,
-            Some(serde_json::json!({
-                "providerType": previous_config.provider_type,
-                "name": previous_config.name,
-                "enabled": false,
-                "baseUrl": previous_config.base_url,
-                "isLocal": previous_config.is_local,
-            })),
-        )
-        .await?;
+            previous_api_key.as_deref(),
+            previous_chatgpt_secret.as_ref(),
+        );
+        return Err(error);
     }
     Ok(())
 }
@@ -3913,11 +3983,12 @@ pub async fn db_set_setting(
 mod tests {
     use super::{
         apply_patch_hunks_to_content, commit_pending_file_changes_atomically,
-        execute_workspace_tool, parse_apply_patch, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation, PendingFileChange,
+        execute_workspace_tool, parse_apply_patch, provider_definition_patch_operations,
+        resolve_requested_workspace, resolve_workspace_for_tool_path,
+        restore_deleted_provider_secrets, DbPool, ParsedPatchOperation, PendingFileChange,
     };
     use crate::git::GitState;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::fs;
     use tempfile::TempDir;
 
@@ -4028,6 +4099,93 @@ mod tests {
             }
             _ => panic!("expected delete operation"),
         }
+    }
+
+    #[test]
+    fn provider_definition_patch_initializes_a_sparse_provider_registry() {
+        let document = json!({
+            "$schema": "./schemas/v1/providers.schema.json",
+            "schemaVersion": 1
+        });
+        let operations = provider_definition_patch_operations(
+            &document,
+            "opencode-go",
+            Some(json!({
+                "providerType": "openai",
+                "name": "OpenCode Go",
+                "enabled": true
+            })),
+        )
+        .expect("provider definition patch");
+        assert_eq!(operations.len(), 2);
+        assert_eq!(operations[0].path, "/providers");
+        assert_eq!(operations[1].path, "/providers/opencode-go");
+
+        let patch: json_patch::Patch = serde_json::from_value(
+            serde_json::to_value(&operations).expect("serialize provider patch"),
+        )
+        .expect("parse provider patch");
+        let mut proposed = document;
+        json_patch::patch(&mut proposed, &patch).expect("apply provider patch");
+        assert_eq!(
+            proposed
+                .pointer("/providers/opencode-go/providerType")
+                .and_then(Value::as_str),
+            Some("openai")
+        );
+    }
+
+    #[test]
+    fn provider_definition_patch_removes_only_an_existing_definition() {
+        let document = json!({
+            "schemaVersion": 1,
+            "providers": {
+                "opencode-go": { "providerType": "openai" },
+                "openai": { "providerType": "openai" }
+            }
+        });
+        let operations = provider_definition_patch_operations(&document, "opencode-go", None)
+            .expect("provider removal patch");
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].op, "remove");
+        assert_eq!(operations[0].path, "/providers/opencode-go");
+
+        let sparse = json!({ "schemaVersion": 1 });
+        assert!(provider_definition_patch_operations(&sparse, "opencode-go", None).is_none());
+    }
+
+    #[test]
+    fn provider_secret_compensation_restores_api_key_and_chatgpt_session() {
+        let _guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let provider_id = format!("provider-{}", uuid::Uuid::new_v4());
+        let chatgpt_secret = crate::secrets::ChatGptSecret {
+            access_token: "access-token".to_string(),
+            refresh_token: "refresh-token".to_string(),
+            access_token_expires_at: Some("2026-08-22T12:00:00Z".to_string()),
+            account_id: Some("account".to_string()),
+            auth_source: "oauth".to_string(),
+        };
+
+        crate::secrets::set_api_key(&provider_id, "api-key").expect("set API key");
+        crate::secrets::set_chatgpt_secret(&provider_id, &chatgpt_secret)
+            .expect("set ChatGPT session");
+        crate::secrets::delete_api_key(&provider_id).expect("delete API key");
+        crate::secrets::delete_provider_secret(&provider_id).expect("delete ChatGPT session");
+
+        restore_deleted_provider_secrets(&provider_id, Some("api-key"), Some(&chatgpt_secret));
+
+        assert_eq!(
+            crate::secrets::get_api_key(&provider_id)
+                .expect("get restored API key")
+                .as_deref(),
+            Some("api-key")
+        );
+        assert_eq!(
+            crate::secrets::get_chatgpt_secret(&provider_id).expect("get restored ChatGPT session"),
+            Some(chatgpt_secret)
+        );
     }
 
     #[test]
