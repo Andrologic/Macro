@@ -68,6 +68,7 @@ import {
   getGlobalProjectById,
   getFocusedProjectIdForGroup,
   getProjectGroupByProjectId,
+  isProjectGitActionable,
   resolveExplicitProjectIdForGroup,
   getScopedProjectIds,
 } from "../services/globalProjects";
@@ -137,10 +138,12 @@ const flushMacroMetadataForProjectGroupSwitch = async (
   const workspacePaths = state.selectedGroupId
     ? state.projectGroups
         .find((group: ProjectGroup) => group.id === state.selectedGroupId)
-        ?.projects.map((project: Project) => project.path)
+        ?.projects
+        .filter((project: Project) => isProjectGitActionable(project))
+        .map((project: Project) => project.path)
         .filter((path: string) => path.trim().length > 0) ?? []
     : state.standaloneProjects
-        .filter((project) => project.id === state.selectedProjectId)
+        .filter((project) => project.id === state.selectedProjectId && isProjectGitActionable(project))
         .map((project) => project.path)
         .filter((path) => path.trim().length > 0);
   if (workspacePaths.length === 0) return;

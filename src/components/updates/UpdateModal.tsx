@@ -11,6 +11,7 @@ import {
 } from '../../services/restartSafety';
 import { prepareForPotentialShutdown } from '../../services/windowShutdown';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
+import { isProjectGitActionable } from '../../services/globalProjects';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
@@ -34,7 +35,9 @@ const getSelectedWorkspacePaths = (): string[] => {
   if (!selectedGroupId) return [];
   return projectGroups
     .find((group) => group.id === selectedGroupId)
-    ?.projects.map((project) => project.path)
+    ?.projects
+    .filter((project) => isProjectGitActionable(project))
+    .map((project) => project.path)
     .filter((path) => path.trim().length > 0) ?? [];
 };
 
