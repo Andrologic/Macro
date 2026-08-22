@@ -7,6 +7,7 @@ import {
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
 import { installTauriRuntimeMock } from '../../test-utils/tauriRuntime';
+import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -728,6 +729,7 @@ const buildProjectGroups = () => [
 ];
 
 const resetState = () => {
+  useConversationGoalStore.setState({ goalsByConversationId: {} });
   appState = {
     mode: 'Chat',
     agentType: 'build',
@@ -997,6 +999,63 @@ describe('ChatZone', () => {
 
     expect(requireContainer().querySelector('[data-tour-id="skill-dropdown"]')).toBeNull();
     expect(requireContainer().querySelector('[data-tour-id="chat-control-row"]')).not.toBeNull();
+  });
+
+  it('activates Goal mode from the composer and sends only the objective', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await setComposerText('/goal Finish the authentication migration');
+    await clickSendButton();
+
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: 'Finish the authentication migration',
+      taskId: null,
+      images: [],
+    });
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conv-1'],
+    ).toMatchObject({
+      objective: 'Finish the authentication migration',
+      status: 'audit_pending',
+    });
+    expect(
+      requireContainer().querySelector('[data-conversation-goal-banner]')?.textContent,
+    ).toContain('Finish the authentication migration');
+  });
+
+  it('pauses an active goal when the standard chat stop button interrupts the agent', async () => {
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+    useConversationGoalStore
+      .getState()
+      .setOperationalStatus('conv-1', 'executor_running');
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      sendState: 'streaming',
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    const stopButton = requireContainer().querySelector(
+      '[data-tour-id="chat-stop-button"]',
+    );
+    expect(stopButton).not.toBeNull();
+    await act(async () => {
+      stopButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(chatState.stopStreaming).toHaveBeenCalledTimes(1);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conv-1']?.status,
+    ).toBe('paused');
   });
 
   it('navigates prompt history while preserving and restoring the current draft', async () => {

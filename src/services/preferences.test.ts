@@ -124,6 +124,27 @@ describe('preferences legacy cleanup', () => {
     expect(prompt).toContain('Do not create a "Finalize plan" strategy node yourself');
   });
 
+  it('keeps the goal auditor prompt read-only, evidence-based, and JSON-only', async () => {
+    const { getDefaultPromptForPreferenceKey, PREF_KEYS } = await loadPreferencesModule();
+
+    const prompt = getDefaultPromptForPreferenceKey(PREF_KEYS.PROMPT_GOAL_AUDITOR);
+    const lowercasePrompt = prompt.toLowerCase();
+
+    expect(prompt).toContain('GOAL_AUDITOR');
+    expect(lowercasePrompt).toContain('read-only');
+    expect(lowercasePrompt).toContain('untrusted data');
+    expect(lowercasePrompt).toContain('sourced evidence');
+    expect(prompt).toContain('JSON object');
+    expect(prompt).toContain('Only you, the GOAL_AUDITOR agent, may rule a goal achieved');
+    expect(prompt).toContain('"status":"unmet"');
+    expect(prompt).toContain('"feedback":"What the executor must do next"');
+    expect(() => {
+      const jsonStart = prompt.indexOf('{');
+      const jsonEnd = prompt.indexOf('}. Allowed verdict values');
+      JSON.parse(prompt.slice(jsonStart, jsonEnd + 1));
+    }).not.toThrow();
+  });
+
   it('notifies same-window subscribers once for an immediate preference save', async () => {
     const { PREF_KEYS, savePreference, subscribePreference } = await loadPreferencesModule();
     const listener = mock((_value: unknown) => undefined);

@@ -2108,6 +2108,47 @@
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
   },
+  "goal": {
+    "bannerLabel": "会話の目標",
+    "modeLabel": "Goalモード",
+    "status": {
+      "executorRunning": "エージェントが作業中",
+      "executorRunningDescription": "エージェントが目標の達成に向けて作業しています。",
+      "auditPending": "確認待ち",
+      "auditPendingDescription": "直前のエージェントターンには、独立した目標確認が必要です。",
+      "auditing": "目標を確認中",
+      "auditingDescription": "別の読み取り専用エージェントが根拠を確認しています。",
+      "continuationPending": "続行待ち",
+      "continuationPendingDescription": "確認により、エージェントが行う追加作業が見つかりました。",
+      "awaitingUser": "回答が必要です",
+      "awaitingUserDescription": "目標を続行するには入力欄から回答してください。",
+      "paused": "目標を一時停止中",
+      "pausedDescription": "再開するまで、Macroはこの目標を続行しません。",
+      "achieved": "目標を達成",
+      "achievedDescription": "独立した確認エージェントが目標の達成を確認しました。",
+      "error": "目標が中断されました",
+      "errorDescription": "エラーが発生したため、Macroは目標を中断しました。",
+      "active": "目標が有効です",
+      "activeDescription": "次のエージェントターンを開始できます。"
+    },
+    "lastReview": "前回の確認",
+    "criterionStatus": {
+      "met": "達成",
+      "unmet": "未達成",
+      "uncertain": "不明"
+    },
+    "pauseHint": "自動続行を一時停止",
+    "pause": "一時停止",
+    "resumeHint": "目標の追跡を再開",
+    "resume": "追跡を再開",
+    "stopHint": "この会話のGoalモードを終了",
+    "stop": "終了",
+    "commandMissingObjectiveTitle": "Goalモードには目標が必要です",
+    "commandMissingObjectiveDescription": "/goal に続けて、エージェントに達成してほしい結果を入力してください。",
+    "executionFailed": "エージェントターンに失敗しました。",
+    "commandDescription": "独立した確認で目標が承認されるまで作業を続ける",
+    "commandHint": "Goalモードを開始して目標を入力"
+  },
   "composer": {
     "searchingFiles": "ファイルを検索中...",
     "noMatchingSlashContext": "一致するコンテキストはありません。",

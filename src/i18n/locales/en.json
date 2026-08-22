@@ -2175,6 +2175,47 @@
     "chatDeleteFailed": "Failed to delete conversations",
     "loggedOut": "Logged out"
   },
+  "goal": {
+    "bannerLabel": "Conversation goal",
+    "modeLabel": "Goal mode",
+    "status": {
+      "executorRunning": "Agent working",
+      "executorRunningDescription": "The agent is working toward the objective.",
+      "auditPending": "Review pending",
+      "auditPendingDescription": "The last agent turn still needs an independent goal review.",
+      "auditing": "Goal review in progress",
+      "auditingDescription": "A separate read-only agent is reviewing the evidence.",
+      "continuationPending": "Continuation pending",
+      "continuationPendingDescription": "The review found more work for the agent.",
+      "awaitingUser": "Your response is needed",
+      "awaitingUserDescription": "Answer in the composer so the goal can continue.",
+      "paused": "Goal paused",
+      "pausedDescription": "Macro will not continue this goal until you resume it.",
+      "achieved": "Goal achieved",
+      "achievedDescription": "An independent reviewer verified the objective.",
+      "error": "Goal interrupted",
+      "errorDescription": "The goal stopped because Macro encountered an error.",
+      "active": "Goal active",
+      "activeDescription": "The objective is ready for the next agent turn."
+    },
+    "lastReview": "Last review",
+    "criterionStatus": {
+      "met": "Met",
+      "unmet": "Not met",
+      "uncertain": "Uncertain"
+    },
+    "pauseHint": "Pause automatic continuation",
+    "pause": "Pause",
+    "resumeHint": "Resume goal tracking",
+    "resume": "Resume tracking",
+    "stopHint": "Leave Goal mode for this conversation",
+    "stop": "Stop",
+    "commandMissingObjectiveTitle": "Goal needs an objective",
+    "commandMissingObjectiveDescription": "Write /goal followed by the outcome you want the agent to reach.",
+    "executionFailed": "The agent turn failed.",
+    "commandDescription": "Keep working until an independent review accepts the objective",
+    "commandHint": "Start Goal mode and describe the objective"
+  },
   "composer": {
     "searchingFiles": "Searching files...",
     "noMatchingSlashContext": "No matching context.",

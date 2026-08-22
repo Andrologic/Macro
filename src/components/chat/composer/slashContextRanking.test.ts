@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   rankSlashContextCandidates,
   scoreSlashContextCandidate,
+  type SlashContextRankCandidate,
 } from './slashContextRanking';
 
 const now = new Date('2026-05-27T12:00:00.000Z').getTime();
@@ -78,5 +79,37 @@ describe('slashContextRanking', () => {
     );
 
     expect(ranked[0]?.key).toBe('skill:test-enabled');
+  });
+
+  it('keeps the Goal command prominent and supports fuzzy matching', () => {
+    const candidates: SlashContextRankCandidate[] = [
+      {
+        key: 'command:goal',
+        kind: 'command',
+        title: '/goal',
+        searchText: 'goal objective autonomous review',
+      },
+      {
+        key: 'skill:general',
+        kind: 'skill',
+        title: 'general-helper',
+        searchText: 'general helper',
+        skillEnabled: true,
+      },
+    ];
+
+    const unfiltered = rankSlashContextCandidates(candidates, {
+      query: '',
+      mode: 'Chat',
+      hasActivePlan: false,
+    });
+    const fuzzy = rankSlashContextCandidates(candidates, {
+      query: 'gal',
+      mode: 'Chat',
+      hasActivePlan: false,
+    });
+
+    expect(unfiltered[0]?.key).toBe('command:goal');
+    expect(fuzzy.map((candidate) => candidate.key)).toContain('command:goal');
   });
 });
