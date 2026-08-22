@@ -2152,7 +2152,8 @@
     "commandMissingObjectiveDescription": "Escribe /goal seguido del resultado que quieres que alcance el agente.",
     "executionFailed": "El turno del agente falló.",
     "commandDescription": "Seguir trabajando hasta que una revisión independiente acepte el objetivo",
-    "commandHint": "Iniciar el modo Goal y describir el objetivo"
+    "commandHint": "Iniciar el modo Goal y describir el objetivo",
+    "removeCommand": "Quitar el comando Goal"
   },
   "composer": {
     "searchingFiles": "Buscando archivos...",

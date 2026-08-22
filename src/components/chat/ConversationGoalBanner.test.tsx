@@ -70,6 +70,9 @@ describe('ConversationGoalBanner', () => {
     expect(container.textContent).toContain('Goal mode');
     expect(container.textContent).toContain('Review pending');
     expect(container.textContent).toContain('Finish the authentication migration');
+    expect(
+      container.querySelector('[data-conversation-goal-banner]')?.getAttribute('data-goal-status'),
+    ).toBe('audit_pending');
   });
 
   it('offers resume instead of pause for a paused goal', async () => {
@@ -122,5 +125,6 @@ describe('ConversationGoalBanner', () => {
     expect(container.textContent).toContain('Met: Migration complete');
     expect(container.textContent).toContain('Not met: Tests green');
     expect(container.textContent).toContain('Uncertain: Deployment verified');
+    expect(container.querySelector('details summary')).not.toBeNull();
   });
 });

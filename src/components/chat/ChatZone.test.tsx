@@ -1009,6 +1009,9 @@ describe('ChatZone', () => {
     });
 
     await setComposerText('/goal Finish the authentication migration');
+    expect(
+      requireContainer().querySelector('[data-chat-composer-goal="true"]'),
+    ).not.toBeNull();
     await clickSendButton();
 
     expect(chatState.sendMessage).toHaveBeenCalledWith({

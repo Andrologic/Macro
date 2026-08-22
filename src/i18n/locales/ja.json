@@ -2147,7 +2147,8 @@
     "commandMissingObjectiveDescription": "/goal に続けて、エージェントに達成してほしい結果を入力してください。",
     "executionFailed": "エージェントターンに失敗しました。",
     "commandDescription": "独立した確認で目標が承認されるまで作業を続ける",
-    "commandHint": "Goalモードを開始して目標を入力"
+    "commandHint": "Goalモードを開始して目標を入力",
+    "removeCommand": "Goalコマンドを削除"
   },
   "composer": {
     "searchingFiles": "ファイルを検索中...",

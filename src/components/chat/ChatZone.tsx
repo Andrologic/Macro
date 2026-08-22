@@ -2836,6 +2836,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         ? Boolean(inputValue.trim())
         : Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0
     );
+  const isGoalComposerDraft = useMemo(
+    () => !composerEditSession && parseConversationGoalCommand(inputValue) !== null,
+    [composerEditSession, inputValue],
+  );
   const hasComposerSkillReference = useMemo(
     () => composerContextRefs.some((ref) => ref.kind === 'skill'),
     [composerContextRefs]
@@ -3420,11 +3424,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 data-chat-composer-editing={
                   composerEditSession ? 'true' : undefined
                 }
+                data-chat-composer-goal={isGoalComposerDraft ? 'true' : undefined}
                 className={cn(
-                  'flex items-center gap-2 rounded-xl border px-2 py-1.5 transition-colors',
-                  composerEditSession
-                    ? 'border-border bg-card/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
-                    : 'border-border bg-card/80'
+                  'relative flex items-center gap-2 rounded-xl border px-2 py-1.5 transition-[border-color,background-color,box-shadow] duration-200',
+                  isGoalComposerDraft
+                    ? 'border-primary/40 bg-[linear-gradient(105deg,rgb(var(--primary)/0.11),rgb(var(--card)/0.88)_32%,rgb(var(--card)/0.82))] shadow-[inset_0_1px_0_rgb(var(--primary)/0.12),0_0_0_1px_rgb(var(--primary)/0.04),0_8px_28px_-20px_rgb(var(--primary)/0.65)]'
+                    : composerEditSession
+                      ? 'border-border bg-card/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+                      : 'border-border bg-card/80'
                 )}
                 onPasteCapture={handleComposerPaste}
                 data-tour-id="chat-composer"

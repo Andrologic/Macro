@@ -2148,7 +2148,8 @@
     "commandMissingObjectiveDescription": "Schreibe /goal gefolgt vom gewünschten Ergebnis.",
     "executionFailed": "Der Agentenlauf ist fehlgeschlagen.",
     "commandDescription": "Weiterarbeiten, bis eine unabhängige Überprüfung das Ziel akzeptiert",
-    "commandHint": "Goal-Modus starten und das Ziel beschreiben"
+    "commandHint": "Goal-Modus starten und das Ziel beschreiben",
+    "removeCommand": "Goal-Befehl entfernen"
   },
   "composer": {
     "searchingFiles": "Dateien werden gesucht...",
