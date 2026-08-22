@@ -3443,25 +3443,37 @@ pub async fn db_delete_provider_config(
         .await
         .map_err(|error| command_error(error.message))?;
     let escaped = id.replace('~', "~0").replace('/', "~1");
-    if document
+    let previous_secret = secrets::get_api_key(&id)
+        .map_err(|error| command_error(format!("Failed to read provider secret: {error}")))?;
+    if let Err(error) = secrets::delete_api_key(&id) {
+        return Err(command_error(format!(
+            "Failed to delete provider secret: {error}"
+        )));
+    }
+    let definition = if document
         .value
         .pointer(&format!("/providers/{escaped}"))
         .is_some()
     {
-        patch_provider_definition(config_manager.inner(), &id, None).await?;
+        None
     } else {
-        patch_provider_definition(
-            config_manager.inner(),
-            &id,
-            Some(serde_json::json!({
-                "providerType": previous_config.provider_type,
-                "name": previous_config.name,
-                "enabled": false,
-                "baseUrl": previous_config.base_url,
-                "isLocal": previous_config.is_local,
-            })),
-        )
-        .await?;
+        Some(serde_json::json!({
+            "providerType": previous_config.provider_type,
+            "name": previous_config.name,
+            "enabled": false,
+            "baseUrl": previous_config.base_url,
+            "isLocal": previous_config.is_local,
+        }))
+    };
+    if let Err(error) = patch_provider_definition(config_manager.inner(), &id, definition).await {
+        if let Some(previous_secret) = previous_secret.as_deref() {
+            if let Err(error) = secrets::set_api_key(&id, previous_secret) {
+                tracing::error!(
+                    "Failed to restore secret for provider {id} after failed config update: {error}"
+                );
+            }
+        }
+        return Err(error);
     }
     Ok(())
 }
