@@ -1,0 +1,81 @@
+import type { ReactNode } from 'react';
+import type {
+  DOMExportOutput,
+  EditorConfig,
+  LexicalEditor,
+  LexicalNode,
+  NodeKey,
+  SerializedLexicalNode,
+} from 'lexical';
+import { $applyNodeReplacement, DecoratorNode } from 'lexical';
+import { GoalCommandChip } from './GoalCommandChip';
+
+export class GoalCommandNode extends DecoratorNode<ReactNode> {
+  static getType(): string {
+    return 'goal-command';
+  }
+
+  static clone(node: GoalCommandNode): GoalCommandNode {
+    return new GoalCommandNode(node.__key);
+  }
+
+  static importJSON(_serializedNode: SerializedLexicalNode): GoalCommandNode {
+    return $createGoalCommandNode();
+  }
+
+  constructor(key?: NodeKey) {
+    super(key);
+  }
+
+  createDOM(_config: EditorConfig): HTMLElement {
+    const span = document.createElement('span');
+    span.style.display = 'inline';
+    return span;
+  }
+
+  updateDOM(): false {
+    return false;
+  }
+
+  exportDOM(): DOMExportOutput {
+    const element = document.createElement('span');
+    element.setAttribute('data-goal-command', 'true');
+    element.textContent = '/goal';
+    return { element };
+  }
+
+  exportJSON(): SerializedLexicalNode {
+    return {
+      ...super.exportJSON(),
+      type: 'goal-command',
+      version: 1,
+    };
+  }
+
+  getTextContent(): string {
+    return '/goal';
+  }
+
+  isInline(): boolean {
+    return true;
+  }
+
+  isIsolated(): boolean {
+    return false;
+  }
+
+  isKeyboardSelectable(): boolean {
+    return false;
+  }
+
+  decorate(_editor: LexicalEditor, _config: EditorConfig): ReactNode {
+    return <GoalCommandChip nodeKey={this.__key} />;
+  }
+}
+
+export const $createGoalCommandNode = (): GoalCommandNode =>
+  $applyNodeReplacement(new GoalCommandNode());
+
+export const $isGoalCommandNode = (
+  node: LexicalNode | null | undefined,
+): node is GoalCommandNode => node instanceof GoalCommandNode;

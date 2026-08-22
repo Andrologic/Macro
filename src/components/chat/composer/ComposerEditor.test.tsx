@@ -759,6 +759,129 @@ describe('ComposerEditor context references', () => {
 
     expect(document.body.querySelector('[data-slash-context-menu="true"]')).not.toBeNull();
     expect(document.body.textContent).toContain('test-skill');
+    expect(
+      document.body.querySelector('[data-slash-context-option="command:/goal"]'),
+    ).toBeNull();
+  });
+
+  it('renders a Goal command chip while preserving the command text', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('/goal Finish the authentication migration');
+      await Promise.resolve();
+    });
+
+    const chip = container.querySelector('[data-goal-command-chip="true"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toContain('Goal');
+    expect(editorRef.current?.getTextContent()).toBe(
+      '/goal Finish the authentication migration',
+    );
+  });
+
+  it('leaves lookalike and mid-sentence Goal commands as plain text', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('/goals list');
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-goal-command-chip="true"]')).toBeNull();
+
+    await act(async () => {
+      editorRef.current?.setText('Explain /goal behavior');
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-goal-command-chip="true"]')).toBeNull();
+    expect(editorRef.current?.getTextContent()).toBe('Explain /goal behavior');
+  });
+
+  it('inserts the highlighted Goal command as a chip from the slash menu', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/goa')).not.toBeNull();
+    const goalOption = document.body.querySelector(
+      '[data-slash-context-option="command:/goal"]',
+    );
+    expect(goalOption).not.toBeNull();
+    expect(goalOption?.className).toContain('border-primary/20');
+
+    await act(async () => {
+      goalOption?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-goal-command-chip="true"]')).not.toBeNull();
+    expect(editorRef.current?.getTextContent()).toBe('/goal ');
+  });
+
+  it('removes the Goal chip without leaving its separator behind', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('/goal Finish the migration');
+      await Promise.resolve();
+    });
+
+    const removeButton = container.querySelector(
+      '[data-goal-command-chip="true"] button',
+    );
+    await act(async () => {
+      removeButton?.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-goal-command-chip="true"]')).toBeNull();
+    expect(editorRef.current?.getTextContent()).toBe('Finish the migration');
   });
 
   it('does not open the slash context menu inside paths or urls', async () => {

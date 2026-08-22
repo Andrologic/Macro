@@ -27,6 +27,7 @@ import type { ContextRefKind, Project, SkillManifest, WorkspaceFileReference } f
 import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../../ui/Icon';
 import { $createMentionNode } from './MentionNode';
+import { $createGoalCommandNode } from './GoalCommandNode';
 import {
   hasFileQueryIntent,
   rankSlashContextCandidates,
@@ -39,6 +40,7 @@ interface SlashTriggerState {
   endOffset: number;
   query: string;
   rect: DOMRect;
+  allowsCommand: boolean;
 }
 
 type SlashContextKind = 'skill' | 'file' | 'source';
@@ -71,7 +73,6 @@ interface SlashCommandMenuItem extends SlashContextRankCandidate {
   icon: IconName;
   iconClassName?: string;
   searchText: string;
-  commandText: string;
 }
 
 type SlashContextMenuItem = SlashReferenceMenuItem | SlashCommandMenuItem;
@@ -290,6 +291,10 @@ export const SlashContextMenuPlugin: React.FC = () => {
           endOffset,
           query: match[1] ?? '',
           rect,
+          allowsCommand:
+            !node.getPreviousSibling() &&
+            !node.getParent()?.getPreviousSibling() &&
+            textBeforeCaret.slice(0, slashIndex).trim().length === 0,
         });
       });
     });
@@ -476,12 +481,11 @@ export const SlashContextMenuPlugin: React.FC = () => {
       icon: 'target',
       iconClassName: 'text-primary',
       searchText: 'goal objective autonomous review',
-      commandText: '/goal ',
     };
 
     return rankSlashContextCandidates(
       [
-        goalCommandItem,
+        ...(trigger?.allowsCommand ? [goalCommandItem] : []),
         ...sourceItems,
         ...skillItems,
         ...fileItems,
@@ -503,6 +507,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
     selectedConversationId,
     t,
     trigger?.query,
+    trigger?.allowsCommand,
   ]);
 
   useEffect(() => {
@@ -539,7 +544,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
         if (!$isTextNode(node)) return;
 
         const selection = node.select(trigger.startOffset, trigger.endOffset);
-        selection.insertNodes([$createTextNode(item.commandText)]);
+        selection.insertNodes([$createGoalCommandNode(), $createTextNode(' ')]);
         didInsertCommand = true;
       });
       if (!didInsertCommand) return;
@@ -755,31 +760,67 @@ export const SlashContextMenuPlugin: React.FC = () => {
                 onClick={() => insertItem(item)}
                 className={cn(
                   'grid w-full grid-cols-[1.75rem_minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
-                  'min-h-10',
-                  active
-                    ? 'bg-accent text-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  item.kind === 'command' ? 'my-0.5 min-h-[3.25rem] border' : 'min-h-10',
+                  item.kind === 'command'
+                    ? active
+                      ? 'border-primary/35 bg-primary/10 text-foreground shadow-[0_0_18px_rgb(var(--primary)/0.08)]'
+                      : 'border-primary/20 bg-primary/[0.045] text-foreground hover:border-primary/30 hover:bg-primary/[0.075]'
+                    : active
+                      ? 'bg-accent text-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                 )}
               >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted/70">
+                <span
+                  className={cn(
+                    'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
+                    item.kind === 'command'
+                      ? 'border border-primary/25 bg-primary/15 text-primary'
+                      : 'bg-muted/70',
+                  )}
+                >
                   <Icon
                     name={item.icon}
                     size={14}
                     className={cn('shrink-0', item.iconClassName)}
                   />
+                  {item.kind === 'command' && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-primary ring-1 ring-card"
+                    />
+                  )}
                 </span>
                 <span className="min-w-0">
-                  <span className="block truncate font-medium leading-5" title={item.title}>
-                    {item.title}
-                  </span>
+                  {item.kind === 'command' ? (
+                    <span className="flex items-center gap-2 leading-5">
+                      <span className="font-semibold text-primary">{item.title}</span>
+                      <span className="rounded border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-primary/80">
+                        {t('goal.modeLabel', 'Goal mode')}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="block truncate font-medium leading-5" title={item.title}>
+                      {item.title}
+                    </span>
+                  )}
                   {(item.subtitle || itemLabel) && (
-                    <span className="block truncate text-xs leading-4 text-muted-foreground" title={tooltip}>
+                    <span
+                      className={cn(
+                        'block truncate text-xs leading-4 text-muted-foreground',
+                        item.kind === 'command' && 'text-[11px]',
+                      )}
+                      title={tooltip}
+                    >
                       {item.subtitle ?? itemLabel}
                     </span>
                   )}
                 </span>
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center">
-                  {selected && <Icon name="check" size={14} className="shrink-0" />}
+                  {item.kind === 'command' ? (
+                    <Icon name="chevron-right" size={13} className="text-primary/70" />
+                  ) : (
+                    selected && <Icon name="check" size={14} className="shrink-0" />
+                  )}
                 </span>
               </button>
             );

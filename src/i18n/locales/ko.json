@@ -2147,7 +2147,8 @@
     "commandMissingObjectiveDescription": "/goal 뒤에 에이전트가 달성할 결과를 입력하세요.",
     "executionFailed": "에이전트 턴이 실패했습니다.",
     "commandDescription": "독립적인 검토에서 목표를 승인할 때까지 작업 계속",
-    "commandHint": "Goal 모드를 시작하고 목표 설명"
+    "commandHint": "Goal 모드를 시작하고 목표 설명",
+    "removeCommand": "Goal 명령 제거"
   },
   "composer": {
     "searchingFiles": "파일 검색 중...",
