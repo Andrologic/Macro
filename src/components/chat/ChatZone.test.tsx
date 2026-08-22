@@ -193,6 +193,7 @@ type AppStoreState = {
 type ProviderState = {
   selectedProviderId: string | null;
   selectedModelId: string | null;
+  selectedReasoningEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null;
   selectedSupportsNativeToolCalling: () => boolean;
   ensureSelectedModelContextMetadata: ReturnType<typeof mock>;
 };
@@ -821,6 +822,7 @@ const resetState = () => {
   providerState = {
     selectedProviderId: 'provider-1',
     selectedModelId: 'model-1',
+    selectedReasoningEffort: 'high',
     selectedSupportsNativeToolCalling: () => true,
     ensureSelectedModelContextMetadata: mock(async () => []),
   };
@@ -1024,6 +1026,97 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('[data-conversation-goal-banner]')?.textContent,
     ).toContain('Finish the authentication migration');
+  });
+
+  it('activates Goal mode from the Architect composer with the current provider selection', async () => {
+    appState = {
+      ...appState,
+      mode: 'Architect',
+      activeArchitectPlanId: 'plan-1',
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Plan à charger' }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    const composer = getComposerEditor();
+    expect(composer.disabled).toBe(false);
+
+    await setComposerText('/goal Draft the migration plan');
+    await clickSendButton();
+
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: 'Draft the migration plan',
+      taskId: null,
+      images: [],
+    });
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conv-1'],
+    ).toMatchObject({
+      objective: 'Draft the migration plan',
+      providerId: 'provider-1',
+      modelId: 'model-1',
+      reasoningEffort: 'high',
+      status: 'audit_pending',
+    });
+  });
+
+  it('activates Goal mode from the Implement composer and sends only the objective for the task', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Quick export',
+          draft: false,
+          task_source: 'standalone',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: null,
+          branch_name: 'feature/quick-export',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Add CSV export from the table.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    const composer = getComposerEditor();
+    expect(composer.disabled).toBe(false);
+
+    await setComposerText('/goal Ship the CSV export end to end');
+    await clickSendButton();
+
+    expect(taskState.startTask).not.toHaveBeenCalled();
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: 'Ship the CSV export end to end',
+      taskId: 'task-1',
+      images: [],
+    });
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conv-1'],
+    ).toMatchObject({
+      objective: 'Ship the CSV export end to end',
+      status: 'audit_pending',
+    });
   });
 
   it('pauses an active goal when the standard chat stop button interrupts the agent', async () => {
@@ -4037,6 +4130,60 @@ describe('ChatZone', () => {
     });
     const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
     expect(composer?.value).toBe('');
+  });
+
+  it('activates Goal mode during the first planned Implement task kickoff', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Implement checkout',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Pending',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/checkout',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Wire the checkout flow.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await setComposerText('/goal Ship the checkout flow end to end');
+    await clickButtonWithText('Start execution');
+
+    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
+    expect(chatState.sendMessage).toHaveBeenCalledWith({
+      conversationId: 'conv-1',
+      content: expect.stringContaining(
+        'DEVELOPER NOTES\nShip the checkout flow end to end',
+      ),
+      taskId: 'task-1',
+    });
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conv-1'],
+    ).toMatchObject({
+      objective: 'Ship the checkout flow end to end',
+      providerId: 'provider-1',
+      modelId: 'model-1',
+      reasoningEffort: 'high',
+      status: 'audit_pending',
+    });
   });
 
   it('reuses the bottom composer text when clicking Start execution', async () => {
