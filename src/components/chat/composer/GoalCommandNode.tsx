@@ -1,16 +1,13 @@
-import type { ReactNode } from 'react';
 import type {
   DOMExportOutput,
   EditorConfig,
-  LexicalEditor,
   LexicalNode,
   NodeKey,
   SerializedLexicalNode,
 } from 'lexical';
 import { $applyNodeReplacement, DecoratorNode } from 'lexical';
-import { GoalCommandMarker } from './GoalCommandMarker';
 
-export class GoalCommandNode extends DecoratorNode<ReactNode> {
+export class GoalCommandNode extends DecoratorNode<null> {
   static getType(): string {
     return 'goal-command';
   }
@@ -68,8 +65,8 @@ export class GoalCommandNode extends DecoratorNode<ReactNode> {
     return false;
   }
 
-  decorate(_editor: LexicalEditor, _config: EditorConfig): ReactNode {
-    return <GoalCommandMarker nodeKey={this.__key} />;
+  decorate(): null {
+    return null;
   }
 }
 

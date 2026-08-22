@@ -764,7 +764,7 @@ describe('ComposerEditor context references', () => {
     ).toBeNull();
   });
 
-  it('renders a Goal command marker while preserving the command text', async () => {
+  it('keeps the Goal command in editor state without an inline control', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 
     await act(async () => {
@@ -784,10 +784,7 @@ describe('ComposerEditor context references', () => {
       await Promise.resolve();
     });
 
-    const marker = container.querySelector('[data-goal-command-marker="true"]');
-    expect(marker).not.toBeNull();
-    expect(marker?.textContent?.trim()).toBe('');
-    expect(marker?.classList.contains('bg-primary')).toBe(false);
+    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
     expect(editorRef.current?.getTextContent()).toBe(
       '/goal Finish the authentication migration',
     );
@@ -812,17 +809,14 @@ describe('ComposerEditor context references', () => {
       editorRef.current?.setText('/goals list');
       await Promise.resolve();
     });
-    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
-
     await act(async () => {
       editorRef.current?.setText('Explain /goal behavior');
       await Promise.resolve();
     });
-    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
     expect(editorRef.current?.getTextContent()).toBe('Explain /goal behavior');
   });
 
-  it('inserts the highlighted Goal command as a marker from the slash menu', async () => {
+  it('inserts the highlighted Goal command from the slash menu', async () => {
     const editorRef = React.createRef<ComposerEditorHandle>();
 
     await act(async () => {
@@ -849,40 +843,8 @@ describe('ComposerEditor context references', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[data-goal-command-marker="true"]')).not.toBeNull();
-    expect(editorRef.current?.getTextContent()).toBe('/goal ');
-  });
-
-  it('removes the Goal marker without leaving its separator behind', async () => {
-    const editorRef = React.createRef<ComposerEditorHandle>();
-
-    await act(async () => {
-      root.render(
-        <ComposerEditor
-          ref={editorRef}
-          editable
-          placeholder="Message"
-          onTextChange={() => undefined}
-          onSend={() => undefined}
-        />
-      );
-    });
-
-    await act(async () => {
-      editorRef.current?.setText('/goal Finish the migration');
-      await Promise.resolve();
-    });
-
-    const removeButton = container.querySelector(
-      '[data-goal-command-marker="true"]',
-    );
-    await act(async () => {
-      removeButton?.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
-      await Promise.resolve();
-    });
-
     expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
-    expect(editorRef.current?.getTextContent()).toBe('Finish the migration');
+    expect(editorRef.current?.getTextContent()).toBe('/goal ');
   });
 
   it('does not open the slash context menu inside paths or urls', async () => {

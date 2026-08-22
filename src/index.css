@@ -190,17 +190,6 @@
     animation: speechCleanupTextSweep 1.8s ease-in-out infinite;
   }
 
-  .goal-composer-editor .composer-editor-paragraph {
-    position: relative;
-    padding-inline-start: 1.75rem;
-  }
-
-  .goal-composer-editor .composer-editor-paragraph [data-goal-command-marker='true'] {
-    position: absolute;
-    inset-inline-start: 0.25rem;
-    top: -0.05rem;
-  }
-
   .macro-topbar {
     min-height: var(--macro-titlebar-height, 48px);
     border-bottom: 1px solid rgb(var(--border) / 0.9);
