@@ -1,4 +1,7 @@
 import * as tauriIpc from './tauriIpc';
+import type { Project } from '../types';
+import { getRegisteredAppState } from './appStateRuntime';
+import { isProjectGitActionable } from './globalProjects';
 import { isWslProjectPath } from './wslPaths';
 
 type MacroMetadataTauri = Pick<
@@ -52,9 +55,19 @@ interface PendingMacroMetadataMutation {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
-interface MacroMetadataCoordinatorDeps {
+interface MacroMetadataProject extends Pick<Project, 'isReadOnly' | 'gitSetupState' | 'directEdit'> {
+  path?: string | null;
+}
+
+interface MacroMetadataAppState {
+  standaloneProjects?: MacroMetadataProject[];
+  projectGroups?: Array<{ projects: MacroMetadataProject[] }>;
+}
+
+export interface MacroMetadataCoordinatorDeps {
   tauri?: MacroMetadataTauri;
   debounceMs?: number;
+  isWorkspaceGitActionable?: (workspacePath: string) => boolean | Promise<boolean>;
 }
 
 export const MACRO_METADATA_STRUCTURAL_DEBOUNCE_MS = 0;
@@ -62,8 +75,43 @@ export const MACRO_METADATA_STRUCTURAL_DEBOUNCE_MS = 0;
 const pendingMutations = new Map<string, PendingMacroMetadataMutation>();
 
 const normalizeWorkspacePath = (workspacePath?: string | null): string | null => {
-  const normalized = workspacePath?.trim();
+  const normalized = workspacePath?.trim().replace(/\\/g, '/').replace(/\/+$/, '');
   return normalized ? normalized : null;
+};
+
+const resolveRegisteredProject = async (
+  workspacePath: string
+): Promise<MacroMetadataProject | null> => {
+  try {
+    const appState = await getRegisteredAppState<MacroMetadataAppState>();
+    const projects = [
+      ...(appState.standaloneProjects ?? []),
+      ...(appState.projectGroups ?? []).flatMap((group) => group.projects),
+    ];
+    const normalizedWorkspacePath = normalizeWorkspacePath(workspacePath);
+    if (!normalizedWorkspacePath) return null;
+    return projects.find(
+      (project) => normalizeWorkspacePath(project.path) === normalizedWorkspacePath
+    ) ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const isWorkspaceGitActionable = async (
+  workspacePath: string,
+  resolver?: MacroMetadataCoordinatorDeps['isWorkspaceGitActionable']
+): Promise<boolean> => {
+  if (resolver) {
+    try {
+      return await resolver(workspacePath);
+    } catch {
+      return true;
+    }
+  }
+
+  const project = await resolveRegisteredProject(workspacePath);
+  return !project || isProjectGitActionable(project);
 };
 
 const normalizeLabel = (value?: string | null): string | null => {
@@ -219,6 +267,10 @@ export const flushMacroMetadata = async (
     const pending = pendingMutations.get(workspacePath) ?? null;
     clearPendingTimer(pending ?? undefined);
     pendingMutations.delete(workspacePath);
+
+    if (!(await isWorkspaceGitActionable(workspacePath, deps?.isWorkspaceGitActionable))) {
+      continue;
+    }
 
     results.push(
       await tauri.macroBranchCommitIfDirty({
