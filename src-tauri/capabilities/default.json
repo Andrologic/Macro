@@ -6,6 +6,7 @@
   "permissions": [
     "core:app:allow-version",
     "core:image:default",
+    "core:resources:allow-close",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-destroy",

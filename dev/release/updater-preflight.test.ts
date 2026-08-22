@@ -82,6 +82,7 @@ function fixture() {
     tauriCapabilities: {
       permissions: [
         'core:app:allow-version',
+        'core:resources:allow-close',
         'updater:allow-check',
         'updater:allow-download',
         'updater:allow-install',
@@ -143,6 +144,7 @@ describe('updater preflight', () => {
 
     expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
       'src-tauri/capabilities/default.json must grant core:app:allow-version.',
+      'src-tauri/capabilities/default.json must grant core:resources:allow-close.',
       'src-tauri/capabilities/default.json must grant updater:allow-download.',
       'src-tauri/capabilities/default.json must grant updater:allow-install.',
       'src-tauri/capabilities/default.json must grant process:allow-restart.',
