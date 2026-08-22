@@ -89,13 +89,14 @@ describe('macroToolRegistry', () => {
   it('keeps project identity out of the agent terminal contract', () => {
     const terminal = requireMacroToolRegistryEntry('terminal_create_session');
 
-    expect(terminal.parameters.type).toBe('object');
-    if (terminal.parameters.type !== 'object') {
+    const { parameters } = terminal;
+    expect('type' in parameters && parameters.type).toBe('object');
+    if (!('type' in parameters) || parameters.type !== 'object') {
       throw new Error('Expected terminal_create_session to use an object schema');
     }
-    expect(terminal.parameters.required).toEqual([]);
-    expect(terminal.parameters.properties).toHaveProperty('cwd');
-    expect(terminal.parameters.properties).not.toHaveProperty('project_id');
+    expect(parameters.required).toEqual([]);
+    expect(parameters.properties).toHaveProperty('cwd');
+    expect(parameters.properties).not.toHaveProperty('project_id');
     expect(terminal.description).toContain('independent');
   });
 
