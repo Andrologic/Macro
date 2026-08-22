@@ -8,6 +8,7 @@ export const LOCAL_TAURI_CONFIG_PATH = 'src-tauri/tauri.local.conf.json';
 export const TAURI_CAPABILITIES_PATH = 'src-tauri/capabilities/default.json';
 const REQUIRED_UPDATER_PERMISSIONS = Object.freeze([
   'core:app:allow-version',
+  'core:resources:allow-close',
   'updater:allow-check',
   'updater:allow-download',
   'updater:allow-install',
