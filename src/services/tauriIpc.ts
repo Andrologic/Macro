@@ -908,6 +908,7 @@ export interface FsFileContentDto {
   is_binary: boolean;
   size: number;
   encoding: string;
+  revision?: string;
 }
 
 export interface FsDirEntryDto {
@@ -964,6 +965,7 @@ export interface FsWriteResultDto {
   bytes_written: number;
   created: boolean;
   skipped: boolean;
+  revision?: string;
 }
 
 export interface WorkspaceBootstrapDto {

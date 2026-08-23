@@ -606,8 +606,8 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let virtual_path = virtual_path_for_mount(mount, &relative_path);
             if result.is_binary {
                 return Ok(Some(format!(
-                    "File {} is binary ({} bytes, encoding={}).",
-                    virtual_path, result.size, result.encoding
+                    "File {} is binary ({} bytes, encoding={}, revision={}).",
+                    virtual_path, result.size, result.encoding, result.revision
                 )));
             }
 
@@ -630,12 +630,13 @@ pub(crate) async fn execute_virtual_workspace_tool(
             };
             let numbered = format_with_line_numbers(&selected, effective_start);
             Ok(Some(format!(
-                "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nLANGUAGE: {}\nSIZE: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
+                "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nLANGUAGE: {}\nSIZE: {}\nREVISION: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
                 virtual_path,
                 mount.project_id,
                 mount.mount_name,
                 result.language,
                 result.size,
+                result.revision,
                 effective_start,
                 effective_start + selected.len().saturating_sub(1),
                 numbered

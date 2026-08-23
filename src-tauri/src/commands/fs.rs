@@ -16,6 +16,7 @@ use crate::project_path::{
     run_wsl_shell_with_stdin, wsl_unc_path, WslProjectPath,
 };
 use crate::WorkspaceRoot;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -192,6 +193,10 @@ fn bytes_look_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|byte| *byte == 0) || std::str::from_utf8(bytes).is_err()
 }
 
+pub(crate) fn content_revision(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 fn wsl_name_from_linux_path(path: &str) -> String {
     path.trim_end_matches('/')
         .rsplit('/')
@@ -267,6 +272,7 @@ async fn read_wsl_file_internal(
         WSL_FS_TIMEOUT,
     )
     .await?;
+    let revision = content_revision(&output.stdout);
     if bytes_look_binary(&output.stdout) {
         return Ok(FileContentDto {
             is_binary: true,
@@ -274,6 +280,7 @@ async fn read_wsl_file_internal(
             encoding: "none".to_string(),
             language: "binary".to_string(),
             size,
+            revision,
         });
     }
     let content = String::from_utf8(output.stdout).map_err(|error| BackendError::Filesystem {
@@ -286,6 +293,7 @@ async fn read_wsl_file_internal(
         is_binary: false,
         size,
         encoding: "utf-8".to_string(),
+        revision,
     })
 }
 
@@ -359,6 +367,7 @@ printf 'created=%s skipped=0\n' "$created"
         },
         created,
         skipped,
+        revision: content_revision(&content_bytes),
     })
 }
 
@@ -682,6 +691,10 @@ pub async fn read_file_internal(
 
     // Verify if binary or text file
     let is_binary = is_binary_file(&validated_path)?;
+    let bytes = tokio::fs::read(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+    let revision = content_revision(&bytes);
     if is_binary {
         // Return binary file response
         Ok(FileContentDto {
@@ -690,12 +703,17 @@ pub async fn read_file_internal(
             encoding: "none".to_string(),
             language: "binary".to_string(),
             size: file_metadata.len(),
+            revision,
         })
     } else {
         // Read text file content
-        let content = tokio::fs::read_to_string(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+        let content = String::from_utf8(bytes).map_err(|e| BackendError::Filesystem {
+            message: format!(
+                "Invalid UTF-8 returned for {}: {}",
+                validated_path.display(),
+                e
+            ),
+        })?;
         // Detect language
         let language = get_file_language(&validated_path).unwrap_or_else(|| "Unknown".to_string());
         // Return text file response
@@ -705,6 +723,7 @@ pub async fn read_file_internal(
             is_binary: false,
             size: file_metadata.len(),
             encoding: "utf-8".to_string(),
+            revision,
         })
     }
 }
@@ -793,6 +812,7 @@ pub async fn write_file_internal(
                 bytes_written: 0,
                 created: false,
                 skipped: true,
+                revision: content_revision(content_bytes),
             });
         }
     }
@@ -845,6 +865,7 @@ pub async fn write_file_internal(
         bytes_written: content_bytes.len() as u64,
         created,
         skipped: false,
+        revision: content_revision(content_bytes),
     })
 }
 
@@ -2148,6 +2169,10 @@ mod tests {
         let dto = result.unwrap();
         assert!(!dto.is_binary);
         assert_eq!(dto.content, "Hello, World!\n");
+        assert_eq!(
+            dto.revision,
+            "c98c24b677eff44860afea6f493bbaec5bb1c4cbb209c6fc2bbb47f66ff2ad31"
+        );
         // Language detection may vary for .txt files, so we just check it's not empty
         assert!(!dto.language.is_empty());
         assert!(!dto.encoding.is_empty());
@@ -2291,6 +2316,10 @@ mod tests {
         let dto = result.unwrap();
         assert!(dto.created);
         assert!(!dto.skipped);
+        assert_eq!(
+            dto.revision,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
         let written = fs::read_to_string(workspace.path().join("new.txt")).unwrap();
         assert_eq!(written, "hello");
     }
