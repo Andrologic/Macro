@@ -8,6 +8,7 @@ import {
   resolveConfiguredConcurrency,
   resolveConcurrency,
   runWithConcurrency,
+  selectFilesForOptions,
   selectTestFiles,
   spawnArgsForFile,
   usesProductionConditions,
@@ -76,6 +77,25 @@ describe('run options', () => {
     expect(options.concurrency).toBe(3);
     expect(options.coverage).toBe(true);
     expect(options.filters).toEqual(['stores']);
+    expect(options.only).toEqual([]);
+  });
+
+  test('parses and deduplicates exact test paths', () => {
+    const options = parseRunOptions(['--only', 'src\\a.test.ts', '--only=src/b.test.tsx']);
+    expect(options.only).toEqual(['src/a.test.ts', 'src/b.test.tsx']);
+    expect(selectFilesForOptions(
+      ['src/a.test.ts', 'src/b.test.tsx', 'src/ab.test.ts'],
+      options,
+    )).toEqual(['src/a.test.ts', 'src/b.test.tsx']);
+  });
+
+  test('rejects missing exact paths and ambiguous filter combinations', () => {
+    expect(() => selectFilesForOptions(
+      ['src/a.test.ts'],
+      parseRunOptions(['--only', 'src/missing.test.ts']),
+    )).toThrow(/not found/i);
+    expect(() => parseRunOptions(['--only', 'src/a.test.ts', 'stores'])).toThrow(/cannot be combined/i);
+    expect(() => parseRunOptions(['--only'])).toThrow(/requires an exact/i);
   });
 
   test('rejects unknown options and invalid concurrency', () => {
