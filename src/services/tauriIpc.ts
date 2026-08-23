@@ -2157,6 +2157,25 @@ export async function gitLog(params: {
   });
 }
 
+export interface GitLogPageDto {
+  commits: GitCommit[];
+  revision: string;
+}
+
+export async function gitLogPage(params: {
+  repoPath: string;
+  limit?: number;
+  offset?: number;
+  branch?: string;
+}): Promise<GitLogPageDto> {
+  return invoke<GitLogPageDto>("git_log_page", {
+    repoPath: params.repoPath,
+    limit: params.limit ?? null,
+    offset: params.offset ?? null,
+    branch: params.branch ?? null,
+  });
+}
+
 export async function gitBranchList(repoPath: string): Promise<GitBranchesDto> {
   return invoke<GitBranchesDto>("git_branch_list", { repoPath });
 }

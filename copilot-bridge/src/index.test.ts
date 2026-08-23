@@ -151,7 +151,7 @@ describe('copilot bridge tool registration', () => {
     expect(requestTool).toHaveBeenCalledTimes(4);
   });
 
-  it('routes delete and apply_patch through the Macro tool host', async () => {
+  it('routes mutations and structural search through the Macro tool host', async () => {
     const fetchCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const fetchMock = mock(async (url: string, init?: RequestInit) => {
       fetchCalls.push({
@@ -175,7 +175,7 @@ describe('copilot bridge tool registration', () => {
         model_id: 'gpt-5',
         messages: [],
         default_workspace_path: '/tmp/macro-test',
-        allowed_tool_ids: ['delete', 'apply_patch'],
+        allowed_tool_ids: ['delete', 'apply_patch', 'ast_grep'],
       }) as Array<{
         name: string;
         options: {
@@ -188,6 +188,7 @@ describe('copilot bridge tool registration', () => {
 
       const deleteTool = tools.find((tool) => tool.name === 'delete');
       const applyPatchTool = tools.find((tool) => tool.name === 'apply_patch');
+      const astGrepTool = tools.find((tool) => tool.name === 'ast_grep');
 
       await expect(
         deleteTool?.options.handler(
@@ -201,9 +202,69 @@ describe('copilot bridge tool registration', () => {
           { sessionId: 'session-1', toolCallId: 'call-patch', toolName: 'apply_patch' },
         ),
       ).resolves.toBe('host ok');
+      await expect(
+        astGrepTool?.options.handler(
+          { path: 'src', pattern: 'console.log($ARG)', language: 'typescript' },
+          { sessionId: 'session-1', toolCallId: 'call-ast', toolName: 'ast_grep' },
+        ),
+      ).resolves.toBe('host ok');
 
-      expect(fetchCalls.map((call) => call.body.tool_id)).toEqual(['delete', 'apply_patch']);
+      expect(fetchCalls.map((call) => call.body.tool_id)).toEqual([
+        'delete',
+        'apply_patch',
+        'ast_grep',
+      ]);
       expect(fetchCalls.every((call) => call.url.endsWith('/api/v1/tools/execute'))).toBe(true);
+      expect(fetchCalls[2]?.body).toMatchObject({
+        workspace_path: '/tmp/macro-test',
+        args: expect.objectContaining({
+          path: 'src',
+          pattern: 'console.log($ARG)',
+        }),
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps Architect structural search on the project source workspace', async () => {
+    const fetchCalls: Array<Record<string, unknown>> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
+      fetchCalls.push(JSON.parse(String(init?.body ?? '{}')));
+      return {
+        ok: true,
+        json: async () => ({ result: 'host ok' }),
+      } as Response;
+    }) as unknown as typeof fetch;
+    process.env.MACRO_TOOL_HOST_URL = 'http://127.0.0.1:1456';
+    process.env.MACRO_TOOL_HOST_BEARER_TOKEN = 'token-1';
+
+    try {
+      const { __testables } = await loadBridge();
+      const tools = __testables.buildMacroTools({
+        request_id: 'req-architect',
+        model_id: 'gpt-5',
+        messages: [],
+        default_workspace_path: '/tmp/macro-source',
+        allowed_tool_ids: ['plan_get', 'ast_grep'],
+      }) as Array<{
+        name: string;
+        options: { handler: (args: Record<string, unknown>) => Promise<string> };
+      }>;
+
+      await tools
+        .find((tool) => tool.name === 'ast_grep')
+        ?.options.handler({ pattern: 'function $NAME($$$ARGS) { $$$BODY }' });
+
+      expect(fetchCalls).toEqual([
+        expect.objectContaining({
+          mode: 'Architect',
+          tool_id: 'ast_grep',
+          workspace_path: '/tmp/macro-source',
+          workspace_scope: null,
+        }),
+      ]);
     } finally {
       globalThis.fetch = originalFetch;
     }

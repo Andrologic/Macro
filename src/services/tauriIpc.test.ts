@@ -80,6 +80,29 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("requests a Git log page and its atomic snapshot revision", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.gitLogPage({
+      repoPath: "C:/dev/Macro",
+      limit: 21,
+      offset: 20,
+      branch: "feature/tool-suite",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "git_log_page",
+        payload: {
+          repoPath: "C:/dev/Macro",
+          limit: 21,
+          offset: 20,
+          branch: "feature/tool-suite",
+        },
+      },
+    ]);
+  });
+
   it("calls ai_get_dev_provider_overrides without payload", async () => {
     const tauriIpc = await loadTauriIpc();
 

@@ -361,6 +361,7 @@ async fn write_wsl_file_internal_with_revision(
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
     expected_revision: Option<&str>,
+    acquire_lock: bool,
 ) -> Result<WriteResultDto, BackendError> {
     let content_bytes = content.into_bytes();
     if content_bytes.len() as u64 > MAX_WRITE_SIZE_BYTES {
@@ -373,6 +374,15 @@ async fn write_wsl_file_internal_with_revision(
     }
 
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(&super::wsl_content_mutation_key(&resolved))
+                .lock_owned()
+                .await,
+        )
+    } else {
+        None
+    };
     let create_dirs_flag = if create_dirs.unwrap_or(true) {
         "1"
     } else {
@@ -658,7 +668,7 @@ async fn delete_wsl_path_internal(
     path: String,
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
-    delete_wsl_path_internal_with_revision(workspace, path, recursive, None).await
+    delete_wsl_path_internal_with_revision(workspace, path, recursive, None, false).await
 }
 
 async fn delete_wsl_path_internal_with_revision(
@@ -666,8 +676,18 @@ async fn delete_wsl_path_internal_with_revision(
     path: String,
     recursive: Option<bool>,
     expected_revision: Option<&str>,
+    acquire_lock: bool,
 ) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(&super::wsl_content_mutation_key(&resolved))
+                .lock_owned()
+                .await,
+        )
+    } else {
+        None
+    };
     let recursive_flag = if recursive.unwrap_or(false) { "1" } else { "0" }.to_string();
     let script = r#"
 p=$1
@@ -966,6 +986,47 @@ pub async fn write_file_internal_with_revision(
     allow_outside_workspace: Option<bool>,
     expected_revision: Option<&str>,
 ) -> Result<WriteResultDto, BackendError> {
+    write_file_internal_with_revision_impl(
+        workspace,
+        path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+        expected_revision,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn write_file_internal_with_revision_unlocked(
+    workspace: &Path,
+    path: String,
+    content: String,
+    create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<WriteResultDto, BackendError> {
+    write_file_internal_with_revision_impl(
+        workspace,
+        path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+        expected_revision,
+        false,
+    )
+    .await
+}
+
+async fn write_file_internal_with_revision_impl(
+    workspace: &Path,
+    path: String,
+    content: String,
+    create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+    acquire_lock: bool,
+) -> Result<WriteResultDto, BackendError> {
     let workspace_string = workspace.to_string_lossy();
     if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
         return write_wsl_file_internal_with_revision(
@@ -975,6 +1036,7 @@ pub async fn write_file_internal_with_revision(
             create_dirs,
             allow_outside_workspace,
             expected_revision,
+            acquire_lock,
         )
         .await;
     }
@@ -1002,6 +1064,17 @@ pub async fn write_file_internal_with_revision(
         }
     } else {
         validate_path_for_write(&path_buf, workspace)?
+    };
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(
+                &super::native_content_mutation_key(&validated_path).await,
+            )
+            .lock_owned()
+            .await,
+        )
+    } else {
+        None
     };
 
     let existing_bytes = match tokio::fs::read(&validated_path).await {
@@ -1774,7 +1847,7 @@ pub async fn exists_internal(workspace: &Path, path: String) -> Result<bool, Bac
     }
 }
 
-pub async fn delete_path_internal(
+pub(crate) async fn delete_path_internal_unlocked(
     workspace: &Path,
     path: String,
     recursive: Option<bool>,
@@ -1825,6 +1898,27 @@ pub async fn delete_path_internal_with_revision(
     recursive: Option<bool>,
     expected_revision: Option<&str>,
 ) -> Result<(), BackendError> {
+    delete_path_internal_with_revision_impl(workspace, path, recursive, expected_revision, true)
+        .await
+}
+
+pub(crate) async fn delete_path_internal_with_revision_unlocked(
+    workspace: &Path,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    delete_path_internal_with_revision_impl(workspace, path, recursive, expected_revision, false)
+        .await
+}
+
+async fn delete_path_internal_with_revision_impl(
+    workspace: &Path,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+    acquire_lock: bool,
+) -> Result<(), BackendError> {
     let workspace_string = workspace.to_string_lossy();
     if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
         return delete_wsl_path_internal_with_revision(
@@ -1832,9 +1926,22 @@ pub async fn delete_path_internal_with_revision(
             path,
             recursive,
             expected_revision,
+            acquire_lock,
         )
         .await;
     }
+    let validated_path = validate_path(&PathBuf::from(&path), workspace)?;
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(
+                &super::native_content_mutation_key(&validated_path).await,
+            )
+            .lock_owned()
+            .await,
+        )
+    } else {
+        None
+    };
     if expected_revision.is_some() {
         let actual_revision = match read_file_internal(workspace, path.clone(), Some(false)).await {
             Ok(current) => Some(current.revision),
@@ -1843,7 +1950,7 @@ pub async fn delete_path_internal_with_revision(
         };
         validate_expected_revision(&path, expected_revision, actual_revision.as_deref())?;
     }
-    delete_path_internal(workspace, path, recursive).await
+    delete_path_internal_unlocked(workspace, path, recursive).await
 }
 
 /// Format file permissions based on platform
@@ -2664,6 +2771,42 @@ mod tests {
             fs::read_to_string(&path).expect("read guarded file"),
             "updated"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_guarded_writes_allow_exactly_one_winner() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let revision = content_revision(b"current");
+
+        let first = write_file_internal_with_revision(
+            &workspace_path,
+            "guarded.txt".to_string(),
+            "first".to_string(),
+            Some(true),
+            None,
+            Some(&revision),
+        );
+        let second = write_file_internal_with_revision(
+            &workspace_path,
+            "guarded.txt".to_string(),
+            "second".to_string(),
+            Some(true),
+            None,
+            Some(&revision),
+        );
+
+        let (first_result, second_result) = tokio::join!(first, second);
+        assert_eq!(
+            usize::from(first_result.is_ok()) + usize::from(second_result.is_ok()),
+            1
+        );
+        let failure = first_result.err().or_else(|| second_result.err()).unwrap();
+        assert!(matches!(failure, BackendError::RevisionConflict { .. }));
+        let content = fs::read_to_string(path).expect("read winning content");
+        assert!(content == "first" || content == "second");
     }
 
     #[tokio::test]

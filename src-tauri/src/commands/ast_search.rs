@@ -1,4 +1,4 @@
-use super::{command_error, fs, tool_output, CommandResult};
+use super::{command_error, fs, tool_output, CommandResult, ToolCancellation};
 use ast_grep_core::{
     matcher::{Pattern as AstPattern, PatternError},
     meta_var::MetaVariable,
@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const AST_PARSE_ERROR_LIMIT: usize = 20;
 
@@ -63,6 +64,7 @@ struct SourceAnalysis {
     matches: Vec<SourceMatch>,
     parse_error: bool,
     stopped_early: bool,
+    cancelled: bool,
 }
 
 fn supported_languages() -> String {
@@ -192,14 +194,45 @@ fn analyze_source(
     skip: usize,
     take: usize,
     include_meta: bool,
+    cancellation: Option<&ToolCancellation>,
 ) -> SourceAnalysis {
+    if cancellation.is_some_and(ToolCancellation::is_cancelled) {
+        return SourceAnalysis {
+            matches_seen: 0,
+            matches: Vec::new(),
+            parse_error: false,
+            stopped_early: false,
+            cancelled: true,
+        };
+    }
     let ast = language.ast_grep(source);
-    let parse_error = ast.root().dfs().any(|node| node.is_error());
+    let mut parse_error = false;
+    for node in ast.root().dfs() {
+        if cancellation.is_some_and(ToolCancellation::is_cancelled) {
+            return SourceAnalysis {
+                matches_seen: 0,
+                matches: Vec::new(),
+                parse_error,
+                stopped_early: false,
+                cancelled: true,
+            };
+        }
+        parse_error |= node.is_error();
+    }
     let mut matches_seen = 0usize;
     let mut matches = Vec::with_capacity(take);
     let mut stopped_early = false;
 
     for matched in ast.root().find_all(pattern) {
+        if cancellation.is_some_and(ToolCancellation::is_cancelled) {
+            return SourceAnalysis {
+                matches_seen,
+                matches,
+                parse_error,
+                stopped_early,
+                cancelled: true,
+            };
+        }
         matches_seen = matches_seen.saturating_add(1);
         if matches_seen <= skip {
             continue;
@@ -281,6 +314,7 @@ fn analyze_source(
         matches,
         parse_error,
         stopped_early,
+        cancelled: false,
     }
 }
 
@@ -289,6 +323,7 @@ pub(crate) async fn execute_ast_search(
     mut candidates: Vec<AstSearchCandidate>,
     cursor_scope: &str,
     virtual_root: bool,
+    cancellation: Option<Arc<ToolCancellation>>,
 ) -> CommandResult<String> {
     let pattern = args
         .get("pattern")
@@ -354,6 +389,12 @@ pub(crate) async fn execute_ast_search(
     let mut scan_complete = true;
 
     for candidate in candidates {
+        if cancellation
+            .as_deref()
+            .is_some_and(ToolCancellation::is_cancelled)
+        {
+            return Err(command_error("Tool execution cancelled: ast_grep."));
+        }
         if let Some(glob) = include_glob.as_ref() {
             if !glob.matches(&candidate.read_path) && !glob.matches(&candidate.display_path) {
                 continue;
@@ -393,6 +434,12 @@ pub(crate) async fn execute_ast_search(
         )
         .await
         .map_err(|error| command_error(error.to_string()))?;
+        if cancellation
+            .as_deref()
+            .is_some_and(ToolCancellation::is_cancelled)
+        {
+            return Err(command_error("Tool execution cancelled: ast_grep."));
+        }
         if content.size > tool_output::AST_MAX_FILE_BYTES {
             skipped_too_large = skipped_too_large.saturating_add(1);
             continue;
@@ -405,6 +452,7 @@ pub(crate) async fn execute_ast_search(
 
         let remaining_skip = page.offset.saturating_sub(matches_seen);
         let remaining_take = page.limit.saturating_add(1).saturating_sub(results.len());
+        let worker_cancellation = cancellation.clone();
         let analysis = tokio::task::spawn_blocking(move || {
             analyze_source(
                 content.content,
@@ -413,10 +461,14 @@ pub(crate) async fn execute_ast_search(
                 remaining_skip,
                 remaining_take,
                 include_meta,
+                worker_cancellation.as_deref(),
             )
         })
         .await
         .map_err(|error| command_error(format!("ast_grep worker failed: {}", error)))?;
+        if analysis.cancelled {
+            return Err(command_error("Tool execution cancelled: ast_grep."));
+        }
 
         if analysis.parse_error {
             parse_errors_total = parse_errors_total.saturating_add(1);
@@ -513,6 +565,7 @@ mod tests {
             0,
             10,
             true,
+            None,
         );
 
         assert_eq!(analysis.matches.len(), 1);
@@ -532,7 +585,7 @@ mod tests {
         let source = format!("console.log('{}');", "x".repeat(4_000));
         let pattern =
             AstPattern::try_new("console.log($ARG)", SupportLang::TypeScript).expect("pattern");
-        let analysis = analyze_source(source, SupportLang::TypeScript, pattern, 0, 10, false);
+        let analysis = analyze_source(source, SupportLang::TypeScript, pattern, 0, 10, false, None);
 
         assert_eq!(analysis.matches.len(), 1);
         assert!(analysis.matches[0].text_truncated);
@@ -549,6 +602,7 @@ mod tests {
             0,
             10,
             true,
+            None,
         );
 
         assert_eq!(analysis.matches.len(), 1);
@@ -569,6 +623,7 @@ mod tests {
             0,
             10,
             true,
+            None,
         );
 
         assert_eq!(analysis.matches.len(), 1);
@@ -590,6 +645,7 @@ mod tests {
             0,
             10,
             true,
+            None,
         );
 
         assert_eq!(analysis.matches.len(), 1);
@@ -606,10 +662,55 @@ mod tests {
         let args = serde_json::json!({
             "pattern": "x".repeat(tool_output::AST_PATTERN_MAX_BYTES + 1)
         });
-        let error = execute_ast_search(&args, Vec::new(), "oversized-pattern", false)
+        let error = execute_ast_search(&args, Vec::new(), "oversized-pattern", false, None)
             .await
             .expect_err("oversized pattern must fail before parsing");
 
         assert!(error.message.contains("pattern exceeds"));
+    }
+
+    #[tokio::test]
+    async fn structural_search_rejects_a_pre_cancelled_execution() {
+        let cancellation = Arc::new(ToolCancellation::new());
+        cancellation.cancel();
+        let error = execute_ast_search(
+            &serde_json::json!({ "pattern": "console.log($ARG)" }),
+            vec![AstSearchCandidate {
+                workspace: std::path::PathBuf::from("."),
+                read_path: "example.ts".to_string(),
+                display_path: "example.ts".to_string(),
+                size: Some(1),
+                project_id: None,
+                mount_name: None,
+            }],
+            "cancelled-search",
+            false,
+            Some(cancellation),
+        )
+        .await
+        .expect_err("cancelled search must stop before reading a file");
+
+        assert_eq!(error.code(), Some("TOOL_EXECUTION_CANCELLED"));
+    }
+
+    #[test]
+    fn structural_search_worker_observes_cooperative_cancellation() {
+        let cancellation = ToolCancellation::new();
+        cancellation.cancel();
+        let pattern =
+            AstPattern::try_new("console.log($ARG)", SupportLang::TypeScript).expect("pattern");
+
+        let analysis = analyze_source(
+            "console.log(first);".repeat(10_000),
+            SupportLang::TypeScript,
+            pattern,
+            0,
+            200,
+            true,
+            Some(&cancellation),
+        );
+
+        assert!(analysis.cancelled);
+        assert!(analysis.matches.is_empty());
     }
 }

@@ -380,6 +380,7 @@ type TestCitation = {
 
 let citationCounter = 0;
 let citationRecords: TestCitation[] = [];
+let citationPersistenceError: Error | null = null;
 
 const createCitationId = () => `cite-test-${++citationCounter}`;
 
@@ -1489,6 +1490,18 @@ const registerUseChatStoreMocks = async () => {
               (!filter || filter(citation)),
           ),
         addCitation: (citation: Omit<TestCitation, 'id' | 'timestamp'>) => {
+          const id = createCitationId();
+          citationRecords.push({
+            ...citation,
+            id,
+            timestamp: new Date().toISOString(),
+          });
+          return id;
+        },
+        addCitationAndPersist: async (
+          citation: Omit<TestCitation, 'id' | 'timestamp'>,
+        ) => {
+          if (citationPersistenceError) throw citationPersistenceError;
           const id = createCitationId();
           citationRecords.push({
             ...citation,
@@ -2663,6 +2676,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.deleteManualFeatureDraft.mockClear();
     citationCounter = 0;
     citationRecords = [];
+    citationPersistenceError = null;
     ensureCitationContentLoadedMock.mockClear();
     ensureCitationContentLoadedMock.mockImplementation(async (id: string) =>
       citationRecords.find((citation) => citation.id === id) ?? null
@@ -2905,6 +2919,26 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     )?.[1];
     expect(firstContent! + secondContent!).toBe(fullOutput);
     expect(secondPage).toContain('TRUNCATED: false');
+  });
+
+  it('does not publish a tool-output URI when durable artifact persistence fails', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une sortie dont la persistance échoue.',
+    );
+    const fullOutput = `BEGIN-${'x'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => fullOutput) as unknown as () => Promise<undefined>,
+    );
+    citationPersistenceError = new Error('injected citation persistence failure');
+
+    const preview = String(
+      await onToolCall('grep', { query: 'needle' }, 'failed-large-output'),
+    );
+
+    expect(preview).toContain('Full output unavailable');
+    expect(preview).not.toContain('tool-output://');
+    expect(citationRecords).toEqual([]);
+    expect(new TextEncoder().encode(preview).byteLength).toBeLessThan(50 * 1024);
   });
 
   registerConversationSelectionScenarios(useChatStoreScenarioContext);

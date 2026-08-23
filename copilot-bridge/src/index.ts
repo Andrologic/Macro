@@ -2114,6 +2114,7 @@ const TOOL_HOST_WORKSPACE_MUTATION_IDS = new Set([
   'delete',
   'apply_patch',
 ]);
+const TOOL_HOST_WORKSPACE_READ_IDS = new Set(['ast_grep']);
 const TOOL_HOST_TOOL_IDS = new Set([
   'git_status',
   'git_log',
@@ -2282,6 +2283,28 @@ const executeCopilotMacroTool = async (
       args: nextArgs,
       workspacePath: routed.workspacePath,
       workspaceScope: mode === 'Architect' ? 'metadata' : null,
+    });
+  }
+
+  if (TOOL_HOST_WORKSPACE_READ_IDS.has(toolId)) {
+    const rawPath = typeof args.path === 'string' ? args.path : '.';
+    const routed = await routeToolHostTarget({
+      context,
+      rawPath,
+      projectId: typeof args.project_id === 'string' ? args.project_id : null,
+      preferFocusedProject: true,
+      searchExistingPath: rawPath !== '.',
+    });
+    const nextArgs: JsonRecord = {
+      ...args,
+      path: routed.relativePath || '.',
+    };
+    delete nextArgs.project_id;
+    return executeToolHost({
+      mode,
+      toolId,
+      args: nextArgs,
+      workspacePath: routed.workspacePath,
     });
   }
 

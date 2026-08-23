@@ -5562,12 +5562,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const preserveLargeToolResult = (
+  const preserveLargeToolResult = async (
     operation: Pick<FrozenToolCallContext, "conversationId" | "assistantMessageId">,
     toolName: string,
     toolCallId: string | undefined,
     resolution: ToolCallResolution | string | void,
-  ): ToolCallResolution | string | void => {
+  ): Promise<ToolCallResolution | string | void> => {
     if (
       typeof resolution !== "string" ||
       !shouldSpillToolResult(toolName, resolution)
@@ -5584,20 +5584,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
       result: resolution,
       artifactPath,
     });
-    useCitationsStore.getState().addCitation({
-      type: "file",
-      scope: "context",
-      source: artifactPath,
-      title: `Tool output: ${toolName}`,
-      snippet: spilled.preview.slice(0, 500),
-      content: resolution,
-      path: artifactPath,
-      language: "text",
-      sizeBytes: spilled.totalBytes,
-      messageId: operation.assistantMessageId,
-      conversationId: operation.conversationId,
-    });
-    return spilled.preview;
+    try {
+      await useCitationsStore.getState().addCitationAndPersist({
+        type: "file",
+        scope: "context",
+        source: artifactPath,
+        title: `Tool output: ${toolName}`,
+        snippet: spilled.preview.slice(0, 500),
+        content: resolution,
+        path: artifactPath,
+        language: "text",
+        sizeBytes: spilled.totalBytes,
+        messageId: operation.assistantMessageId,
+        conversationId: operation.conversationId,
+      });
+      return spilled.preview;
+    } catch (error) {
+      console.warn('[tool-output] Failed to persist recoverable output:', error);
+      return buildSpilledToolResultPreview({
+        toolName,
+        result: resolution,
+        artifactPath: null,
+      }).preview;
+    }
   };
 
   const getOrderedConversationMessages = (conversationId: string) => {

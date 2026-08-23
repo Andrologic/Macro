@@ -106,6 +106,7 @@ const registerWorkspaceToolExecutorMocks = (
       is_clean: true,
     }),
     gitLog: async () => [],
+    gitLogPage: async () => ({ commits: [], revision: "unborn:false:false" }),
     gitBranchList: async () => ({ local: [], remote: [], current: null }),
     gitDiff: async () => "",
     gitGetTree: async () => ({
@@ -756,10 +757,13 @@ describe("workspaceToolExecutor helpers", () => {
           ahead: 0,
           behind: 0,
         }),
-        gitLog: async (params: { limit?: number; offset?: number }) => {
+        gitLogPage: async (params: { limit?: number; offset?: number }) => {
           logCalls.push(params);
           const offset = params.offset ?? 0;
-          return commits.slice(offset, offset + (params.limit ?? commits.length));
+          return {
+            commits: commits.slice(offset, offset + (params.limit ?? commits.length)),
+            revision: `${commits[0]?.id ?? "unborn"}:true:${worktreeDirty}`,
+          };
         },
       },
     } as Partial<MockAppState>);
@@ -817,6 +821,7 @@ describe("workspaceToolExecutor helpers", () => {
     ]);
     expect(logCalls).toEqual([
       expect.objectContaining({ limit: 3, offset: 0 }),
+      expect.objectContaining({ limit: 3, offset: 0 }),
       expect.objectContaining({ limit: 3, offset: 2 }),
     ]);
     worktreeDirty = false;
@@ -827,6 +832,93 @@ describe("workspaceToolExecutor helpers", () => {
       options,
     );
     expect(staleLogPage).toContain("does not belong");
+  });
+
+  it("invalidates a virtual git_log cursor when the explicitly requested branch advances", async () => {
+    let featureTip = "feature-tip-1";
+    const featureCommits = () => [
+      {
+        id: featureTip,
+        hash: featureTip,
+        message: "feature tip",
+        author: "Macro",
+        date: "2026-08-23T00:00:00Z",
+        status: "committed",
+        parent_ids: [],
+        graph_depth: 0,
+        is_branch_point: false,
+      },
+      {
+        id: "feature-parent",
+        hash: "feature-parent",
+        message: "feature parent",
+        author: "Macro",
+        date: "2026-08-22T00:00:00Z",
+        status: "committed",
+        parent_ids: [],
+        graph_depth: 0,
+        is_branch_point: false,
+      },
+    ];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        gitLogPage: async (params: {
+          branch?: string;
+          limit?: number;
+          offset?: number;
+        }) => {
+          expect(params.branch).toBe("feature/topic");
+          const commits = featureCommits();
+          const offset = params.offset ?? 0;
+          return {
+            commits: commits.slice(offset, offset + (params.limit ?? commits.length)),
+            revision: `${featureTip}:false:false`,
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+    const options = {
+      groupId: "macro-suite",
+      focusedProjectId: "web",
+      virtualRootEnabled: true,
+      projectMounts: [
+        {
+          projectId: "web",
+          groupId: "macro-suite",
+          mountName: "web",
+          displayName: "Web App",
+          workspacePath: "C:/dev/macro-web",
+        },
+      ],
+      workspacePathsByProjectId: { web: "C:/dev/macro-web" },
+    };
+
+    const firstPage = JSON.parse(
+      (await executeWorkspaceTool(
+        "git_log",
+        { branch: "feature/topic", limit: 1 },
+        "Implement",
+        options,
+      )) || "{}",
+    );
+    expect(firstPage.commits[0].id).toBe("feature-tip-1");
+    expect(firstPage.next_cursor).toBeTruthy();
+
+    featureTip = "feature-tip-2";
+    const stalePage = await executeWorkspaceTool(
+      "git_log",
+      {
+        branch: "feature/topic",
+        limit: 1,
+        cursor: firstPage.next_cursor,
+      },
+      "Implement",
+      options,
+    );
+
+    expect(stalePage).toContain("does not belong");
   });
 
   it("forwards abort signals to an active backend workspace search", async () => {

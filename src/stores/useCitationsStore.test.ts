@@ -179,6 +179,120 @@ describe('useCitationsStore', () => {
     );
   });
 
+  it('awaits durable citation persistence before resolving', async () => {
+    let finishPersistence: (() => void) | undefined;
+    upsertConversationCitationMock.mockImplementationOnce(
+      async (input: DbUpsertConversationCitationInput) => {
+        await new Promise<void>((resolve) => {
+          finishPersistence = resolve;
+        });
+        return input;
+      },
+    );
+
+    let resolved = false;
+    const persistence = useCitationsStore.getState().addCitationAndPersist({
+      type: 'file',
+      scope: 'context',
+      source: 'tool-output://chat/tool.txt',
+      title: 'Tool output',
+      content: 'complete output',
+      path: 'tool-output://chat/tool.txt',
+      messageId: 'message-1',
+      conversationId: 'chat-conv',
+    }).then((id) => {
+      resolved = true;
+      return id;
+    });
+
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    finishPersistence?.();
+    const id = await persistence;
+    expect(id).toMatch(/^cite-/);
+    expect(resolved).toBe(true);
+  });
+
+  it('rejects failed durable citation persistence and removes the in-memory artifact', async () => {
+    upsertConversationCitationMock.mockImplementationOnce(async () => {
+      throw new Error('injected citation persistence failure');
+    });
+
+    await expect(
+      useCitationsStore.getState().addCitationAndPersist({
+        type: 'file',
+        scope: 'context',
+        source: 'tool-output://chat/tool.txt',
+        title: 'Tool output',
+        content: 'complete output',
+        path: 'tool-output://chat/tool.txt',
+        messageId: 'message-1',
+        conversationId: 'chat-conv',
+      }),
+    ).rejects.toThrow('injected citation persistence failure');
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
+  it('rehydrates and reads an artifact immediately after durable persistence resolves', async () => {
+    let persisted: DbUpsertConversationCitationInput | null = null;
+    upsertConversationCitationMock.mockImplementationOnce(async (input) => {
+      persisted = input;
+      return input;
+    });
+
+    const id = await useCitationsStore.getState().addCitationAndPersist({
+      type: 'file',
+      scope: 'context',
+      source: 'tool-output://chat-conv/tool.txt',
+      title: 'Tool output',
+      snippet: 'bounded preview',
+      content: 'complete persisted output',
+      path: 'tool-output://chat-conv/tool.txt',
+      sizeBytes: 25,
+      messageId: 'message-1',
+      conversationId: 'chat-conv',
+    });
+    expect(persisted).not.toBeNull();
+
+    const persistedInput = persisted as unknown as DbUpsertConversationCitationInput;
+    listConversationCitationsMock.mockImplementationOnce(async () => [
+      {
+        id: persistedInput.id,
+        conversation_id: persistedInput.conversation_id,
+        message_id: persistedInput.message_id,
+        type: persistedInput.type,
+        scope: persistedInput.scope,
+        source: persistedInput.source,
+        title: persistedInput.title,
+        snippet: persistedInput.snippet ?? null,
+        content: null,
+        url: persistedInput.url ?? null,
+        favicon: persistedInput.favicon ?? null,
+        path: persistedInput.path ?? null,
+        language: persistedInput.language ?? null,
+        size_bytes: persistedInput.size_bytes ?? null,
+        kind: persistedInput.kind ?? null,
+        reason: persistedInput.reason ?? null,
+        created_at: persistedInput.timestamp ?? '2026-08-23T00:00:00Z',
+        updated_at: persistedInput.timestamp ?? '2026-08-23T00:00:00Z',
+      },
+    ]);
+    getConversationCitationContentMock.mockImplementationOnce(
+      async () => 'complete persisted output',
+    );
+    useCitationsStore.setState({ citations: [] });
+
+    await useCitationsStore.getState().hydrateConversationCitations('chat-conv');
+    const hydrated = useCitationsStore.getState().citations[0];
+    expect(hydrated).toMatchObject({
+      id,
+      path: 'tool-output://chat-conv/tool.txt',
+      content: undefined,
+    });
+    const loaded = await useCitationsStore.getState().ensureCitationContentLoaded(id);
+    expect(loaded?.content).toBe('complete persisted output');
+  });
+
   it('returns a usable id and refreshes duplicate context file citations', () => {
     const firstId = useCitationsStore.getState().addCitation({
       type: 'file',
