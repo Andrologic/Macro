@@ -168,6 +168,24 @@ describe("effective subagent policy", () => {
     });
   });
 
+  it("rejects an unknown required capability instead of dropping it", () => {
+    const result = authorizeDelegation(
+      preflight({
+        requiredCapabilities: ["root.access" as AgentCapability],
+      })
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      errors: [
+        {
+          code: "invalid_preflight",
+          path: "requiredCapabilities[0]",
+        },
+      ],
+    });
+  });
+
   it("rejects delegation when the parent lacks delegation rights", () => {
     const result = authorizeDelegation(
       preflight({ parentPolicy: scope(["workspace.read", "git.read"]) })
@@ -307,6 +325,29 @@ describe("delegation preflight guards", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errors.map((item) => item.code)).toContain("context_too_large");
+  });
+
+  it("rejects a malformed runtime context instead of serializing it", () => {
+    const result = authorizeDelegation(
+      preflight({
+        context: { objective: "Inspect policy" } as DelegationContext,
+      })
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors).toEqual([
+      {
+        code: "invalid_context",
+        path: "successCriteria",
+        message: "Expected at least one success criterion.",
+      },
+      {
+        code: "invalid_context",
+        path: "responseFormat",
+        message: "Expected a non-empty response format.",
+      },
+    ]);
   });
 
   it("blocks a cancelled delegation with its reason", () => {
