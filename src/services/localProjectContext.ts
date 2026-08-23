@@ -104,13 +104,14 @@ export const setProjectSwitchPolicy = async (policy: ProjectSwitchPolicy): Promi
 export const getLocalProjectContextState = async (
   projectId: string
 ): Promise<LocalProjectContextState | null> => {
-  if (!projectId.trim()) return null;
+  const normalizedProjectId = projectId.trim();
+  if (!normalizedProjectId) return null;
 
   if (tauriIpc.isTauriAvailable()) {
     try {
-      const record = await tauriIpc.dbGetProjectContextState(projectId);
+      const record = await tauriIpc.dbGetProjectContextState(normalizedProjectId);
       if (!record) return null;
-      return normalizeProjectContext(projectId, {
+      return normalizeProjectContext(normalizedProjectId, {
         projectId: record.project_id,
         groupId: record.group_id,
         focusProjectId: record.focus_project_id,
@@ -126,7 +127,7 @@ export const getLocalProjectContextState = async (
   }
 
   const contexts = readLegacyProjectContexts();
-  return contexts[projectId] ?? null;
+  return contexts[normalizedProjectId] ?? null;
 };
 
 export const upsertLocalProjectContextState = async (
