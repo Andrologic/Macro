@@ -18,6 +18,7 @@ import {
   type ArchitectPlanRecord,
   type ArchitectPlanStatus,
 } from '../services/architectPlanService';
+import { createDeferred } from '../test-utils/deferred';
 const actualTauriIpc = await import('../services/tauriIpc');
 const actualConfigurationClient = await import('../services/configurationClient');
 
@@ -2160,14 +2161,6 @@ const flushAsyncWork = async () => {
   await Promise.resolve();
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
-};
-
-const createDeferred = <T = void>() => {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
 };
 
 const getLatestStreamOptions = <T extends Record<string, unknown> = Record<string, unknown>>() => {
