@@ -188,115 +188,89 @@ describe('copilot bridge tool registration', () => {
     }));
   });
 
-  it('routes mutations and workspace inspection through the Macro tool host', async () => {
-    const fetchCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
-    const fetchMock = mock(async (url: string, init?: RequestInit) => {
-      fetchCalls.push({
-        url,
-        body: JSON.parse(String(init?.body ?? '{}')),
-      });
-      return {
-        ok: true,
-        json: async () => ({ result: 'host ok' }),
-      } as Response;
-    });
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-    process.env.MACRO_TOOL_HOST_URL = 'http://127.0.0.1:1456';
-    process.env.MACRO_TOOL_HOST_BEARER_TOKEN = 'token-1';
-
-    try {
-      const { __testables } = await loadBridge();
-      const tools = __testables.buildMacroTools({
-        request_id: 'req-1',
+  it('relays workspace tools and mutating Git tools through the frontend unchanged', async () => {
+    const { __testables } = await loadBridge();
+    const requestTool = mock(async (params: Record<string, unknown>) => ({
+      result: `frontend:${String(params.toolName)}`,
+      hiddenContext: null,
+      visibleContent: null,
+      interrupt: false,
+    }));
+    const relayedToolIds = [
+      'list',
+      'read',
+      'glob',
+      'grep',
+      'ast_grep',
+      'write',
+      'edit',
+      'delete',
+      'apply_patch',
+      'git_add',
+      'git_commit',
+      'git_checkout',
+      'git_merge',
+      'git_reset',
+      'git_stash',
+    ];
+    const tools = __testables.buildMacroTools(
+      {
+        request_id: 'req-relay',
         model_id: 'gpt-5',
         messages: [],
-        default_workspace_path: '/tmp/macro-test',
-        allowed_tool_ids: ['delete', 'apply_patch', 'list', 'read', 'glob', 'grep', 'ast_grep'],
-      }) as Array<{
-        name: string;
-        options: {
-          handler: (
-            args: Record<string, unknown>,
-            invocation: { sessionId: string; toolCallId: string; toolName: string },
-          ) => Promise<string>;
-        };
-      }>;
+        default_workspace_path: '/tmp/default-project',
+        virtual_root_enabled: true,
+        project_mounts: [
+          {
+            project_id: 'web-project',
+            mount_name: 'web',
+            workspace_path: '/tmp/web-project',
+            is_read_only: false,
+          },
+          {
+            project_id: 'api-project',
+            mount_name: 'api',
+            workspace_path: '/tmp/api-project',
+            is_read_only: false,
+          },
+        ],
+        allowed_tool_ids: relayedToolIds,
+      },
+      { controlChannel: { requestTool } } as never,
+    ) as Array<{
+      name: string;
+      options: {
+        handler: (
+          args: Record<string, unknown>,
+          invocation: { sessionId: string; toolCallId: string; toolName: string },
+        ) => Promise<string>;
+      };
+    }>;
 
-      const deleteTool = tools.find((tool) => tool.name === 'delete');
-      const applyPatchTool = tools.find((tool) => tool.name === 'apply_patch');
-      const listTool = tools.find((tool) => tool.name === 'list');
-      const readTool = tools.find((tool) => tool.name === 'read');
-      const globTool = tools.find((tool) => tool.name === 'glob');
-      const grepTool = tools.find((tool) => tool.name === 'grep');
-      const astGrepTool = tools.find((tool) => tool.name === 'ast_grep');
-
+    for (const toolId of relayedToolIds) {
+      expect(__testables.isFrontendRelayToolId(toolId)).toBe(true);
+      const args = {
+        path: 'web/src/index.ts',
+        repo_path: 'web',
+        project_id: 'web-project',
+        patch_text: '*** Begin Patch\n*** Delete File: web/old.txt\n*** End Patch',
+      };
       await expect(
-        deleteTool?.options.handler(
-          { path: 'old.txt' },
-          { sessionId: 'session-1', toolCallId: 'call-delete', toolName: 'delete' },
-        ),
-      ).resolves.toBe('host ok');
-      await expect(
-        applyPatchTool?.options.handler(
-          { patch_text: '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch' },
-          { sessionId: 'session-1', toolCallId: 'call-patch', toolName: 'apply_patch' },
-        ),
-      ).resolves.toBe('host ok');
-      await expect(
-        listTool?.options.handler(
-          { path: 'src', recursive: true },
-          { sessionId: 'session-1', toolCallId: 'call-list', toolName: 'list' },
-        ),
-      ).resolves.toBe('host ok');
-      await expect(
-        readTool?.options.handler(
-          { path: 'src/index.ts', start_line: 10 },
-          { sessionId: 'session-1', toolCallId: 'call-read', toolName: 'read' },
-        ),
-      ).resolves.toBe('host ok');
-      await expect(
-        globTool?.options.handler(
-          { pattern: '**/*.ts' },
-          { sessionId: 'session-1', toolCallId: 'call-glob', toolName: 'glob' },
-        ),
-      ).resolves.toBe('host ok');
-      await expect(
-        grepTool?.options.handler(
-          { query: 'needle' },
-          { sessionId: 'session-1', toolCallId: 'call-grep', toolName: 'grep' },
-        ),
-      ).resolves.toBe('host ok');
-      await expect(
-        astGrepTool?.options.handler(
-          { path: 'src', pattern: 'console.log($ARG)', language: 'typescript' },
-          { sessionId: 'session-1', toolCallId: 'call-ast', toolName: 'ast_grep' },
-        ),
-      ).resolves.toBe('host ok');
-
-      expect(fetchCalls.map((call) => call.body.tool_id)).toEqual([
-        'delete',
-        'apply_patch',
-        'list',
-        'read',
-        'glob',
-        'grep',
-        'ast_grep',
-      ]);
-      expect(fetchCalls.every((call) => call.url.endsWith('/api/v1/tools/execute'))).toBe(true);
-      expect(fetchCalls[6]?.body).toMatchObject({
-        workspace_path: '/tmp/macro-test',
-        args: expect.objectContaining({
-          path: 'src',
-          pattern: 'console.log($ARG)',
+        tools.find((tool) => tool.name === toolId)?.options.handler(args, {
+          sessionId: 'session-relay',
+          toolCallId: `call-${toolId}`,
+          toolName: toolId,
         }),
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
+      ).resolves.toBe(`frontend:${toolId}`);
+      expect(requestTool).toHaveBeenLastCalledWith(
+        expect.objectContaining({ toolName: toolId, args }),
+      );
     }
+
+    expect(requestTool).toHaveBeenCalledTimes(relayedToolIds.length);
   });
 
-  it('keeps Architect structural search on the project source workspace', async () => {
+  it('keeps read-only Git inspection on the confined Macro tool host', async () => {
     const fetchCalls: Array<Record<string, unknown>> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
@@ -312,26 +286,24 @@ describe('copilot bridge tool registration', () => {
     try {
       const { __testables } = await loadBridge();
       const tools = __testables.buildMacroTools({
-        request_id: 'req-architect',
+        request_id: 'req-git-read',
         model_id: 'gpt-5',
         messages: [],
         default_workspace_path: '/tmp/macro-source',
-        allowed_tool_ids: ['plan_get', 'ast_grep'],
+        allowed_tool_ids: ['git_status'],
       }) as Array<{
         name: string;
         options: { handler: (args: Record<string, unknown>) => Promise<string> };
       }>;
 
-      await tools
-        .find((tool) => tool.name === 'ast_grep')
-        ?.options.handler({ pattern: 'function $NAME($$$ARGS) { $$$BODY }' });
-
+      await expect(
+        tools.find((tool) => tool.name === 'git_status')?.options.handler({ repo_path: '.' }),
+      ).resolves.toBe('host ok');
       expect(fetchCalls).toEqual([
         expect.objectContaining({
-          mode: 'Architect',
-          tool_id: 'ast_grep',
+          mode: 'Implement',
+          tool_id: 'git_status',
           workspace_path: '/tmp/macro-source',
-          workspace_scope: null,
         }),
       ]);
     } finally {

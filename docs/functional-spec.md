@@ -731,6 +731,8 @@ La pagination de `git_log` doit lier son curseur au commit de tête résolu et �
 
 Le comportement doit rester équivalent dans le backend desktop, les workspaces virtuels multi-projets, le fallback frontend, le noyau distant et le pont Copilot. Un transport qui ne sait pas garantir ces bornes ne doit pas exécuter ces outils.
 
+Le pont Copilot doit relayer au frontend tous les outils du workspace ainsi que les mutations Git. Ce passage conserve la racine virtuelle multi-projets, le projet ciblé, les checkpoints, la politique de sécurité et les demandes d'approbation de Macro. Seules les inspections Git en lecture seule peuvent utiliser directement le tool host natif.
+
 Un outil agent ne doit jamais sortir du projet sélectionné par un chemin absolu, un composant parent ou un lien symbolique. Cette règle vaut aussi pour les racines virtuelles multi-projets et WSL. Lorsqu'un appel sélectionne explicitement un projet, ce projet doit être transmis au backend même après le retrait de `project_id` ou du préfixe de montage dans les arguments routés.
 
 Une limite de sécurité interne atteinte pendant l'énumération doit produire une erreur récupérable qui invite à réduire le périmètre. Macro ne doit jamais convertir une énumération interne incomplète en `total_count`, `scan_complete` ou `total_is_exact` affirmatif.

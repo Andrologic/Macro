@@ -2079,25 +2079,18 @@ const CHAT_SAFE_TOOL_IDS = new Set([
   'terminal_read',
   'terminal_kill',
 ]);
-const TOOL_HOST_WORKSPACE_MUTATION_IDS = new Set([
-  'write',
-  'edit',
-  'delete',
-  'apply_patch',
-]);
-const TOOL_HOST_WORKSPACE_READ_IDS = new Set([
+const FRONTEND_RELAY_WORKSPACE_TOOL_IDS = new Set([
   'list',
   'read',
   'glob',
   'grep',
   'ast_grep',
+  'write',
+  'edit',
+  'delete',
+  'apply_patch',
 ]);
-const TOOL_HOST_TOOL_IDS = new Set([
-  'git_status',
-  'git_log',
-  'git_branch_list',
-  'git_diff',
-  'git_get_tree',
+const FRONTEND_RELAY_GIT_MUTATION_IDS = new Set([
   'git_add',
   'git_commit',
   'git_checkout',
@@ -2105,10 +2098,19 @@ const TOOL_HOST_TOOL_IDS = new Set([
   'git_reset',
   'git_stash',
 ]);
+const TOOL_HOST_GIT_READ_IDS = new Set([
+  'git_status',
+  'git_log',
+  'git_branch_list',
+  'git_diff',
+  'git_get_tree',
+]);
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
   toolId === 'question' ||
   toolId === 'read_file' ||
+  FRONTEND_RELAY_WORKSPACE_TOOL_IDS.has(toolId) ||
+  FRONTEND_RELAY_GIT_MUTATION_IDS.has(toolId) ||
   toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
   toolId.startsWith('plan_') ||
@@ -2187,53 +2189,6 @@ const executeCopilotMacroTool = async (
     return result.result;
   }
 
-  if (TOOL_HOST_WORKSPACE_MUTATION_IDS.has(toolId)) {
-    const rawPath = typeof args.path === 'string' ? args.path : '.';
-    const routed = await routeToolHostTarget({
-      context,
-      rawPath,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      preferFocusedProject: true,
-      searchExistingPath: toolId === 'edit' || toolId === 'delete',
-    });
-
-    const nextArgs: JsonRecord = { ...args };
-    if (toolId !== 'apply_patch') {
-      nextArgs.path = routed.relativePath || '.';
-    }
-    delete nextArgs.project_id;
-
-    return executeToolHost({
-      mode,
-      toolId,
-      args: nextArgs,
-      workspacePath: routed.workspacePath,
-      workspaceScope: mode === 'Architect' ? 'metadata' : null,
-    });
-  }
-
-  if (TOOL_HOST_WORKSPACE_READ_IDS.has(toolId)) {
-    const rawPath = typeof args.path === 'string' ? args.path : '.';
-    const routed = await routeToolHostTarget({
-      context,
-      rawPath,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      preferFocusedProject: true,
-      searchExistingPath: rawPath !== '.',
-    });
-    const nextArgs: JsonRecord = { ...args };
-    if (toolId === 'list' || toolId === 'read' || toolId === 'ast_grep') {
-      nextArgs.path = routed.relativePath || '.';
-    }
-    delete nextArgs.project_id;
-    return executeToolHost({
-      mode,
-      toolId,
-      args: nextArgs,
-      workspacePath: routed.workspacePath,
-    });
-  }
-
   if (toolId === 'mark_source_passage') {
     return markSourcePassage(args);
   }
@@ -2250,7 +2205,7 @@ const executeCopilotMacroTool = async (
     return fetchWebPageDirect(typeof args.url === 'string' ? args.url : '');
   }
 
-  if (TOOL_HOST_TOOL_IDS.has(toolId)) {
+  if (TOOL_HOST_GIT_READ_IDS.has(toolId)) {
     const rawRepoPath = typeof args.repo_path === 'string' ? args.repo_path : '.';
     const routed = await routeToolHostTarget({
       context,
