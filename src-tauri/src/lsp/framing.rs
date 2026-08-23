@@ -121,7 +121,10 @@ impl LspFramer {
     fn validate_partial_buffer(&self) -> Result<(), FramingError> {
         if self.pending_body.is_none()
             && find_header_end(&self.buffer).is_none()
-            && self.buffer.len() > self.max_header_bytes
+            && self.buffer.len()
+                > self
+                    .max_header_bytes
+                    .saturating_add(HEADER_TERMINATOR.len() - 1)
         {
             return Err(FramingError::HeaderTooLarge {
                 max_bytes: self.max_header_bytes,
@@ -300,6 +303,21 @@ mod tests {
                 max_bytes: 4,
             })
         );
+    }
+
+    #[test]
+    fn accepts_a_maximum_sized_header_when_its_terminator_is_split() {
+        let header = b"Content-Length: 2\r\nX-Padding: 1234";
+        let mut frame = header.to_vec();
+        frame.extend_from_slice(b"\r\n\r\n{}");
+        let mut decoder = LspFramer::new(16, header.len()).unwrap();
+
+        assert!(decoder.push(&frame[..header.len() + 1]).unwrap().is_empty());
+        assert_eq!(
+            decoder.push(&frame[header.len() + 1..]).unwrap(),
+            vec![json!({})]
+        );
+        decoder.finish().expect("clean EOF");
     }
 
     #[test]
