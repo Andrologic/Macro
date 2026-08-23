@@ -40,7 +40,7 @@ The repo uses:
 | `bun run i18n:audit` | Audit locale coverage. |
 | `bun run test` | Run frontend and service tests with bounded parallelism. |
 | `bun run test:coverage` | Run the same tests with per-file coverage reports under `coverage/tests/`. |
-| `bun run ci:pre-push` | Run the differential local gate used by the pre-push hook. |
+| `bun run ci:pre-push` | Run the fast changed-file gate used by the pre-push hook. |
 | `bun run ci:workflows` | Validate workflow YAML and repository Actions policy. |
 | `bun run version:check` | Verify synchronized version manifests. |
 | `bun run ci` | Run the full local CI pipeline. |
@@ -130,8 +130,8 @@ testing.
 
 ## Validation
 
-Run the smallest check that proves the change. Before opening a pull request,
-the expected checks are:
+Run the smallest check that proves the change during development. The focused
+commands available for that work are:
 
 ```bash
 bun run version:check
@@ -143,7 +143,9 @@ bun run test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-The full local CI command also builds the frontend and checks bundle size:
+The pull request workflow runs the required exhaustive profiles before merge.
+When the risk justifies reproducing those profiles locally, the full local CI
+command also builds the frontend and checks bundle size:
 
 ```bash
 bun run ci
@@ -177,9 +179,14 @@ Before pushing, prefer the differential gate:
 bun run ci:pre-push
 ```
 
-It compares the whole proposed integration range, selects the smallest safe
-profile, and caches a successful result for that exact range and platform. The
-tracked `pre-push` hook enforces the same command. Install it with
+It compares the whole proposed integration range and runs only cheap global
+policies plus lint, related tests, Rust formatting, or repository policy checks
+selected from changed paths. It does not install, build, type-check the whole
+application, or run complete suites. GitHub performs those exhaustive checks
+before merge; use `bun run ci` for the same full validation locally when needed.
+The successful fast plan is cached for the exact range and platform.
+
+The tracked `pre-push` hook enforces the same command. Install it with
 `bun run hooks:install`; bypassing it with `--no-verify` is reserved for an
 explicitly authorized emergency.
 

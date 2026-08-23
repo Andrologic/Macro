@@ -8,8 +8,9 @@ not by a target count.
 
 - During development, run the closest test file and the smallest relevant static
   check.
-- Before pushing, run `bun run ci:pre-push`. Its differential selection is the
-  repository gate for ordinary changes.
+- Before pushing, run `bun run ci:pre-push`. It selects changed tests, sibling
+  tests, and tests that directly import changed TypeScript modules. This fast
+  guard complements, rather than duplicates, the exhaustive GitHub checks.
 - Run `bun run test` when shared frontend infrastructure, test setup, or broad
   application behavior changes.
 - Run `bun run test:coverage` for coverage audits. It is diagnostic and does not
@@ -87,5 +88,7 @@ The current refactor follows these independent, reviewable stages:
    and add a minimal end-to-end smoke layer only for journeys that cross the
    frontend/native boundary.
 
-Each stage must pass its focused tests, the full frontend suite, type checking,
-linting, and an OX Alpha review before it is considered complete.
+Each stage must pass its focused local checks and an OX Alpha review. The full
+frontend suite, type checking, linting, and any required native checks must then
+pass on GitHub before merge; run `bun run ci` locally when the stage's risk or a
+remote failure calls for an exhaustive rehearsal.
