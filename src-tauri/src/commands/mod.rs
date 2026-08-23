@@ -948,9 +948,46 @@ async fn write_file_atomically(path: &Path, content: &str) -> CommandResult<()> 
     write_bytes_atomically(path, content.as_bytes()).await
 }
 
-async fn rollback_pending_file_changes(backups: &[(PathBuf, Option<Vec<u8>>)]) -> Vec<String> {
+async fn rollback_pending_file_changes(
+    backups: &[(PathBuf, Option<Vec<u8>>)],
+    applied_changes: &[PendingFileChange],
+) -> Vec<String> {
+    debug_assert_eq!(backups.len(), applied_changes.len());
     let mut errors = Vec::new();
-    for (path, backup) in backups.iter().rev() {
+    for ((path, backup), change) in backups.iter().zip(applied_changes).rev() {
+        let state_matches_applied_mutation = match change.new_content.as_ref() {
+            Some(content) => match tokio::fs::read(path).await {
+                Ok(current) => {
+                    fs::content_revision(&current) == fs::content_revision(content.as_bytes())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    errors.push(format!(
+                        "Failed to inspect {} before rollback: {}",
+                        change.display_path, error
+                    ));
+                    false
+                }
+            },
+            None => match tokio::fs::try_exists(path).await {
+                Ok(exists) => !exists,
+                Err(error) => {
+                    errors.push(format!(
+                        "Failed to inspect {} before rollback: {}",
+                        change.display_path, error
+                    ));
+                    false
+                }
+            },
+        };
+        if !state_matches_applied_mutation {
+            errors.push(format!(
+                "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
+                change.display_path
+            ));
+            continue;
+        }
+
         match backup {
             Some(bytes) => {
                 if let Err(error) = write_bytes_atomically(path, bytes).await {
@@ -1050,9 +1087,17 @@ async fn acquire_content_mutation_locks(
 
 async fn rollback_pending_file_changes_via_fs(
     backups: &[(PathBuf, String, String, Option<String>)],
+    applied_changes: &[PendingFileChange],
 ) -> Vec<String> {
+    debug_assert_eq!(backups.len(), applied_changes.len());
     let mut errors = Vec::new();
-    for (workspace, path, display_path, backup) in backups.iter().rev() {
+    for ((workspace, path, display_path, backup), change) in
+        backups.iter().zip(applied_changes).rev()
+    {
+        let expected_applied_revision = change
+            .new_content
+            .as_ref()
+            .map(|content| fs::content_revision(content.as_bytes()));
         match backup {
             Some(content) => {
                 if let Err(error) = fs::write_file_internal_with_revision_unlocked(
@@ -1061,7 +1106,11 @@ async fn rollback_pending_file_changes_via_fs(
                     content.clone(),
                     Some(true),
                     Some(false),
-                    None,
+                    Some(
+                        expected_applied_revision
+                            .as_deref()
+                            .unwrap_or(fs::EXPECTED_REVISION_ABSENT),
+                    ),
                 )
                 .await
                 {
@@ -1071,11 +1120,15 @@ async fn rollback_pending_file_changes_via_fs(
                     ));
                 }
             }
-            None => match fs::exists_internal(workspace, path.clone()).await {
-                Ok(true) => {
-                    if let Err(error) =
-                        fs::delete_path_internal_unlocked(workspace, path.clone(), Some(false))
-                            .await
+            None => {
+                if let Some(expected_revision) = expected_applied_revision.as_deref() {
+                    if let Err(error) = fs::delete_path_internal_with_revision_unlocked(
+                        workspace,
+                        path.clone(),
+                        Some(false),
+                        Some(expected_revision),
+                    )
+                    .await
                     {
                         errors.push(format!(
                             "Failed to remove created file {} during rollback: {}",
@@ -1083,12 +1136,7 @@ async fn rollback_pending_file_changes_via_fs(
                         ));
                     }
                 }
-                Ok(false) => {}
-                Err(error) => errors.push(format!(
-                    "Failed to inspect {} during rollback: {}",
-                    display_path, error
-                )),
-            },
+            }
         }
     }
     errors
@@ -1172,8 +1220,11 @@ async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> Co
         };
 
         if let Err(error) = result {
-            let rollback_errors =
-                rollback_pending_file_changes_via_fs(&backups[..applied_count]).await;
+            let rollback_errors = rollback_pending_file_changes_via_fs(
+                &backups[..applied_count],
+                &changes[..applied_count],
+            )
+            .await;
             let rollback_suffix = if rollback_errors.is_empty() {
                 String::new()
             } else {
@@ -1239,6 +1290,7 @@ pub(crate) async fn commit_pending_file_changes_atomically(
                 Err(error) => {
                     return rollback_after_batch_failure(
                         &backups,
+                        changes,
                         applied_count,
                         command_error(format!(
                             "Failed to revalidate {} before mutation: {}",
@@ -1276,7 +1328,7 @@ pub(crate) async fn commit_pending_file_changes_atomically(
         };
 
         if let Err(error) = result {
-            return rollback_after_batch_failure(&backups, applied_count, error).await;
+            return rollback_after_batch_failure(&backups, changes, applied_count, error).await;
         }
     }
 
@@ -1285,10 +1337,12 @@ pub(crate) async fn commit_pending_file_changes_atomically(
 
 async fn rollback_after_batch_failure(
     backups: &[(PathBuf, Option<Vec<u8>>)],
+    changes: &[PendingFileChange],
     applied_count: usize,
     error: CommandError,
 ) -> CommandResult<()> {
-    let rollback_errors = rollback_pending_file_changes(&backups[..applied_count]).await;
+    let rollback_errors =
+        rollback_pending_file_changes(&backups[..applied_count], &changes[..applied_count]).await;
     let rollback_suffix = if rollback_errors.is_empty() {
         String::new()
     } else {
@@ -4864,8 +4918,8 @@ mod tests {
         exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
         parse_apply_patch, provider_definition_patch_operations, register_tool_execution,
         resolve_requested_workspace, resolve_workspace_for_tool_path,
-        restore_deleted_provider_secrets, tool_cancel_workspace, tool_execution_timeout, DbPool,
-        ParsedPatchOperation, PendingFileChange,
+        restore_deleted_provider_secrets, rollback_pending_file_changes, tool_cancel_workspace,
+        tool_execution_timeout, DbPool, ParsedPatchOperation, PendingFileChange,
     };
     use crate::commands::fs::content_revision;
     use crate::commands::git::{GitFileStatus, GitStatusDto};
@@ -5765,6 +5819,38 @@ mod tests {
         assert_eq!(
             fs::read_to_string(first_path).expect("read restored file"),
             "original\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_preserves_an_external_edit_after_macro_applied_its_write() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("shared.txt");
+        fs::write(&path, "macro mutation\n").expect("write Macro mutation");
+        let change = PendingFileChange {
+            display_path: "shared.txt".to_string(),
+            effective_workspace: workspace.path().to_path_buf(),
+            effective_path: "shared.txt".to_string(),
+            absolute_path: path.clone(),
+            status: "updated".to_string(),
+            new_content: Some("macro mutation\n".to_string()),
+            created: false,
+            bytes_written: 15,
+            additions: 1,
+            deletions: 1,
+            expected_revision: None,
+        };
+        let backups = vec![(path.clone(), Some(b"original\n".to_vec()))];
+
+        fs::write(&path, "external edit\n").expect("simulate external edit");
+        let errors = rollback_pending_file_changes(&backups, &[change]).await;
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("Rollback conflict for shared.txt")));
+        assert_eq!(
+            fs::read_to_string(path).expect("read preserved external edit"),
+            "external edit\n"
         );
     }
 }
