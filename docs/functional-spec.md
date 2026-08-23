@@ -691,6 +691,8 @@ Les messages de commit doivent être générés automatiquement par l'IA après 
 
 Les outils `list`, `read`, `glob`, `grep`, `git_status`, `git_log` et `git_diff` doivent produire des sorties bornées. Lorsqu'une réponse paginable est incomplète, elle doit l'indiquer explicitement et fournir un curseur permettant de continuer la même requête sans répéter ni sauter volontairement des résultats.
 
+Les outils de lecture `list`, `read` et `glob` doivent expirer après 5 secondes, et `grep` après 30 secondes. Une annulation de la génération en cours doit interrompre réellement leur exécution desktop ou distante et produire une erreur stable, distincte d'un dépassement de délai. Après une expiration, l'agent doit réduire le chemin, le motif ou la requête. Cette interruption ne s'applique pas aux mutations, qui ne doivent jamais être abandonnées à mi-écriture.
+
 Une lecture paginée doit rester liée à la révision du fichier qu'elle a commencé à lire. De même, la pagination de `git_status` doit être liée à l'ensemble exact des changements observés. Si la source change, Macro doit refuser le curseur devenu obsolète plutôt que de composer silencieusement une vue incohérente. Les recherches doivent signaler les fichiers binaires ou trop gros qu'elles n'ont pas inspectés, et les lignes exceptionnellement longues doivent être tronquées de façon visible.
 
 La pagination de `git_log` doit lier son curseur au commit de tête résolu et à la présence des pseudo-commits staged/unstaged. Un changement de cet instantané invalide le curseur afin d'éviter de répéter ou de sauter des commits réels lorsque les pseudo-commits apparaissent ou disparaissent.

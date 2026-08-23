@@ -51,7 +51,31 @@ describe("tauriIpc executeWorkspaceTool", () => {
           projectMounts: [],
           virtualRootEnabled: null,
           focusedProjectId: null,
+          executionId: null,
         },
+      },
+    ]);
+  });
+
+  it("passes the execution id to workspace execution and cancellation commands", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.executeWorkspaceTool({
+      mode: "Implement",
+      toolId: "grep",
+      args: { query: "needle" },
+      executionId: "execution-123",
+    });
+    await tauriIpc.cancelWorkspaceTool("execution-123");
+
+    expect(invokeCalls).toEqual([
+      expect.objectContaining({
+        command: "tool_execute_workspace",
+        payload: expect.objectContaining({ executionId: "execution-123" }),
+      }),
+      {
+        command: "tool_cancel_workspace",
+        payload: { executionId: "execution-123" },
       },
     ]);
   });

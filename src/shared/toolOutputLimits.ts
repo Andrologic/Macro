@@ -4,14 +4,16 @@ export const TOOL_OUTPUT_LIMITS = {
     maxLines: 3_000,
     maxBytes: 256 * 1024,
     maxColumns: 2_000,
+    timeoutMs: 5_000,
   },
-  list: { defaultResults: 200, maxResults: 1_000 },
-  glob: { defaultResults: 200, maxResults: 1_000 },
+  list: { defaultResults: 200, maxResults: 1_000, timeoutMs: 5_000 },
+  glob: { defaultResults: 200, maxResults: 1_000, timeoutMs: 5_000 },
   grep: {
     defaultResults: 50,
     maxResults: 200,
     maxFileBytes: 4 * 1024 * 1024,
     maxColumns: 512,
+    timeoutMs: 30_000,
   },
   git: {
     statusDefaultResults: 200,

@@ -3428,6 +3428,7 @@ export async function executeWorkspaceTool(params: {
   projectMounts?: ProjectMount[];
   virtualRootEnabled?: boolean;
   focusedProjectId?: string | null;
+  executionId?: string | null;
 }): Promise<string> {
   return invoke<string>("tool_execute_workspace", {
     mode: params.mode,
@@ -3444,7 +3445,12 @@ export async function executeWorkspaceTool(params: {
     })),
     virtualRootEnabled: params.virtualRootEnabled ?? null,
     focusedProjectId: params.focusedProjectId ?? null,
+    executionId: params.executionId ?? null,
   });
+}
+
+export async function cancelWorkspaceTool(executionId: string): Promise<boolean> {
+  return invoke<boolean>("tool_cancel_workspace", { executionId });
 }
 
 export async function mcpDiscoverTools(params: {
