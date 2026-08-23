@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import type { AgentCodeCheckpoint, ChatMessage } from "../types";
 import { buildAgentCodeReplayPreview } from "./agentCodeCheckpoints";
 
@@ -111,5 +111,80 @@ describe("agentCodeCheckpoints", () => {
         target: expect.objectContaining({ exists: true, content: "before-1" }),
       }),
     ]);
+  });
+
+  it("ignores a legacy outside-workspace flag when restoring a checkpoint", async () => {
+    const reads: Array<Record<string, unknown>> = [];
+    const writes: Array<Record<string, unknown>> = [];
+    mock.module("./tauriIpc", () => ({
+      isTauriAvailable: () => true,
+      fsExists: async () => true,
+      fsReadFileWithOptions: async (params: Record<string, unknown>) => {
+        reads.push(params);
+        return {
+          content: "after",
+          revision: "after-revision",
+          is_binary: false,
+          size: 5,
+          encoding: "utf-8",
+          language: "text",
+        };
+      },
+      fsWriteFile: async (params: Record<string, unknown>) => {
+        writes.push(params);
+        return {
+          path: params.path,
+          bytes_written: 6,
+          created: false,
+          revision: "before-revision",
+        };
+      },
+      fsDelete: async () => undefined,
+    }));
+    const modulePath = "./agentCodeCheckpoints.ts?confined-restore-test";
+    const module = await import(/* @vite-ignore */ modulePath);
+
+    await module.restoreAgentCodeReplayPreview({
+      conversationId: "conv-1",
+      messageId: "user-1",
+      targetCheckpointId: null,
+      affectedFiles: [
+        {
+          path: "src/file.ts",
+          realPath: "/repo/src/file.ts",
+          action: "modify",
+          status: "modified",
+          workspacePath: "/repo",
+          allowOutsideWorkspace: true,
+          target: {
+            exists: true,
+            content: "before",
+            revision: "before-revision",
+          },
+          expectedCurrent: {
+            exists: true,
+            content: "after",
+            revision: "after-revision",
+          },
+        },
+      ],
+    });
+
+    expect(reads).toEqual([
+      expect.objectContaining({
+        path: "/repo/src/file.ts",
+        allowOutsideWorkspace: false,
+        workspacePath: "/repo",
+      }),
+    ]);
+    expect(writes).toEqual([
+      expect.objectContaining({
+        path: "/repo/src/file.ts",
+        allowOutsideWorkspace: false,
+        workspacePath: "/repo",
+        expectedRevision: "after-revision",
+      }),
+    ]);
+    mock.restore();
   });
 });

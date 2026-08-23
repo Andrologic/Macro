@@ -579,6 +579,42 @@ fn resolve_wsl_path_for_workspace(
     Ok(Some(resolved))
 }
 
+async fn resolve_confined_wsl_repo_path_for_workspace(
+    workspace: &Path,
+    path: &str,
+) -> CommandResult<Option<WslProjectPath>> {
+    let workspace_string = workspace.to_string_lossy();
+    let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) else {
+        if parse_wsl_unc_path(path).is_some() {
+            return Err(command_error(format!(
+                "Repository path is outside the selected workspace: {}",
+                path
+            )));
+        }
+        return Ok(None);
+    };
+
+    let resolved = resolve_wsl_path_for_workspace(workspace, path)?
+        .ok_or_else(|| command_error(format!("Invalid WSL repository path: {}", path)))?;
+    if resolved.distro != wsl_workspace.distro {
+        return Err(command_error(format!(
+            "Repository path escapes WSL workspace: {}",
+            path
+        )));
+    }
+    fs::ensure_wsl_path_within_workspace(&wsl_workspace, &resolved, Some(false))
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+    Ok(Some(resolved))
+}
+
+fn validate_agent_git_repo_path(repo_path: &str, workspace: &Path) -> CommandResult<PathBuf> {
+    let confined = crate::fs::validate_path(Path::new(repo_path), workspace)
+        .map_err(|error| command_error(error.to_string()))?;
+    git::validate_repo_path(confined.to_string_lossy().as_ref(), workspace)
+        .map_err(|error| command_error(error.to_string()))
+}
+
 fn unsupported_wsl_workspace_tool(tool_id: &str) -> CommandError {
     command_error(format!(
         "Tool {} is not yet supported for WSL projects.",
@@ -2609,7 +2645,9 @@ async fn execute_workspace_tool_inner(
         }
         "git_status" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 let status = git::build_wsl_git_status(&wsl_repo_path)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2620,8 +2658,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let status = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2639,7 +2677,9 @@ async fn execute_workspace_tool_inner(
         "git_log" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let branch = json_arg_string(&args, "branch");
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 let snapshot = git::build_wsl_git_log_snapshot(&wsl_repo_path, branch.as_deref())
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2672,8 +2712,8 @@ async fn execute_workspace_tool_inner(
             let args_for_task = args.clone();
 
             tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2708,7 +2748,9 @@ async fn execute_workspace_tool_inner(
         }
         "git_branch_list" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 let branches = git::build_wsl_git_branches(&wsl_repo_path)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2725,8 +2767,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let branches = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2758,7 +2800,9 @@ async fn execute_workspace_tool_inner(
             let mode = git::GitDiffMode::parse(json_arg_string(&args, "mode").as_deref())
                 .map_err(|error| command_error(error.to_string()))?;
             let require_complete = json_arg_bool(&args, "require_complete").unwrap_or(false);
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 let diff = git::wsl_git_diff(
                     &wsl_repo_path,
                     base.as_deref(),
@@ -2787,8 +2831,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let patch = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2825,7 +2869,10 @@ async fn execute_workspace_tool_inner(
         "git_read_file_pair" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let path = json_arg_string(&args, "path").unwrap_or_default();
-            if resolve_wsl_path_for_workspace(&workspace, &repo_path)?.is_some() {
+            if resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path)
+                .await?
+                .is_some()
+            {
                 return Err(unsupported_wsl_workspace_tool("git_read_file_pair"));
             }
             let repo_path_for_task = repo_path.clone();
@@ -2833,8 +2880,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let pair = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let relative_path = git::validate_repo_relative_file_path(&path)
                     .map_err(|error| command_error(error.to_string()))?;
                 let repo = git_state_for_task
@@ -2855,7 +2902,9 @@ async fn execute_workspace_tool_inner(
         "git_get_tree" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let branch = json_arg_string(&args, "branch");
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 let tree = git::build_wsl_git_tree(&wsl_repo_path, branch.as_deref())
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2872,8 +2921,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let tree = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2900,7 +2949,9 @@ async fn execute_workspace_tool_inner(
             let paths = json_arg_string_array(&args, "paths")
                 .filter(|items| !items.is_empty())
                 .unwrap_or_else(|| vec![".".to_string()]);
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 git::wsl_git_add(&wsl_repo_path, &paths)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2922,8 +2973,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let status = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2952,7 +3003,9 @@ async fn execute_workspace_tool_inner(
             let message = json_arg_string(&args, "message")
                 .ok_or_else(|| command_error("Missing message argument for git_commit tool."))?;
             let stage_all = json_arg_bool(&args, "stage_all").unwrap_or(true);
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 let before = git::build_wsl_git_log(&wsl_repo_path, 1, None)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -2983,8 +3036,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let result = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3033,7 +3086,9 @@ async fn execute_workspace_tool_inner(
                 })?;
             let branch_or_commit_for_task = branch_or_commit.clone();
             let create = json_arg_bool(&args, "create").unwrap_or(false);
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 git::wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3053,8 +3108,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let status = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3077,6 +3132,53 @@ async fn execute_workspace_tool_inner(
             }))
             .map_err(|error| command_error(error.to_string()))
         }
+        "git_merge" => {
+            let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let branch_name = json_arg_string(&args, "branch_name")
+                .or_else(|| json_arg_string(&args, "branch"))
+                .ok_or_else(|| command_error("Missing branch_name argument for git_merge tool."))?;
+            let into_branch = json_arg_string(&args, "into_branch")
+                .ok_or_else(|| command_error("Missing into_branch argument for git_merge tool."))?;
+            if resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path)
+                .await?
+                .is_some()
+            {
+                return Err(unsupported_wsl_workspace_tool("git_merge"));
+            }
+
+            let repo_path_for_task = repo_path.clone();
+            let branch_name_for_task = branch_name.clone();
+            let into_branch_for_task = into_branch.clone();
+            let workspace_for_task = workspace.clone();
+            let git_state_for_task = git_state.clone();
+            let (output, status) = tokio::task::spawn_blocking(move || {
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
+                let repo = git_state_for_task
+                    .open_repo(&validated)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let repo = repo
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock repository"))?;
+                let output = git::merge_repo(&repo, &branch_name_for_task, &into_branch_for_task)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let status = git::build_git_status(&repo)
+                    .map_err(|error| command_error(error.to_string()))?;
+                Ok::<_, CommandError>((output, status))
+            })
+            .await
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "repo_path": repo_path,
+                "branch": status.branch,
+                "merged_branch": branch_name,
+                "into_branch": into_branch,
+                "output": output
+            }))
+            .map_err(|error| command_error(error.to_string()))
+        }
         "git_reset" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let mode = json_arg_string(&args, "mode").unwrap_or_default();
@@ -3088,7 +3190,9 @@ async fn execute_workspace_tool_inner(
             }
             let commit = json_arg_string(&args, "commit");
             let confirm = json_arg_bool(&args, "confirm");
-            if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
+            {
                 git::wsl_git_reset(&wsl_repo_path, &mode, commit, confirm)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3107,8 +3211,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let status = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3137,7 +3241,10 @@ async fn execute_workspace_tool_inner(
         "git_abort_merge" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let confirm = json_arg_bool(&args, "confirm");
-            if resolve_wsl_path_for_workspace(&workspace, &repo_path)?.is_some() {
+            if resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path)
+                .await?
+                .is_some()
+            {
                 return Err(unsupported_wsl_workspace_tool("git_abort_merge"));
             }
             let repo_path_for_task = repo_path.clone();
@@ -3145,8 +3252,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let status = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3171,7 +3278,10 @@ async fn execute_workspace_tool_inner(
         "git_stash" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let message = json_arg_string(&args, "message");
-            if resolve_wsl_path_for_workspace(&workspace, &repo_path)?.is_some() {
+            if resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path)
+                .await?
+                .is_some()
+            {
                 return Err(unsupported_wsl_workspace_tool("git_stash"));
             }
             let repo_path_for_task = repo_path.clone();
@@ -3179,8 +3289,8 @@ async fn execute_workspace_tool_inner(
             let git_state_for_task = git_state.clone();
 
             let result = tokio::task::spawn_blocking(move || {
-                let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
-                    .map_err(|error| command_error(error.to_string()))?;
+                let validated =
+                    validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
                     .open_repo(&validated)
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4917,9 +5027,10 @@ mod tests {
         apply_patch_hunks_to_content, command_error, commit_pending_file_changes_atomically,
         exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
         parse_apply_patch, provider_definition_patch_operations, register_tool_execution,
-        resolve_requested_workspace, resolve_workspace_for_tool_path,
-        restore_deleted_provider_secrets, rollback_pending_file_changes, tool_cancel_workspace,
-        tool_execution_timeout, DbPool, ParsedPatchOperation, PendingFileChange,
+        resolve_confined_wsl_repo_path_for_workspace, resolve_requested_workspace,
+        resolve_workspace_for_tool_path, restore_deleted_provider_secrets,
+        rollback_pending_file_changes, tool_cancel_workspace, tool_execution_timeout,
+        validate_agent_git_repo_path, DbPool, ParsedPatchOperation, PendingFileChange,
     };
     use crate::commands::fs::content_revision;
     use crate::commands::git::{GitFileStatus, GitStatusDto};
@@ -4973,6 +5084,62 @@ mod tests {
         let timed_out =
             command_error("Tool execution timed out after 30 seconds: grep. Narrow the query.");
         assert_eq!(timed_out.code(), Some("TOOL_EXECUTION_TIMEOUT"));
+    }
+
+    #[tokio::test]
+    async fn confined_git_repo_rejects_a_wsl_path_from_a_native_workspace() {
+        let workspace = TempDir::new().expect("workspace");
+        let error = resolve_confined_wsl_repo_path_for_workspace(
+            workspace.path(),
+            r"\\wsl$\Ubuntu\home\user\repo",
+        )
+        .await
+        .expect_err("native workspace must not route agent Git into WSL");
+
+        assert!(error.message.contains("outside the selected workspace"));
+    }
+
+    #[tokio::test]
+    async fn confined_git_repo_rejects_a_different_wsl_distribution_before_io() {
+        let workspace = Path::new(r"\\wsl$\Ubuntu\home\user\workspace");
+        let error = resolve_confined_wsl_repo_path_for_workspace(
+            workspace,
+            r"\\wsl$\Debian\home\user\repo",
+        )
+        .await
+        .expect_err("agent Git must stay in the selected WSL distribution");
+
+        assert!(error.message.contains("escapes WSL workspace"));
+    }
+
+    #[test]
+    fn agent_git_repo_validation_rejects_absolute_and_linked_external_directories() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace = temp.path().join("workspace");
+        let inside = workspace.join("inside");
+        let outside = temp.path().join("workspace-sibling");
+        fs::create_dir_all(&inside).expect("create inside repo directory");
+        fs::create_dir_all(&outside).expect("create outside repo directory");
+
+        let validated = validate_agent_git_repo_path("inside", &workspace)
+            .expect("relative repo inside selected workspace");
+        assert_eq!(validated, inside.canonicalize().expect("canonical inside"));
+
+        let absolute_error =
+            validate_agent_git_repo_path(outside.to_string_lossy().as_ref(), &workspace)
+                .expect_err("absolute sibling must be rejected for agent Git");
+        assert!(absolute_error.message.contains("outside workspace"));
+
+        let linked = workspace.join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &linked).expect("create directory symlink");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside, &linked).is_err() {
+            return;
+        }
+        let linked_error = validate_agent_git_repo_path("linked", &workspace)
+            .expect_err("linked external repo must be rejected for agent Git");
+        assert!(linked_error.message.contains("outside workspace"));
     }
 
     #[tokio::test]

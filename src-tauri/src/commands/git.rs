@@ -7239,6 +7239,28 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_repo_path_rejects_relative_repo_through_external_directory_link() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace = temp.path().join("workspace");
+        let outside_repo = temp.path().join("outside-repo");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        Repository::init(&outside_repo).expect("init outside repo");
+        let linked_repo = workspace.join("linked-repo");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_repo, &linked_repo).expect("create repo symlink");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside_repo, &linked_repo).is_err() {
+            return;
+        }
+
+        let error = validate_repo_path("linked-repo", &workspace)
+            .expect_err("agent-relative repo link must stay inside the selected workspace");
+
+        assert!(error.to_string().contains("outside workspace"));
+    }
+
+    #[test]
     fn test_parse_task_id_hash() {
         let msg = "feat: add feature #task-123";
         assert_eq!(parse_task_id(msg), Some("task-123".to_string()));

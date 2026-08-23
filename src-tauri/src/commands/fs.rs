@@ -186,7 +186,7 @@ fn resolve_wsl_path(
     Ok(resolved)
 }
 
-async fn ensure_wsl_path_within_workspace(
+pub(crate) async fn ensure_wsl_path_within_workspace(
     workspace: &WslProjectPath,
     resolved: &WslProjectPath,
     allow_outside_workspace: Option<bool>,

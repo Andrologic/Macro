@@ -298,7 +298,7 @@ const readCurrentSnapshot = async (
 
   const current = await tauriIpc.fsReadFileWithOptions({
     path: file.realPath,
-    allowOutsideWorkspace: file.allowOutsideWorkspace,
+    allowOutsideWorkspace: false,
     ...commonOptions,
   });
   return {
@@ -397,7 +397,7 @@ export const buildAgentCodeReplayPreview = (
         mountName: file.mountName,
         workspacePath: file.workspacePath,
         workspaceScope: file.workspaceScope,
-        allowOutsideWorkspace: file.allowOutsideWorkspace,
+        allowOutsideWorkspace: false,
         target: copySnapshot(file.after),
       });
     }
@@ -433,7 +433,7 @@ export const buildAgentCodeReplayPreview = (
           mountName: file.mountName,
           workspacePath: file.workspacePath,
           workspaceScope: file.workspaceScope,
-          allowOutsideWorkspace: file.allowOutsideWorkspace,
+          allowOutsideWorkspace: false,
           target: copySnapshot(file.before),
         });
       }
@@ -557,7 +557,7 @@ export const restoreAgentCodeReplayPreview = async (
       path: file.realPath,
       content: snapshot.content,
       createDirs: true,
-      allowOutsideWorkspace: file.allowOutsideWorkspace,
+      allowOutsideWorkspace: false,
       expectedRevision: expectedCurrent
         ? expectedCurrent.exists
           ? expectedCurrent.revision ?? undefined

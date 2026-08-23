@@ -236,90 +236,7 @@ const formatToolError = (error: unknown): string => {
   return String(error);
 };
 
-const formatBoundedGitStatus = (
-  status: tauriIpc.GitStatusDto,
-  args: ToolArgs,
-  repoScope: string,
-  repoMeta: Record<string, unknown>,
-): string => {
-  const stagedCount = status.staged_files.length;
-  const unstagedCount = status.unstaged_files.length;
-  const untrackedCount = status.untracked_files.length;
-  const conflictedFiles = status.conflictedFiles;
-  const entries = [
-    ...status.staged_files.map((file) => ({ category: "staged", file })),
-    ...status.unstaged_files.map((file) => ({ category: "unstaged", file })),
-    ...status.untracked_files.map((file) => ({ category: "untracked", file })),
-    ...conflictedFiles.map((path) => ({ category: "conflicted", path })),
-  ];
-  const snapshot = JSON.stringify(entries);
-  const revision = createToolCursor(snapshot, 0).split(":")[1];
-  const cursorScope = `git_status\0${repoScope}\0${revision}`;
-  const page = paginateToolItems(
-    entries,
-    args,
-    cursorScope,
-    {
-      defaultResults: TOOL_OUTPUT_LIMITS.git.statusDefaultResults,
-      maxResults: TOOL_OUTPUT_LIMITS.git.statusMaxResults,
-    },
-  );
-  const stagedFiles: tauriIpc.GitFileStatus[] = [];
-  const unstagedFiles: tauriIpc.GitFileStatus[] = [];
-  const untrackedFiles: tauriIpc.GitFileStatus[] = [];
-  const pageConflictedFiles: string[] = [];
-  for (const entry of page.items) {
-    if (entry.category === "staged" && "file" in entry) {
-      stagedFiles.push(entry.file);
-    } else if (entry.category === "unstaged" && "file" in entry) {
-      unstagedFiles.push(entry.file);
-    } else if (entry.category === "untracked" && "file" in entry) {
-      untrackedFiles.push(entry.file);
-    } else if (entry.category === "conflicted" && "path" in entry) {
-      pageConflictedFiles.push(entry.path);
-    }
-  }
 
-  return JSON.stringify(
-    {
-      ...repoMeta,
-      branch: status.branch,
-      head_commit: status.head_commit,
-      staged_files: stagedFiles,
-      unstaged_files: unstagedFiles,
-      untracked_files: untrackedFiles,
-      conflicted_files: pageConflictedFiles,
-      merge_in_progress: status.mergeInProgress,
-      is_clean: status.is_clean,
-      has_origin: status.has_origin,
-      has_upstream: status.has_upstream,
-      ahead: status.ahead,
-      behind: status.behind,
-      counts: {
-        staged: stagedCount,
-        unstaged: unstagedCount,
-        untracked: untrackedCount,
-        conflicted: conflictedFiles.length,
-      },
-      total_count: entries.length,
-      limit: page.limit,
-      offset: page.offset,
-      truncated: page.truncated,
-      next_cursor: page.nextCursor,
-      revision,
-    },
-    null,
-    2,
-  );
-};
-
-const createGitLogCursorScope = (
-  repoScope: string,
-  branch: string | undefined,
-  revision: string,
-): string => {
-  return `git_log\0${repoScope}\0${branch ?? ""}\0${revision}`;
-};
 
 const normalizeExpectedRevision = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -370,24 +287,6 @@ const expectedRevisionConflict = (
     return `Stale content for "${path}": expected revision ${expectedRevision} but found ${actualRevision}. Re-read the file and retry.`;
   }
   return null;
-};
-
-const validateExpectedFileRevision = async (params: {
-  path: string;
-  expectedRevision: string | null;
-  read: () => Promise<Awaited<ReturnType<typeof tauriIpc.fsReadFileWithOptions>>>;
-}): Promise<string | null> => {
-  if (!params.expectedRevision) return null;
-  try {
-    const current = await params.read();
-    return expectedRevisionConflict(
-      params.path,
-      params.expectedRevision,
-      current.revision,
-    );
-  } catch {
-    return expectedRevisionConflict(params.path, params.expectedRevision, null);
-  }
 };
 
 type CheckpointCaptureOptions = {
@@ -1571,70 +1470,13 @@ const readAllCandidateFiles = async (
     path: resolveDirectPath(".", mode, workspacePath),
     recursive: true,
     includeHidden,
-    allowOutsideWorkspace: Boolean(normalizeWorkspacePath(workspacePath)),
+    allowOutsideWorkspace: false,
+    workspacePath,
   });
   assertActive?.();
   return entries.filter((entry) => entry.kind === "file");
 };
 
-const resolveGitRepoPath = (
-  args: ToolArgs,
-  mode: AppMode,
-  workspacePath?: string | null,
-): string => {
-  const explicitRepoPath = sanitizePathInput(toString(args.repo_path));
-  const normalizedWorkspacePath = normalizeWorkspacePath(workspacePath);
-  if (explicitRepoPath) {
-    return normalizedWorkspacePath
-      ? joinPathWithinWorkspace(normalizedWorkspacePath, explicitRepoPath)
-      : resolvePathForMode(explicitRepoPath, mode);
-  }
-
-  return normalizedWorkspacePath || resolvePathForMode(".", mode);
-};
-
-const shouldFallbackRepoPath = (error: unknown): boolean => {
-  if (!error || typeof error !== "object") return false;
-  const maybe = error as Record<string, unknown>;
-  const code = typeof maybe.code === "string" ? maybe.code : "";
-  const message =
-    typeof maybe.message === "string" ? maybe.message.toLowerCase() : "";
-  return (
-    code === "FilesystemNotFound" ||
-    code === "GitRepositoryNotFound" ||
-    code === "InvalidPath" ||
-    code === "FilesystemPathOutsideWorkspace" ||
-    message.includes("outside the workspace")
-  );
-};
-
-const runGitWithRepoFallback = async <T>(
-  primaryRepoPath: string,
-  execute: (repoPath: string) => Promise<T>,
-  allowFallbackToDot: boolean,
-): Promise<{ value: T; repoPath: string }> => {
-  const candidates = allowFallbackToDot
-    ? Array.from(new Set([primaryRepoPath, "."].filter(Boolean)))
-    : [primaryRepoPath];
-  let lastError: unknown;
-
-  for (const candidate of candidates) {
-    try {
-      const value = await execute(candidate);
-      return { value, repoPath: candidate };
-    } catch (error) {
-      lastError = error;
-      if (
-        !shouldFallbackRepoPath(error) ||
-        candidate === candidates[candidates.length - 1]
-      ) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
-};
 
 const canCheckWorkspaceEntries = (): boolean => tauriIpc.isTauriAvailable();
 
@@ -2044,6 +1886,8 @@ export const executeWorkspaceTool = async (
           }
         }
       }
+
+      return `Error executing ${toolName}: the confined Git tool host is unavailable; refusing an unscoped Git fallback.`;
     }
 
     const candidatePathInput = extractCandidatePath(toolName, args);
@@ -2164,7 +2008,7 @@ export const executeWorkspaceTool = async (
           recursive,
           includeHidden,
           maxDepth,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath: target.candidate.workspacePath,
         });
         assertToolExecutionActive();
@@ -2231,7 +2075,7 @@ export const executeWorkspaceTool = async (
         );
         const result = await tauriIpc.fsReadFileWithOptions({
           path,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath: target.candidate.workspacePath,
         });
         assertToolExecutionActive();
@@ -2303,24 +2147,26 @@ export const executeWorkspaceTool = async (
           projectId: candidate.id,
           mountName: candidate.mountName,
           workspacePath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
         };
-        const revisionConflict = await validateExpectedFileRevision({
-          path: resolved.virtualPath,
+        const before = await readCheckpointSnapshot(checkpointOptions);
+        const revisionConflict = expectedRevisionConflict(
+          resolved.virtualPath,
           expectedRevision,
-          read: () =>
-            tauriIpc.fsReadFileWithOptions({
-              path: realPath,
-              allowOutsideWorkspace: true,
-              workspacePath,
-            }),
-        });
+          before.exists ? before.revision : null,
+        );
         if (revisionConflict) return revisionConflict;
+        const mutationRevision = expectedRevision ??
+          (before.exists ? before.revision : EXPECTED_REVISION_ABSENT);
+        if (!mutationRevision) {
+          return `Cannot safely write ${resolved.virtualPath}: the current revision is unavailable. Re-read the file and retry.`;
+        }
         let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
         const { writeResult, readback } = await executeCheckpointedFileMutation({
           executeOptions: options,
           toolName,
           checkpointOptions,
+          before,
           after: (result) => snapshotFromReadResult(result.readback),
           currentAfterMutation: () => currentAfterMutation,
           mutation: async () => {
@@ -2328,9 +2174,9 @@ export const executeWorkspaceTool = async (
               path: realPath,
               content,
               createDirs: rawArgs.create_dirs !== false,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath,
-              expectedRevision,
+              expectedRevision: mutationRevision,
             });
             currentAfterMutation = snapshotFromAppliedText(
               content,
@@ -2338,7 +2184,7 @@ export const executeWorkspaceTool = async (
             );
             const validation = await tauriIpc.fsReadFileWithOptions({
               path: realPath,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath,
             });
             return { writeResult: result, readback: validation };
@@ -2414,11 +2260,11 @@ export const executeWorkspaceTool = async (
           projectId: candidate.id,
           mountName: candidate.mountName,
           workspacePath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
         };
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath,
         });
         if (current.is_binary) {
@@ -2463,7 +2309,7 @@ export const executeWorkspaceTool = async (
               path: realPath,
               content: updated,
               createDirs: true,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath,
               expectedRevision: mutationRevision,
             });
@@ -2473,7 +2319,7 @@ export const executeWorkspaceTool = async (
             );
             return tauriIpc.fsReadFileWithOptions({
               path: realPath,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath,
             });
           },
@@ -2549,7 +2395,7 @@ export const executeWorkspaceTool = async (
 
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath,
         });
         if (current.is_binary) {
@@ -2578,7 +2424,7 @@ export const executeWorkspaceTool = async (
             projectId: candidate.id,
             mountName: candidate.mountName,
             workspacePath,
-            allowOutsideWorkspace: true,
+            allowOutsideWorkspace: false,
           },
           before: snapshotFromReadResult(current),
           after: missingCheckpointSnapshot(),
@@ -2705,7 +2551,7 @@ export const executeWorkspaceTool = async (
 
           const current = await tauriIpc.fsReadFileWithOptions({
             path: patchTarget.realPath,
-            allowOutsideWorkspace: true,
+            allowOutsideWorkspace: false,
             workspacePath: patchTarget.candidate.workspacePath,
           });
           expectedRevision = expectedRevision ?? current.revision ?? null;
@@ -2770,11 +2616,11 @@ export const executeWorkspaceTool = async (
               workspacePath: change.target.candidate.workspacePath,
             },
             readOptions: {
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath: change.target.candidate.workspacePath,
             },
             writeOptions: {
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath: change.target.candidate.workspacePath,
             },
             deleteOptions: {
@@ -2807,7 +2653,7 @@ export const executeWorkspaceTool = async (
             try {
               const readback = await tauriIpc.fsReadFileWithOptions({
                 path: change.target.realPath,
-                allowOutsideWorkspace: true,
+                allowOutsideWorkspace: false,
                 workspacePath: change.target.candidate.workspacePath,
               });
               validation = {
@@ -2865,7 +2711,7 @@ export const executeWorkspaceTool = async (
               projectId: change.target.candidate.id,
               mountName: change.target.candidate.mountName,
               workspacePath: change.target.candidate.workspacePath,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               before: change.before,
               after: afterCheckpoint,
             }),
@@ -3053,7 +2899,7 @@ export const executeWorkspaceTool = async (
                 candidate.workspacePath,
                 file.relative_path,
               ),
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath: candidate.workspacePath,
             });
             assertToolExecutionActive();
@@ -3175,162 +3021,28 @@ export const executeWorkspaceTool = async (
           target.relativePath,
           mode,
         );
-        const repoPath = joinPathWithinWorkspace(
-          target.candidate.workspacePath,
-          target.relativePath,
-        );
-        const allowRepoFallback = false;
-        let effectiveRepoPath = repoPath;
+        const backendResult = await tauriIpc.executeWorkspaceTool({
+          mode,
+          toolId: toolName,
+          args: {
+            ...rawArgs,
+            repo_path: target.relativePath,
+          },
+          workspacePath: target.candidate.workspacePath,
+          virtualRootEnabled: false,
+          focusedProjectId: target.candidate.id,
+        });
+        if (!backendResult || backendResult === "UNSUPPORTED_WORKSPACE_TOOL") {
+          return `Error executing ${toolName}: the confined Git tool host is unavailable; refusing an unscoped Git fallback.`;
+        }
+
         const repoMeta = {
           project_id: target.candidate.id,
           mount_name: target.candidate.mountName,
           repo_path: resolved.virtualPath,
           ...(resolved.realPath ? { real_repo_path: resolved.realPath } : {}),
         };
-
-        if (toolName === "git_status") {
-          const { value: status } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return formatBoundedGitStatus(
-            status,
-            rawArgs,
-            repoMeta.repo_path,
-            repoMeta,
-          );
-        }
-
-        if (toolName === "git_log") {
-          const branch = toString(rawArgs.branch) || undefined;
-          const requestedPage = resolveToolPage(
-            { ...rawArgs, cursor: undefined },
-            "git_log-page-size",
-            {
-              defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
-              maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
-            },
-          );
-          const { value: snapshotPage } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) =>
-              tauriIpc.gitLogPage({
-                repoPath: candidate,
-                limit: requestedPage.limit + 1,
-                offset: 0,
-                branch,
-              }),
-            allowRepoFallback,
-          );
-          assertToolExecutionActive();
-          const cursorScope = createGitLogCursorScope(
-            repoMeta.repo_path,
-            branch,
-            snapshotPage.revision,
-          );
-          const page = resolveToolPage(
-            rawArgs,
-            cursorScope,
-            {
-              defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
-              maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
-            },
-          );
-          const pageSnapshot = page.offset === 0
-            ? snapshotPage
-            : (
-                await runGitWithRepoFallback(
-                  repoPath,
-                  (candidate) =>
-                    tauriIpc.gitLogPage({
-                      repoPath: candidate,
-                      limit: page.limit + 1,
-                      offset: page.offset,
-                      branch,
-                    }),
-                  allowRepoFallback,
-                )
-              ).value;
-          assertToolExecutionActive();
-          if (pageSnapshot.revision !== snapshotPage.revision) {
-            return "Error executing git_log: repository history changed while reading this page. Restart without a cursor.";
-          }
-          const commits = pageSnapshot.commits;
-          const truncated = commits.length > page.limit;
-          const pageCommits = truncated ? commits.slice(0, page.limit) : commits;
-          return JSON.stringify(
-            {
-              ...repoMeta,
-              count: pageCommits.length,
-              commits: pageCommits,
-              limit: page.limit,
-              offset: page.offset,
-              truncated,
-              next_cursor: truncated
-                ? createToolCursor(
-                    cursorScope,
-                    page.offset + pageCommits.length,
-                  )
-                : null,
-              total_count: truncated
-                ? null
-                : page.offset + pageCommits.length,
-              total_is_exact: !truncated,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_branch_list") {
-          const { value: branches } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitBranchList(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify({ ...repoMeta, ...branches }, null, 2);
-        }
-
         if (toolName === "git_diff") {
-          const base = toString(rawArgs.base) || undefined;
-          const head = toString(rawArgs.head) || undefined;
-          const contextLines =
-            typeof rawArgs.context_lines === "number"
-              ? Math.min(
-                  TOOL_OUTPUT_LIMITS.git.diffMaxContextLines,
-                  Math.max(0, Math.floor(rawArgs.context_lines)),
-                )
-              : undefined;
-          const requestedMode = toString(rawArgs.mode) || "patch";
-          if (!["patch", "stat", "name_only"].includes(requestedMode)) {
-            return `Error executing git_diff: unsupported mode "${requestedMode}".`;
-          }
-          const diffMode = requestedMode as "patch" | "stat" | "name_only";
-          const requireComplete = rawArgs.require_complete === true;
-          const ignoreWhitespace = rawArgs.ignore_whitespace === true;
-          const paths = Array.isArray(rawArgs.paths)
-            ? rawArgs.paths.filter(
-                (value): value is string =>
-                  typeof value === "string" && value.trim().length > 0,
-              )
-            : undefined;
-          const { value: patch } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) =>
-              tauriIpc.gitDiff({
-                repoPath: candidate,
-                base,
-                head,
-                contextLines,
-                ignoreWhitespace,
-                paths,
-                mode: diffMode,
-                maxBytes: TOOL_OUTPUT_LIMITS.git.diffMaxBytes,
-                requireComplete,
-              }),
-            allowRepoFallback,
-          );
           const header = [
             `REPO: ${repoMeta.repo_path}`,
             `PROJECT_ID: ${repoMeta.project_id}`,
@@ -3339,626 +3051,19 @@ export const executeWorkspaceTool = async (
               ? [`REAL_REPO_PATH: ${repoMeta.real_repo_path}`]
               : []),
           ].join("\n");
-          return `${header}\nDIFF_MODE: ${diffMode}\nMAX_OUTPUT_BYTES: ${TOOL_OUTPUT_LIMITS.git.diffMaxBytes}\nREQUIRE_COMPLETE: ${requireComplete}\n\n${patch || ""}`;
+          return `${header}\n${backendResult}`;
         }
 
-        if (toolName === "git_get_tree") {
-          const branch = toString(rawArgs.branch) || undefined;
-          const { value: tree } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitGetTree({ repoPath: candidate, branch }),
-            allowRepoFallback,
-          );
-          return JSON.stringify({ ...repoMeta, ...tree }, null, 2);
+        try {
+          const parsed = JSON.parse(backendResult) as Record<string, unknown>;
+          return JSON.stringify({ ...parsed, ...repoMeta }, null, 2);
+        } catch {
+          return backendResult;
         }
-
-        if (toolName === "git_add") {
-          const paths = Array.isArray(rawArgs.paths)
-            ? rawArgs.paths.filter(
-                (value): value is string =>
-                  typeof value === "string" && value.trim().length > 0,
-              )
-            : ["."];
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitAdd({ repoPath: candidate, paths });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              staged_paths: paths,
-              staged_count: status.staged_files.length,
-              branch: status.branch,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_commit") {
-          const message = toString(rawArgs.message);
-          if (!message) return "Missing message argument for git_commit tool.";
-
-          const { value: before } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitLog({ repoPath: candidate, limit: 1 });
-            },
-            allowRepoFallback,
-          );
-          const headBefore = before[0]?.id ?? null;
-
-          const { value: hash } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitCommit({
-                repoPath: candidate,
-                message,
-                stageAll: rawArgs.stage_all !== false,
-              });
-            },
-            allowRepoFallback,
-          );
-
-          const { value: after } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitLog({ repoPath: candidate, limit: 1 }),
-            allowRepoFallback,
-          );
-          const headAfter = after[0]?.id ?? null;
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              branch: status.branch,
-              hash,
-              head_before: headBefore,
-              head_after: headAfter,
-              head_changed: headBefore !== headAfter,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_checkout") {
-          const branchOrCommit =
-            toString(rawArgs.branch_or_commit) || toString(rawArgs.branch);
-          if (!branchOrCommit)
-            return "Missing branch_or_commit argument for git_checkout tool.";
-
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitCheckout({
-                repoPath: candidate,
-                branchOrCommit,
-                create: rawArgs.create === true,
-              });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              branch: status.branch,
-              target: branchOrCommit,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_merge") {
-          const branchName =
-            toString(rawArgs.branch_name) || toString(rawArgs.branch);
-          const intoBranch = toString(rawArgs.into_branch);
-          if (!branchName || !intoBranch) {
-            return "Missing branch_name or into_branch argument for git_merge tool.";
-          }
-
-          const { value: output } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitMerge({
-                repoPath: candidate,
-                branchName,
-                intoBranch,
-              });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              branch: status.branch,
-              merged_branch: branchName,
-              into_branch: intoBranch,
-              output,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_reset") {
-          const modeArg = toString(rawArgs.mode);
-          if (modeArg !== "soft" && modeArg !== "mixed" && modeArg !== "hard") {
-            return "Missing or invalid mode for git_reset. Use one of: soft, mixed, hard.";
-          }
-
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitReset({
-                repoPath: candidate,
-                mode: modeArg,
-                commit: toString(rawArgs.commit) || undefined,
-                confirm: rawArgs.confirm === true ? true : undefined,
-              });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            { ok: true, ...repoMeta, branch: status.branch },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_stash") {
-          const message = toString(rawArgs.message) || undefined;
-          const { value: stashId } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitStash({ repoPath: candidate, message });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            { ok: true, ...repoMeta, branch: status.branch, stash: stashId },
-            null,
-            2,
-          );
-        }
-
-        return `Unknown Git tool: ${toolName}`;
       }
+
     }
 
-    if (isGitTool(toolName)) {
-      const allowRepoFallback = false;
-      const repoPath = resolveGitRepoPath(args, mode, effectiveWorkspacePath);
-      let effectiveRepoPath = repoPath;
-
-      if (toolName === "git_status") {
-        const { value: status, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-        return formatBoundedGitStatus(
-          status,
-          args,
-          resolvedRepoPath,
-          { repo_path: resolvedRepoPath },
-        );
-      }
-
-      if (toolName === "git_log") {
-        const branch = toString(args.branch) || undefined;
-        const requestedPage = resolveToolPage(
-          { ...args, cursor: undefined },
-          "git_log-page-size",
-          {
-            defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
-            maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
-          },
-        );
-        const { value: snapshotPage } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) =>
-            tauriIpc.gitLogPage({
-              repoPath: candidate,
-              limit: requestedPage.limit + 1,
-              offset: 0,
-              branch,
-            }),
-          allowRepoFallback,
-        );
-        assertToolExecutionActive();
-        const cursorScope = createGitLogCursorScope(
-          repoPath,
-          branch,
-          snapshotPage.revision,
-        );
-        const page = resolveToolPage(
-          args,
-          cursorScope,
-          {
-            defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
-            maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
-          },
-        );
-        const pageResult = page.offset === 0
-          ? { value: snapshotPage, repoPath }
-          : await runGitWithRepoFallback(
-              repoPath,
-              (candidate) =>
-                tauriIpc.gitLogPage({
-                  repoPath: candidate,
-                  limit: page.limit + 1,
-                  offset: page.offset,
-                  branch,
-                }),
-              allowRepoFallback,
-            );
-        assertToolExecutionActive();
-        if (pageResult.value.revision !== snapshotPage.revision) {
-          return "Error executing git_log: repository history changed while reading this page. Restart without a cursor.";
-        }
-        const commits = pageResult.value.commits;
-        const resolvedRepoPath = pageResult.repoPath;
-        const truncated = commits.length > page.limit;
-        const pageCommits = truncated ? commits.slice(0, page.limit) : commits;
-        return JSON.stringify(
-          {
-            repo_path: resolvedRepoPath,
-            count: pageCommits.length,
-            commits: pageCommits,
-            limit: page.limit,
-            offset: page.offset,
-            truncated,
-            next_cursor: truncated
-              ? createToolCursor(
-                  cursorScope,
-                  page.offset + pageCommits.length,
-                )
-              : null,
-            total_count: truncated ? null : page.offset + pageCommits.length,
-            total_is_exact: !truncated,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_branch_list") {
-        const { value: branches, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitBranchList(candidate),
-            allowRepoFallback,
-          );
-        return JSON.stringify(
-          { repo_path: resolvedRepoPath, ...branches },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_diff") {
-        const base = toString(args.base) || undefined;
-        const head = toString(args.head) || undefined;
-        const contextLines =
-          typeof args.context_lines === "number"
-            ? Math.min(
-                TOOL_OUTPUT_LIMITS.git.diffMaxContextLines,
-                Math.max(0, Math.floor(args.context_lines)),
-              )
-            : undefined;
-        const requestedMode = toString(args.mode) || "patch";
-        if (!["patch", "stat", "name_only"].includes(requestedMode)) {
-          return `Error executing git_diff: unsupported mode "${requestedMode}".`;
-        }
-        const diffMode = requestedMode as "patch" | "stat" | "name_only";
-        const requireComplete = args.require_complete === true;
-        const ignoreWhitespace = args.ignore_whitespace === true;
-        const paths = Array.isArray(args.paths)
-          ? args.paths.filter(
-              (value): value is string =>
-                typeof value === "string" && value.trim().length > 0,
-            )
-          : undefined;
-        const { value: patch } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) =>
-            tauriIpc.gitDiff({
-              repoPath: candidate,
-              base,
-              head,
-              contextLines,
-              ignoreWhitespace,
-              paths,
-              mode: diffMode,
-              maxBytes: TOOL_OUTPUT_LIMITS.git.diffMaxBytes,
-              requireComplete,
-            }),
-          allowRepoFallback,
-        );
-        return `DIFF_MODE: ${diffMode}\nMAX_OUTPUT_BYTES: ${TOOL_OUTPUT_LIMITS.git.diffMaxBytes}\nREQUIRE_COMPLETE: ${requireComplete}\n\n${patch || ""}`;
-      }
-
-      if (toolName === "git_get_tree") {
-        const branch = toString(args.branch) || undefined;
-        const { value: tree, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitGetTree({ repoPath: candidate, branch }),
-            allowRepoFallback,
-          );
-        return JSON.stringify(
-          { repo_path: resolvedRepoPath, ...tree },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_add") {
-        const paths = Array.isArray(args.paths)
-          ? args.paths.filter(
-              (value): value is string =>
-                typeof value === "string" && value.trim().length > 0,
-            )
-          : ["."];
-        await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitAdd({ repoPath: candidate, paths });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            staged_paths: paths,
-            staged_count: status.staged_files.length,
-            branch: status.branch,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_commit") {
-        const message = toString(args.message);
-        if (!message) return "Missing message argument for git_commit tool.";
-
-        const { value: before } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitLog({ repoPath: candidate, limit: 1 });
-          },
-          allowRepoFallback,
-        );
-        const headBefore = before[0]?.id ?? null;
-
-        const { value: hash } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitCommit({
-              repoPath: candidate,
-              message,
-              stageAll: args.stage_all !== false,
-            });
-          },
-          allowRepoFallback,
-        );
-
-        const { value: after } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitLog({ repoPath: candidate, limit: 1 }),
-          allowRepoFallback,
-        );
-        const headAfter = after[0]?.id ?? null;
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            hash,
-            head_before: headBefore,
-            head_after: headAfter,
-            head_changed: headBefore !== headAfter,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_checkout") {
-        const branchOrCommit =
-          toString(args.branch_or_commit) || toString(args.branch);
-        if (!branchOrCommit)
-          return "Missing branch_or_commit argument for git_checkout tool.";
-
-        await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitCheckout({
-              repoPath: candidate,
-              branchOrCommit,
-              create: args.create === true,
-            });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            target: branchOrCommit,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_merge") {
-        const branchName = toString(args.branch_name) || toString(args.branch);
-        const intoBranch = toString(args.into_branch);
-        if (!branchName || !intoBranch) {
-          return "Missing branch_name or into_branch argument for git_merge tool.";
-        }
-
-        const { value: output } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitMerge({
-              repoPath: candidate,
-              branchName,
-              intoBranch,
-            });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            merged_branch: branchName,
-            into_branch: intoBranch,
-            output,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_reset") {
-        const modeArg = toString(args.mode);
-        if (modeArg !== "soft" && modeArg !== "mixed" && modeArg !== "hard") {
-          return "Missing or invalid mode for git_reset. Use one of: soft, mixed, hard.";
-        }
-
-        await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitReset({
-              repoPath: candidate,
-              mode: modeArg,
-              commit: toString(args.commit) || undefined,
-              confirm: args.confirm === true ? true : undefined,
-            });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          { ok: true, repo_path: effectiveRepoPath, branch: status.branch },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_stash") {
-        const message = toString(args.message) || undefined;
-        const { value: stashId } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitStash({ repoPath: candidate, message });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            stash: stashId,
-          },
-          null,
-          2,
-        );
-      }
-
-      return `Unknown Git tool: ${toolName}`;
-    }
 
     if (toolName === "list") {
       const inputPath = sanitizePathInput(toString(args.path) || ".");
@@ -3974,7 +3079,8 @@ export const executeWorkspaceTool = async (
         recursive,
         includeHidden,
         maxDepth,
-        allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
+        workspacePath: effectiveWorkspacePath,
       });
       assertToolExecutionActive();
       const sortedEntries = entries.sort((left, right) =>
@@ -4013,7 +3119,8 @@ export const executeWorkspaceTool = async (
       try {
         result = await tauriIpc.fsReadFileWithOptions({
           path,
-          allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
+          workspacePath: effectiveWorkspacePath,
         });
         assertToolExecutionActive();
       } catch (readError) {
@@ -4029,7 +3136,8 @@ export const executeWorkspaceTool = async (
           path: root,
           recursive: true,
           includeHidden: false,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
+          workspacePath: effectiveWorkspacePath,
         });
 
         const candidates = entries
@@ -4076,7 +3184,8 @@ export const executeWorkspaceTool = async (
           resolvedPath = fallbackCandidates[0].path;
           result = await tauriIpc.fsReadFileWithOptions({
             path: resolvedPath,
-            allowOutsideWorkspace: true,
+            allowOutsideWorkspace: false,
+            workspacePath: effectiveWorkspacePath,
           });
         } else if (fallbackCandidates.length > 1) {
           const suggestion = fallbackCandidates
@@ -4125,26 +3234,26 @@ export const executeWorkspaceTool = async (
         realPath: path,
         workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
       };
-      const revisionConflict = await validateExpectedFileRevision({
-        path: resolvedPath,
+      const before = await readCheckpointSnapshot(checkpointOptions);
+      const revisionConflict = expectedRevisionConflict(
+        resolvedPath,
         expectedRevision,
-        read: () =>
-          tauriIpc.fsReadFileWithOptions({
-            path,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
-            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-          }),
-      });
+        before.exists ? before.revision : null,
+      );
       if (revisionConflict) return revisionConflict;
+      const mutationRevision = expectedRevision ??
+        (before.exists ? before.revision : EXPECTED_REVISION_ABSENT);
+      if (!mutationRevision) {
+        return `Cannot safely write ${resolvedPath}: the current revision is unavailable. Re-read the file and retry.`;
+      }
       let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
       const { writeResult, readback } = await executeCheckpointedFileMutation({
         executeOptions: options,
         toolName,
         checkpointOptions,
+        before,
         after: (result) => snapshotFromReadResult(result.readback),
         currentAfterMutation: () => currentAfterMutation,
         mutation: async () => {
@@ -4152,10 +3261,10 @@ export const executeWorkspaceTool = async (
             path,
             content,
             createDirs,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-            expectedRevision,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
+            expectedRevision: mutationRevision,
           });
           currentAfterMutation = snapshotFromAppliedText(
             content,
@@ -4163,9 +3272,9 @@ export const executeWorkspaceTool = async (
           );
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           });
           return { writeResult: result, readback: validation };
         },
@@ -4211,9 +3320,9 @@ export const executeWorkspaceTool = async (
 
       const current = await tauriIpc.fsReadFileWithOptions({
         path,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
       });
       if (current.is_binary) {
         return `Cannot edit binary file: ${path}`;
@@ -4254,8 +3363,7 @@ export const executeWorkspaceTool = async (
           realPath: path,
           workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-          allowOutsideWorkspace:
-            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
         },
         before: snapshotFromReadResult(current),
         after: (result) => snapshotFromReadResult(result.readback),
@@ -4265,9 +3373,9 @@ export const executeWorkspaceTool = async (
             path,
             content: updated,
             createDirs: true,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
             expectedRevision: mutationRevision,
           });
           currentAfterMutation = snapshotFromAppliedText(
@@ -4276,9 +3384,9 @@ export const executeWorkspaceTool = async (
           );
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           });
           return { writeResult: result, readback: validation };
         },
@@ -4328,9 +3436,9 @@ export const executeWorkspaceTool = async (
 
       const current = await tauriIpc.fsReadFileWithOptions({
         path,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
       });
       if (current.is_binary) {
         return `Cannot delete binary file with checkpointing: ${resolvedPath}`;
@@ -4355,8 +3463,7 @@ export const executeWorkspaceTool = async (
           realPath: path,
           workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-          allowOutsideWorkspace:
-            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
         },
         before: snapshotFromReadResult(current),
         after: missingCheckpointSnapshot(),
@@ -4458,9 +3565,9 @@ export const executeWorkspaceTool = async (
 
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
-          allowOutsideWorkspace:
-            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
         });
         expectedRevision = expectedRevision ?? current.revision ?? null;
         if (!expectedRevision) {
@@ -4526,14 +3633,12 @@ export const executeWorkspaceTool = async (
             workspacePath: effectiveWorkspacePath,
           },
           readOptions: {
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
           },
           writeOptions: {
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
           },
@@ -4568,9 +3673,9 @@ export const executeWorkspaceTool = async (
           try {
             const readback = await tauriIpc.fsReadFileWithOptions({
               path: change.realPath,
-              allowOutsideWorkspace:
-                !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+              allowOutsideWorkspace: false,
               workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+              workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
             });
             validation = {
               path: change.path,
@@ -4624,8 +3729,7 @@ export const executeWorkspaceTool = async (
             realPath: change.realPath,
             workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             before: change.before,
             after: afterCheckpoint,
           }),
@@ -4779,7 +3883,8 @@ export const executeWorkspaceTool = async (
             mode,
             effectiveWorkspacePath,
           ),
-          allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
+          workspacePath: effectiveWorkspacePath,
         });
         assertToolExecutionActive();
         if (content.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {

@@ -39,6 +39,24 @@ describe('copilot bridge tool registration', () => {
     expect(__testables.normalizeCopilotSendTimeoutMs(1_800_500.8)).toBe(1_800_500);
   });
 
+  it('keeps the frontend relay alive for the requested terminal runtime plus cleanup margin', async () => {
+    const { __testables } = await loadBridge();
+
+    expect(__testables.frontendToolTimeoutMs('read', {})).toBe(300_000);
+    expect(__testables.frontendToolTimeoutMs('question', {})).toBe(1_800_000);
+    expect(__testables.frontendToolTimeoutMs('need_user_input', {})).toBe(1_800_000);
+    expect(__testables.frontendToolTimeoutMs('terminal_run', {})).toBe(300_000);
+    expect(
+      __testables.frontendToolTimeoutMs('terminal_run', { timeout_ms: 900_000 }),
+    ).toBe(930_000);
+    expect(
+      __testables.frontendToolTimeoutMs('terminal_run', { timeout_ms: 1_800_000 }),
+    ).toBe(1_830_000);
+    expect(
+      __testables.frontendToolTimeoutMs('terminal_run', { timeout_ms: 9_000_000 }),
+    ).toBe(1_830_000);
+  });
+
   it('serializes compacted system checkpoints outside the visible transcript', async () => {
     const { __testables } = await loadBridge();
 
