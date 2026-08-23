@@ -483,6 +483,7 @@ describe("GoalAuditCoordinator", () => {
     expect(executor.requests).toEqual([]);
     expect(journal.getRun("audit-1")?.transitions.map(({ state }) => state)).toEqual([
       "queued",
+      "running",
       "timed_out",
     ]);
     expect(journal.getRun("audit-1")?.transitions.at(-1)?.result).toMatchObject({
