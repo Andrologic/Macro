@@ -811,6 +811,21 @@ En mode Implement, le chat sert aussi de couche d'interaction pour :
 
 Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestration utilisateur.
 
+### 15.4 Sous-agents
+
+Les sous-agents sont des exécutions enfants rattachées à une conversation parente. Ils ne sont pas des tâches Macro supplémentaires et ne créent pas de worktree dans leur première version.
+
+Le socle est séparé en quatre couches :
+
+- `subagentPolicy` calcule les permissions effectives par intersection, construit un contexte explicite et applique les limites de profondeur, de concurrence et de budget ;
+- `subagentRuntime` gère la file par conversation, les transitions, le timeout et l'annulation autour d'un `ChildTurnExecutor` injecté ;
+- la table SQLite `agent_runs` conserve le cycle de vie durable, la filiation, les résultats, les erreurs et la consommation ;
+- `conversationGoalAudit` spécialise ces contrats pour produire et valider un verdict structuré du profil `goal_auditor`.
+
+La première politique est volontairement restrictive : enfants en lecture seule, profondeur maximale de un et aucune délégation agent-visible. Un verdict de goal n'est appliqué que si l'identifiant et la révision attendue sont encore courants.
+
+Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
+
 ---
 
 ## 16. Fondation expérimentale : backend distant et kernel headless
