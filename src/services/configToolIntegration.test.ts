@@ -48,14 +48,17 @@ describe('configToolIntegration', () => {
     expectNoClientCall();
   });
 
-  it('requires a project id for project-scoped operations', async () => {
-    await expect(handleConfigToolCall('config_get', {
-      document: 'settings',
-      scope: 'project',
-      project_id: '   ',
-    })).rejects.toThrow('project_id is required for project configuration.');
-    expectNoClientCall();
-  });
+  it.each([undefined, '   '])(
+    'requires a project id for project-scoped operations',
+    async (projectId) => {
+      await expect(handleConfigToolCall('config_get', {
+        document: 'settings',
+        scope: 'project',
+        ...(projectId === undefined ? {} : { project_id: projectId }),
+      })).rejects.toThrow('project_id is required for project configuration.');
+      expectNoClientCall();
+    },
+  );
 
   it('uses the user scope by default', async () => {
     const result = await handleConfigToolCall('config_get', { document: ' settings ' });
@@ -70,7 +73,7 @@ describe('configToolIntegration', () => {
     })).rejects.toThrow('value is required for config_validate.');
     expect(configurationValidateDocument).not.toHaveBeenCalled();
 
-    await handleConfigToolCall('config_validate', {
+    const result = await handleConfigToolCall('config_validate', {
       document: 'tools',
       value: undefined,
     });
@@ -80,6 +83,7 @@ describe('configToolIntegration', () => {
       scope: { type: 'user' },
       document: undefined,
     });
+    expect(result).toBe(JSON.stringify({ marker: 'validation' }, null, 2));
   });
 
   it('requires a non-blank expected etag for patches', async () => {
@@ -91,7 +95,6 @@ describe('configToolIntegration', () => {
   });
 
   it.each([
-    [undefined, 'patch must contain at least one RFC 6902 operation.'],
     [[], 'patch must contain at least one RFC 6902 operation.'],
     [[null], 'patch[0] must be an object.'],
     [[['replace']], 'patch[0] must be an object.'],
@@ -107,7 +110,7 @@ describe('configToolIntegration', () => {
   });
 
   it('preserves from and value while forcing the agent source', async () => {
-    await handleConfigToolCall('config_patch', {
+    const result = await handleConfigToolCall('config_patch', {
       document: 'providers',
       scope: 'project',
       project_id: ' project-a ',
@@ -130,6 +133,7 @@ describe('configToolIntegration', () => {
       ],
       source: 'agent',
     });
+    expect(result).toBe(JSON.stringify({ marker: 'patch' }, null, 2));
   });
 
   it('filters non-string project ids for config_list without rewriting strings', async () => {
@@ -139,6 +143,12 @@ describe('configToolIntegration', () => {
 
     expect(configurationGetSnapshot).toHaveBeenCalledWith(['project-a', ' project-b ']);
     expect(result).toBe(JSON.stringify({ schemaVersion: 1, marker: 'snapshot' }, null, 2));
+  });
+
+  it('uses an empty project list when config_list receives no project_ids array', async () => {
+    await handleConfigToolCall('config_list', {});
+
+    expect(configurationGetSnapshot).toHaveBeenCalledWith([]);
   });
 
   it('returns undefined for an unrelated tool without touching configuration', async () => {
