@@ -190,7 +190,7 @@ fn epoch_to_rfc3339(value: &str) -> Option<String> {
 }
 
 fn bytes_look_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0) || std::str::from_utf8(bytes).is_err()
+    bytes.iter().take(8192).any(|byte| *byte == 0)
 }
 
 pub(crate) fn content_revision(bytes: &[u8]) -> String {
@@ -312,11 +312,23 @@ async fn read_wsl_file_internal(
 
     let output = run_wsl_shell(
         &resolved,
-        r#"cat -- "$1""#,
-        &[resolved.linux_path.clone()],
+        r#"head -c "$2" -- "$1""#,
+        &[
+            resolved.linux_path.clone(),
+            MAX_FILE_SIZE_BYTES.saturating_add(1).to_string(),
+        ],
         WSL_FS_TIMEOUT,
     )
     .await?;
+    if output.stdout.len() as u64 > MAX_FILE_SIZE_BYTES {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: format!(
+                "The file '{}' exceeds the maximum allowed size of {} bytes.",
+                path, MAX_FILE_SIZE_BYTES
+            ),
+        });
+    }
+    let size = output.stdout.len() as u64;
     let revision = content_revision(&output.stdout);
     if bytes_look_binary(&output.stdout) {
         return Ok(FileContentDto {
@@ -482,9 +494,11 @@ async fn list_wsl_dir_internal(
     }
 
     let depth = if recursive.unwrap_or(false) {
-        max_depth.unwrap_or(8).clamp(1, 32)
+        max_depth
+            .map(|value| value.max(1).to_string())
+            .unwrap_or_else(|| "all".to_string())
     } else {
-        1
+        "1".to_string()
     };
     let include_hidden_flag = if include_hidden.unwrap_or(false) {
         "1"
@@ -499,7 +513,11 @@ depth=$2
 include_hidden=$3
 limit=$4
 ignored=$5
-find "$root" -mindepth 1 -maxdepth "$depth" -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null |
+if [ "$depth" = "all" ]; then
+  find "$root" -mindepth 1 -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null
+else
+  find "$root" -mindepth 1 -maxdepth "$depth" -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null
+fi |
 while IFS="$(printf '\t')" read -r full rel name type size mtime perm; do
   case "|$ignored|" in *"|$name|"*) continue;; esac
   if [ "$include_hidden" != "1" ]; then
@@ -513,9 +531,9 @@ done | head -n "$limit"
         script,
         &[
             resolved.linux_path.clone(),
-            depth.to_string(),
+            depth,
             include_hidden_flag,
-            WSL_LIST_LIMIT.to_string(),
+            WSL_LIST_LIMIT.saturating_add(1).to_string(),
             ignored,
         ],
         WSL_FS_TIMEOUT,
@@ -558,6 +576,15 @@ done | head -n "$limit"
                 && !permissions.ends_with('3')
                 && !permissions.ends_with('6')
                 && !permissions.ends_with('7'),
+        });
+    }
+
+    if entries.len() > WSL_LIST_LIMIT {
+        return Err(BackendError::Filesystem {
+            message: format!(
+                "Directory listing exceeds the WSL safety limit of {} entries. Narrow the path, glob pattern, or recursion depth before retrying.",
+                WSL_LIST_LIMIT
+            ),
         });
     }
 
@@ -842,6 +869,15 @@ pub async fn read_file_internal(
     let bytes = tokio::fs::read(&validated_path)
         .await
         .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+    if bytes.len() as u64 > MAX_FILE_SIZE_BYTES {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: format!(
+                "The file '{}' exceeds the maximum allowed size of {} bytes.",
+                path, MAX_FILE_SIZE_BYTES
+            ),
+        });
+    }
+    let actual_size = bytes.len() as u64;
     let revision = content_revision(&bytes);
     if is_binary {
         // Return binary file response
@@ -850,7 +886,7 @@ pub async fn read_file_internal(
             content: "".to_string(),
             encoding: "none".to_string(),
             language: "binary".to_string(),
-            size: file_metadata.len(),
+            size: actual_size,
             revision,
         })
     } else {
@@ -869,7 +905,7 @@ pub async fn read_file_internal(
             content,
             language,
             is_binary: false,
-            size: file_metadata.len(),
+            size: actual_size,
             encoding: "utf-8".to_string(),
             revision,
         })

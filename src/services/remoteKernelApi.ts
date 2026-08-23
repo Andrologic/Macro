@@ -9,6 +9,8 @@ interface RemoteToolModePolicy {
 }
 
 const CONTENT_REVISIONS_CAPABILITY = 'content_revisions_v1';
+const BOUNDED_TOOL_OUTPUT_CAPABILITY = 'bounded_tool_output_v1';
+const BOUNDED_OUTPUT_TOOL_IDS = new Set(['list', 'read', 'glob', 'grep']);
 
 const requiresContentRevisions = (params: {
   toolId: string;
@@ -81,11 +83,24 @@ export const executeRemoteWorkspaceTool = async (params: {
   virtualRootEnabled?: boolean;
   focusedProjectId?: string | null;
 }): Promise<string> => {
-  if (requiresContentRevisions(params)) {
+  const needsContentRevisions = requiresContentRevisions(params);
+  const needsBoundedOutput = BOUNDED_OUTPUT_TOOL_IDS.has(params.toolId);
+  if (needsContentRevisions || needsBoundedOutput) {
     const policy = await getRemoteToolModePolicy(params.mode);
-    if (!policy.capabilities?.includes(CONTENT_REVISIONS_CAPABILITY)) {
+    if (
+      needsContentRevisions &&
+      !policy.capabilities?.includes(CONTENT_REVISIONS_CAPABILITY)
+    ) {
       throw new Error(
         'The remote Macro kernel cannot enforce content revisions. Update the remote kernel before retrying this guarded mutation.'
+      );
+    }
+    if (
+      needsBoundedOutput &&
+      !policy.capabilities?.includes(BOUNDED_TOOL_OUTPUT_CAPABILITY)
+    ) {
+      throw new Error(
+        'The remote Macro kernel cannot guarantee bounded, resumable tool output. Update the remote kernel before retrying this read-only tool.'
       );
     }
   }

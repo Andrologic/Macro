@@ -687,6 +687,16 @@ Les résultats des tests et du build doivent être visibles pour l'utilisateur, 
 
 Les messages de commit doivent être générés automatiquement par l'IA après validation utilisateur.
 
+### 14.7 Sorties des outils de workspace
+
+Les outils `list`, `read`, `glob` et `grep` doivent produire des sorties bornées. Lorsqu'une réponse est incomplète, elle doit l'indiquer explicitement et fournir un curseur permettant de continuer la même requête sans répéter ni sauter volontairement des résultats.
+
+Une lecture paginée doit rester liée à la révision du fichier qu'elle a commencé à lire. Si ce fichier change, Macro doit refuser le curseur devenu obsolète plutôt que de composer silencieusement une vue incohérente. Les recherches doivent signaler les fichiers binaires ou trop gros qu'elles n'ont pas inspectés, et les lignes exceptionnellement longues doivent être tronquées de façon visible.
+
+Le comportement doit rester équivalent dans le backend desktop, les workspaces virtuels multi-projets, le fallback frontend, le noyau distant et le pont Copilot. Un transport qui ne sait pas garantir ces bornes ne doit pas exécuter ces outils.
+
+Une limite de sécurité interne atteinte pendant l'énumération doit produire une erreur récupérable qui invite à réduire le périmètre. Macro ne doit jamais convertir une énumération interne incomplète en `total_count`, `scan_complete` ou `total_is_exact` affirmatif.
+
 ---
 
 ## 15. Modèle de review et d'intégration
@@ -758,7 +768,7 @@ Quand une même tâche affecte plusieurs projets :
 
 ### 17.1 Objectif
 
-Le mode Chat existe pour des interactions légères et independantes des projets.
+Le mode Chat existe pour des interactions légères et indépendantes des projets.
 
 ### 17.2 Modèle de contexte
 
@@ -771,7 +781,7 @@ Il doit fonctionner sur :
 
 ### 17.3 Pièces jointes
 
-Les fichiers attachés en mode Chat sont scopes à la conversation.
+Les fichiers attachés en mode Chat sont limités à la conversation.
 
 Il n'y a pas d'exigence de bibliothèque de contexte réutilisable entre plusieurs conversations.
 

@@ -17,6 +17,15 @@ import {
   getAllProjects,
   getSubProjectsForGroup,
 } from "./globalProjects";
+import {
+  compareToolPaths,
+  createToolCursor,
+  paginateReadContent,
+  paginateToolItems,
+  resolveToolPage,
+  TOOL_OUTPUT_LIMITS,
+  truncateGrepLine,
+} from "../shared/toolOutputLimits";
 
 type ToolArgs = Record<string, unknown>;
 const isGitTool = (toolName: string): boolean => toolName.startsWith("git_");
@@ -1852,9 +1861,30 @@ export const executeWorkspaceTool = async (
           !explicitProjectId &&
           !prefixedFsPath
         ) {
-          const entries = getVirtualRootEntries(candidates);
+          const entries = getVirtualRootEntries(candidates).sort((left, right) =>
+            compareToolPaths(left.relative_path, right.relative_path),
+          );
+          const cursorScope = `list\0virtual-root\0${JSON.stringify(
+            candidates.map((candidate) => [candidate.id, candidate.mountName]),
+          )}`;
+          const page = paginateToolItems(
+            entries,
+            rawArgs,
+            cursorScope,
+            TOOL_OUTPUT_LIMITS.list,
+          );
           return JSON.stringify(
-            { path: ".", virtual_root: true, count: entries.length, entries },
+            {
+              path: ".",
+              virtual_root: true,
+              count: page.items.length,
+              total_count: entries.length,
+              entries: page.items,
+              limit: page.limit,
+              offset: page.offset,
+              truncated: page.truncated,
+              next_cursor: page.nextCursor,
+            },
             null,
             2,
           );
@@ -1876,7 +1906,7 @@ export const executeWorkspaceTool = async (
           return `Error executing list: unable to resolve "${rawFsPath}" to a project.`;
         }
 
-        const recursive = rawArgs.recursive !== false;
+        const recursive = rawArgs.recursive === true;
         const includeHidden = rawArgs.include_hidden === true;
         const maxDepth =
           typeof rawArgs.max_depth === "number"
@@ -1898,8 +1928,19 @@ export const executeWorkspaceTool = async (
           allowOutsideWorkspace: true,
           workspacePath: target.candidate.workspacePath,
         });
-        const normalizedEntries = entries.map((entry) =>
-          normalizeDirEntryForVirtualRoot(entry, target.candidate!, mode),
+        const normalizedEntries = entries
+          .map((entry) =>
+            normalizeDirEntryForVirtualRoot(entry, target.candidate!, mode),
+          )
+          .sort((left, right) =>
+            compareToolPaths(left.relative_path, right.relative_path),
+          );
+        const cursorScope = `list\0${target.candidate.workspacePath}\0${target.relativePath}\0${recursive}\0${includeHidden}\0${maxDepth ?? ""}`;
+        const page = paginateToolItems(
+          normalizedEntries,
+          rawArgs,
+          cursorScope,
+          TOOL_OUTPUT_LIMITS.list,
         );
         return JSON.stringify(
           {
@@ -1907,8 +1948,13 @@ export const executeWorkspaceTool = async (
             project_id: target.candidate.id,
             mount_name: target.candidate.mountName,
             ...(resolved.realPath ? { real_path: resolved.realPath } : {}),
-            count: normalizedEntries.length,
-            entries: normalizedEntries,
+            count: page.items.length,
+            total_count: normalizedEntries.length,
+            entries: page.items,
+            limit: page.limit,
+            offset: page.offset,
+            truncated: page.truncated,
+            next_cursor: page.nextCursor,
           },
           null,
           2,
@@ -1950,25 +1996,16 @@ export const executeWorkspaceTool = async (
         });
 
         if (result.is_binary) {
-          return `File ${resolved.virtualPath} is binary (${result.size} bytes, encoding=${result.encoding}, revision=${result.revision ?? "unavailable"}).`;
+          return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: ${target.candidate.id}\nMOUNT: ${target.candidate.mountName}\nBINARY: true\nSIZE: ${result.size}\nENCODING: ${result.encoding}\nREVISION: ${result.revision ?? "unavailable"}\nCONTENT_OMITTED: binary`;
         }
 
-        const startLine =
-          typeof rawArgs.start_line === "number"
-            ? Math.max(1, Math.floor(rawArgs.start_line))
-            : 1;
-        const endLine =
+        const endLineScope =
           typeof rawArgs.end_line === "number"
-            ? Math.max(startLine, Math.floor(rawArgs.end_line))
-            : undefined;
-
-        const lines = result.content.split("\n");
-        const selected = lines.slice(
-          startLine - 1,
-          endLine ? endLine : undefined,
-        );
-        const effectiveEndLine = endLine ?? startLine + selected.length - 1;
-        const numberedContent = formatWithLineNumbers(selected, startLine);
+            ? String(Math.floor(rawArgs.end_line))
+            : "";
+        const cursorScope = `read\0${target.candidate.workspacePath}\0${target.relativePath}\0${result.revision ?? "unavailable"}\0${endLineScope}`;
+        const page = paginateReadContent(result.content, rawArgs, cursorScope);
+        const numberedContent = formatWithLineNumbers(page.lines, page.startLine);
         const notices: string[] = [
           `PROJECT_ID: ${target.candidate.id}`,
           `MOUNT: ${target.candidate.mountName}`,
@@ -1980,7 +2017,7 @@ export const executeWorkspaceTool = async (
           notices.push(`REAL_PATH: ${resolved.realPath}`);
         }
 
-        return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\n${notices.join("\n")}\nLANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
+        return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\n${notices.join("\n")}\nLANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${page.startLine}-${page.endLine}\nTOTAL_LINES: ${page.totalLines}\nRETURNED_LINES: ${page.returnedLines}\nTRUNCATED: ${page.truncated}\nNEXT_CURSOR: ${page.nextCursor ?? "none"}\nLIMITS: max_lines=${page.maxLines}, max_bytes=${page.maxBytes}, max_columns=${TOOL_OUTPUT_LIMITS.read.maxColumns}\nCOLUMN_TRUNCATED_LINES: ${page.columnTruncatedLines}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
       }
 
       if (toolName === "write") {
@@ -2628,12 +2665,32 @@ export const executeWorkspaceTool = async (
           });
         }
 
+        const sortedMatches = Array.from(matches).sort(compareToolPaths);
+        const cursorScope = `glob\0${JSON.stringify(
+          candidates.map((candidate) => [
+            candidate.id,
+            candidate.mountName,
+            candidate.workspacePath ?? "",
+          ]),
+        )}\0${pattern}\0${includeHidden}`;
+        const page = paginateToolItems(
+          sortedMatches,
+          rawArgs,
+          cursorScope,
+          TOOL_OUTPUT_LIMITS.glob,
+        );
+
         return JSON.stringify(
           {
             pattern,
             virtual_root: true,
-            count: matches.size,
-            paths: Array.from(matches),
+            count: page.items.length,
+            total_count: sortedMatches.length,
+            paths: page.items,
+            limit: page.limit,
+            offset: page.offset,
+            truncated: page.truncated,
+            next_cursor: page.nextCursor,
           },
           null,
           2,
@@ -2647,11 +2704,6 @@ export const executeWorkspaceTool = async (
         const includeHidden = rawArgs.include_hidden === true;
         const isRegexp = rawArgs.is_regexp === true;
         const includePattern = toString(rawArgs.include_pattern);
-        const maxResults =
-          typeof rawArgs.max_results === "number"
-            ? Math.max(1, Math.floor(rawArgs.max_results))
-            : 50;
-
         let matcher: RegExp | null = null;
         if (isRegexp) {
           try {
@@ -2665,11 +2717,31 @@ export const executeWorkspaceTool = async (
           path: string;
           line: number;
           text: string;
+          text_truncated: boolean;
           project_id: string;
           mount_name: string;
         }> = [];
+        const cursorScope = `grep\0${JSON.stringify(
+          candidates.map((candidate) => [
+            candidate.id,
+            candidate.mountName,
+            candidate.workspacePath ?? "",
+          ]),
+        )}\0${query}\0${isRegexp}\0${includePattern}\0${includeHidden}`;
+        const page = resolveToolPage(
+          rawArgs,
+          cursorScope,
+          TOOL_OUTPUT_LIMITS.grep,
+        );
+        let seenMatches = 0;
+        let filesScanned = 0;
+        let skippedBinary = 0;
+        let skippedTooLarge = 0;
+        let columnTruncatedMatches = 0;
 
-        for (const candidate of candidates) {
+        for (const candidate of [...candidates].sort((left, right) =>
+          compareToolPaths(left.mountName, right.mountName),
+        )) {
           if (!candidate.workspacePath) continue;
           const files = await readAllCandidateFiles(
             includeHidden,
@@ -2677,13 +2749,20 @@ export const executeWorkspaceTool = async (
             candidate.workspacePath,
           );
 
-          for (const file of files) {
+          for (const file of files.sort((left, right) =>
+            compareToolPaths(left.relative_path, right.relative_path),
+          )) {
             const virtualPath = toVirtualPath(candidate, file.relative_path);
             if (
               includePattern &&
               !pathMatchesGlob(virtualPath, includePattern) &&
               !pathMatchesGlob(file.relative_path, includePattern)
             ) {
+              continue;
+            }
+
+            if ((file.size ?? 0) > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+              skippedTooLarge += 1;
               continue;
             }
 
@@ -2695,7 +2774,15 @@ export const executeWorkspaceTool = async (
               allowOutsideWorkspace: true,
               workspacePath: candidate.workspacePath,
             });
-            if (content.is_binary) continue;
+            if (content.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+              skippedTooLarge += 1;
+              continue;
+            }
+            if (content.is_binary) {
+              skippedBinary += 1;
+              continue;
+            }
+            filesScanned += 1;
 
             const lines = content.content.split("\n");
             for (let index = 0; index < lines.length; index += 1) {
@@ -2704,16 +2791,51 @@ export const executeWorkspaceTool = async (
                 ? matcher.test(line)
                 : line.toLowerCase().includes(query.toLowerCase());
               if (match) {
+                if (seenMatches < page.offset) {
+                  seenMatches += 1;
+                  continue;
+                }
+                seenMatches += 1;
+                const capped = truncateGrepLine(line.trim());
                 results.push({
                   path: virtualPath,
                   line: index + 1,
-                  text: line.trim(),
+                  text: capped.text,
+                  text_truncated: capped.truncated,
                   project_id: candidate.id,
                   mount_name: candidate.mountName,
                 });
-                if (results.length >= maxResults) {
+                if (capped.truncated && results.length <= page.limit) {
+                  columnTruncatedMatches += 1;
+                }
+                if (results.length > page.limit) {
+                  results.length = page.limit;
                   return JSON.stringify(
-                    { query, total: results.length, results },
+                    {
+                      query,
+                      total: results.length,
+                      count: results.length,
+                      total_count: null,
+                      total_is_exact: false,
+                      results,
+                      limit: page.limit,
+                      offset: page.offset,
+                      truncated: true,
+                      next_cursor: createToolCursor(
+                        cursorScope,
+                        page.offset + results.length,
+                      ),
+                      files_scanned: filesScanned,
+                      scan_complete: false,
+                      skipped_files: {
+                        binary: skippedBinary,
+                        too_large: skippedTooLarge,
+                        max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+                        is_exact: false,
+                      },
+                      column_truncated_matches: columnTruncatedMatches,
+                      max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+                    },
                     null,
                     2,
                   );
@@ -2723,11 +2845,28 @@ export const executeWorkspaceTool = async (
           }
         }
 
-        return JSON.stringify(
-          { query, total: results.length, results },
-          null,
-          2,
-        );
+        return JSON.stringify({
+          query,
+          total: results.length,
+          count: results.length,
+          total_count: page.offset + results.length,
+          total_is_exact: true,
+          results,
+          limit: page.limit,
+          offset: page.offset,
+          truncated: false,
+          next_cursor: null,
+          files_scanned: filesScanned,
+          scan_complete: true,
+          skipped_files: {
+            binary: skippedBinary,
+            too_large: skippedTooLarge,
+            max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+            is_exact: true,
+          },
+          column_truncated_matches: columnTruncatedMatches,
+          max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+        }, null, 2);
       }
 
       if (isGitTool(toolName)) {
@@ -3390,7 +3529,7 @@ export const executeWorkspaceTool = async (
     if (toolName === "list") {
       const inputPath = sanitizePathInput(toString(args.path) || ".");
       const path = resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
-      const recursive = args.recursive !== false;
+      const recursive = args.recursive === true;
       const includeHidden = args.include_hidden === true;
       const maxDepth =
         typeof args.max_depth === "number"
@@ -3403,7 +3542,30 @@ export const executeWorkspaceTool = async (
         maxDepth,
         allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
       });
-      return JSON.stringify({ path, count: entries.length, entries }, null, 2);
+      const sortedEntries = entries.sort((left, right) =>
+        compareToolPaths(left.relative_path, right.relative_path),
+      );
+      const cursorScope = `list\0${effectiveWorkspacePath ?? ""}\0${path}\0${recursive}\0${includeHidden}\0${maxDepth ?? ""}`;
+      const page = paginateToolItems(
+        sortedEntries,
+        args,
+        cursorScope,
+        TOOL_OUTPUT_LIMITS.list,
+      );
+      return JSON.stringify(
+        {
+          path,
+          count: page.items.length,
+          total_count: sortedEntries.length,
+          entries: page.items,
+          limit: page.limit,
+          offset: page.offset,
+          truncated: page.truncated,
+          next_cursor: page.nextCursor,
+        },
+        null,
+        2,
+      );
     }
 
     if (toolName === "read") {
@@ -3492,30 +3654,21 @@ export const executeWorkspaceTool = async (
       }
 
       if (result.is_binary) {
-        return `File ${resolvedPath} is binary (${result.size} bytes, encoding=${result.encoding}, revision=${result.revision ?? "unavailable"}).`;
+        return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\nBINARY: true\nSIZE: ${result.size}\nENCODING: ${result.encoding}\nREVISION: ${result.revision ?? "unavailable"}\nCONTENT_OMITTED: binary`;
       }
 
-      const startLine =
-        typeof args.start_line === "number"
-          ? Math.max(1, Math.floor(args.start_line))
-          : 1;
-      const endLine =
+      const endLineScope =
         typeof args.end_line === "number"
-          ? Math.max(startLine, Math.floor(args.end_line))
-          : undefined;
-
-      const lines = result.content.split("\n");
-      const selected = lines.slice(
-        startLine - 1,
-        endLine ? endLine : undefined,
-      );
-      const effectiveEndLine = endLine ?? startLine + selected.length - 1;
-      const numberedContent = formatWithLineNumbers(selected, startLine);
+          ? String(Math.floor(args.end_line))
+          : "";
+      const cursorScope = `read\0${effectiveWorkspacePath ?? ""}\0${resolvedPath}\0${result.revision ?? "unavailable"}\0${endLineScope}`;
+      const page = paginateReadContent(result.content, args, cursorScope);
+      const numberedContent = formatWithLineNumbers(page.lines, page.startLine);
       const resolvedNotice =
         resolvedPath !== path
           ? `RESOLVED_PATH: ${resolvedPath} (from requested: ${inputPath})\n`
           : "";
-      return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
+      return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${page.startLine}-${page.endLine}\nTOTAL_LINES: ${page.totalLines}\nRETURNED_LINES: ${page.returnedLines}\nTRUNCATED: ${page.truncated}\nNEXT_CURSOR: ${page.nextCursor ?? "none"}\nLIMITS: max_lines=${page.maxLines}, max_bytes=${page.maxBytes}, max_columns=${TOOL_OUTPUT_LIMITS.read.maxColumns}\nCOLUMN_TRUNCATED_LINES: ${page.columnTruncatedLines}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
     }
 
     if (toolName === "write") {
@@ -4064,9 +4217,26 @@ export const executeWorkspaceTool = async (
       );
       const matches = files
         .map((entry) => entry.relative_path)
-        .filter((relativePath) => pathMatchesGlob(relativePath, pattern));
+        .filter((relativePath) => pathMatchesGlob(relativePath, pattern))
+        .sort(compareToolPaths);
+      const cursorScope = `glob\0${effectiveWorkspacePath ?? ""}\0${pattern}\0${includeHidden}`;
+      const page = paginateToolItems(
+        matches,
+        args,
+        cursorScope,
+        TOOL_OUTPUT_LIMITS.glob,
+      );
       return JSON.stringify(
-        { pattern, count: matches.length, paths: matches },
+        {
+          pattern,
+          count: page.items.length,
+          total_count: matches.length,
+          paths: page.items,
+          limit: page.limit,
+          offset: page.offset,
+          truncated: page.truncated,
+          next_cursor: page.nextCursor,
+        },
         null,
         2,
       );
@@ -4079,15 +4249,12 @@ export const executeWorkspaceTool = async (
       const includeHidden = args.include_hidden === true;
       const isRegexp = args.is_regexp === true;
       const includePattern = toString(args.include_pattern);
-      const maxResults =
-        typeof args.max_results === "number"
-          ? Math.max(1, Math.floor(args.max_results))
-          : 50;
-
-      const files = await readAllCandidateFiles(
+      const files = (await readAllCandidateFiles(
         includeHidden,
         mode,
         effectiveWorkspacePath,
+      )).sort((left, right) =>
+        compareToolPaths(left.relative_path, right.relative_path),
       );
       let matcher: RegExp | null = null;
       if (isRegexp) {
@@ -4097,13 +4264,34 @@ export const executeWorkspaceTool = async (
           return `Invalid regex pattern for grep: ${query}`;
         }
       }
-      const results: Array<{ path: string; line: number; text: string }> = [];
+      const results: Array<{
+        path: string;
+        line: number;
+        text: string;
+        text_truncated: boolean;
+      }> = [];
+      const cursorScope = `grep\0${effectiveWorkspacePath ?? ""}\0${query}\0${isRegexp}\0${includePattern}\0${includeHidden}`;
+      const page = resolveToolPage(
+        args,
+        cursorScope,
+        TOOL_OUTPUT_LIMITS.grep,
+      );
+      let seenMatches = 0;
+      let filesScanned = 0;
+      let skippedBinary = 0;
+      let skippedTooLarge = 0;
+      let columnTruncatedMatches = 0;
 
       for (const file of files) {
         if (
           includePattern &&
           !pathMatchesGlob(file.relative_path, includePattern)
         ) {
+          continue;
+        }
+
+        if ((file.size ?? 0) > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+          skippedTooLarge += 1;
           continue;
         }
 
@@ -4115,7 +4303,15 @@ export const executeWorkspaceTool = async (
           ),
           allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
         });
-        if (content.is_binary) continue;
+        if (content.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+          skippedTooLarge += 1;
+          continue;
+        }
+        if (content.is_binary) {
+          skippedBinary += 1;
+          continue;
+        }
+        filesScanned += 1;
 
         const lines = content.content.split("\n");
         for (let index = 0; index < lines.length; index += 1) {
@@ -4124,14 +4320,49 @@ export const executeWorkspaceTool = async (
             ? matcher.test(line)
             : line.toLowerCase().includes(query.toLowerCase());
           if (match) {
+            if (seenMatches < page.offset) {
+              seenMatches += 1;
+              continue;
+            }
+            seenMatches += 1;
+            const capped = truncateGrepLine(line.trim());
             results.push({
               path: file.relative_path,
               line: index + 1,
-              text: line.trim(),
+              text: capped.text,
+              text_truncated: capped.truncated,
             });
-            if (results.length >= maxResults) {
+            if (capped.truncated && results.length <= page.limit) {
+              columnTruncatedMatches += 1;
+            }
+            if (results.length > page.limit) {
+              results.length = page.limit;
               return JSON.stringify(
-                { query, total: results.length, results },
+                {
+                  query,
+                  total: results.length,
+                  count: results.length,
+                  total_count: null,
+                  total_is_exact: false,
+                  results,
+                  limit: page.limit,
+                  offset: page.offset,
+                  truncated: true,
+                  next_cursor: createToolCursor(
+                    cursorScope,
+                    page.offset + results.length,
+                  ),
+                  files_scanned: filesScanned,
+                  scan_complete: false,
+                  skipped_files: {
+                    binary: skippedBinary,
+                    too_large: skippedTooLarge,
+                    max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+                    is_exact: false,
+                  },
+                  column_truncated_matches: columnTruncatedMatches,
+                  max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+                },
                 null,
                 2,
               );
@@ -4140,7 +4371,28 @@ export const executeWorkspaceTool = async (
         }
       }
 
-      return JSON.stringify({ query, total: results.length, results }, null, 2);
+      return JSON.stringify({
+        query,
+        total: results.length,
+        count: results.length,
+        total_count: page.offset + results.length,
+        total_is_exact: true,
+        results,
+        limit: page.limit,
+        offset: page.offset,
+        truncated: false,
+        next_cursor: null,
+        files_scanned: filesScanned,
+        scan_complete: true,
+        skipped_files: {
+          binary: skippedBinary,
+          too_large: skippedTooLarge,
+          max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+          is_exact: true,
+        },
+        column_truncated_matches: columnTruncatedMatches,
+        max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+      }, null, 2);
     }
 
     return undefined;

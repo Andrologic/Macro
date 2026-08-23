@@ -673,6 +673,25 @@ Les patchs multi-fichiers vérifient toutes les préconditions avant la premièr
 
 Cette garantie est un contrôle optimiste « if-match » et non un verrou exclusif du système de fichiers. Les écritures utilisent un fichier temporaire et un renommage atomique, avec une dernière revalidation au plus près du renommage; une application externe qui n'utilise pas le protocole peut néanmoins gagner une course dans l'intervalle résiduel. Le pont Copilot calcule les mêmes révisions sur ses lectures locales. Un transport distant doit annoncer la capacité `content_revisions_v1` avant d'accepter une mutation gardée.
 
+### 13.5 Sorties bornées et reprise
+
+Les outils de lecture du workspace ne peuvent pas injecter une sortie arbitrairement grande dans le contexte agent. Leur contrat est additif : les champs historiques restent disponibles, et les réponses structurées ajoutent `limit`, `offset`, `truncated` et `next_cursor`. `list` et `glob` ajoutent aussi `total_count`, car leur résultat est complètement trié avant pagination. `grep` conserve `total` comme nombre de lignes renvoyées et expose `total_count=null` avec `total_is_exact=false` lorsqu'il s'arrête après avoir trouvé la ligne qui prouve qu'une page suivante existe.
+
+Les limites partagées sont les suivantes :
+
+- `read` : 500 lignes par défaut, 3 000 au maximum, 256 Kio de contenu par page et 2 000 caractères par ligne ;
+- `list` : 200 entrées par défaut, 1 000 au maximum ;
+- `glob` : 200 chemins par défaut, 1 000 au maximum ;
+- `grep` : 50 correspondances par défaut, 200 au maximum et 512 caractères par ligne de résultat.
+
+`grep` ignore les fichiers binaires et les fichiers de plus de 4 Mio, puis rend ces omissions visibles dans `skipped_files`. Le pont Copilot applique la même liste de répertoires et fichiers ignorés que le backend (`.git`, `node_modules`, `target`, sorties de build et caches usuels). Les résultats sont triés selon les octets UTF-8 sur les chemins Rust, TypeScript et Copilot afin que le découpage en pages reste identique.
+
+Sous WSL, l'énumération interne s'arrête avant d'accumuler plus de 1 000 entrées. Si une arborescence dépasse cette limite de sécurité, l'opération échoue explicitement et demande de réduire le chemin ou la profondeur au lieu d'annoncer un total ou un scan complet erroné. Une récursion sans `max_depth` n'est pas amputée silencieusement à une profondeur arbitraire.
+
+Le curseur opaque suit actuellement le format interne `v1:<empreinte>:<offset>`. L'empreinte FNV-1a lie le curseur aux paramètres sémantiques de la requête ; elle sert à détecter une réutilisation accidentelle et n'est pas une primitive de sécurité. Un curseur de `read` inclut aussi la révision SHA-256 du fichier : si le contenu change entre deux pages, la reprise échoue et l'agent doit recommencer la lecture. Les arbres de fichiers peuvent encore changer entre deux pages de `list`, `glob` ou `grep`; leur pagination est déterministe pour un instantané logique inchangé, sans verrouiller le système de fichiers.
+
+Le backend Tauri, le fallback TypeScript, les racines virtuelles multi-projets et le pont Copilot appliquent ce contrat. Un noyau distant doit annoncer `bounded_tool_output_v1`; Macro refuse sinon d'exécuter `list`, `read`, `glob` ou `grep` à distance, avant qu'une sortie non bornée puisse atteindre le contexte.
+
 ---
 
 ## 14. Skills

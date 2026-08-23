@@ -6231,6 +6231,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "Workspace read results include a REVISION value. When a later write, edit, or delete depends on content you read, pass that value as expected_revision. For apply_patch, pass expected_revisions keyed by the exact patch paths. If Macro reports stale content, re-read before retrying instead of bypassing the guard.",
       );
     }
+    if (["list", "read", "glob", "grep"].some((toolId) => allowedToolIds.includes(toolId))) {
+      systemInstructions.push(
+        "Workspace list, read, glob, and grep outputs are bounded. When TRUNCATED/truncated is true and NEXT_CURSOR/next_cursor is present, continue with that cursor and otherwise keep the same request options; do not assume the first page is complete. Read cursors are bound to the file revision, so re-read from the start if Macro rejects a stale cursor.",
+      );
+    }
     if (allowedToolIds.includes("apply_patch")) {
       systemInstructions.push(
         "For coordinated file edits, use apply_patch instead of write/edit. Macro patch format is: *** Begin Patch, then one or more sections using *** Add File:, *** Update File:, or *** Delete File:, and finally *** End Patch. In update hunks, prefix context lines with a space, removals with -, additions with +, and separate hunks with @@ when needed. Use delete for a direct single-file removal when that is simpler than crafting a patch.",

@@ -17,12 +17,33 @@ import {
   getMacroToolRegistryEntry,
   type JsonSchema,
 } from '../../src/shared/macroToolRegistry';
+import {
+  compareToolPaths,
+  createToolCursor,
+  paginateReadContent,
+  paginateToolItems,
+  resolveToolPage,
+  TOOL_OUTPUT_LIMITS,
+  truncateGrepLine,
+} from '../../src/shared/toolOutputLimits';
 
 const MIN_CLI_VERSION = '1.0.12';
 const CLI_NAME = 'copilot';
-const MAX_READ_BYTES = 256_000;
-const MAX_GREP_RESULTS = 200;
-const MAX_GLOB_RESULTS = 500;
+const MAX_WORKSPACE_TEXT_FILE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_IGNORED_ENTRY_NAMES = new Set([
+  '.git',
+  'node_modules',
+  'target',
+  '.next',
+  '.nuxt',
+  'dist',
+  'build',
+  '__pycache__',
+  '.cache',
+  '.DS_Store',
+  'Thumbs.db',
+  '.idea',
+]);
 const FRONTEND_TOOL_TIMEOUT_MS = 300_000;
 const DEFAULT_COPILOT_SEND_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_COPILOT_SEND_TIMEOUT_MS = 60 * 1000;
@@ -1572,6 +1593,9 @@ const walkEntries = async (
   const result: Array<{ relativePath: string; absolutePath: string; kind: 'file' | 'directory' }> = [];
 
   for (const entry of directoryEntries) {
+    if (DEFAULT_IGNORED_ENTRY_NAMES.has(entry.name)) {
+      continue;
+    }
     if (!options?.includeHidden && isHiddenName(entry.name)) {
       continue;
     }
@@ -1595,37 +1619,63 @@ const walkEntries = async (
 
 const formatListResult = (
   entries: Array<{ relativePath: string; kind: 'file' | 'directory' }>,
-  label: string
+  label: string,
+  args: Record<string, unknown>,
+  cursorScope: string
 ): string => {
-  const lines = [`PATH: ${label}`];
-  if (entries.length === 0) {
-    lines.push('(empty)');
-    return lines.join('\n');
-  }
-
-  for (const entry of entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
-    lines.push(`${entry.kind === 'directory' ? '[dir]' : '[file]'} ${entry.relativePath}`);
-  }
-
-  return lines.join('\n');
+  const sorted = entries.sort((left, right) => compareToolPaths(left.relativePath, right.relativePath));
+  const page = paginateToolItems(sorted, args, cursorScope, TOOL_OUTPUT_LIMITS.list);
+  return JSON.stringify({
+    path: label,
+    count: page.items.length,
+    total_count: sorted.length,
+    entries: page.items.map((entry) => ({
+      relative_path: entry.relativePath,
+      kind: entry.kind,
+    })),
+    limit: page.limit,
+    offset: page.offset,
+    truncated: page.truncated,
+    next_cursor: page.nextCursor,
+  }, null, 2);
 };
 
 const readTextFileWithRevision = async (
   absolutePath: string
-): Promise<{ text: string; revision: string }> => {
+): Promise<{ text: string; revision: string; size: number; isBinary: boolean }> => {
+  const metadata = await fs.stat(absolutePath);
+  if (metadata.size > MAX_WORKSPACE_TEXT_FILE_BYTES) {
+    throw new BridgeError(
+      'file_too_large',
+      `File exceeds the ${MAX_WORKSPACE_TEXT_FILE_BYTES}-byte workspace read limit.`
+    );
+  }
   const buffer = await fs.readFile(absolutePath);
-  const content = buffer.subarray(0, MAX_READ_BYTES).toString('utf8');
+  if (buffer.byteLength > MAX_WORKSPACE_TEXT_FILE_BYTES) {
+    throw new BridgeError(
+      'file_too_large',
+      `File exceeds the ${MAX_WORKSPACE_TEXT_FILE_BYTES}-byte workspace read limit.`
+    );
+  }
+  const isBinary = buffer.subarray(0, Math.min(buffer.byteLength, 8_192)).includes(0);
+  let text = '';
+  if (!isBinary) {
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    } catch {
+      throw new BridgeError(
+        'invalid_utf8',
+        `Invalid UTF-8 content in workspace file ${absolutePath}.`
+      );
+    }
+  }
   return {
-    text:
-      buffer.byteLength > MAX_READ_BYTES
-        ? `${content}\n\n[truncated to ${MAX_READ_BYTES} bytes]`
-        : content,
+    text,
     revision: createHash('sha256').update(buffer).digest('hex'),
+    size: buffer.byteLength,
+    isBinary,
   };
 };
-
-const readTextFile = async (absolutePath: string): Promise<string> =>
-  (await readTextFileWithRevision(absolutePath)).text;
 
 const formatWithLineNumbers = (lines: string[], startLine: number): string =>
   lines
@@ -1638,6 +1688,8 @@ const readWorkspaceFile = async (params: {
   projectId?: string | null;
   startLine?: number;
   endLine?: number;
+  maxLines?: number;
+  cursor?: unknown;
 }): Promise<string> => {
   const target = await resolveWorkspaceTarget({
     rawPath: params.pathValue,
@@ -1653,21 +1705,40 @@ const readWorkspaceFile = async (params: {
     }
     const absolutePath = ensureWithinWorkspace(workspacePath, target.relativePath);
     const result = await readTextFileWithRevision(absolutePath);
-    return `FILE: ${sanitizeRelativePath(params.pathValue)}\nREVISION: ${result.revision}\n\n${result.text}`;
+    const displayPath = sanitizeRelativePath(params.pathValue);
+    if (result.isBinary) {
+      return `FILE: ${displayPath}\nSOURCE: WORKSPACE_FILE\nBINARY: true\nSIZE: ${result.size}\nENCODING: binary\nREVISION: ${result.revision}\nCONTENT_OMITTED: binary`;
+    }
+    const endLineScope = params.endLine == null ? '' : String(Math.floor(params.endLine));
+    const cursorScope = `read\0${workspacePath}\0${target.relativePath}\0${result.revision}\0${endLineScope}`;
+    const page = paginateReadContent(result.text, {
+      start_line: params.startLine,
+      end_line: params.endLine,
+      max_lines: params.maxLines,
+      cursor: params.cursor,
+    }, cursorScope);
+    return `FILE: ${displayPath}\nSOURCE: WORKSPACE_FILE\nSIZE: ${result.size}\nREVISION: ${result.revision}\nLINES: ${page.startLine}-${page.endLine}\nTOTAL_LINES: ${page.totalLines}\nRETURNED_LINES: ${page.returnedLines}\nTRUNCATED: ${page.truncated}\nNEXT_CURSOR: ${page.nextCursor ?? 'none'}\nLIMITS: max_lines=${page.maxLines}, max_bytes=${page.maxBytes}, max_columns=${TOOL_OUTPUT_LIMITS.read.maxColumns}\nCOLUMN_TRUNCATED_LINES: ${page.columnTruncatedLines}\n\n---BEGIN FILE CONTENT---\n${formatWithLineNumbers(page.lines, page.startLine)}\n---END FILE CONTENT---`;
   }
 
   const absolutePath = ensureWithinWorkspace(target.candidate.workspacePath, target.relativePath);
   const result = await readTextFileWithRevision(absolutePath);
-  const allLines = result.text.replace(/\r\n/g, '\n').split('\n');
-  const startLine = Math.max(1, params.startLine || 1);
-  const endLine = Math.max(startLine, params.endLine || allLines.length);
-  const slice = allLines.slice(startLine - 1, endLine);
   const virtualPath =
     params.context.virtualRootEnabled
       ? `${target.candidate.mountName}/${target.relativePath === '.' ? '' : target.relativePath}`.replace(/\/$/, '')
       : target.relativePath;
+  if (result.isBinary) {
+    return `FILE: ${virtualPath || target.candidate.mountName}\nSOURCE: WORKSPACE_FILE\nBINARY: true\nSIZE: ${result.size}\nENCODING: binary\nREVISION: ${result.revision}\nCONTENT_OMITTED: binary`;
+  }
+  const endLineScope = params.endLine == null ? '' : String(Math.floor(params.endLine));
+  const cursorScope = `read\0${target.candidate.workspacePath}\0${target.relativePath}\0${result.revision}\0${endLineScope}`;
+  const page = paginateReadContent(result.text, {
+    start_line: params.startLine,
+    end_line: params.endLine,
+    max_lines: params.maxLines,
+    cursor: params.cursor,
+  }, cursorScope);
 
-  return `FILE: ${virtualPath || target.candidate.mountName}\nREVISION: ${result.revision}\n\n${formatWithLineNumbers(slice, startLine)}`;
+  return `FILE: ${virtualPath || target.candidate.mountName}\nSOURCE: WORKSPACE_FILE\nSIZE: ${result.size}\nREVISION: ${result.revision}\nLINES: ${page.startLine}-${page.endLine}\nTOTAL_LINES: ${page.totalLines}\nRETURNED_LINES: ${page.returnedLines}\nTRUNCATED: ${page.truncated}\nNEXT_CURSOR: ${page.nextCursor ?? 'none'}\nLIMITS: max_lines=${page.maxLines}, max_bytes=${page.maxBytes}, max_columns=${TOOL_OUTPUT_LIMITS.read.maxColumns}\nCOLUMN_TRUNCATED_LINES: ${page.columnTruncatedLines}\n\n---BEGIN FILE CONTENT---\n${formatWithLineNumbers(page.lines, page.startLine)}\n---END FILE CONTENT---`;
 };
 
 const listWorkspace = async (params: {
@@ -1677,6 +1748,8 @@ const listWorkspace = async (params: {
   recursive?: boolean;
   includeHidden?: boolean;
   maxDepth?: number;
+  limit?: number;
+  cursor?: unknown;
 }): Promise<string> => {
   const target = await resolveWorkspaceTarget({
     rawPath: params.pathValue,
@@ -1691,7 +1764,11 @@ const listWorkspace = async (params: {
         relativePath: candidate.mountName,
         kind: 'directory' as const,
       })),
-      '.'
+      '.',
+      { limit: params.limit, cursor: params.cursor },
+      `list\0virtual-root\0${JSON.stringify(
+        params.context.candidates.map((candidate) => [candidate.id, candidate.mountName])
+      )}`
     );
   }
 
@@ -1707,7 +1784,9 @@ const listWorkspace = async (params: {
     });
     return formatListResult(
       entries.map((entry) => ({ relativePath: entry.relativePath, kind: entry.kind })),
-      sanitizeRelativePath(params.pathValue)
+      sanitizeRelativePath(params.pathValue),
+      { limit: params.limit, cursor: params.cursor },
+      `list\0${workspacePath}\0${target.relativePath}\0${params.recursive === true}\0${params.includeHidden === true}\0${params.maxDepth ?? ''}`
     );
   }
 
@@ -1723,7 +1802,12 @@ const listWorkspace = async (params: {
     kind: entry.kind,
   }));
 
-  return formatListResult(normalizedEntries, sanitizeRelativePath(params.pathValue));
+  return formatListResult(
+    normalizedEntries,
+    sanitizeRelativePath(params.pathValue),
+    { limit: params.limit, cursor: params.cursor },
+    `list\0${target.candidate.workspacePath}\0${target.relativePath}\0${params.recursive === true}\0${params.includeHidden === true}\0${params.maxDepth ?? ''}`
+  );
 };
 
 const pathMatchesGlob = (inputPath: string, pattern: string): boolean => {
@@ -1741,6 +1825,8 @@ const globWorkspace = async (params: {
   pattern: string;
   projectId?: string | null;
   includeHidden?: boolean;
+  limit?: number;
+  cursor?: unknown;
 }): Promise<string> => {
   const explicitTarget = await resolveWorkspaceTarget({
     rawPath: '.',
@@ -1778,14 +1864,30 @@ const globWorkspace = async (params: {
           : relativePath;
       if (pathMatchesGlob(virtualPath, params.pattern) || pathMatchesGlob(relativePath, params.pattern)) {
         matches.push(virtualPath);
-        if (matches.length >= MAX_GLOB_RESULTS) {
-          return matches.join('\n');
-        }
       }
     }
   }
 
-  return matches.join('\n') || '(no matches)';
+  const sortedMatches = Array.from(new Set(matches)).sort(compareToolPaths);
+  const cursorScope = `glob\0${JSON.stringify(
+    candidates.map((candidate) => [candidate.id, candidate.mountName, candidate.workspacePath])
+  )}\0${params.pattern}\0${params.includeHidden === true}`;
+  const page = paginateToolItems(
+    sortedMatches,
+    { limit: params.limit, cursor: params.cursor },
+    cursorScope,
+    TOOL_OUTPUT_LIMITS.glob
+  );
+  return JSON.stringify({
+    pattern: params.pattern,
+    count: page.items.length,
+    total_count: sortedMatches.length,
+    paths: page.items,
+    limit: page.limit,
+    offset: page.offset,
+    truncated: page.truncated,
+    next_cursor: page.nextCursor,
+  }, null, 2);
 };
 
 const grepWorkspace = async (params: {
@@ -1796,7 +1898,12 @@ const grepWorkspace = async (params: {
   includeHidden?: boolean;
   isRegexp?: boolean;
   maxResults?: number;
+  limit?: number;
+  cursor?: unknown;
 }): Promise<string> => {
+  if (!params.query) {
+    throw new BridgeError('missing_query', 'Missing query argument for grep tool.');
+  }
   const explicitTarget = await resolveWorkspaceTarget({
     rawPath: '.',
     projectId: params.projectId,
@@ -1820,16 +1927,41 @@ const grepWorkspace = async (params: {
   const matcher = params.isRegexp
     ? new RegExp(params.query, 'i')
     : null;
-  const results: string[] = [];
-  const maxResults = Math.max(1, Math.min(params.maxResults || MAX_GREP_RESULTS, MAX_GREP_RESULTS));
+  const results: Array<{
+    path: string;
+    line: number;
+    text: string;
+    text_truncated: boolean;
+  }> = [];
+  const cursorScope = `grep\0${JSON.stringify(
+    candidates.map((candidate) => [candidate.id, candidate.mountName, candidate.workspacePath])
+  )}\0${params.query}\0${params.isRegexp === true}\0${params.includePattern || ''}\0${params.includeHidden === true}`;
+  const page = resolveToolPage(
+    {
+      limit: params.limit,
+      max_results: params.maxResults,
+      cursor: params.cursor,
+    },
+    cursorScope,
+    TOOL_OUTPUT_LIMITS.grep
+  );
+  let seenMatches = 0;
+  let filesScanned = 0;
+  let skippedBinary = 0;
+  let skippedTooLarge = 0;
+  let columnTruncatedMatches = 0;
 
-  for (const candidate of candidates) {
+  for (const candidate of [...candidates].sort((left, right) =>
+    compareToolPaths(left.mountName, right.mountName)
+  )) {
     const entries = await walkEntries(candidate.workspacePath, '.', {
       recursive: true,
       includeHidden: params.includeHidden,
     });
 
-    for (const entry of entries) {
+    for (const entry of entries.sort((left, right) =>
+      compareToolPaths(left.relativePath, right.relativePath)
+    )) {
       if (entry.kind !== 'file') continue;
 
       const relativePath = entry.relativePath.replace(/\\/g, '/');
@@ -1842,22 +1974,93 @@ const grepWorkspace = async (params: {
         continue;
       }
 
-      const text = await readTextFile(entry.absolutePath);
-      const lines = text.replace(/\r\n/g, '\n').split('\n');
+      const metadata = await fs.stat(entry.absolutePath);
+      if (metadata.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+        skippedTooLarge += 1;
+        continue;
+      }
+      const file = await readTextFileWithRevision(entry.absolutePath);
+      if (file.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+        skippedTooLarge += 1;
+        continue;
+      }
+      if (file.isBinary) {
+        skippedBinary += 1;
+        continue;
+      }
+      filesScanned += 1;
+      const lines = file.text.replace(/\r\n/g, '\n').split('\n');
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
         const line = lines[lineIndex];
         const matched = matcher ? matcher.test(line) : line.toLowerCase().includes(params.query.toLowerCase());
         if (!matched) continue;
 
-        results.push(`${virtualPath}:${lineIndex + 1}: ${line}`);
-        if (results.length >= maxResults) {
-          return results.join('\n');
+        if (seenMatches < page.offset) {
+          seenMatches += 1;
+          continue;
+        }
+        seenMatches += 1;
+        const capped = truncateGrepLine(line.trim());
+        results.push({
+          path: virtualPath,
+          line: lineIndex + 1,
+          text: capped.text,
+          text_truncated: capped.truncated,
+        });
+        if (capped.truncated && results.length <= page.limit) {
+          columnTruncatedMatches += 1;
+        }
+        if (results.length > page.limit) {
+          results.length = page.limit;
+          return JSON.stringify({
+            query: params.query,
+            total: results.length,
+            count: results.length,
+            total_count: null,
+            total_is_exact: false,
+            results,
+            limit: page.limit,
+            offset: page.offset,
+            truncated: true,
+            next_cursor: createToolCursor(cursorScope, page.offset + results.length),
+            files_scanned: filesScanned,
+            scan_complete: false,
+            skipped_files: {
+              binary: skippedBinary,
+              too_large: skippedTooLarge,
+              max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+              is_exact: false,
+            },
+            column_truncated_matches: columnTruncatedMatches,
+            max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+          }, null, 2);
         }
       }
     }
   }
 
-  return results.join('\n') || '(no matches)';
+  return JSON.stringify({
+    query: params.query,
+    total: results.length,
+    count: results.length,
+    total_count: page.offset + results.length,
+    total_is_exact: true,
+    results,
+    limit: page.limit,
+    offset: page.offset,
+    truncated: false,
+    next_cursor: null,
+    files_scanned: filesScanned,
+    scan_complete: true,
+    skipped_files: {
+      binary: skippedBinary,
+      too_large: skippedTooLarge,
+      max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+      is_exact: true,
+    },
+    column_truncated_matches: columnTruncatedMatches,
+    max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+  }, null, 2);
 };
 
 const findReadFileTarget = async (context: WorkspaceContext, fileValue: string): Promise<string> => {
@@ -2025,6 +2228,8 @@ const executeCopilotMacroTool = async (
       recursive: args.recursive === true,
       includeHidden: args.include_hidden === true,
       maxDepth: typeof args.max_depth === 'number' ? args.max_depth : undefined,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+      cursor: args.cursor,
     });
   }
 
@@ -2037,6 +2242,8 @@ const executeCopilotMacroTool = async (
       projectId: typeof args.project_id === 'string' ? args.project_id : null,
       startLine: typeof args.start_line === 'number' ? args.start_line : undefined,
       endLine: typeof args.end_line === 'number' ? args.end_line : undefined,
+      maxLines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
+      cursor: args.cursor,
     });
   }
 
@@ -2071,6 +2278,8 @@ const executeCopilotMacroTool = async (
       pattern: typeof args.pattern === 'string' ? args.pattern : '',
       projectId: typeof args.project_id === 'string' ? args.project_id : null,
       includeHidden: args.include_hidden === true,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+      cursor: args.cursor,
     });
   }
 
@@ -2083,6 +2292,8 @@ const executeCopilotMacroTool = async (
       includeHidden: args.include_hidden === true,
       isRegexp: args.is_regexp === true,
       maxResults: typeof args.max_results === 'number' ? args.max_results : undefined,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+      cursor: args.cursor,
     });
   }
 
@@ -2407,10 +2618,14 @@ export const __testables = {
   buildMacroTools,
   closeCopilotThinkingBlock,
   createCopilotSessionEventState,
+  globWorkspace,
   getCopilotReasoningSummary,
+  grepWorkspace,
   handleCopilotSessionEvent,
+  listWorkspace,
   normalizeCopilotSendTimeoutMs,
   isFrontendRelayToolId,
+  readWorkspaceFile,
   serializeConversationPrompt,
 };
 
