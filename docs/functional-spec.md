@@ -707,6 +707,8 @@ Les commandes lancées par les outils terminal doivent borner leur durée, leur 
 
 Tout résultat textuel d'outil dépassant 50 Kio doit être remplacé dans le contexte par un aperçu borné conservant son début et sa fin. Le contenu complet reste attaché à la conversation sous une adresse `tool-output://…` et peut être relu par pages avec `read_file`. Les fichiers joints et ces sorties récupérables doivent exposer des pages numérotées et un curseur opaque ; le mode brut paginé doit permettre de récupérer sans perte les contenus constitués d'une seule ligne très longue.
 
+Macro doit proposer une recherche structurelle `ast_grep` distincte de la recherche textuelle. Elle accepte les motifs et métavariables ast-grep, infère le langage par fichier ou respecte un langage explicite, fonctionne dans un projet comme à la racine virtuelle, et retourne des positions, extraits et captures bornés. Ses pages, délais, fichiers ignorés et erreurs de syntaxe doivent rester explicites et récupérables sans transformer cette recherche en outil de mutation.
+
 ---
 
 ## 15. Modèle de review et d'intégration

@@ -18,6 +18,7 @@ const TOOL_MODE_CAPABILITIES: &[&str] = &[
     "content_revisions_v1",
     "bounded_tool_output_v1",
     "bounded_git_output_v1",
+    "structural_search_v1",
 ];
 
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
@@ -33,6 +34,7 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "read",
         "glob",
         "grep",
+        "ast_grep",
         "write",
         "edit",
         "delete",
@@ -98,6 +100,7 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
         "read",
         "glob",
         "grep",
+        "ast_grep",
         "write",
         "edit",
         "delete",
@@ -349,12 +352,17 @@ mod tests {
     fn architect_policy_exposes_question_tool() {
         let policy = get_mode_policy("Architect");
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy.allowed_tool_ids.contains(&"ast_grep".to_string()));
+        assert!(policy
+            .capabilities
+            .contains(&"structural_search_v1".to_string()));
     }
 
     #[test]
     fn implement_policy_exposes_question_tool() {
         let policy = get_mode_policy("Implement");
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy.allowed_tool_ids.contains(&"ast_grep".to_string()));
     }
 
     #[test]

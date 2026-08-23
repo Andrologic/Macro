@@ -118,6 +118,7 @@ describe("toolModePolicy", () => {
       "read",
       "glob",
       "grep",
+      "ast_grep",
       "git_status",
       "git_log",
       "git_branch_list",

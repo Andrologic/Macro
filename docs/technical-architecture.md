@@ -709,6 +709,8 @@ La frontière frontend qui remet les résultats d'outils au flux applique une d�
 
 `read_file` utilise le même contrat de pagination que `read` pour les contenus joints : empreinte de contenu liée au curseur, lignes numérotées, limite de 500 lignes par défaut, plafond de 3 000 lignes et 256 Kio par page. Son mode `raw=true` pagine en octets UTF-8 sans couper de point de code ; il sert notamment à relire exactement une sortie `tool-output://` composée d'une seule ligne longue.
 
+`ast_grep` s'appuie directement sur `ast-grep-core` et `ast-grep-language` dans le backend Rust, sans dépendre d'un binaire installé sur la machine. Les 28 parseurs intégrés couvrent les principaux langages de Macro. Une recherche est en lecture seule, limitée à 30 secondes, 16 Kio par motif, 4 Mio par fichier, 2 Kio par extrait, 512 octets par capture, 32 captures et 4 Kio de captures cumulées par correspondance, puis 200 correspondances par page. Toute capture tronquée le signale dans la correspondance. Le curseur est lié au motif, à la portée, au langage et aux options ; les kernels distants doivent annoncer `structural_search_v1`. Le frontend conserve la même politique d'observation, d'annulation et de racine virtuelle que `grep`.
+
 ---
 
 ## 14. Skills

@@ -21,7 +21,7 @@ const SHARED_CONTEXT_TOOLS = [
   "web_fetch",
 ] as const;
 
-const WORKSPACE_READ_TOOLS = ["list", "read", "glob", "grep"] as const;
+const WORKSPACE_READ_TOOLS = ["list", "read", "glob", "grep", "ast_grep"] as const;
 const WORKSPACE_WRITE_TOOLS = ["write", "edit", "delete", "apply_patch"] as const;
 const CHAT_SAFE_TOOLS = [
   "question",

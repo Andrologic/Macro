@@ -5379,6 +5379,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === "delete" ||
       normalizedToolName === "glob" ||
       normalizedToolName === "grep" ||
+      normalizedToolName === "ast_grep" ||
       normalizedToolName === "terminal_create_session" ||
       normalizedToolName === "terminal_run" ||
       normalizedToolName === "terminal_read" ||
@@ -6313,9 +6314,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "Workspace read results include a REVISION value. When a later write, edit, or delete depends on content you read, pass that value as expected_revision. For apply_patch, pass expected_revisions keyed by the exact patch paths. If Macro reports stale content, re-read before retrying instead of bypassing the guard.",
       );
     }
-    if (["list", "read", "glob", "grep", "git_status", "git_log"].some((toolId) => allowedToolIds.includes(toolId))) {
+    if (["list", "read", "glob", "grep", "ast_grep", "git_status", "git_log"].some((toolId) => allowedToolIds.includes(toolId))) {
       systemInstructions.push(
-        "Workspace list, read, glob, grep, git_status, and git_log outputs are bounded. When TRUNCATED/truncated is true and NEXT_CURSOR/next_cursor is present, continue with that cursor and otherwise keep the same request options; do not assume the first page is complete. Read and git_status cursors are bound to the underlying revision, so restart without a cursor if Macro rejects a stale cursor. If a workspace search times out, narrow its path, glob, or query before retrying instead of repeating the same broad scan.",
+        "Workspace list, read, glob, grep, ast_grep, git_status, and git_log outputs are bounded. When TRUNCATED/truncated is true and NEXT_CURSOR/next_cursor is present, continue with that cursor and otherwise keep the same request options; do not assume the first page is complete. Read and git_status cursors are bound to the underlying revision, so restart without a cursor if Macro rejects a stale cursor. Use grep for plain text and ast_grep for syntax-aware patterns. If a workspace search times out, narrow its path, glob, query, pattern, or language before retrying instead of repeating the same broad scan.",
       );
     }
     if (allowedToolIds.includes("git_diff")) {

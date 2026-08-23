@@ -209,6 +209,29 @@ describe('remoteKernelApi', () => {
     expect(fetchCalls).toHaveLength(1);
   });
 
+  it('requires the dedicated structural-search capability for remote ast_grep', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return jsonResponse({
+        allowed_tool_ids: ['ast_grep'],
+        enforce_macro_only_writes: false,
+        capabilities: ['bounded_tool_output_v1'],
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'ast_grep',
+        args: { pattern: 'console.log($$$ARGS)' },
+      })
+    ).rejects.toThrow('does not support structural search');
+    expect(fetchCalls).toHaveLength(1);
+  });
+
   it('aborts requests when the configured timeout elapses', async () => {
     let abortObserved = false;
 
