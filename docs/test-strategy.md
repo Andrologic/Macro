@@ -75,8 +75,9 @@ The current refactor follows these independent, reviewable stages:
    through mocks or large integration suites.
 4. Convert `ChatZone.test.tsx` to a context-owned harness. Only then split the
    questionnaire, compaction, Architect, and Implement domains into separate
-   files. Splitting first would duplicate global `mock.module` registrations and
-   allow cross-file contamination.
+   files. The current cache-busted import per test is an intentional isolation
+   boundary and a known runtime cost. Splitting first would duplicate global
+   `mock.module` registrations and allow cross-file contamination.
 5. Replace the broad `useChatStore.test.ts` harness with domain-specific service
    and store fixtures, then split its scenarios along the same domain boundaries.
 6. Introduce controlled clocks for the remaining deliberate 400 ms UI delays,

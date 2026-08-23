@@ -14,6 +14,7 @@ import {
 import {
   collectCoverageReports,
   coveragePaths,
+  formatCoverageSummary,
   prepareCoverageRun,
   writeCoverageArtifacts,
 } from './write-report.mjs';
@@ -224,5 +225,8 @@ describe('coverage artifact lifecycle', () => {
     expect(result.summary.testFilesAvailable).toBe(10);
     expect(await readFile(paths.lcov, 'utf8')).toContain('SF:src/stores/chat.ts');
     expect(JSON.parse(await readFile(paths.summary, 'utf8')).totals.lines.percent).toBe(100);
+    expect(formatCoverageSummary(result.summary)).toContain(
+      'Missing coverage reports: missing.test.ts.',
+    );
   });
 });
