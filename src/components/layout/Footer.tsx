@@ -18,9 +18,11 @@ import {
 } from '../../services/conflictResolution';
 import { openConflictAssistant } from '../../services/conflictAssistantService';
 import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
+import { ProjectIcon } from '../project/ProjectIcon';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
 import { resolveFooterGitContext } from '../../services/footerGitContext';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
+import { UpdateStatusButton } from '../updates/UpdateStatusButton';
 import {
   presentMetadataSyncIssue,
   resolveDegradedErrorPresentation,
@@ -2014,14 +2016,22 @@ export const Footer: React.FC = () => {
                 onClick={() => void selectFolderScope()}
                 data-tour-id="footer-folder-scope"
               >
-                <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+                {focusedProject?.source === 'project' ? (
+                  <ProjectIcon project={focusedProject} size={12} className="block shrink-0 text-primary" />
+                ) : (
+                  <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+                )}
                 <span className="truncate leading-4 text-foreground">
                   {focusedProject?.name ?? t('footer.scope.selectFolder', 'Sélectionner un dossier Git')}
                 </span>
               </button>
             ) : (
               <span className="flex h-6 min-w-0 max-w-[12rem] items-center gap-1.5" title={focusedProject?.name || undefined}>
-                <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+                {focusedProject?.source === 'project' ? (
+                  <ProjectIcon project={focusedProject} size={12} className="block shrink-0 text-primary" />
+                ) : (
+                  <Icon name="folder-git-2" size={12} className="block translate-x-[0.25px] -translate-y-[0.5px] shrink-0 text-primary" />
+                )}
                 <span className="truncate leading-4 text-foreground">{focusedProject?.name || t('project.noProject', 'Aucun projet')}</span>
               </span>
             )}
@@ -2145,6 +2155,7 @@ export const Footer: React.FC = () => {
                 {t('footer.sync.resolve', 'Resolve')}
               </Button>
             )}
+            <UpdateStatusButton />
             <Button
               ref={notificationCenterButtonRef}
               type="button"

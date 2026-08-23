@@ -1,6 +1,33 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
+
+pub fn direct_checkpoint_id(task_id: &str, project_path: &Path) -> String {
+    let task = task_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let task = if task.is_empty() {
+        "branch".to_string()
+    } else {
+        task
+    };
+    let mut hash: u64 = 1469598103934665603;
+    for byte in project_path.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    format!("{}-{:016x}", task, hash)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceState {
@@ -345,6 +372,10 @@ pub struct WorkspaceTaskExecutionTargetDto {
     pub branch_name: String,
     #[serde(default, rename = "targetBranchName")]
     pub target_branch_name: Option<String>,
+    #[serde(default, rename = "executionMode")]
+    pub execution_mode: Option<String>,
+    #[serde(default, rename = "checkpointId")]
+    pub checkpoint_id: Option<String>,
     #[serde(rename = "worktreeKey")]
     pub worktree_key: String,
     #[serde(default, rename = "repoPath")]
@@ -673,6 +704,8 @@ pub struct ProjectDto {
     pub git_flow_settings: ProjectGitFlowSettingsDto,
     #[serde(default, rename = "userReadOnly")]
     pub user_read_only: bool,
+    #[serde(default, rename = "directEdit")]
+    pub direct_edit: bool,
     #[serde(default = "default_project_git_setup_state", rename = "gitSetupState")]
     pub git_setup_state: String,
     #[serde(default, rename = "isReadOnly")]
@@ -762,6 +795,8 @@ pub struct CreateProjectRequest {
     pub group_name: Option<String>,
     pub path: Option<String>,
     pub git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+    #[serde(default)]
+    pub direct_edit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

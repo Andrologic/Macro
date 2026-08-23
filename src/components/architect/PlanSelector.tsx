@@ -33,9 +33,9 @@ import {
 } from '../../services/architectPlanKinds';
 import { detectProjectVersions } from '../../services/architectPlanVersionDetection';
 import {
-  getScopedActionableProjectIds,
+  getScopedArchitectContextProjectIds,
+  getScopedGitActionableProjectIds,
   getScopedProjectIds,
-  getScopedReadOnlyProjectIds,
 } from '../../services/globalProjects';
 import {
   isProjectWorkspaceMissing,
@@ -322,11 +322,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     activationRequestIdRef.current === requestId &&
     arePlanSelectorActivationContextsEqual(selectorAsyncContextRef.current, context);
   const scopedActionableProjectIds = useMemo(
-    () => getScopedActionableProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
+    () => getScopedGitActionableProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
     [projectRegistry, selectedGroupId, selectedProjectId]
   );
   const contextProjectIds = useMemo(
-    () => getScopedReadOnlyProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
+    () => getScopedArchitectContextProjectIds(projectRegistry, selectedGroupId, selectedProjectId),
     [projectRegistry, selectedGroupId, selectedProjectId]
   );
   const workspaceState = useMemo(

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 
 let importCounter = 0;
 
@@ -8,12 +8,14 @@ const loadService = async () => {
 };
 
 describe('metadataModelPreference', () => {
-  afterEach(() => {
+  beforeEach(async () => {
     window.localStorage.removeItem('macro_metadataModelConfig');
     window.localStorage.removeItem('macro_smartCommitModelConfig');
+    const { saveMetadataModelConfig } = await loadService();
+    await saveMetadataModelConfig(null);
   });
 
-  it('migrates the legacy smart commit model preference when metadata config is absent', async () => {
+  it('ignores the legacy smart commit model preference when metadata config is absent', async () => {
     window.localStorage.setItem(
       'macro_smartCommitModelConfig',
       JSON.stringify({
@@ -28,31 +30,22 @@ describe('metadataModelPreference', () => {
 
     const config = await loadMetadataModelConfig();
 
-    expect(config).toEqual({
-      mode: 'dedicated',
-      providerId: 'provider-a',
-      modelId: 'model-a',
-      reasoningEffort: null,
-    });
-    expect(window.localStorage.getItem('macro_metadataModelConfig')).toContain('provider-a');
+    expect(config).toBeNull();
+    expect(window.localStorage.getItem('macro_metadataModelConfig')).toBeNull();
   });
 
-  it('prefers the new metadata model preference over the legacy commit preference', async () => {
+  it('prefers the JSON-backed metadata model preference over a legacy local value', async () => {
     window.localStorage.setItem(
       'macro_smartCommitModelConfig',
       JSON.stringify({ mode: 'conversation' })
     );
-    window.localStorage.setItem(
-      'macro_metadataModelConfig',
-      JSON.stringify({
-        mode: 'dedicated',
-        providerId: 'provider-b',
-        modelId: 'model-b',
-        reasoningEffort: null,
-      })
-    );
-
-    const { loadMetadataModelConfig } = await loadService();
+    const { loadMetadataModelConfig, saveMetadataModelConfig } = await loadService();
+    await saveMetadataModelConfig({
+      mode: 'dedicated',
+      providerId: 'provider-b',
+      modelId: 'model-b',
+      reasoningEffort: null,
+    });
 
     await expect(loadMetadataModelConfig()).resolves.toEqual({
       mode: 'dedicated',

@@ -1558,6 +1558,7 @@ mod tests {
             status: "active".to_string(),
             git_flow_settings: ProjectGitFlowSettingsDto::default(),
             user_read_only: false,
+            direct_edit: false,
             git_setup_state: "ready".to_string(),
             is_read_only: false,
             read_only_reason: None,

@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod tests {
     use crate::core::config::{
-        test_finalize_desktop_workspace_path_for_mode, test_resolve_workspace_path_for_cwd,
-        test_workspace_path_source_for_config, AppConfig, WorkspacePathSource,
+        test_finalize_desktop_workspace_path_for_mode, test_load_config_from_runtime_file,
+        test_resolve_workspace_path_for_cwd, test_workspace_path_source_for_config, AppConfig,
+        WorkspacePathSource,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -104,5 +105,31 @@ mod tests {
             .expect("detect workspace path source");
 
         assert_eq!(source, WorkspacePathSource::Default);
+    }
+
+    #[test]
+    fn test_runtime_document_defers_workspace_value_to_config_manager() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let runtime_path = temp_dir.path().join("runtime.json");
+        let runtime_workspace = temp_dir.path().join("runtime-workspace");
+        fs::write(
+            &runtime_path,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "defaultWorkspace": runtime_workspace,
+            })
+            .to_string(),
+        )
+        .expect("write runtime config");
+
+        let config = test_load_config_from_runtime_file(runtime_path)
+            .expect("load legacy defaults without deserializing runtime aliases");
+
+        assert!(config.workspace_path.is_absolute());
+        assert_ne!(config.workspace_path, runtime_workspace);
+        assert_eq!(
+            config.workspace_path_source,
+            WorkspacePathSource::Configured
+        );
     }
 }

@@ -61,7 +61,7 @@ import type {
 import {
   getFocusedProjectForGroup,
   getProjectGroupByProjectId,
-  getScopedActionableProjectIds,
+  getScopedGitActionableProjectIds,
 } from "./globalProjects";
 
 const strategyMutationRepairAttempts = new Map<string, number>();
@@ -776,7 +776,7 @@ const resolveStrategyForPlan = async (params: {
   }
 
   const appState = getAppState();
-  const selectedProjectIds = getScopedActionableProjectIds(
+  const selectedProjectIds = getScopedGitActionableProjectIds(
     {
       standaloneProjects: appState.standaloneProjects ?? [],
       projectGroups: appState.projectGroups,
@@ -1103,7 +1103,7 @@ export const handleArchitectToolCall = async (
           .filter((projectId): projectId is string => typeof projectId === "string")
           .map((projectId) => projectId.trim())
           .filter(Boolean)
-      : getScopedActionableProjectIds(
+      : getScopedGitActionableProjectIds(
           {
             standaloneProjects: appState.standaloneProjects ?? [],
             projectGroups: appState.projectGroups,

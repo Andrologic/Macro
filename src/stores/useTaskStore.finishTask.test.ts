@@ -139,6 +139,11 @@ const syncTerminalDisplayMetadataMock = mock(async () => undefined);
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
 const removeManualFeatureMetadataMock = mock(async () => undefined);
+const configGetSnapshotMock = mock(async (projectIds: string[] = []) => ({
+  projectEffective: Object.fromEntries(
+    projectIds.map((projectId) => [projectId, { tools: { projectCommands: {} } }]),
+  ),
+}));
 
 let projectCompletionMergePolicy: 'merge_commit' | 'fast_forward' = 'merge_commit';
 
@@ -245,6 +250,7 @@ mock.module('../services/tauriIpc', () => ({
   workspaceGetActiveRoot: workspaceGetActiveRootMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+  configGetSnapshot: configGetSnapshotMock,
 }));
 
 mock.module('../services/tauriIpc.ts', () => ({
@@ -271,6 +277,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   workspaceGetActiveRoot: workspaceGetActiveRootMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
+  configGetSnapshot: configGetSnapshotMock,
 }));
 
 mock.module('./useAppStore', () => ({

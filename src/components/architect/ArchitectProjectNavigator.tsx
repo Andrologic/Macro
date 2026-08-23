@@ -25,7 +25,7 @@ import {
   getArchitectPlanPrimaryName,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
-import { isProjectActionable } from '../../services/globalProjects';
+import { isProjectGitActionable } from '../../services/globalProjects';
 import { loadMacroProjectMetadataForSelection } from '../../services/macroProjectMetadataLoader';
 import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 import { getPlanKindIconName } from '../../services/planKindPresentation';
@@ -34,6 +34,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
@@ -283,7 +284,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     const detail: ArchitectPlanSelectorStateDetail = {
       status: error ? 'error' : isLoading ? 'loading' : 'ready',
       planCount: selectedPlans.length,
-      canCreate: Boolean(selectedScope?.projects.some(isProjectActionable)),
+      canCreate: Boolean(selectedScope?.projects.some(isProjectGitActionable)),
       canSelect: selectedPlans.length > 0,
     };
     return registerArchitectPlanSelectorStatePublisher(detail);
@@ -488,7 +489,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     planKind: ArchitectPlanKind,
   ) => {
     if (creatingScopeId || isBusy) return;
-    const editableProjectIds = scope.projects.filter(isProjectActionable).map((project) => project.id);
+    const editableProjectIds = scope.projects.filter(isProjectGitActionable).map((project) => project.id);
     const contextProjectIds = scope.projectIds.filter((projectId) => !editableProjectIds.includes(projectId));
     if (editableProjectIds.length === 0) {
       notify.warning(t('architect.projectNavigator.readOnlyScope', 'Ce projet est en lecture seule.'));
@@ -796,7 +797,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         >
           {createMenuPlanKinds.map((planKind) => {
             const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
-            const canCreatePlan = createMenuScope.projects.some(isProjectActionable);
+            const canCreatePlan = createMenuScope.projects.some(isProjectGitActionable);
             return (
               <button
                 key={planKind}
@@ -966,7 +967,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               const showAll = expandedPlanLists.includes(scope.id);
               const visibleEntries = showAll ? scopeEntries : scopeEntries.slice(0, MAX_VISIBLE_PLANS_PER_SCOPE);
               const hiddenCount = scopeEntries.length - visibleEntries.length;
-              const canCreatePlan = scope.projects.some(isProjectActionable);
+              const canCreatePlan = scope.projects.some(isProjectGitActionable);
               return (
                 <div
                   key={scope.id}
@@ -1012,7 +1013,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                       className="flex h-8 min-w-0 flex-1 items-center gap-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/70 disabled:opacity-60"
                     >
                       <span className={cn('flex h-5 w-5 shrink-0 items-center justify-center rounded', isSelected ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-                        <Icon name="folder" size={13} />
+                        {scope.kind === 'project' && scope.projects[0] ? (
+                          <ProjectIcon project={scope.projects[0]} fallbackIcon="folder" size={13} />
+                        ) : (
+                          <Icon name="folder" size={13} />
+                        )}
                       </span>
                       <span className={cn('min-w-0 flex-1 truncate text-xs font-medium', isSelected ? 'text-foreground' : 'text-foreground/90')}>{scope.label}</span>
                       {scopeEntries.length > 0 && (

@@ -432,6 +432,19 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("resolves project icons in one batch", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.workspaceResolveProjectIcons(["project-1", "project-2"]);
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "workspace_resolve_project_icons",
+        payload: { projectIds: ["project-1", "project-2"] },
+      },
+    ]);
+  });
+
   it("submits Copilot tool results through ai_submit_tool_result", async () => {
     const tauriIpc = await loadTauriIpc();
 
@@ -792,6 +805,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
       projectId: "project-1",
       cwd: "packages/api",
     });
+    await tauriIpc.terminalCreateSession({ cwd: "C:/Users/test" });
     await tauriIpc.terminalRun({
       sessionId: "terminal-1",
       command: "git status",
@@ -807,6 +821,13 @@ describe("tauriIpc executeWorkspaceTool", () => {
         payload: {
           projectId: "project-1",
           cwd: "packages/api",
+        },
+      },
+      {
+        command: "terminal_create_session",
+        payload: {
+          projectId: null,
+          cwd: "C:/Users/test",
         },
       },
       {

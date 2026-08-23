@@ -23,9 +23,15 @@ import type {
   ProjectGitFlowDetection,
   ProjectGitSetupCommitResult,
   ProjectGroup,
+  MCPServer,
+  MCPTransportConfig,
   SkillScriptRunResult,
 } from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
+import { BUILT_IN_TOOLS } from '../tools/builtInTools';
+import { normalizeArchitectToolId } from '../architectToolNames';
+import { normalizeMCPServer } from '../mcp';
+import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../configDocuments';
 import {
   buildMCPServerSettingsPayload,
   buildToolSettingsPayload,
@@ -38,10 +44,85 @@ import {
   getWorkspaceBasePath,
   remoteRequest,
   remoteUnsupported,
+  resolveRemoteConfig,
 } from './remoteHttp';
 import { REMOTE_UNSUPPORTED_IN_REMOTE_MODE } from '../serviceRuntime';
 
-export { resolveRemoteConfig } from './remoteHttp';
+export { resolveRemoteConfig };
+
+const LEGACY_TOOL_ID_MAP: Record<string, string> = {
+  'web-search': 'web_search',
+  'file-read': 'read_file',
+};
+
+const normalizeToolEnablement = (settings: Record<string, boolean>): Record<string, boolean> =>
+  Object.fromEntries(
+    Object.entries(settings)
+      .filter(([, value]) => typeof value === 'boolean')
+      .map(([id, enabled]) => [normalizeArchitectToolId(LEGACY_TOOL_ID_MAP[id] || id), enabled]),
+  );
+
+type PersistedMCPServer = {
+  name?: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  website?: string;
+  enabled?: boolean;
+  transport?: MCPTransportConfig;
+};
+
+type ToolsConfigDocument = {
+  builtIn?: Record<string, boolean>;
+  mcpServers?: Record<string, PersistedMCPServer>;
+};
+
+const buildRemoteToolSettingsPayload = (
+  enabledSettings: Record<string, boolean>,
+): ToolSettingsDto => {
+  const enabledTools = normalizeToolEnablement(enabledSettings);
+  const tools = Object.fromEntries(BUILT_IN_TOOLS.map((tool) => {
+    const enabled = enabledTools[tool.id] !== false;
+    return [tool.id, {
+      ...tool,
+      status: enabled ? 'enabled' : 'disabled',
+      config: { ...tool.config, enabled },
+    }];
+  }));
+  return { tools: tools as unknown as Record<string, boolean> };
+};
+
+const toRuntimeMCPServers = (
+  servers: Record<string, PersistedMCPServer> = {},
+): Record<string, MCPServer> => Object.fromEntries(
+  Object.entries(servers).map(([id, server]) => {
+    const normalized = normalizeMCPServer({
+      id,
+      name: server.name ?? id,
+      description: server.description,
+      category: server.category as MCPServer['category'] | undefined,
+      icon: server.icon as MCPServer['icon'] | undefined,
+      website: server.website,
+      transport: server.transport,
+      config: { enabled: server.enabled === true },
+    });
+    return [normalized.id, normalized];
+  }),
+);
+
+const toPersistedMCPServers = (
+  servers: ReturnType<typeof normalizeMCPServerSettingsInput>,
+): Record<string, PersistedMCPServer> => Object.fromEntries(
+  Object.values(servers).map((server) => [server.id, {
+    name: server.name,
+    description: server.description,
+    category: server.category,
+    icon: server.icon,
+    website: server.website,
+    enabled: server.config?.enabled === true,
+    transport: server.transport,
+  }]),
+);
 
 export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
   const config = ensureRemoteConfig();
@@ -127,6 +208,7 @@ export const createProject = async (_data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  directEdit?: boolean;
   requestId?: string | null;
 }): Promise<ProjectDto> => remoteUnsupported('createProject');
 
@@ -201,6 +283,7 @@ export const updateProjectGitFlowWithSetup = async (_data: {
 export const updateProjectAccess = async (_data: {
   projectId: string;
   userReadOnly: boolean;
+  directEdit?: boolean;
   confirmedMigration?: boolean;
 }): Promise<ProjectDto> => remoteUnsupported('updateProjectAccess');
 
@@ -234,16 +317,35 @@ export const closeProject = async (_data: {
   projectId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => remoteUnsupported('closeProject');
 
-export const getToolSettings = async (): Promise<ToolSettingsDto> => buildToolSettingsPayload();
+export const getToolSettings = async (): Promise<ToolSettingsDto> => {
+  if (!resolveRemoteConfig()) return buildToolSettingsPayload();
+  const config = await getEffectiveConfigDocument<ToolsConfigDocument>('tools');
+  return buildRemoteToolSettingsPayload(config.builtIn ?? {});
+};
 
 export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => {
+  if (resolveRemoteConfig()) {
+    await patchUserConfigTopLevel('tools', 'builtIn', normalizeToolEnablement(settings.tools || {}));
+    return;
+  }
   writeStoredToolEnablement(settings.tools || {});
 };
 
-export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> =>
-  buildMCPServerSettingsPayload();
+export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
+  if (!resolveRemoteConfig()) return buildMCPServerSettingsPayload();
+  const config = await getEffectiveConfigDocument<ToolsConfigDocument>('tools');
+  return { servers: toRuntimeMCPServers(config.mcpServers) };
+};
 
 export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
+  if (resolveRemoteConfig()) {
+    await patchUserConfigTopLevel(
+      'tools',
+      'mcpServers',
+      toPersistedMCPServers(normalizeMCPServerSettingsInput(settings)),
+    );
+    return;
+  }
   writeStoredMCPServers(normalizeMCPServerSettingsInput(settings));
 };
 

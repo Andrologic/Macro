@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import type { ProjectGitFlowSettings } from '../../types';
+import type { ProjectGitFlowSettings, ProjectGitSetupState } from '../../types';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 
 export interface TaskProjectFilterOption {
   id: string;
@@ -12,6 +13,8 @@ export interface TaskProjectFilterOption {
   groupName: string | null;
   taskCount: number;
   isReadOnly: boolean;
+  directEdit?: boolean;
+  gitSetupState?: ProjectGitSetupState;
   gitFlowSettings?: ProjectGitFlowSettings;
 }
 
@@ -164,7 +167,11 @@ export const TaskProjectFilter: React.FC<TaskProjectFilterProps> = ({
         )}
       >
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <Icon name={selectedProject ? 'folder-git-2' : 'layers'} size={15} />
+          {selectedProject ? (
+            <ProjectIcon project={selectedProject} size={15} />
+          ) : (
+            <Icon name="layers" size={15} />
+          )}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-foreground">
@@ -264,7 +271,11 @@ export const TaskProjectFilter: React.FC<TaskProjectFilterProps> = ({
                     )}
                   >
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <Icon name={project.isReadOnly ? 'folder' : 'folder-git-2'} size={15} />
+                      <ProjectIcon
+                        project={project}
+                        fallbackIcon={project.isReadOnly ? 'folder' : 'folder-git-2'}
+                        size={15}
+                      />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">

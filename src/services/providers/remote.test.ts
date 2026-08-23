@@ -14,11 +14,6 @@ import {
   updateMCPServerSettings,
   updateToolSettings,
 } from './remote';
-import {
-  workspaceArchitectActivatePlanChat,
-  workspaceArchitectActivatePlanHead,
-  workspaceArchitectListPlans,
-} from '../tauriIpc';
 
 type FetchCall = {
   url: string;
@@ -70,6 +65,7 @@ const originalLocalStorage = globalThis.localStorage;
 
 let fetchCalls: FetchCall[] = [];
 let localStorageMock: LocalStorageMock;
+let tauriImportCounter = 0;
 
 const setEnv = (key: string, value?: string) => {
   if (value === undefined) {
@@ -206,6 +202,13 @@ describe('remote provider', () => {
       });
     }) as unknown as typeof fetch;
 
+    tauriImportCounter += 1;
+    const {
+      workspaceArchitectActivatePlanChat,
+      workspaceArchitectActivatePlanHead,
+      workspaceArchitectListPlans,
+    } = await import(`../tauriIpc.ts?remote-provider-test=${tauriImportCounter}`);
+
     await workspaceArchitectListPlans({
       branchName: 'main',
       includeDeleted: true,
@@ -268,7 +271,7 @@ describe('remote provider', () => {
     });
   });
 
-  it('persists tool settings locally in remote mode', async () => {
+  it('keeps the unconfigured remote fallback in memory without legacy localStorage', async () => {
     const initial = await getToolSettings();
     const initialTools = initial.tools as unknown as Record<
       string,
@@ -290,12 +293,10 @@ describe('remote provider', () => {
 
     expect(updatedTools.read?.status).toBe('disabled');
     expect(updatedTools.read?.config?.enabled).toBe(false);
-    expect(JSON.parse(localStorageMock.getItem('macro_tool_settings') || '{}')).toMatchObject({
-      read: false,
-    });
+    expect(localStorageMock.getItem('macro_tool_settings')).toBeNull();
   });
 
-  it('persists MCP settings locally in remote mode', async () => {
+  it('keeps unconfigured MCP fallback settings in memory without legacy localStorage', async () => {
     await updateMCPServerSettings({
       servers: {
         example: true,
@@ -308,10 +309,7 @@ describe('remote provider', () => {
       status: 'unconfigured',
       config: { enabled: true },
     });
-    expect(JSON.parse(localStorageMock.getItem('macro_mcp_server_settings') || '{}').example).toMatchObject({
-      id: 'example',
-      config: { enabled: true },
-    });
+    expect(localStorageMock.getItem('macro_mcp_server_settings')).toBeNull();
   });
 
   it('calls remote skill lifecycle endpoints with workspace scope', async () => {

@@ -114,12 +114,23 @@ commands, read [INSTALL.md](INSTALL.md).
 - [RELEASES.md](RELEASES.md) - versioning and the multiplatform release
   process.
 - [HEADLESS.md](HEADLESS.md) - internal experimental notes for a possible future remote runtime.
+- [docs/configuration.md](docs/configuration.md) - JSON configuration files,
+  scopes, schemas, agent tools, skills, and security rules.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - contribution guidelines.
 - [SECURITY.md](SECURITY.md) - security reporting and security model notes.
 - [SUPPORT.md](SUPPORT.md) - supported workflows for the current release line.
 - [CHANGELOG.md](CHANGELOG.md) - release history.
 
 Product and architecture reference documents live in [docs/](docs/).
+
+## Acknowledgements
+
+Macro draws inspiration from [T3 Code](https://github.com/pingdotgg/t3code),
+[OpenAI Codex](https://github.com/openai/codex),
+[OpenCode](https://github.com/anomalyco/opencode),
+[Pi](https://github.com/earendil-works/pi), and
+[Oh My Pi](https://github.com/can1357/oh-my-pi). It also incorporates adapted
+code from T3 Code and OpenAI Codex. We thank their contributors.
 
 ## License
 

@@ -7,6 +7,7 @@ const CHAT_TOOLBOX_IDS = [
   'web_fetch',
   'question',
   'read_file',
+  'terminal_create_session',
   'mark_source_passage',
 ];
 
@@ -14,6 +15,9 @@ const CHAT_RUNTIME_IDS = [
   ...CHAT_TOOLBOX_IDS,
   'read_sources',
   'edit_source_passage',
+  'terminal_run',
+  'terminal_read',
+  'terminal_kill',
 ];
 
 const NON_CHAT_TOOLBOX_IDS = [
@@ -26,7 +30,6 @@ const NON_CHAT_TOOLBOX_IDS = [
   'grep',
   'git_status',
   'git_commit',
-  'terminal_run',
   'plan_create',
   'strategy_generate',
 ];
@@ -137,6 +140,32 @@ describe('useToolsStore chat toolbox policy', () => {
     expect(useToolsStore.getState().isChatToolEnabled('mark_source_passage')).toBe(true);
     expect(useToolsStore.getState().isChatToolEnabled('read_sources')).toBe(true);
     expect(useToolsStore.getState().isChatToolEnabled('edit_source_passage')).toBe(true);
+  });
+
+  it('keeps terminal runtime tools behind the single visible Terminal toggle', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+
+    await useToolsStore.getState().loadSettings();
+    useToolsStore.getState().toggleChatTool('terminal_create_session');
+
+    for (const toolId of [
+      'terminal_create_session',
+      'terminal_run',
+      'terminal_read',
+      'terminal_kill',
+    ]) {
+      expect(useToolsStore.getState().isChatToolEnabled(toolId)).toBe(false);
+    }
+
+    useToolsStore.getState().toggleChatTool('terminal_create_session');
+    for (const toolId of [
+      'terminal_create_session',
+      'terminal_run',
+      'terminal_read',
+      'terminal_kill',
+    ]) {
+      expect(useToolsStore.getState().isChatToolEnabled(toolId)).toBe(true);
+    }
   });
 
   it('discovers and exposes enabled MCP tools by namespaced id', async () => {

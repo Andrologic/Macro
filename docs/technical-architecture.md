@@ -103,6 +103,37 @@ Il fournit les capacités natives suivantes :
 - providers IA côté backend
 - fondation expérimentale du kernel headless HTTP
 
+### 3.6 Registre de configuration
+
+Le module Rust `config` est l’unique autorité pour les réglages durables. Il
+regroupe les contrats Serde, les valeurs par défaut, les JSON Schema, le
+catalogue de paramètres, les migrations, la fusion, la provenance, les ETags,
+les écritures atomiques, le watcher et le classement de sécurité.
+
+Le frontend consomme un snapshot typé via `useConfigStore`. Les stores métier
+ne doivent pas conserver une copie persistante concurrente d’un réglage. Le
+transport utilise les mêmes contrats via IPC Tauri ou via l’API headless.
+
+Les documents globaux vivent dans le dossier de configuration de
+l’application. Les surcharges projet autorisées vivent sous
+`@macro/projects/<project-id>/config`. L’état temporaire vit dans `state.json`,
+les caches et données métier dans SQLite, et les secrets dans le fichier privé
+`provider-secrets.json`.
+
+Une zone privée `.runtime` conserve les baselines approuvées et les propositions
+sensibles en attente. Le snapshot effectif est toujours construit depuis la
+baseline approuvée, y compris après un redémarrage. Les verrous locaux sont
+complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
+verrou avant toute écriture. Le watcher desktop coalesce les événements puis
+rescane les documents chargés et les nouveaux documents projet.
+
+Chaque tour agent charge un snapshot correspondant à ses identifiants de projet
+et à son projet de focus. Le modèle, le niveau de risque, les outils autorisés
+et les limites issus de ce snapshot sont figés pour toute la durée du tour,
+y compris lors d’un retry après overflow.
+
+Les détails normatifs sont décrits dans `docs/configuration.md`.
+
 ---
 
 ## 4. Stack technique
@@ -631,6 +662,14 @@ Cette séparation permet :
 - d'exposer un état clair dans l'interface
 - de gérer les conflits metadata de façon explicite
 
+### 12.7 Exécution directe sans dépôt Git
+
+Un projet `not_git` peut être marqué `directEdit`. Il est alors modifiable dans Implement, mais reste non actionnable dans Architect. Les tâches directes s'exécutent dans le chemin du projet, sans provisionnement de branche ou de worktree, et le filtre de capacités retire tous les outils Git du runtime agent.
+
+La revue repose sur un dépôt de point de restauration privé stocké dans les données applicatives de Macro. Son worktree pointe vers le dossier du projet, sans y créer de `.git`. Le premier démarrage capture une base ; les commandes natives de revue, validation, dévalidation, restauration et acceptation réutilisent ensuite le modèle de diff existant. Le dépôt privé exclut notamment `.git`, `.macro`, les dépendances, les sorties de build et les secrets usuels. L'identité du point de restauration combine l'identifiant de tâche et le chemin canonique du projet.
+
+Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`.
+
 ---
 
 ## 13. Outils, politiques d'accès et exécution
@@ -644,7 +683,7 @@ L'objectif est de limiter les droits selon le contexte fonctionnel.
 Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
-- Chat reste plus restreint
+- Chat reste plus restreint, mais peut recevoir l'outil terminal agentique généraliste
 - Implement a accès à davantage d'outils de workspace et Git
 
 ### 13.2 Validation d'exécution
@@ -710,6 +749,14 @@ La frontière frontend qui remet les résultats d'outils au flux applique une d�
 `read_file` utilise le même contrat de pagination que `read` pour les contenus joints : empreinte de contenu liée au curseur, lignes numérotées, limite de 500 lignes par défaut, plafond de 3 000 lignes et 256 Kio par page. Son mode `raw=true` pagine en octets UTF-8 sans couper de point de code ; il sert notamment à relire exactement une sortie `tool-output://` composée d'une seule ligne longue.
 
 `ast_grep` s'appuie directement sur `ast-grep-core` et `ast-grep-language` dans le backend Rust, sans dépendre d'un binaire installé sur la machine. Les 28 parseurs intégrés couvrent les principaux langages de Macro. Une recherche est en lecture seule, limitée à 30 secondes, 16 Kio par motif, 4 Mio par fichier, 2 Kio par extrait, 512 octets par capture, 32 captures et 4 Kio de captures cumulées par correspondance, puis 200 correspondances par page. Toute capture tronquée le signale dans la correspondance. Le curseur est lié au motif, à la portée, au langage et aux options ; les kernels distants doivent annoncer `structural_search_v1`. Le frontend conserve la même politique d'observation, d'annulation et de racine virtuelle que `grep`.
+
+### 13.6 Terminal agentique indépendant des projets
+
+Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` forment l'outil terminal agentique et partagent un seul interrupteur visible. Ce terminal ne passe pas par l'exécuteur de workspace et son schéma n'expose aucun `project_id`. Le frontend crée toujours ses sessions avec `project_id: null`; son répertoire initial est le dossier personnel ou tout répertoire existant demandé. Une session rattachée à un projet par le terminal manuel de l'application est refusée par l'outil agentique.
+
+Dans chaque mode qui expose l'outil, `toolSecurityPolicy` force chaque `terminal_run` à demander une approbation avant l'exécution, quel que soit le niveau de risque, y compris YOLO et Strict. Cette décision précède l'évaluation habituelle du niveau de risque, ignore les autorisations mémorisées et désactive l'action qui autorise des appels similaires pour toute la conversation. La création, la lecture et l'arrêt d'une session agentique restent des opérations d'observation. Le bridge Copilot relaie les quatre appels au frontend afin qu'ils traversent le même contrôle. Le tool host natif refuse explicitement les appels terminal directs, car ce chemin ne possède pas de mécanisme de review utilisateur.
+
+Le terminal manuel reste un sous-système distinct et peut conserver un rattachement à la tâche, au projet et au worktree pour la navigation de l'interface.
 
 ---
 
@@ -812,6 +859,21 @@ En mode Implement, le chat sert aussi de couche d'interaction pour :
 
 Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestration utilisateur.
 
+### 15.4 Sous-agents
+
+Les sous-agents sont des exécutions enfants rattachées à une conversation parente. Ils ne sont pas des tâches Macro supplémentaires et ne créent pas de worktree dans leur première version.
+
+Le socle est séparé en quatre couches :
+
+- `subagentPolicy` calcule les permissions effectives par intersection, construit un contexte explicite et applique les limites de profondeur, de concurrence et de budget ;
+- `subagentRuntime` gère la file par conversation, les transitions, le timeout et l'annulation autour d'un `ChildTurnExecutor` injecté ;
+- la table SQLite `agent_runs` conserve le cycle de vie durable, la filiation, les résultats, les erreurs et la consommation ;
+- `conversationGoalAudit` spécialise ces contrats pour produire et valider un verdict structuré du profil `goal_auditor`.
+
+La première politique est volontairement restrictive : enfants en lecture seule, profondeur maximale de un et aucune délégation agent-visible. Un verdict de goal n'est appliqué que si l'identifiant et la révision attendue sont encore courants.
+
+Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
+
 ---
 
 ## 16. Fondation expérimentale : backend distant et kernel headless
@@ -845,10 +907,10 @@ Le kernel headless expose une API HTTP basée sur axum.
 Cette API couvre au minimum :
 
 - `GET /health`
-- `GET /v1/tools/mode-policy`
+- `GET /v1/tools/mode-policy?mode=<mode>&projectId=<project-id>`
 - `POST /v1/tools/validate`
 - `POST /v1/tools/execute`
-- `GET /api/v1/tools/mode-policy`
+- `GET /api/v1/tools/mode-policy?mode=<mode>&projectId=<project-id>`
 - `POST /api/v1/tools/validate`
 - `POST /api/v1/tools/execute`
 - `GET /api/v1/workspace/bootstrap`
@@ -869,6 +931,8 @@ Les capabilities runtime séparent les skills en deux niveaux : `skills` pour la
 ### 16.3 Protection expérimentale
 
 Le kernel headless peut être protégé par un bearer token. Le token est facultatif uniquement sur une adresse loopback et obligatoire sur toute autre adresse. Lorsqu'il est configuré, il protège aussi `/health`. Sans token sur loopback, `/health` est public comme le reste du prototype local.
+
+Les patches de configuration headless sont toujours attribués à une source agent. L’acceptation ou le rejet d’un changement sensible exige un second bearer défini par `MACRO_HEADLESS_APPROVAL_TOKEN`, différent de `MACRO_HEADLESS_BEARER_TOKEN`. Ce second secret représente une décision utilisateur ponctuelle et n’est jamais remplacé par le bearer agent. Les décisions de politique d’outils sont fermées par défaut : elles exigent un projet chargé et une exécution multi-projet doit être autorisée par chaque projet affecté.
 
 Le tool host desktop est toujours limité à `127.0.0.1`, génère un token éphémère et exige ce token pour tous ses endpoints d'outils. Son endpoint `/health` reste volontairement public : il n'expose qu'un état de vie non sensible et ne doit pas devenir accessible hors localhost.
 

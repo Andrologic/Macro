@@ -129,7 +129,7 @@ export const assertPathAllowed = (mode: AppMode, path: string): void => {
 const toString = (value: unknown): string =>
   typeof value === "string" ? value : "";
 
-type ParsedPatchOperation =
+export type ParsedPatchOperation =
   | { kind: "add"; path: string; lines: string[] }
   | {
       kind: "update";
@@ -702,7 +702,7 @@ const commitPatchWriteChangesWithRollback = async (
   return snapshots;
 };
 
-const parseApplyPatch = (patchText: string): ParsedPatchOperation[] => {
+export const parseApplyPatch = (patchText: string): ParsedPatchOperation[] => {
   const lines = patchText.split("\n");
   if (lines[0] !== "*** Begin Patch") {
     throw new Error(
@@ -842,7 +842,7 @@ const findLineSequence = (
   return -1;
 };
 
-const applyPatchHunksToContent = (
+export const applyPatchHunksToContent = (
   path: string,
   currentContent: string,
   hunks: Array<Array<{ kind: " " | "+" | "-"; content: string }>>,
@@ -1266,8 +1266,7 @@ const isMutatingWorkspaceTool = (toolName: string): boolean =>
   toolName === "edit" ||
   toolName === "delete" ||
   toolName === "apply_patch" ||
-  gitMutatingToolIds.has(toolName) ||
-  toolName === "terminal_create_session";
+  gitMutatingToolIds.has(toolName);
 
 const resolveExplicitProjectTargetId = (
   rawPath: string,
@@ -1310,11 +1309,6 @@ export const resolveExplicitMutatingToolProjectTargets = (
     }
   };
 
-  if (toolName === "terminal_create_session") {
-    const explicitProjectId = getExplicitToolProjectId(args, candidates);
-    return explicitProjectId ? [explicitProjectId] : [];
-  }
-
   if (toolName === "apply_patch") {
     const patchText = toString(args.patch_text);
     if (!patchText) {
@@ -1347,9 +1341,6 @@ const buildReadOnlyToolError = (
   candidate: ProjectWorkspaceCandidate,
 ): string => {
   const label = candidate.name || candidate.mountName || candidate.id;
-  if (toolName === "terminal_create_session") {
-    return `Error executing terminal_create_session: project "${label}" is read-only.`;
-  }
   if (
     toolName === "write" ||
     toolName === "edit" ||
@@ -1886,6 +1877,7 @@ export const executeWorkspaceTool = async (
         mode,
         toolId: backendToolName,
         args: backendArgs,
+        projectId: effectiveProjectId,
         workspacePath: effectiveWorkspacePath,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
         projectMounts: options.projectMounts,
@@ -1922,6 +1914,7 @@ export const executeWorkspaceTool = async (
       mode,
       toolId: backendToolName,
       path,
+      projectId: focusedProjectId ?? '',
     });
   };
 

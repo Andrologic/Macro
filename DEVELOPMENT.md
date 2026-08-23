@@ -38,7 +38,8 @@ The repo uses:
 | `bun run typecheck` | Run TypeScript type checking. |
 | `bun run lint` | Run ESLint. |
 | `bun run i18n:audit` | Audit locale coverage. |
-| `bun run test` | Run frontend and service tests. |
+| `bun run test` | Run frontend and service tests with bounded parallelism. |
+| `bun run test:coverage` | Run the same tests with per-file coverage reports under `coverage/tests/`. |
 | `bun run ci:pre-push` | Run the differential local gate used by the pre-push hook. |
 | `bun run ci:workflows` | Validate workflow YAML and repository Actions policy. |
 | `bun run version:check` | Verify synchronized version manifests. |
@@ -147,6 +148,28 @@ The full local CI command also builds the frontend and checks bundle size:
 ```bash
 bun run ci
 ```
+
+Notes on validation cost and behavior:
+
+- Tests run one `bun test` process per file for isolation, with a bounded
+  concurrency (6 by default, overridable with `--concurrency=<n>` or
+  `MACRO_TEST_CONCURRENCY`). Pass a filter such as `bun run test composer` to
+  run a subset, or `--list` to print the selected files.
+- Coverage is opt-in through `bun run test:coverage`; plain runs skip
+  instrumentation entirely. Each run clears stale data, keeps isolated raw
+  reports in `coverage/tests/<file>/`, and writes the merged application-line
+  report to `coverage/lcov.info` plus a domain summary in
+  `coverage/summary.json`. The summary lists application files that no test
+  loaded. On a filtered coverage run, that list describes only the selected
+  subset and the console summary labels it accordingly. Bun 1.3.14 does not
+  expose function or branch identities in LCOV, so
+  those metrics remain explicitly unavailable instead of being approximated.
+- `bun run build` type-checks then bundles; it is meant for humans and release
+  packaging (`tauri:build`). Local CI profiles typecheck once and then build
+  with Vite only (`build:vite`), so tsc never runs twice.
+- Native profiles run Rust tests with `--all-targets`, then reuse the same Cargo
+  artifacts for documentation tests instead of recompiling examples through a
+  separate `cargo check` pass.
 
 Before pushing, prefer the differential gate:
 

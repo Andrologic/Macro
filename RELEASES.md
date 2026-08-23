@@ -57,14 +57,118 @@ and Linux, then creates a GitHub Release draft named `v<version>`.
 The draft contains:
 
 - `Macro_<version>_macOS_universal.dmg`
+- `Macro_<version>_macOS_universal.app.tar.gz` and its `.sig` file
 - `Macro_<version>_Windows_x64_setup.exe`
+- `Macro_<version>_Windows_x64_setup.exe.sig`
 - `Macro_<version>_Linux_x64.AppImage`
+- `Macro_<version>_Linux_x64.AppImage.sig`
 - `Macro_<version>_Linux_x64.deb`
 - `Macro_<version>_Linux_x64.rpm`
+- `latest.json`, the signed updater manifest consumed by Macro
 - `SHA256SUMS.txt`
 - GitHub's automatic source archives.
 
 Review the draft release in GitHub before publishing it manually.
+
+## Tauri updater
+
+Macro checks the published stable release at startup. It downloads a signed
+update in the background, then waits for the user to restart the app. The
+updater endpoint is:
+
+```text
+https://github.com/Andrologic/Macro/releases/latest/download/latest.json
+```
+
+The draft release is not visible at this endpoint. Publish it only after
+checking `latest.json`, every `.sig` file, the tag-pinned URLs, and
+`SHA256SUMS.txt`.
+
+Tauri uses a separate signing key for updater artifacts. Generate it once on a
+trusted machine and keep the private key outside the repository:
+
+```bash
+bun tauri signer generate -w ~/.tauri/macro-updater.key
+```
+
+Put the generated public key in `src-tauri/tauri.conf.json`. Store the private
+key content and its password in the protected GitHub `release` environment as:
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Keep an encrypted backup of the private key. Losing it prevents installed
+versions from accepting future updates. Never commit the key, its password, or
+generated updater bundles.
+
+Ordinary local builds use `src-tauri/tauri.local.conf.json` and do not create
+updater artifacts, so they do not need the private key. For a local signed
+updater bundle, expose the private key path and password only for the lifetime
+of the packaging shell:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = "C:\secure\macro-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<password>"
+bun run tauri:build:updater
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+```
+
+Validate the endpoint, updater configuration, plugin versions, and lockfile
+before a push or a release tag:
+
+```bash
+bun run release:updater:check
+```
+
+After downloading a draft's assets, validate the manifest, all updater files,
+and their checksums locally:
+
+```bash
+bun run release:updater:verify -- \
+  --manifest release-assets/latest.json \
+  --asset-root release-assets \
+  --checksums release-assets/SHA256SUMS.txt
+```
+
+After publishing, validate the public endpoint without downloading the
+bundles:
+
+```bash
+bun run release:updater:verify -- \
+  --manifest https://github.com/Andrologic/Macro/releases/latest/download/latest.json
+```
+
+The release workflow generates `latest.json` from the four required targets:
+`windows-x86_64`, `linux-x86_64`, `darwin-x86_64`, and `darwin-aarch64`. The two
+macOS targets point to the same universal `.app.tar.gz` archive.
+
+### End-to-end updater test
+
+Use a disposable VM or machine. Keep the previous signed installer so the test
+can start from a real installed version rather than a development server.
+
+1. Leave the new GitHub release as a draft and download all its assets.
+2. Run `release:updater:verify` against the downloaded `latest.json`, updater
+   bundles, signatures, and `SHA256SUMS.txt`.
+3. Install and open the previous stable Macro version on the test machine.
+4. Publish the draft without announcing it. Draft releases are intentionally
+   invisible to the updater, so the network path cannot be tested earlier.
+5. Restart the old app. Confirm one automatic check occurs, the footer reports
+   download progress, and the app remains open after the update becomes ready.
+6. First test the normal restart path with no active work. Confirm the new
+   version launches and its release-note dialog appears once.
+7. Restore the old VM snapshot and repeat with a streaming conversation and an
+   active Implement command. Confirm `Wait` is focused, both activities are
+   listed, and only `Restart anyway` proceeds without cancelling them.
+8. Restart the updated app again. Confirm the release-note dialog does not open
+   a second time and the footer reports that Macro is current.
+9. Run `release:updater:verify` against the public `/releases/latest/` endpoint.
+
+For `v0.1.0`, no previous stable build contains the updater. Existing RC users
+must install `v0.1.0` manually. The first production upgrade path can therefore
+be proven either with a throwaway lower-version build made from the same updater
+source in a disposable worktree, or with the real `v0.1.0` to `v0.1.1` update.
 
 ## Build Outputs
 
@@ -90,6 +194,12 @@ Universal macOS bundles are written under:
 
 ```text
 src-tauri/target/universal-apple-darwin/release/bundle/
+```
+
+Build Linux packages (AppImage, deb, rpm):
+
+```bash
+bun run tauri:build:linux-packages
 ```
 
 ## macOS Release Requirements
@@ -122,18 +232,69 @@ before packaging. Universal macOS builds combine the Apple Silicon and Intel
 sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 `macro-ai-runtime` inside the app bundle.
 
+## In-app Release Notes
+
+Automatic updates preserve the Markdown notes from `latest.json` before
+installation. After the relaunch, the release-note dialog reads that local copy
+and removes it once the user closes the dialog. This avoids a source-code change
+for every updater release. `src/services/releaseNotes.ts` keeps the English and
+French `v0.1.0` note as a bootstrap fallback for installations that did not pass
+through the updater. Raw HTML is ignored.
+
+Store release media under `public/release-notes/<version>/` so that images and
+videos remain available offline. Use root-relative paths in the Markdown:
+
+```markdown
+![Workspace overview](/release-notes/0.2.0/workspace.webp "Workspace overview")
+
+![video: Task execution demo](/release-notes/0.2.0/task-demo.webm)
+```
+
+Image titles become visible captions. Files ending in `.mp4`, `.webm`, `.ogv`,
+or `.mov` render as videos with native controls. The `video:` prefix also marks
+a media URL without a recognizable extension as a video. Compress media before
+committing it and keep the release dialog usable without media playback.
+
 ## Release Runbook
 
 1. Finish the feature branch and run the smallest relevant local checks.
 2. Run `bun run ci:pre-push` before updating the pull request.
-3. Bump to a stable `x.y.z` version and confirm `bun run version:check` passes.
-4. Merge to `main`, fetch the resulting remote state, and run
+3. Bump to a stable `x.y.z` version and review the user-facing notes that GitHub
+   will place in `latest.json`. Keep implementation-only details out of PR titles.
+4. Confirm `bun run version:check` and the release notes tests pass.
+5. Merge to `main`, fetch the resulting remote state, and run
    `bun run release:preflight` from a clean checkout exactly matching
    `origin/main`.
-5. Create and push an annotated matching `vX.Y.Z` tag
+6. Create and push an annotated matching `vX.Y.Z` tag
    from that history using an authorized release-maintainer account.
-6. Review the cheap validation job, then approve the protected `release`
+7. Review the cheap validation job, then approve the protected `release`
    environment when the tag and version are correct.
-7. Wait for `.github/workflows/release.yml` to create the draft release.
-8. Check the draft assets, signatures, notes, and checksums in GitHub.
-9. Publish the draft manually when it is ready for users.
+8. Wait for `.github/workflows/release.yml` to create the draft release.
+9. Run `bun run release:updater:check` and check the draft assets, signatures,
+   `latest.json`, notes, and checksums in GitHub.
+10. Publish the draft manually when it is ready for users.
+11. From an older installed version, verify that the published
+    `/releases/latest/download/latest.json` is reachable and that the updater
+    offers the new version before announcing the release.
+
+## Recovering a faulty release
+
+If the problem is found while the release is still a draft, keep it unpublished,
+fix the source, recreate the tag from the corrected release commit, and let the
+workflow rebuild every asset. Never reuse a signature for changed content.
+
+If the release has already been published:
+
+1. Immediately convert it back to a draft so `/releases/latest/` resolves to the
+   previous stable release for clients that have not downloaded the update.
+2. Fix the problem and publish a higher patch version signed with the same
+   updater key. Do not replace tag-pinned assets in place.
+3. Validate the new public `latest.json` and test the update from the previous
+   stable installation before announcing recovery.
+4. Provide the new installer for a manual repair if the faulty application can
+   no longer start. An already installed higher version cannot automatically
+   downgrade to the previous release.
+
+Do not rotate the updater key for an ordinary faulty release. Rotate it only
+after a confirmed key compromise; installations that trust only the old public
+key will then require a manual migration path.

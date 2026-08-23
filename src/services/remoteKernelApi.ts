@@ -60,18 +60,24 @@ export const canUseRemoteKernel = (): boolean => {
 
 export const getRemoteToolModePolicy = async (
   mode: AppMode,
+  projectId?: string,
   signal?: AbortSignal,
 ): Promise<RemoteToolModePolicy> => {
-  return remoteKernelRequest<RemoteToolModePolicy>(
-    `/tools/mode-policy?mode=${encodeURIComponent(mode)}`,
-    { method: 'GET', signal }
-  );
+  const query = [
+    `mode=${encodeURIComponent(mode)}`,
+    ...(projectId ? [`projectId=${encodeURIComponent(projectId)}`] : []),
+  ].join('&');
+  return remoteKernelRequest<RemoteToolModePolicy>(`/tools/mode-policy?${query}`, {
+    method: 'GET',
+    signal,
+  });
 };
 
 export const validateRemoteToolExecution = async (params: {
   mode: AppMode;
   toolId: string;
   path?: string;
+  projectId: string;
 }): Promise<RemoteToolValidation> => {
   return remoteKernelRequest<RemoteToolValidation>('/tools/validate', {
     method: 'POST',
@@ -79,6 +85,7 @@ export const validateRemoteToolExecution = async (params: {
       mode: params.mode,
       tool_id: params.toolId,
       path: params.path,
+      projectId: params.projectId,
     }),
   });
 };
@@ -87,6 +94,7 @@ export const executeRemoteWorkspaceTool = async (params: {
   mode: AppMode;
   toolId: string;
   args: Record<string, unknown>;
+  projectId?: string | null;
   workspacePath?: string | null;
   workspaceScope?: 'default' | 'metadata';
   projectMounts?: ProjectMount[];
@@ -99,7 +107,11 @@ export const executeRemoteWorkspaceTool = async (params: {
   const needsBoundedGitOutput = BOUNDED_GIT_OUTPUT_TOOL_IDS.has(params.toolId);
   const needsStructuralSearch = params.toolId === 'ast_grep';
   if (needsContentRevisions || needsBoundedOutput || needsBoundedGitOutput || needsStructuralSearch) {
-    const policy = await getRemoteToolModePolicy(params.mode, params.signal);
+    const policy = await getRemoteToolModePolicy(
+      params.mode,
+      params.projectId ?? undefined,
+      params.signal,
+    );
     if (
       needsContentRevisions &&
       !policy.capabilities?.includes(CONTENT_REVISIONS_CAPABILITY)

@@ -197,6 +197,10 @@ export interface TaskExecutionTarget {
   projectId: string;
   branchName: string;
   targetBranchName?: string;
+  // Persist the mode selected when the task is created. A project can gain a
+  // Git repository later without changing how an existing task must run.
+  executionMode?: 'git' | 'direct';
+  checkpointId?: string;
   // `worktree` tasks run in dedicated task worktrees, while
   // `repository_root` targets operate directly in the parent repository.
   executionKind?: 'worktree' | 'repository_root';
@@ -359,7 +363,7 @@ export interface MCPServerSettings {
 }
 
 export type SkillSourceKind = 'global' | 'project';
-export type SkillSourceNamespace = 'agents' | 'codex' | 'opencode' | 'claude';
+export type SkillSourceNamespace = 'agents' | 'codex' | 'opencode' | 'claude' | string;
 export type SkillLocationKind = 'local' | 'remote' | 'bundled';
 export type SkillDiagnosticSeverity = 'error' | 'warning' | 'info';
 
@@ -372,6 +376,8 @@ export interface SkillProjectRoot {
 export interface SkillSource {
   kind: SkillSourceKind;
   namespace?: SkillSourceNamespace;
+  rootId?: string;
+  priority?: number;
   projectId?: string | null;
   projectName?: string | null;
   rootPath: string;
@@ -422,6 +428,11 @@ export interface SkillManifest {
 export interface SkillSettings {
   enabled: boolean;
   scriptsEnabled: boolean;
+  trust?: {
+    contentHash: string;
+    grantedAt: string;
+    grantedBy: 'user';
+  };
 }
 
 export interface SkillPermissionSnapshotEntry {
@@ -429,6 +440,8 @@ export interface SkillPermissionSnapshotEntry {
   enabled: boolean;
   scriptsEnabled: boolean;
   hasScripts: boolean;
+  contentHash?: string;
+  trustedContentHash?: string;
 }
 
 export interface SkillPermissionSnapshot {
@@ -493,6 +506,7 @@ export interface SkillTemplateCreateRequest {
   name: string;
   description: string;
   destinationKind: 'global' | 'project';
+  destinationId?: string | null;
   projectId?: string | null;
   projectRoots?: SkillProjectRoot[];
 }
@@ -529,6 +543,7 @@ export interface Project {
   status: ProjectStatus;
   gitFlowSettings?: ProjectGitFlowSettings;
   userReadOnly?: boolean;
+  directEdit?: boolean;
   gitSetupState?: Extract<ProjectGitSetupState, 'ready' | 'not_git' | 'unborn'>;
   isReadOnly?: boolean;
   readOnlyReason?: 'manual' | 'missing_git' | 'missing_initial_commit' | 'manual_and_missing_git' | null;
@@ -672,6 +687,7 @@ export interface PendingToolApproval {
   detail?: string;
   args?: Record<string, unknown>;
   rememberKey: string;
+  canApproveForConversation?: boolean;
 }
 
 export interface AgentCodeCheckpointFileSnapshot {

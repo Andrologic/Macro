@@ -5,7 +5,10 @@ mod result_format;
 mod stdio;
 mod types;
 
-use self::ids::{build_mcp_env_secret_id, build_mcp_env_secret_ref};
+use self::ids::{
+    build_mcp_env_secret_id, build_mcp_env_secret_ref, is_canonical_mcp_server_id,
+    is_valid_mcp_env_key,
+};
 use self::stdio::{call_stdio_tool, discover_stdio_tools};
 pub use self::types::{
     McpCallToolResponse, McpDiscoverToolsResponse, McpServerDto, McpToolDto, McpTransportDto,
@@ -38,8 +41,11 @@ pub async fn mcp_store_env_secret(
     value: String,
 ) -> CommandResult<String> {
     let key = key.trim();
-    if key.is_empty() {
-        return Err(command_error("MCP env secret key is required."));
+    if !is_canonical_mcp_server_id(&server_id) {
+        return Err(command_error("MCP server id must be canonical."));
+    }
+    if !is_valid_mcp_env_key(key) {
+        return Err(command_error("MCP env secret key is invalid."));
     }
 
     let secret_id = build_mcp_env_secret_id(&server_id, key);
@@ -51,8 +57,11 @@ pub async fn mcp_store_env_secret(
 #[tauri::command]
 pub async fn mcp_delete_env_secret(server_id: String, key: String) -> CommandResult<()> {
     let key = key.trim();
-    if key.is_empty() {
-        return Ok(());
+    if !is_canonical_mcp_server_id(&server_id) {
+        return Err(command_error("MCP server id must be canonical."));
+    }
+    if !is_valid_mcp_env_key(key) {
+        return Err(command_error("MCP env secret key is invalid."));
     }
 
     let secret_id = build_mcp_env_secret_id(&server_id, key);

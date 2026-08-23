@@ -115,6 +115,7 @@ describe('ToolApprovalFooter', () => {
             summary: 'Run a terminal command',
             detail: 'npm test',
             rememberKey: 'terminal:npm test',
+            canApproveForConversation: false,
           }}
           onAllowOnce={() => undefined}
           onAllowForConversation={() => undefined}
@@ -127,7 +128,7 @@ describe('ToolApprovalFooter', () => {
     expect(container?.textContent).toContain('Requested command');
     expect(container?.textContent).toContain('System');
     expect(container?.textContent).toContain('Allow once');
-    expect(container?.textContent).toContain('Allow for this conversation');
+    expect(container?.textContent).not.toContain('Allow for this conversation');
     expect(container?.textContent).not.toContain('terminal_run');
     expect(container?.textContent).not.toContain('Balanced');
     expect(container?.querySelector('[data-icon="shield"]')).not.toBeNull();

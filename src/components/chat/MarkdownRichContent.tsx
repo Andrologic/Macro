@@ -408,7 +408,22 @@ export interface MarkdownRichContentProps {
   content: string;
 }
 
+const VIDEO_MEDIA_EXTENSION = /\.(?:mp4|webm|ogv|mov)(?:[?#].*)?$/i;
+
+export const isMarkdownVideo = (
+  src: string | null | undefined,
+  alt: string | null | undefined,
+): boolean =>
+  Boolean(
+    alt?.trim().toLowerCase().startsWith('video:') ||
+    (src && VIDEO_MEDIA_EXTENSION.test(src)),
+  );
+
+const normalizeMediaLabel = (alt: string | null | undefined): string =>
+  alt?.replace(/^video:\s*/i, '').trim() ?? '';
+
 const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }) => {
+  const { t } = useTranslation();
   const normalizedContent = useMemo(() => normalizeLatexBracketMath(content), [content]);
   const components = useMemo<Components>(() => ({
     a: ({ href, children, ...props }) => {
@@ -423,6 +438,41 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
         >
           {children}
         </a>
+      );
+    },
+    img: ({ src, alt, title }) => {
+      if (!src) return null;
+
+      const label = normalizeMediaLabel(alt);
+      const caption = title?.trim() || (isMarkdownVideo(src, alt) ? label : '');
+
+      return (
+        <span className="my-5 block overflow-hidden rounded-xl border border-border bg-background/65 shadow-sm">
+          {isMarkdownVideo(src, alt) ? (
+            <video
+              src={src}
+              aria-label={label || t('markdown.video', 'Video')}
+              controls
+              playsInline
+              preload="metadata"
+              className="block max-h-[min(62vh,620px)] w-full bg-black object-contain"
+            />
+          ) : (
+            <img
+              src={src}
+              alt={label}
+              title={title}
+              loading="lazy"
+              decoding="async"
+              className="block max-h-[min(62vh,620px)] w-full object-contain"
+            />
+          )}
+          {caption ? (
+            <span className="block border-t border-border px-3 py-2 text-center text-xs text-muted-foreground">
+              {caption}
+            </span>
+          ) : null}
+        </span>
       );
     },
     p: ({ className: paragraphClassName, children, ...props }) => {
@@ -569,7 +619,7 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
       }
       return <input {...domProps} type={type} className={inputClassName} />;
     },
-  }), []);
+  }), [t]);
 
   return (
     <ReactMarkdown

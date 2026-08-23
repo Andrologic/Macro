@@ -6,11 +6,13 @@
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { WebSearchResult } from '../stores/useCitationsStore';
+import { isTauriAvailable, webSearchExecute } from './tauriIpc';
 
 export type SearchProvider = 'tavily' | 'brave';
 
 export interface WebSearchOptions {
   provider?: SearchProvider;
+  configured?: boolean;
   tavilyApiKey?: string;
   braveApiKey?: string;
   maxResults?: number;
@@ -94,6 +96,10 @@ export async function webSearch(
 
   if (braveApiKey) {
     return searchWithBrave(query, braveApiKey, resultCount);
+  }
+
+  if (options.configured && isTauriAvailable()) {
+    return webSearchExecute({ query, includeRawContent });
   }
 
   throw new Error('No search API key configured. Please add a Tavily or Brave Search API key in settings.');

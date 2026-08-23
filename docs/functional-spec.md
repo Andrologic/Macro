@@ -87,6 +87,27 @@ Macro suppose que l'utilisateur agit comme un décideur technique, même lorsqu'
 
 ## 5. Modèle fonctionnel général
 
+### 5.0 Configuration éditable et sûre
+
+Macro expose ses réglages durables sous forme de fichiers JSON stricts,
+validables et modifiables depuis l’interface, un éditeur ou un agent. Les
+réglages utilisateur et les surcharges projet sont séparés. L’interface indique
+la provenance des valeurs effectives et permet de rétablir l’héritage sans
+dupliquer les valeurs par défaut.
+
+Une configuration invalide ne doit pas rendre l’application inutilisable. Le
+dernier snapshot valide reste actif et le diagnostic identifie le fichier, la
+propriété et la cause. Un agent ne peut pas augmenter seul ses permissions :
+les changements sensibles attendent toujours une décision utilisateur locale.
+
+Les secrets restent hors des fichiers exposés et des outils agents. Les racines
+de découverte, les destinations d’installation et les permissions de skills
+sont configurables, tandis que la confiance est invalidée dès que le contenu
+d’une skill change.
+
+Le contrat complet des fichiers, scopes et règles de sécurité est défini dans
+`docs/configuration.md`.
+
 ### 5.1 Modèle mental principal
 
 Macro organise le travail de la façon suivante :
@@ -287,6 +308,10 @@ Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
 Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord le projet, puis un type de tâche compatible avec son workflow Git. La fenêtre ne demande pas le contenu de la tâche : celui-ci est fourni ensuite dans la conversation. Le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Un projet mainline, sans branche de développement distincte de la branche principale, permet `Feature` et `Hotfix`, mais pas `Bugfix`. La disponibilité est recalculée lorsque le projet cible change et tout choix devenu incompatible est effacé. Le type `release` reste réservé aux plans Architect.
 
+Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche d'édition directe peut être active par projet. Ces tâches utilisent le type `feature` interne, présenté comme `Édition directe`, et les outils Git ne sont pas exposés à l'agent.
+
+L'édition directe ne remplace pas le workflow planifié : un projet sans Git reste un contexte de lecture dans Architect et ne peut pas porter de plan exécutable. L'utilisateur peut initialiser Git ultérieurement pour retrouver les branches, les worktrees, le parallélisme et les plans Architect.
+
 ### 7.3 Mode Chat
 
 Le mode Chat est un mode de support indépendant.
@@ -295,6 +320,7 @@ Son objectif est de permettre à l'utilisateur de :
 - poser des questions rapides d'ordre technique ou documentaire
 - attacher des fichiers à une conversation
 - utiliser certains outils web et MCP
+- activer un terminal généraliste pour exécuter des commandes approuvées sur l'ordinateur
 - conserver une continuité de travail dans l'application sans entrer dans tout le workflow Macro
 
 Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
@@ -302,7 +328,7 @@ Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
 Il se distingue du mode Implement en ce que :
 - il n'est pas piloté par une stratégie de plan
 - il ne travaille pas par défaut sur un contexte d'exécution de projet
-- il ne parcourt pas un workspace complet en mode agent
+- il ne parcourt un workspace en mode agent que lorsque l'utilisateur l'attache à la conversation
 - il fonctionne conversation par conversation avec un contexte explicitement fourni
 
 Le mode Chat doit conserver un historique local des conversations.
@@ -478,6 +504,10 @@ L'import doit permettre au minimum de définir :
 - la branche cible
 - le groupe cible optionnel
 - un chemin local optionnel
+
+### 10.2.1 Import d'un dossier sans Git
+
+Lorsqu'un dossier importé ne contient pas de dépôt Git, Macro propose trois choix explicites : initialiser Git, activer l'édition directe ou conserver le projet en lecture seule. Le choix est enregistré dans le registre du projet et peut être modifié depuis ses réglages. L'édition directe ne crée jamais de dossier `.git` dans le projet.
 
 ### 10.3 Gestion du projet
 
@@ -774,6 +804,10 @@ Quand une même tâche affecte plusieurs projets :
 - les commits peuvent être créés séparément par projet
 - chaque message de commit doit refléter les changements effectifs du projet concerné
 
+### 16.4 Points de restauration pour l'édition directe
+
+Le point de restauration d'un projet sans Git appartient à Macro et n'est pas présenté comme l'historique Git du projet. Il couvre les fichiers de travail utiles à la revue, tout en excluant les dépendances générées, les sorties de build, les métadonnées Macro et les secrets usuels. Accepter les changements avance ce point de restauration privé ; terminer la tâche n'exécute aucun merge.
+
 ---
 
 ## 17. Règles du mode Chat
@@ -784,12 +818,13 @@ Le mode Chat existe pour des interactions légères et indépendantes des projet
 
 ### 17.2 Modèle de contexte
 
-Le mode Chat ne doit pas supposer un contexte agent autonome à l'échelle d'un workspace.
+Le mode Chat ne doit pas supposer un contexte agent autonome à l'échelle d'un workspace. Une conversation démarre sans workspace. L'utilisateur peut ensuite lui attacher un projet ou un groupe depuis la boîte à outils. Cette portée est enregistrée avec la conversation et ne suit pas les changements de sélection effectués dans les autres modes.
 
 Il doit fonctionner sur :
 - la conversation courante
 - les fichiers explicitement attachés
 - les outils externes explicitement autorisés
+- le workspace explicitement attaché, le cas échéant
 
 ### 17.3 Pièces jointes
 
@@ -806,11 +841,15 @@ Une future synchronisation de cet historique peut exister plus tard, mais ne fai
 ### 17.5 Accès outils
 
 Le mode Chat peut accéder :
+
 - au web
 - à certains outils MCP
 - aux skills activées par l'utilisateur
+- au terminal agentique généraliste
 
-La disponibilité de ces outils doit être configurable.
+La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. L'outil terminal agentique n'a aucune identité de projet ou de workspace dans son contrat. Il peut démarrer dans n'importe quel répertoire existant, que la conversation possède ou non un workspace de contexte. Chaque commande exige une approbation explicite et distincte dans tous les modes où l'outil est disponible, y compris au niveau de risque YOLO. Une approbation terminal ne peut jamais être mémorisée pour la conversation.
+
+Le terminal manuel de l'application est une fonctionnalité distincte. Il peut rester rattaché à une tâche et à un projet pour les besoins de navigation de l'interface, mais ses sessions ne sont pas utilisables par l'outil terminal agentique.
 
 ---
 

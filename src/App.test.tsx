@@ -148,6 +148,15 @@ const registerAppMocks = () => {
     default: () => null,
   }));
 
+  mock.module('./components/modals/ReleaseNotesModal', () => ({
+    default: ({ enabled }: { enabled: boolean }) =>
+      enabled ? <div data-testid="mock-release-notes" /> : null,
+  }));
+
+  mock.module('./components/updates/AppUpdateController', () => ({
+    default: () => null,
+  }));
+
   mock.module('./components/layout/Footer', () => ({
     Footer: () => <footer data-testid="mock-footer" />,
   }));
@@ -228,6 +237,7 @@ describe('App layout containment', () => {
     expect(shell?.className).toContain('overflow-hidden');
     expect(shell?.className).not.toContain('h-screen');
     expect(shell?.className).not.toContain('w-screen');
+    expect(container.querySelector('[data-testid="mock-release-notes"]')).not.toBeNull();
 
     const mainContentWrapper = shell?.children.item(1) as HTMLDivElement | null;
     expect(mainContentWrapper).not.toBeNull();
@@ -304,6 +314,7 @@ describe('App layout containment', () => {
     });
 
     expect(container.querySelector('.macro-app-shell')).toBeNull();
+    expect(container.querySelector('[data-testid="mock-release-notes"]')).toBeNull();
     expect(container.querySelectorAll('[data-testid="mock-skeleton"]').length).toBeGreaterThan(0);
   });
 

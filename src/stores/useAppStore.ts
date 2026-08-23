@@ -68,6 +68,7 @@ import {
   getGlobalProjectById,
   getFocusedProjectIdForGroup,
   getProjectGroupByProjectId,
+  isProjectGitActionable,
   resolveExplicitProjectIdForGroup,
   getScopedProjectIds,
 } from "../services/globalProjects";
@@ -112,6 +113,7 @@ export type SettingsTab =
   | "speech"
   | "tools"
   | "skills"
+  | "configuration"
   | "shortcuts"
   | "prompts"
   | "architect";
@@ -136,10 +138,12 @@ const flushMacroMetadataForProjectGroupSwitch = async (
   const workspacePaths = state.selectedGroupId
     ? state.projectGroups
         .find((group: ProjectGroup) => group.id === state.selectedGroupId)
-        ?.projects.map((project: Project) => project.path)
+        ?.projects
+        .filter((project: Project) => isProjectGitActionable(project))
+        .map((project: Project) => project.path)
         .filter((path: string) => path.trim().length > 0) ?? []
     : state.standaloneProjects
-        .filter((project) => project.id === state.selectedProjectId)
+        .filter((project) => project.id === state.selectedProjectId && isProjectGitActionable(project))
         .map((project) => project.path)
         .filter((path) => path.trim().length > 0);
   if (workspacePaths.length === 0) return;
@@ -1291,6 +1295,7 @@ interface AppStore {
     projectId: string,
     userReadOnly: boolean,
     confirmedMigration?: boolean,
+    directEdit?: boolean,
   ) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
@@ -1392,6 +1397,7 @@ interface CreateProjectData {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings;
+  directEdit?: boolean;
   requestId?: string | null;
 }
 
@@ -1520,10 +1526,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   projectModalOpen: false,
   projectModalGroupId: null,
   projectGitFlowModalProjectId: null,
-  activeThemeId:
-    (typeof window !== "undefined"
-      ? window.localStorage.getItem("theme-id")
-      : null) || "macro-dark",
+  activeThemeId: "macro-dark",
   leftPanelWidth: 280,
   architectLeftPanelWidth: 320,
   rightPanelWidth: 320,
@@ -1587,10 +1590,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     void savePreference(PREF_KEYS.AGENT_TYPE, agentType);
   },
   setTheme: (themeId) => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("theme-id", themeId);
-    }
     set({ activeThemeId: themeId });
+    void savePreference(PREF_KEYS.THEME, themeId);
   },
 
   setCurrentPlan: (plan) => set({ currentPlan: plan }),
@@ -2685,6 +2686,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     projectId,
     userReadOnly,
     confirmedMigration = false,
+    directEdit,
   ) => {
     set({ isLoading: true, lastError: null });
     try {
@@ -2726,6 +2728,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await services.updateProjectAccess({
         projectId: canonicalProject.id,
         userReadOnly,
+        directEdit,
         confirmedMigration,
       });
 
@@ -4479,6 +4482,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await purgeLegacyImplementExecutionModePreference();
       // Load persisted panel preferences
       const [
+        activeThemeId,
         leftWidth,
         architectLeftWidth,
         rightWidth,
@@ -4501,6 +4505,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         storedProjectSwitchPolicy,
         sessionContext,
       ] = await Promise.all([
+        loadPreference<string>(PREF_KEYS.THEME),
         loadPreference<number>(PREF_KEYS.LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH),
         loadPreference<number>(PREF_KEYS.RIGHT_PANEL_WIDTH),
@@ -4708,6 +4713,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	      );
 
       set({
+        activeThemeId,
         mode: resolvedMode,
         agentType: resolvedAgentType,
 	        currentPlan: bootstrapPlan,

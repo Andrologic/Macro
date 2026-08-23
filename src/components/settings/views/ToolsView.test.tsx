@@ -113,15 +113,21 @@ const loadToolsView = async () => {
     loadPreference: (key: string) => loadPreferenceMock(key),
   }));
 
+  const webSearchSettings = {
+    provider: 'tavily' as const,
+    enabled: true,
+    fetchEnabled: true,
+    hasTavilySecret: true,
+    hasBraveSecret: false,
+  };
   const webSearchSettingsModule = {
-    getWebSearchSettings: () => ({
-      provider: 'tavily',
-      tavilyApiKey: 'tvly-key',
-      braveApiKey: '',
-      enabled: true,
-      fetchEnabled: true,
-    }),
-    saveWebSearchSettings: (value: unknown) => saveWebSearchSettingsMock(value),
+    getWebSearchSettings: () => webSearchSettings,
+    refreshWebSearchSettings: mock(async () => webSearchSettings),
+    saveWebSearchSettings: async (value: typeof webSearchSettings) => {
+      saveWebSearchSettingsMock(value);
+      return value;
+    },
+    setWebSearchApiKey: mock(async () => webSearchSettings),
   };
   mock.module('../../../services/webSearchSettings', () => webSearchSettingsModule);
   mock.module('../../../services/webSearchSettings.ts', () => webSearchSettingsModule);

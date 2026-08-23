@@ -248,6 +248,23 @@ const getPrimaryExecutionTarget = (task: CatalogedImplementTask): TaskExecutionT
   return getExecutionTargets(task)[0] || null;
 };
 
+const isDirectEditTarget = (target: TaskExecutionTarget): boolean => {
+  if (target.executionMode) {
+    return target.executionMode === 'direct';
+  }
+  const project = useAppStore.getState().getProjectById(target.projectId);
+  return project?.directEdit === true && project.gitSetupState === 'not_git';
+};
+
+const isDirectEditTask = (task: CatalogedImplementTask): boolean => {
+  if (task.task_source !== 'standalone') return false;
+  const targets = getExecutionTargets(task);
+  if (targets.length === 0) return false;
+  return targets.every(isDirectEditTarget);
+};
+
+const DIRECT_DRAFT_REVERT_SAGA_TARGET = '@direct-draft-revert';
+
 const getTaskIntegrationBranch = (
   task: CatalogedImplementTask,
   target: TaskExecutionTarget
@@ -515,6 +532,29 @@ const resumeLinkedTaskGitCleanup = async (
     executionTargets: NonNullable<LinkedTaskDeletionSaga['executionTargets']>;
   } = { ...saga, executionTargets: saga.executionTargets };
   for (const target of current.executionTargets) {
+    if (target.cleanupKind === 'direct') {
+      if (!target.checkpointRemoved) {
+        if (!target.checkpointId) {
+          throw new Error(
+            'Le journal de suppression ne contient pas l’identifiant du checkpoint direct.',
+          );
+        }
+        await tauriIpc.directCheckpointRemove({
+          checkpointId: target.checkpointId,
+        });
+        current = {
+          ...current,
+          updatedAt: new Date().toISOString(),
+          executionTargets: current.executionTargets.map((candidate) =>
+            candidate.worktreeKey === target.worktreeKey
+              ? { ...candidate, checkpointRemoved: true }
+              : candidate,
+          ),
+        };
+        await upsertLinkedTaskDeletionSaga(current);
+      }
+      continue;
+    }
     if (!target.worktreeRemoved) {
       const inspectWorktree = () =>
         tauriIpc.gitWorktreeInspect({
@@ -1010,6 +1050,10 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
     return false;
   }
 
+  if (isDirectEditTask(task)) {
+    return false;
+  }
+
   const executionTargets = getExecutionTargetsWithRepoPaths(task);
   for (const target of executionTargets) {
     try {
@@ -1069,10 +1113,12 @@ const resolveTaskStartRef = async (
 };
 
 const inspectTargetWorktreePath = async (
+  task: CatalogedImplementTask,
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>
 ): Promise<string | null> => {
   return resolvePreparedTaskWorktreePath({
+    taskId: task.id,
     target,
     branchWorktrees,
     getProjectById: useAppStore.getState().getProjectById,
@@ -1085,7 +1131,26 @@ const ensureTargetWorktreePath = async (
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>
 ): Promise<string> => {
-  const inspectedPath = await inspectTargetWorktreePath(target, branchWorktrees);
+  const directProject = useAppStore.getState().getProjectById(target.projectId);
+  if (isDirectEditTarget(target)) {
+    const projectPath = directProject?.path?.trim() || target.repoPath?.trim();
+    if (!projectPath) {
+      throw toServiceError(
+        tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
+          taskId: task.id,
+        })
+      );
+    }
+    await tauriIpc.workspaceSetActiveRoot(projectPath);
+    await tauriIpc.directCheckpointEnsure({
+      taskId: task.id,
+      projectPath,
+      checkpointId: target.checkpointId,
+    });
+    return projectPath;
+  }
+
+  const inspectedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
   if (inspectedPath) {
     return inspectedPath;
   }
@@ -1546,7 +1611,8 @@ interface OptimisticTaskStatusSnapshot {
 
 const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
-  branchWorktrees: Record<string, string>
+  branchWorktrees: Record<string, string>,
+  commandRegistryOverride?: Awaited<ReturnType<typeof loadTaskProjectCommandRegistry>>,
 ): Promise<{
   createdWorktrees: Record<string, string>;
   preparedTargets: PreparedTaskExecutionTarget[];
@@ -1564,7 +1630,9 @@ const ensureTaskExecutionTargetsReady = async (
 
   const createdWorktrees: Record<string, string> = {};
   const preparedTargets: PreparedTaskExecutionTarget[] = [];
-  const commandRegistry = await loadTaskProjectCommandRegistry();
+  const commandRegistry = commandRegistryOverride ?? await loadTaskProjectCommandRegistry(
+    executionTargets.map((target) => target.projectId),
+  );
 
   for (const target of executionTargets) {
     const worktreePath = await ensureTargetWorktreePath(executionTask, target, branchWorktrees);
@@ -1581,8 +1649,10 @@ const ensureTaskExecutionTargetsReady = async (
       );
     }
 
-    const setupCommand =
-      getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
+    const isDirectEdit = isDirectEditTarget(target);
+    const setupCommand = isDirectEdit
+      ? ''
+      : getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
     if (setupCommand) {
       try {
         const setupResult = await runWorktreeSetupCommand({
@@ -2484,7 +2554,46 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       if (requestId !== refreshRequestId) return;
       for (const pending of pendingLinkedTaskDeletions) {
         if (requestId !== refreshRequestId) return;
-        const taskStillExists = Boolean(resolveTaskReference(catalog.tasks, pending.taskId));
+        const catalogTask = resolveTaskReference(catalog.tasks, pending.taskId);
+        const taskStillExists = Boolean(catalogTask);
+        if (pending.phase === 'draft_reverting' || pending.phase === 'draft_reverted') {
+          let recoverySaga = pending;
+          try {
+            if (!Array.isArray(pending.executionTargets)) {
+              throw new Error(
+                "Le journal du retour en brouillon ne contient pas les checkpoints à nettoyer.",
+              );
+            }
+            if (pending.phase === 'draft_reverting' && catalogTask && !catalogTask.draft) {
+              await tauriIpc.workspaceRevertManualFeatureToDraft({
+                taskId: pending.taskId,
+                conversationId: pending.conversationId || null,
+                title: pending.revertTitle ?? null,
+                description: pending.revertDescription ?? null,
+              });
+            }
+            recoverySaga = {
+              ...pending,
+              phase: 'draft_reverted',
+              updatedAt: new Date().toISOString(),
+              lastError: undefined,
+            };
+            await upsertLinkedTaskDeletionSaga(recoverySaga);
+            recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga);
+            await removeLinkedTaskDeletionSaga(pending.taskId, pending.targetBranch);
+          } catch (error) {
+            const message = toServiceError(error).message;
+            await upsertLinkedTaskDeletionSaga({
+              ...recoverySaga,
+              updatedAt: new Date().toISOString(),
+              lastError: message,
+            });
+            set({
+              lastError: `Le retour en brouillon reste en attente et sera repris automatiquement : ${message}`,
+            });
+          }
+          continue;
+        }
         if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
           const message =
             "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.";
@@ -2501,7 +2610,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         if (pending.phase === 'task_deleting') {
           try {
-            const resumed = await resumeLinkedTaskGitCleanup(pending);
             if (taskStillExists) {
               if (pending.draft) {
                 await tauriIpc.workspaceDeleteManualFeatureDraft(pending.taskId);
@@ -2509,6 +2617,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                 await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
               }
             }
+            const resumed = await resumeLinkedTaskGitCleanup(pending);
             pending.executionTargets = resumed.executionTargets;
           } catch (error) {
             const message = toServiceError(error).message;
@@ -2529,9 +2638,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           updatedAt: new Date().toISOString(),
         };
         await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
-        const completed = await useChatStore
-          .getState()
-          .completeLinkedTaskConversationDeletion(pending.conversationId);
+        const completed = pending.conversationId
+          ? await useChatStore
+              .getState()
+              .completeLinkedTaskConversationDeletion(pending.conversationId)
+          : true;
         if (completed) {
           await removeLinkedTaskDeletionSaga(pending.taskId, pending.targetBranch);
         } else {
@@ -2767,7 +2878,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(executionTask);
     const branchName = primaryTarget?.branchName || executionTask.assigned_branch;
     const knownWorktree = primaryTarget
-      ? await inspectTargetWorktreePath(primaryTarget, get().branchWorktrees)
+      ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
     if (requestId !== taskActivationRequestId) return;
     if (knownWorktree) {
@@ -2918,28 +3029,103 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
-      await assertLifecycleGitTargetsSafe(executionTargets, get().branchWorktrees);
+      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      const directTargets = executionTargets.filter(isDirectEditTarget);
+      const directCheckpointIds = new Map(
+        await Promise.all(
+          directTargets.map(async (target) => [
+            target.worktreeKey,
+            target.checkpointId ?? await tauriIpc.directCheckpointResolveId({
+              taskId: existingTask.id,
+              projectPath: target.repoPath,
+            }),
+          ] as const),
+        ),
+      );
+      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
+      const branchSnapshots = new Map(
+        await Promise.all(
+          gitTargets.map(async (target) => [
+            target.worktreeKey,
+            await tauriIpc.gitBranchList(target.repoPath),
+          ] as const),
+        ),
+      );
+      let revertSaga: LinkedTaskDeletionSaga | null = null;
+      if (directTargets.length > 0) {
+        const now = new Date().toISOString();
+        revertSaga = {
+          taskId: existingTask.id,
+          conversationId: params.conversationId ?? existingTask.conversation_id ?? '',
+          phase: 'draft_reverting',
+          draft: false,
+          targetBranch: DIRECT_DRAFT_REVERT_SAGA_TARGET,
+          revertTitle: params.title ?? null,
+          revertDescription: params.description ?? null,
+          executionTargets: executionTargets.map((target) => {
+            if (isDirectEditTarget(target)) {
+              return {
+                worktreeKey: target.worktreeKey,
+                repoPath: target.repoPath,
+                branchName: target.branchName,
+                branchExisted: false,
+                worktreeRemoved: true,
+                branchRemoved: true,
+                cleanupKind: 'direct' as const,
+                checkpointRemoved: false,
+                checkpointId: directCheckpointIds.get(target.worktreeKey),
+              };
+            }
+            return {
+              worktreeKey: target.worktreeKey,
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
+                (branch) => branch.name === target.branchName,
+              ),
+              worktreeRemoved: false,
+              branchRemoved: false,
+              cleanupKind: 'git' as const,
+            };
+          }),
+          createdAt: now,
+          updatedAt: now,
+        };
+        await upsertLinkedTaskDeletionSaga(revertSaga);
+      }
       await tauriIpc.workspaceRevertManualFeatureToDraft({
         taskId: params.taskId,
         conversationId: params.conversationId ?? null,
         title: params.title ?? null,
         description: params.description ?? null,
       });
-      for (const target of executionTargets) {
-        await tauriIpc.gitWorktreeRemove({
-          repoPath: target.repoPath,
-          taskId: target.worktreeKey,
-          force: false,
-          branchName: target.branchName,
-        });
-
-        const branches = await tauriIpc.gitBranchList(target.repoPath);
-        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
-          await tauriIpc.gitBranchDelete({
+      if (revertSaga) {
+        revertSaga = {
+          ...revertSaga,
+          phase: 'draft_reverted',
+          updatedAt: new Date().toISOString(),
+        };
+        await upsertLinkedTaskDeletionSaga(revertSaga);
+        revertSaga = await resumeLinkedTaskGitCleanup(revertSaga);
+        await removeLinkedTaskDeletionSaga(existingTask.id, DIRECT_DRAFT_REVERT_SAGA_TARGET);
+      } else {
+        for (const target of gitTargets) {
+          await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
-            branchName: target.branchName,
+            taskId: target.worktreeKey,
             force: false,
+            branchName: target.branchName,
           });
+
+          if ((branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
+            (branch) => branch.name === target.branchName,
+          )) {
+            await tauriIpc.gitBranchDelete({
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              force: false,
+            });
+          }
         }
       }
 
@@ -3118,13 +3304,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      await assertLifecycleGitTargetsSafe(executionTargets, get().branchWorktrees);
+      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
       await tauriIpc.workspaceArchiveManualFeature({
         taskId,
         reason: options?.reason ?? null,
         mergedAt: options?.mergedAt ?? null,
       });
-      for (const target of executionTargets) {
+      for (const target of gitTargets) {
         await tauriIpc.gitWorktreeRemove({
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
@@ -3276,35 +3463,62 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      await assertLifecycleGitTargetsSafe(executionTargets, get().branchWorktrees);
+      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      const directTargets = executionTargets.filter(isDirectEditTarget);
+      const directCheckpointIds = new Map(
+        await Promise.all(
+          directTargets.map(async (target) => [
+            target.worktreeKey,
+            target.checkpointId ?? await tauriIpc.directCheckpointResolveId({
+              taskId: task.id,
+              projectPath: target.repoPath,
+            }),
+          ] as const),
+        ),
+      );
+      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
       const branchSnapshots = new Map(
         await Promise.all(
-          executionTargets.map(async (target) => [
+          gitTargets.map(async (target) => [
             target.worktreeKey,
             await tauriIpc.gitBranchList(target.repoPath),
           ] as const),
         ),
       );
-      linkedConversationSaga = task.conversation_id
-        ? {
+      linkedConversationSaga = {
             taskId: task.id,
-            conversationId: task.conversation_id,
+            conversationId: task.conversation_id ?? '',
             phase: 'prepared' as const,
             draft: task.draft,
-            executionTargets: executionTargets.map((target) => ({
-              worktreeKey: target.worktreeKey,
-              repoPath: target.repoPath,
-              branchName: target.branchName,
-              branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
-                (branch) => branch.name === target.branchName,
-              ),
-              worktreeRemoved: false,
-              branchRemoved: false,
-            })),
+            executionTargets: executionTargets.map((target) => {
+              if (isDirectEditTarget(target)) {
+                return {
+                  worktreeKey: target.worktreeKey,
+                  repoPath: target.repoPath,
+                  branchName: target.branchName,
+                  branchExisted: false,
+                  worktreeRemoved: true,
+                  branchRemoved: true,
+                  cleanupKind: 'direct' as const,
+                  checkpointRemoved: false,
+                  checkpointId: directCheckpointIds.get(target.worktreeKey),
+                };
+              }
+              return {
+                worktreeKey: target.worktreeKey,
+                repoPath: target.repoPath,
+                branchName: target.branchName,
+                branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
+                  (branch) => branch.name === target.branchName,
+                ),
+                worktreeRemoved: false,
+                branchRemoved: false,
+                cleanupKind: 'git' as const,
+              };
+            }),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-          }
-        : null;
+          };
       if (linkedConversationSaga) {
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
         linkedConversationSaga = {
@@ -3325,7 +3539,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         } else {
           await tauriIpc.workspaceDeleteManualFeature(taskId);
         }
-        for (const target of executionTargets) {
+        for (const target of gitTargets) {
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
@@ -3340,6 +3554,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               force: false,
             });
           }
+        }
+        for (const target of directTargets) {
+          await tauriIpc.directCheckpointRemove({
+            checkpointId: directCheckpointIds.get(target.worktreeKey)!,
+          });
         }
       }
 
@@ -3379,9 +3598,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         } catch (error) {
           sagaPersistenceError = error;
         }
-        linkedConversationCleanupCompleted = await useChatStore
-          .getState()
-          .completeLinkedTaskConversationDeletion(task.conversation_id!);
+        linkedConversationCleanupCompleted = task.conversation_id
+          ? await useChatStore
+              .getState()
+              .completeLinkedTaskConversationDeletion(task.conversation_id)
+          : true;
         if (linkedConversationCleanupCompleted && !sagaPersistenceError) {
           await removeLinkedTaskDeletionSaga(task.id, taskDeletedSaga.targetBranch);
         } else if (!linkedConversationCleanupCompleted) {
@@ -3782,10 +4003,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }));
 
     try {
-      const registry = await loadTaskProjectCommandRegistry();
+      const executionTask = retargetTaskForCurrentAppScope(task);
+      const registry = await loadTaskProjectCommandRegistry(
+        getExecutionTargets(executionTask).map((target) => target.projectId),
+      );
       const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
         task,
-        get().branchWorktrees
+        get().branchWorktrees,
+        registry,
       );
 
       set((state) => ({
@@ -4884,10 +5109,32 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   finishTask: async (taskId, options) => {
+    const task = get().getTaskById(taskId);
+    if (task && isDirectEditTask(task)) {
+      await get().setTaskStatus(taskId, 'Completed');
+      if (get().getTaskById(taskId)?.status !== 'Completed') {
+        throw new Error(
+          get().lastError ||
+          tTask('implement.errors.directTaskCompletionFailed', 'The direct-edit task could not be completed.')
+        );
+      }
+      return;
+    }
     await get().runMergeWorkflow(taskId, options);
   },
 
   completeTask: async (taskId, options) => {
+    const task = get().getTaskById(taskId);
+    if (task && isDirectEditTask(task)) {
+      await get().setTaskStatus(taskId, 'Completed');
+      if (get().getTaskById(taskId)?.status !== 'Completed') {
+        throw new Error(
+          get().lastError ||
+          tTask('implement.errors.directTaskCompletionFailed', 'The direct-edit task could not be completed.')
+        );
+      }
+      return;
+    }
     await get().runMergeWorkflow(taskId, options);
   },
 
