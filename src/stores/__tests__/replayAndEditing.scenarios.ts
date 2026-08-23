@@ -18,12 +18,80 @@ export const registerReplayAndEditingScenarios = (
     dbRestoreConversationReplayMock,
     deleteMessagesAfterMock,
     flushAsyncWork,
+    fsExistsMock,
+    fsReadFileWithOptionsMock,
+    fsWriteFileMock,
     loadChatStore,
     streamChatMock,
     updateMessageMock,
   } = context;
 
   describe('useChatStore replay and editing', () => {
+    it('durably rolls back a confirmed code rewind before a replay launches', async () => {
+      context.tauriAvailable = true;
+      let diskContent = 'original';
+      let diskRevision = 'original-revision';
+      fsExistsMock.mockImplementation(async () => true);
+      fsReadFileWithOptionsMock.mockImplementation(async () => ({
+        content: diskContent,
+        revision: diskRevision,
+        language: 'typescript',
+        is_binary: false,
+        size: diskContent.length,
+        encoding: 'utf-8',
+      }));
+      fsWriteFileMock.mockImplementation(async (params) => {
+        diskContent = params.content;
+        diskRevision = params.content === 'original'
+          ? 'original-revision'
+          : 'rewound-revision';
+        return {
+          path: params.path,
+          bytes_written: params.content.length,
+          created: false,
+          revision: diskRevision,
+        };
+      });
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().restoreAgentCodeForReplay({
+        conversationId: 'chat-conv',
+        messageId: 'user-1',
+        targetCheckpointId: null,
+        affectedFiles: [
+          {
+            path: 'src/file.ts',
+            realPath: '/repos/web/src/file.ts',
+            action: 'modify',
+            status: 'modified',
+            workspacePath: '/repos/web',
+            target: {
+              exists: true,
+              content: 'rewound',
+              revision: 'rewound-revision',
+            },
+            current: {
+              exists: true,
+              content: 'original',
+              revision: 'original-revision',
+            },
+          },
+        ],
+      });
+
+      expect(diskContent).toBe('rewound');
+      expect(JSON.parse(
+        context.appSettingValues.get('agentCodeReplayRecovery:chat-conv') ?? '{}',
+      )).toMatchObject({ phase: 'pending', conversationId: 'chat-conv' });
+
+      await useChatStore.getState().rollbackPendingAgentCodeReplay('chat-conv');
+
+      expect(diskContent).toBe('original');
+      expect(
+        context.appSettingValues.has('agentCodeReplayRecovery:chat-conv'),
+      ).toBe(false);
+    });
+
     it('replaces an edited questionnaire response, trims later messages, and restarts the chat from the updated answer', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';

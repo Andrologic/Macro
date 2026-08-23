@@ -43,7 +43,7 @@ const COPILOT_RUNTIME_LICENSE_RESOURCE: &str = "licenses/github-copilot-cli-LICE
 const COPILOT_RUNTIME_DIR_SEGMENT: &str = "copilot/runtimes";
 const COPILOT_TEMP_DIR_SEGMENT: &str = "copilot/tmp";
 const COPILOT_DEFAULT_DEVICE_URL: &str = "https://github.com/login/device";
-const DEFAULT_COPILOT_SEND_TIMEOUT_MS: i64 = 30 * 60 * 1000;
+const DEFAULT_COPILOT_SEND_TIMEOUT_MS: i64 = 31 * 60 * 1000;
 const MIN_COPILOT_SEND_TIMEOUT_MS: i64 = 60 * 1000;
 const DOWNLOAD_PROGRESS_GRANULARITY_BYTES: u64 = 1_048_576;
 const MAX_REQUEST_ID_LENGTH: usize = 128;
@@ -2478,9 +2478,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_copilot_send_timeout_to_thirty_minute_default() {
-        assert_eq!(normalize_copilot_send_timeout_ms(None), 1_800_000);
-        assert_eq!(normalize_copilot_send_timeout_ms(Some(30_000)), 1_800_000);
+    fn normalizes_copilot_send_timeout_with_tool_completion_margin() {
+        assert_eq!(normalize_copilot_send_timeout_ms(None), 1_860_000);
+        assert_eq!(normalize_copilot_send_timeout_ms(Some(30_000)), 1_860_000);
         assert_eq!(normalize_copilot_send_timeout_ms(Some(60_000)), 60_000);
         assert_eq!(
             normalize_copilot_send_timeout_ms(Some(2_400_000)),

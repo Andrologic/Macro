@@ -186,19 +186,19 @@ fn resolve_wsl_path(
     Ok(resolved)
 }
 
-pub(crate) async fn ensure_wsl_path_within_workspace(
+pub(crate) async fn canonical_wsl_path_within_workspace(
     workspace: &WslProjectPath,
     resolved: &WslProjectPath,
     allow_outside_workspace: Option<bool>,
-) -> Result<(), BackendError> {
+) -> Result<WslProjectPath, BackendError> {
     if allow_outside_workspace.unwrap_or(false) {
-        return Ok(());
+        return Ok(resolved.clone());
     }
     let script = r#"
 root=$(realpath -e -- "$1") || exit 4
 target=$(realpath -m -- "$2") || exit 4
 case "$target" in
-  "$root"|"$root"/*) printf 'inside' ;;
+  "$root"|"$root"/*) printf 'inside\n%s' "$target" ;;
   *) printf 'outside' ;;
 esac
 "#;
@@ -209,10 +209,30 @@ esac
         WSL_FS_TIMEOUT,
     )
     .await?;
-    if output.stdout_text() != "inside" {
+    let stdout = output.stdout_text();
+    let mut lines = stdout.lines();
+    if lines.next() != Some("inside") {
         return Err(wsl_path_outside_workspace(&resolved.original_path));
     }
-    Ok(())
+    let canonical_linux_path = lines.next().ok_or_else(|| BackendError::Filesystem {
+        message: "Failed to resolve the canonical WSL target path".to_string(),
+    })?;
+    Ok(WslProjectPath {
+        distro: resolved.distro.clone(),
+        unc_path: wsl_unc_path(&resolved.distro, canonical_linux_path),
+        linux_path: canonical_linux_path.to_string(),
+        original_path: resolved.original_path.clone(),
+    })
+}
+
+pub(crate) async fn ensure_wsl_path_within_workspace(
+    workspace: &WslProjectPath,
+    resolved: &WslProjectPath,
+    allow_outside_workspace: Option<bool>,
+) -> Result<(), BackendError> {
+    canonical_wsl_path_within_workspace(workspace, resolved, allow_outside_workspace)
+        .await
+        .map(|_| ())
 }
 
 fn wsl_list_depth(recursive: Option<bool>, max_depth: Option<u32>) -> u32 {
@@ -416,10 +436,11 @@ async fn write_wsl_file_internal_with_revision(
     }
 
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
-    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
+    let canonical_target =
+        canonical_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
     let _mutation_guard = if acquire_lock {
         Some(
-            super::content_mutation_lock(&super::wsl_content_mutation_key(&resolved))
+            super::content_mutation_lock(&super::wsl_content_mutation_key(&canonical_target))
                 .lock_owned()
                 .await,
         )
@@ -479,10 +500,10 @@ mv -f -- "$tmp" "$p"
 printf 'created=%s skipped=0\n' "$created"
 "#;
     let output = run_wsl_shell_with_stdin(
-        &resolved,
+        &canonical_target,
         script,
         &[
-            resolved.linux_path.clone(),
+            canonical_target.linux_path.clone(),
             create_dirs_flag,
             expected_revision
                 .map(str::trim)
@@ -715,10 +736,10 @@ async fn delete_wsl_path_internal_with_revision(
     acquire_lock: bool,
 ) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
-    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
+    let canonical_target = canonical_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let _mutation_guard = if acquire_lock {
         Some(
-            super::content_mutation_lock(&super::wsl_content_mutation_key(&resolved))
+            super::content_mutation_lock(&super::wsl_content_mutation_key(&canonical_target))
                 .lock_owned()
                 .await,
         )
@@ -756,10 +777,10 @@ else
 fi
 "#;
     let output = run_wsl_shell(
-        &resolved,
+        &canonical_target,
         script,
         &[
-            resolved.linux_path.clone(),
+            canonical_target.linux_path.clone(),
             recursive_flag,
             expected_revision
                 .map(str::trim)

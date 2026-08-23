@@ -3424,6 +3424,10 @@ export async function dbSetAppSetting(params: {
   });
 }
 
+export async function dbDeleteAppSetting(key: string): Promise<boolean> {
+  return invoke<boolean>("db_delete_app_setting", { key });
+}
+
 export async function dbCompareAndSwapAppSetting(params: {
   key: string;
   expectedValueJson: string | null;

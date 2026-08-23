@@ -533,6 +533,45 @@ async fn run_wsl_git_checked(
     }
 }
 
+fn validate_git_cli_operand(value: &str, label: &str) -> Result<()> {
+    if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
+        return Err(BackendError::Validation(format!(
+            "Invalid {label}: Git option-like and control-character values are not allowed"
+        )));
+    }
+    Ok(())
+}
+
+async fn wsl_resolve_commit_oid(
+    repo_path: &WslProjectPath,
+    revision: &str,
+    label: &str,
+) -> Result<String> {
+    let revision = revision.trim();
+    validate_git_cli_operand(revision, label)?;
+    let peeled = format!("{revision}^{{commit}}");
+    let output = run_wsl_git_checked(
+        repo_path,
+        &[
+            "rev-parse".to_string(),
+            "--verify".to_string(),
+            "--end-of-options".to_string(),
+            peeled,
+        ],
+        WSL_GIT_TIMEOUT,
+        "git revision resolution WSL failed",
+    )
+    .await?;
+    let oid = output.stdout_text();
+    if !matches!(oid.len(), 40 | 64) || !oid.chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(BackendError::Validation(format!(
+            "Invalid {label}: Git did not resolve it to an immutable object ID"
+        )));
+    }
+    Ok(oid)
+}
+
 pub(crate) fn parse_wsl_repo_path(repo_path: &str) -> Option<WslProjectPath> {
     parse_wsl_unc_path(repo_path)
 }
@@ -1090,8 +1129,12 @@ pub(crate) async fn wsl_git_reset(
             message: "Hard reset is destructive; set confirm=true".to_string(),
         });
     }
+    let resolved_commit = match commit {
+        Some(commit) => Some(wsl_resolve_commit_oid(repo_path, &commit, "reset commit").await?),
+        None => None,
+    };
     let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
-    if let Some(commit) = commit {
+    if let Some(commit) = resolved_commit {
         args.push(commit);
     }
     run_wsl_git_checked(
@@ -1136,13 +1179,10 @@ async fn wsl_git_branch_create(
 ) -> Result<()> {
     validate_branch_name(branch_name)?;
     validate_refspec(from_ref)?;
+    let from_oid = wsl_resolve_commit_oid(repo_path, from_ref, "branch source").await?;
     run_wsl_git_checked(
         repo_path,
-        &[
-            "branch".to_string(),
-            branch_name.to_string(),
-            from_ref.to_string(),
-        ],
+        &["branch".to_string(), branch_name.to_string(), from_oid],
         WSL_GIT_MUTATION_TIMEOUT,
         "git branch WSL failed",
     )
@@ -1190,10 +1230,18 @@ pub(crate) async fn wsl_git_diff(
     if options.ignore_whitespace {
         args.push("--ignore-all-space".to_string());
     }
-    match (base, head) {
+    let resolved_base = match base {
+        Some(base) => Some(wsl_resolve_commit_oid(repo_path, base, "diff base").await?),
+        None => None,
+    };
+    let resolved_head = match head {
+        Some(head) => Some(wsl_resolve_commit_oid(repo_path, head, "diff head").await?),
+        None => None,
+    };
+    match (resolved_base, resolved_head) {
         (Some(base), Some(head)) => args.push(format!("{}..{}", base, head)),
-        (Some(base), None) => args.push(base.to_string()),
-        (None, Some(head)) => args.push(head.to_string()),
+        (Some(base), None) => args.push(base),
+        (None, Some(head)) => args.push(head),
         (None, None) => {}
     }
     if let Some(paths) = options.paths {
@@ -1241,9 +1289,9 @@ pub(crate) async fn build_wsl_git_tree(
         build_wsl_git_status(repo_path).await?.branch
     };
     let tree_ref = if branch_name == "DETACHED" {
-        "HEAD".to_string()
+        wsl_resolve_commit_oid(repo_path, "HEAD", "tree reference").await?
     } else {
-        branch_name.clone()
+        wsl_resolve_commit_oid(repo_path, &branch_name, "tree reference").await?
     };
     let tree_output = run_wsl_git_allow_failure(
         repo_path,
@@ -1293,11 +1341,7 @@ async fn wsl_resolve_target_branch(
 ) -> Result<String> {
     if let Some(branch) = branch {
         let branch = branch.trim().to_string();
-        if branch.is_empty() {
-            return Err(BackendError::Validation(
-                "Branch cannot be empty".to_string(),
-            ));
-        }
+        validate_branch_name(&branch)?;
         return Ok(branch);
     }
     let output = run_wsl_git_checked(
@@ -1313,6 +1357,7 @@ async fn wsl_resolve_target_branch(
             message: "No current branch".to_string(),
         })
     } else {
+        validate_branch_name(&branch)?;
         Ok(branch)
     }
 }
@@ -1848,6 +1893,7 @@ pub fn validate_repo_path(repo_path: &str, workspace: &Path) -> Result<PathBuf> 
 }
 
 fn validate_branch_name(branch: &str) -> Result<()> {
+    validate_git_cli_operand(branch, "branch name")?;
     let ref_name = format!("refs/heads/{}", branch);
     if git2::Reference::is_valid_name(&ref_name) {
         Ok(())
@@ -1875,6 +1921,7 @@ fn is_hex_oid(value: &str) -> bool {
 }
 
 fn validate_refspec(spec: &str) -> Result<()> {
+    validate_git_cli_operand(spec, "reference")?;
     if is_hex_oid(spec) {
         return Ok(());
     }
@@ -7297,6 +7344,18 @@ mod tests {
         assert!(validate_commit_message("feat(scope: message").is_err());
         assert!(validate_commit_message("feat(BadScope): message").is_err());
         assert!(validate_commit_message("style:").is_err());
+    }
+
+    #[test]
+    fn git_cli_operands_reject_option_injection() {
+        for value in ["--force", "--hard", "--output=/tmp/out", "-n"] {
+            assert!(validate_git_cli_operand(value, "test operand").is_err());
+            assert!(validate_refspec(value).is_err());
+            assert!(validate_branch_name(value).is_err());
+        }
+        assert!(validate_refspec("HEAD").is_ok());
+        assert!(validate_refspec("feature/safe").is_ok());
+        assert!(validate_branch_name("feature/safe").is_ok());
     }
 
     #[test]
