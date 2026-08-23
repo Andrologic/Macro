@@ -24,6 +24,12 @@ describe("tool output limits", () => {
     expect(rustSource).toContain("GREP_DEFAULT_LIMIT: usize = 50");
     expect(rustSource).toContain("GREP_MAX_LIMIT: usize = 200");
     expect(rustSource).toContain("GREP_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024");
+    expect(rustSource).toContain("GIT_STATUS_DEFAULT_LIMIT: usize = 200");
+    expect(rustSource).toContain("GIT_STATUS_MAX_LIMIT: usize = 1_000");
+    expect(rustSource).toContain("GIT_LOG_DEFAULT_LIMIT: usize = 50");
+    expect(rustSource).toContain("GIT_LOG_MAX_LIMIT: usize = 200");
+    expect(rustSource).toContain("GIT_DIFF_MAX_BYTES: usize = 256 * 1024");
+    expect(rustSource).toContain("GIT_DIFF_MAX_CONTEXT_LINES: u32 = 64");
   });
 
   it("sorts paths by UTF-8 bytes for Rust and TypeScript parity", () => {

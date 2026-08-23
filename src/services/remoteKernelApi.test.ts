@@ -186,6 +186,29 @@ describe('remoteKernelApi', () => {
     expect(fetchCalls[0].url).toContain('/tools/mode-policy');
   });
 
+  it('requires the dedicated bounded Git capability for remote repository inspection', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return jsonResponse({
+        allowed_tool_ids: ['git_diff'],
+        enforce_macro_only_writes: false,
+        capabilities: ['bounded_tool_output_v1'],
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'git_diff',
+        args: { mode: 'stat' },
+      })
+    ).rejects.toThrow('cannot guarantee bounded Git tool output');
+    expect(fetchCalls).toHaveLength(1);
+  });
+
   it('aborts requests when the configured timeout elapses', async () => {
     let abortObserved = false;
 

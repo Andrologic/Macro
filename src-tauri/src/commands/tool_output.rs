@@ -13,6 +13,12 @@ pub(crate) const GREP_DEFAULT_LIMIT: usize = 50;
 pub(crate) const GREP_MAX_LIMIT: usize = 200;
 pub(crate) const GREP_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const GREP_MAX_COLUMNS: usize = 512;
+pub(crate) const GIT_STATUS_DEFAULT_LIMIT: usize = 200;
+pub(crate) const GIT_STATUS_MAX_LIMIT: usize = 1_000;
+pub(crate) const GIT_LOG_DEFAULT_LIMIT: usize = 50;
+pub(crate) const GIT_LOG_MAX_LIMIT: usize = 200;
+pub(crate) const GIT_DIFF_MAX_BYTES: usize = 256 * 1024;
+pub(crate) const GIT_DIFF_MAX_CONTEXT_LINES: u32 = 64;
 
 const CURSOR_VERSION: &str = "v1";
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -45,6 +51,77 @@ pub(crate) struct ReadContentPage {
     pub max_lines: usize,
     pub max_bytes: usize,
     pub column_truncated_lines: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundedTextOutput {
+    pub text: String,
+    pub total_bytes: usize,
+    pub retained_bytes: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct BoundedTextCollector {
+    head: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+    head_limit: usize,
+    tail_limit: usize,
+    total_bytes: usize,
+}
+
+impl BoundedTextCollector {
+    pub(crate) fn new(max_bytes: usize) -> Self {
+        let max_bytes = max_bytes.max(2);
+        let tail_limit = max_bytes / 4;
+        Self {
+            head: Vec::with_capacity(max_bytes.saturating_sub(tail_limit)),
+            tail: std::collections::VecDeque::with_capacity(tail_limit),
+            head_limit: max_bytes.saturating_sub(tail_limit),
+            tail_limit,
+            total_bytes: 0,
+        }
+    }
+
+    pub(crate) fn push_str(&mut self, value: &str) {
+        self.push_bytes(value.as_bytes());
+    }
+
+    pub(crate) fn push_bytes(&mut self, value: &[u8]) {
+        self.total_bytes = self.total_bytes.saturating_add(value.len());
+        let head_remaining = self.head_limit.saturating_sub(self.head.len());
+        let split = head_remaining.min(value.len());
+        self.head.extend_from_slice(&value[..split]);
+        if split < value.len() && self.tail_limit > 0 {
+            self.tail.extend(&value[split..]);
+            let excess = self.tail.len().saturating_sub(self.tail_limit);
+            self.tail.drain(..excess);
+        }
+    }
+
+    pub(crate) fn finish(self, label: &str) -> BoundedTextOutput {
+        let retained_bytes = self.head.len().saturating_add(self.tail.len());
+        let truncated = self.total_bytes > retained_bytes;
+        let mut text = String::from_utf8_lossy(&self.head).into_owned();
+        if truncated {
+            let omitted = self.total_bytes.saturating_sub(retained_bytes);
+            text.push_str(&format!(
+                "\n\n[... {label} TRUNCATED: omitted {omitted} bytes; retained the first {} and last {} bytes ...]\n\n",
+                self.head.len(),
+                self.tail.len()
+            ));
+        }
+        if !self.tail.is_empty() {
+            let tail = self.tail.into_iter().collect::<Vec<_>>();
+            text.push_str(&String::from_utf8_lossy(&tail));
+        }
+        BoundedTextOutput {
+            text,
+            total_bytes: self.total_bytes,
+            retained_bytes,
+            truncated,
+        }
+    }
 }
 
 fn fingerprint_scope(scope: &str) -> String {
@@ -296,5 +373,18 @@ mod tests {
         let error = paginate_read_content("one\ntwo", &json!({ "cursor": 12 }), "read\0notes.txt")
             .expect_err("numeric cursor must fail");
         assert!(error.message.contains("cursor must be a string"));
+    }
+
+    #[test]
+    fn bounded_text_keeps_head_and_tail_with_explicit_metadata() {
+        let mut collector = BoundedTextCollector::new(8);
+        collector.push_str("0123456789");
+        let output = collector.finish("TEST OUTPUT");
+        assert!(output.truncated);
+        assert_eq!(output.total_bytes, 10);
+        assert_eq!(output.retained_bytes, 8);
+        assert!(output.text.starts_with("012345"));
+        assert!(output.text.ends_with("89"));
+        assert!(output.text.contains("TEST OUTPUT TRUNCATED"));
     }
 }

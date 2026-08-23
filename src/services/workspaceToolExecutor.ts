@@ -218,6 +218,98 @@ const formatToolError = (error: unknown): string => {
   return String(error);
 };
 
+const formatBoundedGitStatus = (
+  status: tauriIpc.GitStatusDto,
+  args: ToolArgs,
+  repoScope: string,
+  repoMeta: Record<string, unknown>,
+): string => {
+  const stagedCount = status.staged_files.length;
+  const unstagedCount = status.unstaged_files.length;
+  const untrackedCount = status.untracked_files.length;
+  const conflictedFiles = status.conflictedFiles;
+  const entries = [
+    ...status.staged_files.map((file) => ({ category: "staged", file })),
+    ...status.unstaged_files.map((file) => ({ category: "unstaged", file })),
+    ...status.untracked_files.map((file) => ({ category: "untracked", file })),
+    ...conflictedFiles.map((path) => ({ category: "conflicted", path })),
+  ];
+  const snapshot = JSON.stringify(entries);
+  const revision = createToolCursor(snapshot, 0).split(":")[1];
+  const cursorScope = `git_status\0${repoScope}\0${revision}`;
+  const page = paginateToolItems(
+    entries,
+    args,
+    cursorScope,
+    {
+      defaultResults: TOOL_OUTPUT_LIMITS.git.statusDefaultResults,
+      maxResults: TOOL_OUTPUT_LIMITS.git.statusMaxResults,
+    },
+  );
+  const stagedFiles: tauriIpc.GitFileStatus[] = [];
+  const unstagedFiles: tauriIpc.GitFileStatus[] = [];
+  const untrackedFiles: tauriIpc.GitFileStatus[] = [];
+  const pageConflictedFiles: string[] = [];
+  for (const entry of page.items) {
+    if (entry.category === "staged" && "file" in entry) {
+      stagedFiles.push(entry.file);
+    } else if (entry.category === "unstaged" && "file" in entry) {
+      unstagedFiles.push(entry.file);
+    } else if (entry.category === "untracked" && "file" in entry) {
+      untrackedFiles.push(entry.file);
+    } else if (entry.category === "conflicted" && "path" in entry) {
+      pageConflictedFiles.push(entry.path);
+    }
+  }
+
+  return JSON.stringify(
+    {
+      ...repoMeta,
+      branch: status.branch,
+      head_commit: status.head_commit,
+      staged_files: stagedFiles,
+      unstaged_files: unstagedFiles,
+      untracked_files: untrackedFiles,
+      conflicted_files: pageConflictedFiles,
+      merge_in_progress: status.mergeInProgress,
+      is_clean: status.is_clean,
+      has_origin: status.has_origin,
+      has_upstream: status.has_upstream,
+      ahead: status.ahead,
+      behind: status.behind,
+      counts: {
+        staged: stagedCount,
+        unstaged: unstagedCount,
+        untracked: untrackedCount,
+        conflicted: conflictedFiles.length,
+      },
+      total_count: entries.length,
+      limit: page.limit,
+      offset: page.offset,
+      truncated: page.truncated,
+      next_cursor: page.nextCursor,
+      revision,
+    },
+    null,
+    2,
+  );
+};
+
+const createGitLogCursorScope = (
+  repoScope: string,
+  branch: string | undefined,
+  status: tauriIpc.GitStatusDto,
+): string => {
+  const snapshot = JSON.stringify({
+    tip: status.head_commit?.id ?? "unborn",
+    has_staged: status.staged_files.length > 0,
+    has_unstaged:
+      status.unstaged_files.length > 0 || status.untracked_files.length > 0,
+  });
+  const revision = createToolCursor(snapshot, 0).split(":")[1];
+  return `git_log\0${repoScope}\0${branch ?? ""}\0${revision}`;
+};
+
 const normalizeExpectedRevision = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
@@ -2910,23 +3002,66 @@ export const executeWorkspaceTool = async (
             (candidate) => tauriIpc.gitStatus(candidate),
             allowRepoFallback,
           );
-          return JSON.stringify({ ...repoMeta, ...status }, null, 2);
+          return formatBoundedGitStatus(
+            status,
+            rawArgs,
+            repoMeta.repo_path,
+            repoMeta,
+          );
         }
 
         if (toolName === "git_log") {
-          const limit =
-            typeof rawArgs.limit === "number"
-              ? Math.max(1, Math.floor(rawArgs.limit))
-              : undefined;
           const branch = toString(rawArgs.branch) || undefined;
+          const { value: status } = await runGitWithRepoFallback(
+            repoPath,
+            (candidate) => tauriIpc.gitStatus(candidate),
+            allowRepoFallback,
+          );
+          const cursorScope = createGitLogCursorScope(
+            repoMeta.repo_path,
+            branch,
+            status,
+          );
+          const page = resolveToolPage(
+            rawArgs,
+            cursorScope,
+            {
+              defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
+              maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
+            },
+          );
           const { value: commits } = await runGitWithRepoFallback(
             repoPath,
             (candidate) =>
-              tauriIpc.gitLog({ repoPath: candidate, limit, branch }),
+              tauriIpc.gitLog({
+                repoPath: candidate,
+                limit: page.limit + 1,
+                offset: page.offset,
+                branch,
+              }),
             allowRepoFallback,
           );
+          const truncated = commits.length > page.limit;
+          const pageCommits = truncated ? commits.slice(0, page.limit) : commits;
           return JSON.stringify(
-            { ...repoMeta, count: commits.length, commits },
+            {
+              ...repoMeta,
+              count: pageCommits.length,
+              commits: pageCommits,
+              limit: page.limit,
+              offset: page.offset,
+              truncated,
+              next_cursor: truncated
+                ? createToolCursor(
+                    cursorScope,
+                    page.offset + pageCommits.length,
+                  )
+                : null,
+              total_count: truncated
+                ? null
+                : page.offset + pageCommits.length,
+              total_is_exact: !truncated,
+            },
             null,
             2,
           );
@@ -2946,8 +3081,17 @@ export const executeWorkspaceTool = async (
           const head = toString(rawArgs.head) || undefined;
           const contextLines =
             typeof rawArgs.context_lines === "number"
-              ? Math.max(0, Math.floor(rawArgs.context_lines))
+              ? Math.min(
+                  TOOL_OUTPUT_LIMITS.git.diffMaxContextLines,
+                  Math.max(0, Math.floor(rawArgs.context_lines)),
+                )
               : undefined;
+          const requestedMode = toString(rawArgs.mode) || "patch";
+          if (!["patch", "stat", "name_only"].includes(requestedMode)) {
+            return `Error executing git_diff: unsupported mode "${requestedMode}".`;
+          }
+          const diffMode = requestedMode as "patch" | "stat" | "name_only";
+          const requireComplete = rawArgs.require_complete === true;
           const ignoreWhitespace = rawArgs.ignore_whitespace === true;
           const paths = Array.isArray(rawArgs.paths)
             ? rawArgs.paths.filter(
@@ -2965,6 +3109,9 @@ export const executeWorkspaceTool = async (
                 contextLines,
                 ignoreWhitespace,
                 paths,
+                mode: diffMode,
+                maxBytes: TOOL_OUTPUT_LIMITS.git.diffMaxBytes,
+                requireComplete,
               }),
             allowRepoFallback,
           );
@@ -2976,7 +3123,7 @@ export const executeWorkspaceTool = async (
               ? [`REAL_REPO_PATH: ${repoMeta.real_repo_path}`]
               : []),
           ].join("\n");
-          return `${header}\n\n${patch || ""}`;
+          return `${header}\nDIFF_MODE: ${diffMode}\nMAX_OUTPUT_BYTES: ${TOOL_OUTPUT_LIMITS.git.diffMaxBytes}\nREQUIRE_COMPLETE: ${requireComplete}\n\n${patch || ""}`;
         }
 
         if (toolName === "git_get_tree") {
@@ -3219,28 +3366,61 @@ export const executeWorkspaceTool = async (
             (candidate) => tauriIpc.gitStatus(candidate),
             allowRepoFallback,
           );
-        return JSON.stringify(
-          { repo_path: resolvedRepoPath, ...status },
-          null,
-          2,
+        return formatBoundedGitStatus(
+          status,
+          args,
+          resolvedRepoPath,
+          { repo_path: resolvedRepoPath },
         );
       }
 
       if (toolName === "git_log") {
-        const limit =
-          typeof args.limit === "number"
-            ? Math.max(1, Math.floor(args.limit))
-            : undefined;
         const branch = toString(args.branch) || undefined;
+        const { value: status } = await runGitWithRepoFallback(
+          repoPath,
+          (candidate) => tauriIpc.gitStatus(candidate),
+          allowRepoFallback,
+        );
+        const cursorScope = createGitLogCursorScope(repoPath, branch, status);
+        const page = resolveToolPage(
+          args,
+          cursorScope,
+          {
+            defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
+            maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
+          },
+        );
         const { value: commits, repoPath: resolvedRepoPath } =
           await runGitWithRepoFallback(
             repoPath,
             (candidate) =>
-              tauriIpc.gitLog({ repoPath: candidate, limit, branch }),
+              tauriIpc.gitLog({
+                repoPath: candidate,
+                limit: page.limit + 1,
+                offset: page.offset,
+                branch,
+              }),
             allowRepoFallback,
           );
+        const truncated = commits.length > page.limit;
+        const pageCommits = truncated ? commits.slice(0, page.limit) : commits;
         return JSON.stringify(
-          { repo_path: resolvedRepoPath, count: commits.length, commits },
+          {
+            repo_path: resolvedRepoPath,
+            count: pageCommits.length,
+            commits: pageCommits,
+            limit: page.limit,
+            offset: page.offset,
+            truncated,
+            next_cursor: truncated
+              ? createToolCursor(
+                  cursorScope,
+                  page.offset + pageCommits.length,
+                )
+              : null,
+            total_count: truncated ? null : page.offset + pageCommits.length,
+            total_is_exact: !truncated,
+          },
           null,
           2,
         );
@@ -3265,8 +3445,17 @@ export const executeWorkspaceTool = async (
         const head = toString(args.head) || undefined;
         const contextLines =
           typeof args.context_lines === "number"
-            ? Math.max(0, Math.floor(args.context_lines))
+            ? Math.min(
+                TOOL_OUTPUT_LIMITS.git.diffMaxContextLines,
+                Math.max(0, Math.floor(args.context_lines)),
+              )
             : undefined;
+        const requestedMode = toString(args.mode) || "patch";
+        if (!["patch", "stat", "name_only"].includes(requestedMode)) {
+          return `Error executing git_diff: unsupported mode "${requestedMode}".`;
+        }
+        const diffMode = requestedMode as "patch" | "stat" | "name_only";
+        const requireComplete = args.require_complete === true;
         const ignoreWhitespace = args.ignore_whitespace === true;
         const paths = Array.isArray(args.paths)
           ? args.paths.filter(
@@ -3284,10 +3473,13 @@ export const executeWorkspaceTool = async (
               contextLines,
               ignoreWhitespace,
               paths,
+              mode: diffMode,
+              maxBytes: TOOL_OUTPUT_LIMITS.git.diffMaxBytes,
+              requireComplete,
             }),
           allowRepoFallback,
         );
-        return patch || "";
+        return `DIFF_MODE: ${diffMode}\nMAX_OUTPUT_BYTES: ${TOOL_OUTPUT_LIMITS.git.diffMaxBytes}\nREQUIRE_COMPLETE: ${requireComplete}\n\n${patch || ""}`;
       }
 
       if (toolName === "git_get_tree") {

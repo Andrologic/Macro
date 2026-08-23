@@ -13,6 +13,14 @@ export const TOOL_OUTPUT_LIMITS = {
     maxFileBytes: 4 * 1024 * 1024,
     maxColumns: 512,
   },
+  git: {
+    statusDefaultResults: 200,
+    statusMaxResults: 1_000,
+    logDefaultResults: 50,
+    logMaxResults: 200,
+    diffMaxBytes: 256 * 1024,
+    diffMaxContextLines: 64,
+  },
 } as const;
 
 export type BoundedToolName = "list" | "glob" | "grep";

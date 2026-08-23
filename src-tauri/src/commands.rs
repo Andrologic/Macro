@@ -1216,6 +1216,111 @@ pub(crate) async fn build_post_write_response(
         .map_err(|error| command_error(error.to_string()))
 }
 
+fn format_bounded_git_status(
+    repo_path: &str,
+    status: git::GitStatusDto,
+    args: &Value,
+) -> CommandResult<String> {
+    let staged_count = status.staged_files.len();
+    let unstaged_count = status.unstaged_files.len();
+    let untracked_count = status.untracked_files.len();
+    let conflicted_count = status.conflicted_files.len();
+    let mut entries =
+        Vec::with_capacity(staged_count + unstaged_count + untracked_count + conflicted_count);
+    for file in status.staged_files {
+        entries.push(serde_json::json!({ "category": "staged", "file": file }));
+    }
+    for file in status.unstaged_files {
+        entries.push(serde_json::json!({ "category": "unstaged", "file": file }));
+    }
+    for file in status.untracked_files {
+        entries.push(serde_json::json!({ "category": "untracked", "file": file }));
+    }
+    for path in status.conflicted_files {
+        entries.push(serde_json::json!({ "category": "conflicted", "path": path }));
+    }
+    let snapshot =
+        serde_json::to_vec(&entries).map_err(|error| command_error(error.to_string()))?;
+    let revision = fs::content_revision(&snapshot);
+    let cursor_scope = format!("git_status\0{repo_path}\0{revision}");
+    let total_count = entries.len();
+    let page = tool_output::paginate_items(
+        &entries,
+        args,
+        &cursor_scope,
+        tool_output::GIT_STATUS_DEFAULT_LIMIT,
+        tool_output::GIT_STATUS_MAX_LIMIT,
+    )?;
+    let mut staged_files = Vec::new();
+    let mut unstaged_files = Vec::new();
+    let mut untracked_files = Vec::new();
+    let mut conflicted_files = Vec::new();
+    for entry in page.items {
+        match entry.get("category").and_then(Value::as_str) {
+            Some("staged") => staged_files.push(entry["file"].clone()),
+            Some("unstaged") => unstaged_files.push(entry["file"].clone()),
+            Some("untracked") => untracked_files.push(entry["file"].clone()),
+            Some("conflicted") => conflicted_files.push(entry["path"].clone()),
+            _ => {}
+        }
+    }
+
+    serde_json::to_string_pretty(&serde_json::json!({
+        "repo_path": repo_path,
+        "branch": status.branch,
+        "head_commit": status.head_commit,
+        "staged_files": staged_files,
+        "unstaged_files": unstaged_files,
+        "untracked_files": untracked_files,
+        "conflicted_files": conflicted_files,
+        "merge_in_progress": status.merge_in_progress,
+        "is_clean": status.is_clean,
+        "has_origin": status.has_origin,
+        "has_upstream": status.has_upstream,
+        "ahead": status.ahead,
+        "behind": status.behind,
+        "counts": {
+            "staged": staged_count,
+            "unstaged": unstaged_count,
+            "untracked": untracked_count,
+            "conflicted": conflicted_count
+        },
+        "total_count": total_count,
+        "limit": page.limit,
+        "offset": page.offset,
+        "truncated": page.truncated,
+        "next_cursor": page.next_cursor,
+        "revision": revision
+    }))
+    .map_err(|error| command_error(error.to_string()))
+}
+
+fn format_bounded_git_log(
+    repo_path: &str,
+    mut commits: Vec<git::GitCommitDto>,
+    page: tool_output::ToolPage,
+    cursor_scope: &str,
+) -> CommandResult<String> {
+    let truncated = commits.len() > page.limit;
+    if truncated {
+        commits.truncate(page.limit);
+    }
+    let next_cursor = truncated
+        .then(|| tool_output::create_tool_cursor(cursor_scope, page.offset + commits.len()));
+    serde_json::to_string_pretty(&serde_json::json!({
+        "repo_path": repo_path,
+        "count": commits.len(),
+        "commits": commits,
+        "limit": page.limit,
+        "offset": page.offset,
+        "truncated": truncated,
+        "next_cursor": next_cursor,
+        "total_count": (!truncated).then_some(page.offset + commits.len()),
+        "total_is_exact": !truncated
+    }))
+    .map_err(|error| command_error(error.to_string()))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_workspace_tool(
     default_workspace: PathBuf,
@@ -2052,16 +2157,7 @@ pub async fn execute_workspace_tool(
                 let status = git::build_wsl_git_status(&wsl_repo_path)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
-                return serde_json::to_string_pretty(&serde_json::json!({
-                    "repo_path": repo_path,
-                    "branch": status.branch,
-                    "head_commit": status.head_commit,
-                    "staged_files": status.staged_files,
-                    "unstaged_files": status.unstaged_files,
-                    "untracked_files": status.untracked_files,
-                    "is_clean": status.is_clean
-                }))
-                .map_err(|error| command_error(error.to_string()));
+                return format_bounded_git_status(&repo_path, status, &args);
             }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
@@ -2082,37 +2178,44 @@ pub async fn execute_workspace_tool(
             .await
             .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
 
-            serde_json::to_string_pretty(&serde_json::json!({
-                "repo_path": repo_path,
-                "branch": status.branch,
-                "head_commit": status.head_commit,
-                "staged_files": status.staged_files,
-                "unstaged_files": status.unstaged_files,
-                "untracked_files": status.untracked_files,
-                "is_clean": status.is_clean
-            }))
-            .map_err(|error| command_error(error.to_string()))
+            format_bounded_git_status(&repo_path, status, &args)
         }
         "git_log" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
-            let limit = json_arg_u32(&args, "limit").unwrap_or(50).max(1) as usize;
             let branch = json_arg_string(&args, "branch");
             if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
-                let commits = git::build_wsl_git_log(&wsl_repo_path, limit, branch.as_deref())
+                let snapshot = git::build_wsl_git_log_snapshot(&wsl_repo_path, branch.as_deref())
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
-                return serde_json::to_string_pretty(&serde_json::json!({
-                    "repo_path": repo_path,
-                    "count": commits.len(),
-                    "commits": commits
-                }))
-                .map_err(|error| command_error(error.to_string()));
+                let cursor_scope = format!(
+                    "git_log\0{}\0{}\0{}",
+                    repo_path,
+                    branch.as_deref().unwrap_or(""),
+                    snapshot.revision
+                );
+                let page = tool_output::resolve_tool_page(
+                    &args,
+                    &cursor_scope,
+                    tool_output::GIT_LOG_DEFAULT_LIMIT,
+                    tool_output::GIT_LOG_MAX_LIMIT,
+                )?;
+                let commits = git::build_wsl_git_log_page(
+                    &wsl_repo_path,
+                    page.offset,
+                    page.limit.saturating_add(1),
+                    &snapshot,
+                )
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+                return format_bounded_git_log(&repo_path, commits, page, &cursor_scope);
             }
             let repo_path_for_task = repo_path.clone();
+            let response_repo_path = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let args_for_task = args.clone();
 
-            let commits = tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 let validated = git::validate_repo_path(&repo_path_for_task, &workspace_for_task)
                     .map_err(|error| command_error(error.to_string()))?;
                 let repo = git_state_for_task
@@ -2121,19 +2224,31 @@ pub async fn execute_workspace_tool(
                 let repo = repo
                     .lock()
                     .map_err(|_| command_error("Failed to lock repository"))?;
-
-                git::build_git_log(&repo, limit, branch.as_deref())
-                    .map_err(|error| command_error(error.to_string()))
+                let snapshot = git::build_git_log_snapshot(&repo, branch.as_deref())
+                    .map_err(|error| command_error(error.to_string()))?;
+                let cursor_scope = format!(
+                    "git_log\0{}\0{}\0{}",
+                    response_repo_path,
+                    branch.as_deref().unwrap_or(""),
+                    snapshot.revision
+                );
+                let page = tool_output::resolve_tool_page(
+                    &args_for_task,
+                    &cursor_scope,
+                    tool_output::GIT_LOG_DEFAULT_LIMIT,
+                    tool_output::GIT_LOG_MAX_LIMIT,
+                )?;
+                let commits = git::build_git_log_page(
+                    &repo,
+                    page.offset,
+                    page.limit.saturating_add(1),
+                    &snapshot,
+                )
+                .map_err(|error| command_error(error.to_string()))?;
+                format_bounded_git_log(&response_repo_path, commits, page, &cursor_scope)
             })
             .await
-            .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
-
-            serde_json::to_string_pretty(&serde_json::json!({
-                "repo_path": repo_path,
-                "count": commits.len(),
-                "commits": commits
-            }))
-            .map_err(|error| command_error(error.to_string()))
+            .map_err(|error| command_error(git::to_join_error(error).to_string()))?
         }
         "git_branch_list" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
@@ -2180,11 +2295,15 @@ pub async fn execute_workspace_tool(
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let base = json_arg_string(&args, "base");
             let head = json_arg_string(&args, "head");
-            let context_lines = json_arg_u32(&args, "context_lines");
+            let context_lines = json_arg_u32(&args, "context_lines")
+                .map(|value| value.min(tool_output::GIT_DIFF_MAX_CONTEXT_LINES));
             let ignore_whitespace = json_arg_bool(&args, "ignore_whitespace").unwrap_or(false);
             let paths = json_arg_string_array(&args, "paths");
+            let mode = git::GitDiffMode::parse(json_arg_string(&args, "mode").as_deref())
+                .map_err(|error| command_error(error.to_string()))?;
+            let require_complete = json_arg_bool(&args, "require_complete").unwrap_or(false);
             if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
-                return git::wsl_git_diff(
+                let diff = git::wsl_git_diff(
                     &wsl_repo_path,
                     base.as_deref(),
                     head.as_deref(),
@@ -2192,10 +2311,20 @@ pub async fn execute_workspace_tool(
                         context_lines,
                         ignore_whitespace,
                         paths,
+                        mode,
+                        max_bytes: Some(tool_output::GIT_DIFF_MAX_BYTES),
+                        require_complete,
                     },
                 )
                 .await
-                .map_err(|error| command_error(error.to_string()));
+                .map_err(|error| command_error(error.to_string()))?;
+                return Ok(format!(
+                    "DIFF_MODE: {}\nMAX_OUTPUT_BYTES: {}\nREQUIRE_COMPLETE: {}\n\n{}",
+                    mode.as_str(),
+                    tool_output::GIT_DIFF_MAX_BYTES,
+                    require_complete,
+                    diff
+                ));
             }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
@@ -2219,6 +2348,9 @@ pub async fn execute_workspace_tool(
                         context_lines,
                         ignore_whitespace,
                         paths,
+                        mode,
+                        max_bytes: Some(tool_output::GIT_DIFF_MAX_BYTES),
+                        require_complete,
                     },
                 )
                 .map_err(|error| command_error(error.to_string()))
@@ -2226,7 +2358,13 @@ pub async fn execute_workspace_tool(
             .await
             .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
 
-            Ok(patch)
+            Ok(format!(
+                "DIFF_MODE: {}\nMAX_OUTPUT_BYTES: {}\nREQUIRE_COMPLETE: {}\n\n{}",
+                mode.as_str(),
+                tool_output::GIT_DIFF_MAX_BYTES,
+                require_complete,
+                patch
+            ))
         }
         "git_read_file_pair" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
@@ -3879,10 +4017,12 @@ mod tests {
     use super::{
         apply_patch_hunks_to_content, apply_provider_api_key_change, command_error,
         commit_pending_file_changes_atomically, exact_edit_match_error, execute_workspace_tool,
-        parse_apply_patch, reconcile_provider_secret_metadata, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation, PendingFileChange,
+        format_bounded_git_status, parse_apply_patch, reconcile_provider_secret_metadata,
+        resolve_requested_workspace, resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation,
+        PendingFileChange,
     };
     use crate::commands::fs::content_revision;
+    use crate::commands::git::{GitFileStatus, GitStatusDto};
     use crate::db::{models::ProviderAuthMetadata, repository};
     use crate::git::GitState;
     use crate::secrets;
@@ -3928,6 +4068,73 @@ mod tests {
                 "message": "Failed to edit guarded.txt: Revision conflict: stale content"
             })
         );
+    }
+
+    #[test]
+    fn git_status_pages_are_bounded_and_bound_to_the_status_revision() {
+        let build_status = || GitStatusDto {
+            branch: "develop".to_string(),
+            head_commit: None,
+            staged_files: vec![GitFileStatus {
+                path: "a.rs".to_string(),
+                status: "modified".to_string(),
+                old_path: None,
+            }],
+            unstaged_files: vec![GitFileStatus {
+                path: "b.rs".to_string(),
+                status: "modified".to_string(),
+                old_path: None,
+            }],
+            untracked_files: vec![GitFileStatus {
+                path: "c.rs".to_string(),
+                status: "untracked".to_string(),
+                old_path: None,
+            }],
+            conflicted_files: Vec::new(),
+            merge_in_progress: false,
+            is_clean: false,
+            has_origin: true,
+            has_upstream: true,
+            ahead: 1,
+            behind: 0,
+        };
+
+        let first: serde_json::Value = serde_json::from_str(
+            &format_bounded_git_status(".", build_status(), &json!({ "limit": 2 }))
+                .expect("first status page"),
+        )
+        .expect("first status JSON");
+        assert_eq!(first["total_count"], 3);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["staged_files"].as_array().unwrap().len(), 1);
+        assert_eq!(first["unstaged_files"].as_array().unwrap().len(), 1);
+
+        let second: serde_json::Value = serde_json::from_str(
+            &format_bounded_git_status(
+                ".",
+                build_status(),
+                &json!({ "limit": 2, "cursor": first["next_cursor"] }),
+            )
+            .expect("second status page"),
+        )
+        .expect("second status JSON");
+        assert_eq!(second["offset"], 2);
+        assert_eq!(second["untracked_files"].as_array().unwrap().len(), 1);
+        assert_eq!(second["truncated"], false);
+
+        let mut changed = build_status();
+        changed.untracked_files.push(GitFileStatus {
+            path: "d.rs".to_string(),
+            status: "untracked".to_string(),
+            old_path: None,
+        });
+        let stale = format_bounded_git_status(
+            ".",
+            changed,
+            &json!({ "limit": 2, "cursor": first["next_cursor"] }),
+        )
+        .expect_err("changed status must invalidate the cursor");
+        assert!(stale.message.contains("does not belong"));
     }
 
     #[test]
