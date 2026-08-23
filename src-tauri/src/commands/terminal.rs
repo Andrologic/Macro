@@ -3089,16 +3089,17 @@ mod tests {
         let mut child = command.spawn().expect("spawn job root");
         let job = WindowsJob::assign(&child).expect("assign Windows Job Object");
 
+        let mut descendant_pid = None;
         for _ in 0..100 {
-            if child_pid_path.exists() {
-                break;
+            if let Ok(contents) = fs::read_to_string(&child_pid_path) {
+                if let Ok(pid) = contents.trim().parse::<u32>() {
+                    descendant_pid = Some(pid);
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let descendant_pid = fs::read_to_string(&child_pid_path)
-            .expect("descendant pid file")
-            .parse::<u32>()
-            .expect("descendant pid");
+        let descendant_pid = descendant_pid.expect("readable descendant pid file");
 
         job.terminate().expect("terminate Windows Job Object");
         tokio::time::timeout(Duration::from_secs(5), child.wait())
