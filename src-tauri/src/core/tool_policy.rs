@@ -14,7 +14,7 @@ pub struct ToolModePolicyResult {
     pub capabilities: Vec<String>,
 }
 
-const TOOL_MODE_CAPABILITIES: &[&str] = &["content_revisions_v1"];
+const TOOL_MODE_CAPABILITIES: &[&str] = &["content_revisions_v1", "bounded_tool_output_v1"];
 
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[

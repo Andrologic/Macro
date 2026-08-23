@@ -14,6 +14,8 @@ pub mod skills;
 pub mod speech;
 #[path = "commands/terminal.rs"]
 pub mod terminal;
+#[path = "commands/tool_output.rs"]
+mod tool_output;
 #[path = "commands/workspace.rs"]
 pub mod workspace;
 #[path = "commands/workspace_tools.rs"]
@@ -1279,7 +1281,7 @@ pub async fn execute_workspace_tool(
             .await?;
             let mut entries = fs::list_dir_internal(
                 &effective_workspace,
-                effective_path,
+                effective_path.clone(),
                 recursive,
                 include_hidden,
                 max_depth,
@@ -1294,10 +1296,33 @@ pub async fn execute_workspace_tool(
                 }
             }
 
+            entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+            let cursor_scope = format!(
+                "list\0{}\0{}\0{}\0{}\0{}",
+                effective_workspace.to_string_lossy(),
+                effective_path,
+                recursive.unwrap_or(false),
+                include_hidden.unwrap_or(false),
+                max_depth.map_or_else(String::new, |value| value.to_string())
+            );
+            let total_count = entries.len();
+            let page = tool_output::paginate_items(
+                &entries,
+                &args,
+                &cursor_scope,
+                tool_output::LIST_DEFAULT_LIMIT,
+                tool_output::LIST_MAX_LIMIT,
+            )?;
+
             serde_json::to_string_pretty(&serde_json::json!({
                 "path": path,
-                "count": entries.len(),
-                "entries": entries
+                "count": page.items.len(),
+                "total_count": total_count,
+                "entries": page.items,
+                "limit": page.limit,
+                "offset": page.offset,
+                "truncated": page.truncated,
+                "next_cursor": page.next_cursor
             }))
             .map_err(|error| command_error(error.to_string()))
         }
@@ -1305,8 +1330,6 @@ pub async fn execute_workspace_tool(
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for read tool."))?;
             let effective_path = remap_macro_tool_path(path.as_str());
-            let start_line = json_arg_u32(&args, "start_line").unwrap_or(1).max(1) as usize;
-            let end_line = json_arg_u32(&args, "end_line").map(|value| value as usize);
             let effective_workspace = resolve_workspace_for_tool_path(
                 &workspace,
                 &git_state,
@@ -1315,43 +1338,46 @@ pub async fn execute_workspace_tool(
             )
             .await?;
 
-            let result = fs::read_file_internal(&effective_workspace, effective_path, Some(false))
-                .await
-                .map_err(|error| command_error(error.to_string()))?;
+            let result =
+                fs::read_file_internal(&effective_workspace, effective_path.clone(), Some(false))
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
 
             if result.is_binary {
                 return Ok(format!(
-                    "File {} is binary ({} bytes, encoding={}, revision={}).",
+                    "FILE: {}\nSOURCE: WORKSPACE_FILE\nBINARY: true\nSIZE: {}\nENCODING: {}\nREVISION: {}\nCONTENT_OMITTED: binary",
                     path, result.size, result.encoding, result.revision
                 ));
             }
 
-            let lines: Vec<&str> = result.content.lines().collect();
-            let effective_start = start_line.min(lines.len().max(1));
-            let effective_end = end_line
-                .map(|value| value.max(effective_start))
-                .unwrap_or(lines.len().max(effective_start));
-
-            let selected: Vec<&str> = if lines.is_empty() {
-                vec![""]
-            } else {
-                lines
-                    .iter()
-                    .skip(effective_start.saturating_sub(1))
-                    .take(effective_end.saturating_sub(effective_start) + 1)
-                    .copied()
-                    .collect()
-            };
-
-            let numbered = format_with_line_numbers(&selected, effective_start);
+            let end_line_scope =
+                json_arg_u32(&args, "end_line").map_or_else(String::new, |value| value.to_string());
+            let cursor_scope = format!(
+                "read\0{}\0{}\0{}\0{}",
+                effective_workspace.to_string_lossy(),
+                effective_path,
+                result.revision,
+                end_line_scope
+            );
+            let page = tool_output::paginate_read_content(&result.content, &args, &cursor_scope)?;
+            let selected = page.lines.iter().map(String::as_str).collect::<Vec<_>>();
+            let numbered = format_with_line_numbers(&selected, page.start_line);
             Ok(format!(
-                "FILE: {}\nSOURCE: WORKSPACE_FILE\nLANGUAGE: {}\nSIZE: {}\nREVISION: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
+                "FILE: {}\nSOURCE: WORKSPACE_FILE\nLANGUAGE: {}\nSIZE: {}\nREVISION: {}\nLINES: {}-{}\nTOTAL_LINES: {}\nRETURNED_LINES: {}\nTRUNCATED: {}\nNEXT_CURSOR: {}\nLIMITS: max_lines={}, max_bytes={}, max_columns={}\nCOLUMN_TRUNCATED_LINES: {}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
                 path,
                 result.language,
                 result.size,
                 result.revision,
-                effective_start,
-                effective_start + selected.len().saturating_sub(1),
+                page.start_line,
+                page.end_line,
+                page.total_lines,
+                page.returned_lines,
+                page.truncated,
+                page.next_cursor.as_deref().unwrap_or("none"),
+                page.max_lines,
+                page.max_bytes,
+                tool_output::READ_MAX_COLUMNS,
+                page.column_truncated_lines,
                 numbered
             ))
         }
@@ -1799,7 +1825,7 @@ pub async fn execute_workspace_tool(
             let compiled = Pattern::new(&pattern)
                 .map_err(|error| command_error(format!("Invalid glob pattern: {}", error)))?;
 
-            let paths: Vec<String> = entries
+            let mut paths: Vec<String> = entries
                 .into_iter()
                 .filter(|entry| entry.kind == "file")
                 .filter_map(|entry| {
@@ -1817,21 +1843,42 @@ pub async fn execute_workspace_tool(
                     }
                 })
                 .collect();
+            paths.sort();
+            paths.dedup();
+            let cursor_scope = format!(
+                "glob\0{}\0{}\0{}",
+                effective_workspace.to_string_lossy(),
+                pattern,
+                include_hidden
+            );
+            let total_count = paths.len();
+            let page = tool_output::paginate_items(
+                &paths,
+                &args,
+                &cursor_scope,
+                tool_output::GLOB_DEFAULT_LIMIT,
+                tool_output::GLOB_MAX_LIMIT,
+            )?;
 
             serde_json::to_string_pretty(&serde_json::json!({
                 "pattern": pattern,
-                "count": paths.len(),
-                "paths": paths
+                "count": page.items.len(),
+                "total_count": total_count,
+                "paths": page.items,
+                "limit": page.limit,
+                "offset": page.offset,
+                "truncated": page.truncated,
+                "next_cursor": page.next_cursor
             }))
             .map_err(|error| command_error(error.to_string()))
         }
         "grep" => {
             let query = json_arg_string(&args, "query")
+                .filter(|query| !query.is_empty())
                 .ok_or_else(|| command_error("Missing query argument for grep tool."))?;
             let include_hidden = json_arg_bool(&args, "include_hidden").unwrap_or(false);
             let is_regexp = json_arg_bool(&args, "is_regexp").unwrap_or(false);
             let include_pattern = json_arg_string(&args, "include_pattern");
-            let max_results = json_arg_u32(&args, "max_results").unwrap_or(50).max(1) as usize;
             let list_path = ".".to_string();
             let list_is_macro_scope = is_macro_scoped_path(list_path.as_str());
             let effective_list_path = remap_macro_tool_path(list_path.as_str());
@@ -1843,7 +1890,7 @@ pub async fn execute_workspace_tool(
             )
             .await?;
 
-            let entries = fs::list_dir_internal(
+            let mut entries = fs::list_dir_internal(
                 &effective_workspace,
                 effective_list_path,
                 Some(true),
@@ -1853,6 +1900,7 @@ pub async fn execute_workspace_tool(
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
+            entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
             let include_glob = if let Some(glob) = include_pattern.as_ref() {
                 Some(Pattern::new(glob).map_err(|error| {
@@ -1875,7 +1923,26 @@ pub async fn execute_workspace_tool(
                 None
             };
             let query_lower = query.to_lowercase();
+            let cursor_scope = format!(
+                "grep\0{}\0{}\0{}\0{}\0{}",
+                effective_workspace.to_string_lossy(),
+                query,
+                is_regexp,
+                include_pattern.as_deref().unwrap_or(""),
+                include_hidden
+            );
+            let page = tool_output::resolve_tool_page(
+                &args,
+                &cursor_scope,
+                tool_output::GREP_DEFAULT_LIMIT,
+                tool_output::GREP_MAX_LIMIT,
+            )?;
             let mut results = Vec::new();
+            let mut seen_matches = 0usize;
+            let mut files_scanned = 0usize;
+            let mut skipped_binary = 0usize;
+            let mut skipped_too_large = 0usize;
+            let mut column_truncated_matches = 0usize;
 
             for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
                 let relative_path = entry.relative_path.replace('\\', "/");
@@ -1891,15 +1958,26 @@ pub async fn execute_workspace_tool(
                     }
                 }
 
+                if entry.size.unwrap_or(0) > tool_output::GREP_MAX_FILE_BYTES {
+                    skipped_too_large += 1;
+                    continue;
+                }
+
                 let read_path = relative_path.clone();
 
                 let content = fs::read_file_internal(&effective_workspace, read_path, Some(false))
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
 
-                if content.is_binary {
+                if content.size > tool_output::GREP_MAX_FILE_BYTES {
+                    skipped_too_large += 1;
                     continue;
                 }
+                if content.is_binary {
+                    skipped_binary += 1;
+                    continue;
+                }
+                files_scanned += 1;
 
                 for (index, line) in content.content.lines().enumerate() {
                     let is_match = if let Some(compiled) = regex.as_ref() {
@@ -1909,27 +1987,62 @@ pub async fn execute_workspace_tool(
                     };
 
                     if is_match {
+                        if seen_matches < page.offset {
+                            seen_matches += 1;
+                            continue;
+                        }
+                        seen_matches += 1;
+                        let (text, was_truncated) = tool_output::truncate_grep_line(line.trim());
                         results.push(serde_json::json!({
                             "path": virtual_path,
                             "line": index + 1,
-                            "text": line.trim()
+                            "text": text,
+                            "text_truncated": was_truncated
                         }));
+                        if was_truncated && results.len() <= page.limit {
+                            column_truncated_matches += 1;
+                        }
 
-                        if results.len() >= max_results {
+                        if results.len() > page.limit {
                             break;
                         }
                     }
                 }
 
-                if results.len() >= max_results {
+                if results.len() > page.limit {
                     break;
                 }
             }
 
+            let truncated = results.len() > page.limit;
+            if truncated {
+                results.truncate(page.limit);
+            }
+            let next_cursor = truncated.then(|| {
+                tool_output::create_tool_cursor(&cursor_scope, page.offset + results.len())
+            });
+
             serde_json::to_string_pretty(&serde_json::json!({
                 "query": query,
                 "total": results.len(),
-                "results": results
+                "count": results.len(),
+                "total_count": (!truncated).then_some(page.offset + results.len()),
+                "total_is_exact": !truncated,
+                "results": results,
+                "limit": page.limit,
+                "offset": page.offset,
+                "truncated": truncated,
+                "next_cursor": next_cursor,
+                "files_scanned": files_scanned,
+                "scan_complete": !truncated,
+                "skipped_files": {
+                    "binary": skipped_binary,
+                    "too_large": skipped_too_large,
+                    "max_file_bytes": tool_output::GREP_MAX_FILE_BYTES,
+                    "is_exact": !truncated
+                },
+                "column_truncated_matches": column_truncated_matches,
+                "max_columns": tool_output::GREP_MAX_COLUMNS
             }))
             .map_err(|error| command_error(error.to_string()))
         }
@@ -3775,10 +3888,33 @@ mod tests {
     use crate::secrets;
     use serde_json::json;
     use std::fs;
+    use std::path::Path;
     use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
 
     static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    async fn execute_readonly_workspace_tool(
+        workspace: &Path,
+        tool_id: &str,
+        args: serde_json::Value,
+    ) -> String {
+        execute_workspace_tool(
+            workspace.to_path_buf(),
+            workspace.to_path_buf(),
+            GitState::new(),
+            "Implement".to_string(),
+            tool_id.to_string(),
+            args,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("execute read-only workspace tool")
+    }
 
     #[test]
     fn command_error_serializes_revision_conflicts_with_a_stable_code() {
@@ -4167,6 +4303,124 @@ mod tests {
         .expect("apply patch");
 
         assert_eq!(updated, "export const value = 1;\nconsole.info(value);\n");
+    }
+
+    #[tokio::test]
+    async fn execute_workspace_read_returns_a_resumable_bounded_page() {
+        let workspace = TempDir::new().expect("workspace");
+        fs::write(workspace.path().join("notes.txt"), "one\ntwo\nthree\nfour").expect("write file");
+
+        let first = execute_readonly_workspace_tool(
+            workspace.path(),
+            "read",
+            json!({ "path": "notes.txt", "max_lines": 2 }),
+        )
+        .await;
+        assert!(first.contains("LINES: 1-2"));
+        assert!(first.contains("TOTAL_LINES: 4"));
+        assert!(first.contains("TRUNCATED: true"));
+        let cursor = first
+            .lines()
+            .find_map(|line| line.strip_prefix("NEXT_CURSOR: "))
+            .expect("next cursor");
+
+        let second = execute_readonly_workspace_tool(
+            workspace.path(),
+            "read",
+            json!({ "path": "notes.txt", "max_lines": 2, "cursor": cursor }),
+        )
+        .await;
+        assert!(second.contains("LINES: 3-4"));
+        assert!(second.contains("TRUNCATED: false"));
+        assert!(second.contains("   3 | three"));
+
+        fs::write(
+            workspace.path().join("notes.txt"),
+            "changed\ntwo\nthree\nfour",
+        )
+        .expect("change file after first page");
+        let stale_cursor = execute_workspace_tool(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            "Implement".to_string(),
+            "read".to_string(),
+            json!({ "path": "notes.txt", "max_lines": 2, "cursor": cursor }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("read cursor must be bound to the file revision");
+        assert!(stale_cursor
+            .message
+            .contains("does not belong to this tool request"));
+    }
+
+    #[tokio::test]
+    async fn execute_workspace_list_and_glob_return_sorted_pages() {
+        let workspace = TempDir::new().expect("workspace");
+        fs::write(workspace.path().join("b.ts"), "b").expect("write b");
+        fs::write(workspace.path().join("a.ts"), "a").expect("write a");
+        fs::write(workspace.path().join("c.txt"), "c").expect("write c");
+
+        let list = execute_readonly_workspace_tool(
+            workspace.path(),
+            "list",
+            json!({ "path": ".", "limit": 2 }),
+        )
+        .await;
+        let list: serde_json::Value = serde_json::from_str(&list).expect("list json");
+        assert_eq!(list["count"], 2);
+        assert_eq!(list["total_count"], 3);
+        assert_eq!(list["truncated"], true);
+        assert_eq!(list["entries"][0]["relative_path"], "a.ts");
+        assert!(list["next_cursor"].as_str().is_some());
+
+        let glob = execute_readonly_workspace_tool(
+            workspace.path(),
+            "glob",
+            json!({ "pattern": "*.ts", "limit": 1 }),
+        )
+        .await;
+        let glob: serde_json::Value = serde_json::from_str(&glob).expect("glob json");
+        assert_eq!(glob["paths"][0], "a.ts");
+        assert_eq!(glob["total_count"], 2);
+        assert_eq!(glob["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn execute_workspace_grep_bounds_matches_and_reports_skipped_files() {
+        let workspace = TempDir::new().expect("workspace");
+        fs::write(
+            workspace.path().join("a.txt"),
+            format!("needle {}\n", "x".repeat(1_000)),
+        )
+        .expect("write match");
+        fs::write(workspace.path().join("b.txt"), "needle second\n").expect("write match");
+        fs::write(workspace.path().join("0-binary.bin"), b"needle\0binary").expect("write binary");
+        fs::write(
+            workspace.path().join("1-large.txt"),
+            vec![b'x'; 4 * 1024 * 1024 + 1],
+        )
+        .expect("write oversized file");
+
+        let grep = execute_readonly_workspace_tool(
+            workspace.path(),
+            "grep",
+            json!({ "query": "needle", "limit": 1 }),
+        )
+        .await;
+        let grep: serde_json::Value = serde_json::from_str(&grep).expect("grep json");
+        assert_eq!(grep["count"], 1);
+        assert_eq!(grep["truncated"], true);
+        assert_eq!(grep["results"][0]["path"], "a.txt");
+        assert_eq!(grep["results"][0]["text_truncated"], true);
+        assert_eq!(grep["skipped_files"]["binary"], 1);
+        assert_eq!(grep["skipped_files"]["too_large"], 1);
+        assert!(grep["next_cursor"].as_str().is_some());
     }
 
     #[tokio::test]

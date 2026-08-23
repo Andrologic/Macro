@@ -412,38 +412,65 @@ async fn execute_virtual_workspace_search_tool(
                 mount.clone(),
                 workspace.clone(),
                 entry.relative_path.replace('\\', "/"),
+                entry.size,
             ));
         }
     }
+    all_files.sort_by(|left, right| {
+        virtual_path_for_mount(&left.0, &left.2).cmp(&virtual_path_for_mount(&right.0, &right.2))
+    });
+    let mount_scope = serde_json::json!(mounts
+        .iter()
+        .map(|mount| [
+            mount.project_id.as_str(),
+            mount.mount_name.as_str(),
+            mount.workspace_path.as_deref().unwrap_or("")
+        ])
+        .collect::<Vec<_>>())
+    .to_string();
 
     if tool_id == "glob" {
         let pattern = json_arg_string(args, "pattern").unwrap_or_else(|| "**/*".to_string());
-        let max_results = json_arg_u32(args, "max_results").map(|value| value.max(1) as usize);
         let compiled = Pattern::new(&pattern)
             .map_err(|error| command_error(format!("Invalid glob pattern: {}", error)))?;
-        let paths = all_files
+        let mut paths = all_files
             .into_iter()
-            .filter_map(|(mount, _, relative)| {
+            .filter_map(|(mount, _, relative, _)| {
                 let virtual_path = virtual_path_for_mount(&mount, &relative);
                 (compiled.matches(&relative) || compiled.matches(&virtual_path))
                     .then_some(virtual_path)
             })
-            .take(max_results.unwrap_or(usize::MAX))
             .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        let cursor_scope = format!("glob\0{mount_scope}\0{pattern}\0{include_hidden}");
+        let total_count = paths.len();
+        let page = super::tool_output::paginate_items(
+            &paths,
+            args,
+            &cursor_scope,
+            super::tool_output::GLOB_DEFAULT_LIMIT,
+            super::tool_output::GLOB_MAX_LIMIT,
+        )?;
         return serde_json::to_string_pretty(&serde_json::json!({
             "pattern": pattern,
             "virtual_root": true,
-            "count": paths.len(),
-            "paths": paths
+            "count": page.items.len(),
+            "total_count": total_count,
+            "paths": page.items,
+            "limit": page.limit,
+            "offset": page.offset,
+            "truncated": page.truncated,
+            "next_cursor": page.next_cursor
         }))
         .map_err(|error| command_error(error.to_string()));
     }
 
     let query = json_arg_string(args, "query")
+        .filter(|query| !query.is_empty())
         .ok_or_else(|| command_error("Missing query argument for grep tool."))?;
     let is_regexp = json_arg_bool(args, "is_regexp").unwrap_or(false);
     let include_pattern = json_arg_string(args, "include_pattern");
-    let max_results = json_arg_u32(args, "max_results").unwrap_or(50).max(1) as usize;
     let include_glob = include_pattern
         .as_ref()
         .map(|glob| Pattern::new(glob))
@@ -462,20 +489,45 @@ async fn execute_virtual_workspace_search_tool(
         None
     };
     let query_lower = query.to_lowercase();
+    let cursor_scope = format!(
+        "grep\0{mount_scope}\0{query}\0{is_regexp}\0{}\0{include_hidden}",
+        include_pattern.as_deref().unwrap_or("")
+    );
+    let page = super::tool_output::resolve_tool_page(
+        args,
+        &cursor_scope,
+        super::tool_output::GREP_DEFAULT_LIMIT,
+        super::tool_output::GREP_MAX_LIMIT,
+    )?;
     let mut results = Vec::new();
-    for (mount, workspace, relative) in all_files {
+    let mut seen_matches = 0usize;
+    let mut files_scanned = 0usize;
+    let mut skipped_binary = 0usize;
+    let mut skipped_too_large = 0usize;
+    let mut column_truncated_matches = 0usize;
+    for (mount, workspace, relative, size) in all_files {
         let virtual_path = virtual_path_for_mount(&mount, &relative);
         if let Some(pattern) = include_glob.as_ref() {
             if !pattern.matches(&relative) && !pattern.matches(&virtual_path) {
                 continue;
             }
         }
+        if size.unwrap_or(0) > super::tool_output::GREP_MAX_FILE_BYTES {
+            skipped_too_large += 1;
+            continue;
+        }
         let content = fs::read_file_internal(&workspace, relative, Some(true))
             .await
             .map_err(|error| command_error(error.to_string()))?;
-        if content.is_binary {
+        if content.size > super::tool_output::GREP_MAX_FILE_BYTES {
+            skipped_too_large += 1;
             continue;
         }
+        if content.is_binary {
+            skipped_binary += 1;
+            continue;
+        }
+        files_scanned += 1;
         for (index, line) in content.content.lines().enumerate() {
             let is_match = if let Some(compiled) = regex.as_ref() {
                 compiled.is_match(line)
@@ -483,26 +535,60 @@ async fn execute_virtual_workspace_search_tool(
                 line.to_lowercase().contains(&query_lower)
             };
             if is_match {
+                if seen_matches < page.offset {
+                    seen_matches += 1;
+                    continue;
+                }
+                seen_matches += 1;
+                let (text, was_truncated) = super::tool_output::truncate_grep_line(line.trim());
                 results.push(serde_json::json!({
                     "path": virtual_path,
                     "line": index + 1,
-                    "text": line.trim(),
+                    "text": text,
+                    "text_truncated": was_truncated,
                     "project_id": mount.project_id,
                     "mount_name": mount.mount_name,
                 }));
-                if results.len() >= max_results {
+                if was_truncated && results.len() <= page.limit {
+                    column_truncated_matches += 1;
+                }
+                if results.len() > page.limit {
                     break;
                 }
             }
         }
-        if results.len() >= max_results {
+        if results.len() > page.limit {
             break;
         }
     }
+    let truncated = results.len() > page.limit;
+    if truncated {
+        results.truncate(page.limit);
+    }
+    let next_cursor = truncated.then(|| {
+        super::tool_output::create_tool_cursor(&cursor_scope, page.offset + results.len())
+    });
     serde_json::to_string_pretty(&serde_json::json!({
         "query": query,
         "total": results.len(),
-        "results": results
+        "count": results.len(),
+        "total_count": (!truncated).then_some(page.offset + results.len()),
+        "total_is_exact": !truncated,
+        "results": results,
+        "limit": page.limit,
+        "offset": page.offset,
+        "truncated": truncated,
+        "next_cursor": next_cursor,
+        "files_scanned": files_scanned,
+        "scan_complete": !truncated,
+        "skipped_files": {
+            "binary": skipped_binary,
+            "too_large": skipped_too_large,
+            "max_file_bytes": super::tool_output::GREP_MAX_FILE_BYTES,
+            "is_exact": !truncated
+        },
+        "column_truncated_matches": column_truncated_matches,
+        "max_columns": super::tool_output::GREP_MAX_COLUMNS
     }))
     .map_err(|error| command_error(error.to_string()))
 }
@@ -530,7 +616,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
             if explicit_project_id.is_none()
                 && (normalized_path.is_empty() || normalized_path == ".")
             {
-                let entries = mounts
+                let mut entries = mounts
                     .iter()
                     .map(|mount| {
                         serde_json::json!({
@@ -543,11 +629,35 @@ pub(crate) async fn execute_virtual_workspace_tool(
                         })
                     })
                     .collect::<Vec<_>>();
+                entries.sort_by(|left, right| {
+                    left.get("relative_path")
+                        .and_then(Value::as_str)
+                        .cmp(&right.get("relative_path").and_then(Value::as_str))
+                });
+                let mount_scope = serde_json::json!(mounts
+                    .iter()
+                    .map(|mount| [mount.project_id.as_str(), mount.mount_name.as_str()])
+                    .collect::<Vec<_>>())
+                .to_string();
+                let cursor_scope = format!("list\0virtual-root\0{mount_scope}");
+                let total_count = entries.len();
+                let page = super::tool_output::paginate_items(
+                    &entries,
+                    args,
+                    &cursor_scope,
+                    super::tool_output::LIST_DEFAULT_LIMIT,
+                    super::tool_output::LIST_MAX_LIMIT,
+                )?;
                 return serde_json::to_string_pretty(&serde_json::json!({
                     "path": ".",
                     "virtual_root": true,
-                    "count": entries.len(),
-                    "entries": entries
+                    "count": page.items.len(),
+                    "total_count": total_count,
+                    "entries": page.items,
+                    "limit": page.limit,
+                    "offset": page.offset,
+                    "truncated": page.truncated,
+                    "next_cursor": page.next_cursor
                 }))
                 .map(Some)
                 .map_err(|error| command_error(error.to_string()));
@@ -561,12 +671,15 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let mount = resolved.mount;
             let relative_path = resolved.relative_path;
             let workspace = mount_workspace_path(mount)?;
-            let entries = fs::list_dir_internal(
+            let recursive = json_arg_bool(args, "recursive");
+            let include_hidden = json_arg_bool(args, "include_hidden");
+            let max_depth = json_arg_u32(args, "max_depth");
+            let mut entries = fs::list_dir_internal(
                 &workspace,
                 relative_path.clone(),
-                json_arg_bool(args, "recursive"),
-                json_arg_bool(args, "include_hidden"),
-                json_arg_u32(args, "max_depth"),
+                recursive,
+                include_hidden,
+                max_depth,
                 Some(true),
             )
             .await
@@ -579,12 +692,35 @@ pub(crate) async fn execute_virtual_workspace_tool(
             })
             .collect::<Vec<_>>();
 
+            entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+            let cursor_scope = format!(
+                "list\0{}\0{}\0{}\0{}\0{}",
+                workspace.to_string_lossy(),
+                relative_path,
+                recursive.unwrap_or(false),
+                include_hidden.unwrap_or(false),
+                max_depth.map_or_else(String::new, |value| value.to_string())
+            );
+            let total_count = entries.len();
+            let page = super::tool_output::paginate_items(
+                &entries,
+                args,
+                &cursor_scope,
+                super::tool_output::LIST_DEFAULT_LIMIT,
+                super::tool_output::LIST_MAX_LIMIT,
+            )?;
+
             serde_json::to_string_pretty(&serde_json::json!({
                 "path": virtual_path_for_mount(mount, &relative_path),
                 "project_id": mount.project_id,
                 "mount_name": mount.mount_name,
-                "count": entries.len(),
-                "entries": entries
+                "count": page.items.len(),
+                "total_count": total_count,
+                "entries": page.items,
+                "limit": page.limit,
+                "offset": page.offset,
+                "truncated": page.truncated,
+                "next_cursor": page.next_cursor
             }))
             .map(Some)
             .map_err(|error| command_error(error.to_string()))
@@ -607,39 +743,47 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let virtual_path = virtual_path_for_mount(mount, &relative_path);
             if result.is_binary {
                 return Ok(Some(format!(
-                    "File {} is binary ({} bytes, encoding={}, revision={}).",
-                    virtual_path, result.size, result.encoding, result.revision
+                    "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nBINARY: true\nSIZE: {}\nENCODING: {}\nREVISION: {}\nCONTENT_OMITTED: binary",
+                    virtual_path,
+                    mount.project_id,
+                    mount.mount_name,
+                    result.size,
+                    result.encoding,
+                    result.revision
                 )));
             }
 
-            let start_line = json_arg_u32(args, "start_line").unwrap_or(1).max(1) as usize;
-            let end_line = json_arg_u32(args, "end_line").map(|value| value as usize);
-            let lines = result.content.lines().collect::<Vec<_>>();
-            let effective_start = start_line.min(lines.len().max(1));
-            let effective_end = end_line
-                .map(|value| value.max(effective_start))
-                .unwrap_or(lines.len().max(effective_start));
-            let selected = if lines.is_empty() {
-                vec![""]
-            } else {
-                lines
-                    .iter()
-                    .skip(effective_start.saturating_sub(1))
-                    .take(effective_end.saturating_sub(effective_start) + 1)
-                    .copied()
-                    .collect::<Vec<_>>()
-            };
-            let numbered = format_with_line_numbers(&selected, effective_start);
+            let end_line_scope =
+                json_arg_u32(args, "end_line").map_or_else(String::new, |value| value.to_string());
+            let cursor_scope = format!(
+                "read\0{}\0{}\0{}\0{}",
+                workspace.to_string_lossy(),
+                relative_path,
+                result.revision,
+                end_line_scope
+            );
+            let page =
+                super::tool_output::paginate_read_content(&result.content, args, &cursor_scope)?;
+            let selected = page.lines.iter().map(String::as_str).collect::<Vec<_>>();
+            let numbered = format_with_line_numbers(&selected, page.start_line);
             Ok(Some(format!(
-                "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nLANGUAGE: {}\nSIZE: {}\nREVISION: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
+                "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nLANGUAGE: {}\nSIZE: {}\nREVISION: {}\nLINES: {}-{}\nTOTAL_LINES: {}\nRETURNED_LINES: {}\nTRUNCATED: {}\nNEXT_CURSOR: {}\nLIMITS: max_lines={}, max_bytes={}, max_columns={}\nCOLUMN_TRUNCATED_LINES: {}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
                 virtual_path,
                 mount.project_id,
                 mount.mount_name,
                 result.language,
                 result.size,
                 result.revision,
-                effective_start,
-                effective_start + selected.len().saturating_sub(1),
+                page.start_line,
+                page.end_line,
+                page.total_lines,
+                page.returned_lines,
+                page.truncated,
+                page.next_cursor.as_deref().unwrap_or("none"),
+                page.max_lines,
+                page.max_bytes,
+                super::tool_output::READ_MAX_COLUMNS,
+                page.column_truncated_lines,
                 numbered
             )))
         }

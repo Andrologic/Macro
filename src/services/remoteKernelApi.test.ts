@@ -96,6 +96,13 @@ describe('remoteKernelApi', () => {
       if (String(url).includes('/validate')) {
         return jsonResponse({ allowed: true, enforce_macro_only_writes: false });
       }
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['read'],
+          enforce_macro_only_writes: false,
+          capabilities: ['bounded_tool_output_v1'],
+        });
+      }
       return jsonResponse({ result: '{"ok":true}' });
     }) as unknown as typeof fetch;
 
@@ -114,8 +121,9 @@ describe('remoteKernelApi', () => {
     });
     expect(result).toBe('{"ok":true}');
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/remote/api/tools/validate');
-    expect(fetchCalls[1].url).toBe('http://127.0.0.1:8787/remote/api/tools/execute');
-    expect(JSON.parse(String(fetchCalls[1].init?.body))).toEqual({
+    expect(fetchCalls[1].url).toBe('http://127.0.0.1:8787/remote/api/tools/mode-policy?mode=Implement');
+    expect(fetchCalls[2].url).toBe('http://127.0.0.1:8787/remote/api/tools/execute');
+    expect(JSON.parse(String(fetchCalls[2].init?.body))).toEqual({
       mode: 'Implement',
       tool_id: 'read',
       args: { path: 'src/App.tsx' },
@@ -150,6 +158,30 @@ describe('remoteKernelApi', () => {
         },
       })
     ).rejects.toThrow('cannot enforce content revisions');
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].url).toContain('/tools/mode-policy');
+  });
+
+  it('rejects read-only tools before contacting an output-unaware remote kernel', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return jsonResponse({
+        allowed_tool_ids: ['grep'],
+        enforce_macro_only_writes: false,
+        capabilities: ['content_revisions_v1'],
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'grep',
+        args: { query: 'needle' },
+      })
+    ).rejects.toThrow('cannot guarantee bounded, resumable tool output');
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].url).toContain('/tools/mode-policy');
   });

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT = '1';
 
@@ -138,6 +141,124 @@ describe('copilot bridge tool registration', () => {
       expect(fetchCalls.every((call) => call.url.endsWith('/api/v1/tools/execute'))).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('copilot bridge bounded workspace tools', () => {
+  it('paginates list, read, glob, and grep with explicit metadata', async () => {
+    const workspacePath = await mkdtemp(path.join(tmpdir(), 'macro-copilot-tools-'));
+    try {
+      await writeFile(path.join(workspacePath, 'a.txt'), `${'x'.repeat(1_000)} needle\nsecond`);
+      await writeFile(path.join(workspacePath, 'b.txt'), 'needle b\n');
+      await writeFile(path.join(workspacePath, 'c.ts'), 'export const c = true;\n');
+      await writeFile(path.join(workspacePath, 'binary.bin'), Buffer.from('needle\0binary'));
+      const { __testables } = await loadBridge();
+      const context = {
+        defaultWorkspacePath: workspacePath,
+        focusedProjectId: null,
+        virtualRootEnabled: false,
+        candidates: [],
+      };
+
+      const list = JSON.parse(await __testables.listWorkspace({
+        context,
+        pathValue: '.',
+        limit: 1,
+      }));
+      expect(list.count).toBe(1);
+      expect(list.truncated).toBe(true);
+      expect(typeof list.next_cursor).toBe('string');
+
+      const read = await __testables.readWorkspaceFile({
+        context,
+        pathValue: 'a.txt',
+        maxLines: 1,
+      });
+      expect(read).toContain('TRUNCATED: true');
+      expect(read).toContain('COLUMN_TRUNCATED_LINES: 0');
+      const readCursor = read
+        .split('\n')
+        .find((line) => line.startsWith('NEXT_CURSOR: '))
+        ?.slice('NEXT_CURSOR: '.length);
+      expect(typeof readCursor).toBe('string');
+
+      const glob = JSON.parse(await __testables.globWorkspace({
+        context,
+        pattern: '*.txt',
+        limit: 1,
+      }));
+      expect(glob.paths).toEqual(['a.txt']);
+      expect(glob.total_count).toBe(2);
+      expect(glob.truncated).toBe(true);
+
+      const grep = JSON.parse(await __testables.grepWorkspace({
+        context,
+        query: 'needle',
+        limit: 1,
+      }));
+      expect(grep.count).toBe(1);
+      expect(grep.truncated).toBe(true);
+      expect(grep.results[0].text_truncated).toBe(true);
+      expect(typeof grep.next_cursor).toBe('string');
+    } finally {
+      await rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a read cursor after the file revision changes', async () => {
+    const workspacePath = await mkdtemp(path.join(tmpdir(), 'macro-copilot-read-'));
+    try {
+      const filePath = path.join(workspacePath, 'notes.txt');
+      await writeFile(filePath, 'one\ntwo');
+      const { __testables } = await loadBridge();
+      const context = {
+        defaultWorkspacePath: workspacePath,
+        focusedProjectId: null,
+        virtualRootEnabled: false,
+        candidates: [],
+      };
+      const first = await __testables.readWorkspaceFile({
+        context,
+        pathValue: 'notes.txt',
+        maxLines: 1,
+      });
+      const cursor = first
+        .split('\n')
+        .find((line) => line.startsWith('NEXT_CURSOR: '))
+        ?.slice('NEXT_CURSOR: '.length);
+      expect(typeof cursor).toBe('string');
+
+      await writeFile(filePath, 'changed\ntwo');
+      await expect(__testables.readWorkspaceFile({
+        context,
+        pathValue: 'notes.txt',
+        maxLines: 1,
+        cursor,
+      })).rejects.toThrow('does not belong to this tool request');
+    } finally {
+      await rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid UTF-8 instead of reporting it as binary', async () => {
+    const workspacePath = await mkdtemp(path.join(tmpdir(), 'macro-copilot-encoding-'));
+    try {
+      await writeFile(path.join(workspacePath, 'invalid.txt'), Buffer.from([0xc3, 0x28]));
+      const { __testables } = await loadBridge();
+      const context = {
+        defaultWorkspacePath: workspacePath,
+        focusedProjectId: null,
+        virtualRootEnabled: false,
+        candidates: [],
+      };
+
+      await expect(__testables.readWorkspaceFile({
+        context,
+        pathValue: 'invalid.txt',
+      })).rejects.toThrow('Invalid UTF-8 content');
+    } finally {
+      await rm(workspacePath, { recursive: true, force: true });
     }
   });
 });

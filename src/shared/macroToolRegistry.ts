@@ -1,3 +1,5 @@
+import { TOOL_OUTPUT_LIMITS } from "./toolOutputLimits";
+
 export type JsonSchema =
   | {
       type: "object";
@@ -406,7 +408,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "list",
-    "List files and directories under a path in the local workspace. In a group, the visible root can be virtual and contain only project mounts such as api/ or web/.",
+    "List files and directories under a path in the local workspace. Results are sorted, bounded, and resumable with next_cursor. In a group, the visible root can be virtual and contain only project mounts such as api/ or web/.",
     {
       type: "object",
       properties: {
@@ -422,7 +424,7 @@ export const MACRO_TOOL_REGISTRY = [
         },
         recursive: {
           type: "boolean",
-          description: "Whether to list recursively.",
+          description: "Whether to list recursively. Defaults to false.",
         },
         include_hidden: {
           type: "boolean",
@@ -432,13 +434,22 @@ export const MACRO_TOOL_REGISTRY = [
           type: "number",
           description: "Maximum recursion depth when recursive=true.",
         },
+        limit: {
+          type: "number",
+          description: `Maximum entries in this page (default ${TOOL_OUTPUT_LIMITS.list.defaultResults}, hard maximum ${TOOL_OUTPUT_LIMITS.list.maxResults}).`,
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Opaque next_cursor returned by the previous list page. It is valid only for the same path and options.",
+        },
       },
       required: [],
     },
   ),
   copilotBuiltInOverrideTool(
     "read",
-    "Read a file from the local execution workspace by path. The response includes a SHA-256 revision that can guard a later mutation. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.",
+    "Read a bounded, line-numbered page from a file in the local execution workspace. The response includes a SHA-256 revision, explicit truncation metadata, and next_cursor when more content remains. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.",
     {
       type: "object",
       properties: {
@@ -453,6 +464,15 @@ export const MACRO_TOOL_REGISTRY = [
           description: "Optional 1-based start line.",
         },
         end_line: { type: "number", description: "Optional 1-based end line." },
+        max_lines: {
+          type: "number",
+          description: `Maximum lines in this page (default ${TOOL_OUTPUT_LIMITS.read.defaultLines}, hard maximum ${TOOL_OUTPUT_LIMITS.read.maxLines}).`,
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Opaque next_cursor returned by the previous read page. Do not combine it with start_line; it is valid only for the same file.",
+        },
       },
       required: ["path"],
     },
@@ -563,7 +583,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "glob",
-    "Find files in the current execution workspace matching a glob pattern. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
+    "Find files in the current execution workspace matching a glob pattern. Results are sorted, bounded, and resumable with next_cursor. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -577,13 +597,22 @@ export const MACRO_TOOL_REGISTRY = [
           type: "boolean",
           description: "Include hidden files/folders.",
         },
+        limit: {
+          type: "number",
+          description: `Maximum paths in this page (default ${TOOL_OUTPUT_LIMITS.glob.defaultResults}, hard maximum ${TOOL_OUTPUT_LIMITS.glob.maxResults}).`,
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Opaque next_cursor returned by the previous glob page. It is valid only for the same pattern and options.",
+        },
       },
       required: ["pattern"],
     },
   ),
   copilotBuiltInOverrideTool(
     "grep",
-    "Search text in files under the current execution workspace. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
+    "Search text in files under the current execution workspace. Results are bounded, long matching lines are clipped explicitly, binary and oversized files are skipped explicitly, and next_cursor resumes the same query. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
     {
       type: "object",
       properties: {
@@ -607,7 +636,17 @@ export const MACRO_TOOL_REGISTRY = [
         },
         max_results: {
           type: "number",
-          description: "Maximum result rows to return.",
+          description:
+            "Deprecated alias for limit. Maximum result rows to return.",
+        },
+        limit: {
+          type: "number",
+          description: `Maximum matches in this page (default ${TOOL_OUTPUT_LIMITS.grep.defaultResults}, hard maximum ${TOOL_OUTPUT_LIMITS.grep.maxResults}).`,
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Opaque next_cursor returned by the previous grep page. It is valid only for the same query and options.",
         },
       },
       required: ["query"],
