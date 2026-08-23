@@ -1,5 +1,5 @@
 use crate::commands::{command_error, CommandResult, DbPool};
-use crate::core::process::background_tokio_command;
+use crate::core::process::{background_command, background_tokio_command};
 use crate::db::{models::TerminalTabRecord, repository};
 use crate::git::GitState;
 use crate::project_path::{join_wsl_path, parse_wsl_unc_path, wsl_unc_path, WslProjectPath};
@@ -2709,7 +2709,7 @@ impl Drop for LegacyProcessGroupGuard {
         let Some(pid) = self.pid else {
             return;
         };
-        let _ = std::process::Command::new("kill")
+        let _ = background_command("kill")
             .args(["-KILL", "--", &format!("-{pid}")])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
