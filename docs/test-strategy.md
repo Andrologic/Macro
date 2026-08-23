@@ -14,6 +14,9 @@ not by a target count.
   application behavior changes.
 - Run `bun run test:coverage` for coverage audits. It is diagnostic and does not
   belong in the ordinary pre-push path.
+- Run `bun run test:e2e:headless` when the headless HTTP boundary, authentication,
+  configuration bootstrap, or workspace bootstrap changes. The smoke test uses
+  temporary configuration and workspace directories.
 - Run the Rust suite when native commands, persistence, Git, filesystem, or
   remote-kernel behavior changes.
 

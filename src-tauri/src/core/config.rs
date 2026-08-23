@@ -221,27 +221,30 @@ pub(crate) fn test_finalize_desktop_workspace_path_for_mode(
     finalize_desktop_workspace_path_for_mode(config, app_data_dir, use_app_data_default);
 }
 
-pub fn load_config() -> crate::core::Result<AppConfig> {
-    let runtime_file = config_dir_runtime_file()?;
-    let legacy_settings_file = std::env::var("MACRO_CONFIG").ok();
+fn load_config_from_sources(
+    runtime_file: Option<PathBuf>,
+    legacy_settings_file: Option<&str>,
+) -> crate::core::Result<AppConfig> {
     let workspace_path_source = if let Some(path) = runtime_file.as_deref() {
         workspace_path_source_for_runtime(path)?
     } else {
-        workspace_path_source_for_config(legacy_settings_file.as_deref())?
+        workspace_path_source_for_config(legacy_settings_file)?
     };
     let mut settings = config::Config::builder()
         .set_default("workspace_path", ".")?
         .set_default("ai.local_api_url", "http://localhost:11434")?;
 
-    if let Some(runtime_file) = runtime_file {
-        settings = settings.add_source(
-            config::File::from(runtime_file)
-                .format(config::FileFormat::Json)
-                .required(false),
-        );
-    } else if let Some(settings_file) = legacy_settings_file.as_ref() {
-        tracing::warn!("MACRO_CONFIG est déprécié ; utilisez MACRO_CONFIG_DIR avec runtime.json.");
-        settings = settings.add_source(config::File::with_name(settings_file).required(false));
+    // ConfigManager owns runtime.json and applies defaultWorkspace after schema
+    // validation. Feeding the camelCase runtime document to this legacy config
+    // builder would add both workspace_path and its serde alias, which fails as
+    // a duplicate field during deserialization.
+    if runtime_file.is_none() {
+        if let Some(settings_file) = legacy_settings_file {
+            tracing::warn!(
+                "MACRO_CONFIG est déprécié ; utilisez MACRO_CONFIG_DIR avec runtime.json."
+            );
+            settings = settings.add_source(config::File::with_name(settings_file).required(false));
+        }
     }
 
     let mut config: AppConfig = settings
@@ -258,4 +261,17 @@ pub fn load_config() -> crate::core::Result<AppConfig> {
     config.workspace_path_source = workspace_path_source;
 
     Ok(config)
+}
+
+#[cfg(test)]
+pub(crate) fn test_load_config_from_runtime_file(
+    runtime_file: PathBuf,
+) -> crate::core::Result<AppConfig> {
+    load_config_from_sources(Some(runtime_file), None)
+}
+
+pub fn load_config() -> crate::core::Result<AppConfig> {
+    let runtime_file = config_dir_runtime_file()?;
+    let legacy_settings_file = std::env::var("MACRO_CONFIG").ok();
+    load_config_from_sources(runtime_file, legacy_settings_file.as_deref())
 }
