@@ -79,11 +79,17 @@ class ControlledGoalAuditExecutor
   implements ChildTurnExecutor<GoalAuditChildInput, unknown> {
   readonly pending = new Map<string, PendingChild>();
   readonly requests: Array<ChildTurnExecutionRequest<GoalAuditChildInput>> = [];
+  readonly #requestWaiters: Array<{ count: number; resolve: () => void }> = [];
 
   execute(
     childRequest: ChildTurnExecutionRequest<GoalAuditChildInput>,
   ): Promise<ChildTurnExecutionOutput<unknown>> {
     this.requests.push(childRequest);
+    for (const waiter of [...this.#requestWaiters]) {
+      if (this.requests.length < waiter.count) continue;
+      this.#requestWaiters.splice(this.#requestWaiters.indexOf(waiter), 1);
+      waiter.resolve();
+    }
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (callback: () => void) => {
@@ -103,6 +109,13 @@ class ControlledGoalAuditExecutor
     });
   }
 
+  waitForRequestCount(count: number): Promise<void> {
+    if (this.requests.length >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#requestWaiters.push({ count, resolve });
+    });
+  }
+
   complete(runId: string, output: ChildTurnExecutionOutput<unknown>): void {
     const child = this.pending.get(runId);
     if (!child) throw new Error(`Missing audit child ${runId}`);
@@ -116,9 +129,36 @@ class RecordingVerdictPort implements GoalAuditVerdictPort {
 
   applyVerdict(
     input: Parameters<GoalAuditVerdictPort["applyVerdict"]>[0],
-  ): GoalAuditVerdictApplyResult {
+  ): GoalAuditVerdictApplyResult | Promise<GoalAuditVerdictApplyResult> {
     this.applications.push(input);
     return this.outcome;
+  }
+}
+
+class DelayedVerdictPort extends RecordingVerdictPort {
+  readonly started: Promise<void>;
+  #resolveStarted!: () => void;
+  #resolveApplication!: (outcome: GoalAuditVerdictApplyResult) => void;
+
+  constructor() {
+    super();
+    this.started = new Promise((resolve) => {
+      this.#resolveStarted = resolve;
+    });
+  }
+
+  applyVerdict(
+    input: Parameters<GoalAuditVerdictPort["applyVerdict"]>[0],
+  ): Promise<GoalAuditVerdictApplyResult> {
+    this.applications.push(input);
+    this.#resolveStarted();
+    return new Promise((resolve) => {
+      this.#resolveApplication = resolve;
+    });
+  }
+
+  resolve(outcome: GoalAuditVerdictApplyResult): void {
+    this.#resolveApplication(outcome);
   }
 }
 
@@ -172,6 +212,7 @@ describe("GoalAuditCoordinator", () => {
   it("runs a depth-one read-only goal auditor and atomically applies a valid verdict", async () => {
     const { coordinator, executor, journal, verdictPort } = makeCoordinator();
     const handle = coordinator.startAudit(request());
+    await executor.waitForRequestCount(1);
     const childRequest = executor.requests[0];
 
     expect(handle.runId).toBe("audit-1");
@@ -199,15 +240,15 @@ describe("GoalAuditCoordinator", () => {
       runId: "audit-1",
       verdict,
     });
-    expect(verdictPort.applications).toEqual([
-      {
-        conversationId: "conversation-1",
-        goalId: "goal-1",
-        expectedRevision: 4,
-        verdict,
-        runId: "audit-1",
-      },
-    ]);
+    expect(verdictPort.applications).toHaveLength(1);
+    expect(verdictPort.applications[0]).toMatchObject({
+      conversationId: "conversation-1",
+      goalId: "goal-1",
+      expectedRevision: 4,
+      verdict,
+      runId: "audit-1",
+    });
+    expect(verdictPort.applications[0]?.signal).toBeInstanceOf(AbortSignal);
     expect(journal.getRun("audit-1")?.transitions.map(({ state }) => state)).toEqual([
       "queued",
       "running",
@@ -218,6 +259,7 @@ describe("GoalAuditCoordinator", () => {
   it("rejects invalid JSON without applying any partial verdict", async () => {
     const { coordinator, executor, verdictPort } = makeCoordinator();
     const handle = coordinator.startAudit(request());
+    await executor.waitForRequestCount(1);
 
     executor.complete("audit-1", { text: '{"verdict":"achieved"' });
 
@@ -257,12 +299,116 @@ describe("GoalAuditCoordinator", () => {
     expect(verdictPort.applications).toEqual([]);
   });
 
+  it("cancels during verdict application and aborts the port signal", async () => {
+    const verdictPort = new DelayedVerdictPort();
+    const { coordinator, executor } = makeCoordinator({ verdictPort });
+    const handle = coordinator.startAudit(request());
+
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+    await verdictPort.started;
+
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
+    expect(handle.cancel()).toBe(true);
+    expect(verdictPort.applications[0]?.signal.aborted).toBe(true);
+    expect(await handle.result).toEqual({
+      status: "cancelled",
+      runId: "audit-1",
+      reason: "child_cancelled",
+    });
+
+    verdictPort.resolve("applied");
+  });
+
+  it("keeps cancelAudit active during verdict application", async () => {
+    const verdictPort = new DelayedVerdictPort();
+    const { coordinator, executor } = makeCoordinator({ verdictPort });
+    const handle = coordinator.startAudit(request());
+
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+    await verdictPort.started;
+
+    expect(coordinator.cancelAudit("conversation-1")).toBe(true);
+    expect(await handle.result).toMatchObject({
+      status: "cancelled",
+      reason: "child_cancelled",
+    });
+
+    verdictPort.resolve("applied");
+  });
+
+  it("uses the original audit deadline while applying the verdict", async () => {
+    const clock = new FakeClock();
+    const verdictPort = new DelayedVerdictPort();
+    const { coordinator, executor } = makeCoordinator({ clock, verdictPort });
+    const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
+
+    await executor.waitForRequestCount(1);
+    clock.advanceBy(40);
+    executor.complete("audit-1", { structured: verdict });
+    await verdictPort.started;
+    clock.advanceBy(10);
+
+    expect(verdictPort.applications[0]?.signal.aborted).toBe(true);
+    expect(await handle.result).toEqual({
+      status: "timed_out",
+      runId: "audit-1",
+      timeoutMs: 50,
+    });
+
+    verdictPort.resolve("applied");
+  });
+
+  it("fails when the verdict port returns an invalid result", async () => {
+    const verdictPort = new RecordingVerdictPort();
+    verdictPort.outcome = "invalid" as GoalAuditVerdictApplyResult;
+    const { coordinator, executor } = makeCoordinator({ verdictPort });
+    const handle = coordinator.startAudit(request());
+
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+
+    expect(await handle.result).toMatchObject({
+      status: "failed",
+      runId: "audit-1",
+      error: { code: "VERDICT_APPLICATION_FAILED" },
+    });
+  });
+
+  it("does not execute an audit when durable run registration fails", async () => {
+    class RejectingJournal extends InMemoryGoalAuditJournal {
+      override async registerRun(): Promise<void> {
+        throw new Error("journal unavailable");
+      }
+    }
+
+    const executor = new ControlledGoalAuditExecutor();
+    const verdictPort = new RecordingVerdictPort();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort,
+      journal: new RejectingJournal(),
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+
+    expect(await handle.result).toMatchObject({
+      status: "failed",
+      runId: "audit-1",
+      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    });
+    expect(executor.requests).toEqual([]);
+    expect(verdictPort.applications).toEqual([]);
+  });
+
   it("returns a stale result when the goal revision changed before application", async () => {
     const verdictPort = new RecordingVerdictPort();
     verdictPort.outcome = "stale";
     const { coordinator, executor } = makeCoordinator({ verdictPort });
     const handle = coordinator.startAudit(request());
 
+    await executor.waitForRequestCount(1);
     executor.complete("audit-1", { structured: verdict });
 
     expect(await handle.result).toEqual({
@@ -286,6 +432,7 @@ describe("GoalAuditCoordinator", () => {
       runId: null,
       error: { code: "AUDIT_ALREADY_ACTIVE" },
     });
+    await executor.waitForRequestCount(2);
     expect(executor.requests).toHaveLength(2);
 
     executor.complete("audit-1", { text: JSON.stringify(verdict) });
