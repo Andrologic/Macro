@@ -1,14 +1,19 @@
 import { dirname, posix } from 'node:path';
 
 const TYPESCRIPT_PATTERN = /\.(?:ts|tsx)$/;
+const LINTABLE_SCRIPT_PATTERN = /\.(?:[cm]?[jt]s|jsx|tsx)$/;
 const TEST_PATTERN = /\.test\.(?:ts|tsx)$/;
 const RUST_PATTERN = /\.rs$/;
 
 const WORKFLOW_PATTERNS = [
-  /^\.github\/workflows\//,
+  /^\.github\/(?:workflows|actions)\//,
   /^\.githooks\//,
   /^dev\/ci\//,
   /^package\.json$/,
+];
+
+const DEPENDENCY_PATTERNS = [
+  /^(?:package\.json|bun\.lock|bunfig\.toml)$/,
 ];
 
 const UPDATER_PATTERNS = [
@@ -37,7 +42,7 @@ function matchesAny(path, patterns) {
 
 export function selectLintFiles(paths, exists = () => true) {
   return normalizePaths(paths)
-    .filter((path) => TYPESCRIPT_PATTERN.test(path) && exists(path));
+    .filter((path) => LINTABLE_SCRIPT_PATTERN.test(path) && exists(path));
 }
 
 function sourceKeys(path) {
@@ -117,6 +122,14 @@ export function planFastLocalChecks(paths, options = {}) {
     { name: 'Binaires suivis autorisés', command: process.execPath, args: ['dev/check-git-binaries.mjs'] },
   ];
 
+  if (normalized.some((path) => matchesAny(path, DEPENDENCY_PATTERNS))) {
+    steps.push({
+      name: 'Verrouillage des dépendances cohérent',
+      command: process.execPath,
+      args: ['install', '--frozen-lockfile', '--lockfile-only', '--dry-run'],
+      quiet: true,
+    });
+  }
   if (normalized.some((path) => matchesAny(path, WORKFLOW_PATTERNS))) {
     steps.push({ name: 'Workflows GitHub valides', command: process.execPath, args: ['dev/ci/validate-workflows.mjs'] });
   }

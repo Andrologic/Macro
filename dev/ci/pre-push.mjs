@@ -86,12 +86,20 @@ function writeMarker(path, key) {
   writeFileSync(path, `${JSON.stringify({ passed: true, validated_at: new Date().toISOString(), key }, null, 2)}\n`);
 }
 
-function run(command, args) {
-  const result = spawnSync(command, args, { stdio: 'inherit', windowsHide: true });
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    stdio: options.quiet ? 'pipe' : 'inherit',
+    encoding: options.quiet ? 'utf8' : undefined,
+    windowsHide: true,
+  });
   if (result.error) {
     throw result.error;
   }
   if (result.status !== 0) {
+    if (options.quiet) {
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
+    }
     throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status ?? 'unknown'}.`);
   }
 }
@@ -183,7 +191,7 @@ function main() {
 
   for (const step of plan.steps) {
     console.log(`\n==> ${step.name}`);
-    run(step.command, step.args);
+    run(step.command, step.args, { quiet: step.quiet });
   }
   try {
     writeMarker(marker, key);

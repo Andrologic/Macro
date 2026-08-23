@@ -19,9 +19,10 @@ request workflow:
 | Change | Fast local checks |
 | --- | --- |
 | Every push | Whitespace errors in the pushed range, version manifests, and tracked-binary policy |
-| TypeScript | ESLint on changed files plus changed, sibling, and direct-importing test files |
+| JavaScript or TypeScript | ESLint on changed files plus changed, sibling, and direct-relative-importing test files |
 | Rust | `cargo fmt --check` when an existing Rust source changes |
 | Workflows or CI scripts | Workflow syntax and repository Actions policy |
+| Bun manifests or lockfile | Frozen lockfile consistency, without installing packages |
 | Locales or i18n tooling | Translation audit |
 | Updater manifests or tooling | Updater configuration preflight |
 
