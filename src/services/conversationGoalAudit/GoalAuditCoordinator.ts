@@ -76,6 +76,7 @@ interface ActiveAuditCycle {
   cancellationReason?: AuditCancellationReason;
   timeoutHandle?: unknown;
   settled: boolean;
+  result?: Promise<GoalAuditResult>;
   cancel(reason: AuditCancellationReason): boolean;
   removeParentAbortListener?: () => void;
 }
@@ -89,6 +90,8 @@ export class GoalAuditCoordinator<
   readonly #runtime: SubagentRuntime<GoalAuditChildInput, unknown, TProgress>;
   readonly #activeByConversation = new Map<string, ActiveAuditCycle>();
   readonly #descriptors = new Map<string, GoalAuditRunDescriptor>();
+  #disposed = false;
+  #disposePromise?: Promise<void>;
 
   constructor(options: GoalAuditCoordinatorOptions<TProgress>) {
     this.#options = options;
@@ -121,6 +124,12 @@ export class GoalAuditCoordinator<
   }
 
   startAudit(request: GoalAuditRequest): GoalAuditHandle {
+    if (this.#disposed) {
+      return failedHandle({
+        code: "COORDINATOR_DISPOSED",
+        message: "The goal audit coordinator has been disposed.",
+      });
+    }
     if (this.#activeByConversation.has(request.conversationId)) {
       return failedHandle({
         code: "AUDIT_ALREADY_ACTIVE",
@@ -228,6 +237,7 @@ export class GoalAuditCoordinator<
         }
         this.#descriptors.delete(runId);
       });
+    cycle.result = result;
     return {
       runId,
       result,
@@ -236,12 +246,17 @@ export class GoalAuditCoordinator<
   }
 
   async dispose(): Promise<void> {
-    for (const cycle of this.#activeByConversation.values()) {
-      cycle.cancel("runtime_disposed");
-    }
-    await this.#runtime.dispose();
-    this.#activeByConversation.clear();
-    this.#descriptors.clear();
+    if (this.#disposePromise) return this.#disposePromise;
+    this.#disposed = true;
+    const cycles = [...this.#activeByConversation.values()];
+    for (const cycle of cycles) cycle.cancel("runtime_disposed");
+    this.#disposePromise = (async () => {
+      await Promise.all(cycles.map((cycle) => cycle.result));
+      await this.#runtime.dispose();
+      this.#activeByConversation.clear();
+      this.#descriptors.clear();
+    })();
+    return this.#disposePromise;
   }
 
   #createCycle(request: GoalAuditRequest): ActiveAuditCycle {

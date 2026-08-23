@@ -61,6 +61,7 @@ export interface GoalAuditVerdictPort {
 
 export type GoalAuditErrorCode =
   | "AUDIT_ALREADY_ACTIVE"
+  | "COORDINATOR_DISPOSED"
   | "INVALID_AUDIT_CONTEXT"
   | "DELEGATION_PREFLIGHT_REJECTED"
   | "POLICY_INVARIANT_VIOLATION"

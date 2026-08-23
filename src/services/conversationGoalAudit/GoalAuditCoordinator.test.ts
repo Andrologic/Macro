@@ -511,6 +511,95 @@ describe("GoalAuditCoordinator", () => {
     expect(executor.requests).toEqual([]);
   });
 
+  it("waits for late registration before disposing the runtime", async () => {
+    const journal = new DelayedRegistrationJournal();
+    const executor = new ControlledGoalAuditExecutor();
+    const verdictPort = new RecordingVerdictPort();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort,
+      journal,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+
+    const disposal = coordinator.dispose();
+    let disposed = false;
+    void disposal.then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+
+    expect(disposed).toBe(false);
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
+    journal.resolveRegistration();
+
+    expect(await handle.result).toEqual({
+      status: "cancelled",
+      runId: "audit-1",
+      reason: "runtime_disposed",
+    });
+    await disposal;
+    expect(executor.requests).toEqual([]);
+    expect(journal.getRun("audit-1")?.transitions.map(({ state }) => state)).toEqual([
+      "queued",
+      "cancelled",
+    ]);
+  });
+
+  it("waits for verdict application during disposal and keeps applied authoritative", async () => {
+    const verdictPort = new DelayedVerdictPort();
+    const { coordinator, executor } = makeCoordinator({ verdictPort });
+    const handle = coordinator.startAudit(request());
+
+    await executor.waitForRequestCount(1);
+    executor.complete("audit-1", { structured: verdict });
+    await verdictPort.started;
+
+    const disposal = coordinator.dispose();
+    let disposed = false;
+    void disposal.then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+
+    expect(disposed).toBe(false);
+    expect(verdictPort.applications[0]?.signal.aborted).toBe(true);
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
+    verdictPort.resolve("applied");
+
+    expect(await handle.result).toEqual({
+      status: "applied",
+      runId: "audit-1",
+      verdict,
+    });
+    await disposal;
+  });
+
+  it("rejects new audits as soon as disposal starts", async () => {
+    const executor = new ControlledGoalAuditExecutor();
+    const verdictPort = new RecordingVerdictPort();
+    const journal = new InMemoryGoalAuditJournal();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort,
+      journal,
+      idFactory: () => "audit-1",
+    });
+
+    const disposal = coordinator.dispose();
+    const rejected = coordinator.startAudit(request());
+
+    expect(await rejected.result).toMatchObject({
+      status: "failed",
+      runId: null,
+      error: { code: "COORDINATOR_DISPOSED" },
+    });
+    await disposal;
+    expect(journal.listRuns()).toEqual([]);
+    expect(executor.requests).toEqual([]);
+  });
+
   it("returns a stale result when the goal revision changed before application", async () => {
     const verdictPort = new RecordingVerdictPort();
     verdictPort.outcome = "stale";
