@@ -42,6 +42,11 @@ let validateArtifactMock: ReturnType<typeof mock>;
 let unvalidateArtifactMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
+const hadInitialBackendTransport = Object.prototype.hasOwnProperty.call(
+  process.env,
+  'VITE_BACKEND_TRANSPORT',
+);
+const initialBackendTransport = process.env.VITE_BACKEND_TRANSPORT;
 const translationMock = createTranslationMock({
   'errors.degraded.fallback.dynamic': '{{message}}',
   'errors.degraded.worktree.checkedOut.title': 'Macro could not prepare the task workspace',
@@ -832,7 +837,11 @@ describe('FileChangesPanel', () => {
     if (initialFileChangesState) {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
-    delete process.env.VITE_BACKEND_TRANSPORT;
+    if (hadInitialBackendTransport) {
+      process.env.VITE_BACKEND_TRANSPORT = initialBackendTransport;
+    } else {
+      delete process.env.VITE_BACKEND_TRANSPORT;
+    }
     await clearPreferencesForTest();
     mock.restore();
   });
