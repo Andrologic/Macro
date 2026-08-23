@@ -120,7 +120,7 @@ export const filterToolIdsForInternalAgentProfile = (
 
   const allowlist = PROFILE_TOOL_ALLOWLISTS[profile];
   if (!allowlist) {
-    return Array.from(new Set(allowedToolIds));
+    return [];
   }
 
   return Array.from(

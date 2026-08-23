@@ -1,4 +1,8 @@
-import { getDelegationContextSize, serializeDelegationContext } from "./context";
+import {
+  buildDelegationContext,
+  getDelegationContextSize,
+  serializeDelegationContext,
+} from "./context";
 import type {
   AgentCapability,
   DelegationAuthorization,
@@ -8,6 +12,7 @@ import type {
   DelegationResult,
   EffectiveDelegationPolicy,
 } from "./types";
+import { AGENT_CAPABILITIES } from "./types";
 import { normalizeCapabilities, validateAgentDefinition } from "./validation";
 
 export const V1_READ_ONLY_CAPABILITIES = Object.freeze([
@@ -125,7 +130,29 @@ export const authorizeDelegation = (
     });
   }
 
-  const deniedCapabilities = normalizeCapabilities(input.requiredCapabilities ?? []).filter(
+  const requiredCapabilities = Array.isArray(input.requiredCapabilities)
+    ? input.requiredCapabilities
+    : [];
+  if (input.requiredCapabilities !== undefined && !Array.isArray(input.requiredCapabilities)) {
+    errors.push({
+      code: "invalid_preflight",
+      path: "requiredCapabilities",
+      message: "Expected an array of known agent capabilities.",
+    });
+  }
+  requiredCapabilities.forEach((capability, index) => {
+    if (
+      typeof capability !== "string" ||
+      !AGENT_CAPABILITIES.includes(capability as AgentCapability)
+    ) {
+      errors.push({
+        code: "invalid_preflight",
+        path: `requiredCapabilities[${index}]`,
+        message: "Unknown agent capability.",
+      });
+    }
+  });
+  const deniedCapabilities = normalizeCapabilities(requiredCapabilities).filter(
     (capability) => !policy.capabilities.includes(capability)
   );
   if (deniedCapabilities.length > 0) {
@@ -214,8 +241,12 @@ export const authorizeDelegation = (
     );
   }
 
-  const contextBytes = getDelegationContextSize(input.context);
-  if (contextBytes > policy.limits.maxContextBytes) {
+  const context = buildDelegationContext(input.context);
+  if (!context.ok) {
+    errors.push(...context.errors);
+  }
+  const contextBytes = context.ok ? getDelegationContextSize(context.value) : 0;
+  if (context.ok && contextBytes > policy.limits.maxContextBytes) {
     errors.push(
       makeError(
         "context_too_large",
@@ -226,6 +257,7 @@ export const authorizeDelegation = (
   }
 
   if (errors.length > 0) return { ok: false, errors };
+  if (!context.ok) return context;
 
   return {
     ok: true,
@@ -233,7 +265,7 @@ export const authorizeDelegation = (
       agentId: definition.value.id,
       ...(definition.value.model ? { model: definition.value.model } : {}),
       ...(definition.value.effort ? { effort: definition.value.effort } : {}),
-      serializedContext: serializeDelegationContext(input.context),
+      serializedContext: serializeDelegationContext(context.value),
       policy,
       childDepth,
       activeDelegationsForParent: input.activeDelegationsForParent,

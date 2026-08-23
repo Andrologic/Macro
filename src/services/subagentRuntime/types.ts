@@ -2,12 +2,7 @@ export const DEFAULT_SUBAGENT_CONCURRENCY_PER_PARENT = 2;
 export const MAX_SUBAGENT_DEPTH = 1;
 
 export type SubagentRunState =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "timed_out";
+  "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
 
 export type SubagentTerminalState = Exclude<
   SubagentRunState,
@@ -37,11 +32,23 @@ export interface NormalizedSubagentError {
   retryable?: boolean;
 }
 
-export interface ChildTurnExecutionOutput<TStructuredOutput = unknown> {
-  text?: string;
-  structured?: TStructuredOutput;
+interface ChildTurnExecutionOutputBase {
   metrics?: SubagentMetrics;
 }
+
+export type ChildTurnExecutionOutput<TStructuredOutput = unknown> =
+  | (ChildTurnExecutionOutputBase & {
+      text: string;
+      structured?: never;
+    })
+  | (ChildTurnExecutionOutputBase & {
+      text?: never;
+      structured: TStructuredOutput;
+    })
+  | (ChildTurnExecutionOutputBase & {
+      text?: never;
+      structured?: never;
+    });
 
 export interface ChildTurnExecutionRequest<
   TInput = unknown,
@@ -91,29 +98,32 @@ interface SubagentResultBase {
   durationMs?: number;
 }
 
-export interface CompletedSubagentResult<TStructuredOutput = unknown>
-  extends SubagentResultBase {
+export interface CompletedSubagentResult<
+  TStructuredOutput = unknown,
+> extends SubagentResultBase {
   status: "completed";
-  output?: {
-    text?: string;
-    structured?: TStructuredOutput;
-  };
+  output?:
+    | { text: string; structured?: never }
+    | { text?: never; structured: TStructuredOutput };
   metrics?: SubagentMetrics;
 }
 
 export interface FailedSubagentResult extends SubagentResultBase {
   status: "failed";
   error: NormalizedSubagentError;
+  metrics?: SubagentMetrics;
 }
 
 export interface CancelledSubagentResult extends SubagentResultBase {
   status: "cancelled";
   reason: "parent_cancelled" | "child_cancelled" | "runtime_disposed";
+  metrics?: SubagentMetrics;
 }
 
 export interface TimedOutSubagentResult extends SubagentResultBase {
   status: "timed_out";
   timeoutMs: number;
+  metrics?: SubagentMetrics;
 }
 
 export type SubagentRunResult<TStructuredOutput = unknown> =
@@ -156,6 +166,19 @@ export interface SubagentTransitionRecorder<
   TStructuredOutput = unknown,
   TProgress extends SubagentProgressEvent = SubagentProgressEvent,
 > {
+  /**
+   * Atomically claims a new run by recording its initial queued transition.
+   * The executor does not start until this succeeds. When omitted,
+   * `recordTransition` records the claim for backward compatibility.
+   */
+  claimRun?(
+    transition: SubagentTransition<TStructuredOutput, TProgress> & {
+      sequence: 0;
+      previousState: null;
+      state: "queued";
+    },
+  ): void | Promise<void>;
+
   recordTransition(
     transition: SubagentTransition<TStructuredOutput, TProgress>,
   ): void | Promise<void>;
