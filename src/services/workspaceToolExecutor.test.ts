@@ -1181,6 +1181,146 @@ describe("workspaceToolExecutor helpers", () => {
     );
   });
 
+  it("does not reroute an implicit virtual-root mutation away from the focused read-only project", async () => {
+    const writes: string[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        validateToolExecution: async () => ({ allowed: true }),
+        fsWriteFile: async ({ path }: { path: string }) => {
+          writes.push(path);
+          return { path, bytes_written: 0, created: true };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "src/new.ts", content: "export const value = 1;\n" },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "api",
+            groupId: "macro-suite",
+            mountName: "api",
+            displayName: "API",
+            workspacePath: "C:/dev/macro-api",
+            isReadOnly: false,
+          },
+          {
+            projectId: "web",
+            groupId: "macro-suite",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+            isReadOnly: true,
+          },
+        ],
+        workspacePathsByProjectId: {
+          api: "C:/dev/macro-api",
+          web: "C:/dev/macro-web",
+        },
+      },
+    );
+
+    expect(result).toBe(
+      'Error executing write: project "Web App" is read-only.'
+    );
+    expect(writes).toEqual([]);
+  });
+
+  it("does not reroute a non-virtual mutation away from a read-only project", async () => {
+    const writes: string[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsWriteFile: async ({ path }: { path: string }) => {
+          writes.push(path);
+          return { path, bytes_written: 0, created: true };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "src/new.ts", content: "export const value = 1;\n" },
+      "Implement",
+      {
+        projectId: "web",
+        focusedProjectId: "web",
+        virtualRootEnabled: false,
+        projectMounts: [
+          {
+            projectId: "api",
+            mountName: "api",
+            displayName: "API",
+            workspacePath: "C:/dev/macro-api",
+            isReadOnly: false,
+          },
+          {
+            projectId: "web",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+            isReadOnly: true,
+          },
+        ],
+        workspacePathsByProjectId: {
+          api: "C:/dev/macro-api",
+          web: "C:/dev/macro-web",
+        },
+      },
+    );
+
+    expect(result).toBe(
+      'Error executing write: project "Web App" is read-only.'
+    );
+    expect(writes).toEqual([]);
+  });
+
+  it("rejects an ambiguous exact-text edit unless replace_all is true", async () => {
+    const writes: string[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        validateToolExecution: async () => ({ allowed: true }),
+        fsReadFileWithOptions: async () => ({
+          content: "const value = 1;\nconst value = 1;\n",
+          language: "typescript",
+          is_binary: false,
+          size: 34,
+          encoding: "utf-8",
+        }),
+        fsWriteFile: async ({ content }: { content: string }) => {
+          writes.push(content);
+          return { path: "src/value.ts", bytes_written: content.length, created: false };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "edit",
+      {
+        path: "src/value.ts",
+        old_text: "const value = 1;",
+        new_text: "const value = 2;",
+      },
+      "Implement",
+      { workspacePath: "C:/dev/macro-web" },
+    );
+
+    expect(result).toContain("old_text matched 2 locations");
+    expect(result).toContain("replace_all");
+    expect(writes).toEqual([]);
+  });
+
   it("returns a clear error when delete targets a directory", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
