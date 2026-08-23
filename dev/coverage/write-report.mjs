@@ -156,5 +156,10 @@ export function formatCoverageSummary(summary) {
   if (summary.testFilesSelected < summary.testFilesAvailable) {
     lines.push(`Filtered run: ${summary.testFilesSelected}/${summary.testFilesAvailable} test files selected; uninstrumented files reflect this subset.`);
   }
+  if (summary.reportsMissing.length > 0) {
+    const displayedReports = summary.reportsMissing.slice(0, 5);
+    const remainingCount = summary.reportsMissing.length - displayedReports.length;
+    lines.push(`Missing coverage reports: ${displayedReports.join(', ')}${remainingCount > 0 ? ` (+${remainingCount} more)` : ''}.`);
+  }
   return lines.join('\n');
 }

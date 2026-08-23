@@ -7,7 +7,10 @@ import {
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
 import { createDeferred } from '../../test-utils/deferred';
-import { installTauriRuntimeMock } from '../../test-utils/tauriRuntime';
+import {
+  installTauriRuntimeMock,
+  removeTauriRuntimeMock,
+} from '../../test-utils/tauriRuntime';
 import { createStoreHookMock } from '../../test-utils/storeHookMock';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 
@@ -352,6 +355,18 @@ const notifyActionRequiredMock = mock(() => undefined);
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
+const hadInitialActEnvironment = Object.prototype.hasOwnProperty.call(
+  globalThis,
+  'IS_REACT_ACT_ENVIRONMENT',
+);
+const initialActEnvironment = (
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT;
+const hadInitialRequestAnimationFrame = Object.prototype.hasOwnProperty.call(
+  globalThis,
+  'requestAnimationFrame',
+);
+const initialRequestAnimationFrame = globalThis.requestAnimationFrame;
 
 const resetNotifyMocks = () => {
   notifyInfoMock.mockClear();
@@ -924,6 +939,18 @@ describe('ChatZone', () => {
     root = null;
     container = null;
     document.body.innerHTML = '';
+    removeTauriRuntimeMock();
+    if (hadInitialActEnvironment) {
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+        .IS_REACT_ACT_ENVIRONMENT = initialActEnvironment;
+    } else {
+      Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
+    }
+    if (hadInitialRequestAnimationFrame) {
+      globalThis.requestAnimationFrame = initialRequestAnimationFrame;
+    } else {
+      Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
+    }
     mock.restore();
   });
 
@@ -2593,7 +2620,6 @@ describe('ChatZone', () => {
   });
 
   it('keeps manual compaction out of the header while preserving compacted transcript state', async () => {
-    localStorage.setItem('macro_compaction.manualVisible', JSON.stringify(true));
     chatState = {
       ...chatState,
       messages: [
