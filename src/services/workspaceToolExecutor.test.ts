@@ -54,8 +54,48 @@ const registerWorkspaceToolExecutorMocks = (
   appState: Partial<MockAppState> = {},
 ) => {
   mock.restore();
-  const tauriModule =
+  const rawTauriModule =
     (appState as { tauriModule?: Record<string, unknown> }).tauriModule || {};
+  const remoteKernelModule =
+    (appState as { remoteKernelModule?: Record<string, unknown> })
+      .remoteKernelModule || {};
+  const providedRead = rawTauriModule.fsReadFileWithOptions as
+    | ((...args: unknown[]) => Promise<Record<string, unknown>>)
+    | undefined;
+  const providedWrite = rawTauriModule.fsWriteFile as
+    | ((...args: unknown[]) => Promise<Record<string, unknown>>)
+    | undefined;
+  const tauriModule = {
+    ...rawTauriModule,
+    ...(providedRead
+      ? {
+          fsReadFileWithOptions: async (...args: unknown[]) => {
+            const result = await providedRead(...args);
+            return {
+              ...result,
+              revision:
+                typeof result.revision === "string"
+                  ? result.revision
+                  : "mock-read-revision",
+            };
+          },
+        }
+      : {}),
+    ...(providedWrite
+      ? {
+          fsWriteFile: async (...args: unknown[]) => {
+            const result = await providedWrite(...args);
+            return {
+              ...result,
+              revision:
+                typeof result.revision === "string"
+                  ? result.revision
+                  : "mock-write-revision",
+            };
+          },
+        }
+      : {}),
+  };
   mock.module("./tauriIpc", () => ({
     ...actualTauriIpc,
     isTauriAvailable: () => false,
@@ -70,6 +110,7 @@ const registerWorkspaceToolExecutorMocks = (
       is_binary: false,
       size: 0,
       encoding: "utf-8",
+      revision: "default-revision",
     }),
     fsStat: async (path: string | { path: string }) => {
       const resolvedPath =
@@ -91,6 +132,7 @@ const registerWorkspaceToolExecutorMocks = (
       path,
       bytes_written: 0,
       created: false,
+      revision: "written-revision",
     }),
     fsDelete: async () => undefined,
     gitStatus: async () => ({
@@ -130,6 +172,7 @@ const registerWorkspaceToolExecutorMocks = (
       allowed: true,
       enforce_macro_only_writes: false,
     }),
+    ...remoteKernelModule,
   }));
 
   const appStoreState = {
@@ -1115,6 +1158,7 @@ describe("workspaceToolExecutor helpers", () => {
       "C:/dev/macro-web/src/App.tsx",
       "C:/dev/macro-web/notes.md",
     ]);
+    expect(writes[0].expectedRevision).toBe("mock-read-revision");
     expect(writes[1].expectedRevision).toBe("absent");
     expect(deletes).toEqual([]);
   });
@@ -1469,8 +1513,187 @@ describe("workspaceToolExecutor helpers", () => {
     expect(deletes).toEqual(["C:/dev/macro-web/notes.md"]);
   });
 
+  it("continues rolling back an apply_patch batch after one guarded restore fails", async () => {
+    const original = new Map([
+      ["C:/dev/macro-web/src/a.ts", "export const a = 'before';\n"],
+      ["C:/dev/macro-web/src/b.ts", "export const b = 'before';\n"],
+    ]);
+    const contents = new Map(original);
+    const rollbackAttempts: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async (path: string) => contents.has(path),
+        fsReadFileWithOptions: async ({ path }: { path: string }) => {
+          const content = contents.get(path);
+          if (content === undefined) throw new Error(`unexpected read: ${path}`);
+          return {
+            content,
+            language: "typescript",
+            is_binary: false,
+            size: content.length,
+            encoding: "utf-8",
+            revision: content.includes("before")
+              ? `before:${path}`
+              : `applied:${path}`,
+          };
+        },
+        fsWriteFile: async ({
+          path,
+          content,
+        }: {
+          path: string;
+          content: string;
+        }) => {
+          const isRollback = content === original.get(path);
+          if (isRollback) {
+            rollbackAttempts.push(path);
+            if (path.endsWith("/b.ts")) {
+              throw new Error("b.ts changed externally");
+            }
+          }
+          contents.set(path, content);
+          return {
+            path,
+            bytes_written: content.length,
+            created: false,
+            revision: isRollback ? `restored:${path}` : `applied:${path}`,
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: web/src/a.ts",
+          "@@",
+          "-export const a = 'before';",
+          "+export const a = 'after';",
+          "*** Update File: web/src/b.ts",
+          "@@",
+          "-export const b = 'before';",
+          "+export const b = 'after';",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            groupId: "macro-suite",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+          },
+        ],
+        workspacePathsByProjectId: { web: "C:/dev/macro-web" },
+        onCodeCheckpoint: async () => {
+          throw new Error("checkpoint db unavailable");
+        },
+      },
+    );
+
+    expect(result).toContain("rollback failed");
+    expect(result).toContain("b.ts changed externally");
+    expect(rollbackAttempts).toEqual([
+      "C:/dev/macro-web/src/b.ts",
+      "C:/dev/macro-web/src/a.ts",
+    ]);
+    expect(contents.get("C:/dev/macro-web/src/a.ts")).toBe(
+      original.get("C:/dev/macro-web/src/a.ts"),
+    );
+    expect(contents.get("C:/dev/macro-web/src/b.ts")).toContain("after");
+  });
+
+  it("reverts apply_patch when post-write validation fails", async () => {
+    const path = "C:/dev/macro-web/src/value.ts";
+    const before = "export const value = 'before';\n";
+    let content = before;
+    let checkpointCalls = 0;
+    const writes: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => {
+          if (content.includes("after")) {
+            throw new Error("post-write validation unavailable");
+          }
+          return {
+            content,
+            language: "typescript",
+            is_binary: false,
+            size: content.length,
+            encoding: "utf-8",
+            revision: "before-revision",
+          };
+        },
+        fsWriteFile: async ({ content: nextContent }: { content: string }) => {
+          writes.push(nextContent);
+          content = nextContent;
+          return {
+            path,
+            bytes_written: nextContent.length,
+            created: false,
+            revision: nextContent === before ? "restored-revision" : "applied-revision",
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: web/src/value.ts",
+          "@@",
+          "-export const value = 'before';",
+          "+export const value = 'after';",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            groupId: "macro-suite",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+          },
+        ],
+        workspacePathsByProjectId: { web: "C:/dev/macro-web" },
+        onCodeCheckpoint: async () => {
+          checkpointCalls += 1;
+        },
+      },
+    );
+
+    expect(result).toContain("Validation failed after apply_patch");
+    expect(result).toContain("mutations were reverted");
+    expect(content).toBe(before);
+    expect(writes).toEqual(["export const value = 'after';\n", before]);
+    expect(checkpointCalls).toBe(0);
+  });
+
   it("deletes a file from the routed worktree workspace", async () => {
-    const deletes: string[] = [];
+    const deletes: Array<{ path: string; expectedRevision?: string | null }> = [];
 
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
@@ -1499,8 +1722,14 @@ describe("workspaceToolExecutor helpers", () => {
           size: 23,
           encoding: "utf-8",
         }),
-        fsDelete: async ({ path }: { path: string }) => {
-          deletes.push(path);
+        fsDelete: async ({
+          path,
+          expectedRevision,
+        }: {
+          path: string;
+          expectedRevision?: string | null;
+        }) => {
+          deletes.push({ path, expectedRevision });
         },
       },
     } as Partial<MockAppState>);
@@ -1525,7 +1754,12 @@ describe("workspaceToolExecutor helpers", () => {
     expect(parsed.files[0].status).toBe("deleted");
     expect(parsed.files[0].deletions).toBe(2);
     expect(parsed.files[0].validation.exists).toBe(false);
-    expect(deletes).toEqual(["C:/worktrees/web-task/src/obsolete.ts"]);
+    expect(deletes).toEqual([
+      {
+        path: "C:/worktrees/web-task/src/obsolete.ts",
+        expectedRevision: "mock-read-revision",
+      },
+    ]);
   });
 
   it("rejects delete on an explicitly targeted read-only project", async () => {
@@ -1754,6 +1988,180 @@ describe("workspaceToolExecutor helpers", () => {
     expect(result).toContain("old_text matched 2 locations");
     expect(result).toContain("replace_all");
     expect(writes).toEqual([]);
+  });
+
+  it("uses the revision read by edit when the caller omits expected_revision", async () => {
+    let content = "export const value = 1;\n";
+    const expectedRevisions: Array<string | null | undefined> = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => ({
+          content,
+          language: "typescript",
+          is_binary: false,
+          size: content.length,
+          encoding: "utf-8",
+          revision: content.includes("2") ? "updated-revision" : "read-revision",
+        }),
+        fsWriteFile: async ({
+          content: nextContent,
+          expectedRevision,
+        }: {
+          content: string;
+          expectedRevision?: string | null;
+        }) => {
+          expectedRevisions.push(expectedRevision);
+          content = nextContent;
+          return {
+            path: "src/value.ts",
+            bytes_written: nextContent.length,
+            created: false,
+            revision: "updated-revision",
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "edit",
+      {
+        path: "src/value.ts",
+        old_text: "value = 1",
+        new_text: "value = 2",
+      },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async () => undefined,
+      },
+    );
+
+    expect(JSON.parse(result || "{}").ok).toBe(true);
+    expect(expectedRevisions).toEqual(["read-revision"]);
+  });
+
+  it("rejects an unknown explicit project selector instead of using the focused project", async () => {
+    const writes: string[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        fsWriteFile: async ({ path }: { path: string }) => {
+          writes.push(path);
+          return { path, bytes_written: 0, created: true };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    await expect(
+      executeWorkspaceTool(
+        "write",
+        { path: "src/config.ts", project_id: "weeb", content: "value" },
+        "Implement",
+        {
+          focusedProjectId: "web",
+          virtualRootEnabled: true,
+          projectMounts: [
+            {
+              projectId: "api",
+              mountName: "api",
+              workspacePath: "C:/dev/macro-api",
+            },
+            {
+              projectId: "web",
+              mountName: "web",
+              workspacePath: "C:/dev/macro-web",
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow('Unknown project selector "weeb"');
+    expect(writes).toEqual([]);
+  });
+
+  it("rolls back a write when its post-write validation read fails", async () => {
+    let content = "before\n";
+    let reads = 0;
+    const checkpoints: unknown[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => {
+          reads += 1;
+          if (reads === 2) throw new Error("validation read failed");
+          return {
+            content,
+            language: "text",
+            is_binary: false,
+            size: content.length,
+            encoding: "utf-8",
+            revision: reads === 1 ? "before-revision" : "restored-revision",
+          };
+        },
+        fsWriteFile: async ({ content: nextContent }: { content: string }) => {
+          content = nextContent;
+          return {
+            path: "src/value.txt",
+            bytes_written: nextContent.length,
+            created: false,
+            revision: "applied-revision",
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "src/value.txt", content: "after\n" },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async (checkpoint: unknown) =>
+          checkpoints.push(checkpoint),
+      },
+    );
+
+    expect(result).toContain("mutation was reverted");
+    expect(result).toContain("validation read failed");
+    expect(content).toBe("before\n");
+    expect(checkpoints).toEqual([]);
+  });
+
+  it("refuses remote mutations when recoverable checkpoints are required", async () => {
+    let remoteExecutions = 0;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      projectGroups: [],
+      standaloneProjects: [],
+      tauriModule: {
+        isTauriAvailable: () => false,
+      },
+      remoteKernelModule: {
+        canUseRemoteKernel: () => true,
+        executeRemoteWorkspaceTool: async () => {
+          remoteExecutions += 1;
+          return "remote write";
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "src/value.ts", content: "value" },
+      "Implement",
+      {
+        workspacePath: "/remote/workspace",
+        onCodeCheckpoint: async () => undefined,
+      },
+    );
+
+    expect(result).toContain("remote kernel cannot provide the before/after snapshots");
+    expect(remoteExecutions).toBe(0);
   });
 
   it("rejects a stale edit before writing or publishing a checkpoint", async () => {

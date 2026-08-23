@@ -735,6 +735,8 @@ Le pont Copilot doit relayer au frontend tous les outils du workspace ainsi que 
 
 Un outil agent ne doit jamais sortir du projet sélectionné par un chemin absolu, un composant parent ou un lien symbolique. Cette règle vaut aussi pour les racines virtuelles multi-projets et WSL. Lorsqu'un appel sélectionne explicitement un projet, ce projet doit être transmis au backend même après le retrait de `project_id` ou du préfixe de montage dans les arguments routés.
 
+Une mutation qui repose sur une lecture préparatoire doit réutiliser la révision observée lorsque l'agent n'en fournit pas. La relecture de validation et l'enregistrement du checkpoint font partie de la même opération récupérable : leur échec restaure toutes les cibles encore restaurables sans écraser une modification externe concurrente. Un noyau distant qui ne sait pas produire les instantanés avant/après nécessaires doit refuser la mutation lorsqu'un checkpoint est attendu.
+
 Une limite de sécurité interne atteinte pendant l'énumération doit produire une erreur récupérable qui invite à réduire le périmètre. Macro ne doit jamais convertir une énumération interne incomplète en `total_count`, `scan_complete` ou `total_is_exact` affirmatif.
 
 Les commandes lancées par les outils terminal doivent borner leur durée, leur mémoire de sortie et le temps consacré au drainage final de stdout/stderr. Une sortie tronquée conserve un début et une fin identifiables, avec le volume omis. L'annulation de la génération doit terminer le groupe de processus et ses descendants, y compris lorsqu'elle arrive pendant le démarrage, sans interrompre les terminaux interactifs ouverts par l'utilisateur.
