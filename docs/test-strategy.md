@@ -29,8 +29,8 @@ Prefer the lowest level that proves the behavior:
    network, filesystem, database, or Tauri boundaries.
 3. Component tests for user-visible state, interactions, accessibility, and
    coordination between already-tested domain modules.
-4. A small future end-to-end layer for critical cross-process journeys that
-   cannot be proved below the application boundary.
+4. A small end-to-end layer for critical cross-process journeys that cannot be
+   proved below the application boundary.
 
 Do not add tests that only assert a mock was rendered, repeat a dependency's own
 tests, mirror production logic inside a fake, or wait for arbitrary wall-clock
