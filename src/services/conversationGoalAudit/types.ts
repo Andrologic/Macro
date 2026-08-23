@@ -48,6 +48,7 @@ export interface ApplyGoalAuditVerdictInput {
   expectedRevision: number;
   verdict: ConversationGoalVerdict;
   runId: string;
+  signal: AbortSignal;
 }
 
 export type GoalAuditVerdictApplyResult = "applied" | "stale" | "missing";
@@ -65,6 +66,7 @@ export type GoalAuditErrorCode =
   | "POLICY_INVARIANT_VIOLATION"
   | "CHILD_EXECUTION_FAILED"
   | "INVALID_AUDITOR_VERDICT"
+  | "JOURNAL_REGISTRATION_FAILED"
   | "VERDICT_APPLICATION_FAILED";
 
 export interface GoalAuditError {
