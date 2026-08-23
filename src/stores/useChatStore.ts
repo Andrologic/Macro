@@ -92,10 +92,6 @@ import {
   isToolAllowedForImplementAgent,
 } from "../services/toolModePolicy";
 import {
-  executeWorkspaceTool,
-  resolveExplicitMutatingToolProjectTargets,
-} from "../services/workspaceToolExecutor";
-import {
   MODE_PROMPT_KEYS_BY_MODE,
   loadPreference,
   PREF_KEYS,
@@ -1719,6 +1715,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectedTaskId?: string | null;
     toolName: string;
     args: Record<string, unknown>;
+    resolveExplicitMutatingToolProjectTargets: (
+      toolName: string,
+      args: Record<string, unknown>,
+      options: {
+        workspacePath?: string | null;
+        defaultWorkspacePath?: string | null;
+        workspacePathsByProjectId?: Record<string, string>;
+        projectId?: string | null;
+        focusedProjectId?: string | null;
+        groupId?: string | null;
+        projectMounts?: ProjectExecutionContext["projectMounts"];
+        virtualRootEnabled?: boolean;
+      },
+    ) => string[];
   }): {
     task: ImplementTask | undefined;
     projectIds: string[];
@@ -1729,7 +1739,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.executionContext,
       params.selectedTaskId,
     );
-    const explicitProjectTargets = resolveExplicitMutatingToolProjectTargets(
+    const explicitProjectTargets = params.resolveExplicitMutatingToolProjectTargets(
       params.toolName,
       params.args,
       {
@@ -5474,6 +5484,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       normalizedToolName === "ast_grep" ||
       normalizedToolName.startsWith("git_")
     ) {
+      const workspaceToolExecutor = await import(
+        "../services/workspaceToolExecutor"
+      );
       const mode = modeAtSend;
       let promotedProjectIdsForTool: string[] = [];
 
@@ -5484,6 +5497,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectedTaskId: taskIdAtSend,
           toolName: normalizedToolName,
           args,
+          resolveExplicitMutatingToolProjectTargets:
+            workspaceToolExecutor.resolveExplicitMutatingToolProjectTargets,
         });
 
         if (promotionRequest.unavailableResult) {
@@ -5534,27 +5549,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
         })}\n${result}`;
       };
 
-      const result = await executeWorkspaceTool(normalizedToolName, args, mode, {
-        signal,
-        workspacePath: executionContext.workspacePath,
-        defaultWorkspacePath: executionContext.defaultWorkspacePath,
-        projectId: executionContext.projectId,
-        focusedProjectId: executionContext.focusedProjectId,
-        groupId: executionContext.groupId,
-        projectMounts: executionContext.projectMounts,
-        virtualRootEnabled: executionContext.virtualRootEnabled,
-        workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
-        onCodeCheckpoint: async (checkpoint) => {
-          await recordAgentCodeCheckpoint({
-            conversationId,
-            turnId: assistantTurnId,
-            assistantMessageId,
-            toolCallId,
-            toolName: checkpoint.toolName,
-            files: checkpoint.files,
-          });
+      const result = await workspaceToolExecutor.executeWorkspaceTool(
+        normalizedToolName,
+        args,
+        mode,
+        {
+          signal,
+          workspacePath: executionContext.workspacePath,
+          defaultWorkspacePath: executionContext.defaultWorkspacePath,
+          projectId: executionContext.projectId,
+          focusedProjectId: executionContext.focusedProjectId,
+          groupId: executionContext.groupId,
+          projectMounts: executionContext.projectMounts,
+          virtualRootEnabled: executionContext.virtualRootEnabled,
+          workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
+          onCodeCheckpoint: async (checkpoint) => {
+            await recordAgentCodeCheckpoint({
+              conversationId,
+              turnId: assistantTurnId,
+              assistantMessageId,
+              toolCallId,
+              toolName: checkpoint.toolName,
+              files: checkpoint.files,
+            });
+          },
         },
-      });
+      );
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
