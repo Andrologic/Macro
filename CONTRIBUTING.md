@@ -42,6 +42,9 @@ successful result for the exact commit range:
 bun run ci:pre-push
 ```
 
+See [docs/test-strategy.md](docs/test-strategy.md) for test scope, coverage
+interpretation, maintenance rules, and the current refactoring sequence.
+
 The gate compares the complete pull request range against `origin/develop` for
 feature branches and against `origin/main` for release and hotfix branches. It
 uses the same classifier as GitHub Actions. Documentation stays lightweight;
