@@ -339,7 +339,7 @@ pub async fn cancel_agent_run(
     load_after_transition(pool, id).await
 }
 
-pub async fn time_out_agent_run(
+pub async fn timeout_agent_run(
     pool: &SqlitePool,
     id: &str,
     input: TimeOutAgentRunInput,
@@ -522,7 +522,7 @@ mod tests {
         start_agent_run(&pool, &timed_out.id, None)
             .await
             .expect("start timed out run");
-        let timed_out = time_out_agent_run(&pool, &timed_out.id, TimeOutAgentRunInput::default())
+        let timed_out = timeout_agent_run(&pool, &timed_out.id, TimeOutAgentRunInput::default())
             .await
             .expect("time out run");
         assert_eq!(timed_out.status, AgentRunStatus::TimedOut);
@@ -598,6 +598,11 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert!(sqlx::query("UPDATE agent_runs SET depth = 0 WHERE id = ?")
+            .bind(&linked.id)
+            .execute(&pool)
+            .await
+            .is_err());
         assert!(
             sqlx::query("UPDATE agent_runs SET result_text = 'illegal' WHERE id = ?")
                 .bind(&linked.id)
@@ -631,7 +636,8 @@ mod tests {
 
     #[tokio::test]
     async fn reconciliation_is_selective_idempotent_and_resumable() {
-        let (_temp_dir, pool) = test_pool().await;
+        let (temp_dir, pool) = test_pool().await;
+        let db_path = temp_dir.path().join("macro.db");
         let parent = conversation(&pool, "Parent").await;
         let queued = queued_run(&pool, &parent, "queued").await;
         let running = queued_run(&pool, &parent, "running").await;
@@ -639,12 +645,8 @@ mod tests {
             .await
             .expect("start running run");
 
-        assert_eq!(
-            reconcile_active_agent_runs_after_restart(&pool)
-                .await
-                .unwrap(),
-            1
-        );
+        drop(pool);
+        let pool = create_pool(&db_path).await.expect("reopen after restart");
         assert_eq!(
             reconcile_active_agent_runs_after_restart(&pool)
                 .await
