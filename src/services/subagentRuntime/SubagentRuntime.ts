@@ -141,7 +141,7 @@ export class SubagentRuntime<
   }
 
   run(request: SubagentRunRequest<TInput>): SubagentRunHandle<TStructuredOutput> {
-    const runId = (this.#options.idFactory ?? defaultIdFactory)();
+    const runId = request.runId ?? (this.#options.idFactory ?? defaultIdFactory)();
     if (!runId.trim() || this.#runs.has(runId)) {
       throw new Error(`Subagent run id must be unique and non-empty: ${runId}`);
     }

@@ -154,6 +154,23 @@ const makeRuntime = (options?: {
 };
 
 describe("SubagentRuntime", () => {
+  it("accepts a caller-owned run id for durable metadata correlation", async () => {
+    const { executor, runtime } = makeRuntime();
+    const handle = runtime.run({
+      runId: "durable-run-1",
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "durable" },
+    });
+    executor.complete("durable");
+
+    expect(handle.runId).toBe("durable-run-1");
+    expect(await handle.result).toMatchObject({
+      runId: "durable-run-1",
+      status: "completed",
+    });
+  });
+
   it("returns a stable id, structured output, metrics, and observable progress", async () => {
     const { executor, runtime } = makeRuntime();
     const observedKinds: string[] = [];
