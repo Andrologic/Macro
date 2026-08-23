@@ -687,6 +687,10 @@ Les limites partagées sont les suivantes :
 - `git_log` : 50 commits par défaut, 200 au maximum ;
 - `git_diff` : 256 Kio de patch au maximum et 64 lignes de contexte par hunk.
 
+Les lectures ont aussi une durée maximale : 5 secondes pour `list`, `read` et `glob`, 30 secondes pour `grep`. Le frontend associe un identifiant opaque à chaque exécution interruptible. Sur desktop, l'annulation d'une génération déclenche une commande Tauri dédiée qui réveille le travail enregistré et l'abandonne avec le code stable `TOOL_EXECUTION_CANCELLED`; l'expiration utilise `TOOL_EXECUTION_TIMEOUT`. Le transport distant combine le même `AbortSignal` avec une échéance propre à l'outil, et le fallback TypeScript vérifie l'annulation et l'échéance entre ses opérations asynchrones et pendant ses boucles longues.
+
+L'annulation active reste volontairement limitée aux outils de lecture `list`, `read`, `glob` et `grep`. Macro n'interrompt pas une mutation de fichier ou de dépôt au milieu de son application : leur cohérence repose sur les préconditions de révision, les écritures atomiques et les rollbacks décrits plus haut.
+
 `git_diff` accepte les modes `patch`, `stat` et `name_only`. Le mode patch utilise un collecteur tête-fin borné : une troncature conserve les premiers 75 % et les derniers 25 % de la capacité, insère un marqueur avec le nombre exact d'octets omis et devient une erreur si `require_complete=true`. Sous WSL, stdout et stderr sont drainés en continu dans des collecteurs bornés ; la limite s'applique donc à la mémoire capturée pendant l'exécution et pas seulement à la chaîne renvoyée. Les vues de synthèse doivent être privilégiées avant un patch portant sur une modification large.
 
 `grep` ignore les fichiers binaires et les fichiers de plus de 4 Mio, puis rend ces omissions visibles dans `skipped_files`. Le pont Copilot applique la même liste de répertoires et fichiers ignorés que le backend (`.git`, `node_modules`, `target`, sorties de build et caches usuels). Les résultats sont triés selon les octets UTF-8 sur les chemins Rust, TypeScript et Copilot afin que le découpage en pages reste identique.

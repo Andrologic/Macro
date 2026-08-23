@@ -48,14 +48,100 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use tauri::State;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 use tokio::time::{timeout, Duration};
 
 const DB_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 static PROVIDER_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static TOOL_EXECUTION_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Arc<ToolCancellation>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct ToolCancellation {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl ToolCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    async fn cancelled(&self) {
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        loop {
+            self.notify.notified().await;
+            if self.cancelled.load(Ordering::Acquire) {
+                return;
+            }
+        }
+    }
+}
+
+struct ToolExecutionGuard {
+    execution_id: String,
+    cancellation: Arc<ToolCancellation>,
+}
+
+impl Drop for ToolExecutionGuard {
+    fn drop(&mut self) {
+        let mut cancellations = TOOL_EXECUTION_CANCELLATIONS
+            .lock()
+            .expect("tool cancellation registry");
+        if cancellations
+            .get(&self.execution_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
+        {
+            cancellations.remove(&self.execution_id);
+        }
+    }
+}
+
+fn register_tool_execution(
+    execution_id: Option<&str>,
+) -> Option<(Arc<ToolCancellation>, ToolExecutionGuard)> {
+    let execution_id = execution_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let cancellation = {
+        let mut cancellations = TOOL_EXECUTION_CANCELLATIONS
+            .lock()
+            .expect("tool cancellation registry");
+        cancellations
+            .entry(execution_id.clone())
+            .or_insert_with(|| Arc::new(ToolCancellation::new()))
+            .clone()
+    };
+    let guard = ToolExecutionGuard {
+        execution_id,
+        cancellation: cancellation.clone(),
+    };
+    Some((cancellation, guard))
+}
+
+fn tool_execution_timeout(tool_id: &str) -> Option<Duration> {
+    match tool_id {
+        "list" => Some(Duration::from_millis(tool_output::LIST_TIMEOUT_MILLIS)),
+        "read" => Some(Duration::from_millis(tool_output::READ_TIMEOUT_MILLIS)),
+        "glob" => Some(Duration::from_millis(tool_output::GLOB_TIMEOUT_MILLIS)),
+        "grep" => Some(Duration::from_millis(tool_output::GREP_TIMEOUT_MILLIS)),
+        _ => None,
+    }
+}
 
 fn provider_mutation_lock(provider_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     PROVIDER_MUTATION_LOCKS
@@ -150,9 +236,16 @@ pub struct CommandError {
 
 impl CommandError {
     pub fn code(&self) -> Option<&'static str> {
-        self.message
-            .contains("Revision conflict:")
-            .then_some("REVISION_CONFLICT")
+        if self.message.contains("Revision conflict:") {
+            return Some("REVISION_CONFLICT");
+        }
+        if self.message.starts_with("Tool execution cancelled:") {
+            return Some("TOOL_EXECUTION_CANCELLED");
+        }
+        if self.message.starts_with("Tool execution timed out") {
+            return Some("TOOL_EXECUTION_TIMEOUT");
+        }
+        None
     }
 }
 
@@ -1323,6 +1416,112 @@ fn format_bounded_git_log(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_workspace_tool(
+    default_workspace: PathBuf,
+    metadata_workspace: PathBuf,
+    git_state: GitState,
+    mode: String,
+    tool_id: String,
+    args: Value,
+    workspace_path: Option<String>,
+    workspace_scope: Option<String>,
+    project_mounts: Option<Vec<WorkspaceProjectMount>>,
+    virtual_root_enabled: Option<bool>,
+    focused_project_id: Option<String>,
+) -> CommandResult<String> {
+    execute_workspace_tool_controlled(
+        default_workspace,
+        metadata_workspace,
+        git_state,
+        mode,
+        tool_id,
+        args,
+        workspace_path,
+        workspace_scope,
+        project_mounts,
+        virtual_root_enabled,
+        focused_project_id,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_workspace_tool_controlled(
+    default_workspace: PathBuf,
+    metadata_workspace: PathBuf,
+    git_state: GitState,
+    mode: String,
+    tool_id: String,
+    args: Value,
+    workspace_path: Option<String>,
+    workspace_scope: Option<String>,
+    project_mounts: Option<Vec<WorkspaceProjectMount>>,
+    virtual_root_enabled: Option<bool>,
+    focused_project_id: Option<String>,
+    execution_id: Option<String>,
+) -> CommandResult<String> {
+    let Some(timeout_duration) = tool_execution_timeout(tool_id.trim()) else {
+        return execute_workspace_tool_inner(
+            default_workspace,
+            metadata_workspace,
+            git_state,
+            mode,
+            tool_id,
+            args,
+            workspace_path,
+            workspace_scope,
+            project_mounts,
+            virtual_root_enabled,
+            focused_project_id,
+        )
+        .await;
+    };
+    let registration = register_tool_execution(execution_id.as_deref());
+    let cancellation = registration
+        .as_ref()
+        .map(|(cancellation, _)| cancellation.clone());
+    let _guard = registration.map(|(_, guard)| guard);
+    let tool_label = tool_id.trim().to_string();
+    let execution = execute_workspace_tool_inner(
+        default_workspace,
+        metadata_workspace,
+        git_state,
+        mode,
+        tool_id,
+        args,
+        workspace_path,
+        workspace_scope,
+        project_mounts,
+        virtual_root_enabled,
+        focused_project_id,
+    );
+    tokio::pin!(execution);
+
+    if let Some(cancellation) = cancellation {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(command_error(format!(
+                "Tool execution cancelled: {tool_label}."
+            ))),
+            _ = tokio::time::sleep(timeout_duration) => Err(command_error(format!(
+                "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                timeout_duration.as_secs()
+            ))),
+            result = &mut execution => result,
+        }
+    } else {
+        match timeout(timeout_duration, &mut execution).await {
+            Ok(result) => result,
+            Err(_) => Err(command_error(format!(
+                "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                timeout_duration.as_secs()
+            ))),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_workspace_tool_inner(
     default_workspace: PathBuf,
     metadata_workspace: PathBuf,
     git_state: GitState,
@@ -2770,11 +2969,12 @@ pub async fn tool_execute_workspace(
     project_mounts: Option<Vec<WorkspaceProjectMount>>,
     virtual_root_enabled: Option<bool>,
     focused_project_id: Option<String>,
+    execution_id: Option<String>,
 ) -> CommandResult<String> {
     let workspace = workspace_root.inner().read().await.clone();
     let metadata_workspace = workspace_metadata_root.inner().0.read().await.clone();
     let git_state = git_state.inner().clone();
-    execute_workspace_tool(
+    execute_workspace_tool_controlled(
         workspace,
         metadata_workspace,
         git_state,
@@ -2786,8 +2986,28 @@ pub async fn tool_execute_workspace(
         project_mounts,
         virtual_root_enabled,
         focused_project_id,
+        execution_id,
     )
     .await
+}
+
+#[tauri::command]
+pub fn tool_cancel_workspace(execution_id: String) -> bool {
+    let execution_id = execution_id.trim();
+    if execution_id.is_empty() {
+        return false;
+    }
+    let cancellation = TOOL_EXECUTION_CANCELLATIONS
+        .lock()
+        .expect("tool cancellation registry")
+        .get(execution_id)
+        .cloned();
+    if let Some(cancellation) = cancellation {
+        cancellation.cancel();
+        true
+    } else {
+        false
+    }
 }
 
 // ============ CONVERSATIONS ============
@@ -4018,7 +4238,8 @@ mod tests {
         apply_patch_hunks_to_content, apply_provider_api_key_change, command_error,
         commit_pending_file_changes_atomically, exact_edit_match_error, execute_workspace_tool,
         format_bounded_git_status, parse_apply_patch, reconcile_provider_secret_metadata,
-        resolve_requested_workspace, resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation,
+        register_tool_execution, resolve_requested_workspace, resolve_workspace_for_tool_path,
+        tool_cancel_workspace, tool_execution_timeout, DbPool, ParsedPatchOperation,
         PendingFileChange,
     };
     use crate::commands::fs::content_revision;
@@ -4030,6 +4251,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::{Mutex, MutexGuard};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -4068,6 +4290,38 @@ mod tests {
                 "message": "Failed to edit guarded.txt: Revision conflict: stale content"
             })
         );
+    }
+
+    #[test]
+    fn command_error_serializes_tool_interruptions_with_stable_codes() {
+        let cancelled = command_error("Tool execution cancelled: grep.");
+        assert_eq!(cancelled.code(), Some("TOOL_EXECUTION_CANCELLED"));
+        let timed_out =
+            command_error("Tool execution timed out after 30 seconds: grep. Narrow the query.");
+        assert_eq!(timed_out.code(), Some("TOOL_EXECUTION_TIMEOUT"));
+    }
+
+    #[tokio::test]
+    async fn tool_execution_cancellation_reaches_the_registered_backend_work() {
+        let execution_id = "workspace-tool-cancellation-test";
+        let (cancellation, guard) =
+            register_tool_execution(Some(execution_id)).expect("register cancellation");
+        assert!(tool_cancel_workspace(execution_id.to_string()));
+        tokio::time::timeout(Duration::from_millis(100), cancellation.cancelled())
+            .await
+            .expect("cancellation notification");
+        drop(guard);
+        assert!(!tool_cancel_workspace(execution_id.to_string()));
+    }
+
+    #[test]
+    fn search_tools_have_hard_backend_deadlines() {
+        assert_eq!(tool_execution_timeout("glob"), Some(Duration::from_secs(5)));
+        assert_eq!(
+            tool_execution_timeout("grep"),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(tool_execution_timeout("git_diff"), None);
     }
 
     #[test]

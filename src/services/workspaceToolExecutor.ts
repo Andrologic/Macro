@@ -26,6 +26,7 @@ import {
   TOOL_OUTPUT_LIMITS,
   truncateGrepLine,
 } from "../shared/toolOutputLimits";
+import { createCombinedAbortSignal } from "../utils/abortSignals";
 
 type ToolArgs = Record<string, unknown>;
 const isGitTool = (toolName: string): boolean => toolName.startsWith("git_");
@@ -45,6 +46,16 @@ const gitMutatingToolIds = new Set([
   "git_stash",
 ]);
 const gitBackendToolIds = new Set([...gitReadToolIds, ...gitMutatingToolIds]);
+const interruptibleWorkspaceToolIds = new Set(["list", "read", "glob", "grep"]);
+let workspaceToolExecutionCounter = 0;
+
+const createWorkspaceToolExecutionId = (): string => {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  workspaceToolExecutionCounter += 1;
+  return `workspace-tool-${Date.now()}-${workspaceToolExecutionCounter}`;
+};
 
 export interface ExecuteWorkspaceToolOptions {
   /** Best-effort cancellation fence for callers that own a generation. */
@@ -1502,13 +1513,16 @@ const readAllCandidateFiles = async (
   includeHidden = false,
   mode: AppMode,
   workspacePath?: string | null,
+  assertActive?: () => void,
 ) => {
+  assertActive?.();
   const entries = await tauriIpc.fsListDir({
     path: resolveDirectPath(".", mode, workspacePath),
     recursive: true,
     includeHidden,
     allowOutsideWorkspace: Boolean(normalizeWorkspacePath(workspacePath)),
   });
+  assertActive?.();
   return entries.filter((entry) => entry.kind === "file");
 };
 
@@ -1744,6 +1758,27 @@ export const executeWorkspaceTool = async (
   if (options.signal?.aborted) {
     return "Tool execution aborted";
   }
+  const timeoutMs =
+    toolName === "list"
+      ? TOOL_OUTPUT_LIMITS.list.timeoutMs
+      : toolName === "read"
+        ? TOOL_OUTPUT_LIMITS.read.timeoutMs
+        : toolName === "glob"
+          ? TOOL_OUTPUT_LIMITS.glob.timeoutMs
+          : toolName === "grep"
+            ? TOOL_OUTPUT_LIMITS.grep.timeoutMs
+            : null;
+  const executionStartedAt = Date.now();
+  const assertToolExecutionActive = (): void => {
+    if (options.signal?.aborted) {
+      throw new Error("Tool execution aborted");
+    }
+    if (timeoutMs !== null && Date.now() - executionStartedAt >= timeoutMs) {
+      throw new Error(
+        `Tool execution timed out after ${Math.floor(timeoutMs / 1_000)} seconds: ${toolName}. Narrow the path, pattern, or query before retrying.`,
+      );
+    }
+  };
   const useTauri = tauriIpc.isTauriAvailable();
   const useRemoteKernel = !useTauri && canUseRemoteKernel();
   const candidates = getProjectWorkspaceCandidates(options);
@@ -1796,7 +1831,16 @@ export const executeWorkspaceTool = async (
     backendArgs: ToolArgs,
   ): Promise<string> => {
     if (useTauri) {
-      return tauriIpc.executeWorkspaceTool({
+      const executionId = interruptibleWorkspaceToolIds.has(backendToolName)
+        ? createWorkspaceToolExecutionId()
+        : undefined;
+      const abortListener =
+        executionId && options.signal
+          ? () => {
+              void tauriIpc.cancelWorkspaceTool(executionId).catch(() => false);
+            }
+          : undefined;
+      const executionPromise = tauriIpc.executeWorkspaceTool({
         mode,
         toolId: backendToolName,
         args: backendArgs,
@@ -1805,19 +1849,52 @@ export const executeWorkspaceTool = async (
         projectMounts: options.projectMounts,
         virtualRootEnabled,
         focusedProjectId,
+        executionId,
       });
+      if (abortListener) {
+        options.signal?.addEventListener("abort", abortListener, { once: true });
+        if (options.signal?.aborted) abortListener();
+      }
+      try {
+        return await executionPromise;
+      } finally {
+        if (abortListener) {
+          options.signal?.removeEventListener("abort", abortListener);
+        }
+      }
     }
 
-    return executeRemoteWorkspaceTool({
-      mode,
-      toolId: backendToolName,
-      args: backendArgs,
-      workspacePath: effectiveWorkspacePath,
-      workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-      projectMounts: options.projectMounts,
-      virtualRootEnabled,
-      focusedProjectId,
-    });
+    const deadlineController = timeoutMs === null ? null : new AbortController();
+    const deadlineId = deadlineController && timeoutMs !== null
+      ? setTimeout(() => deadlineController.abort(), timeoutMs)
+      : null;
+    const combinedSignal = createCombinedAbortSignal([
+      options.signal,
+      deadlineController?.signal,
+    ]);
+    try {
+      return await executeRemoteWorkspaceTool({
+        mode,
+        toolId: backendToolName,
+        args: backendArgs,
+        workspacePath: effectiveWorkspacePath,
+        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        projectMounts: options.projectMounts,
+        virtualRootEnabled,
+        focusedProjectId,
+        signal: combinedSignal.signal,
+      });
+    } catch (error) {
+      if (deadlineController?.signal.aborted && !options.signal?.aborted) {
+        throw new Error(
+          `Tool execution timed out after ${Math.floor((timeoutMs ?? 0) / 1_000)} seconds: ${toolName}. Narrow the path, pattern, or query before retrying.`,
+        );
+      }
+      throw error;
+    } finally {
+      if (deadlineId !== null) clearTimeout(deadlineId);
+      combinedSignal.dispose();
+    }
   };
 
   const validateBackendTool = async (
@@ -2020,6 +2097,7 @@ export const executeWorkspaceTool = async (
           allowOutsideWorkspace: true,
           workspacePath: target.candidate.workspacePath,
         });
+        assertToolExecutionActive();
         const normalizedEntries = entries
           .map((entry) =>
             normalizeDirEntryForVirtualRoot(entry, target.candidate!, mode),
@@ -2086,6 +2164,7 @@ export const executeWorkspaceTool = async (
           allowOutsideWorkspace: true,
           workspacePath: target.candidate.workspacePath,
         });
+        assertToolExecutionActive();
 
         if (result.is_binary) {
           return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: ${target.candidate.id}\nMOUNT: ${target.candidate.mountName}\nBINARY: true\nSIZE: ${result.size}\nENCODING: ${result.encoding}\nREVISION: ${result.revision ?? "unavailable"}\nCONTENT_OMITTED: binary`;
@@ -2740,13 +2819,16 @@ export const executeWorkspaceTool = async (
         const matches = new Set<string>();
 
         for (const candidate of candidates) {
+          assertToolExecutionActive();
           if (!candidate.workspacePath) continue;
           const files = await readAllCandidateFiles(
             includeHidden,
             mode,
             candidate.workspacePath,
+            assertToolExecutionActive,
           );
-          files.forEach((entry) => {
+          for (const entry of files) {
+            assertToolExecutionActive();
             const virtualPath = toVirtualPath(candidate, entry.relative_path);
             if (
               pathMatchesGlob(virtualPath, pattern) ||
@@ -2754,7 +2836,7 @@ export const executeWorkspaceTool = async (
             ) {
               matches.add(virtualPath);
             }
-          });
+          }
         }
 
         const sortedMatches = Array.from(matches).sort(compareToolPaths);
@@ -2834,16 +2916,19 @@ export const executeWorkspaceTool = async (
         for (const candidate of [...candidates].sort((left, right) =>
           compareToolPaths(left.mountName, right.mountName),
         )) {
+          assertToolExecutionActive();
           if (!candidate.workspacePath) continue;
           const files = await readAllCandidateFiles(
             includeHidden,
             mode,
             candidate.workspacePath,
+            assertToolExecutionActive,
           );
 
           for (const file of files.sort((left, right) =>
             compareToolPaths(left.relative_path, right.relative_path),
           )) {
+            assertToolExecutionActive();
             const virtualPath = toVirtualPath(candidate, file.relative_path);
             if (
               includePattern &&
@@ -2866,6 +2951,7 @@ export const executeWorkspaceTool = async (
               allowOutsideWorkspace: true,
               workspacePath: candidate.workspacePath,
             });
+            assertToolExecutionActive();
             if (content.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
               skippedTooLarge += 1;
               continue;
@@ -2878,6 +2964,7 @@ export const executeWorkspaceTool = async (
 
             const lines = content.content.split("\n");
             for (let index = 0; index < lines.length; index += 1) {
+              if (index % 256 === 0) assertToolExecutionActive();
               const line = lines[index];
               const match = matcher
                 ? matcher.test(line)
@@ -3734,6 +3821,7 @@ export const executeWorkspaceTool = async (
         maxDepth,
         allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
       });
+      assertToolExecutionActive();
       const sortedEntries = entries.sort((left, right) =>
         compareToolPaths(left.relative_path, right.relative_path),
       );
@@ -3772,6 +3860,7 @@ export const executeWorkspaceTool = async (
           path,
           allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
         });
+        assertToolExecutionActive();
       } catch (readError) {
         if (!effectiveWorkspacePath || isAbsolutePath(inputPath)) {
           throw readError;
@@ -4406,11 +4495,16 @@ export const executeWorkspaceTool = async (
         includeHidden,
         mode,
         effectiveWorkspacePath,
+        assertToolExecutionActive,
       );
-      const matches = files
-        .map((entry) => entry.relative_path)
-        .filter((relativePath) => pathMatchesGlob(relativePath, pattern))
-        .sort(compareToolPaths);
+      const matches: string[] = [];
+      for (const entry of files) {
+        assertToolExecutionActive();
+        if (pathMatchesGlob(entry.relative_path, pattern)) {
+          matches.push(entry.relative_path);
+        }
+      }
+      matches.sort(compareToolPaths);
       const cursorScope = `glob\0${effectiveWorkspacePath ?? ""}\0${pattern}\0${includeHidden}`;
       const page = paginateToolItems(
         matches,
@@ -4445,6 +4539,7 @@ export const executeWorkspaceTool = async (
         includeHidden,
         mode,
         effectiveWorkspacePath,
+        assertToolExecutionActive,
       )).sort((left, right) =>
         compareToolPaths(left.relative_path, right.relative_path),
       );
@@ -4475,6 +4570,7 @@ export const executeWorkspaceTool = async (
       let columnTruncatedMatches = 0;
 
       for (const file of files) {
+        assertToolExecutionActive();
         if (
           includePattern &&
           !pathMatchesGlob(file.relative_path, includePattern)
@@ -4495,6 +4591,7 @@ export const executeWorkspaceTool = async (
           ),
           allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
         });
+        assertToolExecutionActive();
         if (content.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
           skippedTooLarge += 1;
           continue;
@@ -4507,6 +4604,7 @@ export const executeWorkspaceTool = async (
 
         const lines = content.content.split("\n");
         for (let index = 0; index < lines.length; index += 1) {
+          if (index % 256 === 0) assertToolExecutionActive();
           const line = lines[index];
           const match = matcher
             ? matcher.test(line)

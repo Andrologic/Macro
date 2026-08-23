@@ -408,7 +408,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "list",
-    "List files and directories under a path in the local workspace. Results are sorted, bounded, and resumable with next_cursor. In a group, the visible root can be virtual and contain only project mounts such as api/ or web/.",
+    `List files and directories under a path in the local workspace. Results are sorted, bounded, resumable with next_cursor, cancellable, and limited to ${TOOL_OUTPUT_LIMITS.list.timeoutMs / 1_000} seconds. Narrow the path or recursion depth after a timeout. In a group, the visible root can be virtual and contain only project mounts such as api/ or web/.`,
     {
       type: "object",
       properties: {
@@ -449,7 +449,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "read",
-    "Read a bounded, line-numbered page from a file in the local execution workspace. The response includes a SHA-256 revision, explicit truncation metadata, and next_cursor when more content remains. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.",
+    `Read a bounded, line-numbered page from a file in the local execution workspace. The response includes a SHA-256 revision, explicit truncation metadata, and next_cursor when more content remains. Reads are cancellable and limited to ${TOOL_OUTPUT_LIMITS.read.timeoutMs / 1_000} seconds. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.`,
     {
       type: "object",
       properties: {
@@ -583,7 +583,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "glob",
-    "Find files in the current execution workspace matching a glob pattern. Results are sorted, bounded, and resumable with next_cursor. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
+    `Find files in the current execution workspace matching a glob pattern. Results are sorted, bounded, resumable with next_cursor, cancellable, and limited to ${TOOL_OUTPUT_LIMITS.glob.timeoutMs / 1_000} seconds. Narrow the pattern after a timeout. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.`,
     {
       type: "object",
       properties: {
@@ -612,7 +612,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "grep",
-    "Search text in files under the current execution workspace. Results are bounded, long matching lines are clipped explicitly, binary and oversized files are skipped explicitly, and next_cursor resumes the same query. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.",
+    `Search text in files under the current execution workspace. Results are bounded, long matching lines are clipped explicitly, binary and oversized files are skipped explicitly, and next_cursor resumes the same query. Searches are cancellable and limited to ${TOOL_OUTPUT_LIMITS.grep.timeoutMs / 1_000} seconds; narrow the path, query, or include_pattern after a timeout. In a virtual group root, results are returned as mountName/path such as api/src/server.ts.`,
     {
       type: "object",
       properties: {

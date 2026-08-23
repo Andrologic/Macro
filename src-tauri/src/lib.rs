@@ -479,6 +479,7 @@ pub fn run() {
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
+            commands::tool_cancel_workspace,
             commands::mcp::mcp_discover_tools,
             commands::mcp::mcp_call_tool,
             commands::mcp::mcp_store_env_secret,

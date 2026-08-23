@@ -57,10 +57,13 @@ export const canUseRemoteKernel = (): boolean => {
   }
 };
 
-export const getRemoteToolModePolicy = async (mode: AppMode): Promise<RemoteToolModePolicy> => {
+export const getRemoteToolModePolicy = async (
+  mode: AppMode,
+  signal?: AbortSignal,
+): Promise<RemoteToolModePolicy> => {
   return remoteKernelRequest<RemoteToolModePolicy>(
     `/tools/mode-policy?mode=${encodeURIComponent(mode)}`,
-    { method: 'GET' }
+    { method: 'GET', signal }
   );
 };
 
@@ -88,12 +91,13 @@ export const executeRemoteWorkspaceTool = async (params: {
   projectMounts?: ProjectMount[];
   virtualRootEnabled?: boolean;
   focusedProjectId?: string | null;
+  signal?: AbortSignal;
 }): Promise<string> => {
   const needsContentRevisions = requiresContentRevisions(params);
   const needsBoundedOutput = BOUNDED_OUTPUT_TOOL_IDS.has(params.toolId);
   const needsBoundedGitOutput = BOUNDED_GIT_OUTPUT_TOOL_IDS.has(params.toolId);
   if (needsContentRevisions || needsBoundedOutput || needsBoundedGitOutput) {
-    const policy = await getRemoteToolModePolicy(params.mode);
+    const policy = await getRemoteToolModePolicy(params.mode, params.signal);
     if (
       needsContentRevisions &&
       !policy.capabilities?.includes(CONTENT_REVISIONS_CAPABILITY)
@@ -121,6 +125,7 @@ export const executeRemoteWorkspaceTool = async (params: {
   }
   const payload = await remoteKernelRequest<{ result: string }>('/tools/execute', {
     method: 'POST',
+    signal: params.signal,
     body: JSON.stringify({
       mode: params.mode,
       tool_id: params.toolId,

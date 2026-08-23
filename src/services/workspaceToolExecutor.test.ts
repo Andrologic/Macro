@@ -61,6 +61,7 @@ const registerWorkspaceToolExecutorMocks = (
     isTauriAvailable: () => false,
     validateToolExecution: async () => ({ allowed: true }),
     executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+    cancelWorkspaceTool: async () => false,
     fsListDir: async () => [],
     fsExists: async () => false,
     fsReadFileWithOptions: async () => ({
@@ -826,6 +827,41 @@ describe("workspaceToolExecutor helpers", () => {
       options,
     );
     expect(staleLogPage).toContain("does not belong");
+  });
+
+  it("forwards abort signals to an active backend workspace search", async () => {
+    let executionId: string | undefined;
+    let finishExecution: ((value: string) => void) | undefined;
+    const cancelledIds: string[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async (params: { executionId?: string }) => {
+          executionId = params.executionId;
+          return new Promise<string>((resolve) => {
+            finishExecution = resolve;
+          });
+        },
+        cancelWorkspaceTool: async (requestedExecutionId: string) => {
+          cancelledIds.push(requestedExecutionId);
+          finishExecution?.("Tool execution cancelled: grep.");
+          return true;
+        },
+      },
+    } as Partial<MockAppState>);
+    const controller = new AbortController();
+
+    const execution = executeWorkspaceTool(
+      "grep",
+      { query: "needle" },
+      "Implement",
+      { workspacePath: "C:/dev/macro-web", signal: controller.signal },
+    );
+    controller.abort();
+
+    expect(await execution).toBe("Tool execution aborted");
+    expect(executionId).toBeTruthy();
+    expect(cancelledIds).toEqual([executionId as string]);
   });
 
   it("applies apply_patch in virtual-root mode and returns validation details", async () => {

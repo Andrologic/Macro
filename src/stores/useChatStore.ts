@@ -6233,7 +6233,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (["list", "read", "glob", "grep", "git_status", "git_log"].some((toolId) => allowedToolIds.includes(toolId))) {
       systemInstructions.push(
-        "Workspace list, read, glob, grep, git_status, and git_log outputs are bounded. When TRUNCATED/truncated is true and NEXT_CURSOR/next_cursor is present, continue with that cursor and otherwise keep the same request options; do not assume the first page is complete. Read and git_status cursors are bound to the underlying revision, so restart without a cursor if Macro rejects a stale cursor.",
+        "Workspace list, read, glob, grep, git_status, and git_log outputs are bounded. When TRUNCATED/truncated is true and NEXT_CURSOR/next_cursor is present, continue with that cursor and otherwise keep the same request options; do not assume the first page is complete. Read and git_status cursors are bound to the underlying revision, so restart without a cursor if Macro rejects a stale cursor. If a workspace search times out, narrow its path, glob, or query before retrying instead of repeating the same broad scan.",
       );
     }
     if (allowedToolIds.includes("git_diff")) {

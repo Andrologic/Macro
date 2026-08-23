@@ -231,4 +231,33 @@ describe('remoteKernelApi', () => {
     });
     expect(abortObserved).toBe(true);
   });
+
+  it('forwards caller cancellation through remote tool policy checks', async () => {
+    let abortObserved = false;
+
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock((_url: string | URL | Request, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        signal?.addEventListener('abort', () => {
+          abortObserved = true;
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    const controller = new AbortController();
+    const execution = executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'grep',
+      args: { query: 'needle' },
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    expect(abortObserved).toBe(true);
+  });
 });
