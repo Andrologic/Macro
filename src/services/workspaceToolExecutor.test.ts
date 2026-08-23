@@ -233,12 +233,21 @@ describe("workspaceToolExecutor helpers", () => {
     let exists = false;
     let content = "";
     const checkpoints: unknown[] = [];
+    const writes: Array<Record<string, unknown>> = [];
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
         fsExists: async () => exists,
-        fsWriteFile: async ({ path, content: nextContent }: { path: string; content: string }) => {
+        fsWriteFile: async (params: {
+          path: string;
+          content: string;
+          expectedRevision?: string | null;
+          allowOutsideWorkspace?: boolean;
+          workspacePath?: string | null;
+        }) => {
+          const { path, content: nextContent } = params;
+          writes.push(params);
           const created = !exists;
           exists = true;
           content = nextContent;
@@ -272,6 +281,14 @@ describe("workspaceToolExecutor helpers", () => {
     );
 
     expect(checkpoints).toHaveLength(1);
+    expect(writes).toEqual([
+      expect.objectContaining({
+        path: "C:/dev/macro-web/src/new-file.ts",
+        expectedRevision: "absent",
+        allowOutsideWorkspace: false,
+        workspacePath: "C:/dev/macro-web",
+      }),
+    ]);
     expect(checkpoints[0]).toMatchObject({
       toolName: "write",
       files: [
@@ -284,6 +301,60 @@ describe("workspaceToolExecutor helpers", () => {
         },
       ],
     });
+  });
+
+  it("derives a guarded write revision from the same existing-file snapshot", async () => {
+    let content = "old\n";
+    const writes: Array<Record<string, unknown>> = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => ({
+          content,
+          language: "text",
+          is_binary: false,
+          size: content.length,
+          encoding: "utf-8",
+          revision: content === "old\n" ? "before-revision" : "after-revision",
+        }),
+        fsWriteFile: async (params: {
+          path: string;
+          content: string;
+          expectedRevision?: string | null;
+          allowOutsideWorkspace?: boolean;
+          workspacePath?: string | null;
+        }) => {
+          writes.push(params);
+          content = params.content;
+          return {
+            path: params.path,
+            bytes_written: params.content.length,
+            created: false,
+            revision: "after-revision",
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    await executeWorkspaceTool(
+      "write",
+      { path: "src/existing.ts", content: "new\n" },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async () => undefined,
+      },
+    );
+
+    expect(writes).toEqual([
+      expect.objectContaining({
+        expectedRevision: "before-revision",
+        allowOutsideWorkspace: false,
+        workspacePath: "C:/dev/macro-web",
+      }),
+    ]);
   });
 
   it("does not capture checkpoints when apply_patch fails before writing", async () => {
@@ -691,27 +762,25 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
-        gitMerge: async ({
-          repoPath,
-          branchName,
-          intoBranch,
-        }: {
-          repoPath: string;
-          branchName: string;
-          intoBranch: string;
-        }) => `merged ${branchName} into ${intoBranch} at ${repoPath}`,
-        gitStatus: async (repoPath: string) => ({
-          branch: repoPath === "C:/dev/macro-web" ? "develop" : "unknown",
-          head_commit: null,
-          staged_files: [],
-          unstaged_files: [],
-          untracked_files: [],
-          conflicted_files: [],
-          merge_in_progress: false,
-          conflictedFiles: [],
-          mergeInProgress: false,
-          is_clean: true,
-        }),
+        executeWorkspaceTool: async (params: {
+          toolId: string;
+          args: Record<string, unknown>;
+          workspacePath?: string | null;
+          virtualRootEnabled?: boolean;
+        }) => {
+          expect(params.toolId).toBe("git_merge");
+          expect(params.workspacePath).toBe("C:/dev/macro-web");
+          expect(params.virtualRootEnabled).toBe(false);
+          expect(params.args.repo_path).toBe(".");
+          return JSON.stringify({
+            ok: true,
+            repo_path: ".",
+            branch: "develop",
+            merged_branch: params.args.branch_name,
+            into_branch: params.args.into_branch,
+            output: "merged feature/auth into develop at C:/dev/macro-web",
+          });
+        },
       },
     } as Partial<MockAppState>);
 
@@ -760,59 +829,30 @@ describe("workspaceToolExecutor helpers", () => {
     expect(parsed.output).toContain("C:/dev/macro-web");
   });
 
-  it("bounds and resumes git status and log fallback output", async () => {
-    let worktreeDirty = true;
-    const commits = Array.from({ length: 5 }, (_, index) => ({
-      id: `commit-${index}`,
-      hash: `c${index}`,
-      message: `test: commit ${index}`,
-      author: "Macro",
-      date: "2026-08-23T00:00:00Z",
-      status: "committed",
-      parent_ids: [],
-      graph_depth: 0,
-      is_branch_point: false,
-    }));
-    const logCalls: Array<{ limit?: number; offset?: number }> = [];
+  it("uses bounded Git output from the confined backend without a direct fallback", async () => {
+    const backendCalls: Array<Record<string, unknown>> = [];
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
-        gitStatus: async () => ({
-          branch: "develop",
-          head_commit: commits[0],
-          staged_files: [
-            { path: "a.ts", status: "modified", old_path: null },
-          ],
-          unstaged_files: worktreeDirty
-            ? [{ path: "b.ts", status: "modified", old_path: null }]
-            : [],
-          untracked_files: worktreeDirty
-            ? [{ path: "c.ts", status: "untracked", old_path: null }]
-            : [],
-          conflicted_files: [],
-          merge_in_progress: false,
-          conflictedFiles: [],
-          mergeInProgress: false,
-          is_clean: false,
-          has_origin: true,
-          has_upstream: true,
-          ahead: 0,
-          behind: 0,
-        }),
-        gitLogPage: async (params: { limit?: number; offset?: number }) => {
-          logCalls.push(params);
-          const offset = params.offset ?? 0;
-          return {
-            commits: commits.slice(offset, offset + (params.limit ?? commits.length)),
-            revision: `${commits[0]?.id ?? "unborn"}:true:${worktreeDirty}`,
-          };
+        executeWorkspaceTool: async (params: Record<string, unknown>) => {
+          backendCalls.push(params);
+          return JSON.stringify({
+            repo_path: ".",
+            count: 1,
+            total_count: 3,
+            truncated: true,
+            next_cursor: "backend-cursor",
+            staged_files: [{ path: "a.ts", status: "modified" }],
+            unstaged_files: [],
+            untracked_files: [],
+          });
         },
       },
     } as Partial<MockAppState>);
     const options = { workspacePath: "C:/dev/macro-web" };
 
-    const statusFirst = JSON.parse(
+    const status = JSON.parse(
       (await executeWorkspaceTool(
         "git_status",
         { limit: 2 },
@@ -820,64 +860,19 @@ describe("workspaceToolExecutor helpers", () => {
         options,
       )) || "{}",
     );
-    expect(statusFirst.total_count).toBe(3);
-    expect(statusFirst.truncated).toBe(true);
-    expect(statusFirst.staged_files).toHaveLength(1);
-    expect(statusFirst.unstaged_files).toHaveLength(1);
-    const statusSecond = JSON.parse(
-      (await executeWorkspaceTool(
-        "git_status",
-        { limit: 2, cursor: statusFirst.next_cursor },
-        "Implement",
-        options,
-      )) || "{}",
-    );
-    expect(statusSecond.offset).toBe(2);
-    expect(statusSecond.untracked_files).toHaveLength(1);
-    expect(statusSecond.truncated).toBe(false);
-
-    const logFirst = JSON.parse(
-      (await executeWorkspaceTool(
-        "git_log",
-        { limit: 2 },
-        "Implement",
-        options,
-      )) || "{}",
-    );
-    expect(logFirst.commits.map((commit: { id: string }) => commit.id)).toEqual([
-      "commit-0",
-      "commit-1",
+    expect(status.total_count).toBe(3);
+    expect(status.truncated).toBe(true);
+    expect(status.staged_files).toHaveLength(1);
+    expect(backendCalls).toEqual([
+      expect.objectContaining({
+        toolId: "git_status",
+        workspacePath: "C:/dev/macro-web",
+        args: expect.objectContaining({ repo_path: ".", limit: 2 }),
+      }),
     ]);
-    expect(logFirst.truncated).toBe(true);
-    const logSecond = JSON.parse(
-      (await executeWorkspaceTool(
-        "git_log",
-        { limit: 2, cursor: logFirst.next_cursor },
-        "Implement",
-        options,
-      )) || "{}",
-    );
-    expect(logSecond.offset).toBe(2);
-    expect(logSecond.commits.map((commit: { id: string }) => commit.id)).toEqual([
-      "commit-2",
-      "commit-3",
-    ]);
-    expect(logCalls).toEqual([
-      expect.objectContaining({ limit: 3, offset: 0 }),
-      expect.objectContaining({ limit: 3, offset: 0 }),
-      expect.objectContaining({ limit: 3, offset: 2 }),
-    ]);
-    worktreeDirty = false;
-    const staleLogPage = await executeWorkspaceTool(
-      "git_log",
-      { limit: 2, cursor: logFirst.next_cursor },
-      "Implement",
-      options,
-    );
-    expect(staleLogPage).toContain("does not belong");
   });
 
-  it("invalidates a virtual git_log cursor when the explicitly requested branch advances", async () => {
+  it("keeps virtual git_log routing and cursor validation inside the selected backend workspace", async () => {
     let featureTip = "feature-tip-1";
     const featureCommits = () => [
       {
@@ -907,18 +902,27 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
-        gitLogPage: async (params: {
-          branch?: string;
-          limit?: number;
-          offset?: number;
+        executeWorkspaceTool: async (params: {
+          toolId: string;
+          args: Record<string, unknown>;
+          workspacePath?: string | null;
+          virtualRootEnabled?: boolean;
         }) => {
-          expect(params.branch).toBe("feature/topic");
+          expect(params.toolId).toBe("git_log");
+          expect(params.workspacePath).toBe("C:/dev/macro-web");
+          expect(params.virtualRootEnabled).toBe(false);
+          expect(params.args.repo_path).toBe(".");
+          expect(params.args.branch).toBe("feature/topic");
+          if (params.args.cursor && featureTip !== "feature-tip-1") {
+            return "Error executing git_log: cursor does not belong to the current repository revision.";
+          }
           const commits = featureCommits();
-          const offset = params.offset ?? 0;
-          return {
-            commits: commits.slice(offset, offset + (params.limit ?? commits.length)),
+          return JSON.stringify({
+            repo_path: ".",
+            commits: commits.slice(0, 1),
+            next_cursor: "backend-log-cursor",
             revision: `${featureTip}:false:false`,
-          };
+          });
         },
       },
     } as Partial<MockAppState>);

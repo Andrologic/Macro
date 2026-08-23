@@ -44,13 +44,37 @@ const DEFAULT_IGNORED_ENTRY_NAMES = new Set([
   'Thumbs.db',
   '.idea',
 ]);
-const FRONTEND_TOOL_TIMEOUT_MS = 300_000;
+const DEFAULT_FRONTEND_TOOL_TIMEOUT_MS = 300_000;
+const TERMINAL_RUN_TIMEOUT_MARGIN_MS = 30_000;
+const MAX_TERMINAL_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_COPILOT_SEND_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_COPILOT_SEND_TIMEOUT_MS = 60 * 1000;
 const TOOL_HOST_URL_ENV = 'MACRO_TOOL_HOST_URL';
 const TOOL_HOST_BEARER_TOKEN_ENV = 'MACRO_TOOL_HOST_BEARER_TOKEN';
 
 type JsonRecord = Record<string, unknown>;
+
+const frontendToolTimeoutMs = (toolName: string, args: JsonRecord): number => {
+  if (toolName === 'question' || toolName.startsWith('need_')) {
+    return DEFAULT_COPILOT_SEND_TIMEOUT_MS;
+  }
+  if (toolName !== 'terminal_run') {
+    return DEFAULT_FRONTEND_TOOL_TIMEOUT_MS;
+  }
+
+  const requested = args.timeout_ms;
+  const requestedMs =
+    typeof requested === 'number' && Number.isFinite(requested)
+      ? Math.max(0, Math.floor(requested))
+      : DEFAULT_FRONTEND_TOOL_TIMEOUT_MS - TERMINAL_RUN_TIMEOUT_MARGIN_MS;
+  return Math.min(
+    MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
+    Math.max(
+      DEFAULT_FRONTEND_TOOL_TIMEOUT_MS,
+      requestedMs + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
+    ),
+  );
+};
 
 interface BridgeProjectMount {
   project_id: string;
@@ -466,7 +490,7 @@ class BridgeControlChannel {
             `Timed out waiting for Macro to execute tool "${params.toolName}".`
           )
         );
-      }, FRONTEND_TOOL_TIMEOUT_MS);
+      }, frontendToolTimeoutMs(params.toolName, params.args));
 
       this.pendingToolResults.set(params.toolCallId, {
         resolve,
@@ -2480,6 +2504,7 @@ export const __testables = {
   createCopilotSessionEventState,
   globWorkspace,
   getCopilotReasoningSummary,
+  frontendToolTimeoutMs,
   grepWorkspace,
   handleCopilotSessionEvent,
   listWorkspace,

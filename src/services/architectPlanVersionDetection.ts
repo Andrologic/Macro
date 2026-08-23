@@ -67,7 +67,8 @@ export const detectProjectVersion = async (
     try {
       const content = await tauriIpc.fsReadFileWithOptions({
         path: fullPath,
-        allowOutsideWorkspace: true,
+        allowOutsideWorkspace: false,
+        workspacePath: projectPath,
       });
       const version = parseVersionForFile(relativePath, content.content || '');
       if (version) {
