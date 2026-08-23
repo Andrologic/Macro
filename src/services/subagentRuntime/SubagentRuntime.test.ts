@@ -152,6 +152,23 @@ const waitForExecution = async (
   throw new Error(`Execution did not start: ${name}`);
 };
 
+const createControlledClaims = () => {
+  const pending = new Map<
+    string,
+    { resolve: () => void; reject: (error: unknown) => void }
+  >();
+  return {
+    pending,
+    recorder: {
+      claimRun: (transition: SubagentTransition<TestOutput>) =>
+        new Promise<void>((resolve, reject) => {
+          pending.set(transition.runId, { resolve, reject });
+        }),
+      recordTransition: () => undefined,
+    },
+  };
+};
+
 const makeRuntime = (options?: {
   executor?: ControlledExecutor;
   clock?: FakeClock;
@@ -348,6 +365,66 @@ describe("SubagentRuntime", () => {
     expect(executor.started).toEqual(["running"]);
   });
 
+  it("maps known reasons from an already aborted parent signal", async () => {
+    const cases = [
+      {
+        signalReason: "timed_out",
+        expected: { status: "timed_out" },
+      },
+      {
+        signalReason: "runtime_disposed",
+        expected: { status: "cancelled", reason: "runtime_disposed" },
+      },
+      {
+        signalReason: "child_cancelled",
+        expected: { status: "cancelled", reason: "child_cancelled" },
+      },
+      {
+        signalReason: "parent_cancelled",
+        expected: { status: "cancelled", reason: "parent_cancelled" },
+      },
+      {
+        signalReason: "unknown_reason",
+        expected: { status: "cancelled", reason: "parent_cancelled" },
+      },
+    ] as const;
+
+    for (const { signalReason, expected } of cases) {
+      const parentController = new AbortController();
+      parentController.abort(signalReason);
+      const { executor, runtime } = makeRuntime();
+      const handle = runtime.run({
+        parentConversationId: "parent-1",
+        parentDepth: 0,
+        input: { name: signalReason },
+        parentSignal: parentController.signal,
+      });
+
+      expect(await handle.result).toMatchObject(expected);
+      expect(executor.started).toEqual([]);
+    }
+  });
+
+  it("maps an in-flight timed_out parent abort to the terminal transition", async () => {
+    const transitions: Array<SubagentTransition<TestOutput>> = [];
+    const parentController = new AbortController();
+    const { executor, runtime } = makeRuntime({ transitions });
+    const handle = runtime.run({
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "external-timeout" },
+      parentSignal: parentController.signal,
+    });
+    await waitForExecution(executor, "external-timeout");
+    parentController.abort("timed_out");
+
+    expect(await handle.result).toMatchObject({ status: "timed_out" });
+    expect(transitions.at(-1)).toMatchObject({
+      state: "timed_out",
+      result: { status: "timed_out" },
+    });
+  });
+
   it("cancels one child explicitly without affecting its sibling", async () => {
     const { executor, runtime } = makeRuntime();
     const cancelled = runtime.run({
@@ -417,6 +494,78 @@ describe("SubagentRuntime", () => {
     await Promise.all(handles.map(({ result }) => result));
 
     expect(executor.maximumActiveCount).toBe(2);
+  });
+
+  it("preserves submission FIFO when durable claims resolve out of order", async () => {
+    const executor = new ControlledExecutor();
+    const claims = createControlledClaims();
+    const runtime = new SubagentRuntime<TestInput, TestOutput>({
+      executor,
+      idFactory: createIdFactory(),
+      policy: { maxConcurrencyForParentConversation: () => 1 },
+      transitionRecorder: claims.recorder,
+    });
+    const first = runtime.run({
+      runId: "first-run",
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "first" },
+    });
+    const second = runtime.run({
+      runId: "second-run",
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "second" },
+    });
+
+    claims.pending.get("second-run")?.resolve();
+    await Promise.resolve();
+    expect(executor.started).toEqual([]);
+
+    claims.pending.get("first-run")?.resolve();
+    await waitForExecution(executor, "first");
+    expect(executor.started).toEqual(["first"]);
+    executor.complete("first");
+    await first.result;
+    await waitForExecution(executor, "second");
+    expect(executor.started).toEqual(["first", "second"]);
+    executor.complete("second");
+    await second.result;
+  });
+
+  it("releases the next FIFO run when the first durable claim fails", async () => {
+    const executor = new ControlledExecutor();
+    const claims = createControlledClaims();
+    const runtime = new SubagentRuntime<TestInput, TestOutput>({
+      executor,
+      idFactory: createIdFactory(),
+      policy: { maxConcurrencyForParentConversation: () => 1 },
+      transitionRecorder: claims.recorder,
+    });
+    const first = runtime.run({
+      runId: "first-run",
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "first" },
+    });
+    const second = runtime.run({
+      runId: "second-run",
+      parentConversationId: "parent-1",
+      parentDepth: 0,
+      input: { name: "second" },
+    });
+
+    claims.pending.get("second-run")?.resolve();
+    claims.pending.get("first-run")?.reject(new Error("first claim rejected"));
+
+    expect(await first.result).toMatchObject({
+      status: "failed",
+      error: { code: "SUBAGENT_CLAIM_FAILED" },
+    });
+    await waitForExecution(executor, "second");
+    expect(executor.started).toEqual(["second"]);
+    executor.complete("second");
+    await second.result;
   });
 
   it("applies concurrency independently for each parent", async () => {

@@ -36,6 +36,7 @@ interface RunRecord<
 > {
   request: SubagentRunRequest<TInput>;
   snapshot: SubagentRunSnapshot<TProgress>;
+  claimState: "pending" | "claimed";
   controller: AbortController;
   cancellationReason?: CancellationReason;
   timeoutHandle?: unknown;
@@ -88,6 +89,20 @@ const getMetrics = (value: unknown): SubagentMetrics | undefined => {
     return undefined;
   }
   return { ...candidate } as SubagentMetrics;
+};
+
+const cancellationReasonFromSignal = (
+  signal: AbortSignal,
+): CancellationReason => {
+  switch (signal.reason) {
+    case "timed_out":
+    case "runtime_disposed":
+    case "child_cancelled":
+    case "parent_cancelled":
+      return signal.reason;
+    default:
+      return "parent_cancelled";
+  }
 };
 
 export const normalizeSubagentError = (
@@ -244,6 +259,7 @@ export class SubagentRuntime<
         queuedAt,
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
       },
+      claimState: "pending",
       controller: new AbortController(),
       transitionSequence: 0,
       transitionWrites: Promise.resolve(),
@@ -252,6 +268,11 @@ export class SubagentRuntime<
       result,
     };
     this.#runs.set(runId, record);
+    const pool = this.#getPool(
+      request.parentConversationId,
+      maximumConcurrency,
+    );
+    pool.queue.push(record);
 
     const handle: SubagentRunHandle<TStructuredOutput> = {
       runId,
@@ -260,11 +281,12 @@ export class SubagentRuntime<
     };
 
     if (!this.#options.transitionRecorder) {
+      record.claimState = "claimed";
       record.transitionSequence = 1;
       this.#emit(record.snapshot);
-      this.#scheduleClaimed(record, maximumConcurrency);
+      this.#scheduleClaimed(record);
     } else {
-      void this.#claimAndSchedule(record, maximumConcurrency);
+      void this.#claimAndSchedule(record);
     }
     return handle;
   }
@@ -303,6 +325,7 @@ export class SubagentRuntime<
     const record: RunRecord<TInput, TStructuredOutput, TProgress> = {
       request,
       snapshot,
+      claimState: "pending",
       controller: new AbortController(),
       transitionSequence: 0,
       transitionWrites: Promise.resolve(),
@@ -322,17 +345,17 @@ export class SubagentRuntime<
 
   async #claimAndSchedule(
     record: RunRecord<TInput, TStructuredOutput, TProgress>,
-    maximumConcurrency: number,
   ): Promise<void> {
     const claimed = await this.#claimRun(record);
     if (!claimed) return;
 
-    this.#scheduleClaimed(record, maximumConcurrency);
+    record.claimState = "claimed";
+    record.transitionSequence = 1;
+    this.#scheduleClaimed(record);
   }
 
   #scheduleClaimed(
     record: RunRecord<TInput, TStructuredOutput, TProgress>,
-    maximumConcurrency: number,
   ): void {
     if (this.#disposed && !record.cancellationReason) {
       this.#requestCancellation(record, "runtime_disposed");
@@ -343,11 +366,6 @@ export class SubagentRuntime<
       return;
     }
 
-    const pool = this.#getPool(
-      record.snapshot.parentConversationId,
-      maximumConcurrency,
-    );
-    pool.queue.push(record);
     this.#pump(record.snapshot.parentConversationId);
   }
 
@@ -376,7 +394,6 @@ export class SubagentRuntime<
       } else {
         await recorder.recordTransition(transition);
       }
-      record.transitionSequence = 1;
       return true;
     } catch (error) {
       try {
@@ -390,6 +407,7 @@ export class SubagentRuntime<
         details: error,
         retryable: true,
       });
+      this.#removeQueuedRecord(record);
       return false;
     }
   }
@@ -510,8 +528,10 @@ export class SubagentRuntime<
     const pool = this.#pools.get(parentConversationId);
     if (!pool) return;
     while (pool.activeCount < pool.maximumConcurrency) {
-      const record = pool.queue.shift();
+      const record = pool.queue[0];
       if (!record) break;
+      if (record.claimState === "pending") break;
+      pool.queue.shift();
       if (record.snapshot.state !== "queued") continue;
       pool.activeCount += 1;
       this.#startExecution(record);
@@ -625,10 +645,11 @@ export class SubagentRuntime<
     const signal = record.request.parentSignal;
     if (!signal) return;
     if (signal.aborted) {
-      this.#requestCancellation(record, "parent_cancelled");
+      this.#requestCancellation(record, cancellationReasonFromSignal(signal));
       return;
     }
-    const onAbort = () => this.#requestCancellation(record, "parent_cancelled");
+    const onAbort = () =>
+      this.#requestCancellation(record, cancellationReasonFromSignal(signal));
     signal.addEventListener("abort", onAbort, { once: true });
     record.removeParentAbortListener = () =>
       signal.removeEventListener("abort", onAbort);
