@@ -214,6 +214,7 @@ import {
   resolveProjectExecutionContext,
   type ProjectExecutionContext,
 } from "../services/projectExecutionContext";
+import { resolveTerminalSessionProjectTarget } from "../services/toolTargeting";
 import {
   buildQuestionnaireResponseArtifacts,
   buildQuestionnaireResponseProviderInputItems,
@@ -5416,28 +5417,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       };
 
       if (normalizedToolName === "terminal_create_session") {
-        const explicitProjectId =
-          typeof args.project_id === "string" &&
-          args.project_id.trim().length > 0
-            ? args.project_id.trim()
-            : null;
-        const projectId =
-          explicitProjectId ||
-          executionContext.actionableProjectIds[0] ||
-          executionContext.focusedProjectId ||
-          executionContext.projectId;
+        const { projectId, readOnlyProjectLabel } =
+          resolveTerminalSessionProjectTarget(
+            executionContext,
+            args.project_id,
+          );
 
         if (!projectId) {
           return "Missing project_id argument for terminal_create_session.";
         }
 
-        if (explicitProjectId) {
-          const explicitProject = executionContext.projectMounts.find(
-            (mount) => mount.projectId === explicitProjectId,
-          );
-          if (explicitProject?.isReadOnly) {
-            return `Error executing terminal_create_session: project "${explicitProject.displayName}" is read-only.`;
-          }
+        if (readOnlyProjectLabel) {
+          return `Error executing terminal_create_session: project "${readOnlyProjectLabel}" is read-only.`;
         }
 
         const session = await useTerminalStore.getState().createSession({

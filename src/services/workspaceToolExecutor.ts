@@ -1556,10 +1556,20 @@ export const executeWorkspaceTool = async (
     normalizeWorkspacePath(options.workspacePath) ||
     normalizeWorkspacePath(getSelectedProjectRoot());
   if (!virtualRootCandidate && isMutatingWorkspaceTool(toolName)) {
-    const routedCandidate = getProjectWorkspaceCandidate(
-      effectiveProjectId,
-      candidates,
-    );
+    const explicitlyScopedWorkspacePath =
+      normalizeWorkspacePath(options.defaultWorkspacePath) ||
+      normalizeWorkspacePath(options.workspacePath);
+    const routedCandidate =
+      getProjectWorkspaceCandidate(effectiveProjectId, candidates) ||
+      candidates.find(
+        (candidate) =>
+          candidate.workspacePath !== null &&
+          candidate.workspacePath === explicitlyScopedWorkspacePath,
+      ) ||
+      null;
+    if (!routedCandidate && candidates.length > 1) {
+      return `Error executing ${toolName}: select a project with project_id or a mount-prefixed path before mutating the workspace.`;
+    }
     if (routedCandidate?.isReadOnly) {
       return buildReadOnlyToolError(toolName, routedCandidate);
     }

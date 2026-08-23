@@ -1284,6 +1284,48 @@ describe("workspaceToolExecutor helpers", () => {
     expect(writes).toEqual([]);
   });
 
+  it("rejects a non-virtual mutation when multiple projects exist without a resolved target", async () => {
+    const writes: string[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsWriteFile: async ({ path }: { path: string }) => {
+          writes.push(path);
+          return { path, bytes_written: 0, created: true };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "src/new.ts", content: "export const value = 1;\n" },
+      "Implement",
+      {
+        virtualRootEnabled: false,
+        projectMounts: [
+          {
+            projectId: "api",
+            mountName: "api",
+            displayName: "API",
+            workspacePath: "C:/dev/macro-api",
+            isReadOnly: false,
+          },
+          {
+            projectId: "web",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+            isReadOnly: false,
+          },
+        ],
+      },
+    );
+
+    expect(result).toContain("select a project with project_id");
+    expect(writes).toEqual([]);
+  });
+
   it("rejects an ambiguous exact-text edit unless replace_all is true", async () => {
     const writes: string[] = [];
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({

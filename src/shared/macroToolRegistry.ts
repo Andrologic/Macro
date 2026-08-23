@@ -493,7 +493,8 @@ export const MACRO_TOOL_REGISTRY = [
         new_text: { type: "string", description: "Replacement text." },
         replace_all: {
           type: "boolean",
-          description: "Replace all matches (default false = first only).",
+          description:
+            "Replace all matches. By default, the edit succeeds only when old_text matches exactly once.",
         },
       },
       required: ["path", "old_text", "new_text"],
