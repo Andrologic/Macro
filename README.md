@@ -125,9 +125,12 @@ Product and architecture reference documents live in [docs/](docs/).
 
 ## Acknowledgements
 
-Macro draws inspiration from and incorporates adapted code from
-[T3 Code](https://github.com/pingdotgg/t3code) and
-[OpenAI Codex](https://github.com/openai/codex). We thank their contributors.
+Macro draws inspiration from [T3 Code](https://github.com/pingdotgg/t3code),
+[OpenAI Codex](https://github.com/openai/codex),
+[OpenCode](https://github.com/anomalyco/opencode),
+[Pi](https://github.com/earendil-works/pi), and
+[Oh My Pi](https://github.com/can1357/oh-my-pi). It also incorporates adapted
+code from T3 Code and OpenAI Codex. We thank their contributors.
 
 ## License
 
