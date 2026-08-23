@@ -10,6 +10,37 @@ const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byt
 
 const normalizeText = (value: string): string => value.trim().replace(/\s+/g, " ");
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const readTextList = (
+  value: unknown,
+  path: string,
+  errors: DelegationError[],
+  required: boolean
+): string[] => {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    errors.push({
+      code: "invalid_context",
+      path,
+      message: required
+        ? "Expected at least one success criterion."
+        : "Expected an array of strings.",
+    });
+    return [];
+  }
+
+  const normalized = normalizeList(value);
+  if (required && normalized.length === 0) {
+    errors.push({
+      code: "invalid_context",
+      path,
+      message: "Expected at least one success criterion.",
+    });
+  }
+  return normalized;
+};
+
 const normalizeList = (values: readonly string[]): string[] => {
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -54,10 +85,14 @@ export const buildDelegationContext = (
   input: DelegationContextInput,
   maxContextBytes?: number
 ): DelegationResult<DelegationContext> => {
-  const objective = normalizeText(input.objective);
-  const successCriteria = normalizeList(input.successCriteria);
-  const responseFormat = normalizeText(input.responseFormat);
   const errors: DelegationError[] = [];
+  const candidate: Record<string, unknown> = isRecord(input) ? input : {};
+  const objective =
+    typeof candidate.objective === "string" ? normalizeText(candidate.objective) : "";
+  const responseFormat =
+    typeof candidate.responseFormat === "string"
+      ? normalizeText(candidate.responseFormat)
+      : "";
 
   if (!objective) {
     errors.push({
@@ -66,13 +101,12 @@ export const buildDelegationContext = (
       message: "Expected a non-empty objective.",
     });
   }
-  if (successCriteria.length === 0) {
-    errors.push({
-      code: "invalid_context",
-      path: "successCriteria",
-      message: "Expected at least one success criterion.",
-    });
-  }
+  const successCriteria = readTextList(
+    candidate.successCriteria,
+    "successCriteria",
+    errors,
+    true
+  );
   if (!responseFormat) {
     errors.push({
       code: "invalid_context",
@@ -87,14 +121,38 @@ export const buildDelegationContext = (
       message: "Expected a positive integer.",
     });
   }
+
+  const constraints = readTextList(candidate.constraints ?? [], "constraints", errors, false);
+  const establishedFacts = readTextList(
+    candidate.establishedFacts ?? [],
+    "establishedFacts",
+    errors,
+    false
+  );
+  const relevantAreasInput = candidate.relevantAreas ?? [];
+  if (
+    !Array.isArray(relevantAreasInput) ||
+    relevantAreasInput.some(
+      (area) =>
+        !isRecord(area) ||
+        typeof area.path !== "string" ||
+        (area.reason !== undefined && typeof area.reason !== "string")
+    )
+  ) {
+    errors.push({
+      code: "invalid_context",
+      path: "relevantAreas",
+      message: "Expected an array of areas with a string path and optional string reason.",
+    });
+  }
   if (errors.length > 0) return { ok: false, errors };
 
   const context: DelegationContext = {
     objective,
     successCriteria,
-    relevantAreas: normalizeAreas(input.relevantAreas ?? []),
-    constraints: normalizeList(input.constraints ?? []),
-    establishedFacts: normalizeList(input.establishedFacts ?? []),
+    relevantAreas: normalizeAreas(relevantAreasInput as DelegationRelevantArea[]),
+    constraints,
+    establishedFacts,
     responseFormat,
   };
   const size = getDelegationContextSize(context);

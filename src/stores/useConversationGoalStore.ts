@@ -22,10 +22,6 @@ interface ConversationGoalState {
     status: ConversationGoalOperationalStatus,
     reason?: string | null,
   ) => void;
-  applyAuditorVerdict: (
-    conversationId: string,
-    verdict: ConversationGoalVerdict,
-  ) => void;
   applyAuditorVerdictIfCurrent: (
     conversationId: string,
     goalId: string,
@@ -131,20 +127,6 @@ export const useConversationGoalStore = create<ConversationGoalState>((set) => (
                 ? goal.executorTurnCount + 1
                 : goal.executorTurnCount,
           }),
-        },
-      };
-    });
-  },
-
-  applyAuditorVerdict: (conversationId, verdict) => {
-    set((state) => {
-      const goal = state.goalsByConversationId[conversationId];
-      if (!goal || goal.status === 'achieved') return state;
-
-      return {
-        goalsByConversationId: {
-          ...state.goalsByConversationId,
-          [conversationId]: applyVerdictToGoal(goal, verdict),
         },
       };
     });
