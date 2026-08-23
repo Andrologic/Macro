@@ -678,6 +678,13 @@ export class SubagentRuntime<
     const reason = record.cancellationReason;
     if (!reason || record.snapshot.state !== "queued") return;
     if (reason === "timed_out") {
+      const previousState = record.snapshot.state;
+      record.snapshot = {
+        ...record.snapshot,
+        state: "running",
+        startedAt: this.#clock.now(),
+      };
+      this.#publishTransition(record, previousState);
       this.#finishTimedOut(record);
     } else {
       this.#finishCancelled(record, reason);

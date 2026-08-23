@@ -34,6 +34,11 @@ The expected durable status mapping is:
 | `cancelled` with `runtime_disposed`                      | `cancelled`                                         | Graceful disposal aborts active work, waits for executor cleanup, and records `runtime_disposed` as the reason. |
 | `timed_out`                                              | `timed_out` when supported, otherwise `interrupted` | Preserve `timeoutMs` so a later schema migration can distinguish timeouts.                                      |
 
+If a claimed run times out before reaching the executor, the runtime records a
+`running` transition immediately before `timed_out`. This preserves the durable
+state-machine invariant that a timed-out run has a start timestamp and attempt,
+without invoking the child executor.
+
 The runtime deliberately does not import a persistence adapter. After a claim
 succeeds, recorder failures call `onTransitionError` and do not replace the
 child's terminal result. Recorder promises are still awaited in sequence before
