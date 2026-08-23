@@ -607,7 +607,10 @@ const loadChatZoneModule = async () => {
     subscribePreference: mock(() => () => undefined),
   }));
 
-  await import('./AgentCodeReplayConfirmModal');
+  await Promise.all([
+    import('./AgentCodeReplayConfirmModal'),
+    import('../architect/ArchitectPlanNamingRecoveryModal'),
+  ]);
   ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
 };
 

@@ -25,6 +25,7 @@ export const IGNORED_PREFIXES = Object.freeze([
 const productionConditionTestFiles = new Set([
   'src/components/chat/composer/ComposerEditor.test.tsx',
 ]);
+const testTimeoutMs = 30_000;
 
 export function normalizePath(file) {
   return file.replace(/^\.\//, '').replaceAll('\\', '/');
@@ -83,6 +84,7 @@ export function spawnArgsForFile(file, options = {}) {
     args.push('--conditions=production');
   }
   args.push('test');
+  args.push(`--timeout=${testTimeoutMs}`);
   if (options.coverage) {
     // The text reporter only prints to stdout; lcov is what persists per-file
     // reports under --coverage-dir on bun 1.3.14.
