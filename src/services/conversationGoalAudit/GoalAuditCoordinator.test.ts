@@ -11,7 +11,10 @@ import type {
   SubagentRuntimeClock,
 } from "../subagentRuntime";
 import { GoalAuditCoordinator } from "./GoalAuditCoordinator";
-import { InMemoryGoalAuditJournal } from "./journal";
+import {
+  InMemoryGoalAuditJournal,
+  type GoalAuditRunDescriptor,
+} from "./journal";
 import type {
   GoalAuditChildInput,
   GoalAuditRequest,
@@ -139,6 +142,7 @@ class DelayedVerdictPort extends RecordingVerdictPort {
   readonly started: Promise<void>;
   #resolveStarted!: () => void;
   #resolveApplication!: (outcome: GoalAuditVerdictApplyResult) => void;
+  #rejectApplication!: (error: unknown) => void;
 
   constructor() {
     super();
@@ -152,13 +156,45 @@ class DelayedVerdictPort extends RecordingVerdictPort {
   ): Promise<GoalAuditVerdictApplyResult> {
     this.applications.push(input);
     this.#resolveStarted();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.#resolveApplication = resolve;
+      this.#rejectApplication = reject;
     });
   }
 
   resolve(outcome: GoalAuditVerdictApplyResult): void {
     this.#resolveApplication(outcome);
+  }
+
+  reject(error: unknown): void {
+    this.#rejectApplication(error);
+  }
+}
+
+class DelayedRegistrationJournal extends InMemoryGoalAuditJournal {
+  #resolveRegistration!: () => void;
+  #rejectRegistration!: (error: unknown) => void;
+
+  override registerRun(descriptor: GoalAuditRunDescriptor): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.#resolveRegistration = () => {
+        try {
+          super.registerRun(descriptor);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+      this.#rejectRegistration = reject;
+    });
+  }
+
+  resolveRegistration(): void {
+    this.#resolveRegistration();
+  }
+
+  rejectRegistration(error: unknown): void {
+    this.#rejectRegistration(error);
   }
 }
 
@@ -311,13 +347,20 @@ describe("GoalAuditCoordinator", () => {
     expect(coordinator.isAuditActive("conversation-1")).toBe(true);
     expect(handle.cancel()).toBe(true);
     expect(verdictPort.applications[0]?.signal.aborted).toBe(true);
-    expect(await handle.result).toEqual({
-      status: "cancelled",
-      runId: "audit-1",
-      reason: "child_cancelled",
+    let settled = false;
+    void handle.result.then(() => {
+      settled = true;
     });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
 
     verdictPort.resolve("applied");
+    expect(await handle.result).toEqual({
+      status: "applied",
+      runId: "audit-1",
+      verdict,
+    });
   });
 
   it("keeps cancelAudit active during verdict application", async () => {
@@ -330,12 +373,14 @@ describe("GoalAuditCoordinator", () => {
     await verdictPort.started;
 
     expect(coordinator.cancelAudit("conversation-1")).toBe(true);
-    expect(await handle.result).toMatchObject({
-      status: "cancelled",
-      reason: "child_cancelled",
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
+    verdictPort.resolve("stale");
+    expect(await handle.result).toEqual({
+      status: "stale",
+      runId: "audit-1",
+      reason: "revision_changed",
+      verdict,
     });
-
-    verdictPort.resolve("applied");
   });
 
   it("uses the original audit deadline while applying the verdict", async () => {
@@ -351,13 +396,14 @@ describe("GoalAuditCoordinator", () => {
     clock.advanceBy(10);
 
     expect(verdictPort.applications[0]?.signal.aborted).toBe(true);
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
+    verdictPort.reject(new Error("deadline exceeded"));
     expect(await handle.result).toEqual({
       status: "timed_out",
       runId: "audit-1",
       timeoutMs: 50,
     });
 
-    verdictPort.resolve("applied");
   });
 
   it("fails when the verdict port returns an invalid result", async () => {
@@ -400,6 +446,69 @@ describe("GoalAuditCoordinator", () => {
     });
     expect(executor.requests).toEqual([]);
     expect(verdictPort.applications).toEqual([]);
+  });
+
+  it("waits for registration after timeout and persists a terminal transition", async () => {
+    const clock = new FakeClock();
+    const journal = new DelayedRegistrationJournal();
+    const executor = new ControlledGoalAuditExecutor();
+    const verdictPort = new RecordingVerdictPort();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort,
+      journal,
+      clock,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request({ timeoutMs: 50 }));
+
+    clock.advanceBy(50);
+    let settled = false;
+    void handle.result.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
+    expect(executor.requests).toEqual([]);
+
+    journal.resolveRegistration();
+
+    expect(await handle.result).toEqual({
+      status: "timed_out",
+      runId: "audit-1",
+      timeoutMs: 50,
+    });
+    expect(executor.requests).toEqual([]);
+    expect(journal.getRun("audit-1")?.transitions.map(({ state }) => state)).toEqual([
+      "queued",
+      "cancelled",
+    ]);
+  });
+
+  it("keeps registration failure authoritative after cancellation", async () => {
+    const journal = new DelayedRegistrationJournal();
+    const executor = new ControlledGoalAuditExecutor();
+    const verdictPort = new RecordingVerdictPort();
+    const coordinator = new GoalAuditCoordinator({
+      executor,
+      verdictPort,
+      journal,
+      idFactory: () => "audit-1",
+    });
+    const handle = coordinator.startAudit(request());
+
+    expect(handle.cancel()).toBe(true);
+    expect(coordinator.isAuditActive("conversation-1")).toBe(true);
+    journal.rejectRegistration(new Error("journal unavailable"));
+
+    expect(await handle.result).toMatchObject({
+      status: "failed",
+      runId: "audit-1",
+      error: { code: "JOURNAL_REGISTRATION_FAILED" },
+    });
+    expect(executor.requests).toEqual([]);
   });
 
   it("returns a stale result when the goal revision changed before application", async () => {

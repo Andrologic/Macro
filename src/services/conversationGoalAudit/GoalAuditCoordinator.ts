@@ -76,7 +76,6 @@ interface ActiveAuditCycle {
   cancellationReason?: AuditCancellationReason;
   timeoutHandle?: unknown;
   settled: boolean;
-  cancellation: Promise<AuditCancellationReason>;
   cancel(reason: AuditCancellationReason): boolean;
   removeParentAbortListener?: () => void;
 }
@@ -247,17 +246,12 @@ export class GoalAuditCoordinator<
 
   #createCycle(request: GoalAuditRequest): ActiveAuditCycle {
     const controller = new AbortController();
-    let resolveCancellation!: (reason: AuditCancellationReason) => void;
     const cycle: ActiveAuditCycle = {
       controller,
       settled: false,
-      cancellation: new Promise((resolve) => {
-        resolveCancellation = resolve;
-      }),
       cancel: (reason) => {
         if (cycle.settled || cycle.cancellationReason) return false;
         cycle.cancellationReason = reason;
-        resolveCancellation(reason);
         if (reason === "child_cancelled") {
           cycle.runtimeHandle?.cancel();
         }
@@ -293,13 +287,7 @@ export class GoalAuditCoordinator<
   ): Promise<GoalAuditResult> {
     if (registration) {
       try {
-        const registrationOutcome = await Promise.race([
-          Promise.resolve(registration).then(() => "registered" as const),
-          cycle.cancellation.then((reason) => ({ cancelled: reason }) as const),
-        ]);
-        if (registrationOutcome !== "registered") {
-          return this.#cancellationResult(request, runId, registrationOutcome.cancelled);
-        }
+        await registration;
       } catch (error) {
         this.#notifyJournalError(error, this.#descriptors.get(runId));
         return {
@@ -316,10 +304,6 @@ export class GoalAuditCoordinator<
         };
       }
     }
-    if (cycle.cancellationReason) {
-      return this.#cancellationResult(request, runId, cycle.cancellationReason);
-    }
-
     let runtimeHandle: SubagentRunHandle<unknown>;
     try {
       runtimeHandle = this.#runtime.run({
@@ -478,27 +462,14 @@ export class GoalAuditCoordinator<
 
     let application: unknown;
     try {
-      const applicationOutcome = await Promise.race([
-        Promise.resolve(
-          this.#options.verdictPort.applyVerdict({
-            conversationId: request.conversationId,
-            goalId: request.goalId,
-            expectedRevision: request.goalRevision,
-            verdict: verdict.value,
-            runId: runtimeResult.runId,
-            signal: cycle.controller.signal,
-          }),
-        ).then((value) => ({ application: value }) as const),
-        cycle.cancellation.then((reason) => ({ cancelled: reason }) as const),
-      ]);
-      if ("cancelled" in applicationOutcome) {
-        return this.#cancellationResult(
-          request,
-          runtimeResult.runId,
-          applicationOutcome.cancelled,
-        );
-      }
-      application = applicationOutcome.application;
+      application = await this.#options.verdictPort.applyVerdict({
+        conversationId: request.conversationId,
+        goalId: request.goalId,
+        expectedRevision: request.goalRevision,
+        verdict: verdict.value,
+        runId: runtimeResult.runId,
+        signal: cycle.controller.signal,
+      });
     } catch (error) {
       if (cycle.cancellationReason) {
         return this.#cancellationResult(
@@ -516,13 +487,6 @@ export class GoalAuditCoordinator<
           details: error,
         },
       };
-    }
-    if (cycle.cancellationReason) {
-      return this.#cancellationResult(
-        request,
-        runtimeResult.runId,
-        cycle.cancellationReason,
-      );
     }
     if (application === "stale" || application === "missing") {
       return {
