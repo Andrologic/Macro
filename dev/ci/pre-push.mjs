@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { changedPaths, classifyPaths } from './classify-changes.mjs';
 import { profileForClassification } from './check-profiles.mjs';
+import { planFastLocalChecks } from './fast-local-checks.mjs';
 import { parsePrePushInput, strongestProfile, targetBaseForBranch } from './pre-push-policy.mjs';
 
 const ZERO_SHA = /^0+$/;
@@ -21,8 +22,14 @@ function git(args, options = {}) {
 function cleanWorktreeRequired() {
   const status = git(['status', '--porcelain=v1', '--untracked-files=all']);
   if (status) {
-    throw new Error(`Local CI requires a clean worktree before push:\n${status}`);
+    throw new Error(`Fast local checks require a clean worktree before push:\n${status}`);
   }
+}
+
+function trackedTestFiles() {
+  return git(['ls-files', '-z'])
+    .split('\0')
+    .filter((path) => /\.test\.(?:ts|tsx)$/.test(path));
 }
 
 function currentPushEntry() {
@@ -120,6 +127,7 @@ function main() {
 
   const profiles = [];
   const comparisons = [];
+  const allChangedPaths = new Set();
   for (const entry of branchPushes) {
     const branch = entry.localRef.slice('refs/heads/'.length);
     const target = targetBaseForBranch(branch, entry.remoteSha);
@@ -129,28 +137,38 @@ function main() {
     const classification = classifyPaths(paths);
     const profile = profileForClassification(classification);
     profiles.push(profile);
-    comparisons.push({ branch, base_sha: baseSha, head_sha: headSha, mode: target.mode, profile });
+    paths.forEach((path) => allChangedPaths.add(path));
+    comparisons.push({ branch, base_sha: baseSha, head_sha: headSha, mode: target.mode, remote_profile: profile });
 
     const diffRange = target.mode === 'merge-base' ? `${baseSha}...${headSha}` : `${baseSha}..${headSha}`;
     run('git', ['diff', '--check', diffRange]);
   }
 
-  const profile = strongestProfile(profiles);
+  const remoteProfile = strongestProfile(profiles);
+  const plan = planFastLocalChecks([...allChangedPaths], {
+    exists: (path) => existsSync(resolve(path)),
+    readFile: (path) => readFileSync(resolve(path), 'utf8'),
+    testFiles: trackedTestFiles(),
+  });
   const key = {
-    schema: 1,
+    schema: 2,
     platform: process.platform,
-    profile,
+    bun: process.versions.bun,
     comparisons: comparisons.sort((left, right) => left.branch.localeCompare(right.branch)),
+    steps: plan.steps.map(({ name, command, args }) => ({ name, command, args })),
   };
   const marker = validationMarker(key);
 
-  console.log(`Pre-push validation profile: ${profile}`);
+  console.log(`Fast pre-push checks (${plan.steps.length}):`);
+  plan.steps.forEach((step) => console.log(`- ${step.name}`));
+  console.log(`Remote CI profile after push: ${remoteProfile}`);
   comparisons.forEach((comparison) => {
     console.log(`- ${comparison.branch}: ${comparison.base_sha.slice(0, 12)}..${comparison.head_sha.slice(0, 12)} (${comparison.mode})`);
   });
+  console.log('GitHub CI remains the merge authority.');
 
   if (!force && markerIsValid(marker, key)) {
-    console.log('This exact commit range already passed local CI on this platform.');
+    console.log('This exact commit range already passed the fast local checks on this platform.');
     return;
   }
   if (dryRun) {
@@ -158,11 +176,19 @@ function main() {
     return;
   }
 
-  run(process.execPath, ['dev/ci/run-checks.mjs', '--profile', profile]);
+  if (plan.steps.some((step) => step.needsDependencies)
+    && !existsSync(resolve('node_modules/eslint/bin/eslint.js'))) {
+    throw new Error('Fast local checks need installed dependencies. Run "bun install" once, then push again.');
+  }
+
+  for (const step of plan.steps) {
+    console.log(`\n==> ${step.name}`);
+    run(step.command, step.args);
+  }
   try {
     writeMarker(marker, key);
   } catch (error) {
-    console.warn(`Local CI passed, but its cache marker could not be written: ${error instanceof Error ? error.message : error}`);
+    console.warn(`Fast local checks passed, but their cache marker could not be written: ${error instanceof Error ? error.message : error}`);
   }
 }
 

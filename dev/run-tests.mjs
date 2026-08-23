@@ -116,7 +116,7 @@ export function resolveConfiguredConcurrency(cliValue, environmentValue) {
 }
 
 export function parseRunOptions(argv) {
-  const options = { filters: [], concurrency: undefined, coverage: false, list: false };
+  const options = { filters: [], only: [], concurrency: undefined, coverage: false, list: false };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--') {
@@ -126,16 +126,32 @@ export function parseRunOptions(argv) {
       options.coverage = true;
     } else if (argument === '--list') {
       options.list = true;
+    } else if (argument.startsWith('--only=')) {
+      const file = argument.slice('--only='.length);
+      if (!file) {
+        throw new Error('The --only option requires an exact test file path.');
+      }
+      options.only.push(normalizePath(file));
+    } else if (argument === '--only') {
+      index += 1;
+      const file = argv[index];
+      if (!file || file.startsWith('-')) {
+        throw new Error('The --only option requires an exact test file path.');
+      }
+      options.only.push(normalizePath(file));
     } else if (argument.startsWith('--concurrency=')) {
       options.concurrency = resolveConcurrency(Number(argument.slice('--concurrency='.length)));
     } else if (argument === '--concurrency') {
       index += 1;
       options.concurrency = resolveConcurrency(Number(argv[index]));
     } else if (argument.startsWith('-')) {
-      throw new Error(`Unknown option "${argument}". Supported: --concurrency=<n>, --coverage, --list.`);
+      throw new Error(`Unknown option "${argument}". Supported: --concurrency=<n>, --coverage, --list, --only <file>.`);
     } else {
       options.filters.push(argument);
     }
+  }
+  if (options.only.length > 0 && options.filters.length > 0) {
+    throw new Error('Exact --only paths cannot be combined with positional substring filters.');
   }
   return options;
 }
@@ -146,6 +162,19 @@ export function filterFiles(files, filters) {
   }
   const lowercaseFilters = filters.map((filter) => filter.toLowerCase());
   return files.filter((file) => lowercaseFilters.some((filter) => file.toLowerCase().includes(filter)));
+}
+
+export function selectFilesForOptions(files, options) {
+  if (options.only.length === 0) {
+    return filterFiles(files, options.filters);
+  }
+  const available = new Set(files.map(normalizePath));
+  const requested = [...new Set(options.only.map(normalizePath))].sort();
+  const missing = requested.filter((file) => !available.has(file));
+  if (missing.length > 0) {
+    throw new Error(`Exact test file not found: ${missing.join(', ')}`);
+  }
+  return requested;
 }
 
 export async function runWithConcurrency(items, limit, worker) {
@@ -235,7 +264,7 @@ async function main() {
   const repositoryRoot = resolve('.');
   const options = parseRunOptions(process.argv.slice(2));
   const allFiles = await collectTestFiles();
-  const files = filterFiles(allFiles, options.filters);
+  const files = selectFilesForOptions(allFiles, options);
 
   if (files.length === 0) {
     console.error(options.filters.length > 0
