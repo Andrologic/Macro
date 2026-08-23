@@ -23,22 +23,10 @@ const requiresContentRevisions = (params: {
   toolId: string;
   args: Record<string, unknown>;
 }): boolean => {
-  if (['write', 'edit', 'delete'].includes(params.toolId)) {
+  if (params.toolId === 'write') {
     return typeof params.args.expected_revision === 'string' && params.args.expected_revision.trim().length > 0;
   }
-  if (params.toolId !== 'apply_patch') return false;
-  if (
-    params.args.expected_revisions &&
-    typeof params.args.expected_revisions === 'object' &&
-    !Array.isArray(params.args.expected_revisions) &&
-    Object.keys(params.args.expected_revisions).length > 0
-  ) {
-    return true;
-  }
-  return (
-    typeof params.args.patch_text === 'string' &&
-    params.args.patch_text.includes('*** Add File:')
-  );
+  return ['edit', 'delete', 'apply_patch'].includes(params.toolId);
 };
 
 interface RemoteToolValidation {

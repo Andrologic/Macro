@@ -53,6 +53,32 @@ pub(crate) fn normalize_tool_path(value: &str) -> String {
     normalized.trim_matches('/').to_string()
 }
 
+fn validate_virtual_relative_path(value: &str) -> CommandResult<String> {
+    let normalized_separators = value.trim().replace('\\', "/");
+    let has_windows_drive = normalized_separators
+        .as_bytes()
+        .get(1)
+        .is_some_and(|byte| *byte == b':');
+    if normalized_separators.starts_with('/')
+        || has_windows_drive
+        || normalized_separators.contains('\0')
+    {
+        return Err(command_error(format!(
+            "Virtual workspace paths must be relative to a project mount: {}",
+            value
+        )));
+    }
+
+    let normalized = normalize_tool_path(&normalized_separators);
+    if normalized.split('/').any(|component| component == "..") {
+        return Err(command_error(format!(
+            "Virtual workspace path escapes its project mount: {}",
+            value
+        )));
+    }
+    Ok(normalized)
+}
+
 pub(crate) fn virtual_path_for_mount(mount: &WorkspaceProjectMount, relative_path: &str) -> String {
     let relative = normalize_tool_path(relative_path);
     if relative.is_empty() || relative == "." {
@@ -278,6 +304,7 @@ pub(crate) fn resolve_virtual_mount_target<'a>(
     raw_path: &str,
     explicit_project_id: Option<&str>,
 ) -> CommandResult<ResolvedMountTarget<'a>> {
+    let normalized_path = validate_virtual_relative_path(raw_path)?;
     if let Some(project_id) = explicit_project_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -296,11 +323,10 @@ pub(crate) fn resolve_virtual_mount_target<'a>(
         let mount = single_mount_or_ambiguous(matches, project_id)?;
         return Ok(ResolvedMountTarget {
             mount,
-            relative_path: normalize_tool_path(raw_path).if_empty(".").to_string(),
+            relative_path: normalized_path.if_empty(".").to_string(),
         });
     }
 
-    let normalized_path = normalize_tool_path(raw_path);
     let normalized_path_lower = normalized_path.to_lowercase();
     if !normalized_path.is_empty() && normalized_path != "." {
         let mut matches = Vec::new();
@@ -404,7 +430,7 @@ async fn execute_virtual_workspace_search_tool(
             Some(true),
             Some(include_hidden),
             None,
-            Some(true),
+            Some(false),
         )
         .await
         .map_err(|error| command_error(error.to_string()))?;
@@ -517,7 +543,7 @@ async fn execute_virtual_workspace_search_tool(
             skipped_too_large += 1;
             continue;
         }
-        let content = fs::read_file_internal(&workspace, relative, Some(true))
+        let content = fs::read_file_internal(&workspace, relative, Some(false))
             .await
             .map_err(|error| command_error(error.to_string()))?;
         if content.size > super::tool_output::GREP_MAX_FILE_BYTES {
@@ -601,7 +627,7 @@ async fn execute_virtual_ast_search(
 ) -> CommandResult<String> {
     let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
     let explicit_project_id = json_arg_string(args, "project_id");
-    let normalized_path = normalize_tool_path(&raw_path);
+    let normalized_path = validate_virtual_relative_path(&raw_path)?;
     let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
     let mut targets = Vec::<(&WorkspaceProjectMount, String)>::new();
 
@@ -648,7 +674,7 @@ async fn execute_virtual_ast_search(
             Some(true),
             Some(include_hidden),
             None,
-            Some(true),
+            Some(false),
         )
         .await
         .map_err(|error| command_error(error.to_string()))?;
@@ -786,7 +812,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 recursive,
                 include_hidden,
                 max_depth,
-                Some(true),
+                Some(false),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?
@@ -843,7 +869,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let mount = resolved.mount;
             let relative_path = resolved.relative_path;
             let workspace = mount_workspace_path(mount)?;
-            let result = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+            let result = fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
                 .await
                 .map_err(|error| command_error(error.to_string()))?;
             let virtual_path = virtual_path_for_mount(mount, &relative_path);
@@ -928,7 +954,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 relative_path.clone(),
                 content.clone(),
                 create_dirs,
-                Some(true),
+                Some(false),
                 expected_revision.as_deref(),
             )
             .await
@@ -993,7 +1019,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let replace_all = json_arg_bool(args, "replace_all").unwrap_or(false);
             let expected_revision = json_arg_string(args, "expected_revision");
             let workspace = mount_workspace_path(mount)?;
-            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
                 .await
                 .map_err(|error| command_error(error.to_string()))?;
             let display_path = virtual_path_for_mount(mount, &relative_path);
@@ -1006,6 +1032,9 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 Some(&current.revision),
             )
             .map_err(|error| command_error(error.to_string()))?;
+            let mutation_revision = expected_revision
+                .clone()
+                .unwrap_or_else(|| current.revision.clone());
             let occurrences = current.content.matches(&old_text).count();
             if let Some(error) = exact_edit_match_error(&display_path, occurrences, replace_all) {
                 return Ok(Some(error));
@@ -1022,8 +1051,8 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 relative_path.clone(),
                 updated.clone(),
                 Some(true),
-                Some(true),
-                expected_revision.as_deref(),
+                Some(false),
+                Some(&mutation_revision),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -1043,7 +1072,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 bytes_written: write_result.bytes_written,
                 additions,
                 deletions,
-                expected_revision,
+                expected_revision: Some(mutation_revision),
             };
             build_post_write_response(
                 &[change],
@@ -1107,7 +1136,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                     display_path
                 )));
             }
-            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
                 .await
                 .map_err(|error| command_error(error.to_string()))?;
             let deletions = if current.is_binary {
@@ -1121,11 +1150,14 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 Some(&current.revision),
             )
             .map_err(|error| command_error(error.to_string()))?;
+            let mutation_revision = expected_revision
+                .clone()
+                .unwrap_or_else(|| current.revision.clone());
             fs::delete_path_internal_with_revision(
                 &workspace,
                 relative_path.clone(),
                 Some(false),
-                expected_revision.as_deref(),
+                Some(&mutation_revision),
             )
             .await
             .map_err(|error| {
@@ -1142,7 +1174,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 bytes_written: 0,
                 additions: 0,
                 deletions,
-                expected_revision,
+                expected_revision: Some(mutation_revision),
             };
             build_post_write_response(
                 &[change],
@@ -1238,7 +1270,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                         });
                     }
                     ParsedPatchOperation::Update { path, hunks } => {
-                        let expected_revision = expected_revisions
+                        let requested_revision = expected_revisions
                             .get(&normalize_tool_map_path(&path))
                             .cloned();
                         let resolved = resolve_virtual_mount_target(
@@ -1257,7 +1289,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                         let workspace = mount_workspace_path(mount)?;
                         let display_path = virtual_path_for_mount(mount, &relative_path);
                         let current =
-                            fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+                            fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
                                 .await
                                 .map_err(|error| command_error(error.to_string()))?;
                         if current.is_binary {
@@ -1266,6 +1298,14 @@ pub(crate) async fn execute_virtual_workspace_tool(
                                 display_path
                             )));
                         }
+                        fs::validate_expected_revision(
+                            &display_path,
+                            requested_revision.as_deref(),
+                            Some(&current.revision),
+                        )
+                        .map_err(|error| command_error(error.to_string()))?;
+                        let expected_revision =
+                            requested_revision.unwrap_or_else(|| current.revision.clone());
                         let absolute_path =
                             resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
                         let new_content = apply_patch_hunks_to_content(
@@ -1286,11 +1326,11 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             bytes_written: new_content.len() as u64,
                             additions,
                             deletions,
-                            expected_revision,
+                            expected_revision: Some(expected_revision),
                         });
                     }
                     ParsedPatchOperation::Delete { path } => {
-                        let expected_revision = expected_revisions
+                        let requested_revision = expected_revisions
                             .get(&normalize_tool_map_path(&path))
                             .cloned();
                         let resolved = resolve_virtual_mount_target(
@@ -1311,9 +1351,17 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
                         let display_path = virtual_path_for_mount(mount, &relative_path);
                         let current =
-                            fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
+                            fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
                                 .await
                                 .map_err(|error| command_error(error.to_string()))?;
+                        fs::validate_expected_revision(
+                            &display_path,
+                            requested_revision.as_deref(),
+                            Some(&current.revision),
+                        )
+                        .map_err(|error| command_error(error.to_string()))?;
+                        let expected_revision =
+                            requested_revision.unwrap_or_else(|| current.revision.clone());
                         let deletion_count = if current.is_binary {
                             0
                         } else {
@@ -1330,7 +1378,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             bytes_written: 0,
                             additions: 0,
                             deletions: deletion_count,
-                            expected_revision,
+                            expected_revision: Some(expected_revision),
                         });
                     }
                 }
@@ -1424,6 +1472,25 @@ mod tests {
 
         assert_eq!(resolved.mount.project_id, "api");
         assert_eq!(resolved.relative_path, "src/main.rs");
+    }
+
+    #[test]
+    fn resolve_virtual_mount_rejects_paths_that_escape_a_mount() {
+        let mounts = vec![mount("web", "web", None)];
+
+        for path in [
+            "../secret.txt",
+            "web/../../secret.txt",
+            "/tmp/secret.txt",
+            "C:/secret.txt",
+        ] {
+            let error = resolve(&mounts, path, Some("web"), None).expect_err("unsafe path");
+            assert!(
+                error.contains("relative to a project mount")
+                    || error.contains("escapes its project mount"),
+                "unexpected error for {path}: {error}"
+            );
+        }
     }
 
     #[test]
