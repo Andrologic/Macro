@@ -61,4 +61,36 @@ describe('useConversationGoalStore', () => {
       useConversationGoalStore.getState().goalsByConversationId['conversation-1']?.status,
     ).toBe('achieved');
   });
+
+  it('applies an auditor verdict only to the expected goal revision', () => {
+    const store = useConversationGoalStore.getState();
+    const goal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Ship it',
+    });
+
+    expect(
+      useConversationGoalStore.getState().applyAuditorVerdictIfCurrent(
+        'conversation-1',
+        goal.goalId,
+        goal.revision + 1,
+        achievedVerdict,
+      ),
+    ).toBe(false);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conversation-1'],
+    ).toMatchObject({ revision: goal.revision, status: 'active_ready', auditCount: 0 });
+
+    expect(
+      useConversationGoalStore.getState().applyAuditorVerdictIfCurrent(
+        'conversation-1',
+        goal.goalId,
+        goal.revision,
+        achievedVerdict,
+      ),
+    ).toBe(true);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conversation-1'],
+    ).toMatchObject({ revision: goal.revision + 1, status: 'achieved', auditCount: 1 });
+  });
 });

@@ -73,6 +73,8 @@ export interface ChildTurnExecutor<
 }
 
 export interface SubagentRunRequest<TInput = unknown> {
+  /** Optional caller-owned id, useful when a durable recorder needs metadata before queuing. */
+  runId?: string;
   parentConversationId: string;
   parentDepth: number;
   input: TInput;

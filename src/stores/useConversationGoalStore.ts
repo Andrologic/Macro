@@ -26,6 +26,12 @@ interface ConversationGoalState {
     conversationId: string,
     verdict: ConversationGoalVerdict,
   ) => void;
+  applyAuditorVerdictIfCurrent: (
+    conversationId: string,
+    goalId: string,
+    expectedRevision: number,
+    verdict: ConversationGoalVerdict,
+  ) => boolean;
   clearGoal: (conversationId: string) => void;
 }
 
@@ -42,6 +48,34 @@ const updateGoal = (
   revision: goal.revision + 1,
   updatedAt: new Date().toISOString(),
 });
+
+const applyVerdictToGoal = (
+  goal: ConversationGoalRecord,
+  verdict: ConversationGoalVerdict,
+): ConversationGoalRecord => {
+  const now = new Date().toISOString();
+  const status: ConversationGoalRecord['status'] =
+    verdict.verdict === 'achieved'
+      ? 'achieved'
+      : verdict.verdict === 'needs_user'
+        ? 'awaiting_user'
+        : verdict.verdict === 'continue'
+          ? 'continuation_pending'
+          : 'paused';
+
+  return updateGoal(goal, {
+    status,
+    latestVerdict: verdict,
+    lastAuditedAt: now,
+    awaitingUserSinceAt: status === 'awaiting_user' ? now : null,
+    auditCount: goal.auditCount + 1,
+    continuationCount:
+      status === 'continuation_pending'
+        ? goal.continuationCount + 1
+        : goal.continuationCount,
+    lastError: null,
+  });
+};
 
 export const useConversationGoalStore = create<ConversationGoalState>((set) => ({
   goalsByConversationId: {},
@@ -107,34 +141,41 @@ export const useConversationGoalStore = create<ConversationGoalState>((set) => (
       const goal = state.goalsByConversationId[conversationId];
       if (!goal || goal.status === 'achieved') return state;
 
-      const now = new Date().toISOString();
-      const status: ConversationGoalRecord['status'] =
-        verdict.verdict === 'achieved'
-          ? 'achieved'
-          : verdict.verdict === 'needs_user'
-            ? 'awaiting_user'
-            : verdict.verdict === 'continue'
-              ? 'continuation_pending'
-              : 'paused';
-
       return {
         goalsByConversationId: {
           ...state.goalsByConversationId,
-          [conversationId]: updateGoal(goal, {
-            status,
-            latestVerdict: verdict,
-            lastAuditedAt: now,
-            awaitingUserSinceAt: status === 'awaiting_user' ? now : null,
-            auditCount: goal.auditCount + 1,
-            continuationCount:
-              status === 'continuation_pending'
-                ? goal.continuationCount + 1
-                : goal.continuationCount,
-            lastError: null,
-          }),
+          [conversationId]: applyVerdictToGoal(goal, verdict),
         },
       };
     });
+  },
+
+  applyAuditorVerdictIfCurrent: (
+    conversationId,
+    goalId,
+    expectedRevision,
+    verdict,
+  ) => {
+    let applied = false;
+    set((state) => {
+      const goal = state.goalsByConversationId[conversationId];
+      if (
+        !goal ||
+        goal.status === 'achieved' ||
+        goal.goalId !== goalId ||
+        goal.revision !== expectedRevision
+      ) {
+        return state;
+      }
+      applied = true;
+      return {
+        goalsByConversationId: {
+          ...state.goalsByConversationId,
+          [conversationId]: applyVerdictToGoal(goal, verdict),
+        },
+      };
+    });
+    return applied;
   },
 
   clearGoal: (conversationId) => {
