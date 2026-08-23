@@ -69,7 +69,6 @@ async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
 
     // Run migrations
     run_migrations(&pool).await?;
-    agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
 
     Ok(pool)
 }
@@ -2176,6 +2175,31 @@ mod tests {
 
         let reapplied_pool = create_pool(&db_path).await.expect("reapplied pool");
         assert_migration_001_applied(&reapplied_pool).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_recovers_agent_run_migration_metadata_without_recreating_its_table() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let pool = create_pool(&db_path).await.expect("initial pool");
+        sqlx::query("DROP TABLE schema_migrations")
+            .execute(&pool)
+            .await
+            .expect("drop migration metadata");
+        drop(pool);
+
+        let recovered = create_pool(&db_path)
+            .await
+            .expect("recover migration metadata");
+        assert_migration_001_applied(&recovered).await;
+        assert_migration_002_applied(&recovered).await;
+        let table_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+        )
+        .fetch_one(&recovered)
+        .await
+        .expect("agent runs table count");
+        assert_eq!(table_count, 1);
     }
 
     #[tokio::test]
