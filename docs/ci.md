@@ -29,6 +29,14 @@ runs pay no coverage cost. Native and full profiles use `cargo test
 --all-targets` so examples, binaries, and library tests share one compilation;
 the separate documentation-test pass reuses those artifacts.
 
+`bun run test:coverage` clears stale reports before running. It merges exact
+application line counts into `coverage/lcov.info` and writes global, per-domain,
+missing-report, and never-instrumented-file details to `coverage/summary.json`.
+On a filtered coverage run, the never-instrumented list applies only to that
+subset and is labeled as such in the console. The command still writes a partial
+summary when a test fails. Bun 1.3.14 LCOV reports do not identify functions or
+branches, so the summary marks those metrics as unavailable.
+
 The successful result is cached outside the worktree for the exact HEAD, target
 base, platform, and profile. Running `bun run ci:pre-push` manually immediately
 before `git push` therefore does not duplicate the expensive work. A dirty

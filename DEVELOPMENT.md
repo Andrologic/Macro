@@ -156,7 +156,14 @@ Notes on validation cost and behavior:
   `MACRO_TEST_CONCURRENCY`). Pass a filter such as `bun run test composer` to
   run a subset, or `--list` to print the selected files.
 - Coverage is opt-in through `bun run test:coverage`; plain runs skip
-  instrumentation entirely. Reports land in `coverage/tests/<file>/`.
+  instrumentation entirely. Each run clears stale data, keeps isolated raw
+  reports in `coverage/tests/<file>/`, and writes the merged application-line
+  report to `coverage/lcov.info` plus a domain summary in
+  `coverage/summary.json`. The summary lists application files that no test
+  loaded. On a filtered coverage run, that list describes only the selected
+  subset and the console summary labels it accordingly. Bun 1.3.14 does not
+  expose function or branch identities in LCOV, so
+  those metrics remain explicitly unavailable instead of being approximated.
 - `bun run build` type-checks then bundles; it is meant for humans and release
   packaging (`tauri:build`). Local CI profiles typecheck once and then build
   with Vite only (`build:vite`), so tsc never runs twice.
