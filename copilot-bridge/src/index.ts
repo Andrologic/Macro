@@ -47,19 +47,29 @@ const DEFAULT_IGNORED_ENTRY_NAMES = new Set([
 const DEFAULT_FRONTEND_TOOL_TIMEOUT_MS = 300_000;
 const TERMINAL_RUN_TIMEOUT_MARGIN_MS = 30_000;
 const MAX_TERMINAL_RUN_TIMEOUT_MS = 30 * 60 * 1000;
-const DEFAULT_COPILOT_SEND_TIMEOUT_MS = 30 * 60 * 1000;
+const COPILOT_COMPLETION_MARGIN_MS = 30_000;
+const DEFAULT_COPILOT_SEND_TIMEOUT_MS =
+  MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS + COPILOT_COMPLETION_MARGIN_MS;
 const MIN_COPILOT_SEND_TIMEOUT_MS = 60 * 1000;
 const TOOL_HOST_URL_ENV = 'MACRO_TOOL_HOST_URL';
 const TOOL_HOST_BEARER_TOKEN_ENV = 'MACRO_TOOL_HOST_BEARER_TOKEN';
 
 type JsonRecord = Record<string, unknown>;
 
-const frontendToolTimeoutMs = (toolName: string, args: JsonRecord): number => {
+const frontendToolTimeoutMs = (
+  toolName: string,
+  args: JsonRecord,
+  sessionTimeoutMs = DEFAULT_COPILOT_SEND_TIMEOUT_MS
+): number => {
+  const relayBudget = Math.max(1, sessionTimeoutMs - COPILOT_COMPLETION_MARGIN_MS);
   if (toolName === 'question' || toolName.startsWith('need_')) {
-    return DEFAULT_COPILOT_SEND_TIMEOUT_MS;
+    return Math.min(
+      MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
+      relayBudget
+    );
   }
   if (toolName !== 'terminal_run') {
-    return DEFAULT_FRONTEND_TOOL_TIMEOUT_MS;
+    return Math.min(DEFAULT_FRONTEND_TOOL_TIMEOUT_MS, relayBudget);
   }
 
   const requested = args.timeout_ms;
@@ -68,6 +78,7 @@ const frontendToolTimeoutMs = (toolName: string, args: JsonRecord): number => {
       ? Math.max(0, Math.floor(requested))
       : DEFAULT_FRONTEND_TOOL_TIMEOUT_MS - TERMINAL_RUN_TIMEOUT_MARGIN_MS;
   return Math.min(
+    relayBudget,
     MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
     Math.max(
       DEFAULT_FRONTEND_TOOL_TIMEOUT_MS,
@@ -463,6 +474,7 @@ class BridgeControlChannel {
     toolCallId: string;
     toolName: string;
     args: JsonRecord;
+    sessionTimeoutMs: number;
   }): Promise<RelayToolResult> {
     if (this.pendingToolResults.has(params.toolCallId)) {
       return Promise.reject(
@@ -490,7 +502,7 @@ class BridgeControlChannel {
             `Timed out waiting for Macro to execute tool "${params.toolName}".`
           )
         );
-      }, frontendToolTimeoutMs(params.toolName, params.args));
+      }, frontendToolTimeoutMs(params.toolName, params.args, params.sessionTimeoutMs));
 
       this.pendingToolResults.set(params.toolCallId, {
         resolve,
@@ -2208,6 +2220,7 @@ const executeCopilotMacroTool = async (
       toolCallId: invocation?.toolCallId || `${toolId}_${randomUUID()}`,
       toolName: toolId,
       args,
+      sessionTimeoutMs: normalizeCopilotSendTimeoutMs(request.copilot_send_timeout_ms),
     });
     recordRelayResult?.(result);
     return result.result;

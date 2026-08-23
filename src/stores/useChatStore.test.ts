@@ -888,6 +888,14 @@ const fsReadFileWithOptionsMock = mock(async (_params: {
   size: 30,
   encoding: 'utf-8',
 }));
+const fsExistsMock = mock(async () => true);
+const fsWriteFileMock = mock(async (params: { path: string; content: string }) => ({
+  path: params.path,
+  bytes_written: new TextEncoder().encode(params.content).length,
+  created: false,
+  revision: 'written-revision',
+}));
+const fsDeleteMock = mock(async () => undefined);
 let streamingWebSearchConfig = {
   enableWebSearch: false,
   enableWebFetch: false,
@@ -1046,6 +1054,9 @@ const dbSetAppSettingMock = mock(async ({ key, valueJson }: {
 }) => {
   appSettingValues.set(key, valueJson);
 });
+const dbDeleteAppSettingMock = mock(async (key: string) =>
+  appSettingValues.delete(key)
+);
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
@@ -1792,6 +1803,7 @@ const registerUseChatStoreMocks = async () => {
     deleteConversations: deleteConversationsMock,
     dbGetAppSetting: dbGetAppSettingMock,
     dbSetAppSetting: dbSetAppSettingMock,
+    dbDeleteAppSetting: dbDeleteAppSettingMock,
     gitBranchList: gitBranchListMock,
     getChatBootstrapSnapshot: getChatBootstrapSnapshotMock,
     getChatSnapshot: getChatSnapshotMock,
@@ -1825,8 +1837,11 @@ const registerUseChatStoreMocks = async () => {
 	      exitCode: 0,
 	      timedOut: false,
 	      truncated: false,
-	    }),
+    }),
+    fsExists: fsExistsMock,
     fsReadFileWithOptions: fsReadFileWithOptionsMock,
+	    fsWriteFile: fsWriteFileMock,
+	    fsDelete: fsDeleteMock,
 	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
     dbTrimConversationReplay: dbTrimConversationReplayMock,
@@ -2481,6 +2496,9 @@ const useChatStoreScenarioContext = {
   fetchWebPageMock,
   flushAsyncWork,
   fsReadFileWithOptionsMock,
+  fsExistsMock,
+  fsWriteFileMock,
+  fsDeleteMock,
   expectArchitectSelection,
   getArchitectPlanActivationPayloadMock,
   getArchitectPlanMock,
@@ -2690,6 +2708,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appSettingValues.clear();
     dbGetAppSettingMock.mockClear();
     dbSetAppSettingMock.mockClear();
+    dbDeleteAppSettingMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();
     getArchitectPlanChatTranscriptMock.mockClear();
@@ -2703,6 +2722,24 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     webSearchMock.mockClear();
     fetchWebPageMock.mockClear();
     fsReadFileWithOptionsMock.mockClear();
+    fsReadFileWithOptionsMock.mockImplementation(async () => ({
+      content: 'Workspace file body from disk.',
+      language: 'typescript',
+      is_binary: false,
+      size: 30,
+      encoding: 'utf-8',
+    }));
+    fsExistsMock.mockClear();
+    fsExistsMock.mockImplementation(async () => true);
+    fsWriteFileMock.mockClear();
+    fsWriteFileMock.mockImplementation(async (params) => ({
+      path: params.path,
+      bytes_written: new TextEncoder().encode(params.content).length,
+      created: false,
+      revision: 'written-revision',
+    }));
+    fsDeleteMock.mockClear();
+    fsDeleteMock.mockImplementation(async () => undefined);
     streamingWebSearchConfig = {
       enableWebSearch: false,
       enableWebFetch: false,

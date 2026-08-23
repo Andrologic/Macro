@@ -602,10 +602,10 @@ async fn resolve_confined_wsl_repo_path_for_workspace(
             path
         )));
     }
-    fs::ensure_wsl_path_within_workspace(&wsl_workspace, &resolved, Some(false))
+    let canonical = fs::canonical_wsl_path_within_workspace(&wsl_workspace, &resolved, Some(false))
         .await
         .map_err(|error| command_error(error.to_string()))?;
-    Ok(Some(resolved))
+    Ok(Some(canonical))
 }
 
 fn validate_agent_git_repo_path(repo_path: &str, workspace: &Path) -> CommandResult<PathBuf> {
@@ -1095,7 +1095,12 @@ async fn content_mutation_key(change: &PendingFileChange) -> CommandResult<Strin
     if let Some(target) =
         resolve_wsl_path_for_workspace(&change.effective_workspace, &change.effective_path)?
     {
-        return Ok(wsl_content_mutation_key(&target));
+        let workspace = parse_wsl_unc_path(&change.effective_workspace.to_string_lossy())
+            .ok_or_else(|| command_error("Invalid WSL workspace path"))?;
+        let canonical = fs::canonical_wsl_path_within_workspace(&workspace, &target, Some(false))
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+        return Ok(wsl_content_mutation_key(&canonical));
     }
     Ok(native_content_mutation_key(&change.absolute_path).await)
 }
@@ -6045,6 +6050,14 @@ pub async fn db_set_app_setting(
     let pool = get_pool(&pool).await?;
 
     repository::set_app_setting(&pool, &key, &value_json)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn db_delete_app_setting(pool: State<'_, DbPool>, key: String) -> CommandResult<bool> {
+    let pool = get_pool(&pool).await?;
+    repository::delete_app_setting(&pool, &key)
         .await
         .map_err(Into::into)
 }

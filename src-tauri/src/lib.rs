@@ -676,6 +676,7 @@ pub fn run() {
             commands::db_set_setting,
             commands::db_get_app_setting,
             commands::db_set_app_setting,
+            commands::db_delete_app_setting,
             commands::db_compare_and_swap_app_setting,
             commands::db_get_project_context_state,
             commands::db_upsert_project_context_state,

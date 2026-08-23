@@ -8,11 +8,15 @@ import type {
 import * as tauriIpc from "./tauriIpc";
 
 const STORAGE_KEY_PREFIX = "agentCodeCheckpoints:";
+const REPLAY_RECOVERY_KEY_PREFIX = "agentCodeReplayRecovery:";
 const MAX_CHECKPOINTS_PER_CONVERSATION = 200;
 const checkpointWriteQueues = new Map<string, Promise<void>>();
 
 const getStorageKey = (conversationId: string): string =>
   `${STORAGE_KEY_PREFIX}${conversationId}`;
+
+export const getAgentCodeReplayRecoveryKey = (conversationId: string): string =>
+  `${REPLAY_RECOVERY_KEY_PREFIX}${conversationId}`;
 
 const cloneCheckpoints = (
   checkpoints: AgentCodeCheckpoint[],
@@ -504,6 +508,48 @@ export const hydrateAgentCodeReplayPreviewCurrentState = async (
   };
 };
 
+const restoreReplaySnapshot = async (
+  file: AgentCodeReplayPreviewFile,
+  snapshot: AgentCodeCheckpointFileSnapshot,
+  expectedCurrent?: AgentCodeCheckpointFileSnapshot,
+): Promise<void> => {
+  const commonOptions = {
+    workspaceScope: (file.workspaceScope || undefined) as
+      | tauriIpc.WorkspaceScope
+      | undefined,
+    workspacePath: file.workspacePath ?? undefined,
+  };
+
+  if (!snapshot.exists) {
+    const exists = await tauriIpc.fsExists(file.realPath, commonOptions);
+    if (exists) {
+      await tauriIpc.fsDelete({
+        path: file.realPath,
+        expectedRevision: expectedCurrent?.revision ?? undefined,
+        ...commonOptions,
+      });
+    }
+    return;
+  }
+
+  if (snapshot.content === null) {
+    throw new Error(`Cannot restore ${file.path}: checkpoint content is missing.`);
+  }
+
+  await tauriIpc.fsWriteFile({
+    path: file.realPath,
+    content: snapshot.content,
+    createDirs: true,
+    allowOutsideWorkspace: false,
+    expectedRevision: expectedCurrent
+      ? expectedCurrent.exists
+        ? expectedCurrent.revision ?? undefined
+        : "absent"
+      : undefined,
+    ...commonOptions,
+  });
+};
+
 export const restoreAgentCodeReplayPreview = async (
   preview: AgentCodeReplayPreview,
 ): Promise<() => Promise<void>> => {
@@ -525,62 +571,20 @@ export const restoreAgentCodeReplayPreview = async (
     );
   }
 
-  const restoreSnapshot = async (
-    file: AgentCodeReplayPreviewFile,
-    snapshot: AgentCodeCheckpointFileSnapshot,
-    expectedCurrent?: AgentCodeCheckpointFileSnapshot,
-  ): Promise<void> => {
-    const commonOptions = {
-      workspaceScope: (file.workspaceScope || undefined) as
-        | tauriIpc.WorkspaceScope
-        | undefined,
-      workspacePath: file.workspacePath ?? undefined,
-    };
-
-    if (!snapshot.exists) {
-      const exists = await tauriIpc.fsExists(file.realPath, commonOptions);
-      if (exists) {
-        await tauriIpc.fsDelete({
-          path: file.realPath,
-          expectedRevision: expectedCurrent?.revision ?? undefined,
-          ...commonOptions,
-        });
-      }
-      return;
-    }
-
-    if (snapshot.content === null) {
-      throw new Error(`Cannot restore ${file.path}: checkpoint content is missing.`);
-    }
-
-    await tauriIpc.fsWriteFile({
-      path: file.realPath,
-      content: snapshot.content,
-      createDirs: true,
-      allowOutsideWorkspace: false,
-      expectedRevision: expectedCurrent
-        ? expectedCurrent.exists
-          ? expectedCurrent.revision ?? undefined
-          : "absent"
-        : undefined,
-      ...commonOptions,
-    });
-  };
-
   const restored: Array<{
     file: AgentCodeReplayPreviewFile;
     current: AgentCodeCheckpointFileSnapshot;
   }> = [];
   try {
     for (const { file, current } of currentSnapshots) {
-      await restoreSnapshot(file, file.target, current);
+      await restoreReplaySnapshot(file, file.target, current);
       restored.push({ file, current });
     }
   } catch (error) {
     const rollbackFailures: string[] = [];
     for (const { file, current } of restored.reverse()) {
       try {
-        await restoreSnapshot(file, current, file.target);
+        await restoreReplaySnapshot(file, current, file.target);
       } catch (rollbackError) {
         rollbackFailures.push(`${file.path}: ${String(rollbackError)}`);
       }
@@ -597,7 +601,7 @@ export const restoreAgentCodeReplayPreview = async (
     const rollbackFailures: string[] = [];
     for (const { file, current } of restored.slice().reverse()) {
       try {
-        await restoreSnapshot(file, current, file.target);
+        await restoreReplaySnapshot(file, current, file.target);
       } catch (error) {
         rollbackFailures.push(`${file.path}: ${String(error)}`);
       }
@@ -608,6 +612,49 @@ export const restoreAgentCodeReplayPreview = async (
       );
     }
   };
+};
+
+export const buildAgentCodeReplayRollbackPreview = (
+  preview: AgentCodeReplayPreview,
+): AgentCodeReplayPreview => ({
+  ...preview,
+  affectedFiles: preview.affectedFiles.map((file) => {
+    if (!file.current) {
+      throw new Error(`Cannot prepare replay recovery for ${file.path}: current snapshot is missing.`);
+    }
+    return {
+      ...file,
+      target: copySnapshot(file.current),
+      expectedCurrent: copySnapshot(file.target),
+      current: copySnapshot(file.target),
+      hasExternalChanges: false,
+      allowOutsideWorkspace: false,
+    };
+  }),
+  hasExternalChanges: false,
+});
+
+export const recoverAgentCodeReplayPreview = async (
+  rollbackPreview: AgentCodeReplayPreview,
+): Promise<void> => {
+  const failures: string[] = [];
+  for (const file of rollbackPreview.affectedFiles) {
+    try {
+      const current = await readCurrentSnapshot(file);
+      if (snapshotsEqual(current, file.target)) {
+        continue;
+      }
+      if (!file.expectedCurrent || !snapshotsEqual(current, file.expectedCurrent)) {
+        throw new Error("the file differs from both the original and rewound snapshots");
+      }
+      await restoreReplaySnapshot(file, file.target, current);
+    } catch (error) {
+      failures.push(`${file.path}: ${String(error)}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`Unable to recover replayed code: ${failures.join("; ")}`);
+  }
 };
 
 export const pruneAgentCodeCheckpointsToMessageIds = (

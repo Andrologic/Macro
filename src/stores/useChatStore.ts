@@ -279,12 +279,15 @@ import {
 } from "../services/modelContextLimits";
 import {
   appendAgentCodeCheckpoint,
+  buildAgentCodeReplayRollbackPreview,
   buildAgentCodeReplayPreview,
   clearAgentCodeCheckpoints,
   createAgentCodeCheckpoint,
   hydrateAgentCodeReplayPreviewCurrentState,
+  getAgentCodeReplayRecoveryKey,
   loadAgentCodeCheckpoints,
   pruneAgentCodeCheckpointsToMessageIds,
+  recoverAgentCodeReplayPreview,
   restoreAgentCodeReplayPreview,
   saveAgentCodeCheckpoints,
 } from "../services/agentCodeCheckpoints";
@@ -1124,6 +1127,7 @@ interface ChatStore {
   restoreAgentCodeForReplay: (
     preview: AgentCodeReplayPreview,
   ) => Promise<void>;
+  rollbackPendingAgentCodeReplay: (conversationId: string) => Promise<void>;
   editMessage: (
     messageId: string,
     newContent: string,
@@ -1404,6 +1408,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
     string,
     () => Promise<void>
   >();
+  const pendingAgentCodeReplayMarkersByConversationId = new Map<
+    string,
+    {
+      recoveryKey: string;
+      launchedValueJson: string;
+    }
+  >();
+  const launchedAgentCodeReplayConversationIds = new Set<string>();
+
+  const clearPendingAgentCodeReplay = (conversationId: string): void => {
+    pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
+    pendingAgentCodeReplayMarkersByConversationId.delete(conversationId);
+    launchedAgentCodeReplayConversationIds.delete(conversationId);
+  };
+
+  const forceRollbackPendingAgentCodeReplay = async (
+    conversationId: string,
+  ): Promise<void> => {
+    const rollback = pendingAgentCodeReplayRollbacksByConversationId.get(conversationId);
+    if (!rollback) return;
+    await rollback();
+    clearPendingAgentCodeReplay(conversationId);
+    replayRecoveryBlockedConversationIds.delete(conversationId);
+  };
+
+  const markPendingAgentCodeReplayLaunched = async (
+    conversationId: string,
+  ): Promise<void> => {
+    const marker = pendingAgentCodeReplayMarkersByConversationId.get(conversationId);
+    if (!marker) return;
+    await tauriIpc.dbSetAppSetting({
+      key: marker.recoveryKey,
+      valueJson: marker.launchedValueJson,
+    });
+    launchedAgentCodeReplayConversationIds.add(conversationId);
+  };
+
+  const commitPendingAgentCodeReplay = async (
+    conversationId: string,
+  ): Promise<void> => {
+    const marker = pendingAgentCodeReplayMarkersByConversationId.get(conversationId);
+    if (!marker) return;
+    await tauriIpc.dbDeleteAppSetting(marker.recoveryKey);
+    clearPendingAgentCodeReplay(conversationId);
+    replayRecoveryBlockedConversationIds.delete(conversationId);
+  };
 
   const serializeToolApproval = async <T>(
     conversationId: string,
@@ -8971,11 +9021,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     agentTypeAtSend: AgentType | null;
     replayRecovery?: {
       replayId: string;
-      onLaunched: () => void;
-      onProgress: () => void;
+      onLaunched: () => Promise<void>;
+      onProgress: () => Promise<void>;
       onFailedBeforeProgress: () => Promise<void>;
     };
-  }) => {
+  }): Promise<boolean> => {
     let assistantMessageId: string | null = null;
     const agentTypeAtSend = params.agentTypeAtSend;
     const cleanupCancelledAssistantPlaceholder = async (
@@ -9035,7 +9085,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.providerSupportsNativeToolCalling,
       });
       if (!isCurrentPreparation()) {
-        return;
+        return false;
       }
 
       const assistantMessage = await buildAssistantMessageForSend({
@@ -9045,7 +9095,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       if (!isCurrentPreparation()) {
         await cleanupCancelledAssistantPlaceholder(assistantMessage.id);
-        return;
+        return false;
       }
       rememberAssistantTurnContext(
         assistantMessage.id,
@@ -9069,7 +9119,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : runtime,
       );
       if (!isCurrentPreparation()) {
-        return;
+        return false;
       }
 
       if (params.replayRecovery) {
@@ -9077,7 +9127,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId: params.conversationId,
           replayId: params.replayRecovery.replayId,
         });
-        params.replayRecovery.onLaunched();
+        await params.replayRecovery.onLaunched();
       }
 
       startAssistantStream({
@@ -9124,6 +9174,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
           : undefined,
       });
+      return true;
     } catch (error) {
       if (params.manualFeatureDraftRecovery) {
         await rollbackManualFeatureDraftAfterFailedLaunch(
@@ -9674,7 +9725,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     overflowRecoveryAttempted?: boolean;
     replayRecovery?: {
       replayId: string;
-      onProgress: () => void;
+      onProgress: () => Promise<void>;
       onFailedBeforeProgress: () => Promise<void>;
     };
   }) => {
@@ -9767,15 +9818,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const finalizeReplayRecoveryAfterProgress = () => {
       if (!params.replayRecovery || replayRecoveryFinalized) return;
       replayRecoveryFinalized = true;
-      params.replayRecovery.onProgress();
-      void tauriIpc
-        .dbFinalizeConversationReplay({
+      void (async () => {
+        await params.replayRecovery!.onProgress();
+        await tauriIpc.dbFinalizeConversationReplay({
           conversationId: params.conversationId,
-          replayId: params.replayRecovery.replayId,
-        })
-        .catch((error) => {
-          console.error("Replay recovery finalization remains pending", error);
+          replayId: params.replayRecovery!.replayId,
         });
+      })().catch((error) => {
+        console.error("Replay recovery finalization remains pending", error);
+      });
     };
 
     const maybeMarkImplementTaskFailedAfterStreamError = async () => {
@@ -11663,10 +11714,75 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (tauriIpc.isTauriAvailable()) {
       let restoredAnyReplay = false;
       for (const conversation of conversations) {
+        const codeRecoveryKey = getAgentCodeReplayRecoveryKey(conversation.id);
+        const codeRecoveryMarker = await tauriIpc.dbGetAppSetting(codeRecoveryKey);
+        let codeRecovery:
+          | {
+              phase: "pending" | "launched";
+              rollbackPreview: AgentCodeReplayPreview;
+            }
+          | null = null;
+        if (codeRecoveryMarker) {
+          try {
+            const recovery = JSON.parse(codeRecoveryMarker.value_json) as {
+              version?: unknown;
+              conversationId?: unknown;
+              phase?: unknown;
+              rollbackPreview?: unknown;
+            };
+            if (
+              recovery.version !== 1 ||
+              recovery.conversationId !== conversation.id ||
+              (recovery.phase !== "pending" && recovery.phase !== "launched") ||
+              !recovery.rollbackPreview ||
+              typeof recovery.rollbackPreview !== "object"
+            ) {
+              throw new Error("The agent code replay recovery marker is invalid.");
+            }
+            codeRecovery = {
+              phase: recovery.phase,
+              rollbackPreview: recovery.rollbackPreview as AgentCodeReplayPreview,
+            };
+            if (codeRecovery.phase === "pending") {
+              await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+              await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+              codeRecovery = null;
+              replayRecoveryBlockedConversationIds.delete(conversation.id);
+            }
+          } catch (error) {
+            replayRecoveryBlockedConversationIds.add(conversation.id);
+            replayRecoveryError =
+              "Replay recovery is pending for a conversation. Its code and transcript are preserved fail-closed; reload Macro to retry.";
+            console.error(
+              "Agent code replay recovery is pending for conversation",
+              conversation.id,
+              error,
+            );
+            continue;
+          }
+        }
         const marker = await tauriIpc.dbGetAppSetting(
           `conversationReplayRecovery:${conversation.id}`,
         );
-        if (!marker) continue;
+        if (!marker) {
+          if (codeRecovery?.phase === "launched") {
+            try {
+              await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+              await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+              replayRecoveryBlockedConversationIds.delete(conversation.id);
+            } catch (error) {
+              replayRecoveryBlockedConversationIds.add(conversation.id);
+              replayRecoveryError =
+                "Replay recovery is pending for a conversation. Its code is preserved fail-closed; reload Macro to retry.";
+              console.error(
+                "Agent code replay recovery is pending for conversation",
+                conversation.id,
+                error,
+              );
+            }
+          }
+          continue;
+        }
         try {
           const recovery = JSON.parse(marker.value_json) as {
             replay_id?: unknown;
@@ -11699,6 +11815,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             // only removes that exact launched marker; otherwise it remains
             // fail-closed and is retried at the next bootstrap.
             if (recovery.phase === "launched") {
+              if (codeRecovery?.phase === "launched") {
+                await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+                codeRecovery = null;
+              }
               await tauriIpc.dbFinalizeConversationReplay({
                 conversationId: conversation.id,
                 replayId,
@@ -11712,6 +11832,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
               }
             }
             throw new Error("The replay recovery marker could not be applied safely.");
+          }
+          if (codeRecovery?.phase === "launched") {
+            await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+            await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+            codeRecovery = null;
           }
           replayRecoveryBlockedConversationIds.delete(conversation.id);
           restoredAnyReplay = true;
@@ -14635,19 +14760,58 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (preview.affectedFiles.length === 0) {
         return;
       }
+      const rollbackPreview = buildAgentCodeReplayRollbackPreview(preview);
+      const recoveryKey = getAgentCodeReplayRecoveryKey(preview.conversationId);
+      const recoveryMarker = {
+        version: 1,
+        conversationId: preview.conversationId,
+        messageId: preview.messageId,
+        rollbackPreview,
+      };
+      const pendingValueJson = JSON.stringify({
+        ...recoveryMarker,
+        phase: "pending",
+      });
+      const launchedValueJson = JSON.stringify({
+        ...recoveryMarker,
+        phase: "launched",
+      });
       try {
-        const rollback = await restoreAgentCodeReplayPreview(preview);
+        await tauriIpc.dbSetAppSetting({
+          key: recoveryKey,
+          valueJson: pendingValueJson,
+        });
+        await restoreAgentCodeReplayPreview(preview);
+        pendingAgentCodeReplayMarkersByConversationId.set(
+          preview.conversationId,
+          { recoveryKey, launchedValueJson },
+        );
         pendingAgentCodeReplayRollbacksByConversationId.set(
           preview.conversationId,
-          rollback,
+          async () => {
+            await recoverAgentCodeReplayPreview(rollbackPreview);
+            await tauriIpc.dbDeleteAppSetting(recoveryKey);
+          },
         );
       } catch (error) {
+        try {
+          await recoverAgentCodeReplayPreview(rollbackPreview);
+          await tauriIpc.dbDeleteAppSetting(recoveryKey);
+        } catch (recoveryError) {
+          replayRecoveryBlockedConversationIds.add(preview.conversationId);
+          console.error("Agent code replay recovery remains pending:", recoveryError);
+        }
         const normalized = toServiceError(error);
         set({ lastError: normalized.message, sendState: "error" });
         throw buildSendError(
           `Failed to restore code checkpoint before replay: ${normalized.message}`,
         );
       }
+    },
+
+    rollbackPendingAgentCodeReplay: async (conversationId) => {
+      if (launchedAgentCodeReplayConversationIds.has(conversationId)) return;
+      await forceRollbackPendingAgentCodeReplay(conversationId);
     },
 
     editMessage: async (messageId, newContent, options) => {
@@ -14991,7 +15155,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return;
         }
 
-        await restartAssistantFromEditedMessage({
+        const replayLaunched = await restartAssistantFromEditedMessage({
           sessionId,
           turnId,
           messageId,
@@ -15012,33 +15176,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
           replayRecovery: replayPrepared
             ? {
                 replayId,
-                onLaunched: () => {
+                onLaunched: async () => {
+                  await markPendingAgentCodeReplayLaunched(conversationId);
                   replayPrepared = false;
                 },
-                onProgress: () => {
+                onProgress: async () => {
+                  await commitPendingAgentCodeReplay(conversationId);
                   replayRecoveryActive = false;
                 },
-                onFailedBeforeProgress: restoreReplayRecovery,
+                onFailedBeforeProgress: async () => {
+                  await restoreReplayRecovery();
+                  if (!replayRecoveryActive) {
+                    await forceRollbackPendingAgentCodeReplay(conversationId);
+                  }
+                },
               }
             : undefined,
         });
-        committedCodeReplay = true;
-        pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
+        committedCodeReplay = replayLaunched;
       } catch (error) {
         await restoreReplayRecovery();
-        if (!committedCodeReplay) {
-          const rollback = pendingAgentCodeReplayRollbacksByConversationId.get(
-            conversationId,
-          );
-          pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
-          if (rollback) {
-            try {
-              await rollback();
-            } catch (rollbackError) {
-              console.error("Failed to roll back replayed code:", rollbackError);
-            }
-          }
-        }
         if (manualFeatureDraftRecovery) {
           await rollbackManualFeatureDraftAfterFailedLaunch(
             manualFeatureDraftRecovery,
@@ -15048,6 +15205,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
           applyAssistantLaunchError(conversationId, sessionId, null, error, {
             setSendState: true,
           });
+        }
+      } finally {
+        if (!committedCodeReplay && replayRecoveryActive) {
+          await restoreReplayRecovery();
+        }
+        if (!committedCodeReplay && !replayRecoveryActive) {
+          try {
+            await forceRollbackPendingAgentCodeReplay(conversationId);
+          } catch (rollbackError) {
+            replayRecoveryBlockedConversationIds.add(conversationId);
+            console.error("Failed to roll back replayed code:", rollbackError);
+          }
         }
       }
     },
@@ -15069,6 +15238,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingArchitectConversationIdsByPlanKey.clear();
       pendingArchitectConversationDetailsById.clear();
       pendingAgentCodeReplayRollbacksByConversationId.clear();
+      pendingAgentCodeReplayMarkersByConversationId.clear();
+      launchedAgentCodeReplayConversationIds.clear();
       cancelStream();
       set({
         conversationRuntimeById: {},

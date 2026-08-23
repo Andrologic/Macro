@@ -29,12 +29,12 @@ afterEach(() => {
 });
 
 describe('copilot bridge tool registration', () => {
-  it('normalizes the Copilot send timeout with a 30 minute default', async () => {
+  it('normalizes the Copilot send timeout with room for tool and completion margins', async () => {
     const { __testables } = await loadBridge();
 
-    expect(__testables.normalizeCopilotSendTimeoutMs(undefined)).toBe(1_800_000);
-    expect(__testables.normalizeCopilotSendTimeoutMs(null)).toBe(1_800_000);
-    expect(__testables.normalizeCopilotSendTimeoutMs(30_000)).toBe(1_800_000);
+    expect(__testables.normalizeCopilotSendTimeoutMs(undefined)).toBe(1_860_000);
+    expect(__testables.normalizeCopilotSendTimeoutMs(null)).toBe(1_860_000);
+    expect(__testables.normalizeCopilotSendTimeoutMs(30_000)).toBe(1_860_000);
     expect(__testables.normalizeCopilotSendTimeoutMs(60_000)).toBe(60_000);
     expect(__testables.normalizeCopilotSendTimeoutMs(1_800_500.8)).toBe(1_800_500);
   });
@@ -43,8 +43,8 @@ describe('copilot bridge tool registration', () => {
     const { __testables } = await loadBridge();
 
     expect(__testables.frontendToolTimeoutMs('read', {})).toBe(300_000);
-    expect(__testables.frontendToolTimeoutMs('question', {})).toBe(1_800_000);
-    expect(__testables.frontendToolTimeoutMs('need_user_input', {})).toBe(1_800_000);
+    expect(__testables.frontendToolTimeoutMs('question', {})).toBe(1_830_000);
+    expect(__testables.frontendToolTimeoutMs('need_user_input', {})).toBe(1_830_000);
     expect(__testables.frontendToolTimeoutMs('terminal_run', {})).toBe(300_000);
     expect(
       __testables.frontendToolTimeoutMs('terminal_run', { timeout_ms: 900_000 }),
@@ -55,6 +55,10 @@ describe('copilot bridge tool registration', () => {
     expect(
       __testables.frontendToolTimeoutMs('terminal_run', { timeout_ms: 9_000_000 }),
     ).toBe(1_830_000);
+    expect(__testables.frontendToolTimeoutMs('question', {}, 60_000)).toBe(30_000);
+    expect(
+      __testables.frontendToolTimeoutMs('terminal_run', { timeout_ms: 900_000 }, 120_000),
+    ).toBe(90_000);
   });
 
   it('serializes compacted system checkpoints outside the visible transcript', async () => {

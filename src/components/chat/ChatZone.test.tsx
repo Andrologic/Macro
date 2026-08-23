@@ -155,6 +155,7 @@ export type MockChatState = {
   editMessage: ReturnType<typeof mock>;
   getAgentCodeReplayPreview: ReturnType<typeof mock>;
   restoreAgentCodeForReplay: ReturnType<typeof mock>;
+  rollbackPendingAgentCodeReplay: ReturnType<typeof mock>;
   getMessageImages: ReturnType<typeof mock>;
   setMessageImages: ReturnType<typeof mock>;
   compactConversationNow: ReturnType<typeof mock>;
@@ -766,6 +767,7 @@ const resetState = () => {
     editMessage: mock(async () => undefined),
     getAgentCodeReplayPreview: mock(async () => null),
     restoreAgentCodeForReplay: mock(async () => undefined),
+    rollbackPendingAgentCodeReplay: mock(async () => undefined),
     getMessageImages: mock(() => []),
     setMessageImages: mock(() => undefined),
     compactConversationNow: mock(async () => buildManualCompactionSkippedResult()),
