@@ -9,8 +9,9 @@ not by a target count.
 - During development, run the closest test file and the smallest relevant static
   check.
 - Before pushing, run `bun run ci:pre-push`. It selects changed tests, sibling
-  tests, and tests that directly import changed TypeScript modules. This fast
-  guard complements, rather than duplicates, the exhaustive GitHub checks.
+  tests, and tests that directly import changed TypeScript modules through a
+  relative path. This fast guard complements, rather than duplicates, the
+  exhaustive GitHub checks.
 - Run `bun run test` when shared frontend infrastructure, test setup, or broad
   application behavior changes.
 - Run `bun run test:coverage` for coverage audits. It is diagnostic and does not

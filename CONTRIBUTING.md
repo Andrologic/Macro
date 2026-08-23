@@ -48,10 +48,10 @@ interpretation, maintenance rules, and the current refactoring sequence.
 The gate compares the complete pull request range against `origin/develop` for
 feature branches and against `origin/main` for release and hotfix branches. It
 always checks pushed whitespace, versions, and tracked binaries. It then runs
-ESLint and related tests for changed TypeScript, `cargo fmt --check` for changed
-Rust, and the relevant workflow, updater, or translation policy checks. It does
-not install dependencies or run repository-wide typechecks, builds, or test
-suites.
+ESLint for changed scripts and related tests for changed TypeScript,
+`cargo fmt --check` for changed Rust, and the relevant dependency-lock,
+workflow, updater, or translation policy checks. It does not install
+dependencies or run repository-wide typechecks, builds, or test suites.
 
 GitHub's pull request checks are the merge authority and run the exhaustive
 profiles on clean runners. Use `bun run ci` when a full validation is useful

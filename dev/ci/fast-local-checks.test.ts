@@ -12,11 +12,11 @@ describe('fast local check selection', () => {
     expect(normalizePaths(['src\\b.ts', './src/a.ts', 'src/a.ts'])).toEqual(['src/a.ts', 'src/b.ts']);
   });
 
-  test('lints only existing TypeScript files', () => {
+  test('lints only existing JavaScript and TypeScript files', () => {
     expect(selectLintFiles(
-      ['src/kept.tsx', 'src/deleted.ts', 'src/style.css'],
+      ['src/kept.tsx', 'dev/check.mjs', 'src/deleted.ts', 'src/style.css'],
       (path) => path !== 'src/deleted.ts',
-    )).toEqual(['src/kept.tsx']);
+    )).toEqual(['dev/check.mjs', 'src/kept.tsx']);
   });
 
   test('selects changed tests, sibling tests, and direct importers', () => {
@@ -82,5 +82,19 @@ describe('fast local check selection', () => {
       'Tests liés (1 fichier)',
       'Formatage Rust',
     ]);
+  });
+
+  test('checks dependency manifests and local GitHub actions without installing', () => {
+    const plan = planFastLocalChecks(['bun.lock', 'bunfig.toml', '.github/actions/setup/action.yml']);
+    expect(plan.steps.map((step) => step.name)).toEqual([
+      'Versions cohérentes',
+      'Binaires suivis autorisés',
+      'Verrouillage des dépendances cohérent',
+      'Workflows GitHub valides',
+    ]);
+    expect(plan.steps[2]).toMatchObject({
+      args: ['install', '--frozen-lockfile', '--lockfile-only', '--dry-run'],
+      quiet: true,
+    });
   });
 });
