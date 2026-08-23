@@ -839,7 +839,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "terminal_run",
-    "Run a shell command inside an existing terminal session.",
+    "Run a shell command inside an existing terminal session. Output is capped at 1 MiB with an explicit head/tail truncation marker. The command is stopped when its agent generation is cancelled, and inherited output pipes are drained for a bounded interval.",
     {
       type: "object",
       properties: {
@@ -860,7 +860,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "terminal_read",
-    "Read the latest output and status from an existing terminal session.",
+    "Read the latest bounded output and status from an existing terminal session, including timeout, kill, exit-code, and truncation state.",
     {
       type: "object",
       properties: {
@@ -875,7 +875,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   objectTool(
     "terminal_kill",
-    "Kill the active process in an existing terminal session.",
+    "Kill the active process group in an existing terminal session, including descendants. A kill requested during process startup is retained until the process can be terminated.",
     {
       type: "object",
       properties: {

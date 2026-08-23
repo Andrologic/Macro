@@ -1281,6 +1281,7 @@ const terminalRunCommandFromChatMock = mock(
     sessionId: string;
     command: string;
     timeoutMs?: number | null;
+    executionId?: string | null;
   }) => ({
     id: sessionId,
     command,
@@ -1289,6 +1290,17 @@ const terminalRunCommandFromChatMock = mock(
     output: '',
     exit_code: null,
     timed_out: false,
+    updated_at: '2026-03-26T10:00:00.000Z',
+  })
+);
+const terminalKillSessionFromChatMock = mock(
+  async (sessionId: string, _executionId?: string | null) => ({
+    id: sessionId,
+    status: 'killed',
+    output: '',
+    exit_code: null,
+    timed_out: false,
+    output_truncated: false,
     updated_at: '2026-03-26T10:00:00.000Z',
   })
 );
@@ -1585,6 +1597,7 @@ const registerUseChatStoreMocks = async () => {
         addTerminalLine: () => undefined,
         createSession: terminalCreateSessionFromChatMock,
         runCommand: terminalRunCommandFromChatMock,
+        killSession: terminalKillSessionFromChatMock,
       }),
     },
   }));
@@ -2498,6 +2511,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     importMessagesMock.mockClear();
     terminalCreateSessionFromChatMock.mockClear();
     terminalRunCommandFromChatMock.mockClear();
+    terminalKillSessionFromChatMock.mockClear();
     resetSendChatNonStreamingImplementation();
     toolsStoreState.loadSettings.mockClear();
     toolsStoreState.getEnabledChatToolIds = () => [
@@ -13106,6 +13120,49 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
 
     const parsed = JSON.parse(String(result));
     expect(parsed.cwd).toBe('C:/repos/web/.macro/worktrees/task-1');
+  });
+
+  it('kills an active terminal_run when its conversation generation is stopped', async () => {
+    const { useChatStore, onToolCall } = await startImplementToolConversation(
+      'Lance les tests dans le terminal.',
+    );
+    const killedSession = {
+      id: 'session-1',
+      command: 'bun test',
+      timeout_ms: null,
+      status: 'killed',
+      output: '',
+      exit_code: null,
+      timed_out: false,
+      output_truncated: false,
+      updated_at: '2026-03-26T10:00:00.000Z',
+    };
+    const commandFinished = createDeferred<typeof killedSession>();
+    terminalRunCommandFromChatMock.mockImplementationOnce(
+      async () => commandFinished.promise,
+    );
+    terminalKillSessionFromChatMock.mockImplementationOnce(async () => {
+      commandFinished.resolve(killedSession);
+      return killedSession;
+    });
+
+    const toolCall = onToolCall(
+      'terminal_run',
+      { session_id: 'session-1', command: 'bun test' },
+      'terminal-run-cancelled',
+    );
+    await flushAsyncWork();
+
+    useChatStore.getState().stopConversationStream('implement-conv');
+    await toolCall;
+
+    expect(terminalKillSessionFromChatMock).toHaveBeenCalledWith(
+      'session-1',
+      expect.any(String),
+    );
+    expect(terminalRunCommandFromChatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: expect.any(String) }),
+    );
   });
 
   it('challenges git_commit once before allowing the same assistant turn to commit', async () => {
