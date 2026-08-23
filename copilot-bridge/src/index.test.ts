@@ -151,7 +151,44 @@ describe('copilot bridge tool registration', () => {
     expect(requestTool).toHaveBeenCalledTimes(4);
   });
 
-  it('routes mutations and structural search through the Macro tool host', async () => {
+  it('relays read_file arguments unchanged so the frontend can resolve artifacts and byte ranges', async () => {
+    const { __testables } = await loadBridge();
+    const requestTool = mock(async () => ({
+      result: 'artifact contents',
+      hiddenContext: null,
+      visibleContent: null,
+      interrupt: false,
+    }));
+    const tools = __testables.buildMacroTools(
+      {
+        request_id: 'req-read-file',
+        model_id: 'gpt-5',
+        messages: [],
+        allowed_tool_ids: ['read_file'],
+      },
+      { controlChannel: { requestTool } } as never,
+    ) as Array<{
+      name: string;
+      options: { handler: (args: Record<string, unknown>) => Promise<string> };
+    }>;
+    const args = {
+      file: 'tool-output://artifact-1',
+      raw: true,
+      cursor: 'cursor-1',
+      start_byte: 128,
+      max_bytes: 4096,
+    };
+
+    await expect(
+      tools.find((tool) => tool.name === 'read_file')?.options.handler(args),
+    ).resolves.toBe('artifact contents');
+    expect(requestTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'read_file',
+      args,
+    }));
+  });
+
+  it('routes mutations and workspace inspection through the Macro tool host', async () => {
     const fetchCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const fetchMock = mock(async (url: string, init?: RequestInit) => {
       fetchCalls.push({
@@ -175,7 +212,7 @@ describe('copilot bridge tool registration', () => {
         model_id: 'gpt-5',
         messages: [],
         default_workspace_path: '/tmp/macro-test',
-        allowed_tool_ids: ['delete', 'apply_patch', 'ast_grep'],
+        allowed_tool_ids: ['delete', 'apply_patch', 'list', 'read', 'glob', 'grep', 'ast_grep'],
       }) as Array<{
         name: string;
         options: {
@@ -188,6 +225,10 @@ describe('copilot bridge tool registration', () => {
 
       const deleteTool = tools.find((tool) => tool.name === 'delete');
       const applyPatchTool = tools.find((tool) => tool.name === 'apply_patch');
+      const listTool = tools.find((tool) => tool.name === 'list');
+      const readTool = tools.find((tool) => tool.name === 'read');
+      const globTool = tools.find((tool) => tool.name === 'glob');
+      const grepTool = tools.find((tool) => tool.name === 'grep');
       const astGrepTool = tools.find((tool) => tool.name === 'ast_grep');
 
       await expect(
@@ -203,6 +244,30 @@ describe('copilot bridge tool registration', () => {
         ),
       ).resolves.toBe('host ok');
       await expect(
+        listTool?.options.handler(
+          { path: 'src', recursive: true },
+          { sessionId: 'session-1', toolCallId: 'call-list', toolName: 'list' },
+        ),
+      ).resolves.toBe('host ok');
+      await expect(
+        readTool?.options.handler(
+          { path: 'src/index.ts', start_line: 10 },
+          { sessionId: 'session-1', toolCallId: 'call-read', toolName: 'read' },
+        ),
+      ).resolves.toBe('host ok');
+      await expect(
+        globTool?.options.handler(
+          { pattern: '**/*.ts' },
+          { sessionId: 'session-1', toolCallId: 'call-glob', toolName: 'glob' },
+        ),
+      ).resolves.toBe('host ok');
+      await expect(
+        grepTool?.options.handler(
+          { query: 'needle' },
+          { sessionId: 'session-1', toolCallId: 'call-grep', toolName: 'grep' },
+        ),
+      ).resolves.toBe('host ok');
+      await expect(
         astGrepTool?.options.handler(
           { path: 'src', pattern: 'console.log($ARG)', language: 'typescript' },
           { sessionId: 'session-1', toolCallId: 'call-ast', toolName: 'ast_grep' },
@@ -212,10 +277,14 @@ describe('copilot bridge tool registration', () => {
       expect(fetchCalls.map((call) => call.body.tool_id)).toEqual([
         'delete',
         'apply_patch',
+        'list',
+        'read',
+        'glob',
+        'grep',
         'ast_grep',
       ]);
       expect(fetchCalls.every((call) => call.url.endsWith('/api/v1/tools/execute'))).toBe(true);
-      expect(fetchCalls[2]?.body).toMatchObject({
+      expect(fetchCalls[6]?.body).toMatchObject({
         workspace_path: '/tmp/macro-test',
         args: expect.objectContaining({
           path: 'src',

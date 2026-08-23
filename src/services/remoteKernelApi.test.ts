@@ -194,6 +194,32 @@ describe('remoteKernelApi', () => {
     expect(fetchCalls[0].url).toContain('/tools/mode-policy');
   });
 
+  it('requires revision support for implicit edit, delete, and patch guards', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return jsonResponse({
+        allowed_tool_ids: ['edit', 'delete', 'apply_patch'],
+        enforce_macro_only_writes: false,
+      });
+    }) as unknown as typeof fetch;
+
+    for (const [toolId, args] of [
+      ['edit', { path: 'src/App.tsx', old_text: 'old', new_text: 'new' }],
+      ['delete', { path: 'src/old.ts' }],
+      ['apply_patch', { patch_text: '*** Begin Patch\n*** Update File: src/App.tsx\n@@\n-old\n+new\n*** End Patch' }],
+    ] as const) {
+      fetchCalls = [];
+      await expect(
+        executeRemoteWorkspaceTool({ mode: 'Implement', toolId, args }),
+      ).rejects.toThrow('cannot enforce content revisions');
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0].url).toContain('/tools/mode-policy');
+    }
+  });
+
   it('rejects read-only tools before contacting an output-unaware remote kernel', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');

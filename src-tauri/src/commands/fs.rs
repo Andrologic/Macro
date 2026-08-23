@@ -30,7 +30,9 @@ const MAX_FILE_SEARCH_RESULTS: usize = 100;
 const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
 const WSL_FS_TIMEOUT: Duration = Duration::from_secs(5);
 const WSL_FS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-const WSL_LIST_LIMIT: usize = 1_000;
+const WSL_LIST_LIMIT: usize = 20_000;
+const WSL_DEFAULT_RECURSIVE_DEPTH: u32 = 8;
+const WSL_MAX_RECURSIVE_DEPTH: u32 = 32;
 
 // Default ignored directories/patterns
 static DEFAULT_IGNORED: [&str; 12] = [
@@ -184,6 +186,45 @@ fn resolve_wsl_path(
     Ok(resolved)
 }
 
+async fn ensure_wsl_path_within_workspace(
+    workspace: &WslProjectPath,
+    resolved: &WslProjectPath,
+    allow_outside_workspace: Option<bool>,
+) -> Result<(), BackendError> {
+    if allow_outside_workspace.unwrap_or(false) {
+        return Ok(());
+    }
+    let script = r#"
+root=$(realpath -e -- "$1") || exit 4
+target=$(realpath -m -- "$2") || exit 4
+case "$target" in
+  "$root"|"$root"/*) printf 'inside' ;;
+  *) printf 'outside' ;;
+esac
+"#;
+    let output = run_wsl_shell(
+        workspace,
+        script,
+        &[workspace.linux_path.clone(), resolved.linux_path.clone()],
+        WSL_FS_TIMEOUT,
+    )
+    .await?;
+    if output.stdout_text() != "inside" {
+        return Err(wsl_path_outside_workspace(&resolved.original_path));
+    }
+    Ok(())
+}
+
+fn wsl_list_depth(recursive: Option<bool>, max_depth: Option<u32>) -> u32 {
+    if recursive.unwrap_or(false) {
+        max_depth
+            .unwrap_or(WSL_DEFAULT_RECURSIVE_DEPTH)
+            .clamp(1, WSL_MAX_RECURSIVE_DEPTH)
+    } else {
+        1
+    }
+}
+
 fn epoch_to_rfc3339(value: &str) -> Option<String> {
     let seconds = value.trim().split('.').next()?.parse::<i64>().ok()?;
     chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).map(|time| time.to_rfc3339())
@@ -295,6 +336,7 @@ async fn read_wsl_file_internal(
     allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
     let (kind, size, _, _, _) = wsl_stat_raw(&resolved).await?;
     if kind != "file" && kind != "symlink" {
         return Err(BackendError::FilesystemIsDirectory {
@@ -374,6 +416,7 @@ async fn write_wsl_file_internal_with_revision(
     }
 
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
     let _mutation_guard = if acquire_lock {
         Some(
             super::content_mutation_lock(&super::wsl_content_mutation_key(&resolved))
@@ -496,6 +539,7 @@ async fn list_wsl_dir_internal(
     allow_outside_workspace: Option<bool>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
     let (kind, _, _, _, _) = wsl_stat_raw(&resolved).await?;
     if kind != "directory" {
         return Err(BackendError::FilesystemIsFile {
@@ -503,33 +547,24 @@ async fn list_wsl_dir_internal(
         });
     }
 
-    let depth = if recursive.unwrap_or(false) {
-        max_depth
-            .map(|value| value.max(1).to_string())
-            .unwrap_or_else(|| "all".to_string())
-    } else {
-        "1".to_string()
-    };
+    let depth = wsl_list_depth(recursive, max_depth).to_string();
     let include_hidden_flag = if include_hidden.unwrap_or(false) {
         "1"
     } else {
         "0"
     }
     .to_string();
-    let ignored = DEFAULT_IGNORED.join("|");
     let script = r#"
 root=$1
 depth=$2
 include_hidden=$3
 limit=$4
-ignored=$5
-if [ "$depth" = "all" ]; then
-  find "$root" -mindepth 1 -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null
-else
-  find "$root" -mindepth 1 -maxdepth "$depth" -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null
-fi |
+find "$root" -mindepth 1 -maxdepth "$depth" \
+  \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt \
+     -o -name dist -o -name build -o -name __pycache__ -o -name .cache \
+     -o -name .DS_Store -o -name Thumbs.db -o -name .idea \) -prune -o \
+  -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null |
 while IFS="$(printf '\t')" read -r full rel name type size mtime perm; do
-  case "|$ignored|" in *"|$name|"*) continue;; esac
   if [ "$include_hidden" != "1" ]; then
     case "$name" in .*) continue;; esac
   fi
@@ -544,7 +579,6 @@ done | head -n "$limit"
             depth,
             include_hidden_flag,
             WSL_LIST_LIMIT.saturating_add(1).to_string(),
-            ignored,
         ],
         WSL_FS_TIMEOUT,
     )
@@ -615,6 +649,7 @@ async fn stat_wsl_internal(
     path: String,
 ) -> Result<FileStatsDto, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let (kind, size, modified, permissions, symlink_target) = wsl_stat_raw(&resolved).await?;
     let name = wsl_name_from_linux_path(&resolved.linux_path);
     let symlink_target = symlink_target.map(|target| {
@@ -653,6 +688,7 @@ async fn wsl_exists_internal(
     path: String,
 ) -> Result<bool, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let output = run_wsl_shell(
         &resolved,
         r#"if [ -e "$1" ] || [ -L "$1" ]; then printf '1'; else printf '0'; fi"#,
@@ -679,6 +715,7 @@ async fn delete_wsl_path_internal_with_revision(
     acquire_lock: bool,
 ) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let _mutation_guard = if acquire_lock {
         Some(
             super::content_mutation_lock(&super::wsl_content_mutation_key(&resolved))
@@ -763,6 +800,7 @@ async fn create_wsl_dir_internal(
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let recursive_flag = if recursive.unwrap_or(true) { "1" } else { "0" }.to_string();
     let script = r#"
 p=$1
@@ -790,6 +828,8 @@ async fn copy_wsl_path_internal(
 ) -> Result<u64, BackendError> {
     let src_resolved = resolve_wsl_path(workspace, &src, None)?;
     let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
+    ensure_wsl_path_within_workspace(workspace, &src_resolved, None).await?;
+    ensure_wsl_path_within_workspace(workspace, &dest_resolved, None).await?;
     let script = r#"
 src=$1
 dest=$2
@@ -818,6 +858,8 @@ async fn move_wsl_path_internal(
 ) -> Result<(), BackendError> {
     let src_resolved = resolve_wsl_path(workspace, &src, None)?;
     let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
+    ensure_wsl_path_within_workspace(workspace, &src_resolved, None).await?;
+    ensure_wsl_path_within_workspace(workspace, &dest_resolved, None).await?;
     let script = r#"
 src=$1
 dest=$2
@@ -2328,6 +2370,20 @@ mod tests {
 
     fn setup_empty_workspace() -> TempDir {
         TempDir::new().expect("Failed to create temp directory")
+    }
+
+    #[test]
+    fn wsl_recursive_list_depth_is_bounded_by_default_and_at_the_upper_limit() {
+        assert_eq!(wsl_list_depth(Some(false), Some(20)), 1);
+        assert_eq!(
+            wsl_list_depth(Some(true), None),
+            WSL_DEFAULT_RECURSIVE_DEPTH
+        );
+        assert_eq!(wsl_list_depth(Some(true), Some(0)), 1);
+        assert_eq!(
+            wsl_list_depth(Some(true), Some(WSL_MAX_RECURSIVE_DEPTH + 10)),
+            WSL_MAX_RECURSIVE_DEPTH
+        );
     }
 
     #[test]

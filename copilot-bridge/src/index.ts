@@ -2063,35 +2063,6 @@ const grepWorkspace = async (params: {
   }, null, 2);
 };
 
-const findReadFileTarget = async (context: WorkspaceContext, fileValue: string): Promise<string> => {
-  const normalized = sanitizeRelativePath(fileValue);
-  if (normalized.includes('/')) {
-    return normalized;
-  }
-
-  const matches: string[] = [];
-  for (const candidate of context.candidates) {
-    const entries = await walkEntries(candidate.workspacePath, '.', { recursive: true });
-    for (const entry of entries) {
-      if (entry.kind !== 'file') continue;
-      if (path.basename(entry.relativePath).toLowerCase() === normalized.toLowerCase()) {
-        const virtualPath = context.virtualRootEnabled
-          ? path.posix.join(candidate.mountName, entry.relativePath)
-          : entry.relativePath;
-        matches.push(virtualPath);
-        if (matches.length > 1) {
-          throw new BridgeError(
-            'ambiguous_file',
-            `File "${fileValue}" matches multiple workspace files. Provide a more specific path.`
-          );
-        }
-      }
-    }
-  }
-
-  return matches[0] || normalized;
-};
-
 const CHAT_SAFE_TOOL_IDS = new Set([
   'question',
   'skill_activate',
@@ -2114,7 +2085,13 @@ const TOOL_HOST_WORKSPACE_MUTATION_IDS = new Set([
   'delete',
   'apply_patch',
 ]);
-const TOOL_HOST_WORKSPACE_READ_IDS = new Set(['ast_grep']);
+const TOOL_HOST_WORKSPACE_READ_IDS = new Set([
+  'list',
+  'read',
+  'glob',
+  'grep',
+  'ast_grep',
+]);
 const TOOL_HOST_TOOL_IDS = new Set([
   'git_status',
   'git_log',
@@ -2131,6 +2108,7 @@ const TOOL_HOST_TOOL_IDS = new Set([
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
   toolId === 'question' ||
+  toolId === 'read_file' ||
   toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
   toolId.startsWith('plan_') ||
@@ -2152,19 +2130,6 @@ const inferMacroMode = (allowedToolIds: string[]): string => {
     return 'Chat';
   }
   return 'Implement';
-};
-
-const maybeValidateLocalWorkspaceTool = async (
-  mode: string,
-  toolId: string,
-  pathValue?: string | null
-): Promise<void> => {
-  if (!pathValue || mode !== 'Architect') return;
-  await validateToolViaHost({
-    mode,
-    toolId,
-    path: pathValue,
-  });
 };
 
 const routeToolHostTarget = async (params: {
@@ -2222,45 +2187,6 @@ const executeCopilotMacroTool = async (
     return result.result;
   }
 
-  if (toolId === 'read_file') {
-    const fileValue = typeof args.file === 'string' ? args.file : '';
-    const target = await findReadFileTarget(context, fileValue);
-    await maybeValidateLocalWorkspaceTool(mode, 'read', target);
-    return readWorkspaceFile({
-      context,
-      pathValue: target,
-    });
-  }
-
-  if (toolId === 'list') {
-    const pathValue = typeof args.path === 'string' ? args.path : '.';
-    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
-    return listWorkspace({
-      context,
-      pathValue,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      recursive: args.recursive === true,
-      includeHidden: args.include_hidden === true,
-      maxDepth: typeof args.max_depth === 'number' ? args.max_depth : undefined,
-      limit: typeof args.limit === 'number' ? args.limit : undefined,
-      cursor: args.cursor,
-    });
-  }
-
-  if (toolId === 'read') {
-    const pathValue = typeof args.path === 'string' ? args.path : '';
-    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
-    return readWorkspaceFile({
-      context,
-      pathValue,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      startLine: typeof args.start_line === 'number' ? args.start_line : undefined,
-      endLine: typeof args.end_line === 'number' ? args.end_line : undefined,
-      maxLines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
-      cursor: args.cursor,
-    });
-  }
-
   if (TOOL_HOST_WORKSPACE_MUTATION_IDS.has(toolId)) {
     const rawPath = typeof args.path === 'string' ? args.path : '.';
     const routed = await routeToolHostTarget({
@@ -2295,41 +2221,16 @@ const executeCopilotMacroTool = async (
       preferFocusedProject: true,
       searchExistingPath: rawPath !== '.',
     });
-    const nextArgs: JsonRecord = {
-      ...args,
-      path: routed.relativePath || '.',
-    };
+    const nextArgs: JsonRecord = { ...args };
+    if (toolId === 'list' || toolId === 'read' || toolId === 'ast_grep') {
+      nextArgs.path = routed.relativePath || '.';
+    }
     delete nextArgs.project_id;
     return executeToolHost({
       mode,
       toolId,
       args: nextArgs,
       workspacePath: routed.workspacePath,
-    });
-  }
-
-  if (toolId === 'glob') {
-    return globWorkspace({
-      context,
-      pattern: typeof args.pattern === 'string' ? args.pattern : '',
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      includeHidden: args.include_hidden === true,
-      limit: typeof args.limit === 'number' ? args.limit : undefined,
-      cursor: args.cursor,
-    });
-  }
-
-  if (toolId === 'grep') {
-    return grepWorkspace({
-      context,
-      query: typeof args.query === 'string' ? args.query : '',
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      includePattern: typeof args.include_pattern === 'string' ? args.include_pattern : null,
-      includeHidden: args.include_hidden === true,
-      isRegexp: args.is_regexp === true,
-      maxResults: typeof args.max_results === 'number' ? args.max_results : undefined,
-      limit: typeof args.limit === 'number' ? args.limit : undefined,
-      cursor: args.cursor,
     });
   }
 

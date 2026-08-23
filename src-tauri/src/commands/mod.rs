@@ -56,10 +56,14 @@ static PROVIDER_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static CONTENT_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static TOOL_EXECUTION_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Arc<ToolCancellation>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static PENDING_TOOL_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[derive(Default)]
+struct ToolExecutionCancellationRegistry {
+    active: HashMap<String, Arc<ToolCancellation>>,
+    pending: HashMap<String, Instant>,
+}
+
+static TOOL_EXECUTION_CANCELLATION_REGISTRY: LazyLock<Mutex<ToolExecutionCancellationRegistry>> =
+    LazyLock::new(|| Mutex::new(ToolExecutionCancellationRegistry::default()));
 const PENDING_TOOL_CANCELLATION_TTL: Duration = Duration::from_secs(60);
 const PENDING_TOOL_CANCELLATION_LIMIT: usize = 1_024;
 
@@ -105,14 +109,15 @@ struct ToolExecutionGuard {
 
 impl Drop for ToolExecutionGuard {
     fn drop(&mut self) {
-        let mut cancellations = TOOL_EXECUTION_CANCELLATIONS
+        let mut registry = TOOL_EXECUTION_CANCELLATION_REGISTRY
             .lock()
             .expect("tool cancellation registry");
-        if cancellations
+        if registry
+            .active
             .get(&self.execution_id)
             .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
         {
-            cancellations.remove(&self.execution_id);
+            registry.active.remove(&self.execution_id);
         }
     }
 }
@@ -124,24 +129,21 @@ fn register_tool_execution(
         .map(str::trim)
         .filter(|value| !value.is_empty())?
         .to_string();
-    let cancellation = {
-        let mut cancellations = TOOL_EXECUTION_CANCELLATIONS
+    let (cancellation, was_cancelled_before_registration) = {
+        let mut registry = TOOL_EXECUTION_CANCELLATION_REGISTRY
             .lock()
             .expect("tool cancellation registry");
-        cancellations
-            .entry(execution_id.clone())
-            .or_insert_with(|| Arc::new(ToolCancellation::new()))
-            .clone()
-    };
-    let was_cancelled_before_registration = {
-        let mut pending = PENDING_TOOL_CANCELLATIONS
-            .lock()
-            .expect("pending tool cancellation registry");
         let now = Instant::now();
-        pending.retain(|_, recorded_at| {
+        registry.pending.retain(|_, recorded_at| {
             now.duration_since(*recorded_at) < PENDING_TOOL_CANCELLATION_TTL
         });
-        pending.remove(&execution_id).is_some()
+        let was_pending = registry.pending.remove(&execution_id).is_some();
+        let cancellation = registry
+            .active
+            .entry(execution_id.clone())
+            .or_insert_with(|| Arc::new(ToolCancellation::new()))
+            .clone();
+        (cancellation, was_pending)
     };
     if was_cancelled_before_registration {
         cancellation.cancel();
@@ -3198,32 +3200,35 @@ pub fn tool_cancel_workspace(execution_id: String) -> bool {
     if execution_id.is_empty() {
         return false;
     }
-    let cancellation = TOOL_EXECUTION_CANCELLATIONS
-        .lock()
-        .expect("tool cancellation registry")
-        .get(execution_id)
-        .cloned();
+    let cancellation = {
+        let mut registry = TOOL_EXECUTION_CANCELLATION_REGISTRY
+            .lock()
+            .expect("tool cancellation registry");
+        let now = Instant::now();
+        registry.pending.retain(|_, recorded_at| {
+            now.duration_since(*recorded_at) < PENDING_TOOL_CANCELLATION_TTL
+        });
+        if let Some(cancellation) = registry.active.get(execution_id).cloned() {
+            Some(cancellation)
+        } else {
+            if registry.pending.len() >= PENDING_TOOL_CANCELLATION_LIMIT {
+                if let Some(oldest_id) = registry
+                    .pending
+                    .iter()
+                    .min_by_key(|(_, recorded_at)| **recorded_at)
+                    .map(|(id, _)| id.clone())
+                {
+                    registry.pending.remove(&oldest_id);
+                }
+            }
+            registry.pending.insert(execution_id.to_string(), now);
+            None
+        }
+    };
     if let Some(cancellation) = cancellation {
         cancellation.cancel();
         true
     } else {
-        let mut pending = PENDING_TOOL_CANCELLATIONS
-            .lock()
-            .expect("pending tool cancellation registry");
-        let now = Instant::now();
-        pending.retain(|_, recorded_at| {
-            now.duration_since(*recorded_at) < PENDING_TOOL_CANCELLATION_TTL
-        });
-        if pending.len() >= PENDING_TOOL_CANCELLATION_LIMIT {
-            if let Some(oldest_id) = pending
-                .iter()
-                .min_by_key(|(_, recorded_at)| **recorded_at)
-                .map(|(id, _)| id.clone())
-            {
-                pending.remove(&oldest_id);
-            }
-        }
-        pending.insert(execution_id.to_string(), now);
         false
     }
 }
@@ -4926,9 +4931,10 @@ mod tests {
             .await
             .expect("cancellation notification");
         drop(guard);
-        assert!(!super::TOOL_EXECUTION_CANCELLATIONS
+        assert!(!super::TOOL_EXECUTION_CANCELLATION_REGISTRY
             .lock()
             .expect("tool cancellation registry")
+            .active
             .contains_key(execution_id));
     }
 

@@ -1782,6 +1782,7 @@ export const executeWorkspaceTool = async (
   const routing = resolveToolWorkspaceRouting(toolName, args, options);
   args = routing.args;
   let effectiveProjectId = routing.projectId;
+  const backendFocusedProjectId = effectiveProjectId || focusedProjectId;
   let effectiveWorkspacePath =
     normalizeWorkspacePath(routing.workspacePath) ||
     normalizeWorkspacePath(options.defaultWorkspacePath) ||
@@ -1841,7 +1842,7 @@ export const executeWorkspaceTool = async (
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
         projectMounts: options.projectMounts,
         virtualRootEnabled,
-        focusedProjectId,
+        focusedProjectId: backendFocusedProjectId,
         executionId,
       });
       if (abortListener) {
@@ -1875,7 +1876,7 @@ export const executeWorkspaceTool = async (
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
         projectMounts: options.projectMounts,
         virtualRootEnabled,
-        focusedProjectId,
+        focusedProjectId: backendFocusedProjectId,
         signal: combinedSignal.signal,
       });
     } catch (error) {
@@ -1907,7 +1908,7 @@ export const executeWorkspaceTool = async (
       mode,
       toolId: backendToolName,
       path,
-      projectId: focusedProjectId ?? '',
+      projectId: backendFocusedProjectId ?? '',
     });
   };
 

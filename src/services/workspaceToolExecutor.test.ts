@@ -956,6 +956,53 @@ describe("workspaceToolExecutor helpers", () => {
     expect(cancelledIds).toEqual([executionId as string]);
   });
 
+  it("passes an explicit project selector to the backend after stripping routing arguments", async () => {
+    let backendParams: Record<string, unknown> | null = null;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async (params: Record<string, unknown>) => {
+          backendParams = params;
+          return "routed";
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "read",
+      { path: "web/src/App.tsx", project_id: "web" },
+      "Implement",
+      {
+        focusedProjectId: "api",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "api",
+            mountName: "api",
+            displayName: "API",
+            workspacePath: "C:/dev/api",
+          },
+          {
+            projectId: "web",
+            mountName: "web",
+            displayName: "Web",
+            workspacePath: "C:/dev/web",
+          },
+        ],
+        workspacePathsByProjectId: {
+          api: "C:/dev/api",
+          web: "C:/dev/web",
+        },
+      },
+    );
+
+    expect(result).toBe("routed");
+    expect(backendParams).toMatchObject({
+      focusedProjectId: "web",
+      args: { path: "src/App.tsx" },
+    });
+  });
+
   it("applies apply_patch in virtual-root mode and returns validation details", async () => {
     const writes: Array<{
       path: string;
