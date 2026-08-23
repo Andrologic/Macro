@@ -12,7 +12,7 @@ The provider transport remains to be connected. Its adapter should create or res
 | `running` | `start_agent_run` with the optional provider child conversation id |
 | `completed` | `complete_agent_run`, using `result_json` for structured output or `result_text` for text and copying metrics into usage |
 | `failed` | `fail_agent_run` with the normalized code, message, details, and usage |
-| `cancelled` | `cancel_agent_run`; map `runtime_disposed` to an interruption when an IPC command supports it |
+| `cancelled` | `cancel_agent_run`, preserving `parent_cancelled`, `child_cancelled`, or `runtime_disposed` as the reason |
 | `timed_out` | `timeout_agent_run` with `deadline_exceeded` and usage |
 
 The adapter must serialize calls per run, reject a transition whose sequence is not the next expected value, and make `(runId, sequence)` idempotent at the IPC boundary. No Tauri command exposes these repository functions yet, so `InMemoryGoalAuditJournal` is the current implementation and durability is not end to end.

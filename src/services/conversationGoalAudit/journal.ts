@@ -17,7 +17,7 @@ export interface GoalAuditRunDescriptor {
 export interface GoalAuditJournal<
   TProgress extends SubagentProgressEvent = SubagentProgressEvent,
 > extends SubagentTransitionRecorder<unknown, TProgress> {
-  registerRun(descriptor: GoalAuditRunDescriptor): void;
+  registerRun(descriptor: GoalAuditRunDescriptor): void | Promise<void>;
 }
 
 export interface InMemoryGoalAuditRun<
