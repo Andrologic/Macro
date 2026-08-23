@@ -705,6 +705,8 @@ Une limite de sécurité interne atteinte pendant l'énumération doit produire 
 
 Les commandes lancées par les outils terminal doivent borner leur durée, leur mémoire de sortie et le temps consacré au drainage final de stdout/stderr. Une sortie tronquée conserve un début et une fin identifiables, avec le volume omis. L'annulation de la génération doit terminer le groupe de processus et ses descendants, y compris lorsqu'elle arrive pendant le démarrage, sans interrompre les terminaux interactifs ouverts par l'utilisateur.
 
+Tout résultat textuel d'outil dépassant 50 Kio doit être remplacé dans le contexte par un aperçu borné conservant son début et sa fin. Le contenu complet reste attaché à la conversation sous une adresse `tool-output://…` et peut être relu par pages avec `read_file`. Les fichiers joints et ces sorties récupérables doivent exposer des pages numérotées et un curseur opaque ; le mode brut paginé doit permettre de récupérer sans perte les contenus constitués d'une seule ligne très longue.
+
 ---
 
 ## 15. Modèle de review et d'intégration

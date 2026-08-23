@@ -364,6 +364,8 @@ type TestCitation = {
   timestamp: string;
   url?: string;
   path?: string;
+  language?: string;
+  sizeBytes?: number;
   kind?: 'interesting' | 'used';
   reason?: string;
 };
@@ -6740,7 +6742,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(streamOptions.guidedToolRetry).toBeUndefined();
   });
 
-  it('reads the full attached file content through the chat read_file tool', async () => {
+  it('reads bounded attached file content through the chat read_file tool', async () => {
     providerState.selectedSupportsNativeToolCalling = () => true;
     appState.mode = 'Chat';
     appState.selectedGroupId = null;
@@ -13163,6 +13165,53 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(terminalRunCommandFromChatMock).toHaveBeenCalledWith(
       expect.objectContaining({ executionId: expect.any(String) }),
     );
+  });
+
+  it('spills oversized tool output to a recoverable conversation artifact', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une très grosse sortie.',
+    );
+    const fullOutput = `BEGIN-${'x'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => fullOutput) as unknown as () => Promise<undefined>,
+    );
+
+    const preview = String(
+      await onToolCall('grep', { query: 'needle' }, 'large-output-call'),
+    );
+    const artifactPath = preview.match(/^Full output: (tool-output:\/\/\S+)$/m)?.[1];
+    const artifact = citationRecords.find(
+      (citation) => citation.path === artifactPath,
+    );
+
+    expect(artifactPath).toBeTruthy();
+    expect(artifact?.content).toBe(fullOutput);
+    expect(artifact?.sizeBytes).toBe(new TextEncoder().encode(fullOutput).byteLength);
+    expect(new TextEncoder().encode(preview).byteLength).toBeLessThan(50 * 1024);
+
+    const firstPage = String(
+      await onToolCall(
+        'read_file',
+        { file: artifactPath, raw: true, max_bytes: 10_000 },
+        'read-large-output-1',
+      ),
+    );
+    const cursor = firstPage.match(/^NEXT_CURSOR: (.+)$/m)?.[1];
+    const firstContent = firstPage.match(
+      /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
+    )?.[1];
+    const secondPage = String(
+      await onToolCall(
+        'read_file',
+        { file: artifactPath, raw: true, max_bytes: 256_000, cursor },
+        'read-large-output-2',
+      ),
+    );
+    const secondContent = secondPage.match(
+      /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
+    )?.[1];
+    expect(firstContent! + secondContent!).toBe(fullOutput);
+    expect(secondPage).toContain('TRUNCATED: false');
   });
 
   it('challenges git_commit once before allowing the same assistant turn to commit', async () => {

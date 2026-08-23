@@ -705,6 +705,10 @@ Les commandes agent `terminal_run` conservent au maximum 1 Mio de sortie dans un
 
 Une annulation de génération appelle `terminal_kill` avec l'identifiant unique de l'exécution concernée. Le backend mémorise cette demande même si elle précède l'enregistrement de la commande, empêche deux exécutions simultanées dans une session et termine le groupe de processus complet. Une génération monotone empêche aussi la finalisation tardive d'une annulation d'écraser l'état d'une commande suivante. Un garde de durée de vie détruit le groupe si la future Rust est abandonnée avant son nettoyage normal. Les sessions interactives visibles utilisent leur propre cycle de vie et ne sont pas concernées par ce protocole agent.
 
+La frontière frontend qui remet les résultats d'outils au flux applique une défense commune inspirée des artefacts de session d'Oh My Pi. Au-delà de 50 Kio, Macro persiste le texte complet comme citation fichier de portée conversation, sous une adresse stable `tool-output://<conversation>/<appel>.txt`, puis n'injecte qu'une tête et une fin de 20 Kio avec le nombre d'octets omis. La persistance suit le cycle de vie déjà existant des citations de conversation ; un échec de persistance ne doit pas réinjecter la sortie volumineuse.
+
+`read_file` utilise le même contrat de pagination que `read` pour les contenus joints : empreinte de contenu liée au curseur, lignes numérotées, limite de 500 lignes par défaut, plafond de 3 000 lignes et 256 Kio par page. Son mode `raw=true` pagine en octets UTF-8 sans couper de point de code ; il sert notamment à relire exactement une sortie `tool-output://` composée d'une seule ligne longue.
+
 ---
 
 ## 14. Skills

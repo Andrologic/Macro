@@ -3,10 +3,12 @@ import {
   compareToolPaths,
   createToolCursor,
   paginateReadContent,
+  paginateTextBytes,
   paginateToolItems,
   parseToolCursor,
   TOOL_OUTPUT_LIMITS,
   truncateGrepLine,
+  truncateUtf8Middle,
 } from "./toolOutputLimits";
 
 describe("tool output limits", () => {
@@ -101,5 +103,35 @@ describe("tool output limits", () => {
     const result = truncateGrepLine("x".repeat(1_000));
     expect(Array.from(result.text)).toHaveLength(TOOL_OUTPUT_LIMITS.grep.maxColumns);
     expect(result.truncated).toBe(true);
+  });
+
+  it("middle-truncates UTF-8 output without splitting code points", () => {
+    const result = truncateUtf8Middle("début-🙂-milieu-🙂-fin", 8, 8);
+    expect(result.truncated).toBe(true);
+    expect(result.head).not.toContain("�");
+    expect(result.tail).not.toContain("�");
+    expect(result.omittedBytes).toBeGreaterThan(0);
+    expect(result.retainedBytes + result.omittedBytes).toBe(result.totalBytes);
+  });
+
+  it("paginates raw UTF-8 bytes without losing a long line", () => {
+    const content = `start-${"🙂".repeat(20)}-end`;
+    const first = paginateTextBytes(content, { max_bytes: 17 }, "raw\0output");
+    const second = paginateTextBytes(
+      content,
+      { max_bytes: 256, cursor: first.nextCursor },
+      "raw\0output",
+    );
+
+    expect(first.content).not.toContain("�");
+    expect(second.content).not.toContain("�");
+    expect(first.content + second.content).toBe(content);
+    expect(second.truncated).toBe(false);
+  });
+
+  it("rejects a raw byte offset inside a UTF-8 code point", () => {
+    expect(() =>
+      paginateTextBytes("a🙂b", { start_byte: 2 }, "raw\0output"),
+    ).toThrow("not aligned to a UTF-8 code point boundary");
   });
 });
