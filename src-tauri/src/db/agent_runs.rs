@@ -1,7 +1,7 @@
 use super::models::*;
 use super::{DbError, DbResult};
 use serde_json::Value;
-use sqlx::sqlite::{SqlitePool, SqliteRow};
+use sqlx::sqlite::{Sqlite, SqlitePool, SqliteRow};
 use sqlx::Row;
 use std::str::FromStr;
 
@@ -75,6 +75,10 @@ async fn transition_error(pool: &SqlitePool, id: &str, transition: &str) -> DbEr
         Ok(None) => DbError::Validation(format!("Agent run not found: {id}")),
         Err(error) => error,
     }
+}
+
+async fn begin_immediate(pool: &SqlitePool) -> DbResult<sqlx::Transaction<'static, Sqlite>> {
+    Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
 }
 
 async fn validate_lineage(
@@ -184,22 +188,18 @@ pub async fn create_agent_run(pool: &SqlitePool, input: CreateAgentRunInput) -> 
         input.model_metadata_json.as_deref(),
     )?;
 
-    let mut connection = pool.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *connection)
-        .await?;
-    let operation = async {
-        validate_lineage(
-            &mut connection,
-            &input.parent_conversation_id,
-            input.child_conversation_id.as_deref(),
-            input.depth,
-        )
-        .await?;
+    let mut transaction = begin_immediate(pool).await?;
+    validate_lineage(
+        &mut transaction,
+        &input.parent_conversation_id,
+        input.child_conversation_id.as_deref(),
+        input.depth,
+    )
+    .await?;
 
-        let now = chrono::Utc::now().to_rfc3339();
-        let row = sqlx::query(
-            r#"
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = sqlx::query(
+        r#"
         INSERT INTO agent_runs (
             id, parent_conversation_id, child_conversation_id, agent_profile,
             depth, status, prompt, model_metadata_json, attempt_count,
@@ -207,32 +207,21 @@ pub async fn create_agent_run(pool: &SqlitePool, input: CreateAgentRunInput) -> 
         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?)
         RETURNING *
         "#,
-        )
-        .bind(&id)
-        .bind(&input.parent_conversation_id)
-        .bind(&input.child_conversation_id)
-        .bind(&input.agent_profile)
-        .bind(input.depth)
-        .bind(&input.prompt)
-        .bind(&input.model_metadata_json)
-        .bind(&now)
-        .bind(&now)
-        .fetch_one(&mut *connection)
-        .await?;
-        map_agent_run(row)
-    }
-    .await;
-
-    match operation {
-        Ok(run) => {
-            sqlx::query("COMMIT").execute(&mut *connection).await?;
-            Ok(run)
-        }
-        Err(error) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
-            Err(error)
-        }
-    }
+    )
+    .bind(&id)
+    .bind(&input.parent_conversation_id)
+    .bind(&input.child_conversation_id)
+    .bind(&input.agent_profile)
+    .bind(input.depth)
+    .bind(&input.prompt)
+    .bind(&input.model_metadata_json)
+    .bind(&now)
+    .bind(&now)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let run = map_agent_run(row)?;
+    transaction.commit().await?;
+    Ok(run)
 }
 
 pub async fn get_agent_run(pool: &SqlitePool, id: &str) -> DbResult<Option<AgentRun>> {
@@ -287,52 +276,48 @@ pub async fn start_agent_run(
     id: &str,
     child_conversation_id: Option<&str>,
 ) -> DbResult<AgentRun> {
-    let mut connection = pool.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *connection)
-        .await?;
-    let operation = async {
-        let current = sqlx::query(
-            r#"
+    let mut transaction = begin_immediate(pool).await?;
+    let current = sqlx::query(
+        r#"
             SELECT parent_conversation_id, child_conversation_id, depth, status
             FROM agent_runs
             WHERE id = ?
             "#,
-        )
-        .bind(id)
-        .fetch_optional(&mut *connection)
-        .await?
-        .ok_or_else(|| DbError::Validation(format!("Agent run not found: {id}")))?;
-        let status = current.get::<String, _>("status");
-        if status != "queued" && status != "interrupted" {
+    )
+    .bind(id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| DbError::Validation(format!("Agent run not found: {id}")))?;
+    let status = current.get::<String, _>("status");
+    if status != "queued" && status != "interrupted" {
+        return Err(DbError::Validation(format!(
+            "Cannot start agent run {id} from status {status}"
+        )));
+    }
+    let durable_child = current.get::<Option<String>, _>("child_conversation_id");
+    if let (Some(durable_child), Some(requested_child)) =
+        (durable_child.as_deref(), child_conversation_id)
+    {
+        if durable_child != requested_child {
             return Err(DbError::Validation(format!(
-                "Cannot start agent run {id} from status {status}"
-            )));
-        }
-        let durable_child = current.get::<Option<String>, _>("child_conversation_id");
-        if let (Some(durable_child), Some(requested_child)) =
-            (durable_child.as_deref(), child_conversation_id)
-        {
-            if durable_child != requested_child {
-                return Err(DbError::Validation(format!(
                     "Agent run {id} is already linked to child conversation {durable_child}; it cannot be replaced with {requested_child}"
                 )));
-            }
         }
-        if durable_child.is_none() {
-            let parent_conversation_id = current.get::<String, _>("parent_conversation_id");
-            let depth = current.get::<i32, _>("depth");
-            validate_lineage(
-                &mut connection,
-                &parent_conversation_id,
-                child_conversation_id,
-                depth,
-            )
-            .await?;
-        }
+    }
+    if durable_child.is_none() {
+        let parent_conversation_id = current.get::<String, _>("parent_conversation_id");
+        let depth = current.get::<i32, _>("depth");
+        validate_lineage(
+            &mut transaction,
+            &parent_conversation_id,
+            child_conversation_id,
+            depth,
+        )
+        .await?;
+    }
 
-        let now = chrono::Utc::now().to_rfc3339();
-        let row = sqlx::query(
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = sqlx::query(
         r#"
         UPDATE agent_runs
         SET status = 'running',
@@ -343,27 +328,16 @@ pub async fn start_agent_run(
         WHERE id = ? AND status IN ('queued', 'interrupted')
         RETURNING *
         "#,
-        )
-        .bind(child_conversation_id)
-        .bind(&now)
-        .bind(&now)
-        .bind(id)
-        .fetch_one(&mut *connection)
-        .await?;
-        map_agent_run(row)
-    }
-    .await;
-
-    match operation {
-        Ok(run) => {
-            sqlx::query("COMMIT").execute(&mut *connection).await?;
-            Ok(run)
-        }
-        Err(error) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
-            Err(error)
-        }
-    }
+    )
+    .bind(child_conversation_id)
+    .bind(&now)
+    .bind(&now)
+    .bind(id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let run = map_agent_run(row)?;
+    transaction.commit().await?;
+    Ok(run)
 }
 
 pub async fn complete_agent_run(
@@ -914,6 +888,36 @@ mod tests {
                 .as_deref(),
             Some(first_child.as_str())
         );
+
+        let transaction =
+            tokio::time::timeout(std::time::Duration::from_secs(5), begin_immediate(&pool))
+                .await
+                .expect("early validation error must release the write lock")
+                .unwrap();
+        transaction.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn immediate_transaction_guard_releases_the_write_lock_when_aborted() {
+        let (_temp_dir, pool) = test_pool().await;
+        let task_pool = pool.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _transaction = begin_immediate(&task_pool).await.unwrap();
+            started_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        let transaction =
+            tokio::time::timeout(std::time::Duration::from_secs(5), begin_immediate(&pool))
+                .await
+                .expect("cancelled transaction must not retain the write lock")
+                .unwrap();
+        transaction.rollback().await.unwrap();
     }
 
     #[tokio::test]
