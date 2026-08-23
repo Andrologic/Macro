@@ -41,6 +41,7 @@ describe('per-file spawn arguments', () => {
     expect(spawnArgsForFile('src/components/chat/composer/ComposerEditor.test.tsx')).toEqual([
       '--conditions=production',
       'test',
+      '--timeout=30000',
       'src/components/chat/composer/ComposerEditor.test.tsx',
     ]);
   });
@@ -48,6 +49,7 @@ describe('per-file spawn arguments', () => {
   test('runs every other file with plain test conditions', () => {
     expect(spawnArgsForFile('src/stores/workspace.test.ts')).toEqual([
       'test',
+      '--timeout=30000',
       'src/stores/workspace.test.ts',
     ]);
   });
@@ -56,6 +58,7 @@ describe('per-file spawn arguments', () => {
     const args = spawnArgsForFile('src/services/git/review.test.ts', { coverage: true });
     expect(args).toEqual([
       'test',
+      '--timeout=30000',
       '--coverage',
       '--coverage-reporter=lcov',
       '--coverage-dir=coverage/tests/src_services_git_review-5d3694dd',
