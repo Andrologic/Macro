@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use git2::{
-    BranchType, Commit, DiffFormat, Oid, Repository, RepositoryState, ResetType, StashFlags,
-    Status, StatusEntry,
+    BranchType, Commit, DiffFormat, DiffStatsFormat, Oid, Repository, RepositoryState, ResetType,
+    StashFlags, Status, StatusEntry,
 };
 use serde::Serialize;
 use tauri::State;
@@ -24,7 +24,8 @@ use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::{GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME};
 use crate::project_path::{
-    parse_wsl_unc_path, run_wsl_git_allow_failure, WslCommandOutput, WslProjectPath,
+    parse_wsl_unc_path, run_wsl_git_allow_failure, run_wsl_git_bounded_allow_failure,
+    WslCommandOutput, WslProjectPath,
 };
 use crate::workspace;
 use crate::workspace::metadata::WorkspaceRecoverMissingMetadataRequestDto;
@@ -75,6 +76,14 @@ pub struct GitCommitDto {
     pub graph_depth: usize,
     pub is_branch_point: bool,
     pub task_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GitLogSnapshot {
+    pub revision: String,
+    tip: Option<String>,
+    has_staged: bool,
+    has_unstaged: bool,
 }
 
 #[derive(Serialize)]
@@ -808,6 +817,7 @@ pub(crate) async fn build_wsl_git_log(
         "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1f%P".to_string(),
     ];
     if let Some(branch) = branch {
+        args.push("--end-of-options".to_string());
         args.push(branch.to_string());
     }
     let output = run_wsl_git_allow_failure(repo_path, &args, WSL_GIT_TIMEOUT).await?;
@@ -821,6 +831,86 @@ pub(crate) async fn build_wsl_git_log(
     }
     annotate_commit_graph(&mut commits);
     Ok(commits)
+}
+
+pub(crate) async fn build_wsl_git_log_page(
+    repo_path: &WslProjectPath,
+    offset: usize,
+    max_items: usize,
+    snapshot: &GitLogSnapshot,
+) -> Result<Vec<GitCommitDto>> {
+    let mut virtual_commits = Vec::new();
+    if snapshot.has_unstaged {
+        virtual_commits.push(build_virtual_commit("in-progress", "Working tree changes"));
+    }
+    if snapshot.has_staged {
+        virtual_commits.push(build_virtual_commit("planned", "Staged changes"));
+    }
+    let virtual_count = virtual_commits.len();
+    let mut commits = virtual_commits
+        .into_iter()
+        .skip(offset)
+        .take(max_items)
+        .collect::<Vec<_>>();
+    let real_limit = max_items.saturating_sub(commits.len());
+    if real_limit > 0 && snapshot.tip.is_some() {
+        let real_offset = offset.saturating_sub(virtual_count);
+        let mut args = vec![
+            "log".to_string(),
+            format!("--skip={real_offset}"),
+            format!("--max-count={real_limit}"),
+            "--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1f%P".to_string(),
+        ];
+        args.push(snapshot.tip.clone().expect("checked snapshot tip"));
+        let output =
+            run_wsl_git_checked(repo_path, &args, WSL_GIT_TIMEOUT, "git log WSL failed").await?;
+        commits.extend(
+            output
+                .stdout_text()
+                .lines()
+                .filter_map(parse_wsl_commit_line),
+        );
+    }
+    annotate_commit_graph(&mut commits);
+    Ok(commits)
+}
+
+pub(crate) async fn build_wsl_git_log_snapshot(
+    repo_path: &WslProjectPath,
+    branch: Option<&str>,
+) -> Result<GitLogSnapshot> {
+    if let Some(branch) = branch {
+        validate_refspec(branch)?;
+    }
+    let status = build_wsl_git_status(repo_path).await?;
+    let tip = if let Some(branch) = branch {
+        let output = run_wsl_git_checked(
+            repo_path,
+            &[
+                "rev-parse".to_string(),
+                "--verify".to_string(),
+                "--end-of-options".to_string(),
+                format!("{branch}^{{commit}}"),
+            ],
+            WSL_GIT_TIMEOUT,
+            "git log reference resolution failed",
+        )
+        .await?;
+        Some(output.stdout_text())
+    } else {
+        status.head_commit.as_ref().map(|commit| commit.id.clone())
+    };
+    let has_staged = !status.staged_files.is_empty();
+    let has_unstaged = !status.unstaged_files.is_empty() || !status.untracked_files.is_empty();
+    Ok(GitLogSnapshot {
+        revision: format!(
+            "{}:{has_staged}:{has_unstaged}",
+            tip.as_deref().unwrap_or("unborn")
+        ),
+        tip,
+        has_staged,
+        has_unstaged,
+    })
 }
 
 pub(crate) async fn build_wsl_git_branches(repo_path: &WslProjectPath) -> Result<GitBranchesDto> {
@@ -1073,8 +1163,15 @@ pub(crate) async fn wsl_git_diff(
     options: DiffRequestOptions,
 ) -> Result<String> {
     let mut args = vec!["diff".to_string()];
-    if let Some(context_lines) = options.context_lines {
-        args.push(format!("--unified={}", context_lines));
+    if options.mode == GitDiffMode::Stat {
+        args.push("--stat".to_string());
+    } else if options.mode == GitDiffMode::NameOnly {
+        args.push("--name-only".to_string());
+    }
+    if options.mode == GitDiffMode::Patch {
+        if let Some(context_lines) = options.context_lines {
+            args.push(format!("--unified={}", context_lines));
+        }
     }
     if options.ignore_whitespace {
         args.push("--ignore-all-space".to_string());
@@ -1091,9 +1188,32 @@ pub(crate) async fn wsl_git_diff(
             args.extend(paths);
         }
     }
+    let Some(max_bytes) = options.max_bytes else {
+        let output =
+            run_wsl_git_checked(repo_path, &args, WSL_GIT_TIMEOUT, "git diff WSL failed").await?;
+        return Ok(output.stdout_text());
+    };
     let output =
-        run_wsl_git_checked(repo_path, &args, WSL_GIT_TIMEOUT, "git diff WSL failed").await?;
-    Ok(output.stdout_text())
+        run_wsl_git_bounded_allow_failure(repo_path, &args, WSL_GIT_TIMEOUT, max_bytes).await?;
+    if !output.status.success() {
+        let details = output.stderr.text("WSL STDERR");
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                "git diff WSL failed".to_string()
+            } else {
+                details
+            },
+        });
+    }
+    if options.require_complete && output.stdout.truncated() {
+        return Err(BackendError::Git {
+            message: format!(
+                "Git diff output requires {} bytes and exceeds the inline limit of {} retained bytes. Narrow paths, use mode=stat or mode=name_only, or retry without require_complete.",
+                output.stdout.total_bytes(), output.stdout.retained_bytes()
+            ),
+        });
+    }
+    Ok(output.stdout.text("GIT DIFF"))
 }
 
 pub(crate) async fn build_wsl_git_tree(
@@ -2570,10 +2690,42 @@ fn ensure_clean(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitDiffMode {
+    Patch,
+    Stat,
+    NameOnly,
+}
+
+impl GitDiffMode {
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self> {
+        match value.unwrap_or("patch").trim() {
+            "patch" | "" => Ok(Self::Patch),
+            "stat" => Ok(Self::Stat),
+            "name_only" => Ok(Self::NameOnly),
+            value => Err(BackendError::Validation(format!(
+                "Unsupported git diff mode '{}'. Expected patch, stat, or name_only.",
+                value
+            ))),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Patch => "patch",
+            Self::Stat => "stat",
+            Self::NameOnly => "name_only",
+        }
+    }
+}
+
 pub(crate) struct DiffRequestOptions {
     pub context_lines: Option<u32>,
     pub ignore_whitespace: bool,
     pub paths: Option<Vec<String>>,
+    pub mode: GitDiffMode,
+    pub max_bytes: Option<usize>,
+    pub require_complete: bool,
 }
 
 pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
@@ -2752,6 +2904,79 @@ pub fn build_git_log(
     }
 
     Ok(commits)
+}
+
+pub(crate) fn build_git_log_page(
+    repo: &Repository,
+    offset: usize,
+    max_items: usize,
+    snapshot: &GitLogSnapshot,
+) -> Result<Vec<GitCommitDto>> {
+    let mut virtual_commits = Vec::new();
+    if snapshot.has_unstaged {
+        virtual_commits.push(build_virtual_commit("in-progress", "Working tree changes"));
+    }
+    if snapshot.has_staged {
+        virtual_commits.push(build_virtual_commit("planned", "Staged changes"));
+    }
+    let virtual_count = virtual_commits.len();
+    let mut commits = virtual_commits
+        .into_iter()
+        .skip(offset)
+        .take(max_items)
+        .collect::<Vec<_>>();
+    let real_limit = max_items.saturating_sub(commits.len());
+    if real_limit == 0 {
+        annotate_commit_graph(&mut commits);
+        return Ok(commits);
+    }
+
+    let Some(tip) = snapshot.tip.as_deref() else {
+        annotate_commit_graph(&mut commits);
+        return Ok(commits);
+    };
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push(Oid::from_str(tip).map_err(|error| BackendError::Git {
+        message: format!("Invalid git log snapshot tip: {error}"),
+    })?)?;
+
+    let real_offset = offset.saturating_sub(virtual_count);
+    for oid in revwalk.skip(real_offset).take(real_limit) {
+        let oid = oid.map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+        let commit = repo.find_commit(oid)?;
+        commits.push(commit_to_dto(&commit));
+    }
+    annotate_commit_graph(&mut commits);
+    Ok(commits)
+}
+
+pub(crate) fn build_git_log_snapshot(
+    repo: &Repository,
+    branch: Option<&str>,
+) -> Result<GitLogSnapshot> {
+    let (has_staged, has_unstaged) = get_working_status_flags(repo)?;
+    if let Some(branch) = branch {
+        validate_refspec(branch)?;
+    }
+    let tip = if let Some(branch) = branch {
+        Some(resolve_commit(repo, branch)?.id().to_string())
+    } else {
+        repo.head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| oid.to_string())
+    };
+    Ok(GitLogSnapshot {
+        revision: format!(
+            "{}:{has_staged}:{has_unstaged}",
+            tip.as_deref().unwrap_or("unborn")
+        ),
+        tip,
+        has_staged,
+        has_unstaged,
+    })
 }
 
 pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
@@ -2972,6 +3197,9 @@ pub(crate) fn build_git_merge_check(
             context_lines: Some(0),
             ignore_whitespace: false,
             paths: None,
+            mode: GitDiffMode::Patch,
+            max_bytes: None,
+            require_complete: false,
         },
     )?;
     let has_changes = !diff.trim().is_empty();
@@ -3681,6 +3909,47 @@ pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> 
     Ok(short_hash(oid))
 }
 
+enum DiffTextSink {
+    Full(String),
+    Bounded(super::tool_output::BoundedTextCollector),
+}
+
+impl DiffTextSink {
+    fn new(max_bytes: Option<usize>) -> Self {
+        match max_bytes {
+            Some(max_bytes) => {
+                Self::Bounded(super::tool_output::BoundedTextCollector::new(max_bytes))
+            }
+            None => Self::Full(String::new()),
+        }
+    }
+
+    fn push_str(&mut self, value: &str) {
+        match self {
+            Self::Full(output) => output.push_str(value),
+            Self::Bounded(output) => output.push_str(value),
+        }
+    }
+
+    fn finish(self, require_complete: bool) -> Result<String> {
+        match self {
+            Self::Full(output) => Ok(output),
+            Self::Bounded(output) => {
+                let output = output.finish("GIT DIFF");
+                if require_complete && output.truncated {
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Git diff output requires {} bytes and exceeds the inline limit of {} retained bytes. Narrow paths, use mode=stat or mode=name_only, or retry without require_complete.",
+                            output.total_bytes, output.retained_bytes
+                        ),
+                    });
+                }
+                Ok(output.text)
+            }
+        }
+    }
+}
+
 pub(crate) fn diff_repo(
     repo: &Repository,
     base: Option<&str>,
@@ -3718,30 +3987,59 @@ pub(crate) fn diff_repo(
         }
     }
 
-    let mut output = String::new();
-    let mut print_cb = |_delta: git2::DiffDelta<'_>,
-                        _hunk: Option<git2::DiffHunk<'_>>,
-                        line: git2::DiffLine<'_>| {
-        let origin = line.origin();
-        // Only prepend origin for content lines, not file/hunk headers
-        if matches!(origin, '+' | '-' | ' ') {
-            output.push(origin);
+    let mut output = DiffTextSink::new(options.max_bytes);
+    let mut render_diff = |diff: &git2::Diff<'_>| -> Result<()> {
+        match options.mode {
+            GitDiffMode::Patch => {
+                diff.print(
+                    DiffFormat::Patch,
+                    |_delta: git2::DiffDelta<'_>,
+                     _hunk: Option<git2::DiffHunk<'_>>,
+                     line: git2::DiffLine<'_>| {
+                        let origin = line.origin();
+                        if matches!(origin, '+' | '-' | ' ') {
+                            output.push_str(&origin.to_string());
+                        }
+                        output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
+                        true
+                    },
+                )?;
+            }
+            GitDiffMode::Stat => {
+                let stats = diff.stats()?;
+                let buffer = stats.to_buf(DiffStatsFormat::FULL, 80)?;
+                output.push_str(std::str::from_utf8(buffer.as_ref()).unwrap_or(""));
+            }
+            GitDiffMode::NameOnly => {
+                let mut previous_path = None;
+                for path in diff
+                    .deltas()
+                    .filter_map(|delta| delta.new_file().path().or_else(|| delta.old_file().path()))
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                {
+                    if previous_path.as_deref() == Some(path.as_str()) {
+                        continue;
+                    }
+                    output.push_str(&path);
+                    output.push_str("\n");
+                    previous_path = Some(path);
+                }
+            }
         }
-        output.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-        true
+        Ok(())
     };
 
     if let Some(head) = head {
         let head_commit = resolve_commit(repo, head)?;
         let head_tree = head_commit.tree()?;
         let diff = repo.diff_tree_to_tree(base_tree.as_ref(), Some(&head_tree), Some(&mut opts))?;
-        diff.print(DiffFormat::Patch, &mut print_cb)?;
+        render_diff(&diff)?;
     } else {
         let diff = repo.diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut opts))?;
-        diff.print(DiffFormat::Patch, &mut print_cb)?;
+        render_diff(&diff)?;
     }
 
-    Ok(output)
+    output.finish(options.require_complete)
 }
 
 pub(crate) fn validate_repo_relative_file_path(path: &str) -> Result<PathBuf> {
@@ -4077,11 +4375,17 @@ pub async fn git_log(
     git_state: State<'_, GitState>,
     repo_path: String,
     limit: Option<u32>,
+    offset: Option<u32>,
     branch: Option<String>,
 ) -> Result<Vec<GitCommitDto>> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
         let limit = limit.map(|v| v as usize).unwrap_or(DEFAULT_LOG_LIMIT);
-        return build_wsl_git_log(&wsl_repo_path, limit, branch.as_deref()).await;
+        return if let Some(offset) = offset {
+            let snapshot = build_wsl_git_log_snapshot(&wsl_repo_path, branch.as_deref()).await?;
+            build_wsl_git_log_page(&wsl_repo_path, offset as usize, limit, &snapshot).await
+        } else {
+            build_wsl_git_log(&wsl_repo_path, limit, branch.as_deref()).await
+        };
     }
 
     let workspace = workspace_root.inner().read().await.clone();
@@ -4095,7 +4399,12 @@ pub async fn git_log(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        build_git_log(&repo, limit, branch.as_deref())
+        if let Some(offset) = offset {
+            let snapshot = build_git_log_snapshot(&repo, branch.as_deref())?;
+            build_git_log_page(&repo, offset as usize, limit, &snapshot)
+        } else {
+            build_git_log(&repo, limit, branch.as_deref())
+        }
     })
     .await
     .map_err(to_join_error)?
@@ -4671,7 +4980,17 @@ pub async fn git_diff(
     context_lines: Option<u32>,
     ignore_whitespace: Option<bool>,
     paths: Option<Vec<String>>,
+    mode: Option<String>,
+    max_bytes: Option<u32>,
+    require_complete: Option<bool>,
 ) -> Result<String> {
+    let mode = GitDiffMode::parse(mode.as_deref())?;
+    let max_bytes = max_bytes.map(|value| {
+        (value as usize)
+            .max(1)
+            .min(super::tool_output::GIT_DIFF_MAX_BYTES)
+    });
+    let require_complete = require_complete.unwrap_or(false);
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
         return wsl_git_diff(
             &wsl_repo_path,
@@ -4681,6 +5000,9 @@ pub async fn git_diff(
                 context_lines,
                 ignore_whitespace: ignore_whitespace.unwrap_or(false),
                 paths,
+                mode,
+                max_bytes,
+                require_complete,
             },
         )
         .await;
@@ -4704,6 +5026,9 @@ pub async fn git_diff(
                 context_lines,
                 ignore_whitespace: ignore_whitespace.unwrap_or(false),
                 paths,
+                mode,
+                max_bytes,
+                require_complete,
             },
         )
     })
@@ -6012,6 +6337,25 @@ mod tests {
     }
 
     #[test]
+    fn test_git_log_page_skips_without_materializing_prior_commits() {
+        let (temp, repo) = init_repo();
+        for index in 1..=4 {
+            fs::write(temp.path().join("README.md"), format!("commit {index}\n")).unwrap();
+            commit_repo(&repo, &format!("test: commit {index}"), true).unwrap();
+        }
+        let all = build_git_log(&repo, 10, None).unwrap();
+        let snapshot = build_git_log_snapshot(&repo, None).unwrap();
+        let page = build_git_log_page(&repo, 1, 2, &snapshot).unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].id, all[1].id);
+        assert_eq!(page[1].id, all[2].id);
+
+        fs::write(temp.path().join("dirty.txt"), "changed\n").unwrap();
+        let changed_snapshot = build_git_log_snapshot(&repo, None).unwrap();
+        assert_ne!(changed_snapshot.revision, snapshot.revision);
+    }
+
+    #[test]
     fn test_git_branch_list_basic() {
         let (_temp, repo) = init_repo();
         let branches = build_git_branches(&repo).unwrap();
@@ -6250,10 +6594,85 @@ mod tests {
                 context_lines: Some(3),
                 ignore_whitespace: false,
                 paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: None,
+                require_complete: false,
             },
         )
         .unwrap();
         assert!(diff.contains("README.md"));
+    }
+
+    #[test]
+    fn test_git_diff_modes_and_explicit_truncation() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("README.md"), "updated\n".repeat(20_000)).unwrap();
+
+        let bounded = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(1_024),
+                require_complete: false,
+            },
+        )
+        .unwrap();
+        assert!(bounded.contains("GIT DIFF TRUNCATED"));
+        assert!(bounded.contains("README.md"));
+
+        let complete_error = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(1_024),
+                require_complete: true,
+            },
+        )
+        .expect_err("require_complete must reject truncated output");
+        assert!(complete_error.to_string().contains("mode=stat"));
+
+        let stat = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: None,
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Stat,
+                max_bytes: Some(8_192),
+                require_complete: false,
+            },
+        )
+        .unwrap();
+        assert!(stat.contains("README.md"));
+        assert!(!stat.contains("@@"));
+
+        let names = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: None,
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::NameOnly,
+                max_bytes: Some(8_192),
+                require_complete: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(names.trim(), "README.md");
     }
 
     #[test]

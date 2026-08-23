@@ -689,9 +689,13 @@ Les messages de commit doivent être générés automatiquement par l'IA après 
 
 ### 14.7 Sorties des outils de workspace
 
-Les outils `list`, `read`, `glob` et `grep` doivent produire des sorties bornées. Lorsqu'une réponse est incomplète, elle doit l'indiquer explicitement et fournir un curseur permettant de continuer la même requête sans répéter ni sauter volontairement des résultats.
+Les outils `list`, `read`, `glob`, `grep`, `git_status`, `git_log` et `git_diff` doivent produire des sorties bornées. Lorsqu'une réponse paginable est incomplète, elle doit l'indiquer explicitement et fournir un curseur permettant de continuer la même requête sans répéter ni sauter volontairement des résultats.
 
-Une lecture paginée doit rester liée à la révision du fichier qu'elle a commencé à lire. Si ce fichier change, Macro doit refuser le curseur devenu obsolète plutôt que de composer silencieusement une vue incohérente. Les recherches doivent signaler les fichiers binaires ou trop gros qu'elles n'ont pas inspectés, et les lignes exceptionnellement longues doivent être tronquées de façon visible.
+Une lecture paginée doit rester liée à la révision du fichier qu'elle a commencé à lire. De même, la pagination de `git_status` doit être liée à l'ensemble exact des changements observés. Si la source change, Macro doit refuser le curseur devenu obsolète plutôt que de composer silencieusement une vue incohérente. Les recherches doivent signaler les fichiers binaires ou trop gros qu'elles n'ont pas inspectés, et les lignes exceptionnellement longues doivent être tronquées de façon visible.
+
+La pagination de `git_log` doit lier son curseur au commit de tête résolu et à la présence des pseudo-commits staged/unstaged. Un changement de cet instantané invalide le curseur afin d'éviter de répéter ou de sauter des commits réels lorsque les pseudo-commits apparaissent ou disparaissent.
+
+`git_diff` doit proposer des vues de synthèse `stat` et `name_only` en plus du patch. Un patch trop volumineux conserve un début et une fin identifiables, annonce explicitement les octets omis et peut échouer à la demande avec `require_complete` lorsque l'appelant interdit une réponse partielle.
 
 Le comportement doit rester équivalent dans le backend desktop, les workspaces virtuels multi-projets, le fallback frontend, le noyau distant et le pont Copilot. Un transport qui ne sait pas garantir ces bornes ne doit pas exécuter ces outils.
 

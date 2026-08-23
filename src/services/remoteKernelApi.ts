@@ -10,7 +10,13 @@ interface RemoteToolModePolicy {
 
 const CONTENT_REVISIONS_CAPABILITY = 'content_revisions_v1';
 const BOUNDED_TOOL_OUTPUT_CAPABILITY = 'bounded_tool_output_v1';
+const BOUNDED_GIT_OUTPUT_CAPABILITY = 'bounded_git_output_v1';
 const BOUNDED_OUTPUT_TOOL_IDS = new Set(['list', 'read', 'glob', 'grep']);
+const BOUNDED_GIT_OUTPUT_TOOL_IDS = new Set([
+  'git_status',
+  'git_log',
+  'git_diff',
+]);
 
 const requiresContentRevisions = (params: {
   toolId: string;
@@ -85,7 +91,8 @@ export const executeRemoteWorkspaceTool = async (params: {
 }): Promise<string> => {
   const needsContentRevisions = requiresContentRevisions(params);
   const needsBoundedOutput = BOUNDED_OUTPUT_TOOL_IDS.has(params.toolId);
-  if (needsContentRevisions || needsBoundedOutput) {
+  const needsBoundedGitOutput = BOUNDED_GIT_OUTPUT_TOOL_IDS.has(params.toolId);
+  if (needsContentRevisions || needsBoundedOutput || needsBoundedGitOutput) {
     const policy = await getRemoteToolModePolicy(params.mode);
     if (
       needsContentRevisions &&
@@ -101,6 +108,14 @@ export const executeRemoteWorkspaceTool = async (params: {
     ) {
       throw new Error(
         'The remote Macro kernel cannot guarantee bounded, resumable tool output. Update the remote kernel before retrying this read-only tool.'
+      );
+    }
+    if (
+      needsBoundedGitOutput &&
+      !policy.capabilities?.includes(BOUNDED_GIT_OUTPUT_CAPABILITY)
+    ) {
+      throw new Error(
+        'The remote Macro kernel cannot guarantee bounded Git tool output. Update the remote kernel before retrying this repository inspection tool.'
       );
     }
   }

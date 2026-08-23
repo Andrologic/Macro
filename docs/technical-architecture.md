@@ -675,22 +675,27 @@ Cette garantie est un contrôle optimiste « if-match » et non un verrou exclus
 
 ### 13.5 Sorties bornées et reprise
 
-Les outils de lecture du workspace ne peuvent pas injecter une sortie arbitrairement grande dans le contexte agent. Leur contrat est additif : les champs historiques restent disponibles, et les réponses structurées ajoutent `limit`, `offset`, `truncated` et `next_cursor`. `list` et `glob` ajoutent aussi `total_count`, car leur résultat est complètement trié avant pagination. `grep` conserve `total` comme nombre de lignes renvoyées et expose `total_count=null` avec `total_is_exact=false` lorsqu'il s'arrête après avoir trouvé la ligne qui prouve qu'une page suivante existe.
+Les outils de lecture du workspace et d'inspection Git ne peuvent pas injecter une sortie arbitrairement grande dans le contexte agent. Leur contrat est additif : les réponses structurées paginables ajoutent `limit`, `offset`, `truncated` et `next_cursor`. `list`, `glob` et `git_status` ajoutent aussi `total_count`, car leur résultat est complètement matérialisé avant pagination. `grep` et `git_log` exposent `total_count=null` avec `total_is_exact=false` lorsqu'ils s'arrêtent après avoir trouvé l'élément qui prouve qu'une page suivante existe.
 
 Les limites partagées sont les suivantes :
 
 - `read` : 500 lignes par défaut, 3 000 au maximum, 256 Kio de contenu par page et 2 000 caractères par ligne ;
 - `list` : 200 entrées par défaut, 1 000 au maximum ;
 - `glob` : 200 chemins par défaut, 1 000 au maximum ;
-- `grep` : 50 correspondances par défaut, 200 au maximum et 512 caractères par ligne de résultat.
+- `grep` : 50 correspondances par défaut, 200 au maximum et 512 caractères par ligne de résultat ;
+- `git_status` : 200 changements par défaut, 1 000 au maximum ;
+- `git_log` : 50 commits par défaut, 200 au maximum ;
+- `git_diff` : 256 Kio de patch au maximum et 64 lignes de contexte par hunk.
+
+`git_diff` accepte les modes `patch`, `stat` et `name_only`. Le mode patch utilise un collecteur tête-fin borné : une troncature conserve les premiers 75 % et les derniers 25 % de la capacité, insère un marqueur avec le nombre exact d'octets omis et devient une erreur si `require_complete=true`. Sous WSL, stdout et stderr sont drainés en continu dans des collecteurs bornés ; la limite s'applique donc à la mémoire capturée pendant l'exécution et pas seulement à la chaîne renvoyée. Les vues de synthèse doivent être privilégiées avant un patch portant sur une modification large.
 
 `grep` ignore les fichiers binaires et les fichiers de plus de 4 Mio, puis rend ces omissions visibles dans `skipped_files`. Le pont Copilot applique la même liste de répertoires et fichiers ignorés que le backend (`.git`, `node_modules`, `target`, sorties de build et caches usuels). Les résultats sont triés selon les octets UTF-8 sur les chemins Rust, TypeScript et Copilot afin que le découpage en pages reste identique.
 
 Sous WSL, l'énumération interne s'arrête avant d'accumuler plus de 1 000 entrées. Si une arborescence dépasse cette limite de sécurité, l'opération échoue explicitement et demande de réduire le chemin ou la profondeur au lieu d'annoncer un total ou un scan complet erroné. Une récursion sans `max_depth` n'est pas amputée silencieusement à une profondeur arbitraire.
 
-Le curseur opaque suit actuellement le format interne `v1:<empreinte>:<offset>`. L'empreinte FNV-1a lie le curseur aux paramètres sémantiques de la requête ; elle sert à détecter une réutilisation accidentelle et n'est pas une primitive de sécurité. Un curseur de `read` inclut aussi la révision SHA-256 du fichier : si le contenu change entre deux pages, la reprise échoue et l'agent doit recommencer la lecture. Les arbres de fichiers peuvent encore changer entre deux pages de `list`, `glob` ou `grep`; leur pagination est déterministe pour un instantané logique inchangé, sans verrouiller le système de fichiers.
+Le curseur opaque suit actuellement le format interne `v1:<empreinte>:<offset>`. L'empreinte FNV-1a lie le curseur aux paramètres sémantiques de la requête ; elle sert à détecter une réutilisation accidentelle et n'est pas une primitive de sécurité. Un curseur de `read` inclut aussi la révision SHA-256 du fichier, celui de `git_status` une révision de l'ensemble ordonné des changements, et celui de `git_log` le commit de tête résolu avec les indicateurs staged/unstaged qui déterminent ses pseudo-commits. Si l'une de ces sources change entre deux pages, la reprise échoue et l'agent doit recommencer sans curseur. Les arbres de fichiers peuvent encore changer entre deux pages de `list`, `glob` ou `grep`; leur pagination reste déterministe pour un instantané logique inchangé, sans verrouiller le système de fichiers ni le dépôt.
 
-Le backend Tauri, le fallback TypeScript, les racines virtuelles multi-projets et le pont Copilot appliquent ce contrat. Un noyau distant doit annoncer `bounded_tool_output_v1`; Macro refuse sinon d'exécuter `list`, `read`, `glob` ou `grep` à distance, avant qu'une sortie non bornée puisse atteindre le contexte.
+Le backend Tauri, le fallback TypeScript et les racines virtuelles multi-projets appliquent ce contrat Git ; le pont Copilot conserve son périmètre d'outils pris en charge. Un noyau distant doit annoncer `bounded_tool_output_v1` pour `list`, `read`, `glob` et `grep`, puis `bounded_git_output_v1` pour `git_status`, `git_log` et `git_diff`. Macro refuse l'exécution distante si la capacité propre à la famille d'outils manque, avant qu'une sortie non bornée puisse atteindre le contexte.
 
 ---
 

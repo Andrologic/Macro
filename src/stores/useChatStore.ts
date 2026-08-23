@@ -6231,9 +6231,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "Workspace read results include a REVISION value. When a later write, edit, or delete depends on content you read, pass that value as expected_revision. For apply_patch, pass expected_revisions keyed by the exact patch paths. If Macro reports stale content, re-read before retrying instead of bypassing the guard.",
       );
     }
-    if (["list", "read", "glob", "grep"].some((toolId) => allowedToolIds.includes(toolId))) {
+    if (["list", "read", "glob", "grep", "git_status", "git_log"].some((toolId) => allowedToolIds.includes(toolId))) {
       systemInstructions.push(
-        "Workspace list, read, glob, and grep outputs are bounded. When TRUNCATED/truncated is true and NEXT_CURSOR/next_cursor is present, continue with that cursor and otherwise keep the same request options; do not assume the first page is complete. Read cursors are bound to the file revision, so re-read from the start if Macro rejects a stale cursor.",
+        "Workspace list, read, glob, grep, git_status, and git_log outputs are bounded. When TRUNCATED/truncated is true and NEXT_CURSOR/next_cursor is present, continue with that cursor and otherwise keep the same request options; do not assume the first page is complete. Read and git_status cursors are bound to the underlying revision, so restart without a cursor if Macro rejects a stale cursor.",
+      );
+    }
+    if (allowedToolIds.includes("git_diff")) {
+      systemInstructions.push(
+        "Git diff output is byte-bounded. For broad changes, inspect mode=stat or mode=name_only first, narrow paths when possible, and use require_complete=true only when an incomplete patch would be unsafe.",
       );
     }
     if (allowedToolIds.includes("apply_patch")) {

@@ -107,7 +107,7 @@ describe('macroToolRegistry', () => {
   });
 
   it('publishes bounded, resumable arguments for workspace read tools', () => {
-    for (const toolId of ['list', 'glob', 'grep'] as const) {
+    for (const toolId of ['list', 'glob', 'grep', 'git_status', 'git_log'] as const) {
       const parameters = requireMacroToolRegistryEntry(toolId).parameters;
       expect(parameters.type).toBe('object');
       if (parameters.type !== 'object') continue;
@@ -120,6 +120,15 @@ describe('macroToolRegistry', () => {
     if (read.type !== 'object') return;
     expect(read.properties?.max_lines?.type).toBe('number');
     expect(read.properties?.cursor?.type).toBe('string');
+
+    const diff = requireMacroToolRegistryEntry('git_diff').parameters;
+    expect(diff.type).toBe('object');
+    if (diff.type !== 'object') return;
+    expect(diff.properties?.mode).toMatchObject({
+      type: 'string',
+      enum: ['patch', 'stat', 'name_only'],
+    });
+    expect(diff.properties?.require_complete?.type).toBe('boolean');
   });
 
   it('filters Copilot tools to the currently supported Macro runtime surface', () => {

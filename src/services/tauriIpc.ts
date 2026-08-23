@@ -2121,11 +2121,13 @@ export async function gitStatus(repoPath: string): Promise<GitStatusDto> {
 export async function gitLog(params: {
   repoPath: string;
   limit?: number;
+  offset?: number;
   branch?: string;
 }): Promise<GitCommit[]> {
   return invoke<GitCommit[]>("git_log", {
     repoPath: params.repoPath,
     limit: params.limit ?? null,
+    offset: params.offset ?? null,
     branch: params.branch ?? null,
   });
 }
@@ -2328,6 +2330,9 @@ export async function gitDiff(params: {
   contextLines?: number;
   ignoreWhitespace?: boolean;
   paths?: string[];
+  mode?: "patch" | "stat" | "name_only";
+  maxBytes?: number;
+  requireComplete?: boolean;
 }): Promise<string> {
   return invoke<string>("git_diff", {
     repoPath: params.repoPath,
@@ -2336,6 +2341,9 @@ export async function gitDiff(params: {
     contextLines: params.contextLines ?? null,
     ignoreWhitespace: params.ignoreWhitespace ?? null,
     paths: params.paths ?? null,
+    mode: params.mode ?? null,
+    maxBytes: params.maxBytes ?? null,
+    requireComplete: params.requireComplete ?? null,
   });
 }
 

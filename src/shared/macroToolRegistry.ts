@@ -668,17 +668,34 @@ export const MACRO_TOOL_REGISTRY = [
           description:
             "Optional repository path override. In a virtual global root, you can use mount-prefixed values such as api or api/src.",
         },
+        limit: {
+          type: "number",
+          description: `Maximum changed-file entries per page. Defaults to ${TOOL_OUTPUT_LIMITS.git.statusDefaultResults} and is capped at ${TOOL_OUTPUT_LIMITS.git.statusMaxResults}.`,
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Opaque next_cursor returned by the previous status page. It is valid only while the repository status is unchanged.",
+        },
       },
       required: [],
     },
   ),
-  objectTool("git_log", "Get git commit history.", {
+  objectTool("git_log", "Get bounded, resumable git commit history.", {
     type: "object",
     properties: {
       repo_path: { type: "string" },
       project_id: { type: "string" },
-      limit: { type: "number" },
+      limit: {
+        type: "number",
+        description: `Maximum commits per page. Defaults to ${TOOL_OUTPUT_LIMITS.git.logDefaultResults} and is capped at ${TOOL_OUTPUT_LIMITS.git.logMaxResults}.`,
+      },
       branch: { type: "string" },
+      cursor: {
+        type: "string",
+        description:
+          "Opaque next_cursor returned by the previous history page. It is valid only while the repository, branch tip, and staged/unstaged state are unchanged.",
+      },
     },
     required: [],
   }),
@@ -690,16 +707,30 @@ export const MACRO_TOOL_REGISTRY = [
     },
     required: [],
   }),
-  objectTool("git_diff", "Generate repository diff.", {
+  objectTool("git_diff", "Generate a bounded repository diff. Prefer stat or name_only before requesting a patch for a broad change.", {
     type: "object",
     properties: {
       repo_path: { type: "string" },
       project_id: { type: "string" },
       base: { type: "string" },
       head: { type: "string" },
-      context_lines: { type: "number" },
+      context_lines: {
+        type: "number",
+        description: `Patch context lines, clamped to ${TOOL_OUTPUT_LIMITS.git.diffMaxContextLines}.`,
+      },
       ignore_whitespace: { type: "boolean" },
       paths: { type: "array", items: { type: "string" } },
+      mode: {
+        type: "string",
+        enum: ["patch", "stat", "name_only"],
+        description:
+          "Output mode. Defaults to patch; stat and name_only are safer for broad repository changes.",
+      },
+      require_complete: {
+        type: "boolean",
+        description:
+          "Fail instead of returning an explicitly truncated diff. Defaults to false.",
+      },
     },
     required: [],
   }),
