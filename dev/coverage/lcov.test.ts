@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   domainForSource,
   filterCoverageSources,
+  isProductionCoverageSource,
   mergeLcovReports,
   normalizeSourcePath,
   parseLcov,
@@ -169,6 +170,8 @@ describe('coverage summaries', () => {
     expect(summary.uninstrumentedFiles).toEqual(['src/services/missing.ts']);
     expect(domainForSource('src/components/chat/ChatZone.tsx')).toBe('components/chat');
     expect(domainForSource('src/unknown.ts')).toBe('other');
+    expect(isProductionCoverageSource('src/stores/__tests__/chat.scenarios.ts')).toBe(false);
+    expect(isProductionCoverageSource('src/stores/chat.scenarios.ts')).toBe(false);
     expect(serializeLcov(filterCoverageSources(coverage))).not.toContain('chat.test.ts');
   });
 });

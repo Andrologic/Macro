@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-const TEST_FILE_PATTERN = /\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i;
+const TEST_FILE_PATTERN = /\.(?:test|spec|scenarios)\.(?:ts|tsx|js|jsx)$/i;
 
 function parseNonNegativeInteger(value, context) {
   if (!/^\d+$/.test(value)) {
@@ -299,7 +299,12 @@ export function serializeLcov(coverage) {
 
 export function isProductionCoverageSource(source) {
   const normalized = source.replaceAll('\\', '/');
-  if (TEST_FILE_PATTERN.test(normalized) || normalized === 'test-setup.ts' || normalized.includes('/test-utils/')) {
+  if (
+    TEST_FILE_PATTERN.test(normalized)
+    || normalized === 'test-setup.ts'
+    || normalized.includes('/__tests__/')
+    || normalized.includes('/test-utils/')
+  ) {
     return false;
   }
   if (normalized.includes('/generated/') || normalized.endsWith('.d.ts')) {
