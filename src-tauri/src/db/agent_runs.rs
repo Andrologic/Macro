@@ -77,10 +77,90 @@ async fn transition_error(pool: &SqlitePool, id: &str, transition: &str) -> DbEr
     }
 }
 
-async fn load_after_transition(pool: &SqlitePool, id: &str) -> DbResult<AgentRun> {
-    get_agent_run(pool, id)
-        .await?
-        .ok_or_else(|| DbError::Validation(format!("Agent run disappeared: {id}")))
+async fn validate_lineage(
+    connection: &mut sqlx::SqliteConnection,
+    parent_conversation_id: &str,
+    child_conversation_id: Option<&str>,
+    depth: i32,
+) -> DbResult<()> {
+    let parent_depth = sqlx::query_scalar::<_, i32>(
+        "SELECT depth FROM agent_runs WHERE child_conversation_id = ?",
+    )
+    .bind(parent_conversation_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let expected_depth = parent_depth.map_or(1, |parent_depth| parent_depth + 1);
+    if depth != expected_depth {
+        return Err(DbError::Validation(format!(
+            "Agent run depth {depth} does not match expected depth {expected_depth} for parent conversation {parent_conversation_id}"
+        )));
+    }
+
+    let Some(child_conversation_id) = child_conversation_id else {
+        return Ok(());
+    };
+    if child_conversation_id.trim().is_empty() {
+        return Err(DbError::Validation(
+            "Agent run child conversation cannot be empty".to_string(),
+        ));
+    }
+    if child_conversation_id == parent_conversation_id {
+        return Err(DbError::Validation(
+            "Parent and child conversations must differ".to_string(),
+        ));
+    }
+
+    let creates_cycle = sqlx::query_scalar::<_, i64>(
+        r#"
+        WITH RECURSIVE descendants(conversation_id) AS (
+            SELECT child_conversation_id
+            FROM agent_runs
+            WHERE parent_conversation_id = ? AND child_conversation_id IS NOT NULL
+            UNION
+            SELECT runs.child_conversation_id
+            FROM agent_runs AS runs
+            JOIN descendants
+              ON runs.parent_conversation_id = descendants.conversation_id
+            WHERE runs.child_conversation_id IS NOT NULL
+        )
+        SELECT EXISTS(
+            SELECT 1 FROM descendants WHERE conversation_id = ?
+        )
+        "#,
+    )
+    .bind(child_conversation_id)
+    .bind(parent_conversation_id)
+    .fetch_one(&mut *connection)
+    .await?
+        != 0;
+    if creates_cycle {
+        return Err(DbError::Validation(format!(
+            "Linking parent conversation {parent_conversation_id} to child conversation {child_conversation_id} would create a cycle"
+        )));
+    }
+
+    if let Some(row) = sqlx::query(
+        r#"
+        SELECT id, depth
+        FROM agent_runs
+        WHERE parent_conversation_id = ? AND depth <> ?
+        LIMIT 1
+        "#,
+    )
+    .bind(child_conversation_id)
+    .bind(depth + 1)
+    .fetch_optional(&mut *connection)
+    .await?
+    {
+        return Err(DbError::Validation(format!(
+            "Linking child conversation {child_conversation_id} would make descendant run {} depth {}; expected {}",
+            row.get::<String, _>("id"),
+            row.get::<i32, _>("depth"),
+            depth + 1
+        )));
+    }
+
+    Ok(())
 }
 
 pub async fn create_agent_run(pool: &SqlitePool, input: CreateAgentRunInput) -> DbResult<AgentRun> {
@@ -99,39 +179,60 @@ pub async fn create_agent_run(pool: &SqlitePool, input: CreateAgentRunInput) -> 
             "Agent run depth must be at least 1".to_string(),
         ));
     }
-    if input.child_conversation_id.as_deref() == Some(input.parent_conversation_id.as_str()) {
-        return Err(DbError::Validation(
-            "Parent and child conversations must differ".to_string(),
-        ));
-    }
     validate_json(
         "agent run model metadata JSON",
         input.model_metadata_json.as_deref(),
     )?;
 
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        r#"
+    let mut connection = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *connection)
+        .await?;
+    let operation = async {
+        validate_lineage(
+            &mut connection,
+            &input.parent_conversation_id,
+            input.child_conversation_id.as_deref(),
+            input.depth,
+        )
+        .await?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            r#"
         INSERT INTO agent_runs (
             id, parent_conversation_id, child_conversation_id, agent_profile,
             depth, status, prompt, model_metadata_json, attempt_count,
             created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?)
+        RETURNING *
         "#,
-    )
-    .bind(&id)
-    .bind(&input.parent_conversation_id)
-    .bind(&input.child_conversation_id)
-    .bind(&input.agent_profile)
-    .bind(input.depth)
-    .bind(&input.prompt)
-    .bind(&input.model_metadata_json)
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
-    .await?;
+        )
+        .bind(&id)
+        .bind(&input.parent_conversation_id)
+        .bind(&input.child_conversation_id)
+        .bind(&input.agent_profile)
+        .bind(input.depth)
+        .bind(&input.prompt)
+        .bind(&input.model_metadata_json)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&mut *connection)
+        .await?;
+        map_agent_run(row)
+    }
+    .await;
 
-    load_after_transition(pool, &id).await
+    match operation {
+        Ok(run) => {
+            sqlx::query("COMMIT").execute(&mut *connection).await?;
+            Ok(run)
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+            Err(error)
+        }
+    }
 }
 
 pub async fn get_agent_run(pool: &SqlitePool, id: &str) -> DbResult<Option<AgentRun>> {
@@ -186,28 +287,83 @@ pub async fn start_agent_run(
     id: &str,
     child_conversation_id: Option<&str>,
 ) -> DbResult<AgentRun> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let result = sqlx::query(
+    let mut connection = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *connection)
+        .await?;
+    let operation = async {
+        let current = sqlx::query(
+            r#"
+            SELECT parent_conversation_id, child_conversation_id, depth, status
+            FROM agent_runs
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(|| DbError::Validation(format!("Agent run not found: {id}")))?;
+        let status = current.get::<String, _>("status");
+        if status != "queued" && status != "interrupted" {
+            return Err(DbError::Validation(format!(
+                "Cannot start agent run {id} from status {status}"
+            )));
+        }
+        let durable_child = current.get::<Option<String>, _>("child_conversation_id");
+        if let (Some(durable_child), Some(requested_child)) =
+            (durable_child.as_deref(), child_conversation_id)
+        {
+            if durable_child != requested_child {
+                return Err(DbError::Validation(format!(
+                    "Agent run {id} is already linked to child conversation {durable_child}; it cannot be replaced with {requested_child}"
+                )));
+            }
+        }
+        if durable_child.is_none() {
+            let parent_conversation_id = current.get::<String, _>("parent_conversation_id");
+            let depth = current.get::<i32, _>("depth");
+            validate_lineage(
+                &mut connection,
+                &parent_conversation_id,
+                child_conversation_id,
+                depth,
+            )
+            .await?;
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let row = sqlx::query(
         r#"
         UPDATE agent_runs
         SET status = 'running',
-            child_conversation_id = COALESCE(?, child_conversation_id),
+            child_conversation_id = COALESCE(child_conversation_id, ?),
             attempt_count = attempt_count + 1,
             started_at = COALESCE(started_at, ?),
             updated_at = ?, interruption_reason = NULL, finished_at = NULL
         WHERE id = ? AND status IN ('queued', 'interrupted')
+        RETURNING *
         "#,
-    )
-    .bind(child_conversation_id)
-    .bind(&now)
-    .bind(&now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    if result.rows_affected() != 1 {
-        return Err(transition_error(pool, id, "start").await);
+        )
+        .bind(child_conversation_id)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .fetch_one(&mut *connection)
+        .await?;
+        map_agent_run(row)
     }
-    load_after_transition(pool, id).await
+    .await;
+
+    match operation {
+        Ok(run) => {
+            sqlx::query("COMMIT").execute(&mut *connection).await?;
+            Ok(run)
+        }
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+            Err(error)
+        }
+    }
 }
 
 pub async fn complete_agent_run(
@@ -232,12 +388,13 @@ async fn finish_success(
 ) -> DbResult<AgentRun> {
     let now = chrono::Utc::now().to_rfc3339();
     let usage = input.usage;
-    let result = sqlx::query(
+    let row = sqlx::query(
         r#"
         UPDATE agent_runs SET status = 'completed', result_text = ?, result_json = ?,
             input_tokens = ?, output_tokens = ?, cached_input_tokens = ?, reasoning_tokens = ?,
             total_tokens = ?, usage_json = ?, updated_at = ?, finished_at = ?
         WHERE id = ? AND status = 'running'
+        RETURNING *
         "#,
     )
     .bind(&input.result_text)
@@ -251,12 +408,12 @@ async fn finish_success(
     .bind(&now)
     .bind(&now)
     .bind(id)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    if result.rows_affected() != 1 {
-        return Err(transition_error(pool, id, "complete").await);
+    match row {
+        Some(row) => map_agent_run(row),
+        None => Err(transition_error(pool, id, "complete").await),
     }
-    load_after_transition(pool, id).await
 }
 
 pub async fn fail_agent_run(
@@ -276,12 +433,13 @@ pub async fn fail_agent_run(
     validate_usage(&input.usage)?;
     let now = chrono::Utc::now().to_rfc3339();
     let usage = input.usage;
-    let result = sqlx::query(
+    let row = sqlx::query(
         r#"
         UPDATE agent_runs SET status = 'failed', error_code = ?, error_message = ?,
             error_details_json = ?, input_tokens = ?, output_tokens = ?, cached_input_tokens = ?,
             reasoning_tokens = ?, total_tokens = ?, usage_json = ?, updated_at = ?, finished_at = ?
         WHERE id = ? AND status = 'running'
+        RETURNING *
         "#,
     )
     .bind(&input.error_code)
@@ -296,12 +454,12 @@ pub async fn fail_agent_run(
     .bind(&now)
     .bind(&now)
     .bind(id)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    if result.rows_affected() != 1 {
-        return Err(transition_error(pool, id, "fail").await);
+    match row {
+        Some(row) => map_agent_run(row),
+        None => Err(transition_error(pool, id, "fail").await),
     }
-    load_after_transition(pool, id).await
 }
 
 pub async fn cancel_agent_run(
@@ -312,13 +470,14 @@ pub async fn cancel_agent_run(
     validate_usage(&input.usage)?;
     let now = chrono::Utc::now().to_rfc3339();
     let usage = input.usage;
-    let result = sqlx::query(
+    let row = sqlx::query(
         r#"
         UPDATE agent_runs SET status = 'cancelled', cancellation_reason = ?,
             interruption_reason = NULL, input_tokens = ?, output_tokens = ?,
             cached_input_tokens = ?, reasoning_tokens = ?, total_tokens = ?, usage_json = ?,
             updated_at = ?, finished_at = ?
         WHERE id = ? AND status IN ('queued', 'running', 'interrupted')
+        RETURNING *
         "#,
     )
     .bind(&input.reason)
@@ -331,12 +490,12 @@ pub async fn cancel_agent_run(
     .bind(&now)
     .bind(&now)
     .bind(id)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    if result.rows_affected() != 1 {
-        return Err(transition_error(pool, id, "cancel").await);
+    match row {
+        Some(row) => map_agent_run(row),
+        None => Err(transition_error(pool, id, "cancel").await),
     }
-    load_after_transition(pool, id).await
 }
 
 pub async fn timeout_agent_run(
@@ -352,12 +511,13 @@ pub async fn timeout_agent_run(
         .unwrap_or("deadline_exceeded");
     let now = chrono::Utc::now().to_rfc3339();
     let usage = input.usage;
-    let result = sqlx::query(
+    let row = sqlx::query(
         r#"
         UPDATE agent_runs SET status = 'timed_out', timeout_reason = ?,
             input_tokens = ?, output_tokens = ?, cached_input_tokens = ?, reasoning_tokens = ?,
             total_tokens = ?, usage_json = ?, updated_at = ?, finished_at = ?
         WHERE id = ? AND status = 'running'
+        RETURNING *
         "#,
     )
     .bind(reason)
@@ -370,14 +530,19 @@ pub async fn timeout_agent_run(
     .bind(&now)
     .bind(&now)
     .bind(id)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    if result.rows_affected() != 1 {
-        return Err(transition_error(pool, id, "time out").await);
+    match row {
+        Some(row) => map_agent_run(row),
+        None => Err(transition_error(pool, id, "time out").await),
     }
-    load_after_transition(pool, id).await
 }
 
+/// Marks all running agent runs as interrupted after an established application restart.
+///
+/// Opening a database does not call this function. The caller must first establish that no
+/// other live process can still own a running row; the schema has no instance lease that could
+/// prove this itself.
 pub async fn reconcile_active_agent_runs_after_restart(pool: &SqlitePool) -> DbResult<u64> {
     let now = chrono::Utc::now().to_rfc3339();
     let result = sqlx::query(
@@ -635,7 +800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconciliation_is_selective_idempotent_and_resumable() {
+    async fn opening_a_second_pool_preserves_live_runs_until_explicit_reconciliation() {
         let (temp_dir, pool) = test_pool().await;
         let db_path = temp_dir.path().join("macro.db");
         let parent = conversation(&pool, "Parent").await;
@@ -645,36 +810,48 @@ mod tests {
             .await
             .expect("start running run");
 
-        drop(pool);
-        let pool = create_pool(&db_path).await.expect("reopen after restart");
+        let second_pool = create_pool(&db_path).await.expect("second live pool");
         assert_eq!(
-            reconcile_active_agent_runs_after_restart(&pool)
+            get_agent_run(&second_pool, &running.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRunStatus::Running
+        );
+
+        drop(pool);
+        assert_eq!(
+            reconcile_active_agent_runs_after_restart(&second_pool)
                 .await
                 .unwrap(),
-            0
+            1
         );
         assert_eq!(
-            get_agent_run(&pool, &queued.id)
+            get_agent_run(&second_pool, &queued.id)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
             AgentRunStatus::Queued
         );
-        let interrupted = get_agent_run(&pool, &running.id).await.unwrap().unwrap();
+        let interrupted = get_agent_run(&second_pool, &running.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(interrupted.status, AgentRunStatus::Interrupted);
         assert_eq!(
             interrupted.interruption_reason.as_deref(),
             Some("application_restart")
         );
-        let resumed = start_agent_run(&pool, &running.id, None)
+        let resumed = start_agent_run(&second_pool, &running.id, None)
             .await
             .expect("resume interrupted run");
         assert_eq!(resumed.status, AgentRunStatus::Running);
         assert_eq!(resumed.attempt_count, 2);
 
-        let complete_pool = pool.clone();
-        let fail_pool = pool.clone();
+        let complete_pool = second_pool.clone();
+        let fail_pool = second_pool.clone();
         let run_id = resumed.id.clone();
         let complete_id = run_id.clone();
         let complete = tokio::spawn(async move {
@@ -701,6 +878,142 @@ mod tests {
             .is_ok()
         });
         assert_ne!(complete.await.unwrap(), fail.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn child_conversation_is_immutable_once_persisted() {
+        let (_temp_dir, pool) = test_pool().await;
+        let parent = conversation(&pool, "Parent").await;
+        let first_child = conversation(&pool, "First child").await;
+        let replacement = conversation(&pool, "Replacement child").await;
+        let run = create_agent_run(
+            &pool,
+            CreateAgentRunInput {
+                id: Some("immutable-child".to_string()),
+                parent_conversation_id: parent,
+                child_conversation_id: Some(first_child.clone()),
+                agent_profile: "worker".to_string(),
+                depth: 1,
+                prompt: "Keep durable child".to_string(),
+                model_metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = start_agent_run(&pool, &run.id, Some(&replacement))
+            .await
+            .expect_err("replacement must fail");
+        assert!(error.to_string().contains("cannot be replaced"));
+        assert_eq!(
+            get_agent_run(&pool, &run.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .child_conversation_id
+                .as_deref(),
+            Some(first_child.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn lineage_rejects_wrong_depth_and_conversation_cycles() {
+        let (_temp_dir, pool) = test_pool().await;
+        let root = conversation(&pool, "Root").await;
+        let child = conversation(&pool, "Child").await;
+        let grandchild = conversation(&pool, "Grandchild").await;
+
+        create_agent_run(
+            &pool,
+            CreateAgentRunInput {
+                id: Some("root-child".to_string()),
+                parent_conversation_id: root.clone(),
+                child_conversation_id: Some(child.clone()),
+                agent_profile: "worker".to_string(),
+                depth: 1,
+                prompt: "First level".to_string(),
+                model_metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let wrong_depth = create_agent_run(
+            &pool,
+            CreateAgentRunInput {
+                id: Some("wrong-depth".to_string()),
+                parent_conversation_id: child.clone(),
+                child_conversation_id: Some(grandchild.clone()),
+                agent_profile: "worker".to_string(),
+                depth: 1,
+                prompt: "Wrong depth".to_string(),
+                model_metadata_json: None,
+            },
+        )
+        .await
+        .expect_err("nested depth must be derived from the parent");
+        assert!(wrong_depth.to_string().contains("expected depth 2"));
+
+        create_agent_run(
+            &pool,
+            CreateAgentRunInput {
+                id: Some("child-grandchild".to_string()),
+                parent_conversation_id: child,
+                child_conversation_id: Some(grandchild.clone()),
+                agent_profile: "worker".to_string(),
+                depth: 2,
+                prompt: "Second level".to_string(),
+                model_metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let cycle_candidate = create_agent_run(
+            &pool,
+            CreateAgentRunInput {
+                id: Some("cycle".to_string()),
+                parent_conversation_id: grandchild,
+                child_conversation_id: None,
+                agent_profile: "worker".to_string(),
+                depth: 3,
+                prompt: "Cycle".to_string(),
+                model_metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let cycle = start_agent_run(&pool, &cycle_candidate.id, Some(&root))
+            .await
+            .expect_err("cycle must fail");
+        assert!(cycle.to_string().contains("would create a cycle"));
+    }
+
+    #[tokio::test]
+    async fn transition_returns_the_updated_row_without_a_follow_up_read() {
+        let (_temp_dir, pool) = test_pool().await;
+        let parent = conversation(&pool, "Parent").await;
+        let run = queued_run(&pool, &parent, "returning").await;
+        start_agent_run(&pool, &run.id, None).await.unwrap();
+        sqlx::query(
+            r#"
+            CREATE TRIGGER delete_completed_agent_run
+            AFTER UPDATE OF status ON agent_runs
+            WHEN NEW.status = 'completed'
+            BEGIN
+                DELETE FROM agent_runs WHERE id = NEW.id;
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let completed = complete_agent_run(&pool, &run.id, CompleteAgentRunInput::default())
+            .await
+            .expect("UPDATE RETURNING supplies the transitioned row");
+        assert_eq!(completed.status, AgentRunStatus::Completed);
+        assert!(get_agent_run(&pool, &run.id).await.unwrap().is_none());
     }
 }
 
@@ -866,7 +1179,7 @@ mod persistence_tests {
     }
 
     #[tokio::test]
-    async fn reopening_reconciles_only_running_runs_and_allows_resume() {
+    async fn explicit_reconciliation_interrupts_running_runs_and_allows_resume() {
         let (temp, pool) = test_pool().await;
         let parent = conversation(&pool, "Parent").await;
         create_agent_run(&pool, create_input("running-run", &parent.id))
@@ -881,6 +1194,20 @@ mod persistence_tests {
         let reopened = super::super::create_pool(&temp.path().join("macro.db"))
             .await
             .unwrap();
+        assert_eq!(
+            get_agent_run(&reopened, "running-run")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRunStatus::Running
+        );
+        assert_eq!(
+            reconcile_active_agent_runs_after_restart(&reopened)
+                .await
+                .unwrap(),
+            1
+        );
         let interrupted = get_agent_run(&reopened, "running-run")
             .await
             .unwrap()

@@ -1,4 +1,4 @@
-CREATE TABLE agent_runs (
+CREATE TABLE IF NOT EXISTS agent_runs (
     id TEXT PRIMARY KEY CHECK (LENGTH(TRIM(id)) > 0),
     parent_conversation_id TEXT NOT NULL CHECK (LENGTH(TRIM(parent_conversation_id)) > 0),
     child_conversation_id TEXT,
@@ -69,12 +69,12 @@ CREATE TABLE agent_runs (
     )
 );
 
-CREATE INDEX idx_agent_runs_parent
+CREATE INDEX IF NOT EXISTS idx_agent_runs_parent
 ON agent_runs(parent_conversation_id, created_at ASC, id ASC);
 
-CREATE INDEX idx_agent_runs_status
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status
 ON agent_runs(status, updated_at ASC, id ASC);
 
-CREATE UNIQUE INDEX idx_agent_runs_child
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_child
 ON agent_runs(child_conversation_id)
 WHERE child_conversation_id IS NOT NULL;
