@@ -20,13 +20,12 @@ import {
   CompactionPass,
   CompactionSummarySource,
   MCPTool,
+  MCPServer,
   PendingToolApproval,
   PersistedContextReference,
   PlanNode,
   PredictedBranch,
   ProviderTurnState,
-  Project,
-  ProjectGroup,
   ReasoningEffort,
   SkillManifest,
   SkillPermissionSnapshot,
@@ -75,6 +74,8 @@ import {
   shouldSpillToolResult,
 } from "../services/toolResultArtifacts";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
+import { handleConfigToolCall } from "../services/configToolIntegration";
+import { handleConfigVirtualScopeToolCall } from "../services/configVirtualScope";
 import {
   fetchWebPage,
   formatSearchResultsAsContext,
@@ -87,6 +88,7 @@ import { useTaskStore, type ImplementTask } from "./useTaskStore";
 import {
   getImplementAgentToolPolicy,
   getToolModePolicy as getLocalToolModePolicy,
+  isGitToolId,
   isToolAllowedForImplementAgent,
 } from "../services/toolModePolicy";
 import {
@@ -111,6 +113,12 @@ import {
   getRemoteToolModePolicy,
 } from "../services/remoteKernelApi";
 import * as tauriIpc from "../services/tauriIpc";
+import {
+  applyScopedToolRestrictions,
+  loadScopedTurnConfiguration,
+  resolveScopedModelSelection,
+  type ScopedTurnConfiguration,
+} from "../services/configurationClient";
 import {
   type ArchitectPlanActivationPayload,
   type ArchitectPlanRecord,
@@ -143,6 +151,10 @@ import { buildArchitectPlanToolFollowUpInstruction } from "../services/architect
 import { normalizeArchitectToolId } from "../services/architectToolNames";
 import { selectInjectableMCPToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
+import {
+  callScopedMcpTool,
+  resolveScopedMcpRuntime,
+} from "../services/scopedMcpRuntime";
 import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
@@ -191,7 +203,6 @@ import {
 import {
   renderStandaloneTaskBranchName,
 } from "../services/architectGitNaming";
-import { retargetTaskForProjectSelection } from "../services/projectIdentityReconciliation";
 import { provisionPlanBranches } from "../services/architectGitFlowService";
 import {
   applyStrategyMutationPreview,
@@ -199,17 +210,21 @@ import {
 } from "../services/architectStrategyMutationGuard";
 import {
   getLocalProjectContextState,
-  type LocalProjectContextState,
 } from "../services/localProjectContext";
 import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
   getProjectGroupByProjectId,
-  getScopedActionableProjectIds,
+  getScopedGitActionableProjectIds,
   getScopedProjectIds,
+  isProjectGitActionable,
 } from "../services/globalProjects";
-import { taskMatchesProjectId } from "../services/implementTaskCatalog";
 import { resolveTaskReference, taskReferenceMatches } from "../services/durableIdentity";
+import {
+  resolveImplementTaskForContext,
+  retargetImplementTaskForSelection,
+} from "../services/implementTaskContextResolver";
+export { resolveImplementTaskForContext } from "../services/implementTaskContextResolver";
 import {
   isProjectWorkspaceMissing,
   resolveProjectWorkspaceState,
@@ -219,7 +234,6 @@ import {
   resolveProjectExecutionContext,
   type ProjectExecutionContext,
 } from "../services/projectExecutionContext";
-import { resolveTerminalSessionProjectTarget } from "../services/toolTargeting";
 import {
   buildQuestionnaireResponseArtifacts,
   buildQuestionnaireResponseProviderInputItems,
@@ -384,10 +398,20 @@ const conversationCompactionStateCache = new Map<
 const conversationCompactionInProgress = new Set<string>();
 const gitStageCommitChallengesByAssistantTurn = new Set<string>();
 const LOCKED_AGENT_TOOL_IDS = [
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
 ] as const;
+const AGENT_TERMINAL_TOOL_IDS = new Set([
+  "terminal_create_session",
+  "terminal_run",
+  "terminal_read",
+  "terminal_kill",
+]);
 const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
   "strategy_generate",
   "strategy_update",
@@ -471,7 +495,7 @@ const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
 const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
   "The previous assistant turn used Plan mode. Execute the latest plan unless the user changed direction.";
 const STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION =
-  "This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. In Build mode, use workspace, git, and terminal tools against the selected task repository/worktree. In Plan mode, inspect only and return a concrete plan.";
+  "This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. In Build mode, use workspace and git tools against the selected task repository/worktree. The agent terminal remains independent from that workspace. In Plan mode, inspect only and return a concrete plan.";
 const ARCHITECT_TASK_ONLY_TOOL_IDS = new Set([
   "task_todo_get",
   "task_todo_update",
@@ -847,8 +871,35 @@ interface FrozenToolCallContext {
   agentType: AgentType | null;
   taskId: string;
   executionContext: ProjectExecutionContext;
+  scopedTurnConfiguration: ScopedTurnConfiguration | null;
+  allowedToolIds: readonly string[];
+  mcpServers: readonly MCPServer[];
+  riskLevel: ToolRiskLevel;
   signal: AbortSignal;
 }
+
+const scopedModelPreferenceKeys = (
+  mode: AppMode,
+  agentType: AgentType | null | undefined,
+  internalAgentProfile: InternalAgentProfile | null | undefined,
+): string[] => {
+  if (internalAgentProfile === "plan_explorer") {
+    return ["planExplorer", "plan_explorer", "architect"];
+  }
+  if (internalAgentProfile === "task_reviewer") {
+    return ["taskReviewer", "task_reviewer", "implement"];
+  }
+  if (internalAgentProfile === "repo_auditor") {
+    return ["repoAuditor", "repo_auditor", "implement"];
+  }
+  if (mode === "Architect") return ["architect"];
+  if (mode === "Implement") {
+    return agentType === "plan"
+      ? ["implementPlan", "implement"]
+      : ["implementBuild", "implement"];
+  }
+  return ["chat"];
+};
 
 interface ArchitectTranscriptState {
   dbCount: number;
@@ -1000,6 +1051,10 @@ interface ChatStore {
   ensureConversationForCurrentMode: () => Promise<string | null>;
   reapplySelectionForCurrentContext: () => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
+  setChatConversationWorkspace: (
+    conversationId: string,
+    workspace: { groupId: string | null; projectId: string | null },
+  ) => Promise<void>;
   togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
     conversationId: string,
@@ -1181,116 +1236,6 @@ const buildChatContextKey = (
 
 const isChatContextKeyCurrent = (contextKey: ChatContextKey): boolean =>
   buildChatContextKey(useAppStore.getState()) === contextKey;
-
-interface ResolveImplementTaskForContextInput {
-  selectedTaskId?: string | null;
-  tasks: ImplementTask[];
-  standaloneProjects?: Project[];
-  projectGroups: ProjectGroup[];
-  selectedGroupId?: string | null;
-  selectedProjectId?: string | null;
-  localContext?: LocalProjectContextState | null;
-}
-
-const IMPLEMENT_CONTEXT_TASK_STATUS_ORDER: Record<string, number> = {
-  InProgress: 0,
-  AwaitingResponse: 1,
-  Pending: 2,
-};
-
-const taskMatchesScopedProjectIds = (
-  task: Pick<ImplementTask, "project_id" | "project_ids" | "execution_targets">,
-  scopedProjectIds: string[],
-): boolean =>
-  scopedProjectIds.length === 0 ||
-  scopedProjectIds.some((projectId) => taskMatchesProjectId(task, projectId));
-
-const retargetImplementTaskForSelection = (
-  task: ImplementTask,
-  params: {
-    standaloneProjects?: Project[];
-    projectGroups: ProjectGroup[];
-    selectedGroupId?: string | null;
-    selectedProjectId?: string | null;
-  },
-): ImplementTask => {
-  const knownProjectIds = new Set([
-    ...(params.standaloneProjects ?? []).map((project) => project.id),
-    ...params.projectGroups.flatMap((group) => group.projects.map((project) => project.id)),
-  ]);
-  const taskProjectIds = [...(task.project_ids ?? []), task.project_id].filter(Boolean);
-  if (taskProjectIds.some((projectId) => knownProjectIds.has(projectId))) {
-    return task;
-  }
-  return retargetTaskForProjectSelection(task, {
-    standaloneProjects: params.standaloneProjects ?? [],
-    projectGroups: params.projectGroups,
-    selectedGroupId: params.selectedGroupId,
-    selectedProjectId: params.selectedProjectId,
-  });
-};
-
-export const resolveImplementTaskForContext = ({
-  selectedTaskId,
-  tasks,
-  standaloneProjects,
-  projectGroups,
-  selectedGroupId,
-  selectedProjectId,
-  localContext,
-}: ResolveImplementTaskForContextInput): ImplementTask | null => {
-  const selectedTask = selectedTaskId
-    ? tasks.find((task) => task.id === selectedTaskId) ?? null
-    : null;
-  if (selectedTask) return selectedTask;
-  const scopedProjectIds = getScopedProjectIds(
-    {
-      standaloneProjects: standaloneProjects ?? [],
-      projectGroups,
-    },
-    selectedGroupId,
-    selectedProjectId,
-  );
-  const eligibleTasks = tasks.filter((task) => {
-    if (task.archived_at) return task.id === selectedTaskId;
-    if (task.id === selectedTaskId) return true;
-    if (taskMatchesScopedProjectIds(task, scopedProjectIds)) {
-      return true;
-    }
-    if (task.task_source !== "standalone" && !taskReferenceMatches(tasks, task, selectedTaskId)) {
-      return false;
-    }
-    const executionTask = retargetImplementTaskForSelection(task, {
-      standaloneProjects,
-      projectGroups,
-      selectedGroupId,
-      selectedProjectId,
-    });
-    return taskMatchesScopedProjectIds(executionTask, scopedProjectIds);
-  });
-  const findEligibleTask = (taskId?: string | null): ImplementTask | null =>
-    taskId
-      ? resolveTaskReference(eligibleTasks, taskId) ?? null
-      : null;
-
-  return (
-    findEligibleTask(selectedTaskId) ||
-    findEligibleTask(localContext?.lastTaskId) ||
-    [...eligibleTasks].sort((left, right) => {
-      const leftOrder =
-        IMPLEMENT_CONTEXT_TASK_STATUS_ORDER[left.status] ??
-        Number.MAX_SAFE_INTEGER;
-      const rightOrder =
-        IMPLEMENT_CONTEXT_TASK_STATUS_ORDER[right.status] ??
-        Number.MAX_SAFE_INTEGER;
-      if (leftOrder !== rightOrder) {
-        return leftOrder - rightOrder;
-      }
-      return (left.sequence_index ?? 0) - (right.sequence_index ?? 0);
-    })[0] ||
-    null
-  );
-};
 
 const toComparableChatMessage = (
   message: ChatMessage,
@@ -1671,11 +1616,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!isStandaloneImplementTask(task)) {
       return toolIds;
     }
-    return toolIds.filter((toolId) => !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId));
+    const projectIds = Array.from(new Set([
+      ...(task.project_ids || []),
+      ...(task.execution_targets || []).map((target) => target.projectId),
+      task.project_id,
+    ].filter((projectId): projectId is string => Boolean(projectId))));
+    const usesDirectEditing = projectIds.length > 0 && projectIds.every((projectId) => {
+      const project = useAppStore.getState().getProjectById(projectId);
+      return Boolean(project?.directEdit && project.gitSetupState === 'not_git');
+    });
+    return toolIds.filter((toolId) =>
+      !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId) &&
+      !(usesDirectEditing && isGitToolId(toolId))
+    );
   };
 
   const formatStandaloneArchitectToolUnavailable = (toolName: string): string =>
-    `${toolName} is unavailable for standalone tasks. Use the conversation, workspace tools, git, and terminal tools for this independent task instead.`;
+    `${toolName} is unavailable for standalone tasks. Use the conversation and the tools available for this independent task instead.`;
 
   const assertStandaloneTaskExecutionContextReady = (
     task: ImplementTask | undefined,
@@ -3092,12 +3049,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`;
   };
 
-  const getToolDefinitionsForIds = (toolIds: string[]) => {
+  const getToolDefinitionsForIds = (
+    toolIds: string[],
+    frozenMcpTools?: readonly MCPTool[],
+  ) => {
     const allowedIdSet = new Set(toolIds);
     const macroDefinitions = MACRO_TOOL_REGISTRY.filter((entry) => allowedIdSet.has(entry.id));
-    const mcpDefinitions: MacroToolRegistryEntry[] = useToolsStore
-      .getState()
-      .getEnabledMCPTools()
+    const mcpDefinitions: MacroToolRegistryEntry[] = (
+      frozenMcpTools ?? useToolsStore.getState().getEnabledMCPTools()
+    )
       .filter((tool) => allowedIdSet.has(tool.id))
       .map((tool) => ({
         id: tool.id,
@@ -4231,6 +4191,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getModePolicyForCurrentMode = async (
     modeOverride?: AppMode,
+    projectIdOverride?: string | null,
   ): Promise<{
     allowedToolIds: string[];
     enforceMacroOnlyWrites: boolean;
@@ -4257,17 +4218,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (canUseRemoteKernel()) {
+      const projectId = projectIdOverride ?? useAppStore.getState().selectedProjectId;
+      if (!projectId) {
+        return { allowedToolIds: [], enforceMacroOnlyWrites: true };
+      }
       try {
-        const backendPolicy = await getRemoteToolModePolicy(mode);
+        const backendPolicy = await getRemoteToolModePolicy(mode, projectId);
         return {
           allowedToolIds: adjustAllowedToolIds(backendPolicy.allowed_tool_ids),
           enforceMacroOnlyWrites: backendPolicy.enforce_macro_only_writes,
         };
       } catch (error) {
         console.warn(
-          "Failed to load remote backend tool policy, using local fallback:",
+          "Failed to load remote backend tool policy; tools remain disabled:",
           error,
         );
+        return { allowedToolIds: [], enforceMacroOnlyWrites: true };
       }
     }
 
@@ -4987,6 +4953,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const normalizedToolName = normalizeArchitectToolId(toolName);
     const assistantTurnId = operation.turnId;
 
+    if (!operation.allowedToolIds.includes(normalizedToolName)) {
+      return `Tool ${normalizedToolName} is not available for this turn.`;
+    }
+
+    if (
+      applyScopedToolRestrictions(
+        [normalizedToolName],
+        operation.scopedTurnConfiguration,
+      ).length === 0
+    ) {
+      return `Tool ${normalizedToolName} is disabled for this turn's project scope.`;
+    }
+
     if (
       modeAtSend === "Implement" &&
       agentTypeAtSend === "plan" &&
@@ -5003,6 +4982,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (
+      !isMCPToolId(normalizedToolName) &&
       !(await isSourceToolEnabled(
         normalizedToolName,
         modeAtSend,
@@ -5016,7 +4996,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     let executionContext = operation.executionContext;
-    const riskLevel = await loadToolRiskLevelPreference();
+    const riskLevel = operation.riskLevel;
     if (!isCurrentOperation()) {
       return TOOL_EXECUTION_ABORTED_RESULT;
     }
@@ -5075,6 +5055,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         detail: securityEvaluation.normalizedCall.detail,
         args,
         rememberKey: securityEvaluation.normalizedCall.rememberKey,
+        canApproveForConversation:
+          securityEvaluation.normalizedCall.canApproveForConversation,
       };
 
       const resolution = await serializeToolApproval(
@@ -5146,7 +5128,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
 
-      if (resolution.kind === "allow_conversation") {
+      if (
+        resolution.kind === "allow_conversation" &&
+        pendingApproval.canApproveForConversation !== false
+      ) {
         set((state) => {
           const currentGrants =
             state.conversationApprovalGrantsByConversationId[conversationId] ??
@@ -5201,7 +5186,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { enableWebSearch, webSearchOptions } = getStreamingWebSearchConfig();
       if (
         !enableWebSearch ||
-        (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)
+        (!webSearchOptions?.configured &&
+          !webSearchOptions?.tavilyApiKey &&
+          !webSearchOptions?.braveApiKey)
       ) {
         return "Web search is not configured for this provider.";
       }
@@ -5247,6 +5234,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return readConversationFileContext(conversationId, args);
     }
 
+    const configToolResult = await handleConfigToolCall(normalizedToolName, args);
+    if (!isCurrentOperation()) {
+      return TOOL_EXECUTION_ABORTED_RESULT;
+    }
+    if (configToolResult !== undefined) {
+      return configToolResult;
+    }
+
+    const configVirtualScopeResult = await handleConfigVirtualScopeToolCall(
+      normalizedToolName,
+      args,
+    );
+    if (!isCurrentOperation()) {
+      return TOOL_EXECUTION_ABORTED_RESULT;
+    }
+    if (configVirtualScopeResult !== undefined) {
+      return configVirtualScopeResult;
+    }
+
     const skillToolResult = await handleSkillToolCall(
       normalizedToolName,
       args,
@@ -5260,7 +5266,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (isMCPToolId(normalizedToolName)) {
-      const result = await useToolsStore.getState().callMCPTool(normalizedToolName, args);
+      const result = await callScopedMcpTool(
+        normalizedToolName,
+        args,
+        operation.mcpServers,
+      );
       return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
     }
 
@@ -5371,19 +5381,97 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return architectToolResult;
     }
 
+    if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {
+      const serializeAgentTerminalSession = <T extends object>(session: T) => {
+        const agentSession = { ...session } as Record<string, unknown>;
+        delete agentSession.project_id;
+        delete agentSession.project_name;
+        delete agentSession.mount_name;
+        delete agentSession.workspace_path;
+        return JSON.stringify(agentSession, null, 2);
+      };
+      const readAgentTerminalSession = async (sessionId: string) => {
+        const terminalStore = useTerminalStore.getState();
+        const session =
+          terminalStore.sessions[sessionId] ??
+          (await terminalStore.readSession(sessionId));
+        if (session.project_id) {
+          return {
+            session,
+            error: "This session belongs to the manual project terminal and is unavailable to the agent terminal tool.",
+          };
+        }
+        return { session, error: null };
+      };
+
+      if (normalizedToolName === "terminal_create_session") {
+        const session = await useTerminalStore.getState().createSession({
+          projectId: null,
+          cwd: typeof args.cwd === "string" ? args.cwd : null,
+        });
+        return serializeAgentTerminalSession(session);
+      }
+
+      const sessionId =
+        typeof args.session_id === "string" ? args.session_id.trim() : "";
+      if (!sessionId) {
+        return `Missing session_id argument for ${normalizedToolName}.`;
+      }
+
+      const agentSession = await readAgentTerminalSession(sessionId);
+      if (agentSession.error) {
+        return `Error executing ${normalizedToolName}: ${agentSession.error}`;
+      }
+
+      if (normalizedToolName === "terminal_run") {
+        const command = typeof args.command === "string" ? args.command : "";
+        if (!command.trim()) {
+          return "Missing command argument for terminal_run.";
+        }
+        const executionId = createTerminalToolExecutionId();
+        const runPromise = useTerminalStore.getState().runCommand({
+          sessionId,
+          command,
+          executionId,
+          timeoutMs:
+            typeof args.timeout_ms === "number"
+              ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
+              : null,
+        });
+        const abortListener = () => {
+          void useTerminalStore
+            .getState()
+            .killSession(sessionId, executionId)
+            .catch(() => undefined);
+        };
+        signal.addEventListener("abort", abortListener, { once: true });
+        if (signal.aborted) abortListener();
+        try {
+          const session = await runPromise;
+          return serializeAgentTerminalSession(session);
+        } finally {
+          signal.removeEventListener("abort", abortListener);
+        }
+      }
+
+      if (normalizedToolName === "terminal_read") {
+        return serializeAgentTerminalSession(agentSession.session);
+      }
+
+      const session = await useTerminalStore.getState().killSession(sessionId);
+      return serializeAgentTerminalSession(session);
+    }
+
     if (
       normalizedToolName === "list" ||
       normalizedToolName === "read" ||
       normalizedToolName === "write" ||
       normalizedToolName === "edit" ||
       normalizedToolName === "delete" ||
+      normalizedToolName === "apply_patch" ||
       normalizedToolName === "glob" ||
       normalizedToolName === "grep" ||
       normalizedToolName === "ast_grep" ||
-      normalizedToolName === "terminal_create_session" ||
-      normalizedToolName === "terminal_run" ||
-      normalizedToolName === "terminal_read" ||
-      normalizedToolName === "terminal_kill" ||
       normalizedToolName.startsWith("git_")
     ) {
       const mode = modeAtSend;
@@ -5445,84 +5533,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           retried_tool: normalizedToolName,
         })}\n${result}`;
       };
-
-      if (normalizedToolName === "terminal_create_session") {
-        const { projectId, readOnlyProjectLabel } =
-          resolveTerminalSessionProjectTarget(
-            executionContext,
-            args.project_id,
-          );
-
-        if (!projectId) {
-          return "Missing project_id argument for terminal_create_session.";
-        }
-
-        if (readOnlyProjectLabel) {
-          return `Error executing terminal_create_session: project "${readOnlyProjectLabel}" is read-only.`;
-        }
-
-        const session = await useTerminalStore.getState().createSession({
-          projectId,
-          cwd: typeof args.cwd === "string" ? args.cwd : null,
-        });
-        return withPromotionNotice(JSON.stringify(session, null, 2));
-      }
-
-      if (normalizedToolName === "terminal_run") {
-        const sessionId =
-          typeof args.session_id === "string" ? args.session_id.trim() : "";
-        const command = typeof args.command === "string" ? args.command : "";
-        if (!sessionId) return "Missing session_id argument for terminal_run.";
-        if (!command.trim())
-          return "Missing command argument for terminal_run.";
-
-        const executionId = createTerminalToolExecutionId();
-        const runPromise = useTerminalStore.getState().runCommand({
-          sessionId,
-          command,
-          executionId,
-          timeoutMs:
-            typeof args.timeout_ms === "number"
-              ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
-              : null,
-        });
-        const abortListener = () => {
-          void useTerminalStore
-            .getState()
-            .killSession(sessionId, executionId)
-            .catch(() => undefined);
-        };
-        signal.addEventListener("abort", abortListener, { once: true });
-        if (signal.aborted) abortListener();
-        try {
-          const session = await runPromise;
-          return JSON.stringify(session, null, 2);
-        } finally {
-          signal.removeEventListener("abort", abortListener);
-        }
-      }
-
-      if (normalizedToolName === "terminal_read") {
-        const sessionId =
-          typeof args.session_id === "string" ? args.session_id.trim() : "";
-        if (!sessionId) return "Missing session_id argument for terminal_read.";
-
-        const session = await useTerminalStore
-          .getState()
-          .readSession(sessionId);
-        return JSON.stringify(session, null, 2);
-      }
-
-      if (normalizedToolName === "terminal_kill") {
-        const sessionId =
-          typeof args.session_id === "string" ? args.session_id.trim() : "";
-        if (!sessionId) return "Missing session_id argument for terminal_kill.";
-
-        const session = await useTerminalStore
-          .getState()
-          .killSession(sessionId);
-        return JSON.stringify(session, null, 2);
-      }
 
       const result = await executeWorkspaceTool(normalizedToolName, args, mode, {
         signal,
@@ -6041,11 +6051,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageWithImagesId?: string,
     skillPermissionSnapshot?: SkillPermissionSnapshot | null,
     executionContextOverride?: ProjectExecutionContext,
+    riskLevelOverride?: ToolRiskLevel,
   ) => {
     const appState = useAppStore.getState();
     const executionContext =
       executionContextOverride ?? resolveConversationExecutionContext(conversationId);
-    const riskLevel = await loadToolRiskLevelPreference();
+    const riskLevel = riskLevelOverride ?? await loadToolRiskLevelPreference();
     const contextCitations = useCitationsStore
       .getState()
       .getConversationContextCitations(conversationId);
@@ -6367,7 +6378,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.unshift(modePrompt);
     }
 
-    systemInstructions.push(buildToolRiskLevelSystemInstruction(riskLevel));
+    systemInstructions.push(buildToolRiskLevelSystemInstruction(riskLevel, appMode));
 
     const internalAgentProfilePromptKey =
       getInternalAgentProfilePromptPreferenceKey(internalAgentProfile);
@@ -6418,6 +6429,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION);
     }
 
+    if (allowedToolIds.includes("terminal_run")) {
+      systemInstructions.push(
+        "[Agent Terminal] The terminal is a general computer capability and is independent from every workspace and project. Its tool contract has no project_id. Choose any existing directory as cwd when useful. Every terminal_run command requires a separate user approval, even at YOLO risk level, and an approval can never cover a later command.",
+      );
+    }
+
     if (
       executionContext.groupName ||
       executionContext.projectName ||
@@ -6436,8 +6453,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         executionContext.projectMounts
           .map((mount) => `${mount.mountName}=>${mount.displayName}`)
           .join(", ") || "none";
+      const executionTargetInstruction =
+        "Git operations must target exactly one project; there is no git repository at the virtual root. The agent terminal is independent from these project mounts.";
       systemInstructions.push(
-        `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. Git and terminal operations must target exactly one project; there is no git or terminal at the virtual root.`,
+        `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. ${executionTargetInstruction}`,
       );
     }
 
@@ -7159,6 +7178,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       >;
       modelId: string;
     },
+    riskLevelOverride?: ToolRiskLevel,
+    projectIdOverride?: string | null,
   ): Promise<string[]> => {
     if (
       providerSnapshot
@@ -7168,7 +7189,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return [];
     }
 
-    const riskLevel = await loadToolRiskLevelPreference();
+    const riskLevel = riskLevelOverride ?? await loadToolRiskLevelPreference();
     const providerState = useProviderStore.getState();
     const selectedProvider =
       providerSnapshot?.providerConfig ??
@@ -7212,6 +7233,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const riskFilteredToolIds = filterDeniedToolIdsForRiskLevel(
         filteredToolIds,
         riskLevel,
+        mode,
       );
       const availableToolIds = filterSkillToolsForAvailability(riskFilteredToolIds, {
         tauriAvailable: chatPersistenceAdapters.isTauriAvailable(),
@@ -7232,7 +7254,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       mode === "Implement"
         ? (agentTypeOverride ?? appState.agentType)
         : null;
-    const modePolicy = await getModePolicyForCurrentMode(mode);
+    const modePolicy = await getModePolicyForCurrentMode(mode, projectIdOverride);
     const lockedAgentToolIds = LOCKED_AGENT_TOOL_IDS.filter((toolId) =>
       modePolicy.allowedToolIds.includes(toolId),
     );
@@ -7656,9 +7678,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ): Array<{ projectId: string; branchName: string }> => {
       const projectIdsToCheck =
         projectIds.length > 0
-          ? projectIds
+          ? projectIds.filter((projectId) =>
+              isProjectGitActionable(appState.getProjectById(projectId)),
+            )
           : appState.selectedGroupId
-            ? getScopedActionableProjectIds(
+            ? getScopedGitActionableProjectIds(
                 {
                   standaloneProjects: appState.standaloneProjects,
                   projectGroups: appState.projectGroups,
@@ -7667,7 +7691,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 null,
               )
             : appState.selectedProjectId
-              ? getScopedActionableProjectIds(
+              ? getScopedGitActionableProjectIds(
                   {
                     standaloneProjects: appState.standaloneProjects,
                     projectGroups: appState.projectGroups,
@@ -8162,6 +8186,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     >;
     internalAgentProfile?: InternalAgentProfile | null;
     executionContext?: ProjectExecutionContext;
+    scopedTurnConfigurationOverride?: ScopedTurnConfiguration | null;
     providerSupportsNativeToolCalling?: boolean;
     compactionMode?: ContextCompactionKind;
     forceCompaction?: boolean;
@@ -8196,6 +8221,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const taskForToolScope = params.resolvedTaskId
       ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
       : undefined;
+    const executionContext =
+      params.executionContext ?? resolveConversationExecutionContext(params.conversationId);
+    const scopedTurnConfiguration = params.scopedTurnConfigurationOverride !== undefined
+      ? params.scopedTurnConfigurationOverride
+      : await loadScopedTurnConfiguration({
+          projectIds: executionContext.projectIds,
+          focusProjectId: executionContext.focusedProjectId,
+          mode: params.modeAtSend,
+        });
+    const riskLevel =
+      scopedTurnConfiguration?.riskLevel ?? await loadToolRiskLevelPreference();
     const baseAllowedToolIds = await getAllowedToolIdsForCurrentMode(
       internalAgentProfile,
       params.modeAtSend,
@@ -8207,11 +8243,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerConfig: params.providerConfig,
         modelId: params.modelId,
       },
+      riskLevel,
+      executionContext.focusedProjectId,
     );
-    const allowedToolIds =
-      params.modeAtSend === "Implement"
-        ? filterToolIdsForImplementTask(baseAllowedToolIds, taskForToolScope)
-        : baseAllowedToolIds;
+    let taskAllowedToolIds = baseAllowedToolIds;
+    if (params.modeAtSend === "Implement") {
+      taskAllowedToolIds = filterToolIdsForImplementTask(
+        baseAllowedToolIds,
+        taskForToolScope,
+      );
+    }
+    const toolsState = useToolsStore.getState();
+    const scopedMcpRuntime = scopedTurnConfiguration
+      ? await resolveScopedMcpRuntime(
+          scopedTurnConfiguration.mcpServers,
+          toolsState.mcpServers,
+        )
+      : {
+          servers: toolsState.mcpServers,
+          tools: toolsState.getEnabledMCPTools(),
+        };
+    const scopedMcpTools = scopedMcpRuntime.tools;
+    const frozenMcpToolIds = new Set(scopedMcpTools.map((tool) => tool.id));
+    const allowedToolIds = applyScopedToolRestrictions(
+      taskAllowedToolIds,
+      scopedTurnConfiguration,
+    ).filter((toolId) => !isMCPToolId(toolId) || frozenMcpToolIds.has(toolId));
+    const mcpTools = scopedMcpTools.filter((tool) => allowedToolIds.includes(tool.id));
     const showToolTraces = false;
     const skillPermissionSnapshot = useSkillsStore
       .getState()
@@ -8224,7 +8282,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.agentTypeAtSend,
       params.replyToMessageId,
       skillPermissionSnapshot,
-      params.executionContext,
+      executionContext,
+      riskLevel,
     );
     set((state) => {
       const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
@@ -8236,7 +8295,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       return { skillTurnFeedbackByMessageId: nextFeedback };
     });
-    const toolDefinitions = getToolDefinitionsForIds(allowedToolIds);
+    const toolDefinitions = getToolDefinitionsForIds(allowedToolIds, mcpTools);
     await useProviderStore
       .getState()
       .ensureSelectedModelContextMetadata(
@@ -8456,13 +8515,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       supportsNativeToolCalling: params.providerSupportsNativeToolCalling,
       fileToolContext,
     });
-    const maxTurns = normalizeChatMaxTurns(
-      await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
-    );
-    const mcpTools: MCPTool[] = useToolsStore
-      .getState()
-      .getEnabledMCPTools()
-      .filter((tool) => allowedToolIds.includes(tool.id));
+    const maxTurns = scopedTurnConfiguration?.maxTurns !== null
+      && scopedTurnConfiguration?.maxTurns !== undefined
+      ? normalizeChatMaxTurns(scopedTurnConfiguration.maxTurns)
+      : normalizeChatMaxTurns(
+          await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
+        );
     const { skillToolIds, runnableSkillToolIds } =
       getSkillToolIdsForRequest(
         allowedToolIds,
@@ -8476,6 +8534,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     return {
       allowedToolIds,
+      riskLevel,
+      scopedTurnConfiguration,
       showToolTraces,
       messagesForRequest: compactedRequest.messages,
       contextDiagnosticsBaselineSeed: {
@@ -8487,7 +8547,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modelId: params.modelId,
         ...footprintFields,
         allowedToolIds,
-        toolDefinitions: getToolDefinitionsForIds(allowedToolIds),
+        toolDefinitions: getToolDefinitionsForIds(allowedToolIds, mcpTools),
         messagesForRequest: compactedRequest.messages.map(cloneStreamMessage),
         citations: preparedRequest.citations.map(cloneCitationForDiagnostics),
         compactionDecision: compactedRequest.decision,
@@ -8499,6 +8559,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       enableWebFetch,
       webSearchOptions,
       mcpTools,
+      mcpServers: scopedMcpRuntime.servers,
       skillToolIds,
       runnableSkillToolIds,
       guidedToolRetry,
@@ -9012,6 +9073,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.providerSupportsNativeToolCalling,
         fileToolContext: streamLaunch.fileToolContext,
         allowedToolIds: streamLaunch.allowedToolIds,
+        riskLevel: streamLaunch.riskLevel,
+        scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
         skillToolIds: streamLaunch.skillToolIds,
         runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
         guidedToolRetry: streamLaunch.guidedToolRetry,
@@ -9020,6 +9083,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         enableWebFetch: streamLaunch.enableWebFetch,
         webSearchOptions: streamLaunch.webSearchOptions,
         mcpTools: streamLaunch.mcpTools,
+        mcpServers: streamLaunch.mcpServers,
         maxTurns: streamLaunch.maxTurns,
         compactionDecision: streamLaunch.compactionDecision,
         abortController: params.abortController,
@@ -9558,6 +9622,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       content?: string;
     }>;
     allowedToolIds: string[];
+    riskLevel: ToolRiskLevel;
+    scopedTurnConfiguration: ScopedTurnConfiguration | null;
     guidedToolRetry?: {
       requiredToolNames: string[];
       retrySystemPrompt: string;
@@ -9570,6 +9636,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       typeof getStreamingWebSearchConfig
     >["webSearchOptions"];
     mcpTools: MCPTool[];
+    mcpServers: MCPServer[];
     skillToolIds: string[];
     runnableSkillToolIds: string[];
     maxTurns: ChatMaxTurnsPreference;
@@ -9794,6 +9861,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           providerConfig: params.providerConfig,
           internalAgentProfile: params.internalAgentProfile,
           executionContext: params.executionContext,
+          scopedTurnConfigurationOverride: params.scopedTurnConfiguration,
           providerSupportsNativeToolCalling:
             params.providerSupportsNativeToolCalling,
           compactionMode: "stream_overflow",
@@ -9854,6 +9922,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             params.providerSupportsNativeToolCalling,
           fileToolContext: streamLaunch.fileToolContext,
           allowedToolIds: streamLaunch.allowedToolIds,
+          riskLevel: streamLaunch.riskLevel,
+          scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
           skillToolIds: streamLaunch.skillToolIds,
           runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
           guidedToolRetry: streamLaunch.guidedToolRetry,
@@ -9862,6 +9932,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           enableWebFetch: streamLaunch.enableWebFetch,
           webSearchOptions: streamLaunch.webSearchOptions,
           mcpTools: streamLaunch.mcpTools,
+          mcpServers: streamLaunch.mcpServers,
           internalAgentProfile: streamLaunch.internalAgentProfile,
           maxTurns: streamLaunch.maxTurns,
           compactionDecision: streamLaunch.compactionDecision,
@@ -9940,7 +10011,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.providerConfig.providerType,
       );
       const budgetPolicy = await loadContextBudgetPolicy();
-      const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const toolDefinitions = getToolDefinitionsForIds(
+        params.allowedToolIds,
+        params.mcpTools,
+      );
       const preparedMessagesForContext = normalizeMessagesForProviderContext(
         params.providerConfig.providerType,
         preparedMessages,
@@ -10183,8 +10257,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.allowedToolIds,
         params.internalAgentProfile,
         params.modeAtSend,
+        params.agentTypeAtSend,
+        undefined,
+        undefined,
+        params.executionContext,
+        params.riskLevel,
       );
-      const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
+      const toolDefinitions = getToolDefinitionsForIds(
+        params.allowedToolIds,
+        params.mcpTools,
+      );
       const preparedMessagesForContext = normalizeMessagesForProviderContext(
         params.providerConfig.providerType,
         preparedRequest.preparedMessages,
@@ -10568,6 +10650,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           agentType: params.agentTypeAtSend ?? null,
           taskId: params.resolvedTaskId,
           executionContext: params.executionContext,
+          scopedTurnConfiguration: params.scopedTurnConfiguration,
+          allowedToolIds: params.allowedToolIds,
+          mcpServers: params.mcpServers,
+          riskLevel: params.riskLevel,
           signal: abortController.signal,
         };
         const resolution = await handleToolCall(
@@ -11703,7 +11789,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
     const pendingConversationIds = new Set(
       pendingLinkedTaskDeletions
-        .filter((saga) => saga.phase !== "prepared")
+        .filter((saga) =>
+          saga.phase !== "prepared" &&
+          saga.phase !== "draft_reverting" &&
+          saga.phase !== "draft_reverted"
+        )
         .map((saga) => saga.conversationId),
     );
     completedPendingConversationDeletionIds.forEach((conversationId) => {
@@ -13108,6 +13198,76 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
     },
 
+    setChatConversationWorkspace: async (conversationId, workspace) => {
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === conversationId,
+      );
+      if (!conversation || deletedConversationIds.has(conversationId)) {
+        throw new Error("Conversation introuvable.");
+      }
+      if (conversation.scope_mode !== "Chat") {
+        throw new Error(
+          "Le workspace de conversation ne peut être défini que pour une conversation Chat.",
+        );
+      }
+
+      const runtime = getConversationRuntimeSnapshot(
+        get().conversationRuntimeById,
+        conversationId,
+      );
+      if (runtime.phase !== "idle" && runtime.phase !== "error") {
+        throw new Error(
+          "Attendez la fin de la réponse avant de changer le workspace de la conversation.",
+        );
+      }
+
+      const appState = useAppStore.getState();
+      const group = workspace.groupId
+        ? appState.projectGroups.find((candidate) => candidate.id === workspace.groupId) ?? null
+        : null;
+      const project = workspace.projectId
+        ? appState.getProjectById(workspace.projectId) ?? null
+        : null;
+      if (workspace.groupId && !group) {
+        throw new Error("Groupe de projets introuvable.");
+      }
+      if (workspace.projectId && !project) {
+        throw new Error("Projet introuvable.");
+      }
+      if (
+        group &&
+        project &&
+        !group.projects.some((candidate) => candidate.id === project.id)
+      ) {
+        throw new Error("Le projet sélectionné n’appartient pas à ce groupe.");
+      }
+
+      if (tauriIpc.isTauriAvailable()) {
+        await tauriIpc.updateConversationScope({
+          id: conversationId,
+          scopeMode: "Chat",
+          taskId: null,
+          groupId: workspace.groupId,
+          projectId: workspace.projectId,
+        });
+      }
+
+      clearConversationSecurityState(conversationId);
+      set((state) => ({
+        conversations: state.conversations.map((candidate) =>
+          candidate.id === conversationId
+            ? {
+                ...candidate,
+                task_id: null,
+                group_id: workspace.groupId,
+                project_id: workspace.projectId,
+                updated_at: new Date().toISOString(),
+              }
+            : candidate,
+        ),
+      }));
+    },
+
     clearSelectedConversation: () => {
       const mode = useAppStore.getState().mode;
       clearConversationSelection(mode);
@@ -13560,7 +13720,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             pendingApproval.toolCallId,
           ),
         )
-        ?.({ kind: "allow_conversation" });
+        ?.({
+          kind:
+            pendingApproval.canApproveForConversation === false
+              ? "allow_once"
+              : "allow_conversation",
+        });
     },
 
     denyPendingToolApproval: (conversationId, reason) => {
@@ -13917,7 +14082,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ...provider,
         })),
         resolveProviderApiKey: providerState.resolveProviderApiKey,
-        supportsNativeToolCalling: providerState.selectedSupportsNativeToolCalling(),
+        supportsNativeToolCalling: (providerId: string, modelId: string) =>
+          typeof providerState.supportsNativeToolCalling === "function"
+            ? providerState.supportsNativeToolCalling(providerId, modelId)
+            : providerState.selectedSupportsNativeToolCalling(),
       };
       const conversationAtSend = get().conversations.find(
         (conversation) => conversation.id === conversationId,
@@ -14041,12 +14209,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
             { globalLastError: null },
           );
         }
-        const {
-          selectedProviderId,
-          selectedModelId,
-          selectedReasoningEffort,
-          providerConfigs,
-        } = providerSelectionAtSend;
+        const scopedTurnConfigurationAtSend = await loadScopedTurnConfiguration({
+          projectIds: executionContextAtSend.projectIds,
+          focusProjectId: executionContextAtSend.focusedProjectId,
+          mode: modeAtSend,
+        });
+        if (!isCurrentPreparation()) {
+          return cancelledResult();
+        }
+        const scopedModelSelection = resolveScopedModelSelection(
+          scopedTurnConfigurationAtSend,
+          scopedModelPreferenceKeys(modeAtSend, agentTypeAtSend, internalAgentProfile),
+        );
+        const selectedProviderId = scopedModelSelection?.providerId
+          ?? providerSelectionAtSend.selectedProviderId;
+        const selectedModelId = scopedModelSelection?.modelId
+          ?? providerSelectionAtSend.selectedModelId;
+        const selectedReasoningEffort = scopedModelSelection
+          ? scopedModelSelection.reasoningEffort
+          : providerSelectionAtSend.selectedReasoningEffort;
+        const { providerConfigs } = providerSelectionAtSend;
         persistSelectionForContext(modeAtSend, conversationId);
 
         if (providerSelectionAtSend.isLoading) {
@@ -14062,8 +14244,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const providerConfig = providerConfigs.find(
           (p) => p.id === selectedProviderId,
         );
-        if (!providerConfig) {
-          throw buildSendError("Provider configuration not found.");
+        if (!providerConfig || !providerConfig.isEnabled) {
+          throw buildSendError(
+            scopedModelSelection
+              ? "The model configured for this project uses an unavailable provider."
+              : "Provider configuration not found.",
+          );
         }
         const resolvedApiKey =
           providerConfig.isLocal || providerHasAuthSession(providerConfig)
@@ -14222,8 +14408,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerConfig: providerConfigForUse,
             internalAgentProfile,
             executionContext: executionContextAtSend,
+            scopedTurnConfigurationOverride: scopedTurnConfigurationAtSend,
             providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling,
+              providerSelectionAtSend.supportsNativeToolCalling(
+                selectedProviderId,
+                selectedModelId,
+              ),
           });
           if (!isCurrentPreparation()) {
             return sentWithoutAssistantResult();
@@ -14298,9 +14488,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
               streamLaunch.contextDiagnosticsBaselineSeed,
             executionContext: executionContextAtSend,
             providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling,
+              providerSelectionAtSend.supportsNativeToolCalling(
+                selectedProviderId,
+                selectedModelId,
+              ),
             fileToolContext: streamLaunch.fileToolContext,
             allowedToolIds: streamLaunch.allowedToolIds,
+            riskLevel: streamLaunch.riskLevel,
+            scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
             skillToolIds: streamLaunch.skillToolIds,
             runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
             guidedToolRetry: streamLaunch.guidedToolRetry,
@@ -14309,6 +14504,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             enableWebFetch: streamLaunch.enableWebFetch,
             webSearchOptions: streamLaunch.webSearchOptions,
             mcpTools: streamLaunch.mcpTools,
+            mcpServers: streamLaunch.mcpServers,
             maxTurns: streamLaunch.maxTurns,
             compactionDecision: streamLaunch.compactionDecision,
             abortController: preparationAbortController,

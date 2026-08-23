@@ -288,6 +288,8 @@
   "standaloneBadge": "Standalone",
   "taskKindPending": "Agent classification",
   "taskKindFeature": "Feature",
+  "taskKindDirectEdit": "Direct edit",
+  "taskKindDirectEditHelp": "Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.",
   "taskKindBugfix": "Bugfix",
   "taskKindHotfix": "Hotfix",
   "taskKindFeatureHelp": "Feature creates a branch from the configured development branch and merges it back into that branch.",
@@ -356,6 +358,7 @@
     "full": "Full file context"
   },
   "errors": {
+    "directTaskCompletionFailed": "The direct-edit task could not be completed.",
     "unknownTask": "Unknown task: {{taskId}}",
     "taskAlreadyCompleted": "Task is already completed.",
     "taskBlockedByDependencies": "Task is blocked by unresolved dependencies: {{reason}}",
@@ -414,6 +417,8 @@
   "diffModalReadyOnly": "{{validated}} staged and ready",
   "diffModalPendingOnly": "{{pending}} pending file(s)",
   "stagedBadge": "Staged",
+  "validatedBadge": "Validated",
+  "acceptDirectChanges": "Accept changes",
   "validatedStageLegend": "Validated lines are shown with a softer highlight until commit.",
   "repositoryPendingAndReady": "{{pending}} pending, {{validated}} ready",
   "validateChangesSuccess": "Changes validated and staged.",

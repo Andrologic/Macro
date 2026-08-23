@@ -968,6 +968,10 @@ describe('architectGitFlowService', () => {
       ...projectPaths.get('web')!,
       gitFlowSettings: createGitFlowSettings({ releaseBranchTemplate: 'release/v{releaseSlug}' }),
     });
+    projectPaths.set('api', {
+      ...projectPaths.get('api')!,
+      gitFlowSettings: createGitFlowSettings({ releaseBranchTemplate: 'release/{releaseSlug}' }),
+    });
     currentPlan = {
       ...buildPlan(),
       planKind: 'release',
@@ -1467,7 +1471,7 @@ describe('architectGitFlowService', () => {
     gitBranchListMock.mockImplementation(async (repoPath: string) => createGitBranches([
       'develop',
       'main',
-      'release/0.2.0',
+      'release/v0.2.0',
       repoPath === '/repos/web' ? 'feature/checkout/checkout-web' : 'feature/checkout/checkout-api',
     ]));
 
@@ -1480,7 +1484,7 @@ describe('architectGitFlowService', () => {
       {
         projectId: 'web',
         repoPath: '/repos/web',
-        planBranchName: 'release/0.2.0',
+        planBranchName: 'release/v0.2.0',
         baseBranchName: 'main',
         backmergeBranchName: 'develop',
         mergeOutput: 'merged:/repos/web',
@@ -1489,7 +1493,7 @@ describe('architectGitFlowService', () => {
       {
         projectId: 'api',
         repoPath: '/repos/api',
-        planBranchName: 'release/0.2.0',
+        planBranchName: 'release/v0.2.0',
         baseBranchName: 'main',
         backmergeBranchName: 'develop',
         mergeOutput: undefined,
@@ -1503,7 +1507,7 @@ describe('architectGitFlowService', () => {
       { repoPath: '/repos/api', branchOrCommit: 'develop', create: false },
     ]));
     expect(gitMergeMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repos/web', branchName: 'release/0.2.0', intoBranch: 'main' },
+      { repoPath: '/repos/web', branchName: 'release/v0.2.0', intoBranch: 'main' },
       { repoPath: '/repos/web', branchName: 'main', intoBranch: 'develop' },
       { repoPath: '/repos/api', branchName: 'main', intoBranch: 'develop' },
     ]);

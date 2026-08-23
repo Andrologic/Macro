@@ -4,7 +4,7 @@ import type {
   ProjectGitFlowSettings,
   StandaloneTaskKind,
 } from '../types';
-import { PREF_KEYS } from './preferences';
+import { getCachedPreference, PREF_KEYS } from './preferences';
 
 export interface ArchitectGitNamingSettings extends ProjectGitFlowSettings {
   completionMergePolicy: CompletionMergePolicy;
@@ -110,27 +110,13 @@ const normalizeTemplate = (value: string, fallback: string): string => {
 };
 
 const readStoredValue = (key: string): string | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(`macro_${key}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'string' ? parsed : null;
-  } catch {
-    return null;
-  }
+  const value = getCachedPreference(key as (typeof PREF_KEYS)[keyof typeof PREF_KEYS]);
+  return typeof value === 'string' ? value : null;
 };
 
 const readStoredBoolean = (key: string): boolean | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(`macro_${key}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'boolean' ? parsed : null;
-  } catch {
-    return null;
-  }
+  const value = getCachedPreference(key as (typeof PREF_KEYS)[keyof typeof PREF_KEYS]);
+  return typeof value === 'boolean' ? value : null;
 };
 
 const normalizeProjectGitFlowSettings = (

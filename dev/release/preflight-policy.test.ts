@@ -14,6 +14,15 @@ describe('release preflight policy', () => {
   test('selects a native package command', () => {
     expect(packageCommandForPlatform('win32')).toEqual(['bun', ['run', 'tauri:build:nsis']]);
     expect(packageCommandForPlatform('darwin')[1]).toContain('tauri:build:dmg:mac-universal:test');
-    expect(packageCommandForPlatform('linux')[1]).toContain('appimage,deb,rpm');
+    expect(packageCommandForPlatform('linux')).toEqual(['bun', ['run', 'tauri:build:linux-packages']]);
+  });
+
+  test('routes every platform through validated package.json scripts', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      const [command, args] = packageCommandForPlatform(platform);
+      expect(command).toBe('bun');
+      expect(args[0]).toBe('run');
+      expect(args[1]).toMatch(/^tauri:build/);
+    }
   });
 });

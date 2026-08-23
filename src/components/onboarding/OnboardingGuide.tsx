@@ -14,20 +14,16 @@ import {
   observeTourGeometry,
   type TourTargetMeasurement,
 } from './tourGeometry';
+import {
+  ONBOARDING_VERSION,
+  type OnboardingPreferenceState,
+} from './onboardingPreference';
 
-const ONBOARDING_VERSION = 1;
 const PANEL_GAP = 14;
 const VIEWPORT_PADDING = 14;
 
 type TourSection = 'basics' | 'architect' | 'implement' | 'chat' | 'system';
 type TourPlacement = 'top' | 'right' | 'bottom' | 'left' | 'center';
-
-interface OnboardingPreferenceState {
-  version: number;
-  completedAt: string | null;
-  dismissedAt: string | null;
-  lastStepId: string | null;
-}
 
 interface TourStep {
   id: string;

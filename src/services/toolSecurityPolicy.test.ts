@@ -165,7 +165,7 @@ describe("toolSecurityPolicy", () => {
     expect(strategyResult.decision).toBe("ask");
   });
 
-  it("asks again when the terminal command prefix does not match the grant", () => {
+  it("ignores remembered grants for terminal commands", () => {
     const result = evaluateToolSecurity(
       "terminal_run",
       { session_id: "session-1", command: "npm run lint" },
@@ -176,7 +176,7 @@ describe("toolSecurityPolicy", () => {
         grants: [
           {
             toolId: "terminal_run",
-            rememberKey: "terminal:npm test",
+            rememberKey: "terminal:npm run",
             createdAt: "2026-04-21T00:00:00.000Z",
           },
         ],
@@ -185,6 +185,66 @@ describe("toolSecurityPolicy", () => {
 
     expect(result.decision).toBe("ask");
     expect(result.normalizedCall.rememberKey).toBe("terminal:npm run");
+  });
+
+  it("requires a fresh approval for every agent terminal command in every risk level", () => {
+    for (const mode of ["Chat", "Implement"] as const) {
+      for (const riskLevel of ["strict", "balanced", "yolo"] as const) {
+        const result = evaluateToolSecurity(
+          "terminal_run",
+          { session_id: "session-1", command: "npm test" },
+          {
+            mode,
+            riskLevel,
+            workspacePath: "/repo",
+            grants: [
+              {
+                toolId: "terminal_run",
+                rememberKey: "terminal:npm test",
+                createdAt: "2026-04-21T00:00:00.000Z",
+              },
+            ],
+          },
+        );
+
+        expect(result.decision).toBe("ask");
+        expect(result.normalizedCall.canApproveForConversation).toBe(false);
+      }
+    }
+  });
+
+  it("allows every agent mode to create a terminal outside its workspace", () => {
+    for (const mode of ["Chat", "Implement"] as const) {
+      const result = evaluateToolSecurity(
+        "terminal_create_session",
+        { cwd: "/outside" },
+        {
+          mode,
+          riskLevel: "strict",
+          workspacePath: "/repo",
+        },
+      );
+
+      expect(result.decision).toBe("allow");
+      expect(result.normalizedCall.isExternalToWorkspace).toBe(false);
+    }
+  });
+
+  it("keeps the reviewed agent terminal on the strict model surface", () => {
+    for (const mode of ["Chat", "Implement"] as const) {
+      const strictIds = filterDeniedToolIdsForRiskLevel(
+        ["terminal_create_session", "terminal_run", "terminal_read", "terminal_kill"],
+        "strict",
+        mode,
+      );
+
+      expect(strictIds).toEqual([
+        "terminal_create_session",
+        "terminal_run",
+        "terminal_read",
+        "terminal_kill",
+      ]);
+    }
   });
 
   it("allows attached read_file calls in strict mode even when the file path is outside the workspace", () => {

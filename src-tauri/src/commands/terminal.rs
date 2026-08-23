@@ -105,10 +105,10 @@ struct TerminalClosedEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct TerminalSessionDto {
     pub id: String,
-    pub project_id: String,
-    pub project_name: String,
-    pub mount_name: String,
-    pub workspace_path: String,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub mount_name: Option<String>,
+    pub workspace_path: Option<String>,
     pub cwd: String,
     pub status: String,
     pub last_command: Option<String>,
@@ -193,10 +193,10 @@ struct UnixShellLaunchConfig {
 
 struct LegacyTerminalSessionRecord {
     id: String,
-    project_id: String,
-    project_name: String,
-    mount_name: String,
-    workspace_path: PathBuf,
+    project_id: Option<String>,
+    project_name: Option<String>,
+    mount_name: Option<String>,
+    workspace_path: Option<PathBuf>,
     cwd: PathBuf,
     status: String,
     last_command: Option<String>,
@@ -309,7 +309,10 @@ impl LegacyTerminalSessionRecord {
             project_id: self.project_id.clone(),
             project_name: self.project_name.clone(),
             mount_name: self.mount_name.clone(),
-            workspace_path: self.workspace_path.to_string_lossy().to_string(),
+            workspace_path: self
+                .workspace_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
             cwd: self.cwd.to_string_lossy().to_string(),
             status: self.status.clone(),
             last_command: self.last_command.clone(),
@@ -449,6 +452,29 @@ fn canonicalize_existing_dir(path: &Path) -> CommandResult<PathBuf> {
     }
 
     Ok(canonical)
+}
+
+fn default_general_terminal_cwd() -> CommandResult<PathBuf> {
+    let candidate = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| command_error("Could not resolve a default terminal directory"))?;
+    canonicalize_existing_dir(&candidate)
+}
+
+fn resolve_general_session_cwd(cwd: Option<&str>) -> CommandResult<PathBuf> {
+    let Some(raw_cwd) = cwd.map(str::trim).filter(|value| !value.is_empty()) else {
+        return default_general_terminal_cwd();
+    };
+
+    let requested = PathBuf::from(raw_cwd);
+    let candidate = if requested.is_absolute() {
+        requested
+    } else {
+        default_general_terminal_cwd()?.join(requested)
+    };
+    canonicalize_existing_dir(&candidate)
 }
 
 async fn resolve_project_target(
@@ -2847,19 +2873,40 @@ pub async fn create_legacy_session_internal(
     workspace_path: PathBuf,
     git_state: GitState,
     terminal_store: TerminalSessionStore,
-    project_id: String,
+    project_id: Option<String>,
     cwd: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
-    let metadata_root = resolve_metadata_root(workspace_path.clone(), git_state.clone()).await?;
-    let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
-    let session_cwd = resolve_session_cwd(&project.workspace_path, cwd.as_deref(), &git_state)?;
+    let (project_id, project_name, mount_name, project_workspace_path, session_cwd) =
+        if let Some(project_id) = project_id {
+            let metadata_root =
+                resolve_metadata_root(workspace_path.clone(), git_state.clone()).await?;
+            let project =
+                resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
+            let session_cwd =
+                resolve_session_cwd(&project.workspace_path, cwd.as_deref(), &git_state)?;
+            (
+                Some(project_id),
+                Some(project.project_name),
+                Some(project.mount_name),
+                Some(project.workspace_path),
+                session_cwd,
+            )
+        } else {
+            (
+                None,
+                None,
+                None,
+                None,
+                resolve_general_session_cwd(cwd.as_deref())?,
+            )
+        };
 
     let session = LegacyTerminalSessionRecord {
         id: format!("terminal-{}", Uuid::new_v4()),
         project_id,
-        project_name: project.project_name,
-        mount_name: project.mount_name,
-        workspace_path: project.workspace_path,
+        project_name,
+        mount_name,
+        workspace_path: project_workspace_path,
         cwd: session_cwd,
         status: "idle".to_string(),
         last_command: None,
@@ -3158,7 +3205,7 @@ pub async fn terminal_create_session(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     terminal_store: State<'_, TerminalSessionStore>,
-    project_id: String,
+    project_id: Option<String>,
     cwd: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
@@ -3243,6 +3290,18 @@ mod tests {
     }
 
     #[test]
+    fn general_terminal_cwd_accepts_an_existing_absolute_directory() {
+        let directory = TempDir::new().expect("terminal cwd");
+        let resolved = resolve_general_session_cwd(Some(&directory.path().to_string_lossy()))
+            .expect("resolve terminal cwd");
+
+        assert_eq!(
+            resolved,
+            directory.path().canonicalize().expect("canonical cwd")
+        );
+    }
+
+    #[test]
     fn bounded_legacy_output_retains_head_tail_and_exact_omission() {
         let mut collected = BoundedChildOutput::default();
         collected.push(&vec![b'a'; MAX_LEGACY_COMMAND_OUTPUT_BYTES]);
@@ -3271,10 +3330,10 @@ mod tests {
     fn legacy_test_session(cwd: &Path) -> LegacyTerminalSessionRecord {
         LegacyTerminalSessionRecord {
             id: "terminal-test".to_string(),
-            project_id: "project-test".to_string(),
-            project_name: "Project Test".to_string(),
-            mount_name: "project-test".to_string(),
-            workspace_path: cwd.to_path_buf(),
+            project_id: Some("project-test".to_string()),
+            project_name: Some("Project Test".to_string()),
+            mount_name: Some("project-test".to_string()),
+            workspace_path: Some(cwd.to_path_buf()),
             cwd: cwd.to_path_buf(),
             status: "idle".to_string(),
             last_command: None,
@@ -3496,16 +3555,17 @@ mod tests {
         let mut child = command.spawn().expect("spawn job root");
         let job = WindowsJob::assign(&child).expect("assign Windows Job Object");
 
+        let mut descendant_pid = None;
         for _ in 0..100 {
-            if child_pid_path.exists() {
-                break;
+            if let Ok(contents) = fs::read_to_string(&child_pid_path) {
+                if let Ok(pid) = contents.trim().parse::<u32>() {
+                    descendant_pid = Some(pid);
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let descendant_pid = fs::read_to_string(&child_pid_path)
-            .expect("descendant pid file")
-            .parse::<u32>()
-            .expect("descendant pid");
+        let descendant_pid = descendant_pid.expect("readable descendant pid file");
 
         job.terminate().expect("terminate Windows Job Object");
         tokio::time::timeout(Duration::from_secs(5), child.wait())
@@ -3544,6 +3604,7 @@ mod tests {
             created_at: "2026-06-05T00:00:00.000Z".to_string(),
             status: "active".to_string(),
             user_read_only: false,
+            direct_edit: false,
             git_setup_state: "ready".to_string(),
             is_read_only: false,
             read_only_reason: None,

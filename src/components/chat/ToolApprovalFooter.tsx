@@ -276,21 +276,23 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
               >
                 {t('chat.toolApprovalAllowOnce', 'Allow once')}
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={onAllowForConversation}
-                title={t(
-                  'chat.toolApprovalAllowConversationHint',
-                  'Remember this choice for similar requests here.'
-                )}
-                className="h-9 rounded-lg px-3"
-              >
-                {t(
-                  'chat.toolApprovalAllowConversation',
-                  'Allow for this conversation'
-                )}
-              </Button>
+              {pendingApproval.canApproveForConversation !== false && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={onAllowForConversation}
+                  title={t(
+                    'chat.toolApprovalAllowConversationHint',
+                    'Remember this choice for similar requests here.'
+                  )}
+                  className="h-9 rounded-lg px-3"
+                >
+                  {t(
+                    'chat.toolApprovalAllowConversation',
+                    'Allow for this conversation'
+                  )}
+                </Button>
+              )}
             </div>
             <Button
               type="button"

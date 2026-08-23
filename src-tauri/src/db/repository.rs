@@ -1947,7 +1947,7 @@ pub async fn delete_architect_plan_conversation_sync(
 
 // ============ PROVIDER CONFIGS ============
 
-pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
+async fn list_legacy_provider_status(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
     let rows = sqlx::query(
         r#"
         SELECT id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
@@ -1984,37 +1984,81 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
     Ok(configs)
 }
 
-pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option<ProviderConfig>> {
-    let row = sqlx::query(
-        r#"
-        SELECT id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
-               auth_status, auth_source, plan_type, account_label, token_expires_at,
-               created_at, updated_at
-        FROM provider_configs
-        WHERE id = ?
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderConfig>> {
+    let legacy = list_legacy_provider_status(pool).await?;
+    let Some(manager) = crate::config::runtime_config_manager() else {
+        return Ok(legacy);
+    };
+    let definitions = manager
+        .effective_user_document(crate::config::ConfigDocumentKind::Providers)
+        .await;
+    let definitions = definitions
+        .get("providers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| DbError::Validation("providers.json est invalide.".to_string()))?;
+    let legacy = legacy
+        .into_iter()
+        .map(|provider| (provider.id.clone(), provider))
+        .collect::<HashMap<_, _>>();
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut configured = Vec::with_capacity(definitions.len());
+    for (id, definition) in definitions {
+        let status = legacy.get(id);
+        configured.push(ProviderConfig {
+            id: id.clone(),
+            name: definition
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(id)
+                .to_string(),
+            provider_type: definition
+                .get("providerType")
+                .and_then(Value::as_str)
+                .unwrap_or("openai")
+                .to_string(),
+            base_url: definition
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            api_key: None,
+            has_stored_api_key: crate::secrets::get_api_key(id)
+                .map_err(|error| DbError::Validation(error.to_string()))?
+                .is_some(),
+            is_enabled: definition
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_local: definition
+                .get("isLocal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            auth_status: status.and_then(|value| value.auth_status.clone()),
+            auth_source: status.and_then(|value| value.auth_source.clone()),
+            plan_type: status.and_then(|value| value.plan_type.clone()),
+            account_label: status.and_then(|value| value.account_label.clone()),
+            token_expires_at: status.and_then(|value| value.token_expires_at.clone()),
+            created_at: status
+                .map(|value| value.created_at.clone())
+                .unwrap_or_else(|| now.clone()),
+            updated_at: status
+                .map(|value| value.updated_at.clone())
+                .unwrap_or_else(|| now.clone()),
+        });
+    }
+    configured.sort_by(|left, right| {
+        left.is_local
+            .cmp(&right.is_local)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(configured)
+}
 
-    Ok(row.map(|row| ProviderConfig {
-        id: row.get("id"),
-        name: row.get("name"),
-        provider_type: row.get("provider_type"),
-        base_url: row.get("base_url"),
-        api_key: None,
-        has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
-        is_enabled: row.get::<i32, _>("is_enabled") != 0,
-        is_local: row.get::<i32, _>("is_local") != 0,
-        auth_status: row.get("auth_status"),
-        auth_source: row.get("auth_source"),
-        plan_type: row.get("plan_type"),
-        account_label: row.get("account_label"),
-        token_expires_at: row.get("token_expires_at"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }))
+pub async fn get_provider_config(pool: &SqlitePool, id: &str) -> DbResult<Option<ProviderConfig>> {
+    Ok(list_provider_configs(pool)
+        .await?
+        .into_iter()
+        .find(|provider| provider.id == id))
 }
 
 pub async fn update_provider_config(
@@ -2079,56 +2123,6 @@ pub async fn update_provider_config(
     q.bind(&input.id).execute(pool).await?;
 
     Ok(())
-}
-
-pub async fn create_provider_config(
-    pool: &SqlitePool,
-    name: &str,
-    provider_type: &str,
-    base_url: &str,
-    api_key: Option<&str>,
-    is_local: bool,
-    is_enabled: bool,
-) -> DbResult<ProviderConfig> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    let has_stored_api_key = api_key.is_some_and(|value| !value.trim().is_empty());
-
-    sqlx::query(
-        r#"
-        INSERT INTO provider_configs (id, name, provider_type, base_url, api_key, has_stored_api_key, is_enabled, is_local, created_at, updated_at)
-        VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(&id)
-    .bind(name)
-    .bind(provider_type)
-    .bind(base_url)
-    .bind(has_stored_api_key as i32)
-    .bind(is_enabled as i32)
-    .bind(is_local as i32)
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
-    .await?;
-
-    Ok(ProviderConfig {
-        id,
-        name: name.to_string(),
-        provider_type: provider_type.to_string(),
-        base_url: base_url.to_string(),
-        api_key: None,
-        has_stored_api_key,
-        is_enabled,
-        is_local,
-        auth_status: None,
-        auth_source: None,
-        plan_type: None,
-        account_label: None,
-        token_expires_at: None,
-        created_at: now.clone(),
-        updated_at: now,
-    })
 }
 
 pub async fn upsert_provider_config_by_id(
@@ -2223,188 +2217,7 @@ pub async fn update_provider_auth_metadata(
     Ok(())
 }
 
-pub async fn delete_provider_config(pool: &SqlitePool, id: &str) -> DbResult<()> {
-    let mut transaction = pool.begin().await?;
-    sqlx::query("DELETE FROM ai_models WHERE provider_id = ?")
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-
-    sqlx::query("DELETE FROM provider_settings WHERE provider_id = ?")
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-
-    sqlx::query("DELETE FROM provider_configs WHERE id = ?")
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-    transaction.commit().await?;
-    Ok(())
-}
-
 // ============ SPEECH PROVIDER CONFIGS ============
-
-pub async fn list_speech_provider_configs(
-    pool: &SqlitePool,
-) -> DbResult<Vec<SpeechProviderConfig>> {
-    let rows = sqlx::query(
-        r#"
-        SELECT id, name, provider_type, base_url, model, has_stored_api_key,
-               is_enabled, is_local, created_at, updated_at
-        FROM speech_provider_configs
-        ORDER BY is_local ASC, name ASC
-        "#,
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| SpeechProviderConfig {
-            id: row.get("id"),
-            name: row.get("name"),
-            provider_type: row.get("provider_type"),
-            base_url: row.get("base_url"),
-            model: row.get("model"),
-            has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
-            is_enabled: row.get::<i32, _>("is_enabled") != 0,
-            is_local: row.get::<i32, _>("is_local") != 0,
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        })
-        .collect())
-}
-
-pub async fn get_speech_provider_config(
-    pool: &SqlitePool,
-    id: &str,
-) -> DbResult<Option<SpeechProviderConfig>> {
-    let row = sqlx::query(
-        r#"
-        SELECT id, name, provider_type, base_url, model, has_stored_api_key,
-               is_enabled, is_local, created_at, updated_at
-        FROM speech_provider_configs
-        WHERE id = ?
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(row.map(|row| SpeechProviderConfig {
-        id: row.get("id"),
-        name: row.get("name"),
-        provider_type: row.get("provider_type"),
-        base_url: row.get("base_url"),
-        model: row.get("model"),
-        has_stored_api_key: row.get::<i32, _>("has_stored_api_key") != 0,
-        is_enabled: row.get::<i32, _>("is_enabled") != 0,
-        is_local: row.get::<i32, _>("is_local") != 0,
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }))
-}
-
-pub async fn create_speech_provider_config(
-    pool: &SqlitePool,
-    name: &str,
-    provider_type: &str,
-    base_url: &str,
-    model: &str,
-    is_local: bool,
-    is_enabled: bool,
-) -> DbResult<SpeechProviderConfig> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        r#"
-        INSERT INTO speech_provider_configs (
-            id, name, provider_type, base_url, model, has_stored_api_key,
-            is_enabled, is_local, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(&id)
-    .bind(name)
-    .bind(provider_type)
-    .bind(base_url)
-    .bind(model)
-    .bind(is_enabled as i32)
-    .bind(is_local as i32)
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
-    .await?;
-
-    Ok(SpeechProviderConfig {
-        id,
-        name: name.to_string(),
-        provider_type: provider_type.to_string(),
-        base_url: base_url.to_string(),
-        model: model.to_string(),
-        has_stored_api_key: false,
-        is_enabled,
-        is_local,
-        created_at: now.clone(),
-        updated_at: now,
-    })
-}
-
-pub async fn update_speech_provider_config(
-    pool: &SqlitePool,
-    input: UpdateSpeechProviderConfigInput,
-) -> DbResult<()> {
-    let current = get_speech_provider_config(pool, &input.id)
-        .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
-    let now = chrono::Utc::now().to_rfc3339();
-    sqlx::query(
-        r#"
-        UPDATE speech_provider_configs
-        SET name = ?, provider_type = ?, base_url = ?, model = ?,
-            is_local = ?, is_enabled = ?, updated_at = ?
-        WHERE id = ?
-        "#,
-    )
-    .bind(input.name.unwrap_or(current.name))
-    .bind(input.provider_type.unwrap_or(current.provider_type))
-    .bind(input.base_url.unwrap_or(current.base_url))
-    .bind(input.model.unwrap_or(current.model))
-    .bind(input.is_local.unwrap_or(current.is_local) as i32)
-    .bind(input.is_enabled.unwrap_or(current.is_enabled) as i32)
-    .bind(now)
-    .bind(input.id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn set_speech_provider_has_stored_api_key(
-    pool: &SqlitePool,
-    id: &str,
-    has_key: bool,
-) -> DbResult<()> {
-    sqlx::query(
-        "UPDATE speech_provider_configs SET has_stored_api_key = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(has_key as i32)
-    .bind(chrono::Utc::now().to_rfc3339())
-    .bind(id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn delete_speech_provider_config(pool: &SqlitePool, id: &str) -> DbResult<()> {
-    sqlx::query("DELETE FROM speech_provider_configs WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-// ============ AI MODELS ============
 
 pub async fn list_models_by_provider(
     pool: &SqlitePool,
@@ -2556,42 +2369,6 @@ pub async fn prune_provider_models(
     }
 
     statement.execute(pool).await?;
-    Ok(())
-}
-
-pub async fn register_manual_model(
-    pool: &SqlitePool,
-    provider_id: &str,
-    model_id: &str,
-    name: &str,
-) -> DbResult<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let id = format!("{}::{}", provider_id, model_id);
-
-    sqlx::query(
-        r#"
-        INSERT INTO ai_models (
-            id, provider_id, model_id, name, description, owned_by,
-            pricing_prompt, pricing_completion, pricing_request,
-            reasoning_efforts_json, default_reasoning_effort, context_window_tokens,
-            is_enabled, is_manual, first_seen_at, last_seen_at
-        )
-        VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 1, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name,
-            is_manual = 1,
-            last_seen_at = excluded.last_seen_at
-        "#,
-    )
-    .bind(&id)
-    .bind(provider_id)
-    .bind(model_id)
-    .bind(name)
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
-    .await?;
-
     Ok(())
 }
 
@@ -2850,172 +2627,6 @@ pub async fn delete_conversation_compaction_state(
     Ok(())
 }
 
-pub async fn update_manual_model(
-    pool: &SqlitePool,
-    provider_id: &str,
-    current_model_id: &str,
-    next_model_id: &str,
-    name: &str,
-) -> DbResult<()> {
-    let current_id = format!("{}::{}", provider_id, current_model_id);
-    let next_id = format!("{}::{}", provider_id, next_model_id);
-    let now = chrono::Utc::now().to_rfc3339();
-
-    let mut tx = pool.begin().await?;
-
-    let existing = sqlx::query(
-        r#"
-        SELECT is_enabled, first_seen_at
-        FROM ai_models
-        WHERE id = ? AND provider_id = ? AND is_manual = 1
-        "#,
-    )
-    .bind(&current_id)
-    .bind(provider_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-
-    let Some(existing) = existing else {
-        return Err(DbError::Validation(format!(
-            "Manual model {current_model_id} not found for provider {provider_id}."
-        )));
-    };
-
-    if current_model_id != next_model_id {
-        let conflict = sqlx::query(
-            r#"
-            SELECT id
-            FROM ai_models
-            WHERE id = ? AND provider_id = ?
-            "#,
-        )
-        .bind(&next_id)
-        .bind(provider_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        if conflict.is_some() {
-            return Err(DbError::Validation(format!(
-                "Model {next_model_id} already exists for provider {provider_id}."
-            )));
-        }
-
-        sqlx::query("DELETE FROM ai_models WHERE id = ? AND provider_id = ? AND is_manual = 1")
-            .bind(&current_id)
-            .bind(provider_id)
-            .execute(&mut *tx)
-            .await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO ai_models (
-                id, provider_id, model_id, name, description, owned_by,
-                pricing_prompt, pricing_completion, pricing_request,
-                reasoning_efforts_json, default_reasoning_effort,
-                is_enabled, is_manual, first_seen_at, last_seen_at
-            )
-            VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, 1, ?, ?)
-            "#,
-        )
-        .bind(&next_id)
-        .bind(provider_id)
-        .bind(next_model_id)
-        .bind(name)
-        .bind(existing.get::<i32, _>("is_enabled"))
-        .bind(existing.get::<String, _>("first_seen_at"))
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-    } else {
-        sqlx::query(
-            r#"
-            UPDATE ai_models
-            SET name = ?, last_seen_at = ?
-            WHERE id = ? AND provider_id = ? AND is_manual = 1
-            "#,
-        )
-        .bind(name)
-        .bind(&now)
-        .bind(&current_id)
-        .bind(provider_id)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    tx.commit().await?;
-    Ok(())
-}
-
-pub async fn delete_manual_model(
-    pool: &SqlitePool,
-    provider_id: &str,
-    model_id: &str,
-) -> DbResult<()> {
-    let id = format!("{}::{}", provider_id, model_id);
-    let result = sqlx::query(
-        r#"
-        DELETE FROM ai_models
-        WHERE id = ? AND provider_id = ? AND is_manual = 1
-        "#,
-    )
-    .bind(&id)
-    .bind(provider_id)
-    .execute(pool)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(DbError::Validation(format!(
-            "Manual model {model_id} not found for provider {provider_id}."
-        )));
-    }
-
-    Ok(())
-}
-
-pub async fn set_model_enabled(
-    pool: &SqlitePool,
-    provider_id: &str,
-    model_id: &str,
-    enabled: bool,
-) -> DbResult<()> {
-    let id = format!("{}::{}", provider_id, model_id);
-    sqlx::query(
-        r#"
-        UPDATE ai_models
-        SET is_enabled = ?
-        WHERE id = ?
-        "#,
-    )
-    .bind(enabled as i32)
-    .bind(&id)
-    .execute(pool)
-    .await?;
-
-    Ok(())
-}
-
-pub async fn set_all_models_enabled(
-    pool: &SqlitePool,
-    provider_id: &str,
-    enabled: bool,
-) -> DbResult<()> {
-    sqlx::query(
-        r#"
-        UPDATE ai_models
-        SET is_enabled = ?
-        WHERE provider_id = ?
-        "#,
-    )
-    .bind(enabled as i32)
-    .bind(provider_id)
-    .execute(pool)
-    .await?;
-
-    Ok(())
-}
-
-// ============ PROVIDER SETTINGS ============
-
 pub async fn ensure_provider_settings(pool: &SqlitePool, provider_id: &str) -> DbResult<()> {
     sqlx::query(
         r#"
@@ -3052,45 +2663,6 @@ pub async fn get_provider_settings(
         filter_free_models: row.get::<i32, _>("filter_free_models") != 0,
         copilot_send_timeout_ms: row.get("copilot_send_timeout_ms"),
     })
-}
-
-pub async fn update_provider_settings(
-    pool: &SqlitePool,
-    provider_id: &str,
-    filter_free_models: Option<bool>,
-    copilot_send_timeout_ms: Option<Option<i64>>,
-) -> DbResult<()> {
-    ensure_provider_settings(pool, provider_id).await?;
-
-    if let Some(filter_free_models) = filter_free_models {
-        sqlx::query(
-            r#"
-            UPDATE provider_settings
-            SET filter_free_models = ?
-            WHERE provider_id = ?
-            "#,
-        )
-        .bind(filter_free_models as i32)
-        .bind(provider_id)
-        .execute(pool)
-        .await?;
-    }
-
-    if let Some(copilot_send_timeout_ms) = copilot_send_timeout_ms {
-        sqlx::query(
-            r#"
-            UPDATE provider_settings
-            SET copilot_send_timeout_ms = ?
-            WHERE provider_id = ?
-            "#,
-        )
-        .bind(copilot_send_timeout_ms)
-        .bind(provider_id)
-        .execute(pool)
-        .await?;
-    }
-
-    Ok(())
 }
 
 // ============ APP SETTINGS ============
@@ -3763,35 +3335,6 @@ mod tests {
         let truncated = truncate_last_message(&content);
 
         assert_eq!(truncated, format!("{}...", "é".repeat(100)));
-    }
-
-    #[tokio::test]
-    async fn provider_settings_preserve_fields_on_partial_updates() {
-        let (_temp_dir, pool) = test_pool().await;
-
-        let initial = get_provider_settings(&pool, "copilot")
-            .await
-            .expect("initial settings");
-        assert!(!initial.filter_free_models);
-        assert_eq!(initial.copilot_send_timeout_ms, None);
-
-        update_provider_settings(&pool, "copilot", None, Some(Some(1_800_000)))
-            .await
-            .expect("update timeout");
-        let after_timeout = get_provider_settings(&pool, "copilot")
-            .await
-            .expect("settings after timeout");
-        assert!(!after_timeout.filter_free_models);
-        assert_eq!(after_timeout.copilot_send_timeout_ms, Some(1_800_000));
-
-        update_provider_settings(&pool, "copilot", Some(true), None)
-            .await
-            .expect("update filter");
-        let after_filter = get_provider_settings(&pool, "copilot")
-            .await
-            .expect("settings after filter");
-        assert!(after_filter.filter_free_models);
-        assert_eq!(after_filter.copilot_send_timeout_ms, Some(1_800_000));
     }
 
     #[tokio::test]

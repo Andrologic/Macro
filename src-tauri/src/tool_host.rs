@@ -1,7 +1,3 @@
-use crate::commands::terminal::{
-    create_legacy_session_internal, kill_legacy_session_internal, read_legacy_session_internal,
-    run_legacy_session_internal, TerminalSessionStore,
-};
 use crate::commands::{execute_workspace_tool, CommandError, WorkspaceProjectMount};
 use crate::core::http_auth::BearerTokenDigest;
 use crate::core::tool_policy::{get_mode_policy, validate_tool_execution};
@@ -28,7 +24,6 @@ struct ToolHostState {
     bearer_token: BearerTokenDigest,
     workspace_metadata_root: WorkspaceMetadataRoot,
     git_state: GitState,
-    terminal_store: TerminalSessionStore,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,136 +143,11 @@ async fn tool_execute(
     let workspace_root = state.workspace_metadata_root.0.read().await.clone();
 
     let result = match payload.tool_id.as_str() {
-        "terminal_create_session" => {
-            let project_id = payload
-                .args
-                .get("project_id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| CommandError {
-                    message: "Missing project_id argument for terminal_create_session.".to_string(),
-                })
-                .map(str::to_string);
-
-            match project_id {
-                Ok(project_id) => create_legacy_session_internal(
-                    workspace_root.clone(),
-                    state.git_state.clone(),
-                    state.terminal_store.clone(),
-                    project_id,
-                    payload
-                        .args
-                        .get("cwd")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                )
-                .await
-                .and_then(|dto| {
-                    serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                        message: error.to_string(),
-                    })
-                }),
-                Err(error) => Err(error),
-            }
-        }
-        "terminal_run" => {
-            let session_id = payload
-                .args
-                .get("session_id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| CommandError {
-                    message: "Missing session_id argument for terminal_run.".to_string(),
-                })
-                .map(str::to_string);
-            let command = payload
-                .args
-                .get("command")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| CommandError {
-                    message: "Missing command argument for terminal_run.".to_string(),
-                });
-
-            match (session_id, command) {
-                (Ok(session_id), Ok(command)) => run_legacy_session_internal(
-                    state.terminal_store.clone(),
-                    session_id,
-                    command,
-                    payload.args.get("timeout_ms").and_then(Value::as_u64),
-                    payload
-                        .args
-                        .get("execution_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                )
-                .await
-                .and_then(|dto| {
-                    serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                        message: error.to_string(),
-                    })
-                }),
-                (Err(error), _) | (_, Err(error)) => Err(error),
-            }
-        }
-        "terminal_read" => {
-            let session_id = payload
-                .args
-                .get("session_id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| CommandError {
-                    message: "Missing session_id argument for terminal_read.".to_string(),
-                })
-                .map(str::to_string);
-
-            match session_id {
-                Ok(session_id) => {
-                    read_legacy_session_internal(state.terminal_store.clone(), session_id)
-                        .await
-                        .and_then(|dto| {
-                            serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                                message: error.to_string(),
-                            })
-                        })
-                }
-                Err(error) => Err(error),
-            }
-        }
-        "terminal_kill" => {
-            let session_id = payload
-                .args
-                .get("session_id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| CommandError {
-                    message: "Missing session_id argument for terminal_kill.".to_string(),
-                })
-                .map(str::to_string);
-
-            match session_id {
-                Ok(session_id) => kill_legacy_session_internal(
-                    state.terminal_store.clone(),
-                    session_id,
-                    payload
-                        .args
-                        .get("execution_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                )
-                .await
-                .and_then(|dto| {
-                    serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                        message: error.to_string(),
-                    })
-                }),
-                Err(error) => Err(error),
-            }
-        }
+        tool_id if tool_id.starts_with("terminal_") => Err(CommandError {
+            message:
+                "Agent terminal tools must be relayed through Macro's frontend permission review."
+                    .to_string(),
+        }),
         _ => {
             execute_workspace_tool(
                 workspace_root.clone(),
@@ -305,7 +175,6 @@ async fn tool_execute(
 pub fn start(
     workspace_metadata_root: WorkspaceMetadataRoot,
     git_state: GitState,
-    terminal_store: TerminalSessionStore,
 ) -> Result<ToolHostConfig, String> {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Failed to bind Macro tool host: {}", error))?;
@@ -321,7 +190,6 @@ pub fn start(
         bearer_token: BearerTokenDigest::new(&bearer_token),
         workspace_metadata_root,
         git_state,
-        terminal_store,
     });
 
     let router = Router::new()

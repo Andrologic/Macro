@@ -19,6 +19,9 @@ export type JsonSchema =
       type: "string" | "number" | "boolean";
       description?: string;
       enum?: string[];
+    }
+  | {
+      description?: string;
     };
 
 export interface MacroToolRegistryEntry {
@@ -35,6 +38,10 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "read_sources",
   "edit_source_passage",
   "question",
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
@@ -48,7 +55,6 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "apply_patch",
   "glob",
   "grep",
-  "ast_grep",
   "git_status",
   "git_log",
   "git_branch_list",
@@ -249,6 +255,86 @@ export const MACRO_TOOL_REGISTRY = [
         },
       },
       required: ["title", "passage"],
+    },
+  ),
+  objectTool(
+    "config_list",
+    "List Macro configuration documents and effective values. Secret values are never included.",
+    {
+      type: "object",
+      properties: {
+        project_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional project ids whose effective configuration should be included.",
+        },
+      },
+    },
+  ),
+  objectTool(
+    "config_get",
+    "Read one sparse Macro JSON configuration document, including its ETag and diagnostics.",
+    {
+      type: "object",
+      properties: {
+        document: {
+          type: "string",
+          enum: ["runtime", "settings", "agents", "providers", "tools", "skills", "git"],
+        },
+        scope: { type: "string", enum: ["user", "project"] },
+        project_id: { type: "string" },
+      },
+      required: ["document"],
+    },
+  ),
+  objectTool(
+    "config_validate",
+    "Validate a complete Macro configuration document without writing it.",
+    {
+      type: "object",
+      properties: {
+        document: {
+          type: "string",
+          enum: ["runtime", "settings", "agents", "providers", "tools", "skills", "git"],
+        },
+        scope: { type: "string", enum: ["user", "project"] },
+        project_id: { type: "string" },
+        value: {
+          type: "object",
+          description: "Complete JSON document to validate.",
+        },
+      },
+      required: ["document", "value"],
+    },
+  ),
+  objectTool(
+    "config_patch",
+    "Apply an RFC 6902 JSON Patch to a Macro configuration document. Supply the latest ETag from config_get. Sensitive changes remain pending until the user explicitly approves them.",
+    {
+      type: "object",
+      properties: {
+        document: {
+          type: "string",
+          enum: ["runtime", "settings", "agents", "providers", "tools", "skills", "git"],
+        },
+        scope: { type: "string", enum: ["user", "project"] },
+        project_id: { type: "string" },
+        expected_etag: { type: "string" },
+        patch: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              op: { type: "string", enum: ["add", "remove", "replace", "move", "copy", "test"] },
+              path: { type: "string" },
+              from: { type: "string" },
+              value: {},
+            },
+            required: ["op", "path"],
+          },
+        },
+      },
+      required: ["document", "expected_etag", "patch"],
     },
   ),
   objectTool(
@@ -906,26 +992,22 @@ export const MACRO_TOOL_REGISTRY = [
   }),
   objectTool(
     "terminal_create_session",
-    "Create a terminal session bound to exactly one project. project_id is required. There is no terminal at the virtual group root.",
+    "Create a general agent terminal session that is independent from projects and workspaces.",
     {
       type: "object",
       properties: {
-        project_id: {
-          type: "string",
-          description: "Required project identifier.",
-        },
         cwd: {
           type: "string",
           description:
-            "Optional directory under the selected project or worktree.",
+            "Optional initial directory anywhere on the computer. Defaults to the user home directory.",
         },
       },
-      required: ["project_id"],
+      required: [],
     },
   ),
   objectTool(
     "terminal_run",
-    "Run a shell command inside an existing terminal session. Output is capped at 1 MiB with an explicit head/tail truncation marker. The command is stopped when its agent generation is cancelled, and inherited output pipes are drained for a bounded interval.",
+    "Run a shell command inside an existing agent terminal session. Every command requires a separate user review that cannot be remembered, including in YOLO mode. Output is capped at 1 MiB with an explicit head/tail truncation marker. The command is stopped when its agent generation is cancelled, and inherited output pipes are drained for a bounded interval.",
     {
       type: "object",
       properties: {

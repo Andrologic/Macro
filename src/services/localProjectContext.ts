@@ -1,5 +1,6 @@
 import type { AppMode } from '../types';
 import * as tauriIpc from './tauriIpc';
+import { loadPreference, PREF_KEYS, savePreference } from './preferences';
 
 export type ProjectSwitchPolicy = 'resume_per_project' | 'reset_on_switch';
 
@@ -22,27 +23,12 @@ export interface LocalSessionContextState {
   updatedAt: string;
 }
 
-const APP_SETTING_PROJECT_SWITCH_POLICY_KEY = 'project_switch_policy';
 const DEFAULT_PROJECT_SWITCH_POLICY: ProjectSwitchPolicy = 'resume_per_project';
-
-const LEGACY_POLICY_STORAGE_KEY = 'macro_project_switch_policy';
-const LEGACY_PROJECT_CONTEXTS_KEY = 'macro_project_context_states';
-const LEGACY_SESSION_CONTEXT_KEY = 'macro_session_context_state';
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const transientProjectContexts: Record<string, LocalProjectContextState> = {};
+let transientSessionContext: LocalSessionContextState | null = null;
 
 const normalizeProjectSwitchPolicy = (value: unknown): ProjectSwitchPolicy =>
   value === 'reset_on_switch' ? value : DEFAULT_PROJECT_SWITCH_POLICY;
-
-const safeJsonParse = <T>(raw: string | null): T | null => {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-};
 
 const toNowIso = (): string => new Date().toISOString();
 
@@ -83,14 +69,8 @@ const normalizeSessionContext = (
 });
 
 const readLegacyProjectContexts = (): Record<string, LocalProjectContextState> => {
-  if (typeof window === 'undefined') return {};
-  const parsed = safeJsonParse<Record<string, LocalProjectContextState>>(
-    window.localStorage.getItem(LEGACY_PROJECT_CONTEXTS_KEY)
-  );
-  if (!parsed || !isRecord(parsed)) return {};
-
   const normalized: Record<string, LocalProjectContextState> = {};
-  for (const [projectId, value] of Object.entries(parsed)) {
+  for (const [projectId, value] of Object.entries(transientProjectContexts)) {
     if (!projectId.trim()) continue;
     normalized[projectId] = normalizeProjectContext(projectId, value);
   }
@@ -98,69 +78,40 @@ const readLegacyProjectContexts = (): Record<string, LocalProjectContextState> =
 };
 
 const writeLegacyProjectContexts = (contexts: Record<string, LocalProjectContextState>): void => {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(LEGACY_PROJECT_CONTEXTS_KEY, JSON.stringify(contexts));
+  Object.keys(transientProjectContexts).forEach((key) => delete transientProjectContexts[key]);
+  Object.assign(transientProjectContexts, contexts);
 };
 
 const readLegacySessionContext = (): LocalSessionContextState | null => {
-  if (typeof window === 'undefined') return null;
-  const parsed = safeJsonParse<LocalSessionContextState>(
-    window.localStorage.getItem(LEGACY_SESSION_CONTEXT_KEY)
-  );
-  return normalizeSessionContext(parsed);
+  return transientSessionContext ? normalizeSessionContext(transientSessionContext) : null;
 };
 
 const writeLegacySessionContext = (state: LocalSessionContextState): void => {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(LEGACY_SESSION_CONTEXT_KEY, JSON.stringify(state));
+  transientSessionContext = normalizeSessionContext(state);
 };
 
 export const getProjectSwitchPolicy = async (): Promise<ProjectSwitchPolicy> => {
-  if (tauriIpc.isTauriAvailable()) {
-    try {
-      const record = await tauriIpc.dbGetAppSetting(APP_SETTING_PROJECT_SWITCH_POLICY_KEY);
-      if (record?.value_json) {
-        return normalizeProjectSwitchPolicy(safeJsonParse(record.value_json));
-      }
-    } catch {
-      // fall through to legacy local fallback
-    }
-  }
-
-  if (typeof window === 'undefined') return DEFAULT_PROJECT_SWITCH_POLICY;
   return normalizeProjectSwitchPolicy(
-    safeJsonParse(window.localStorage.getItem(LEGACY_POLICY_STORAGE_KEY))
+    await loadPreference<ProjectSwitchPolicy>(PREF_KEYS.PROJECT_SWITCH_POLICY),
   );
 };
 
 export const setProjectSwitchPolicy = async (policy: ProjectSwitchPolicy): Promise<void> => {
   const normalized = normalizeProjectSwitchPolicy(policy);
-  if (tauriIpc.isTauriAvailable()) {
-    try {
-      await tauriIpc.dbSetAppSetting({
-        key: APP_SETTING_PROJECT_SWITCH_POLICY_KEY,
-        valueJson: JSON.stringify(normalized),
-      });
-      return;
-    } catch {
-      // fallback to legacy local storage
-    }
-  }
-
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(LEGACY_POLICY_STORAGE_KEY, JSON.stringify(normalized));
+  await savePreference(PREF_KEYS.PROJECT_SWITCH_POLICY, normalized);
 };
 
 export const getLocalProjectContextState = async (
   projectId: string
 ): Promise<LocalProjectContextState | null> => {
-  if (!projectId.trim()) return null;
+  const normalizedProjectId = projectId.trim();
+  if (!normalizedProjectId) return null;
 
   if (tauriIpc.isTauriAvailable()) {
     try {
-      const record = await tauriIpc.dbGetProjectContextState(projectId);
+      const record = await tauriIpc.dbGetProjectContextState(normalizedProjectId);
       if (!record) return null;
-      return normalizeProjectContext(projectId, {
+      return normalizeProjectContext(normalizedProjectId, {
         projectId: record.project_id,
         groupId: record.group_id,
         focusProjectId: record.focus_project_id,
@@ -176,7 +127,7 @@ export const getLocalProjectContextState = async (
   }
 
   const contexts = readLegacyProjectContexts();
-  return contexts[projectId] ?? null;
+  return contexts[normalizedProjectId] ?? null;
 };
 
 export const upsertLocalProjectContextState = async (

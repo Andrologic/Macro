@@ -86,6 +86,71 @@ describe('copilot bridge tool registration', () => {
     expect(gitStatusTool?.options.overridesBuiltInTool).toBeUndefined();
   });
 
+  it('classifies supported Chat terminal tools without being confused by MCP ids', async () => {
+    const { __testables } = await loadBridge();
+
+    expect(
+      __testables.inferMacroMode([
+        'read_file',
+        'terminal_create_session',
+        'terminal_run',
+        'mcp__github__list_issues',
+      ]),
+    ).toBe('Chat');
+    expect(__testables.inferMacroMode(['read_file', 'write'])).toBe('Implement');
+    expect(__testables.inferMacroMode(['read_file', 'plan_get'])).toBe('Architect');
+  });
+
+  it('relays every terminal tool to the frontend permission handler', async () => {
+    const { __testables } = await loadBridge();
+    const requestTool = mock(async (params: Record<string, unknown>) => ({
+      result: `frontend:${String(params.toolName)}`,
+      hiddenContext: null,
+      visibleContent: null,
+      interrupt: false,
+    }));
+
+    for (const toolId of [
+      'terminal_create_session',
+      'terminal_run',
+      'terminal_read',
+      'terminal_kill',
+    ]) {
+      expect(__testables.isFrontendRelayToolId(toolId)).toBe(true);
+      const tools = __testables.buildMacroTools(
+        {
+          request_id: 'req-terminal',
+          model_id: 'gpt-5',
+          messages: [],
+          allowed_tool_ids: [toolId],
+        },
+        { controlChannel: { requestTool } } as never,
+      ) as Array<{
+        name: string;
+        options: {
+          handler: (
+            args: Record<string, unknown>,
+            invocation: { sessionId: string; toolCallId: string; toolName: string },
+          ) => Promise<string>;
+        };
+      }>;
+      const terminalTool = tools.find((tool) => tool.name === toolId);
+
+      await expect(
+        terminalTool?.options.handler(
+          { project_id: 'project-1', session_id: 'session-1', command: 'pwd' },
+          {
+            sessionId: 'session-1',
+            toolCallId: `call-${toolId}`,
+            toolName: toolId,
+          },
+        ),
+      ).resolves.toBe(`frontend:${toolId}`);
+    }
+
+    expect(requestTool).toHaveBeenCalledTimes(4);
+  });
+
   it('routes delete and apply_patch through the Macro tool host', async () => {
     const fetchCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const fetchMock = mock(async (url: string, init?: RequestInit) => {

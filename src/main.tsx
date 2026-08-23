@@ -7,7 +7,10 @@ import { usePerformanceMonitor } from "./hooks/usePerformanceMonitor";
 import { initializeI18n } from "./i18n";
 import { installFrontendDiagnostics } from "./services/frontendDiagnostics";
 import { registerAppStateGetter } from "./services/appStateRuntime";
+import { refreshWebSearchSettings } from "./services/webSearchSettings";
+import { installConfigRuntimeEffects } from "./services/configRuntimeEffects";
 import { useAppStore } from "./stores/useAppStore";
+import { initializeConfigRuntime } from "./stores/useConfigStore";
 import { isDevelopmentBuild } from "./utils/devLogger";
 import "xterm/css/xterm.css";
 import "./index.css";
@@ -95,9 +98,13 @@ const renderApp = (): void => {
   );
 };
 
-void initializeI18n()
+void initializeConfigRuntime()
+  .then(() => Promise.all([initializeI18n(), refreshWebSearchSettings()]))
+  .then(() => {
+    installConfigRuntimeEffects();
+  })
   .catch((error) => {
-    console.error("Failed to initialize i18n:", error);
+    console.error("Failed to initialize Macro runtime:", error);
   })
   .finally(() => {
     renderApp();

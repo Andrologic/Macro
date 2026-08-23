@@ -1,9 +1,58 @@
 import { describe, expect, it } from 'bun:test';
 import {
   getTaskProjectCommand,
+  loadTaskProjectCommandRegistry,
   mergeTaskProjectCommandRegistry,
   normalizeTaskProjectCommandPath,
+  resolveTaskProjectCommandRegistry,
 } from './taskProjectCommands';
+import type { ConfigSnapshot } from '../types/generated/config';
+
+const configSnapshot = (): ConfigSnapshot => ({
+  schemaVersion: 1,
+  effective: {
+    tools: {
+      projectCommands: {
+        'C:/dev/api': {
+          projectId: 'api',
+          projectName: 'API global stale',
+          projectPath: 'C:/dev/api',
+          command: 'global command',
+          openTerminalOnRun: true,
+          updatedAt: '2026-03-24T00:00:00.000Z',
+        },
+      },
+    },
+  },
+  projectEffective: {
+    api: {
+      tools: {
+        projectCommands: {
+          'C:/dev/api': {
+            projectId: 'api',
+            projectName: 'API',
+            projectPath: 'C:/dev/api',
+            command: 'bun test:api',
+            openTerminalOnRun: true,
+            updatedAt: '2026-03-24T00:00:00.000Z',
+          },
+          'C:/dev/web': {
+            projectId: 'web',
+            projectName: 'Web',
+            projectPath: 'C:/dev/web',
+            command: 'bun test:web',
+            openTerminalOnRun: true,
+            updatedAt: '2026-03-24T00:00:00.000Z',
+          },
+        },
+      },
+    },
+  },
+  documents: [],
+  provenance: [],
+  diagnostics: [],
+  pendingRestartPaths: [],
+});
 
 describe('taskProjectCommands', () => {
   it('normalizes project paths with forward slashes and no trailing slash', () => {
@@ -86,5 +135,26 @@ describe('taskProjectCommands', () => {
     expect(entry?.command).toBe('');
     expect(entry?.worktreeSetupCommand).toBe('bun install');
     expect(registry.version).toBe(3);
+  });
+
+  it('resolves commands from the requested project effective snapshot only', () => {
+    const registry = resolveTaskProjectCommandRegistry(configSnapshot(), ['api']);
+
+    expect(getTaskProjectCommand(registry, 'C:/dev/api')?.command).toBe('bun test:api');
+    expect(getTaskProjectCommand(registry, 'C:/dev/web')).toBeNull();
+  });
+
+  it('requests an explicit normalized project scope from the snapshot loader', async () => {
+    const requestedScopes: string[][] = [];
+    const registry = await loadTaskProjectCommandRegistry(
+      [' api ', 'api'],
+      async (projectIds) => {
+        requestedScopes.push(projectIds);
+        return configSnapshot();
+      },
+    );
+
+    expect(requestedScopes).toEqual([['api']]);
+    expect(getTaskProjectCommand(registry, 'C:/dev/api')?.command).toBe('bun test:api');
   });
 });

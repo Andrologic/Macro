@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { Project } from '../../types';
 import { cn } from '../../utils/cn';
 import { Icon, type IconName } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 
 interface TerminalTargetSplitButtonProps {
   variant: 'header' | 'icon' | 'empty';
@@ -131,7 +132,10 @@ export const TerminalTargetSplitButton: React.FC<TerminalTargetSplitButtonProps>
                             : 'text-muted-foreground hover:bg-accent hover:text-foreground'
                         )}
                       >
-                        <span className="truncate text-sm font-medium">{project.name}</span>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <ProjectIcon project={project} size={14} className="text-muted-foreground" />
+                          <span className="truncate text-sm font-medium">{project.name}</span>
+                        </span>
                         <span className="flex shrink-0 items-center gap-2">
                           {isFocused && (
                             <span className="rounded-full border border-border bg-card/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -218,7 +222,10 @@ export const TerminalTargetSplitButton: React.FC<TerminalTargetSplitButtonProps>
                           : 'text-muted-foreground hover:bg-accent hover:text-foreground'
                       )}
                     >
-                      <span className="truncate text-sm font-medium">{project.name}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <ProjectIcon project={project} size={14} className="text-muted-foreground" />
+                        <span className="truncate text-sm font-medium">{project.name}</span>
+                      </span>
                       <span className="flex shrink-0 items-center gap-2">
                         {isFocused && (
                           <span className="rounded-full border border-border bg-card/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">

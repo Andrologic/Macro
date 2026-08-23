@@ -25,6 +25,8 @@ pub struct SkillTemplateCreateRequest {
 pub struct SkillSourceDto {
     pub kind: String,
     pub namespace: String,
+    pub root_id: String,
+    pub priority: i32,
     pub project_id: Option<String>,
     pub project_name: Option<String>,
     pub root_path: String,

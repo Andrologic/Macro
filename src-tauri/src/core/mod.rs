@@ -13,7 +13,7 @@ pub mod error_tests;
 
 #[allow(unused_imports)]
 pub use config::AppConfig;
-pub use config::{finalize_desktop_workspace_path, load_config};
+pub use config::{apply_runtime_workspace, finalize_desktop_workspace_path, load_config};
 pub use environment::init_process_environment;
 #[allow(unused_imports)]
 pub use error::BackendError;

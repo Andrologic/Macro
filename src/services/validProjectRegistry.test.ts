@@ -56,4 +56,29 @@ describe('validProjectRegistry', () => {
     expect(snapshot.repoPathByProjectId.get('project-api')).toBe('C:/dev/macro/api');
     expect(snapshot.hasRegisteredProjects).toBe(true);
   });
+
+  it('keeps direct-edit projects as Architect context without exposing a repository path', () => {
+    const gitProject = makeProject('project-git', 'C:/dev/git');
+    const directProject = {
+      ...makeProject('project-direct', 'C:/dev/direct'),
+      directEdit: true,
+      gitSetupState: 'not_git' as const,
+    };
+    const snapshot = buildValidProjectRegistrySnapshot({
+      projectGroups: [{
+        id: 'group-mixed',
+        name: 'Mixed',
+        isOpen: true,
+        projects: [gitProject, directProject],
+      }],
+      selectedGroupId: 'group-mixed',
+      selectedProjectId: null,
+    });
+
+    expect(snapshot.scopedProjectIds).toEqual(['project-git', 'project-direct']);
+    expect(snapshot.actionableProjectIds).toEqual(['project-git']);
+    expect(snapshot.readOnlyProjectIds).toEqual(['project-direct']);
+    expect(snapshot.repoPathByProjectId.get('project-git')).toBe('C:/dev/git');
+    expect(snapshot.repoPathByProjectId.has('project-direct')).toBe(false);
+  });
 });

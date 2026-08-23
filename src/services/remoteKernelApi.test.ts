@@ -80,9 +80,9 @@ describe('remoteKernelApi', () => {
       });
     }) as unknown as typeof fetch;
 
-    const result = await getRemoteToolModePolicy('Implement');
+    const result = await getRemoteToolModePolicy('Implement', 'project-1');
     expect(result.allowed_tool_ids).toEqual(['read', 'grep']);
-    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/custom/tools/mode-policy?mode=Implement');
+    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/custom/tools/mode-policy?mode=Implement&projectId=project-1');
     expect((fetchCalls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer token');
   });
 
@@ -110,8 +110,12 @@ describe('remoteKernelApi', () => {
       mode: 'Implement',
       toolId: 'read',
       path: 'src/App.tsx',
+      projectId: 'project-1',
     });
     expect(validation.allowed).toBe(true);
+    expect(JSON.parse(String(fetchCalls[0].init?.body))).toMatchObject({
+      projectId: 'project-1',
+    });
 
     const result = await executeRemoteWorkspaceTool({
       mode: 'Implement',
@@ -249,7 +253,7 @@ describe('remoteKernelApi', () => {
       });
     }) as unknown as typeof fetch;
 
-    await expect(getRemoteToolModePolicy('Implement')).rejects.toMatchObject({
+    await expect(getRemoteToolModePolicy('Implement', 'project-1')).rejects.toMatchObject({
       code: 'REMOTE_TIMEOUT',
     });
     expect(abortObserved).toBe(true);

@@ -1,3 +1,4 @@
+pub mod agent_runs;
 pub mod models;
 pub mod repository;
 
@@ -27,6 +28,9 @@ pub type DbResult<T> = Result<T, DbError>;
 const MIGRATION_001_VERSION: i64 = 1;
 const MIGRATION_001_NAME: &str = "001_initial";
 const MIGRATION_001_SQL: &str = include_str!("migrations/001_initial.sql");
+const MIGRATION_002_VERSION: i64 = 2;
+const MIGRATION_002_NAME: &str = "002_agent_runs";
+const MIGRATION_002_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -65,6 +69,7 @@ async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
 
     // Run migrations
     run_migrations(&pool).await?;
+    agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
 
     Ok(pool)
 }
@@ -134,6 +139,19 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
     // newly added columns and indexes even when schema_migrations is already populated.
     if !is_legacy_database {
         upgrade_legacy_schema_to_baseline(connection).await?;
+    }
+
+    if !list_applied_migrations(connection)
+        .await?
+        .contains(&MIGRATION_002_VERSION)
+    {
+        apply_migration(
+            connection,
+            MIGRATION_002_VERSION,
+            MIGRATION_002_NAME.to_string(),
+            MIGRATION_002_SQL.to_string(),
+        )
+        .await?;
     }
 
     // Insert default providers if they don't exist
@@ -1676,6 +1694,14 @@ mod tests {
         assert_eq!(row.get::<String, _>("name"), "001_initial");
     }
 
+    async fn assert_migration_002_applied(pool: &sqlx::SqlitePool) {
+        let row = sqlx::query("SELECT name FROM schema_migrations WHERE version = 2")
+            .fetch_one(pool)
+            .await
+            .expect("migration 002 row");
+        assert_eq!(row.get::<String, _>("name"), "002_agent_runs");
+    }
+
     async fn apply_baseline_in_transaction(pool: &sqlx::SqlitePool) {
         let mut transaction = pool.begin().await.expect("begin baseline transaction");
         ensure_schema_migrations_table(&mut *transaction)
@@ -1732,6 +1758,7 @@ mod tests {
             WHERE type = 'table'
               AND name IN (
                 'architect_plan_conversation_sync',
+                'agent_runs',
                 'conversation_citations',
                 'conversation_toolbox_state',
                 'schema_migrations',
@@ -1762,6 +1789,7 @@ mod tests {
         assert_eq!(
             table_names,
             vec![
+                "agent_runs".to_string(),
                 "ai_models".to_string(),
                 "app_settings".to_string(),
                 "architect_plan_conversation_sync".to_string(),
@@ -1783,6 +1811,32 @@ mod tests {
         );
 
         assert_migration_001_applied(&pool).await;
+        assert_migration_002_applied(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn create_pool_applies_agent_run_migration_to_existing_baseline() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("macro.db");
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("baseline pool");
+        apply_baseline_in_transaction(&pool).await;
+        drop(pool);
+
+        let migrated = create_pool(&db_path).await.expect("migrated pool");
+        assert_migration_001_applied(&migrated).await;
+        assert_migration_002_applied(&migrated).await;
+        let table_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+        )
+        .fetch_one(&migrated)
+        .await
+        .expect("agent runs table");
+        assert_eq!(table_count, 1);
     }
 
     #[tokio::test]

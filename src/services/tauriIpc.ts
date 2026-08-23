@@ -5,6 +5,16 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { TaskCatalogDto } from "./contracts/dtos";
+import type {
+  ConfigDocument,
+  ConfigDocumentKind,
+  ConfigPatchRequest,
+  ConfigPatchResult,
+  ConfigScope,
+  ConfigSnapshot,
+  ConfigValidationResult,
+  PendingSensitiveConfigChange,
+} from "../types/generated/config";
 import {
   getWorkspaceBasePath,
   remoteRequest,
@@ -398,6 +408,10 @@ export interface GitReviewSnapshotDto {
   conflictedFiles: string[];
   mergeInProgress: boolean;
   isClean: boolean;
+}
+
+export interface DirectReviewSnapshotDto extends GitReviewSnapshotDto {
+  hasAcceptedChanges: boolean;
 }
 
 export interface GitReviewFileDto {
@@ -976,6 +990,17 @@ export interface WorkspaceBootstrapDto {
   predictedBranches: PredictedBranch[];
 }
 
+export interface ProjectIconDto {
+  dataUrl: string;
+  sourcePath: string;
+  revision: string;
+}
+
+export interface ProjectIconResolutionDto {
+  projectId: string;
+  icon: ProjectIconDto | null;
+}
+
 export interface WorkspaceArchitectPlanReplicaDto {
   scopeKey: string;
   projectId: string | null;
@@ -1196,10 +1221,10 @@ export interface SkillResourceReadResponseDto {
 
 export interface TerminalSessionDto {
   id: string;
-  project_id: string;
-  project_name: string;
-  mount_name: string;
-  workspace_path: string;
+  project_id: string | null;
+  project_name: string | null;
+  mount_name: string | null;
+  workspace_path: string | null;
   cwd: string;
   status: string;
   last_command: string | null;
@@ -2361,6 +2386,80 @@ export async function gitReviewSnapshot(repoPath: string): Promise<GitReviewSnap
   return invoke<GitReviewSnapshotDto>("git_review_snapshot", { repoPath });
 }
 
+export async function directCheckpointEnsure(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<string> {
+  return invoke<string>('direct_checkpoint_ensure', params);
+}
+
+export async function directCheckpointRemove(params: {
+  checkpointId: string;
+}): Promise<boolean> {
+  return invoke<boolean>('direct_checkpoint_remove', params);
+}
+
+export async function directCheckpointResolveId(params: {
+  taskId: string;
+  projectPath: string;
+}): Promise<string> {
+  return invoke<string>('direct_checkpoint_resolve_id', params);
+}
+
+export async function directReviewSnapshot(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<DirectReviewSnapshotDto> {
+  return invoke<DirectReviewSnapshotDto>('direct_review_snapshot', params);
+}
+
+export async function directReviewFile(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  path: string;
+  status: string;
+}): Promise<GitReviewFileDto> {
+  return invoke<GitReviewFileDto>('direct_review_file', params);
+}
+
+export async function directStagePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_stage_paths', params);
+}
+
+export async function directUnstagePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_unstage_paths', params);
+}
+
+export async function directRestoreWorktreePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_restore_worktree_paths', params);
+}
+
+export async function directAcceptChanges(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<string> {
+  return invoke<string>('direct_accept_changes', params);
+}
+
 export async function gitReviewFile(params: {
   repoPath: string;
   path: string;
@@ -2605,6 +2704,10 @@ export async function workspaceGetBootstrap(): Promise<WorkspaceBootstrapDto> {
   return invoke<WorkspaceBootstrapDto>("workspace_get_bootstrap");
 }
 
+export async function workspaceResolveProjectIcons(projectIds: string[]): Promise<ProjectIconResolutionDto[]> {
+  return invoke<ProjectIconResolutionDto[]>("workspace_resolve_project_icons", { projectIds });
+}
+
 export async function workspaceListProjects(): Promise<ProjectGroup[]> {
   return invoke<ProjectGroup[]>("workspace_list_projects");
 }
@@ -2800,6 +2903,7 @@ export async function workspaceCreateProject(params: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings | null;
+  directEdit?: boolean;
   requestId?: string | null;
 }): Promise<Project> {
   return invoke<Project>("workspace_create_project", {
@@ -2809,6 +2913,7 @@ export async function workspaceCreateProject(params: {
     groupName: params.groupName ?? null,
     path: params.path ?? null,
     gitFlowSettings: params.gitFlowSettings ?? null,
+    ...(params.directEdit !== undefined ? { directEdit: params.directEdit } : {}),
     requestId: params.requestId ?? null,
   });
 }
@@ -2906,11 +3011,13 @@ export async function workspaceUpdateProjectGitFlow(params: {
 export async function workspaceUpdateProjectAccess(params: {
   projectId: string;
   userReadOnly: boolean;
+  directEdit?: boolean;
   confirmedMigration?: boolean;
 }): Promise<Project> {
   return invoke<Project>("workspace_update_project_access", {
     projectId: params.projectId,
     userReadOnly: params.userReadOnly,
+    ...(params.directEdit !== undefined ? { directEdit: params.directEdit } : {}),
     confirmedMigration: params.confirmedMigration ?? false,
   });
 }
@@ -3530,6 +3637,7 @@ export async function skillsCreateTemplate(
     name: params.name,
     description: params.description,
     destinationKind: params.destinationKind,
+    destinationId: params.destinationId ?? null,
     projectId: params.projectId ?? null,
     projectRoots: params.projectRoots ?? [],
   });
@@ -3578,11 +3686,11 @@ export async function skillsRunScript(params: {
 }
 
 export async function terminalCreateSession(params: {
-  projectId: string;
+  projectId?: string | null;
   cwd?: string | null;
 }): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_create_session", {
-    projectId: params.projectId,
+    projectId: params.projectId ?? null,
     cwd: params.cwd ?? null,
   });
 }
@@ -3725,6 +3833,217 @@ export async function terminalClearTab(tabId: string): Promise<TerminalTabDto> {
 
 export async function terminalCloseTab(tabId: string): Promise<void> {
   return invoke("terminal_close_tab", { tabId });
+}
+
+// ============ Configuration ============
+
+export async function configGetSnapshot(
+  projectIds: string[] = [],
+): Promise<ConfigSnapshot> {
+  return invoke<ConfigSnapshot>("config_get_snapshot", { projectIds });
+}
+
+export async function configGetDocument(
+  kind: ConfigDocumentKind,
+  scope: ConfigScope = { type: "user" },
+): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_get_document", { kind, scope });
+}
+
+export async function configGetSchema(
+  kind: ConfigDocumentKind,
+): Promise<unknown> {
+  return invoke<unknown>("config_get_schema", { kind });
+}
+
+export async function configValidateDocument(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+  document: unknown;
+}): Promise<ConfigValidationResult> {
+  return invoke<ConfigValidationResult>("config_validate_document", {
+    kind: input.kind,
+    scope: input.scope ?? { type: "user" },
+    document: input.document,
+  });
+}
+
+export async function configApplyPatch(
+  request: ConfigPatchRequest,
+): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>("config_apply_patch", { request });
+}
+
+export async function configApplyAgentPatch(
+  request: ConfigPatchRequest,
+): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>("config_patch", { request });
+}
+
+export async function configResetPath(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+  path: string;
+  expectedEtag: string;
+}): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>("config_reset_path", {
+    kind: input.kind,
+    scope: input.scope ?? { type: "user" },
+    path: input.path,
+    expectedEtag: input.expectedEtag,
+  });
+}
+
+export async function configReload(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+}): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_reload", {
+    kind: input.kind,
+    scope: input.scope ?? { type: "user" },
+  });
+}
+
+export async function configOpenDirectory(input: {
+  kind?: ConfigDocumentKind;
+  scope?: ConfigScope;
+} = {}): Promise<string> {
+  return invoke<string>("config_open_directory", {
+    kind: input.kind ?? null,
+    scope: input.scope ?? { type: "user" },
+  });
+}
+
+export async function configAcceptPendingChange(
+  id: string,
+): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_accept_pending_change", { id });
+}
+
+export async function configRejectPendingChange(input: {
+  id: string;
+  restoreApproved: boolean;
+}): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_reject_pending_change", input);
+}
+
+export async function configListPendingChanges(): Promise<
+  PendingSensitiveConfigChange[]
+> {
+  return invoke<PendingSensitiveConfigChange[]>(
+    "config_list_pending_changes",
+  );
+}
+
+export interface OrphanSecretDto {
+  id: string;
+  namespace: string;
+  secretType: 'apiKey' | 'chatgptSession';
+  secretRef: string;
+}
+
+export async function configListOrphanSecrets(): Promise<OrphanSecretDto[]> {
+  return invoke<OrphanSecretDto[]>('config_list_orphan_secrets');
+}
+
+export async function configDeleteOrphanSecret(input: {
+  id: string;
+  secretType: OrphanSecretDto['secretType'];
+}): Promise<void> {
+  return invoke('config_delete_orphan_secret', { request: input });
+}
+
+export async function configAgentList(
+  projectIds: string[] = [],
+): Promise<ConfigSnapshot> {
+  return invoke<ConfigSnapshot>('config_list', { projectIds });
+}
+
+export async function configAgentGet(
+  kind: ConfigDocumentKind,
+  scope: ConfigScope = { type: 'user' },
+): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>('config_get', { kind, scope });
+}
+
+export async function configAgentValidate(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+  document: unknown;
+}): Promise<ConfigValidationResult> {
+  return invoke<ConfigValidationResult>('config_validate', {
+    kind: input.kind,
+    scope: input.scope ?? { type: 'user' },
+    document: input.document,
+  });
+}
+
+export async function configAgentPatch(
+  request: Omit<ConfigPatchRequest, 'source'>,
+): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>('config_patch', {
+    request: { ...request, source: 'agent' },
+  });
+}
+
+export interface WebSearchSecretStatus {
+  provider: 'tavily' | 'brave';
+  hasSecret: boolean;
+  secretRef: string;
+}
+
+export interface NativeWebSearchResult {
+  url: string;
+  title: string;
+  snippet: string;
+  score: number;
+}
+
+export async function webSearchGetSecretStatus(
+  provider: 'tavily' | 'brave',
+): Promise<WebSearchSecretStatus> {
+  return invoke<WebSearchSecretStatus>('web_search_get_secret_status', { provider });
+}
+
+export async function webSearchSetSecret(input: {
+  provider: 'tavily' | 'brave';
+  value: string | null;
+}): Promise<WebSearchSecretStatus> {
+  return invoke<WebSearchSecretStatus>('web_search_set_secret', { input });
+}
+
+export async function webSearchExecute(input: {
+  query: string;
+  includeRawContent?: boolean;
+}): Promise<NativeWebSearchResult[]> {
+  return invoke<NativeWebSearchResult[]>('web_search_execute', {
+    query: input.query,
+    includeRawContent: input.includeRawContent ?? false,
+  });
+}
+
+export interface StateSnapshotDto {
+  schemaVersion: number;
+  values: Record<string, unknown>;
+}
+
+export async function stateGetSnapshot(): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_get_snapshot");
+}
+
+export async function stateSetValue(
+  key: string,
+  value: unknown,
+): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_set_value", { key, value });
+}
+
+export async function stateDeleteValue(key: string): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_delete_value", { key });
+}
+
+export async function stateClear(): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_clear");
 }
 
 // ============ Utility ============

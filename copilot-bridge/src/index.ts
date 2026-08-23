@@ -2092,7 +2092,22 @@ const findReadFileTarget = async (context: WorkspaceContext, fileValue: string):
   return matches[0] || normalized;
 };
 
-const CHAT_SAFE_TOOL_IDS = new Set(['read_sources', 'read_file', 'web_search', 'web_fetch']);
+const CHAT_SAFE_TOOL_IDS = new Set([
+  'question',
+  'skill_activate',
+  'skill_read_resource',
+  'skill_run_script',
+  'mark_source_passage',
+  'read_sources',
+  'edit_source_passage',
+  'read_file',
+  'web_search',
+  'web_fetch',
+  'terminal_create_session',
+  'terminal_run',
+  'terminal_read',
+  'terminal_kill',
+]);
 const TOOL_HOST_WORKSPACE_MUTATION_IDS = new Set([
   'write',
   'edit',
@@ -2111,21 +2126,19 @@ const TOOL_HOST_TOOL_IDS = new Set([
   'git_merge',
   'git_reset',
   'git_stash',
-  'terminal_create_session',
-  'terminal_run',
-  'terminal_read',
-  'terminal_kill',
 ]);
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
   toolId === 'question' ||
+  toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
   toolId.startsWith('plan_') ||
   toolId.startsWith('strategy_');
 
 const inferMacroMode = (allowedToolIds: string[]): string => {
+  const supportedToolIds = filterCopilotSupportedToolIds(allowedToolIds);
   if (
-    allowedToolIds.some(
+    supportedToolIds.some(
       (toolId) =>
         toolId.startsWith('need_') ||
         toolId.startsWith('plan_') ||
@@ -2134,7 +2147,7 @@ const inferMacroMode = (allowedToolIds: string[]): string => {
   ) {
     return 'Architect';
   }
-  if (allowedToolIds.every((toolId) => CHAT_SAFE_TOOL_IDS.has(toolId))) {
+  if (supportedToolIds.every((toolId) => CHAT_SAFE_TOOL_IDS.has(toolId))) {
     return 'Chat';
   }
   return 'Implement';
@@ -2313,39 +2326,7 @@ const executeCopilotMacroTool = async (
     return fetchWebPageDirect(typeof args.url === 'string' ? args.url : '');
   }
 
-  if (toolId === 'terminal_create_session') {
-    const explicitProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
-    const resolvedProjectId =
-      explicitProjectId ||
-      context.focusedProjectId ||
-      context.candidates[0]?.id ||
-      '';
-    if (!resolvedProjectId) {
-      throw new BridgeError(
-        'missing_project_id',
-        'terminal_create_session requires project_id when no focused subproject is available.'
-      );
-    }
-
-    return executeToolHost({
-      mode,
-      toolId,
-      args: {
-        ...args,
-        project_id: resolvedProjectId,
-      },
-    });
-  }
-
   if (TOOL_HOST_TOOL_IDS.has(toolId)) {
-    if (toolId.startsWith('terminal_')) {
-      return executeToolHost({
-        mode,
-        toolId,
-        args,
-      });
-    }
-
     const rawRepoPath = typeof args.repo_path === 'string' ? args.repo_path : '.';
     const routed = await routeToolHostTarget({
       context,
@@ -2624,6 +2605,7 @@ export const __testables = {
   handleCopilotSessionEvent,
   listWorkspace,
   normalizeCopilotSendTimeoutMs,
+  inferMacroMode,
   isFrontendRelayToolId,
   readWorkspaceFile,
   serializeConversationPrompt,

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { registerAppStateGetter } from './appStateRuntime';
 import {
   clearMacroMetadataCoordinatorForTests,
   flushMacroMetadata,
@@ -146,5 +147,71 @@ describe('macroMetadataCoordinator', () => {
       workspacePath: '/repos/web',
       message: 'chore(@macro): create plan checkout-flow',
     });
+  });
+
+  it('skips pending metadata flushes for non-Git-actionable projects', async () => {
+    const guardedDeps = {
+      ...deps,
+      debounceMs: 10,
+      isWorkspaceGitActionable: (workspacePath: string) => workspacePath !== '/repos/direct',
+    };
+
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/direct',
+      kind: 'plan_updated',
+      label: 'direct-project',
+      importance: 'structural',
+    }, guardedDeps);
+
+    await flushMacroMetadata({
+      trigger: 'app_close',
+      workspacePaths: ['/repos/direct'],
+    }, guardedDeps);
+
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps Git projects and unknown external folders flushable', async () => {
+    const guardedDeps = {
+      ...deps,
+      isWorkspaceGitActionable: (workspacePath: string) => workspacePath === '/repos/git',
+    };
+
+    await flushMacroMetadata({
+      trigger: 'code_push',
+      workspacePaths: ['/repos/git'],
+    }, guardedDeps);
+
+    await flushMacroMetadata({
+      trigger: 'code_push',
+      workspacePaths: ['/external/folder'],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchCommitIfDirtyMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/git',
+      '/external/folder',
+    ]);
+  });
+
+  it('resolves registered direct-edit projects by normalized workspace path', async () => {
+    registerAppStateGetter(() => ({
+      standaloneProjects: [],
+      projectGroups: [{
+        projects: [{
+          path: 'C:\\repos\\direct',
+          isReadOnly: false,
+          gitSetupState: 'not_git' as const,
+          directEdit: true,
+        }],
+      }],
+    }));
+
+    await flushMacroMetadata({
+      trigger: 'app_close',
+      workspacePaths: ['C:/repos/direct/'],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
 });

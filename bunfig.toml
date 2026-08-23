@@ -61,7 +61,8 @@ NODE_OPTIONS = "--max-old-space-size=4096"
 
 [test]
 # Test runner configuration
-coverage = true
+# Coverage is opt-in (bun run test:coverage); enabling it here would instrument
+# every spawned bun test process and write a report for each.
 preload = ["./test-setup.ts"]
 # Parallel test execution
 timeout = 30000

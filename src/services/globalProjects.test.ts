@@ -2,7 +2,11 @@ import { describe, expect, it } from 'bun:test';
 import {
   getFocusedProjectIdForGroup,
   getRepositoryScopedProjectIds,
+  getScopedArchitectContextProjectIds,
+  getScopedGitActionableProjectIds,
   getScopedProjectIds,
+  isProjectActionable,
+  isProjectGitActionable,
   resolveExplicitProjectIdForGroup,
 } from './globalProjects';
 
@@ -80,5 +84,34 @@ describe('globalProjects', () => {
       'project-web',
       'project-api',
     ]);
+  });
+
+  it('keeps direct-edit projects writable in Implement but context-only in Architect', () => {
+    const directProject = {
+      ...makeProject('project-direct', 'C:/dev/app/direct', 'Direct'),
+      isReadOnly: false,
+      directEdit: true,
+      gitSetupState: 'not_git' as const,
+    };
+    const gitProject = {
+      ...makeProject('project-git', 'C:/dev/app/git', 'Git'),
+      isReadOnly: false,
+      directEdit: false,
+      gitSetupState: 'ready' as const,
+    };
+    const registry = {
+      standaloneProjects: [],
+      projectGroups: [{
+        id: 'group-direct',
+        name: 'Direct and Git',
+        isOpen: true,
+        projects: [directProject, gitProject],
+      }],
+    };
+
+    expect(isProjectActionable(directProject)).toBe(true);
+    expect(isProjectGitActionable(directProject)).toBe(false);
+    expect(getScopedGitActionableProjectIds(registry, 'group-direct', null)).toEqual(['project-git']);
+    expect(getScopedArchitectContextProjectIds(registry, 'group-direct', null)).toEqual(['project-direct']);
   });
 });

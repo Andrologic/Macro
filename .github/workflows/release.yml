@@ -21,6 +21,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
       release_name: ${{ steps.meta.outputs.release_name }}
+      pub_date: ${{ steps.meta.outputs.pub_date }}
     steps:
       - name: Reject tag updates and deletions
         env:
@@ -112,6 +113,8 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "release_name=Macro ${TAG}" >> "$GITHUB_OUTPUT"
+          PUB_DATE="$(git show -s --format=%cI "${TAG}^{commit}")"
+          echo "pub_date=${PUB_DATE}" >> "$GITHUB_OUTPUT"
 
       - name: Install Linux native dependencies
         run: |
@@ -138,6 +141,8 @@ jobs:
             artifact_name: release-macos
             artifact_paths: |
               src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           - name: Windows x64
             key: windows
             runner: windows-latest
@@ -145,6 +150,7 @@ jobs:
             artifact_name: release-windows
             artifact_paths: |
               src-tauri/target/release/bundle/nsis/*.exe
+              src-tauri/target/release/bundle/nsis/*.exe.sig
           - name: Linux x64
             key: linux
             runner: ubuntu-22.04
@@ -152,6 +158,7 @@ jobs:
             artifact_name: release-linux
             artifact_paths: |
               src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/appimage/*.AppImage.sig
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/rpm/*.rpm
     steps:
@@ -191,6 +198,21 @@ jobs:
 
       - name: Install frontend dependencies from lockfile
         run: bun install --frozen-lockfile
+
+      - name: Verify Tauri updater signing secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "::error::Missing required release secret: TAURI_SIGNING_PRIVATE_KEY"
+            exit 1
+          fi
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
+            echo "::error::Missing required release secret: TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            exit 1
+          fi
 
       - name: Verify Apple signing secrets
         if: matrix.key == 'macos'
@@ -263,6 +285,8 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: bun dev/tauri-cli.mjs
           args: ${{ matrix.args }}
@@ -360,17 +384,14 @@ jobs:
           }
 
           copy_asset '*.dmg' "Macro_${VERSION}_macOS_universal.dmg"
+          copy_asset '*.app.tar.gz' "Macro_${VERSION}_macOS_universal.app.tar.gz"
+          copy_asset '*.app.tar.gz.sig' "Macro_${VERSION}_macOS_universal.app.tar.gz.sig"
           copy_asset '*.exe' "Macro_${VERSION}_Windows_x64_setup.exe"
+          copy_asset '*.exe.sig' "Macro_${VERSION}_Windows_x64_setup.exe.sig"
           copy_asset '*.AppImage' "Macro_${VERSION}_Linux_x64.AppImage"
+          copy_asset '*.AppImage.sig' "Macro_${VERSION}_Linux_x64.AppImage.sig"
           copy_asset '*.deb' "Macro_${VERSION}_Linux_x64.deb"
           copy_asset '*.rpm' "Macro_${VERSION}_Linux_x64.rpm"
-
-          (
-            cd release-assets
-            find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' \
-              | sort -z \
-              | xargs -0 sha256sum > SHA256SUMS.txt
-          )
 
       - name: Write release notes
         env:
@@ -383,12 +404,19 @@ jobs:
             -f target_commitish="${GITHUB_SHA}" \
             --jq '.body' || true)"
 
+          if [ -n "$GENERATED_NOTES" ]; then
+            printf '%s\n' "$GENERATED_NOTES" > updater-notes.md
+          else
+            echo "No user-facing changes were provided for this release." > updater-notes.md
+          fi
+
           {
             echo "## Downloads"
             echo
             echo "- macOS Apple Silicon + Intel: \`Macro_${VERSION}_macOS_universal.dmg\`"
             echo "- Windows x64: \`Macro_${VERSION}_Windows_x64_setup.exe\`"
             echo "- Linux x64: \`Macro_${VERSION}_Linux_x64.AppImage\`, \`Macro_${VERSION}_Linux_x64.deb\`, or \`Macro_${VERSION}_Linux_x64.rpm\`"
+            echo "- Automatic updates: \`latest.json\` and the signed updater archives are attached for installed Macro clients."
             echo "- Source code: GitHub automatically attaches source archives to this release."
             echo
             echo "## Checksums"
@@ -397,12 +425,50 @@ jobs:
             echo
             echo "## Changes"
             echo
-            if [ -n "$GENERATED_NOTES" ]; then
-              printf '%s\n' "$GENERATED_NOTES"
-            else
-              echo "GitHub release notes were not generated for this run."
-            fi
+            cat updater-notes.md
           } > release-notes.md
+
+      - name: Generate updater manifest and checksums
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          PUB_DATE: ${{ needs.validate.outputs.pub_date }}
+        run: |
+          bun dev/release/updater-manifest.mjs \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --notes-file updater-notes.md \
+            --pub-date "$PUB_DATE" \
+            --output release-assets/latest.json \
+            --artifact windows-x86_64 \
+              "release-assets/Macro_${VERSION}_Windows_x64_setup.exe" \
+              "release-assets/Macro_${VERSION}_Windows_x64_setup.exe.sig" \
+              "Macro_${VERSION}_Windows_x64_setup.exe" \
+            --artifact linux-x86_64 \
+              "release-assets/Macro_${VERSION}_Linux_x64.AppImage" \
+              "release-assets/Macro_${VERSION}_Linux_x64.AppImage.sig" \
+              "Macro_${VERSION}_Linux_x64.AppImage" \
+            --artifact darwin-x86_64 \
+              "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz" \
+              "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz.sig" \
+              "Macro_${VERSION}_macOS_universal.app.tar.gz" \
+            --artifact darwin-aarch64 \
+              "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz" \
+              "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz.sig" \
+              "Macro_${VERSION}_macOS_universal.app.tar.gz"
+
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS.txt
+          )
+
+          bun dev/release/verify-updater.mjs \
+            --manifest release-assets/latest.json \
+            --asset-root release-assets \
+            --checksums release-assets/SHA256SUMS.txt
 
       - name: Create draft GitHub release
         env:

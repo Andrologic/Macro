@@ -288,6 +288,8 @@
   "standaloneBadge": "Indépendant",
   "taskKindPending": "Classification par l’agent",
   "taskKindFeature": "Feature",
+  "taskKindDirectEdit": "Édition directe",
+  "taskKindDirectEditHelp": "Modifie le dossier source sans branche, worktree ni commit Git. Une seule tâche peut s'exécuter à la fois.",
   "taskKindBugfix": "Bugfix",
   "taskKindHotfix": "Hotfix",
   "taskKindFeatureHelp": "Feature crée une branche depuis la branche de développement configurée, puis la fusionne dans cette branche.",
@@ -356,6 +358,7 @@
     "full": "Contexte complet du fichier"
   },
   "errors": {
+    "directTaskCompletionFailed": "La tâche en édition directe n’a pas pu être terminée.",
     "unknownTask": "Tâche inconnue : {{taskId}}",
     "taskAlreadyCompleted": "La tâche est déjà terminée.",
     "taskBlockedByDependencies": "La tâche est bloquée par des dépendances non résolues : {{reason}}",
@@ -414,6 +417,8 @@
   "diffModalReadyOnly": "{{validated}} indexé(s) et prêt(s)",
   "diffModalPendingOnly": "{{pending}} fichier(s) en attente",
   "stagedBadge": "Indexé",
+  "validatedBadge": "Validé",
+  "acceptDirectChanges": "Accepter les changements",
   "validatedStageLegend": "Les lignes validées sont affichées avec un surlignage plus doux jusqu'au commit.",
   "repositoryPendingAndReady": "{{pending}} en attente, {{validated}} prêt(s)",
   "validateChangesSuccess": "Changements validés et indexés.",

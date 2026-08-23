@@ -456,7 +456,7 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
 
-  it('returns an empty execution context in chat mode even when a project is selected', async () => {
+  it('uses durable conversation scope in chat mode and ignores global project selection', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
       mode: 'Chat',
@@ -465,6 +465,71 @@ describe('resolveProjectExecutionContext', () => {
       selectedGroupId: 'macro-suite',
       selectedProjectId: 'macro-api',
       selectedTaskId: 'task-1',
+      conversations: [
+        {
+          id: 'conv-1',
+          title: 'Chat',
+          description: '',
+          scope_mode: 'Chat',
+          task_id: null,
+          group_id: 'macro-suite',
+          project_id: 'macro-api',
+          last_message: '',
+          message_count: 0,
+          updated_at: '2026-03-05T00:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      conversationId: 'conv-1',
+    });
+
+    expect(context).toEqual({
+      groupId: 'macro-suite',
+      groupName: 'Macro Suite',
+      projectIds: ['macro-web', 'macro-api'],
+      actionableProjectIds: ['macro-web', 'macro-api'],
+      contextProjectIds: [],
+      projectMounts: [
+        {
+          projectId: 'macro-web',
+          groupId: 'macro-suite',
+          mountName: 'web',
+          displayName: 'Macro Web',
+          workspacePath: 'projects/macro-web',
+          isReadOnly: false,
+        },
+        {
+          projectId: 'macro-api',
+          groupId: 'macro-suite',
+          mountName: 'api',
+          displayName: 'Macro API',
+          workspacePath: 'C:/dev/macro-api',
+          isReadOnly: false,
+        },
+      ],
+      focusedProjectId: 'macro-api',
+      virtualRootEnabled: true,
+      workspacePathsByProjectId: {
+        'macro-web': 'projects/macro-web',
+        'macro-api': 'C:/dev/macro-api',
+      },
+      defaultWorkspacePath: 'C:/dev/macro-api',
+      projectId: 'macro-api',
+      projectName: 'Macro API',
+      taskId: null,
+      branchName: null,
+      workspacePath: 'C:/dev/macro-api',
+    });
+  });
+
+  it('keeps an unscoped chat detached even when a project is selected globally', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Chat',
+      projects,
+      projectGroups,
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: 'macro-api',
       conversations: [
         {
           id: 'conv-1',
@@ -483,23 +548,9 @@ describe('resolveProjectExecutionContext', () => {
       conversationId: 'conv-1',
     });
 
-    expect(context).toEqual({
-      groupId: null,
-      groupName: null,
-      projectIds: [],
-      actionableProjectIds: [],
-      contextProjectIds: [],
-      projectMounts: [],
-      focusedProjectId: null,
-      virtualRootEnabled: false,
-      workspacePathsByProjectId: {},
-      defaultWorkspacePath: null,
-      projectId: null,
-      projectName: null,
-      taskId: null,
-      branchName: null,
-      workspacePath: null,
-    });
+    expect(context.projectIds).toEqual([]);
+    expect(context.projectId).toBeNull();
+    expect(context.workspacePath).toBeNull();
   });
 
   it('falls back to the primary project of the selected group when no focus repo is set', async () => {

@@ -10,6 +10,7 @@ interface ConfirmPromptModalProps {
   children?: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
+  secondaryLabel?: string;
   confirmVariant?: 'primary' | 'error';
   initialValue?: string;
   inputPlaceholder?: string;
@@ -17,6 +18,7 @@ interface ConfirmPromptModalProps {
   isSubmitting?: boolean;
   showConfirmButton?: boolean;
   onCancel: () => void;
+  onSecondary?: () => void;
   onConfirm: (value?: string) => void;
 }
 
@@ -27,6 +29,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   children,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
+  secondaryLabel,
   confirmVariant = 'primary',
   initialValue = '',
   inputPlaceholder,
@@ -34,6 +37,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   isSubmitting = false,
   showConfirmButton = true,
   onCancel,
+  onSecondary,
   onConfirm,
 }) => {
   const [value, setValue] = useState(initialValue);
@@ -116,6 +120,11 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
           <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={isSubmitting}>
             {cancelLabel}
           </Button>
+          {secondaryLabel && onSecondary && (
+            <Button type="button" variant="secondary" size="sm" onClick={onSecondary} disabled={isSubmitting}>
+              {secondaryLabel}
+            </Button>
+          )}
           {showConfirmButton && (
             <Button
               variant={confirmVariant === 'error' ? 'error' : 'primary'}

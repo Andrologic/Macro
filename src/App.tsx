@@ -44,6 +44,12 @@ const ProjectGitFlowModal = lazy(
 const CodeFileViewerModal = lazy(
   () => import("./components/modals/CodeFileViewerModal"),
 );
+const ReleaseNotesModal = lazy(
+  () => import("./components/modals/ReleaseNotesModal"),
+);
+const AppUpdateController = lazy(
+  () => import("./components/updates/AppUpdateController"),
+);
 const OnboardingGuide = lazy(() =>
   import("./components/onboarding/OnboardingGuide").then((module) => ({
     default: module.OnboardingGuide,
@@ -508,6 +514,8 @@ const App: React.FC = () => {
         ) : null}
         <ProjectGitFlowModal />
         <CodeFileViewerModal />
+        <AppUpdateController enabled={initStatus.ready} />
+        <ReleaseNotesModal enabled={initStatus.ready} />
       </Suspense>
 
       <Toaster />

@@ -69,8 +69,24 @@ describe('skills helpers', () => {
     });
     const plain = buildSkill('global:agents:plain:bbb', { name: 'plain' });
     const settings: Record<string, SkillSettings> = {
-      [runner.id]: { enabled: true, scriptsEnabled: true },
-      [plain.id]: { enabled: true, scriptsEnabled: true },
+      [runner.id]: {
+        enabled: true,
+        scriptsEnabled: true,
+        trust: {
+          contentHash: runner.contentHash!,
+          grantedAt: '2026-08-20T12:00:00Z',
+          grantedBy: 'user',
+        },
+      },
+      [plain.id]: {
+        enabled: true,
+        scriptsEnabled: true,
+        trust: {
+          contentHash: plain.contentHash!,
+          grantedAt: '2026-08-20T12:00:00Z',
+          grantedBy: 'user',
+        },
+      },
     };
 
     expect(getRunnableSkillIds([runner, plain], (id) => settings[id] ?? {

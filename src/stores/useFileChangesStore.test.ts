@@ -14,6 +14,8 @@ const worktreeBPath = 'C:/worktrees/project-b-feature';
 const worktreeKeyA = toBranchWorktreeKey('project-a', 'feature/task-a');
 const worktreeKeyB = toBranchWorktreeKey('project-b', 'feature/task-b');
 const missingWorktreeKey = toBranchWorktreeKey('project-b', 'feature/task-a');
+const directWorktreeKey = toBranchWorktreeKey('project-a', 'direct');
+const directRepositoryId = `project-a::${directWorktreeKey}`;
 const repositoryIdA = `project-a::${worktreeKeyA}`;
 const repositoryIdB = `project-b::${worktreeKeyB}`;
 const changeIdA = `${repositoryIdA}::src/main.ts`;
@@ -48,11 +50,13 @@ const initialOriginalFiles: Record<string, Record<string, string>> = {
 let currentFiles: Record<string, Record<string, string | null>> = {};
 let stagedFiles: Record<string, Record<string, string | null>> = {};
 let pathsWithEmptyGitDiff = new Set<string>();
+let directProjectMode = false;
 let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
   'task-1': 'InProgress',
   'task-2': 'InProgress',
   'task-3': 'InProgress',
   'task-4': 'Pending',
+  'task-6': 'InProgress',
 };
 
 const getHeadContent = (repoPath: string, path: string): string | undefined =>
@@ -441,6 +445,27 @@ const tasksById = {
       },
     ],
   },
+  'task-6': {
+    id: 'task-6',
+    title: 'Direct edit task',
+    description: 'Task without Git',
+    status: 'InProgress' as const,
+    task_source: 'standalone' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a'],
+    assigned_branch: 'direct',
+    base_branch: 'direct',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'direct',
+        executionMode: 'direct' as const,
+        checkpointId: 'task-6-0000000000000001',
+        targetBranchName: 'direct',
+        worktreeKey: directWorktreeKey,
+      },
+    ],
+  },
 };
 
 type TestTask = Omit<(typeof tasksById)[keyof typeof tasksById], 'status'> & {
@@ -500,7 +525,13 @@ const appStoreState = {
     },
   ],
   getProjectById: (projectId: string) => {
-    if (projectId === 'project-a') return { id: 'project-a', name: 'Project A', path: repoAPath };
+    if (projectId === 'project-a') return {
+      id: 'project-a',
+      name: 'Project A',
+      path: repoAPath,
+      directEdit: directProjectMode,
+      gitSetupState: directProjectMode ? 'not_git' as const : 'ready' as const,
+    };
     if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath };
     if (projectId === 'project-c') return { id: 'project-c', name: 'Project C', path: repoCPath };
     return undefined;
@@ -529,8 +560,10 @@ describe('useFileChangesStore', () => {
       'task-3': 'InProgress',
       'task-4': 'Pending',
       'task-5': 'InProgress',
+      'task-6': 'InProgress',
     };
     pathsWithEmptyGitDiff = new Set();
+    directProjectMode = false;
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;
     appStoreState.selectedTaskId = 'task-1';
@@ -614,6 +647,120 @@ describe('useFileChangesStore', () => {
     expect(reviewSummary.nextAction).toBe('validate_repository');
     expect(reviewSummary.nextRepositoryId).toBe(repositoryIdA);
     expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+  });
+
+  it('reviews and accepts direct edits without invoking project Git commands', async () => {
+    directProjectMode = false;
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    let directStaged = false;
+    let directAccepted = false;
+    const directReviewSnapshotMock = mock(async () => ({
+      branch: 'direct',
+      stagedPaths: directStaged && !directAccepted ? ['src/main.ts'] : [],
+      changes: directAccepted ? [] : [{
+        path: 'src/main.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 1,
+        hasPendingVisibleChange: !directStaged,
+        hasValidatedStage: directStaged,
+        validatedRemovedLineNumbers: directStaged ? [1] : [],
+        validatedAddedLineNumbers: directStaged ? [1] : [],
+        isBinary: false,
+        tooLarge: false,
+        requiresHydration: false,
+        originalContent: 'const value = 1;',
+        indexContent: directStaged ? 'const value = 2;' : 'const value = 1;',
+        modifiedContent: 'const value = 2;',
+        language: 'TypeScript',
+        hunks: [],
+      }],
+      conflictedFiles: [],
+      mergeInProgress: false,
+      isClean: directAccepted,
+      hasAcceptedChanges: directAccepted,
+    }));
+    const directStagePathsMock = mock(async () => {
+      directStaged = true;
+    });
+    const directAcceptChangesMock = mock(async () => {
+      directAccepted = true;
+      return 'checkpoint-hash';
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+        directStagePaths: directStagePathsMock,
+        directAcceptChanges: directAcceptChangesMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const directRepository = useFileChangesStore.getState().getRepository(directRepositoryId);
+    expect(directRepository?.executionMode).toBe('direct');
+    const changeId = directRepository?.changes[0]?.id;
+    expect(changeId).toBeTruthy();
+
+    await useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!]);
+    const result = await useFileChangesStore.getState().commitAllReadyTaskRepositories();
+
+    expect(result.commits[0]?.hash).toBe('checkpoint-hash');
+    expect(directStagePathsMock).toHaveBeenCalledWith({
+      taskId: 'task-6',
+      projectPath: repoAPath,
+      checkpointId: 'task-6-0000000000000001',
+      paths: ['src/main.ts'],
+    });
+    expect(directAcceptChangesMock).toHaveBeenCalledWith({
+      taskId: 'task-6',
+      projectPath: repoAPath,
+      checkpointId: 'task-6-0000000000000001',
+    });
+    expect(generateCommitMessagesMock).not.toHaveBeenCalled();
+    expect(gitAddMock).not.toHaveBeenCalled();
+    expect(gitCommitMock).not.toHaveBeenCalled();
+
+    const restartedStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+    await restartedStore.getState().loadCurrentChanges();
+
+    expect(restartedStore.getState().getRepository(directRepositoryId)?.commitState).toBe('committed');
   });
 
   it('rehydrates prepared task worktree mappings before loading changes', async () => {
