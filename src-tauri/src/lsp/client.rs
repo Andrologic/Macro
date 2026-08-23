@@ -442,11 +442,15 @@ impl LspClient {
             self.force_terminate_and_cleanup().await;
             return Err(error);
         }
-        self.inner.transition(
+        if let Err(error) = self.inner.transition(
             &[ClientState::Initializing],
             ClientState::Ready,
             "finish initialization",
-        )?;
+        ) {
+            self.inner.fail_session(error.clone());
+            self.force_terminate_and_cleanup().await;
+            return Err(error);
+        }
         Ok(result)
     }
 
