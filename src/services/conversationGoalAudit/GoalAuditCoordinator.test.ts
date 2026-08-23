@@ -485,6 +485,10 @@ describe("GoalAuditCoordinator", () => {
       "queued",
       "timed_out",
     ]);
+    expect(journal.getRun("audit-1")?.transitions.at(-1)?.result).toMatchObject({
+      status: "timed_out",
+      timeoutMs: 50,
+    });
   });
 
   it("keeps registration failure authoritative after cancellation", async () => {

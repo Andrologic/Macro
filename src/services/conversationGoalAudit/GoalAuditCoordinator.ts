@@ -331,6 +331,7 @@ export class GoalAuditCoordinator<
           authorization,
         },
         parentSignal: cycle.controller.signal,
+        ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
       });
       cycle.runtimeHandle = runtimeHandle;
     } catch (error) {
