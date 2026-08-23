@@ -1,5 +1,136 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Interrupted,
+    TimedOut,
+}
+
+impl AgentRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+            Self::TimedOut => "timed_out",
+        }
+    }
+}
+
+impl fmt::Display for AgentRunStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AgentRunStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            "interrupted" => Ok(Self::Interrupted),
+            "timed_out" => Ok(Self::TimedOut),
+            _ => Err(format!("Unknown agent run status: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRun {
+    pub id: String,
+    pub parent_conversation_id: String,
+    pub child_conversation_id: Option<String>,
+    pub agent_profile: String,
+    pub depth: i32,
+    pub status: AgentRunStatus,
+    pub prompt: String,
+    pub result_text: Option<String>,
+    pub result_json: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub error_details_json: Option<String>,
+    pub cancellation_reason: Option<String>,
+    pub interruption_reason: Option<String>,
+    pub timeout_reason: Option<String>,
+    pub model_metadata_json: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub usage_json: Option<String>,
+    pub attempt_count: i32,
+    pub created_at: String,
+    pub updated_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub last_interrupted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateAgentRunInput {
+    pub id: Option<String>,
+    pub parent_conversation_id: String,
+    pub child_conversation_id: Option<String>,
+    pub agent_profile: String,
+    pub depth: i32,
+    pub prompt: String,
+    pub model_metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentRunUsageInput {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub usage_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompleteAgentRunInput {
+    pub result_text: Option<String>,
+    pub result_json: Option<String>,
+    pub usage: AgentRunUsageInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailAgentRunInput {
+    pub error_code: Option<String>,
+    pub error_message: String,
+    pub error_details_json: Option<String>,
+    pub usage: AgentRunUsageInput,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CancelAgentRunInput {
+    pub reason: Option<String>,
+    pub usage: AgentRunUsageInput,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TimeOutAgentRunInput {
+    pub reason: Option<String>,
+    pub usage: AgentRunUsageInput,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
