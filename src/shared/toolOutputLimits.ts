@@ -23,6 +23,11 @@ export const TOOL_OUTPUT_LIMITS = {
     diffMaxBytes: 256 * 1024,
     diffMaxContextLines: 64,
   },
+  toolResult: {
+    spillThresholdBytes: 50 * 1024,
+    headBytes: 20 * 1024,
+    tailBytes: 20 * 1024,
+  },
 } as const;
 
 export type BoundedToolName = "list" | "glob" | "grep";
@@ -51,12 +56,130 @@ export interface ReadContentPage {
   columnTruncatedLines: number;
 }
 
+export interface MiddleTruncatedContent {
+  head: string;
+  tail: string;
+  totalBytes: number;
+  retainedBytes: number;
+  omittedBytes: number;
+  truncated: boolean;
+}
+
+export interface TextBytePage {
+  content: string;
+  startByte: number;
+  endByte: number;
+  totalBytes: number;
+  returnedBytes: number;
+  truncated: boolean;
+  nextCursor: string | null;
+  maxBytes: number;
+}
+
 const CURSOR_VERSION = "v1";
 const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const FNV_MASK = 0xffffffffffffffffn;
 
 const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+const isUtf8ContinuationByte = (byte: number | undefined): boolean =>
+  typeof byte === "number" && (byte & 0xc0) === 0x80;
+
+export const truncateUtf8Middle = (
+  content: string,
+  headBytes: number,
+  tailBytes: number,
+): MiddleTruncatedContent => {
+  const bytes = utf8Encoder.encode(content);
+  const normalizedHeadBytes = Math.max(0, Math.floor(headBytes));
+  const normalizedTailBytes = Math.max(0, Math.floor(tailBytes));
+  if (bytes.byteLength <= normalizedHeadBytes + normalizedTailBytes) {
+    return {
+      head: content,
+      tail: "",
+      totalBytes: bytes.byteLength,
+      retainedBytes: bytes.byteLength,
+      omittedBytes: 0,
+      truncated: false,
+    };
+  }
+
+  let headEnd = Math.min(bytes.byteLength, normalizedHeadBytes);
+  while (headEnd > 0 && isUtf8ContinuationByte(bytes[headEnd])) {
+    headEnd -= 1;
+  }
+  let tailStart = Math.max(headEnd, bytes.byteLength - normalizedTailBytes);
+  while (tailStart < bytes.byteLength && isUtf8ContinuationByte(bytes[tailStart])) {
+    tailStart += 1;
+  }
+
+  const retainedBytes = headEnd + (bytes.byteLength - tailStart);
+  return {
+    head: utf8Decoder.decode(bytes.subarray(0, headEnd)),
+    tail: utf8Decoder.decode(bytes.subarray(tailStart)),
+    totalBytes: bytes.byteLength,
+    retainedBytes,
+    omittedBytes: bytes.byteLength - retainedBytes,
+    truncated: true,
+  };
+};
+
+export const paginateTextBytes = (
+  content: string,
+  args: Record<string, unknown>,
+  scope: string,
+): TextBytePage => {
+  const bytes = utf8Encoder.encode(content);
+  const hasCursor = args.cursor != null && args.cursor !== "";
+  if (hasCursor && args.start_byte != null) {
+    throw new Error("cursor cannot be combined with start_byte.");
+  }
+  const requestedStart =
+    typeof args.start_byte === "number" && Number.isFinite(args.start_byte)
+      ? Math.max(0, Math.floor(args.start_byte))
+      : 0;
+  let offset = hasCursor ? parseToolCursor(args.cursor, scope) : requestedStart;
+  if (offset >= bytes.byteLength && bytes.byteLength > 0) {
+    throw new Error(
+      `read byte offset ${offset} exceeds the content length of ${bytes.byteLength} bytes.`,
+    );
+  }
+  if (offset < bytes.byteLength && isUtf8ContinuationByte(bytes[offset])) {
+    throw new Error(
+      `read byte offset ${offset} is not aligned to a UTF-8 code point boundary. Use the opaque cursor returned by the previous page.`,
+    );
+  }
+
+  const maxBytes = resolveToolLimit(
+    args.max_bytes,
+    TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes,
+    TOOL_OUTPUT_LIMITS.read.maxBytes,
+  );
+  let end = Math.min(bytes.byteLength, offset + maxBytes);
+  while (end > offset && end < bytes.byteLength && isUtf8ContinuationByte(bytes[end])) {
+    end -= 1;
+  }
+  if (end === offset && end < bytes.byteLength) {
+    end += 1;
+    while (end < bytes.byteLength && isUtf8ContinuationByte(bytes[end])) {
+      end += 1;
+    }
+  }
+
+  const truncated = end < bytes.byteLength;
+  return {
+    content: utf8Decoder.decode(bytes.subarray(offset, end)),
+    startByte: offset,
+    endByte: end,
+    totalBytes: bytes.byteLength,
+    returnedBytes: end - offset,
+    truncated,
+    nextCursor: truncated ? createToolCursor(scope, end) : null,
+    maxBytes,
+  };
+};
 
 export const compareToolPaths = (left: string, right: string): number => {
   const leftBytes = utf8Encoder.encode(left);

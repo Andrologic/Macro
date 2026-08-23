@@ -389,7 +389,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "read_file",
-    "Read a file already attached in the conversation context. Use this when asked to analyze or inspect a file.",
+    "Read a bounded, line-numbered page from a file already attached to the conversation context. The response includes explicit truncation metadata and next_cursor when more content remains.",
     {
       type: "object",
       properties: {
@@ -401,6 +401,34 @@ export const MACRO_TOOL_REGISTRY = [
           type: "boolean",
           description:
             "Optional hint to request text extraction for binary-like formats (e.g. .docx).",
+        },
+        start_line: {
+          type: "number",
+          description: "Optional 1-based start line.",
+        },
+        end_line: { type: "number", description: "Optional 1-based end line." },
+        max_lines: {
+          type: "number",
+          description: `Maximum lines in this page (default ${TOOL_OUTPUT_LIMITS.read.defaultLines}, hard maximum ${TOOL_OUTPUT_LIMITS.read.maxLines}).`,
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Opaque next_cursor returned by the previous read_file page. Do not combine it with start_line; it is valid only for the same attached content.",
+        },
+        raw: {
+          type: "boolean",
+          description:
+            "Return a byte-bounded raw UTF-8 page instead of line-numbered content. Use this to recover long single-line tool artifacts without column truncation.",
+        },
+        start_byte: {
+          type: "number",
+          description:
+            "Optional zero-based byte offset for raw=true. Do not combine with cursor.",
+        },
+        max_bytes: {
+          type: "number",
+          description: `Maximum UTF-8 bytes for raw=true (default ${TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes}, hard maximum ${TOOL_OUTPUT_LIMITS.read.maxBytes}).`,
         },
       },
       required: ["file"],
