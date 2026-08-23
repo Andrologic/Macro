@@ -21,18 +21,25 @@ export const shouldSpillToolResult = (
 export const buildSpilledToolResultPreview = (params: {
   toolName: string;
   result: string;
-  artifactPath: string;
+  artifactPath?: string | null;
 }): SpilledToolResultPreview => {
   const truncated = truncateUtf8Middle(
     params.result,
     TOOL_OUTPUT_LIMITS.toolResult.headBytes,
     TOOL_OUTPUT_LIMITS.toolResult.tailBytes,
   );
+  const recoveryLines = params.artifactPath
+    ? [
+        `Full output: ${params.artifactPath}`,
+        `Use read_file with file="${params.artifactPath}", raw=true, and its cursor arguments to recover the complete output safely.`,
+      ]
+    : [
+        "Full output unavailable: Macro could not persist the recoverable artifact.",
+      ];
   const marker = [
     "",
     `[tool output truncated: ${truncated.omittedBytes} bytes omitted; beginning and latest output retained]`,
-    `Full output: ${params.artifactPath}`,
-    `Use read_file with file="${params.artifactPath}", raw=true, and its cursor arguments to recover the complete output safely.`,
+    ...recoveryLines,
     "",
   ].join("\n");
 

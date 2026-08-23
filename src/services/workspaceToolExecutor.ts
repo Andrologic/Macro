@@ -316,15 +316,8 @@ const formatBoundedGitStatus = (
 const createGitLogCursorScope = (
   repoScope: string,
   branch: string | undefined,
-  status: tauriIpc.GitStatusDto,
+  revision: string,
 ): string => {
-  const snapshot = JSON.stringify({
-    tip: status.head_commit?.id ?? "unborn",
-    has_staged: status.staged_files.length > 0,
-    has_unstaged:
-      status.unstaged_files.length > 0 || status.untracked_files.length > 0,
-  });
-  const revision = createToolCursor(snapshot, 0).split(":")[1];
   return `git_log\0${repoScope}\0${branch ?? ""}\0${revision}`;
 };
 
@@ -3102,15 +3095,30 @@ export const executeWorkspaceTool = async (
 
         if (toolName === "git_log") {
           const branch = toString(rawArgs.branch) || undefined;
-          const { value: status } = await runGitWithRepoFallback(
+          const requestedPage = resolveToolPage(
+            { ...rawArgs, cursor: undefined },
+            "git_log-page-size",
+            {
+              defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
+              maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
+            },
+          );
+          const { value: snapshotPage } = await runGitWithRepoFallback(
             repoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
+            (candidate) =>
+              tauriIpc.gitLogPage({
+                repoPath: candidate,
+                limit: requestedPage.limit + 1,
+                offset: 0,
+                branch,
+              }),
             allowRepoFallback,
           );
+          assertToolExecutionActive();
           const cursorScope = createGitLogCursorScope(
             repoMeta.repo_path,
             branch,
-            status,
+            snapshotPage.revision,
           );
           const page = resolveToolPage(
             rawArgs,
@@ -3120,17 +3128,26 @@ export const executeWorkspaceTool = async (
               maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
             },
           );
-          const { value: commits } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) =>
-              tauriIpc.gitLog({
-                repoPath: candidate,
-                limit: page.limit + 1,
-                offset: page.offset,
-                branch,
-              }),
-            allowRepoFallback,
-          );
+          const pageSnapshot = page.offset === 0
+            ? snapshotPage
+            : (
+                await runGitWithRepoFallback(
+                  repoPath,
+                  (candidate) =>
+                    tauriIpc.gitLogPage({
+                      repoPath: candidate,
+                      limit: page.limit + 1,
+                      offset: page.offset,
+                      branch,
+                    }),
+                  allowRepoFallback,
+                )
+              ).value;
+          assertToolExecutionActive();
+          if (pageSnapshot.revision !== snapshotPage.revision) {
+            return "Error executing git_log: repository history changed while reading this page. Restart without a cursor.";
+          }
+          const commits = pageSnapshot.commits;
           const truncated = commits.length > page.limit;
           const pageCommits = truncated ? commits.slice(0, page.limit) : commits;
           return JSON.stringify(
@@ -3466,12 +3483,31 @@ export const executeWorkspaceTool = async (
 
       if (toolName === "git_log") {
         const branch = toString(args.branch) || undefined;
-        const { value: status } = await runGitWithRepoFallback(
+        const requestedPage = resolveToolPage(
+          { ...args, cursor: undefined },
+          "git_log-page-size",
+          {
+            defaultResults: TOOL_OUTPUT_LIMITS.git.logDefaultResults,
+            maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
+          },
+        );
+        const { value: snapshotPage } = await runGitWithRepoFallback(
           repoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
+          (candidate) =>
+            tauriIpc.gitLogPage({
+              repoPath: candidate,
+              limit: requestedPage.limit + 1,
+              offset: 0,
+              branch,
+            }),
           allowRepoFallback,
         );
-        const cursorScope = createGitLogCursorScope(repoPath, branch, status);
+        assertToolExecutionActive();
+        const cursorScope = createGitLogCursorScope(
+          repoPath,
+          branch,
+          snapshotPage.revision,
+        );
         const page = resolveToolPage(
           args,
           cursorScope,
@@ -3480,18 +3516,25 @@ export const executeWorkspaceTool = async (
             maxResults: TOOL_OUTPUT_LIMITS.git.logMaxResults,
           },
         );
-        const { value: commits, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) =>
-              tauriIpc.gitLog({
-                repoPath: candidate,
-                limit: page.limit + 1,
-                offset: page.offset,
-                branch,
-              }),
-            allowRepoFallback,
-          );
+        const pageResult = page.offset === 0
+          ? { value: snapshotPage, repoPath }
+          : await runGitWithRepoFallback(
+              repoPath,
+              (candidate) =>
+                tauriIpc.gitLogPage({
+                  repoPath: candidate,
+                  limit: page.limit + 1,
+                  offset: page.offset,
+                  branch,
+                }),
+              allowRepoFallback,
+            );
+        assertToolExecutionActive();
+        if (pageResult.value.revision !== snapshotPage.revision) {
+          return "Error executing git_log: repository history changed while reading this page. Restart without a cursor.";
+        }
+        const commits = pageResult.value.commits;
+        const resolvedRepoPath = pageResult.repoPath;
         const truncated = commits.length > page.limit;
         const pageCommits = truncated ? commits.slice(0, page.limit) : commits;
         return JSON.stringify(

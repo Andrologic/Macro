@@ -609,6 +609,7 @@ pub fn run() {
             commands::git::git_status,
             commands::git::git_fetch,
             commands::git::git_log,
+            commands::git::git_log_page,
             commands::git::git_branch_list,
             commands::git::git_branch_create,
             commands::git::git_branch_delete,

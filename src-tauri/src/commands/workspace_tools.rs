@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -596,6 +597,7 @@ async fn execute_virtual_workspace_search_tool(
 async fn execute_virtual_ast_search(
     args: &Value,
     context: VirtualWorkspaceContext<'_>,
+    cancellation: Option<Arc<super::ToolCancellation>>,
 ) -> CommandResult<String> {
     let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
     let explicit_project_id = json_arg_string(args, "project_id");
@@ -693,7 +695,7 @@ async fn execute_virtual_ast_search(
         json_arg_string(args, "include_pattern").unwrap_or_default(),
         include_hidden
     );
-    super::ast_search::execute_ast_search(args, candidates, &cursor_scope, true).await
+    super::ast_search::execute_ast_search(args, candidates, &cursor_scope, true, cancellation).await
 }
 
 pub(crate) async fn execute_virtual_workspace_tool(
@@ -702,6 +704,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
     args: &Value,
     mounts: &[WorkspaceProjectMount],
     focused_project_id: Option<&str>,
+    cancellation: Option<Arc<super::ToolCancellation>>,
 ) -> CommandResult<VirtualToolResponse> {
     if mounts.is_empty() {
         return Ok(None);
@@ -893,7 +896,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
         "glob" | "grep" => execute_virtual_workspace_search_tool(tool_id, args, mounts)
             .await
             .map(Some),
-        "ast_grep" => execute_virtual_ast_search(args, virtual_context)
+        "ast_grep" => execute_virtual_ast_search(args, virtual_context, cancellation)
             .await
             .map(Some),
         "write" => {
@@ -1517,6 +1520,7 @@ mod tests {
             &json!({ "pattern": "**/*.rs", "max_results": 2 }),
             &mounts,
             None,
+            None,
         )
         .await
         .expect("glob")
@@ -1571,6 +1575,7 @@ mod tests {
             }),
             &mounts,
             None,
+            None,
         )
         .await
         .expect("ast grep")
@@ -1612,6 +1617,7 @@ mod tests {
                 "new_text": "const value = 2;"
             }),
             &mounts,
+            None,
             None,
         )
         .await

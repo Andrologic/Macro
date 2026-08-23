@@ -78,6 +78,12 @@ pub struct GitCommitDto {
     pub task_id: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct GitLogPageDto {
+    pub commits: Vec<GitCommitDto>,
+    pub revision: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct GitLogSnapshot {
     pub revision: String,
@@ -4419,6 +4425,48 @@ pub async fn git_log(
 }
 
 #[tauri::command]
+/// Get one commit-history page and the exact snapshot revision used to build it.
+pub async fn git_log_page(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    branch: Option<String>,
+) -> Result<GitLogPageDto> {
+    let limit = limit
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_LOG_LIMIT);
+    let offset = offset.unwrap_or(0) as usize;
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let snapshot = build_wsl_git_log_snapshot(&wsl_repo_path, branch.as_deref()).await?;
+        let commits = build_wsl_git_log_page(&wsl_repo_path, offset, limit, &snapshot).await?;
+        return Ok(GitLogPageDto {
+            commits,
+            revision: snapshot.revision,
+        });
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        let snapshot = build_git_log_snapshot(&repo, branch.as_deref())?;
+        let commits = build_git_log_page(&repo, offset, limit, &snapshot)?;
+        Ok(GitLogPageDto {
+            commits,
+            revision: snapshot.revision,
+        })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// List local and remote branches for a Git repository.
 pub async fn git_branch_list(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -7310,6 +7358,29 @@ mod tests {
         fs::write(temp.path().join("dirty.txt"), "changed\n").unwrap();
         let changed_snapshot = build_git_log_snapshot(&repo, None).unwrap();
         assert_ne!(changed_snapshot.revision, snapshot.revision);
+    }
+
+    #[test]
+    fn test_git_log_snapshot_uses_the_requested_branch_tip() {
+        let (temp, repo) = init_repo();
+        let feature_tip = repo.head().unwrap().peel_to_commit().unwrap().id();
+        repo.branch(
+            "feature/snapshot",
+            &repo.find_commit(feature_tip).unwrap(),
+            false,
+        )
+        .unwrap();
+        fs::write(temp.path().join("README.md"), "current branch advanced\n").unwrap();
+        let current_tip = commit_repo(&repo, "test: advance current branch", true).unwrap();
+        assert_ne!(current_tip, feature_tip.to_string());
+
+        let snapshot = build_git_log_snapshot(&repo, Some("feature/snapshot")).unwrap();
+
+        assert_eq!(
+            snapshot.tip.as_deref(),
+            Some(feature_tip.to_string().as_str())
+        );
+        assert!(snapshot.revision.starts_with(&feature_tip.to_string()));
     }
 
     #[test]

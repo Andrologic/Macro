@@ -30,7 +30,8 @@ use crate::core::tool_policy::{
 use crate::db::{models::*, repository, DbError};
 use crate::dev_overrides::DevProviderOverridesFile;
 use crate::fs::{
-    validate_path as validate_fs_path, validate_path_for_write as validate_fs_path_for_write,
+    normalize_path, validate_path as validate_fs_path,
+    validate_path_for_write as validate_fs_path_for_write,
 };
 use crate::git::GitState;
 use crate::project_path::{join_wsl_path, parse_wsl_unc_path, WslProjectPath};
@@ -44,7 +45,8 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::time::Instant;
 use tauri::State;
 use tokio::sync::{watch, Notify};
 use tokio::time::{timeout, Duration};
@@ -52,10 +54,16 @@ use tokio::time::{timeout, Duration};
 const DB_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 static PROVIDER_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static CONTENT_MUTATION_LOCKS: LazyLock<Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static TOOL_EXECUTION_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Arc<ToolCancellation>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static PENDING_TOOL_CANCELLATIONS: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const PENDING_TOOL_CANCELLATION_TTL: Duration = Duration::from_secs(60);
+const PENDING_TOOL_CANCELLATION_LIMIT: usize = 1_024;
 
-struct ToolCancellation {
+pub(super) struct ToolCancellation {
     cancelled: AtomicBool,
     notify: Notify,
 }
@@ -70,7 +78,11 @@ impl ToolCancellation {
 
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
-        self.notify.notify_waiters();
+        self.notify.notify_one();
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
     }
 
     async fn cancelled(&self) {
@@ -121,6 +133,19 @@ fn register_tool_execution(
             .or_insert_with(|| Arc::new(ToolCancellation::new()))
             .clone()
     };
+    let was_cancelled_before_registration = {
+        let mut pending = PENDING_TOOL_CANCELLATIONS
+            .lock()
+            .expect("pending tool cancellation registry");
+        let now = Instant::now();
+        pending.retain(|_, recorded_at| {
+            now.duration_since(*recorded_at) < PENDING_TOOL_CANCELLATION_TTL
+        });
+        pending.remove(&execution_id).is_some()
+    };
+    if was_cancelled_before_registration {
+        cancellation.cancel();
+    }
     let guard = ToolExecutionGuard {
         execution_id,
         cancellation: cancellation.clone(),
@@ -146,6 +171,19 @@ fn provider_mutation_lock(provider_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         .entry(provider_id.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone()
+}
+
+fn content_mutation_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = CONTENT_MUTATION_LOCKS
+        .lock()
+        .expect("content mutation lock registry");
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key.to_string(), Arc::downgrade(&lock));
+    lock
 }
 
 #[derive(Clone, Debug)]
@@ -947,6 +985,67 @@ fn change_targets_wsl(change: &PendingFileChange) -> bool {
     parse_wsl_unc_path(&change.effective_workspace.to_string_lossy()).is_some()
 }
 
+fn wsl_content_mutation_key(target: &WslProjectPath) -> String {
+    format!(
+        "wsl:{}:{}",
+        target.distro.to_ascii_lowercase(),
+        target.linux_path
+    )
+}
+
+async fn native_content_mutation_key(path: &Path) -> String {
+    let resolved_path = match tokio::fs::canonicalize(path).await {
+        Ok(path) => path,
+        Err(_) => {
+            let parent = path.parent();
+            match parent {
+                Some(parent) => match tokio::fs::canonicalize(parent).await {
+                    Ok(canonical_parent) => path
+                        .file_name()
+                        .map(|name| canonical_parent.join(name))
+                        .unwrap_or_else(|| normalize_path(path)),
+                    Err(_) => normalize_path(path),
+                },
+                None => normalize_path(path),
+            }
+        }
+    };
+    let key = resolved_path.to_string_lossy().replace('\\', "/");
+    #[cfg(any(windows, target_os = "macos"))]
+    let key = key.to_ascii_lowercase();
+    format!("native:{key}")
+}
+
+async fn content_mutation_key(change: &PendingFileChange) -> CommandResult<String> {
+    if let Some(target) =
+        resolve_wsl_path_for_workspace(&change.effective_workspace, &change.effective_path)?
+    {
+        return Ok(wsl_content_mutation_key(&target));
+    }
+    Ok(native_content_mutation_key(&change.absolute_path).await)
+}
+
+async fn acquire_content_mutation_locks(
+    changes: &[PendingFileChange],
+) -> CommandResult<Vec<tokio::sync::OwnedMutexGuard<()>>> {
+    let mut keys = Vec::with_capacity(changes.len());
+    for change in changes {
+        keys.push(content_mutation_key(change).await?);
+    }
+    keys.sort();
+    keys.dedup();
+
+    let locks = keys
+        .iter()
+        .map(|key| content_mutation_lock(key))
+        .collect::<Vec<_>>();
+    let mut guards = Vec::with_capacity(locks.len());
+    for lock in locks {
+        guards.push(lock.lock_owned().await);
+    }
+    Ok(guards)
+}
+
 async fn rollback_pending_file_changes_via_fs(
     backups: &[(PathBuf, String, String, Option<String>)],
 ) -> Vec<String> {
@@ -954,12 +1053,13 @@ async fn rollback_pending_file_changes_via_fs(
     for (workspace, path, display_path, backup) in backups.iter().rev() {
         match backup {
             Some(content) => {
-                if let Err(error) = fs::write_file_internal(
+                if let Err(error) = fs::write_file_internal_with_revision_unlocked(
                     workspace,
                     path.clone(),
                     content.clone(),
                     Some(true),
                     Some(false),
+                    None,
                 )
                 .await
                 {
@@ -972,7 +1072,8 @@ async fn rollback_pending_file_changes_via_fs(
             None => match fs::exists_internal(workspace, path.clone()).await {
                 Ok(true) => {
                     if let Err(error) =
-                        fs::delete_path_internal(workspace, path.clone(), Some(false)).await
+                        fs::delete_path_internal_unlocked(workspace, path.clone(), Some(false))
+                            .await
                     {
                         errors.push(format!(
                             "Failed to remove created file {} during rollback: {}",
@@ -1048,7 +1149,7 @@ async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> Co
 
     for (applied_count, change) in changes.iter().enumerate() {
         let result = if let Some(new_content) = change.new_content.as_ref() {
-            fs::write_file_internal_with_revision(
+            fs::write_file_internal_with_revision_unlocked(
                 &change.effective_workspace,
                 change.effective_path.clone(),
                 new_content.clone(),
@@ -1059,7 +1160,7 @@ async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> Co
             .await
             .map(|_| ())
         } else {
-            fs::delete_path_internal_with_revision(
+            fs::delete_path_internal_with_revision_unlocked(
                 &change.effective_workspace,
                 change.effective_path.clone(),
                 Some(false),
@@ -1092,6 +1193,7 @@ async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> Co
 pub(crate) async fn commit_pending_file_changes_atomically(
     changes: &[PendingFileChange],
 ) -> CommandResult<()> {
+    let _mutation_guards = acquire_content_mutation_locks(changes).await?;
     if changes.iter().any(change_targets_wsl) {
         return commit_pending_file_changes_via_fs(changes).await;
     }
@@ -1469,6 +1571,7 @@ async fn execute_workspace_tool_controlled(
             project_mounts,
             virtual_root_enabled,
             focused_project_id,
+            None,
         )
         .await;
     };
@@ -1477,6 +1580,7 @@ async fn execute_workspace_tool_controlled(
         .as_ref()
         .map(|(cancellation, _)| cancellation.clone());
     let _guard = registration.map(|(_, guard)| guard);
+    let cancellation = cancellation.unwrap_or_else(|| Arc::new(ToolCancellation::new()));
     let tool_label = tool_id.trim().to_string();
     let execution = execute_workspace_tool_inner(
         default_workspace,
@@ -1490,28 +1594,35 @@ async fn execute_workspace_tool_controlled(
         project_mounts,
         virtual_root_enabled,
         focused_project_id,
+        Some(cancellation.clone()),
     );
     tokio::pin!(execution);
 
-    if let Some(cancellation) = cancellation {
+    if execution_id.is_some() {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => Err(command_error(format!(
                 "Tool execution cancelled: {tool_label}."
             ))),
-            _ = tokio::time::sleep(timeout_duration) => Err(command_error(format!(
-                "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
-                timeout_duration.as_secs()
-            ))),
+            _ = tokio::time::sleep(timeout_duration) => {
+                cancellation.cancel();
+                Err(command_error(format!(
+                    "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                    timeout_duration.as_secs()
+                )))
+            },
             result = &mut execution => result,
         }
     } else {
         match timeout(timeout_duration, &mut execution).await {
             Ok(result) => result,
-            Err(_) => Err(command_error(format!(
-                "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
-                timeout_duration.as_secs()
-            ))),
+            Err(_) => {
+                cancellation.cancel();
+                Err(command_error(format!(
+                    "Tool execution timed out after {} seconds: {tool_label}. Narrow the path, pattern, or query before retrying.",
+                    timeout_duration.as_secs()
+                )))
+            }
         }
     }
 }
@@ -1529,6 +1640,7 @@ async fn execute_workspace_tool_inner(
     project_mounts: Option<Vec<WorkspaceProjectMount>>,
     virtual_root_enabled: Option<bool>,
     focused_project_id: Option<String>,
+    cancellation: Option<Arc<ToolCancellation>>,
 ) -> CommandResult<String> {
     let workspace = resolve_requested_workspace(
         &default_workspace,
@@ -1557,6 +1669,7 @@ async fn execute_workspace_tool_inner(
             &args,
             project_mounts.as_deref().unwrap_or(&[]),
             focused_project_id.as_deref(),
+            cancellation.clone(),
         )
         .await?
         {
@@ -1774,6 +1887,9 @@ async fn execute_workspace_tool_inner(
                 Some(&current.revision),
             )
             .map_err(|error| command_error(error.to_string()))?;
+            let mutation_revision = expected_revision
+                .clone()
+                .unwrap_or_else(|| current.revision.clone());
 
             let occurrences = current.content.matches(&old_text).count();
             if let Some(error) = exact_edit_match_error(&path, occurrences, replace_all) {
@@ -1795,7 +1911,7 @@ async fn execute_workspace_tool_inner(
                 updated.clone(),
                 Some(true),
                 Some(false),
-                expected_revision.as_deref(),
+                Some(&mutation_revision),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -1816,7 +1932,7 @@ async fn execute_workspace_tool_inner(
                 bytes_written: write_result.bytes_written,
                 additions,
                 deletions,
-                expected_revision,
+                expected_revision: Some(mutation_revision),
             };
 
             build_post_write_response(
@@ -1885,12 +2001,15 @@ async fn execute_workspace_tool_inner(
                 Some(&current.revision),
             )
             .map_err(|error| command_error(error.to_string()))?;
+            let mutation_revision = expected_revision
+                .clone()
+                .unwrap_or_else(|| current.revision.clone());
 
             fs::delete_path_internal_with_revision(
                 &effective_workspace,
                 effective_path.clone(),
                 Some(false),
-                expected_revision.as_deref(),
+                Some(&mutation_revision),
             )
             .await
             .map_err(|error| command_error(format!("Failed to delete {}: {}", path, error)))?;
@@ -1906,7 +2025,7 @@ async fn execute_workspace_tool_inner(
                 bytes_written: 0,
                 additions: 0,
                 deletions,
-                expected_revision,
+                expected_revision: Some(mutation_revision),
             };
 
             build_post_write_response(
@@ -1997,7 +2116,7 @@ async fn execute_workspace_tool_inner(
                         });
                     }
                     ParsedPatchOperation::Update { path, hunks } => {
-                        let expected_revision = expected_revisions
+                        let requested_revision = expected_revisions
                             .get(&normalize_tool_map_path(&path))
                             .cloned();
                         let effective_path = remap_macro_tool_path(path.as_str());
@@ -2015,6 +2134,8 @@ async fn execute_workspace_tool_inner(
                         )
                         .await
                         .map_err(|error| command_error(error.to_string()))?;
+                        let expected_revision =
+                            requested_revision.unwrap_or_else(|| current.revision.clone());
 
                         if current.is_binary {
                             return Ok(format!("Cannot apply patch to binary file: {}", path));
@@ -2041,11 +2162,11 @@ async fn execute_workspace_tool_inner(
                             bytes_written: new_content.len() as u64,
                             additions,
                             deletions,
-                            expected_revision,
+                            expected_revision: Some(expected_revision),
                         });
                     }
                     ParsedPatchOperation::Delete { path } => {
-                        let expected_revision = expected_revisions
+                        let requested_revision = expected_revisions
                             .get(&normalize_tool_map_path(&path))
                             .cloned();
                         let effective_path = remap_macro_tool_path(path.as_str());
@@ -2068,6 +2189,8 @@ async fn execute_workspace_tool_inner(
                         )
                         .await
                         .map_err(|error| command_error(error.to_string()))?;
+                        let expected_revision =
+                            requested_revision.unwrap_or_else(|| current.revision.clone());
                         let deletion_count = current.content.lines().count();
                         pending_changes.push(PendingFileChange {
                             display_path: path,
@@ -2080,7 +2203,7 @@ async fn execute_workspace_tool_inner(
                             bytes_written: 0,
                             additions: 0,
                             deletions: deletion_count,
-                            expected_revision,
+                            expected_revision: Some(expected_revision),
                         });
                     }
                 }
@@ -2425,7 +2548,8 @@ async fn execute_workspace_tool_inner(
                 json_arg_string(&args, "include_pattern").unwrap_or_default(),
                 include_hidden
             );
-            ast_search::execute_ast_search(&args, candidates, &cursor_scope, false).await
+            ast_search::execute_ast_search(&args, candidates, &cursor_scope, false, cancellation)
+                .await
         }
         "git_status" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
@@ -3083,6 +3207,23 @@ pub fn tool_cancel_workspace(execution_id: String) -> bool {
         cancellation.cancel();
         true
     } else {
+        let mut pending = PENDING_TOOL_CANCELLATIONS
+            .lock()
+            .expect("pending tool cancellation registry");
+        let now = Instant::now();
+        pending.retain(|_, recorded_at| {
+            now.duration_since(*recorded_at) < PENDING_TOOL_CANCELLATION_TTL
+        });
+        if pending.len() >= PENDING_TOOL_CANCELLATION_LIMIT {
+            if let Some(oldest_id) = pending
+                .iter()
+                .min_by_key(|(_, recorded_at)| **recorded_at)
+                .map(|(id, _)| id.clone())
+            {
+                pending.remove(&oldest_id);
+            }
+        }
+        pending.insert(execution_id.to_string(), now);
         false
     }
 }
@@ -4785,7 +4926,24 @@ mod tests {
             .await
             .expect("cancellation notification");
         drop(guard);
+        assert!(!super::TOOL_EXECUTION_CANCELLATIONS
+            .lock()
+            .expect("tool cancellation registry")
+            .contains_key(execution_id));
+    }
+
+    #[tokio::test]
+    async fn tool_execution_cancellation_before_registration_is_not_lost() {
+        let execution_id = "workspace-tool-pre-registration-cancellation-test";
         assert!(!tool_cancel_workspace(execution_id.to_string()));
+
+        let (cancellation, guard) =
+            register_tool_execution(Some(execution_id)).expect("register cancelled execution");
+        tokio::time::timeout(Duration::from_millis(100), cancellation.cancelled())
+            .await
+            .expect("pre-registration cancellation notification");
+        assert!(cancellation.is_cancelled());
+        drop(guard);
     }
 
     #[test]
@@ -5387,6 +5545,88 @@ mod tests {
             fs::read_to_string(path).expect("read guarded file"),
             "value = 1\n"
         );
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[tokio::test]
+    async fn content_mutation_keys_fold_case_on_case_insensitive_desktop_platforms() {
+        let workspace = TempDir::new().expect("workspace");
+        let upper = super::native_content_mutation_key(&workspace.path().join("Guarded.txt")).await;
+        let lower = super::native_content_mutation_key(&workspace.path().join("guarded.txt")).await;
+
+        assert_eq!(upper, lower);
+    }
+
+    #[tokio::test]
+    async fn concurrent_absent_revision_writes_allow_exactly_one_winner() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("new.txt");
+        let change = |content: &str| PendingFileChange {
+            display_path: "new.txt".to_string(),
+            effective_workspace: workspace.path().to_path_buf(),
+            effective_path: "new.txt".to_string(),
+            absolute_path: path.clone(),
+            status: "created".to_string(),
+            new_content: Some(content.to_string()),
+            created: true,
+            bytes_written: content.len() as u64,
+            additions: 1,
+            deletions: 0,
+            expected_revision: Some("absent".to_string()),
+        };
+        let first = vec![change("first\n")];
+        let second = vec![change("second\n")];
+
+        let (first_result, second_result) = tokio::join!(
+            commit_pending_file_changes_atomically(&first),
+            commit_pending_file_changes_atomically(&second),
+        );
+
+        assert_eq!(
+            usize::from(first_result.is_ok()) + usize::from(second_result.is_ok()),
+            1
+        );
+        let failure = first_result.err().or_else(|| second_result.err()).unwrap();
+        assert_eq!(failure.code(), Some("REVISION_CONFLICT"));
+        let content = fs::read_to_string(path).expect("read winning content");
+        assert!(content == "first\n" || content == "second\n");
+    }
+
+    #[tokio::test]
+    async fn concurrent_matching_revision_writes_allow_exactly_one_winner() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("shared.txt");
+        fs::write(&path, "original\n").expect("seed shared file");
+        let revision = content_revision(b"original\n");
+        let change = |content: &str| PendingFileChange {
+            display_path: "shared.txt".to_string(),
+            effective_workspace: workspace.path().to_path_buf(),
+            effective_path: "shared.txt".to_string(),
+            absolute_path: path.clone(),
+            status: "updated".to_string(),
+            new_content: Some(content.to_string()),
+            created: false,
+            bytes_written: content.len() as u64,
+            additions: 1,
+            deletions: 1,
+            expected_revision: Some(revision.clone()),
+        };
+        let first = vec![change("first\n")];
+        let second = vec![change("second\n")];
+
+        let (first_result, second_result) = tokio::join!(
+            commit_pending_file_changes_atomically(&first),
+            commit_pending_file_changes_atomically(&second),
+        );
+
+        assert_eq!(
+            usize::from(first_result.is_ok()) + usize::from(second_result.is_ok()),
+            1
+        );
+        let failure = first_result.err().or_else(|| second_result.err()).unwrap();
+        assert_eq!(failure.code(), Some("REVISION_CONFLICT"));
+        let content = fs::read_to_string(path).expect("read winning content");
+        assert!(content == "first\n" || content == "second\n");
     }
 
     #[tokio::test]

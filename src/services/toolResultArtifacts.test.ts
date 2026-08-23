@@ -31,4 +31,19 @@ describe("toolResultArtifacts", () => {
       TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes,
     );
   });
+
+  it("does not advertise a recovery path when durable persistence failed", () => {
+    const result = `HEAD-${"x".repeat(70_000)}-TAIL`;
+    const preview = buildSpilledToolResultPreview({
+      toolName: "terminal_run",
+      result,
+    });
+
+    expect(preview.preview).toContain("Full output unavailable");
+    expect(preview.preview).not.toContain("tool-output://");
+    expect(preview.preview).not.toContain("Use read_file");
+    expect(new TextEncoder().encode(preview.preview).byteLength).toBeLessThan(
+      TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes,
+    );
+  });
 });

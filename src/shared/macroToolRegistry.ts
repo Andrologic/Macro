@@ -55,6 +55,7 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "apply_patch",
   "glob",
   "grep",
+  "ast_grep",
   "git_status",
   "git_log",
   "git_branch_list",

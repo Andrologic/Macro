@@ -152,6 +152,7 @@ describe('macroToolRegistry', () => {
         'web_search',
         'plan_get',
         'strategy_generate',
+        'ast_grep',
         'git_status',
         'terminal_run',
       ])
@@ -159,6 +160,7 @@ describe('macroToolRegistry', () => {
       'read_file',
       'plan_get',
       'strategy_generate',
+      'ast_grep',
       'git_status',
       'terminal_run',
     ]);
