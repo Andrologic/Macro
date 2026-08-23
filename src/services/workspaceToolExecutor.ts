@@ -46,7 +46,13 @@ const gitMutatingToolIds = new Set([
   "git_stash",
 ]);
 const gitBackendToolIds = new Set([...gitReadToolIds, ...gitMutatingToolIds]);
-const interruptibleWorkspaceToolIds = new Set(["list", "read", "glob", "grep"]);
+const interruptibleWorkspaceToolIds = new Set([
+  "list",
+  "read",
+  "glob",
+  "grep",
+  "ast_grep",
+]);
 let workspaceToolExecutionCounter = 0;
 
 const createWorkspaceToolExecutionId = (): string => {
@@ -101,7 +107,8 @@ const extractCandidatePath = (
     toolName === "edit" ||
     toolName === "delete" ||
     toolName === "read" ||
-    toolName === "list"
+    toolName === "list" ||
+    toolName === "ast_grep"
   ) {
     const rawPath = sanitizePathInput(toString(args.path) || ".");
     return rawPath || undefined;
@@ -1767,6 +1774,8 @@ export const executeWorkspaceTool = async (
           ? TOOL_OUTPUT_LIMITS.glob.timeoutMs
           : toolName === "grep"
             ? TOOL_OUTPUT_LIMITS.grep.timeoutMs
+            : toolName === "ast_grep"
+              ? TOOL_OUTPUT_LIMITS.ast.timeoutMs
             : null;
   const executionStartedAt = Date.now();
   const assertToolExecutionActive = (): void => {
@@ -1926,6 +1935,7 @@ export const executeWorkspaceTool = async (
       "apply_patch",
       "glob",
       "grep",
+      "ast_grep",
     ]);
     const shouldUseBackendWorkspaceTool =
       workspaceToolIds.has(toolName) &&

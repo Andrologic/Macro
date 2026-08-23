@@ -48,6 +48,7 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "apply_patch",
   "glob",
   "grep",
+  "ast_grep",
   "git_status",
   "git_log",
   "git_branch_list",
@@ -678,6 +679,63 @@ export const MACRO_TOOL_REGISTRY = [
         },
       },
       required: ["query"],
+    },
+  ),
+  objectTool(
+    "ast_grep",
+    `Search source code structurally with ast-grep patterns and metavariables such as $NAME and $$$ARGS. Results are sorted, bounded, resumable, cancellable, and limited to ${TOOL_OUTPUT_LIMITS.ast.timeoutMs / 1_000} seconds. Unsupported, binary, and oversized files are reported explicitly. Use grep for plain text and ast_grep when syntax matters.`,
+    {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description:
+            `Structural ast-grep pattern up to ${TOOL_OUTPUT_LIMITS.ast.maxPatternBytes} bytes, for example console.log($$$ARGS) or const $NAME = ($$$ARGS) => $BODY.`,
+        },
+        path: {
+          type: "string",
+          description:
+            "Optional file or directory to search. Defaults to the current execution workspace root; mount-prefixed paths are supported in virtual groups.",
+        },
+        project_id: {
+          type: "string",
+          description:
+            "Optional project identifier when you want to force which project to use.",
+        },
+        language: {
+          type: "string",
+          description:
+            "Optional language name or alias such as ts, tsx, js, rs, py, go, java, or yaml. Otherwise inferred per file extension.",
+        },
+        strictness: {
+          type: "string",
+          enum: ["smart", "cst", "ast", "relaxed", "signature", "template"],
+          description: "Pattern matching strictness. Defaults to smart.",
+        },
+        include_pattern: {
+          type: "string",
+          description: "Optional file glob filter inside the selected path.",
+        },
+        include_hidden: {
+          type: "boolean",
+          description: "Include hidden files and folders.",
+        },
+        include_meta: {
+          type: "boolean",
+          description:
+            "Include bounded metavariable captures for each match. Defaults to false.",
+        },
+        limit: {
+          type: "number",
+          description: `Maximum matches in this page (default ${TOOL_OUTPUT_LIMITS.ast.defaultResults}, hard maximum ${TOOL_OUTPUT_LIMITS.ast.maxResults}).`,
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Opaque next_cursor returned by the previous ast_grep page. It is valid only for the same pattern, path, language, and options.",
+        },
+      },
+      required: ["pattern"],
     },
   ),
   objectTool(

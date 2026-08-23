@@ -593,6 +593,109 @@ async fn execute_virtual_workspace_search_tool(
     .map_err(|error| command_error(error.to_string()))
 }
 
+async fn execute_virtual_ast_search(
+    args: &Value,
+    context: VirtualWorkspaceContext<'_>,
+) -> CommandResult<String> {
+    let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+    let explicit_project_id = json_arg_string(args, "project_id");
+    let normalized_path = normalize_tool_path(&raw_path);
+    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
+    let mut targets = Vec::<(&WorkspaceProjectMount, String)>::new();
+
+    if explicit_project_id.is_none() && (normalized_path.is_empty() || normalized_path == ".") {
+        targets.extend(
+            context
+                .mounts
+                .iter()
+                .filter(|mount| mount_has_workspace(mount))
+                .map(|mount| (mount, ".".to_string())),
+        );
+    } else {
+        let resolved =
+            resolve_virtual_mount_target(context, &raw_path, explicit_project_id.as_deref())?;
+        targets.push((resolved.mount, resolved.relative_path));
+    }
+
+    let mut candidates = Vec::new();
+    for (mount, base_path) in targets {
+        let workspace = mount_workspace_path(mount)?;
+        let stats = fs::stat_internal(&workspace, base_path.clone())
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+        if stats.kind == "file" {
+            candidates.push(super::ast_search::AstSearchCandidate {
+                workspace,
+                read_path: base_path.clone(),
+                display_path: virtual_path_for_mount(mount, &base_path),
+                size: Some(stats.size),
+                project_id: Some(mount.project_id.clone()),
+                mount_name: Some(mount.mount_name.clone()),
+            });
+            continue;
+        }
+        if stats.kind != "directory" {
+            return Err(command_error(format!(
+                "ast_grep path must be a file or directory: {}",
+                raw_path
+            )));
+        }
+        let entries = fs::list_dir_internal(
+            &workspace,
+            base_path.clone(),
+            Some(true),
+            Some(include_hidden),
+            None,
+            Some(true),
+        )
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+        for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
+            let relative = entry.relative_path.replace('\\', "/");
+            let read_path = if base_path.is_empty() || base_path == "." {
+                relative
+            } else {
+                format!(
+                    "{}/{}",
+                    base_path.trim_end_matches(['/', '\\']),
+                    relative.trim_start_matches(['/', '\\'])
+                )
+            };
+            candidates.push(super::ast_search::AstSearchCandidate {
+                workspace: workspace.clone(),
+                display_path: virtual_path_for_mount(mount, &read_path),
+                read_path,
+                size: entry.size,
+                project_id: Some(mount.project_id.clone()),
+                mount_name: Some(mount.mount_name.clone()),
+            });
+        }
+    }
+
+    let mount_scope = serde_json::json!(context
+        .mounts
+        .iter()
+        .map(|mount| [
+            mount.project_id.as_str(),
+            mount.mount_name.as_str(),
+            mount.workspace_path.as_deref().unwrap_or("")
+        ])
+        .collect::<Vec<_>>())
+    .to_string();
+    let cursor_scope = format!(
+        "ast_grep\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        mount_scope,
+        raw_path,
+        explicit_project_id.as_deref().unwrap_or(""),
+        json_arg_string(args, "pattern").unwrap_or_default(),
+        json_arg_string(args, "language").unwrap_or_default(),
+        json_arg_string(args, "strictness").unwrap_or_else(|| "smart".to_string()),
+        json_arg_string(args, "include_pattern").unwrap_or_default(),
+        include_hidden
+    );
+    super::ast_search::execute_ast_search(args, candidates, &cursor_scope, true).await
+}
+
 pub(crate) async fn execute_virtual_workspace_tool(
     mode: &str,
     tool_id: &str,
@@ -788,6 +891,9 @@ pub(crate) async fn execute_virtual_workspace_tool(
             )))
         }
         "glob" | "grep" => execute_virtual_workspace_search_tool(tool_id, args, mounts)
+            .await
+            .map(Some),
+        "ast_grep" => execute_virtual_ast_search(args, virtual_context)
             .await
             .map(Some),
         "write" => {
@@ -1428,6 +1534,57 @@ mod tests {
                 .map(Vec::len),
             Some(2)
         );
+    }
+
+    #[tokio::test]
+    async fn virtual_ast_grep_searches_all_project_mounts() {
+        let api = TempDir::new().expect("api workspace");
+        let web = TempDir::new().expect("web workspace");
+        fs::write(api.path().join("app.ts"), "console.log(apiValue);\n")
+            .expect("write api fixture");
+        fs::write(web.path().join("app.ts"), "console.log(webValue);\n")
+            .expect("write web fixture");
+        let mounts = vec![
+            WorkspaceProjectMount {
+                project_id: "web-project".to_string(),
+                mount_name: "web".to_string(),
+                workspace_path: Some(web.path().to_string_lossy().to_string()),
+                display_name: None,
+                is_read_only: false,
+            },
+            WorkspaceProjectMount {
+                project_id: "api-project".to_string(),
+                mount_name: "api".to_string(),
+                workspace_path: Some(api.path().to_string_lossy().to_string()),
+                display_name: None,
+                is_read_only: false,
+            },
+        ];
+
+        let result = execute_virtual_workspace_tool(
+            "Implement",
+            "ast_grep",
+            &json!({
+                "pattern": "console.log($ARG)",
+                "include_meta": true,
+                "limit": 10
+            }),
+            &mounts,
+            None,
+        )
+        .await
+        .expect("ast grep")
+        .expect("handled by virtual root");
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("json response");
+
+        assert_eq!(parsed["virtual_root"], true);
+        assert_eq!(parsed["count"], 2);
+        assert_eq!(parsed["total_count"], 2);
+        assert_eq!(parsed["matches"][0]["path"], "api/app.ts");
+        assert_eq!(parsed["matches"][0]["project_id"], "api-project");
+        assert_eq!(parsed["matches"][0]["meta_variables"]["ARG"], "apiValue");
+        assert_eq!(parsed["matches"][1]["path"], "web/app.ts");
+        assert_eq!(parsed["matches"][1]["project_id"], "web-project");
     }
 
     #[tokio::test]

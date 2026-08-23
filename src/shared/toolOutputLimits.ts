@@ -15,6 +15,17 @@ export const TOOL_OUTPUT_LIMITS = {
     maxColumns: 512,
     timeoutMs: 30_000,
   },
+  ast: {
+    defaultResults: 50,
+    maxResults: 200,
+    timeoutMs: 30_000,
+    maxFileBytes: 4 * 1024 * 1024,
+    maxMatchBytes: 2 * 1024,
+    maxPatternBytes: 16 * 1024,
+    maxCaptureBytes: 512,
+    maxCaptures: 32,
+    maxCaptureTotalBytes: 4 * 1024,
+  },
   git: {
     statusDefaultResults: 200,
     statusMaxResults: 1_000,
@@ -30,7 +41,7 @@ export const TOOL_OUTPUT_LIMITS = {
   },
 } as const;
 
-export type BoundedToolName = "list" | "glob" | "grep";
+export type BoundedToolName = "list" | "glob" | "grep" | "ast_grep";
 
 export interface ToolPage {
   limit: number;

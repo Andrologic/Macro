@@ -1,5 +1,7 @@
 #[path = "commands/ai.rs"]
 pub mod ai;
+#[path = "commands/ast_search.rs"]
+mod ast_search;
 #[path = "commands/external_apps.rs"]
 mod external_apps;
 #[path = "commands/fs.rs"]
@@ -139,6 +141,7 @@ fn tool_execution_timeout(tool_id: &str) -> Option<Duration> {
         "read" => Some(Duration::from_millis(tool_output::READ_TIMEOUT_MILLIS)),
         "glob" => Some(Duration::from_millis(tool_output::GLOB_TIMEOUT_MILLIS)),
         "grep" => Some(Duration::from_millis(tool_output::GREP_TIMEOUT_MILLIS)),
+        "ast_grep" => Some(Duration::from_millis(tool_output::AST_TIMEOUT_MILLIS)),
         _ => None,
     }
 }
@@ -2350,6 +2353,87 @@ async fn execute_workspace_tool_inner(
             }))
             .map_err(|error| command_error(error.to_string()))
         }
+        "ast_grep" => {
+            let path = json_arg_string(&args, "path").unwrap_or_else(|| ".".to_string());
+            let effective_path = remap_macro_tool_path(path.as_str());
+            let path_is_macro_scope = is_macro_scoped_path(path.as_str());
+            let include_hidden = json_arg_bool(&args, "include_hidden").unwrap_or(false);
+            let effective_workspace = resolve_workspace_for_tool_path(
+                &workspace,
+                &git_state,
+                Some(path.as_str()),
+                workspace_scope.as_deref(),
+            )
+            .await?;
+            let stats = fs::stat_internal(&effective_workspace, effective_path.clone())
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+            let mut candidates = Vec::new();
+
+            if stats.kind == "directory" {
+                let entries = fs::list_dir_internal(
+                    &effective_workspace,
+                    effective_path.clone(),
+                    Some(true),
+                    Some(include_hidden),
+                    None,
+                    Some(false),
+                )
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+                for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
+                    let relative = entry.relative_path.replace('\\', "/");
+                    let read_path = if effective_path.is_empty() || effective_path == "." {
+                        relative
+                    } else {
+                        format!(
+                            "{}/{}",
+                            effective_path.trim_end_matches(['/', '\\']),
+                            relative.trim_start_matches(['/', '\\'])
+                        )
+                    };
+                    let display_path = if path_is_macro_scope {
+                        to_macro_virtual_relative(&read_path)
+                    } else {
+                        read_path.clone()
+                    };
+                    candidates.push(ast_search::AstSearchCandidate {
+                        workspace: effective_workspace.clone(),
+                        read_path,
+                        display_path,
+                        size: entry.size,
+                        project_id: None,
+                        mount_name: None,
+                    });
+                }
+            } else if stats.kind == "file" {
+                candidates.push(ast_search::AstSearchCandidate {
+                    workspace: effective_workspace.clone(),
+                    read_path: effective_path.clone(),
+                    display_path: path.clone(),
+                    size: Some(stats.size),
+                    project_id: None,
+                    mount_name: None,
+                });
+            } else {
+                return Err(command_error(format!(
+                    "ast_grep path must be a file or directory: {}",
+                    path
+                )));
+            }
+
+            let cursor_scope = format!(
+                "ast_grep\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+                effective_workspace.to_string_lossy(),
+                effective_path,
+                json_arg_string(&args, "pattern").unwrap_or_default(),
+                json_arg_string(&args, "language").unwrap_or_default(),
+                json_arg_string(&args, "strictness").unwrap_or_else(|| "smart".to_string()),
+                json_arg_string(&args, "include_pattern").unwrap_or_default(),
+                include_hidden
+            );
+            ast_search::execute_ast_search(&args, candidates, &cursor_scope, false).await
+        }
         "git_status" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             if let Some(wsl_repo_path) = resolve_wsl_path_for_workspace(&workspace, &repo_path)? {
@@ -4321,6 +4405,10 @@ mod tests {
             tool_execution_timeout("grep"),
             Some(Duration::from_secs(30))
         );
+        assert_eq!(
+            tool_execution_timeout("ast_grep"),
+            Some(Duration::from_secs(30))
+        );
         assert_eq!(tool_execution_timeout("git_diff"), None);
     }
 
@@ -4882,6 +4970,85 @@ mod tests {
         assert_eq!(grep["skipped_files"]["binary"], 1);
         assert_eq!(grep["skipped_files"]["too_large"], 1);
         assert!(grep["next_cursor"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_workspace_ast_grep_returns_structural_resumable_matches() {
+        let workspace = TempDir::new().expect("workspace");
+        fs::write(
+            workspace.path().join("a.ts"),
+            "console.log(first);\nconsole.log(second);\n",
+        )
+        .expect("write first source");
+        fs::write(
+            workspace.path().join("b.ts"),
+            "const untouched = true;\nconsole.log(last);\n",
+        )
+        .expect("write second source");
+        fs::write(workspace.path().join("notes.txt"), "console.log(notCode)")
+            .expect("write unsupported source");
+
+        let first = execute_readonly_workspace_tool(
+            workspace.path(),
+            "ast_grep",
+            json!({
+                "pattern": "console.log($ARG)",
+                "include_meta": true,
+                "limit": 2
+            }),
+        )
+        .await;
+        let first: serde_json::Value = serde_json::from_str(&first).expect("ast grep json");
+        assert_eq!(first["count"], 2);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["matches"][0]["path"], "a.ts");
+        assert_eq!(first["matches"][0]["start_line"], 1);
+        assert_eq!(first["matches"][1]["meta_variables"]["ARG"], "second");
+        assert_eq!(first["skipped_files"]["unsupported_language"], 0);
+        let cursor = first["next_cursor"].as_str().expect("ast next cursor");
+
+        let mismatched_cursor = execute_workspace_tool(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            "Implement".to_string(),
+            "ast_grep".to_string(),
+            json!({
+                "pattern": "console.error($ARG)",
+                "limit": 2,
+                "cursor": cursor
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("ast cursor must be bound to the structural query");
+        assert!(mismatched_cursor
+            .message
+            .contains("does not belong to this tool request"));
+
+        let second = execute_readonly_workspace_tool(
+            workspace.path(),
+            "ast_grep",
+            json!({
+                "pattern": "console.log($ARG)",
+                "include_meta": true,
+                "limit": 2,
+                "cursor": cursor
+            }),
+        )
+        .await;
+        let second: serde_json::Value = serde_json::from_str(&second).expect("ast page json");
+        assert_eq!(second["count"], 1);
+        assert_eq!(second["matches"][0]["path"], "b.ts");
+        assert_eq!(second["matches"][0]["meta_variables"]["ARG"], "last");
+        assert_eq!(second["truncated"], false);
+        assert_eq!(second["total_count"], 3);
+        assert_eq!(second["total_is_exact"], true);
+        assert_eq!(second["skipped_files"]["unsupported_language"], 1);
     }
 
     #[tokio::test]

@@ -125,6 +125,12 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     destructiveStrategy: "never",
     summary: "Search text in the workspace",
   },
+  ast_grep: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Search code structurally in the workspace",
+  },
   git_status: {
     actionGroup: "observe",
     rememberStrategy: "path",

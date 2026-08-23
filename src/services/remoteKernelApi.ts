@@ -11,7 +11,8 @@ interface RemoteToolModePolicy {
 const CONTENT_REVISIONS_CAPABILITY = 'content_revisions_v1';
 const BOUNDED_TOOL_OUTPUT_CAPABILITY = 'bounded_tool_output_v1';
 const BOUNDED_GIT_OUTPUT_CAPABILITY = 'bounded_git_output_v1';
-const BOUNDED_OUTPUT_TOOL_IDS = new Set(['list', 'read', 'glob', 'grep']);
+const STRUCTURAL_SEARCH_CAPABILITY = 'structural_search_v1';
+const BOUNDED_OUTPUT_TOOL_IDS = new Set(['list', 'read', 'glob', 'grep', 'ast_grep']);
 const BOUNDED_GIT_OUTPUT_TOOL_IDS = new Set([
   'git_status',
   'git_log',
@@ -96,7 +97,8 @@ export const executeRemoteWorkspaceTool = async (params: {
   const needsContentRevisions = requiresContentRevisions(params);
   const needsBoundedOutput = BOUNDED_OUTPUT_TOOL_IDS.has(params.toolId);
   const needsBoundedGitOutput = BOUNDED_GIT_OUTPUT_TOOL_IDS.has(params.toolId);
-  if (needsContentRevisions || needsBoundedOutput || needsBoundedGitOutput) {
+  const needsStructuralSearch = params.toolId === 'ast_grep';
+  if (needsContentRevisions || needsBoundedOutput || needsBoundedGitOutput || needsStructuralSearch) {
     const policy = await getRemoteToolModePolicy(params.mode, params.signal);
     if (
       needsContentRevisions &&
@@ -120,6 +122,14 @@ export const executeRemoteWorkspaceTool = async (params: {
     ) {
       throw new Error(
         'The remote Macro kernel cannot guarantee bounded Git tool output. Update the remote kernel before retrying this repository inspection tool.'
+      );
+    }
+    if (
+      needsStructuralSearch &&
+      !policy.capabilities?.includes(STRUCTURAL_SEARCH_CAPABILITY)
+    ) {
+      throw new Error(
+        'The remote Macro kernel does not support structural search. Update the remote kernel before retrying ast_grep.'
       );
     }
   }

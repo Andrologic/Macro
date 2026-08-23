@@ -60,7 +60,7 @@ describe('macroToolRegistry', () => {
       expect(requireMacroToolRegistryEntry(toolId).copilot?.overridesBuiltInTool).toBe(true);
     }
 
-    for (const toolId of ['git_status', 'terminal_run', 'question']) {
+    for (const toolId of ['ast_grep', 'git_status', 'terminal_run', 'question']) {
       expect(requireMacroToolRegistryEntry(toolId).copilot?.overridesBuiltInTool).toBeUndefined();
     }
   });
@@ -107,7 +107,7 @@ describe('macroToolRegistry', () => {
   });
 
   it('publishes bounded, resumable arguments for workspace read tools', () => {
-    for (const toolId of ['list', 'glob', 'grep', 'git_status', 'git_log'] as const) {
+    for (const toolId of ['list', 'glob', 'grep', 'ast_grep', 'git_status', 'git_log'] as const) {
       const parameters = requireMacroToolRegistryEntry(toolId).parameters;
       expect(parameters.type).toBe('object');
       if (parameters.type !== 'object') continue;
