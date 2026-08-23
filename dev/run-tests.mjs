@@ -4,6 +4,11 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  formatCoverageSummary,
+  prepareCoverageRun,
+  writeCoverageArtifacts,
+} from './coverage/write-report.mjs';
 import { formatDuration } from './format-duration.mjs';
 
 const TEST_EXTENSIONS = ['.test.ts', '.test.tsx'];
@@ -227,6 +232,7 @@ function reportFailures(failures) {
 }
 
 async function main() {
+  const repositoryRoot = resolve('.');
   const options = parseRunOptions(process.argv.slice(2));
   const allFiles = await collectTestFiles();
   const files = filterFiles(allFiles, options.filters);
@@ -246,6 +252,9 @@ async function main() {
     options.concurrency,
     process.env.MACRO_TEST_CONCURRENCY,
   );
+  if (options.coverage) {
+    await prepareCoverageRun(repositoryRoot);
+  }
   console.log(`Running ${files.length} test file(s) with concurrency ${concurrency}${options.coverage ? ' (coverage on)' : ''}.`);
   const startedAt = Date.now();
 
@@ -278,9 +287,30 @@ async function main() {
   }
 
   const failures = results.filter((result) => result.exitCode !== 0);
+  let coverageError = null;
+  if (options.coverage) {
+    try {
+      const { summary } = await writeCoverageArtifacts({
+        repositoryRoot,
+        selectedTestFiles: files,
+        availableTestFiles: allFiles.length,
+        completedTestFiles: completed,
+        failedTestFiles: failures.map((failure) => failure.file),
+        coverageDirectoryFor,
+      });
+      console.log(`\n${formatCoverageSummary(summary)}`);
+      console.log('Coverage artifacts: coverage/lcov.info and coverage/summary.json');
+    } catch (error) {
+      coverageError = error;
+      console.error(`\nCoverage aggregation failed: ${error instanceof Error ? error.message : error}`);
+    }
+  }
   if (failures.length > 0) {
     reportFailures(failures);
-    process.exit(1);
+  }
+  if (failures.length > 0 || coverageError) {
+    process.exitCode = 1;
+    return;
   }
   console.log(`\nAll ${files.length} test file(s) passed in ${formatDuration(Date.now() - startedAt)}.`);
 }

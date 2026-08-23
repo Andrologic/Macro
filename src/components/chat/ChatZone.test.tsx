@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -6,8 +6,17 @@ import {
   createTranslationMock,
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
-import { installTauriRuntimeMock } from '../../test-utils/tauriRuntime';
+import { createDeferred } from '../../test-utils/deferred';
+import {
+  installTauriRuntimeMock,
+  removeTauriRuntimeMock,
+} from '../../test-utils/tauriRuntime';
+import { createStoreHookMock } from '../../test-utils/storeHookMock';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
+import { registerArchitectScenarios } from './__tests__/architect.scenarios';
+import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
+import { registerImplementScenarios } from './__tests__/implement.scenarios';
+import { registerQuestionnaireApprovalScenarios } from './__tests__/questionnaireApproval.scenarios';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -20,7 +29,7 @@ type MockConversation = {
   group_id: string | null;
 };
 
-type MockMessage = {
+export type MockMessage = {
   id: string;
   conversation_id: string;
   role: 'user' | 'assistant';
@@ -52,7 +61,7 @@ type MockMessage = {
   completion_reason?: 'completed' | 'tool_turn_limit' | 'post_tool_empty_fallback';
 };
 
-type MockChatState = {
+export type MockChatState = {
   conversations: MockConversation[];
   messages: MockMessage[];
   selectedConversationId: string | null;
@@ -174,7 +183,7 @@ type MockChatState = {
   clearComposerContextRefs: ReturnType<typeof mock>;
 };
 
-type AppStoreState = {
+export type AppStoreState = {
   mode: AppMode;
   agentType: 'build' | 'plan';
   setAgentType: ReturnType<typeof mock>;
@@ -202,7 +211,7 @@ type ShortcutsState = {
   promptHistoryNavigationMode: string;
 };
 
-type TaskState = {
+export type TaskState = {
   tasks: Array<{
     id: string;
     title: string;
@@ -228,50 +237,6 @@ type TaskState = {
   }>;
   getTaskById: (taskId: string) => TaskState['tasks'][number] | null;
   startTask: ReturnType<typeof mock>;
-};
-
-const createStoreHook = <T extends object,>(
-  getSnapshot: () => T,
-  setSnapshot: (nextState: T) => void,
-) => {
-  const listeners = new Set<() => void>();
-  const subscribe = (listener: () => void) => {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-      };
-  };
-
-  const hook = ((selector?: (state: T) => unknown) => {
-    const snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-    return selector ? selector(snapshot) : snapshot;
-  }) as ((selector?: (state: T) => unknown) => unknown) & {
-    emit: () => void;
-    getState: () => T;
-    setState: (
-      nextStateOrUpdater: Partial<T> | T | ((state: T) => Partial<T> | T),
-      replace?: boolean
-    ) => void;
-    subscribe: typeof subscribe;
-  };
-
-  hook.getState = getSnapshot;
-  hook.emit = () => {
-    listeners.forEach((listener) => listener());
-  };
-  hook.setState = (nextStateOrUpdater, replace = false) => {
-    const currentState = getSnapshot();
-    const nextState =
-      typeof nextStateOrUpdater === 'function'
-        ? nextStateOrUpdater(currentState)
-        : nextStateOrUpdater;
-    setSnapshot(
-      (replace ? nextState : { ...currentState, ...nextState }) as T
-    );
-    hook.emit();
-  };
-  hook.subscribe = subscribe;
-  return hook;
 };
 
 let appState: AppStoreState;
@@ -311,22 +276,22 @@ const getMockConversationRuntime = (
   };
 };
 
-const useAppStore = createStoreHook(() => appState, (nextState) => {
+const useAppStore = createStoreHookMock(() => appState, (nextState) => {
   appState = nextState;
 });
-const useChatStore = createStoreHook(() => chatState, (nextState) => {
+const useChatStore = createStoreHookMock(() => chatState, (nextState) => {
   chatState = nextState;
 });
-const useProviderStore = createStoreHook(() => providerState, (nextState) => {
+const useProviderStore = createStoreHookMock(() => providerState, (nextState) => {
   providerState = nextState;
 });
-const useSkillsStore = createStoreHook(() => skillsState, (nextState) => {
+const useSkillsStore = createStoreHookMock(() => skillsState, (nextState) => {
   skillsState = nextState;
 });
-const useShortcutsStore = createStoreHook(() => shortcutsState, (nextState) => {
+const useShortcutsStore = createStoreHookMock(() => shortcutsState, (nextState) => {
   shortcutsState = nextState;
 });
-const useTaskStore = createStoreHook(() => taskState, (nextState) => {
+const useTaskStore = createStoreHookMock(() => taskState, (nextState) => {
   taskState = nextState;
 });
 const translationMock = createTranslationMock({
@@ -373,9 +338,6 @@ const translationMock = createTranslationMock({
   'chat.contextWindow.countSummary': '{{messages}} messages · {{sources}} sources',
   'chat.contextWindow.refresh': 'Actualiser',
 });
-const COMPACTION_PROGRESS_TEXT = 'Compactage du contexte...';
-const COMPACTION_BOUNDARY_TEXT = 'Contexte compacté';
-
 const scrollContainerRef = { current: null as HTMLDivElement | null };
 const markdownRendererContentMock = mock(
   (_content: string, _isStreaming: boolean) => undefined,
@@ -386,27 +348,38 @@ let messageEditEditorValue = '';
 let composerEditorSetTextCalls: string[] = [];
 let composerEditorFocusCalls = 0;
 let latestComposerProps: Record<string, unknown> | null = null;
-let notifyInfoMock: ReturnType<typeof mock>;
-let notifySuccessMock: ReturnType<typeof mock>;
-let notifyWarningMock: ReturnType<typeof mock>;
-let notifyErrorMock: ReturnType<typeof mock>;
-let notifyActionRequiredMock: ReturnType<typeof mock>;
+const notifyInfoMock = mock(() => undefined);
+const notifySuccessMock = mock(() => undefined);
+const notifyWarningMock = mock(() => undefined);
+const notifyErrorMock = mock(() => undefined);
+const notifyActionRequiredMock = mock(() => undefined);
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
+const hadInitialActEnvironment = Object.prototype.hasOwnProperty.call(
+  globalThis,
+  'IS_REACT_ACT_ENVIRONMENT',
+);
+const initialActEnvironment = (
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT;
+const hadInitialRequestAnimationFrame = Object.prototype.hasOwnProperty.call(
+  globalThis,
+  'requestAnimationFrame',
+);
+const initialRequestAnimationFrame = globalThis.requestAnimationFrame;
 
 const resetNotifyMocks = () => {
-  notifyInfoMock = mock(() => undefined);
-  notifySuccessMock = mock(() => undefined);
-  notifyWarningMock = mock(() => undefined);
-  notifyErrorMock = mock(() => undefined);
-  notifyActionRequiredMock = mock(() => undefined);
+  notifyInfoMock.mockClear();
+  notifySuccessMock.mockClear();
+  notifyWarningMock.mockClear();
+  notifyErrorMock.mockClear();
+  notifyActionRequiredMock.mockClear();
 };
 
 const loadChatZoneModule = async () => {
   importCounter += 1;
   mock.restore();
-  resetNotifyMocks();
 
   installReactI18nextMock(translationMock);
 
@@ -634,6 +607,7 @@ const loadChatZoneModule = async () => {
     subscribePreference: mock(() => () => undefined),
   }));
 
+  await import('./AgentCodeReplayConfirmModal');
   ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
 };
 
@@ -657,7 +631,7 @@ const buildMessage = (overrides: Partial<MockMessage>): MockMessage => ({
   ...overrides,
 });
 
-const buildCompactionEvent = (
+export const buildCompactionEvent = (
   overrides: Partial<
     MockChatState['sessionCompactionEventsByConversationId'][string][number]
   > = {},
@@ -672,7 +646,7 @@ const buildCompactionEvent = (
   ...overrides,
 });
 
-const buildCompactionFootprint = (
+export const buildCompactionFootprint = (
   overrides: {
     usableContextRatio?: number;
     totalContextRatio?: number;
@@ -683,7 +657,7 @@ const buildCompactionFootprint = (
   ...overrides,
 });
 
-const buildManualCompactionCompletedResult = (
+export const buildManualCompactionCompletedResult = (
   overrides: Record<string, unknown> = {},
 ) => ({
   outcome: 'compacted' as const,
@@ -700,7 +674,7 @@ const buildManualCompactionCompletedResult = (
   ...overrides,
 });
 
-const buildManualCompactionSkippedResult = (
+export const buildManualCompactionSkippedResult = (
   overrides: Record<string, unknown> = {},
 ) => ({
   outcome: 'skipped' as const,
@@ -949,6 +923,7 @@ describe('ChatZone', () => {
 
     await loadChatZoneModule();
     resetState();
+    resetNotifyMocks();
     markdownRendererContentMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -965,6 +940,18 @@ describe('ChatZone', () => {
     root = null;
     container = null;
     document.body.innerHTML = '';
+    removeTauriRuntimeMock();
+    if (hadInitialActEnvironment) {
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+        .IS_REACT_ACT_ENVIRONMENT = initialActEnvironment;
+    } else {
+      Reflect.deleteProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT');
+    }
+    if (hadInitialRequestAnimationFrame) {
+      globalThis.requestAnimationFrame = initialRequestAnimationFrame;
+    } else {
+      Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
+    }
     mock.restore();
   });
 
@@ -1546,26 +1533,28 @@ describe('ChatZone', () => {
   });
 
   it('keeps composer editing active when checkpoint restoration is canceled', async () => {
+    const preview = {
+      conversationId: 'conv-1',
+      messageId: 'msg-user-1',
+      targetCheckpointId: null,
+      affectedFiles: [
+        {
+          path: 'src/new-file.ts',
+          realPath: '/repo/src/new-file.ts',
+          action: 'delete',
+          status: 'created',
+          target: { exists: false, content: null },
+        },
+      ],
+    };
+    const previewDeferred = createDeferred<typeof preview>();
     chatState = {
       ...chatState,
       messages: [
         buildMessage({ id: 'msg-user-1', role: 'user', content: 'Original message' }),
         buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Code changed.' }),
       ],
-      getAgentCodeReplayPreview: mock(async () => ({
-        conversationId: 'conv-1',
-        messageId: 'msg-user-1',
-        targetCheckpointId: null,
-        affectedFiles: [
-          {
-            path: 'src/new-file.ts',
-            realPath: '/repo/src/new-file.ts',
-            action: 'delete',
-            status: 'created',
-            target: { exists: false, content: null },
-          },
-        ],
-      })),
+      getAgentCodeReplayPreview: mock(() => previewDeferred.promise),
     };
 
     await act(async () => {
@@ -1575,6 +1564,10 @@ describe('ChatZone', () => {
     await clickFirstMessageEditButton();
     await setComposerText('Edited message');
     await clickSendButton();
+    await act(async () => {
+      previewDeferred.resolve(preview);
+      await previewDeferred.promise;
+    });
 
     expect(requireContainer().textContent).toContain('Revenir au point de contrôle du code ?');
     expect(requireContainer().textContent).toContain('src/new-file.ts');
@@ -1728,759 +1721,6 @@ describe('ChatZone', () => {
     );
   });
 
-  it('renders a vertical compaction boundary in the transcript', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Réponse avant compression',
-        }),
-        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Message après compression' }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'compacted',
-          upToMessageId: 'msg-assistant-1',
-          updatedAt: '2026-05-10T08:30:00.000Z',
-          summaryText: 'Résumé compacté',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [buildCompactionEvent()],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const boundary = requireContainer().querySelector('[data-chat-compaction-boundary="true"]');
-    expect(boundary).not.toBeNull();
-    expect(boundary?.textContent).toContain(COMPACTION_BOUNDARY_TEXT);
-    expect(boundary?.getAttribute('role')).toBe('separator');
-    expect(boundary?.getAttribute('aria-label')).toBe(COMPACTION_BOUNDARY_TEXT);
-    expect(boundary?.getAttribute('data-chat-compaction-boundary-orientation')).toBe('vertical');
-    expect(boundary?.querySelector('[data-icon="archive"]')).toBeNull();
-  });
-
-  it('keeps the compaction boundary visible when the compacted message is last', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Dernière réponse compactée',
-        }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'compacted',
-          upToMessageId: 'msg-assistant-1',
-          updatedAt: '2026-05-10T08:30:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [buildCompactionEvent()],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
-    ).not.toBeNull();
-  });
-
-  it('removes the virtual transcript gap before a compaction separator that follows an assistant message', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Dernière réponse compactée',
-        }),
-      ],
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [buildCompactionEvent()],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const assistant = requireContainer().querySelector<HTMLElement>(
-      '#chat-message-msg-assistant-1'
-    );
-    const boundary = requireContainer().querySelector<HTMLElement>(
-      '[data-chat-compaction-boundary="true"]'
-    );
-
-    expect(assistant).not.toBeNull();
-    expect(boundary).not.toBeNull();
-    expect(assistant?.style.transform).toBe('translateY(244px)');
-    expect(boundary?.style.transform).toBe('translateY(464px)');
-    expect(boundary?.className).toContain('pt-0');
-    expect(boundary?.className).toContain('pb-2');
-  });
-
-  it('does not render a visual boundary from a rehydrated compaction checkpoint alone', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Dernière réponse compactée',
-        }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'compacted',
-          upToMessageId: 'msg-assistant-1',
-          updatedAt: '2026-05-10T08:30:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {},
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
-    ).toBeNull();
-  });
-
-  it('renders compaction progress in the transcript while manual compaction is running', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Réponse' }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'compacting',
-          upToMessageId: 'msg-assistant-1',
-          updatedAt: '2026-05-10T08:30:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            id: 'previous-compaction',
-            status: 'completed',
-            displayAfterMessageId: 'msg-user-1',
-          }),
-          buildCompactionEvent({
-            status: 'running',
-            displayAfterMessageId: 'msg-assistant-1',
-            completedAt: null,
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
-    expect(progress).not.toBeNull();
-    expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('compacting');
-    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
-    ).not.toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-boundary="true"]')).not.toBeNull();
-  });
-
-  it('uses the same compaction label layout for completed and running rows', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Réponse' }),
-      ],
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            id: 'completed-compaction',
-            status: 'completed',
-            displayAfterMessageId: 'msg-user-1',
-          }),
-          buildCompactionEvent({
-            id: 'running-compaction',
-            status: 'running',
-            displayAfterMessageId: 'msg-assistant-1',
-            completedAt: null,
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const boundary = requireContainer().querySelector('[data-chat-compaction-boundary="true"]');
-    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
-    const boundaryLabel = boundary?.querySelector('.chat-compaction-label');
-    const progressLabel = progress?.querySelector('.chat-compaction-label');
-
-    expect(boundary).not.toBeNull();
-    expect(progress).not.toBeNull();
-    expect(boundaryLabel).not.toBeNull();
-    expect(progressLabel).not.toBeNull();
-    expect(boundaryLabel?.textContent).toContain(COMPACTION_BOUNDARY_TEXT);
-    expect(progressLabel?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(boundaryLabel?.classList.contains('chat-compaction-wave-text')).toBe(false);
-    expect(progressLabel?.classList.contains('chat-compaction-wave-text')).toBe(true);
-  });
-
-  it('suppresses the streaming cursor during compaction without rendering inline compaction text', async () => {
-    chatState = {
-      ...chatState,
-      isStreaming: true,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message trop large' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: '',
-        }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'recovering_overflow',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-        },
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
-    ).not.toBeNull();
-  });
-
-  it('renders standalone preparation activity instead of attaching a cursor to an old assistant row', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Ancien message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Ancienne réponse',
-        }),
-      ],
-      getConversationRuntime: () => ({
-        phase: 'preparing',
-        sessionId: 'session-conv-1',
-        assistantMessageId: null,
-        lastError: null,
-        lastErrorOrigin: null,
-        lastErrorDisplayTarget: null,
-      }),
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            status: 'running',
-            displayAfterMessageId: 'msg-assistant-1',
-            completedAt: null,
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
-    expect(progress).not.toBeNull();
-    expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
-    expect(scrollMagnetActiveValues.at(-1)).toBe(true);
-  });
-
-  it('updates an existing streaming assistant row when automatic compaction starts', async () => {
-    const userMessage = buildMessage({
-      id: 'msg-user-1',
-      role: 'user',
-      content: 'Message trop grand',
-    });
-    const assistantMessage = buildMessage({
-      id: 'msg-assistant-1',
-      role: 'assistant',
-      content: '',
-    });
-    const messages = [userMessage, assistantMessage];
-    chatState = {
-      ...chatState,
-      isStreaming: true,
-      messages,
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).not.toBeNull();
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
-
-    markdownRendererContentMock.mockClear();
-    await act(async () => {
-      useChatStore.setState((state) => ({
-        conversationCompactionStatusById: {
-          ...state.conversationCompactionStatusById,
-          'conv-1': {
-            phase: 'safety_compacting',
-            updatedAt: '2026-05-10T08:31:00.000Z',
-          },
-        },
-      }));
-      await Promise.resolve();
-    });
-
-    expect(chatState.messages).toBe(messages);
-    expect(chatState.messages[1]).toBe(assistantMessage);
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
-    expect(
-      markdownRendererContentMock.mock.calls.some(
-        ([content, isStreaming]) => content === '' && isStreaming === false,
-      ),
-    ).toBe(true);
-  });
-
-  it('anchors automatic compaction to the latest assistant row when runtime loses the assistant id', async () => {
-    let runtimeAssistantMessageId: string | null = 'msg-assistant-1';
-    const userMessage = buildMessage({
-      id: 'msg-user-1',
-      role: 'user',
-      content: 'Message trop grand',
-    });
-    const assistantMessage = buildMessage({
-      id: 'msg-assistant-1',
-      role: 'assistant',
-      content: '',
-    });
-    chatState = {
-      ...chatState,
-      messages: [userMessage, assistantMessage],
-      getConversationRuntime: () => ({
-        phase: 'streaming',
-        sessionId: 'session-conv-1',
-        assistantMessageId: runtimeAssistantMessageId,
-        lastError: null,
-        lastErrorOrigin: null,
-        lastErrorDisplayTarget: null,
-      }),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).not.toBeNull();
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-
-    runtimeAssistantMessageId = null;
-    await act(async () => {
-      useChatStore.setState((state) => ({
-        conversationCompactionStatusById: {
-          ...state.conversationCompactionStatusById,
-          'conv-1': {
-            phase: 'safety_compacting',
-            updatedAt: '2026-05-10T08:31:00.000Z',
-          },
-        },
-      }));
-      await Promise.resolve();
-    });
-
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
-  });
-
-  it('suppresses the preparing assistant cursor during compaction without rendering inline compaction text', async () => {
-    chatState = {
-      ...chatState,
-      sendState: 'preparing',
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message à envoyer' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: '',
-        }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'safety_compacting',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-        },
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-assistant-activity="true"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
-    ).not.toBeNull();
-  });
-
-  it('animates the context window during safety compaction without diagnostics', async () => {
-    chatState = {
-      ...chatState,
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'safety_compacting',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.42 }),
-        },
-      },
-      contextDiagnosticsByConversationId: {},
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
-    ).not.toBeNull();
-    expect(
-      requireContainer()
-        .querySelector('[data-testid="context-window-compacting-mask-fill"]')
-        ?.getAttribute('stroke-dasharray'),
-    ).toBe('42 100');
-  });
-
-  it('animates the context window during model-switch compaction without diagnostics', async () => {
-    chatState = {
-      ...chatState,
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'model_switch_compacting',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.37 }),
-        },
-      },
-      contextDiagnosticsByConversationId: {},
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
-    ).not.toBeNull();
-    expect(
-      requireContainer()
-        .querySelector('[data-testid="context-window-compacting-mask-fill"]')
-        ?.getAttribute('stroke-dasharray'),
-    ).toBe('37 100');
-  });
-
-  it('animates the context window during overflow recovery without diagnostics', async () => {
-    chatState = {
-      ...chatState,
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'recovering_overflow',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.64 }),
-        },
-      },
-      contextDiagnosticsByConversationId: {},
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
-    ).not.toBeNull();
-    expect(
-      requireContainer()
-        .querySelector('[data-testid="context-window-compacting-mask-fill"]')
-        ?.getAttribute('stroke-dasharray'),
-    ).toBe('64 100');
-  });
-
-  it('does not animate the context window for a final compacted status', async () => {
-    chatState = {
-      ...chatState,
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'compacted',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-          footprintAfter: buildCompactionFootprint({ usableContextRatio: 0.25 }),
-        },
-      },
-      contextDiagnosticsByConversationId: {},
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting"]'),
-    ).toBeNull();
-  });
-
-  it('renders compaction progress clearly in the transcript when no assistant cursor exists', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message trop large' }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'recovering_overflow',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            status: 'running',
-            displayAfterMessageId: 'msg-user-1',
-            kind: 'stream_overflow',
-            completedAt: null,
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
-    expect(progress).not.toBeNull();
-    expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('recovering_overflow');
-    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
-    ).not.toBeNull();
-  });
-
-  it('renders safety compaction progress when the assistant cursor is not available yet', async () => {
-    chatState = {
-      ...chatState,
-      sendState: 'preparing',
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message trop large' }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'safety_compacting',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            status: 'running',
-            displayAfterMessageId: 'msg-user-1',
-            kind: 'safety_prestream',
-            completedAt: null,
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
-    expect(progress).not.toBeNull();
-    expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('safety_compacting');
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
-    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(progress?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
-    ).not.toBeNull();
-  });
-
-  it('keeps the transcript pinned while pre-stream safety compaction is visible', async () => {
-    chatState = {
-      ...chatState,
-      sendState: 'preparing',
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Message trop large' }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'safety_compacting',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            status: 'running',
-            displayAfterMessageId: 'msg-user-1',
-            kind: 'safety_prestream',
-            completedAt: null,
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('[data-chat-compaction-progress="true"]'),
-    ).not.toBeNull();
-    expect(scrollMagnetActiveValues.at(-1)).toBe(true);
-  });
-
-  it('renders safety compaction progress before messages are persisted and keeps the composer text', async () => {
-    composerEditorValue = 'encore';
-    chatState = {
-      ...chatState,
-      sendState: 'preparing',
-      messages: [],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'safety_compacting',
-          updatedAt: '2026-05-10T08:31:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            status: 'running',
-            displayAfterMessageId: null,
-            kind: 'safety_prestream',
-            completedAt: null,
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
-    const composer = requireContainer().querySelector(
-      '[data-testid="composer-editor"]',
-    ) as HTMLTextAreaElement | null;
-    expect(progress).not.toBeNull();
-    expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('safety_compacting');
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
-    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(progress?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
-    expect(composer?.value).toBe('encore');
-    expect(
-      requireContainer().querySelector('[data-chat-streaming-compaction-activity="true"]'),
-    ).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
-    ).not.toBeNull();
-  });
-
-  it('keeps the checkpoint boundary after compaction completes', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Réponse' }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'compacted',
-          upToMessageId: 'msg-assistant-1',
-          updatedAt: '2026-05-10T08:32:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [
-          buildCompactionEvent({
-            displayAfterMessageId: 'msg-user-1',
-            logicalUpToMessageId: 'msg-assistant-1',
-            completedAt: '2026-05-10T08:32:00.000Z',
-          }),
-        ],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
-    const boundary = requireContainer().querySelector('[data-chat-compaction-boundary="true"]');
-    expect(boundary).not.toBeNull();
-    expect(boundary?.textContent).toContain(COMPACTION_BOUNDARY_TEXT);
-    expect(boundary?.querySelector('.chat-streaming-compaction__wave')).toBeNull();
-  });
-
   it('asks before replaying a user message that would rewind agent code checkpoints', async () => {
     chatState = {
       ...chatState,
@@ -2627,266 +1867,6 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Task worktree is not ready yet.');
   });
 
-  it('keeps manual compaction out of the header while preserving compacted transcript state', async () => {
-    localStorage.setItem('macro_compaction.manualVisible', JSON.stringify(true));
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Réponse avant compression',
-        }),
-        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Message après compression' }),
-      ],
-      conversationCompactionStatusById: {
-        'conv-1': {
-          phase: 'compacted',
-          upToMessageId: 'msg-assistant-1',
-          updatedAt: '2026-05-10T08:30:00.000Z',
-        },
-      },
-      sessionCompactionEventsByConversationId: {
-        'conv-1': [buildCompactionEvent()],
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-    await act(async () => undefined);
-
-    expect(
-      requireContainer().querySelector('button[aria-label="Compacter maintenant"]')
-    ).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-chat-compaction-boundary="true"]')
-    ).not.toBeNull();
-  });
-
-  it('renders transcript progress when manual compaction starts from the context popover', async () => {
-    let resolveCompaction: (() => void) | null = null;
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Réponse avant compactage manuel',
-        }),
-        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Deuxième demande' }),
-        buildMessage({
-          id: 'msg-assistant-2',
-          role: 'assistant',
-          content: 'Réponse intermédiaire',
-        }),
-        buildMessage({ id: 'msg-user-3', role: 'user', content: 'Troisième demande' }),
-      ],
-      compactConversationNow: mock(
-        () => {
-          useChatStore.setState((state) => ({
-            conversationCompactionStatusById: {
-              ...state.conversationCompactionStatusById,
-              'conv-1': {
-                phase: 'compacting',
-                upToMessageId: 'msg-assistant-1',
-                updatedAt: '2026-05-10T08:30:00.000Z',
-                summaryText: 'Previous compacted summary.',
-              },
-            },
-            sessionCompactionEventsByConversationId: {
-              ...state.sessionCompactionEventsByConversationId,
-              'conv-1': [
-                buildCompactionEvent({
-                  status: 'running',
-                  displayAfterMessageId: 'msg-assistant-1',
-                  completedAt: null,
-                }),
-              ],
-            },
-          }));
-          return new Promise<ReturnType<typeof buildManualCompactionCompletedResult>>((resolve) => {
-            resolveCompaction = () => resolve(buildManualCompactionCompletedResult());
-          });
-        },
-      ),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-    await act(async () => undefined);
-
-    expect(
-      requireContainer().querySelector('button[aria-label="Compacter maintenant"]'),
-    ).toBeNull();
-
-    await act(async () => {
-      requireContainer()
-        .querySelector<HTMLButtonElement>('button[aria-label="Diagnostic du contexte"]')
-        ?.click();
-      await Promise.resolve();
-    });
-
-    const manualButton = Array.from(
-      requireContainer().querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent?.includes('Compacter maintenant'));
-    expect(manualButton).not.toBeNull();
-    chatState.refreshConversationContextDiagnostics.mockClear();
-
-    await act(async () => {
-      manualButton?.click();
-      await Promise.resolve();
-    });
-
-    const progress = requireContainer().querySelector('[data-chat-compaction-progress="true"]');
-    expect(progress).not.toBeNull();
-    expect(progress?.textContent).toContain(COMPACTION_PROGRESS_TEXT);
-    expect(progress?.getAttribute('data-chat-compaction-progress-phase')).toBe('compacting');
-    expect(progress?.querySelector('.chat-compaction-wave-text')).not.toBeNull();
-    expect(progress?.querySelector('[data-spinner-icon="true"] .animate-spin')).toBeNull();
-    expect(
-      requireContainer().querySelector('[data-testid="context-window-compacting-spinner"]'),
-    ).not.toBeNull();
-
-    await act(async () => {
-      resolveCompaction?.();
-      await Promise.resolve();
-    });
-    expect(chatState.refreshConversationContextDiagnostics).toHaveBeenCalledWith('conv-1', {
-      mode: 'full',
-    });
-    expect(notifySuccessMock).toHaveBeenCalledWith(
-      'Contexte compacté',
-      expect.objectContaining({
-        description: expect.stringContaining('tokens économisés'),
-      }),
-    );
-  });
-
-  it('greys manual compaction without rendering transcript progress when history is too short', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Réponse courte',
-        }),
-      ],
-      compactConversationNow: mock(async () =>
-        buildManualCompactionSkippedResult({
-          reason: 'not_enough_history',
-          userTurnCount: 2,
-        })
-      ),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-    await act(async () => undefined);
-
-    await act(async () => {
-      requireContainer()
-        .querySelector<HTMLButtonElement>('button[aria-label="Diagnostic du contexte"]')
-        ?.click();
-      await Promise.resolve();
-    });
-
-    const manualButton = Array.from(
-      requireContainer().querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent?.includes('Rien à compacter'));
-    expect(manualButton).not.toBeNull();
-    expect(manualButton?.disabled).toBe(true);
-    expect(manualButton?.getAttribute('title')).toContain("plus d'historique");
-    expect(requireContainer().textContent).not.toContain('Action manuelle');
-    expect(requireContainer().textContent).not.toContain("plus d'historique");
-    chatState.refreshConversationContextDiagnostics.mockClear();
-
-    await act(async () => {
-      manualButton?.click();
-      await Promise.resolve();
-    });
-
-    expect(chatState.compactConversationNow).not.toHaveBeenCalled();
-    expect(notifyInfoMock).not.toHaveBeenCalled();
-    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
-    expect(
-      requireContainer().querySelector('[data-chat-compaction-progress="true"]'),
-    ).toBeNull();
-  });
-
-  it('recovers the manual compaction button after a compaction failure', async () => {
-    const originalWarn = console.warn;
-    console.warn = mock(() => undefined) as unknown as typeof console.warn;
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Premier message' }),
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Réponse avant échec de compactage',
-        }),
-        buildMessage({ id: 'msg-user-2', role: 'user', content: 'Deuxième demande' }),
-        buildMessage({
-          id: 'msg-assistant-2',
-          role: 'assistant',
-          content: 'Réponse intermédiaire',
-        }),
-        buildMessage({ id: 'msg-user-3', role: 'user', content: 'Troisième demande' }),
-      ],
-      compactConversationNow: mock(async () => {
-        throw new Error('compaction failed');
-      }),
-    };
-
-    try {
-      await act(async () => {
-        requireRoot().render(<ChatZone />);
-      });
-      await act(async () => undefined);
-
-      await act(async () => {
-        requireContainer()
-          .querySelector<HTMLButtonElement>('button[aria-label="Diagnostic du contexte"]')
-          ?.click();
-        await Promise.resolve();
-      });
-
-      const manualButton = Array.from(
-        requireContainer().querySelectorAll<HTMLButtonElement>('button'),
-      ).find((button) => button.textContent?.includes('Compacter maintenant'));
-      expect(manualButton).not.toBeNull();
-      chatState.refreshConversationContextDiagnostics.mockClear();
-
-      await act(async () => {
-        manualButton?.click();
-        await Promise.resolve();
-      });
-
-      expect(chatState.compactConversationNow).toHaveBeenCalledWith('conv-1');
-      expect(notifyErrorMock).toHaveBeenCalledWith(
-        'Compactage impossible',
-        expect.objectContaining({
-          description: 'compaction failed',
-        }),
-      );
-      expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
-      expect(
-        Array.from(requireContainer().querySelectorAll<HTMLButtonElement>('button')).find(
-          (button) => button.textContent?.includes('Compacter maintenant'),
-        )?.disabled,
-      ).toBe(false);
-    } finally {
-      console.warn = originalWarn;
-    }
-  });
-
   it('shows the context indicator in Chat mode when a conversation is selected', async () => {
     chatState = {
       ...chatState,
@@ -2954,283 +1934,6 @@ describe('ChatZone', () => {
     expect(
       requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
     ).not.toBeNull();
-  });
-
-  it('locks Architect chat when no plan is selected', async () => {
-    appState = {
-      ...appState,
-      mode: 'Architect',
-      activeArchitectPlanId: null,
-      activePlanContext: null,
-    };
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Conversation architecte' }),
-      ],
-      selectedConversationId: 'conv-1',
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-    await act(async () => undefined);
-    await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 400));
-    });
-
-    expect(
-      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
-    ).toBeNull();
-    expect(
-      requireContainer().querySelector('button[aria-label="Compacter maintenant"]')
-    ).toBeNull();
-    expect(requireContainer().textContent).not.toContain('Conversation architecte');
-    expect(requireContainer().textContent).toContain('Select or create a plan to start architecting.');
-    expect(requireContainer().textContent).not.toContain('New Conversation');
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer).not.toBeNull();
-    expect(composer?.disabled).toBe(true);
-    const sendButton = requireContainer().querySelector('[data-tour-id="chat-send-button"]') as HTMLButtonElement | null;
-    expect(sendButton?.disabled).toBe(true);
-    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
-  });
-
-  it('offers to create a plan in the central panel when none exists', async () => {
-    appState = {
-      ...appState,
-      mode: 'Architect',
-      activeArchitectPlanId: null,
-      activePlanContext: null,
-    };
-
-    const handleStateRequest = () => {
-      window.dispatchEvent(
-        new CustomEvent('macro:architect-plan-selector-state', {
-          detail: {
-            status: 'ready',
-            planCount: 0,
-            canCreate: true,
-            canSelect: false,
-          },
-        }),
-      );
-    };
-    window.addEventListener('macro:architect-plan-selector-state-request', handleStateRequest);
-    try {
-      await act(async () => {
-        requireRoot().render(<ChatZone />);
-      });
-    } finally {
-      window.removeEventListener('macro:architect-plan-selector-state-request', handleStateRequest);
-    }
-
-    const button = requireContainer().querySelector(
-      '[data-tour-id="architect-empty-plan-action"]'
-    ) as HTMLButtonElement | null;
-    expect(requireContainer().textContent).toContain('Create your first plan to start architecting.');
-    expect(requireContainer().textContent).not.toContain('Select or create a plan to start architecting.');
-    expect(button?.textContent).toContain('Create a plan');
-    if (button) {
-      button.getBoundingClientRect = () => ({
-        top: 300,
-        right: 740,
-        bottom: 336,
-        left: 600,
-        width: 140,
-        height: 36,
-        x: 600,
-        y: 300,
-        toJSON: () => ({}),
-      });
-    }
-
-    const requestDetails: unknown[] = [];
-    const handleRequest = (event: Event) => {
-      requestDetails.push((event as CustomEvent).detail);
-    };
-    window.addEventListener('macro:architect-plan-selector-request', handleRequest);
-    try {
-      await act(async () => {
-        button?.click();
-        await new Promise((resolve) => window.requestAnimationFrame(resolve));
-      });
-    } finally {
-      window.removeEventListener('macro:architect-plan-selector-request', handleRequest);
-    }
-
-    expect(requestDetails).toEqual([{
-      action: 'primary',
-      anchorRect: {
-        top: 300,
-        right: 740,
-        bottom: 336,
-        left: 600,
-        width: 140,
-        height: 36,
-      },
-    }]);
-  });
-
-  it('offers to select a plan in the central panel when plans exist', async () => {
-    appState = {
-      ...appState,
-      mode: 'Architect',
-      activeArchitectPlanId: null,
-      activePlanContext: null,
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    await act(async () => {
-      window.dispatchEvent(
-        new CustomEvent('macro:architect-plan-selector-state', {
-          detail: {
-            status: 'ready',
-            planCount: 2,
-            canCreate: true,
-            canSelect: true,
-          },
-        }),
-      );
-    });
-
-    const button = requireContainer().querySelector(
-      '[data-tour-id="architect-empty-plan-action"]'
-    ) as HTMLButtonElement | null;
-    expect(requireContainer().textContent).toContain('Select a plan to start architecting.');
-    expect(button?.textContent).toContain('Select a plan');
-  });
-
-  it('does not create or send an Architect message when no plan is selected', async () => {
-    appState = {
-      ...appState,
-      mode: 'Architect',
-      activeArchitectPlanId: null,
-      activePlanContext: null,
-    };
-    chatState = {
-      ...chatState,
-      selectedConversationId: null,
-      ensureConversationForCurrentMode: mock(async () => 'conv-1'),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    composerEditorValue = 'Peux-tu préparer le plan ?';
-    await act(async () => {
-      await (latestComposerProps?.onSend as (() => Promise<void>) | undefined)?.();
-    });
-
-    expect(chatState.ensureConversationForCurrentMode).not.toHaveBeenCalled();
-    expect(chatState.createConversation).not.toHaveBeenCalled();
-    expect(chatState.sendMessage).not.toHaveBeenCalled();
-  });
-
-  it('keeps Architect chat enabled when an active plan id exists before plan details load', async () => {
-    appState = {
-      ...appState,
-      mode: 'Architect',
-      activeArchitectPlanId: 'plan-1',
-      activePlanContext: null,
-    };
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Plan à charger' }),
-      ],
-      selectedConversationId: 'conv-1',
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
-    ).not.toBeNull();
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer?.disabled).toBe(false);
-  });
-
-  it('does not treat an Architect plan context alone as a selected plan', async () => {
-    appState = {
-      ...appState,
-      mode: 'Architect',
-      activeArchitectPlanId: null,
-      activePlanContext: { id: 'plan-1' },
-    };
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Plan hydraté' }),
-      ],
-      selectedConversationId: 'conv-1',
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(
-      requireContainer().querySelector('button[aria-label="Diagnostic du contexte"]')
-    ).toBeNull();
-    expect(requireContainer().textContent).toContain('Select or create a plan to start architecting.');
-  });
-
-  it('blocks orphan architect conversations when no project is available', async () => {
-    appState = {
-      ...appState,
-      mode: 'Architect',
-      selectedGroupId: null,
-      selectedProjectId: null,
-      projectGroups: [],
-      activeArchitectPlanId: null,
-    };
-    chatState = {
-      ...chatState,
-      messages: [buildMessage({ content: 'Old orphan architect conversation' })],
-      selectedConversationId: 'conv-1',
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Ajoutez un projet pour commencer avec Macro.');
-    expect(requireContainer().textContent).not.toContain('Old orphan architect conversation');
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer?.disabled).toBe(true);
-  });
-
-  it('renders architect plan naming recovery actions when a plan still needs a name', async () => {
-    appState.mode = 'Architect';
-    chatState = {
-      ...chatState,
-      architectPlanNamingRecovery: {
-        conversationId: 'conv-1',
-        planId: 'plan-1',
-        targetBranch: 'develop',
-        firstUserContent: 'On doit renommer le plan.',
-        providerId: 'provider-1',
-        modelId: 'model-1',
-        stage: 'choice',
-        isSubmitting: false,
-        error: null,
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Plan name still needed');
-    expect(requireContainer().textContent).toContain('Retry AI');
-    expect(requireContainer().textContent).toContain('Name manually');
   });
 
   it('renders the visible assistant content while streaming', async () => {
@@ -3351,29 +2054,39 @@ describe('ChatZone', () => {
       ],
     };
 
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-      await Promise.resolve();
-    });
-    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        requireRoot().render(<ChatZone />);
+        await Promise.resolve();
+      });
+      expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
 
-    chatState = {
-      ...chatState,
-      isStreaming: false,
-      sendState: 'idle',
-    };
-    await act(async () => {
-      useChatStore.emit();
-      await Promise.resolve();
-    });
+      chatState = {
+        ...chatState,
+        isStreaming: false,
+        sendState: 'idle',
+      };
+      await act(async () => {
+        useChatStore.emit();
+        await Promise.resolve();
+      });
 
-    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+      expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
 
-    await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 400));
-    });
+      await act(async () => {
+        jest.advanceTimersByTime(400);
+        await Promise.resolve();
+      });
 
-    expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+      expect(chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
+    } finally {
+      try {
+        jest.clearAllTimers();
+      } finally {
+        jest.useRealTimers();
+      }
+    }
   });
 
   it('prevents overlapping context diagnostic refreshes from the indicator', async () => {
@@ -3562,183 +2275,6 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-chat-compaction-progress="true"]')).toBeNull();
   });
 
-  it('hides the Architect progress button before the first user explanation', async () => {
-    appState.mode = 'Architect';
-    appState.activeArchitectPlanId = 'plan-1';
-    chatState.messages = [];
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).not.toContain('Generate Strategy');
-  });
-
-  it('offers direct strategy generation after the first explanation', async () => {
-    appState.mode = 'Architect';
-    appState.activeArchitectPlanId = 'plan-1';
-    chatState.messages = [
-      buildMessage({
-        id: 'msg-user-1',
-        role: 'user',
-        content: 'I want to rebuild the onboarding flow.',
-      }),
-    ];
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Generate Strategy')
-    );
-
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(composerEditorSetTextCalls).toHaveLength(0);
-    expect(composerEditorFocusCalls).toBe(0);
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('strategy_generate'),
-    });
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('question'),
-    });
-  });
-
-  it('keeps an existing composer draft when sending an Architect action', async () => {
-    appState.mode = 'Architect';
-    appState.activeArchitectPlanId = 'plan-1';
-    chatState.messages = [
-      buildMessage({
-        id: 'msg-user-1',
-        role: 'user',
-        content: 'I want to rebuild the onboarding flow.',
-      }),
-    ];
-    composerEditorValue = 'Existing user draft';
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Generate Strategy')
-    );
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(composerEditorValue).toBe('Existing user draft');
-    expect(composerEditorSetTextCalls).toHaveLength(0);
-    expect(composerEditorFocusCalls).toBe(0);
-    expect(notifyInfoMock).not.toHaveBeenCalled();
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('strategy_generate'),
-    });
-  });
-
-  it('keeps normal user messages in the standard user bubble', async () => {
-    chatState.messages = [
-      buildMessage({
-        id: 'msg-user-normal',
-        role: 'user',
-        content: 'I want to rebuild the onboarding flow.',
-      }),
-    ];
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const row = requireContainer().querySelector('#chat-message-msg-user-normal');
-    expect(row).not.toBeNull();
-    expect(row?.querySelector('[data-testid="architect-action-message"]')).toBeNull();
-    expect(row?.querySelector('[data-user-message-content="true"]')).not.toBeNull();
-    expect(row?.textContent).toContain('I want to rebuild the onboarding flow.');
-  });
-
-  it('asks for a natural-language recap after Generate Strategy in Architect mode', async () => {
-    appState.mode = 'Architect';
-    appState.activeArchitectPlanId = 'plan-1';
-    appState.planNodes = [];
-    appState.predictedBranches = [];
-    chatState.messages = [
-      buildMessage({
-        id: 'msg-user-strategy',
-        role: 'user',
-        content: 'Rebuild the onboarding flow.',
-      }),
-    ];
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Generate Strategy')
-    );
-
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('Call `strategy_generate`'),
-    });
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('short summary of the strategy'),
-    });
-  });
-
-  it('disables strategy regeneration after plan validation', async () => {
-    appState.mode = 'Architect';
-    appState.activeArchitectPlanId = 'plan-1';
-    appState.activePlanContext = {
-      id: 'plan-1',
-      title: 'Plan verrouillé',
-      description: '',
-      status: 'validated',
-      targetBranch: 'develop',
-    };
-    appState.planNodes = [{ id: 'node-1', title: 'Existing strategy node' }];
-    chatState.messages = [
-      buildMessage({
-        id: 'msg-user-regenerate',
-        role: 'user',
-        content: 'Rebuild the onboarding flow.',
-      }),
-    ];
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Regenerate Strategy')
-    ) as HTMLButtonElement | undefined;
-
-    expect(button).toBeDefined();
-    expect(button?.disabled).toBe(true);
-    expect(button?.title).toBe('Strategy is locked after plan validation.');
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(chatState.sendMessage).not.toHaveBeenCalled();
-  });
-
   it('renders provider, model, and reasoning selectors in the toolbar', async () => {
     await act(async () => {
       requireRoot().render(<ChatZone />);
@@ -3747,1512 +2283,6 @@ describe('ChatZone', () => {
     expect(requireContainer().querySelector('[data-testid="provider-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="model-dropdown"]')).not.toBeNull();
     expect(requireContainer().querySelector('[data-testid="reasoning-dropdown"]')).not.toBeNull();
-  });
-
-  it('shows a read-only task todo dropdown in the Implement header', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'InProgress',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-          todos: [
-            { id: 'todo-api', title: 'Wire checkout API', status: 'done' },
-            {
-              id: 'todo-tests',
-              title: 'Update tests',
-              description: 'Cover the checkout happy path.',
-              status: 'in-progress',
-            },
-          ],
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const toggle = requireContainer().querySelector(
-      '[data-testid="implement-task-todos-toggle"]'
-    ) as HTMLButtonElement | null;
-    expect(toggle).not.toBeNull();
-    expect(toggle?.getAttribute('aria-label')).toBe('Show task checklist');
-    expect(toggle?.querySelector('[data-icon="list-todo"]')).not.toBeNull();
-    expect(toggle?.querySelector('[data-icon="chevron-down"]')).toBeNull();
-    expect(requireContainer().textContent).toContain('Implement checkout');
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
-
-    await act(async () => {
-      toggle?.click();
-    });
-
-    const dropdown = requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]');
-    expect(dropdown).not.toBeNull();
-    expect(dropdown?.getAttribute('role')).toBe('dialog');
-    expect(dropdown?.className).toContain('max-h-');
-    expect(
-      dropdown?.querySelector('[data-testid="implement-task-todos-list"]')?.className
-    ).toContain('overflow-y-auto');
-    expect(dropdown?.textContent).toContain('1/2');
-    expect(dropdown?.textContent).toContain('Wire checkout API');
-    expect(dropdown?.textContent).toContain('Update tests');
-    expect(dropdown?.textContent).not.toContain('Cover the checkout happy path.');
-    expect(dropdown?.querySelectorAll('[data-implement-task-todo]')).toHaveLength(2);
-    expect(dropdown?.querySelector('[data-todo-status-icon="done"]')).not.toBeNull();
-    expect(dropdown?.querySelector('[data-todo-status-icon="in-progress"] .animate-spin')).not.toBeNull();
-
-    await act(async () => {
-      toggle?.click();
-    });
-
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
-  });
-
-  it('closes the task todo dropdown on Escape and outside click', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'InProgress',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-          todos: [{ id: 'todo-api', title: 'Wire checkout API', status: 'pending' }],
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const toggle = requireContainer().querySelector(
-      '[data-testid="implement-task-todos-toggle"]'
-    ) as HTMLButtonElement | null;
-    expect(toggle).not.toBeNull();
-
-    await act(async () => {
-      toggle?.click();
-    });
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).not.toBeNull();
-
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    });
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
-
-    await act(async () => {
-      toggle?.click();
-    });
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).not.toBeNull();
-
-    await act(async () => {
-      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    });
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
-  });
-
-  it('hides the Implement header todo dropdown for tasks without stored todos', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Legacy checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'InProgress',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Legacy checkout');
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-toggle"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-dropdown"]')).toBeNull();
-  });
-
-  it('hides the Implement header todo dropdown for standalone and finalization tasks', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'standalone-task',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'standalone-task',
-          title: 'Standalone feature',
-          draft: false,
-          task_source: 'standalone',
-          is_blocked: false,
-          status: 'InProgress',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'manual',
-          branch_name: 'feature/manual',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Manual work.',
-          todos: [{ id: 'todo-hidden', title: 'Hidden todo', status: 'pending' }],
-        },
-        {
-          id: 'plan-finalization:plan-1',
-          title: 'Finalize plan',
-          draft: false,
-          task_source: 'plan_finalization',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'develop',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Merge the plan.',
-          todos: [{ id: 'todo-hidden-final', title: 'Hidden final todo', status: 'pending' }],
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-toggle"]')).toBeNull();
-
-    await act(async () => {
-      appState = { ...appState, selectedTaskId: 'plan-finalization:plan-1' };
-      useAppStore.emit();
-    });
-
-    expect(requireContainer().textContent).toContain('Finalize plan');
-    expect(requireContainer().querySelector('[data-testid="implement-task-todos-toggle"]')).toBeNull();
-  });
-
-  it('uses the bottom composer as the only kickoff input for planned tasks with an empty conversation', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Task briefing');
-    expect(requireContainer().textContent).toContain('Start execution');
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer).not.toBeNull();
-    expect(composer?.disabled).toBe(false);
-    expect(composer?.getAttribute('placeholder')).toBe('Optional guidance for this task kickoff');
-    expect(requireContainer().querySelectorAll('textarea')).toHaveLength(1);
-    expect(taskState.startTask).not.toHaveBeenCalled();
-    expect(chatState.sendMessage).not.toHaveBeenCalled();
-  });
-
-  it('shows a locked Implement state for dependency-blocked tasks', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: true,
-          blocked_by: ['Prepare checkout model'],
-          status: 'Blocked',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: ['task-0'],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Task blocked');
-    expect(requireContainer().textContent).toContain('Blocked by: Prepare checkout model');
-    expect(requireContainer().textContent).not.toContain('Task briefing');
-    expect(requireContainer().textContent).not.toContain('Optional guidance for this task kickoff');
-    expect(requireContainer().querySelector('[data-icon="lock"]')).not.toBeNull();
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer).not.toBeNull();
-    expect(composer?.disabled).toBe(true);
-    expect(composer?.getAttribute('placeholder')).toBe('Task blocked until prerequisites are completed');
-    expect(taskState.startTask).not.toHaveBeenCalled();
-    expect(chatState.sendMessage).not.toHaveBeenCalled();
-  });
-
-  it('routes the first planned task composer send through the kickoff flow', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    await act(async () => {
-      composerEditorValue = 'Need to reuse checkout components.';
-      const onTextChange = latestComposerProps?.onTextChange as
-        | ((value: string) => void)
-        | undefined;
-      onTextChange?.(composerEditorValue);
-    });
-
-    const sendButton = requireContainer()
-      .querySelector('span[data-icon="arrow-up"]')
-      ?.closest('button') as HTMLButtonElement | null;
-    expect(sendButton).not.toBeNull();
-    expect(sendButton?.disabled).toBe(false);
-
-    await act(async () => {
-      sendButton?.click();
-    });
-
-    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('DEVELOPER NOTES\nNeed to reuse checkout components.'),
-      taskId: 'task-1',
-    });
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer?.value).toBe('');
-  });
-
-  it('activates Goal mode during the first planned Implement task kickoff', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    await setComposerText('/goal Ship the checkout flow end to end');
-    await clickButtonWithText('Start execution');
-
-    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining(
-        'DEVELOPER NOTES\nShip the checkout flow end to end',
-      ),
-      taskId: 'task-1',
-    });
-    expect(
-      useConversationGoalStore.getState().goalsByConversationId['conv-1'],
-    ).toMatchObject({
-      objective: 'Ship the checkout flow end to end',
-      providerId: 'provider-1',
-      modelId: 'model-1',
-      reasoningEffort: 'high',
-      status: 'audit_pending',
-    });
-  });
-
-  it('reuses the bottom composer text when clicking Start execution', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    await act(async () => {
-      composerEditorValue = 'Focus on a minimal diff.';
-      const onTextChange = latestComposerProps?.onTextChange as
-        | ((value: string) => void)
-        | undefined;
-      onTextChange?.(composerEditorValue);
-    });
-
-    const startExecutionButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Start execution')
-    );
-    expect(startExecutionButton).toBeDefined();
-
-    await act(async () => {
-      startExecutionButton?.click();
-    });
-
-    expect(taskState.startTask).toHaveBeenCalledWith('task-1');
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: expect.stringContaining('DEVELOPER NOTES\nFocus on a minimal diff.'),
-      taskId: 'task-1',
-    });
-  });
-
-  it('skips kickoff UI for standalone tasks with an empty conversation', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Quick export',
-          draft: false,
-          task_source: 'standalone',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: null,
-          branch_name: 'feature/quick-export',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Add CSV export from the table.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).not.toContain('Task briefing');
-    expect(requireContainer().textContent).not.toContain('Start execution');
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer).not.toBeNull();
-    expect(composer?.disabled).toBe(false);
-    expect(composer?.getAttribute('placeholder')).toBe('Type your message');
-  });
-
-  it('resets a newly selected standalone task to Build mode once', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      agentType: 'plan',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Quick export',
-          draft: false,
-          task_source: 'standalone',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: null,
-          branch_name: 'feature/quick-export',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Add CSV export from the table.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(appState.setAgentType).toHaveBeenCalledWith('build');
-  });
-
-  it('sends the first standalone task message directly from the composer', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Quick export',
-          draft: false,
-          task_source: 'standalone',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [{ projectId: 'project-1' }],
-          project_ids: ['project-1'],
-          project_id: 'project-1',
-          plan_id: null,
-          branch_name: 'feature/quick-export',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Add CSV export from the table.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
-    expect(composer).not.toBeNull();
-
-    await act(async () => {
-      composerEditorValue = 'Implement the standalone feature directly.';
-      const onTextChange = latestComposerProps?.onTextChange as
-        | ((value: string) => void)
-        | undefined;
-      onTextChange?.(composerEditorValue);
-    });
-
-    const sendButton = requireContainer()
-      .querySelector('span[data-icon="arrow-up"]')
-      ?.closest('button') as HTMLButtonElement | null;
-    expect(sendButton).not.toBeNull();
-    expect(sendButton?.disabled).toBe(false);
-
-    await act(async () => {
-      sendButton?.click();
-    });
-
-    expect(chatState.sendMessage).toHaveBeenCalledWith({
-      conversationId: 'conv-1',
-      content: 'Implement the standalone feature directly.',
-      taskId: 'task-1',
-      images: [],
-    });
-    expect(taskState.startTask).not.toHaveBeenCalled();
-  });
-
-  it('shows the focused project name instead of a multi-repository count in the kickoff summary', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-      selectedGroupId: 'group-1',
-      selectedProjectId: 'project-2',
-      projectGroups: [
-        {
-          id: 'group-1',
-          name: 'Platform',
-          projects: [
-            { id: 'project-1', name: 'Web' },
-            { id: 'project-2', name: 'API' },
-            { id: 'project-3', name: 'Worker' },
-          ],
-        },
-      ],
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [
-            { projectId: 'project-1' },
-            { projectId: 'project-2' },
-            { projectId: 'project-3' },
-          ],
-          project_ids: ['project-1', 'project-2', 'project-3'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('API');
-    expect(requireContainer().textContent).not.toContain('3 repositories');
-  });
-
-  it('keeps a repository count in the kickoff summary when the scoped task still targets multiple repos', async () => {
-    appState = {
-      ...appState,
-      mode: 'Implement',
-      selectedTaskId: 'task-1',
-      selectedGroupId: 'group-1',
-      selectedProjectId: null,
-      projectGroups: [
-        {
-          id: 'group-1',
-          name: 'Platform',
-          projects: [
-            { id: 'project-1', name: 'Web' },
-            { id: 'project-2', name: 'API' },
-            { id: 'project-3', name: 'Worker' },
-          ],
-        },
-      ],
-    };
-    taskState = {
-      ...taskState,
-      tasks: [
-        {
-          id: 'task-1',
-          title: 'Implement checkout',
-          draft: false,
-          task_source: 'architect',
-          is_blocked: false,
-          status: 'Pending',
-          execution_targets: [
-            { projectId: 'project-1' },
-            { projectId: 'project-2' },
-            { projectId: 'project-3' },
-          ],
-          project_ids: ['project-1', 'project-2', 'project-3'],
-          project_id: 'project-1',
-          plan_id: 'plan-1',
-          branch_name: 'feature/checkout',
-          dependencies: [],
-          estimated_changes: [],
-          description: 'Wire the checkout flow.',
-        },
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('3 repositories');
-  });
-
-  it('renders the active questionnaire in the footer and hides the standard composer', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Need one blocking decision.',
-          questionnaire: {
-            intro: 'Need one blocking decision.',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-            ],
-          },
-        }),
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Which scope should I use?');
-    const footer = requireContainer().querySelector('[data-testid="questionnaire-footer"]');
-    const choiceList = requireContainer().querySelector('[data-testid="questionnaire-choice-list"]');
-    const stepPanel = requireContainer().querySelector('[data-testid="questionnaire-step-panel"]');
-    expect(footer?.textContent).toContain('Question');
-    expect(footer?.textContent).not.toContain('Need one blocking decision.');
-    expect(choiceList?.className).toContain('flex-col');
-    expect(stepPanel?.className).toContain('questionnaire-step-enter');
-    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
-  });
-
-  it('renders the active tool approval footer and hides the standard composer', async () => {
-    chatState = {
-      ...chatState,
-      pendingToolApprovalByConversationId: {
-        'conv-1': {
-          conversationId: 'conv-1',
-          assistantMessageId: 'msg-assistant-1',
-          toolCallId: 'tool-call-1',
-          toolId: 'terminal_run',
-          actionGroup: 'escape',
-          riskLevel: 'balanced',
-          isDestructive: true,
-          summary: 'Run a terminal command',
-          detail: 'npm test',
-          rememberKey: 'terminal:npm test',
-        },
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const footer = requireContainer().querySelector('[data-testid="tool-approval-footer"]');
-    expect(footer?.textContent).toContain('Tool approval');
-    expect(footer?.textContent).toContain('Run a terminal command');
-    expect(footer?.textContent).toContain('System');
-    expect(footer?.textContent).not.toContain('terminal_run');
-    expect(footer?.textContent).toContain('Allow once');
-    expect(footer?.textContent).toContain('Allow for this conversation');
-    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
-  });
-
-  it('forwards tool approval actions to the chat store', async () => {
-    chatState = {
-      ...chatState,
-      pendingToolApprovalByConversationId: {
-        'conv-1': {
-          conversationId: 'conv-1',
-          assistantMessageId: 'msg-assistant-1',
-          toolCallId: 'tool-call-1',
-          toolId: 'web_fetch',
-          actionGroup: 'escape',
-          riskLevel: 'balanced',
-          isDestructive: false,
-          summary: 'Fetch a web page',
-          detail: 'example.com',
-          rememberKey: 'domain:example.com',
-        },
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const allowOnceButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Allow once')
-    );
-    const allowConversationButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Allow for this conversation')
-    );
-    const denyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Refuse')
-    );
-
-    await act(async () => {
-      allowOnceButton?.click();
-      allowConversationButton?.click();
-      denyButton?.click();
-    });
-
-    expect(chatState.approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
-    expect(chatState.approvePendingToolApprovalForConversation).toHaveBeenCalledWith('conv-1');
-    expect(chatState.denyPendingToolApproval).not.toHaveBeenCalled();
-  });
-
-  it('forwards tool denial confirmations to the chat store', async () => {
-    chatState = {
-      ...chatState,
-      pendingToolApprovalByConversationId: {
-        'conv-1': {
-          conversationId: 'conv-1',
-          assistantMessageId: 'msg-assistant-1',
-          toolCallId: 'tool-call-1',
-          toolId: 'web_fetch',
-          actionGroup: 'escape',
-          riskLevel: 'balanced',
-          isDestructive: false,
-          summary: 'Fetch a web page',
-          detail: 'example.com',
-          rememberKey: 'domain:example.com',
-        },
-      },
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const denyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Refuse')
-    );
-
-    await act(async () => {
-      denyButton?.click();
-    });
-
-    const confirmDenyButton = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Confirm denial')
-    );
-
-    await act(async () => {
-      confirmDenyButton?.click();
-    });
-
-    expect(chatState.denyPendingToolApproval).toHaveBeenCalledWith('conv-1', undefined);
-  });
-
-  it('submits the questionnaire when the user clicks a suggested answer', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Need one blocking decision.',
-          questionnaire: {
-            intro: 'Need one blocking decision.',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-            ],
-          },
-        }),
-      ],
-      recordActiveQuestionnaireAnswer: mock(() => ({ completed: true, state: null })),
-      submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const button = Array.from(requireContainer().querySelectorAll('button')).find((candidate) =>
-      candidate.textContent?.includes('Balanced')
-    );
-    expect(button).toBeDefined();
-
-    await act(async () => {
-      button?.click();
-    });
-
-    expect(chatState.recordActiveQuestionnaireAnswer).toHaveBeenCalledWith('conv-1', 'Balanced');
-    expect(chatState.submitActiveQuestionnaire).toHaveBeenCalledWith('conv-1');
-  });
-
-  it('renders the inline free-text questionnaire input in the footer', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Need one blocking decision.',
-          questionnaire: {
-            intro: 'Need one blocking decision.',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-                free_text_placeholder: 'Custom answer',
-              },
-            ],
-          },
-        }),
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const input = requireContainer().querySelector('input');
-    expect(input).not.toBeNull();
-    expect((input as HTMLInputElement).getAttribute('placeholder')).toBe('Custom answer');
-  });
-
-  it('updates the question and choices when advancing to the next questionnaire step', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Need two decisions.',
-          questionnaire: {
-            intro: 'Need two decisions.',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-              {
-                id: 'risk',
-                prompt: 'How risky can the change be?',
-                choices: ['Safe', 'Moderate', 'Aggressive'],
-              },
-            ],
-          },
-        }),
-      ],
-      recordActiveQuestionnaireAnswer: mock((_conversationId: string, answer: string) => {
-        chatState = {
-          ...chatState,
-          questionnaireDraftsByConversationId: {
-            ...chatState.questionnaireDraftsByConversationId,
-            'conv-1': {
-              assistantMessageId: 'msg-assistant-1',
-              currentStepIndex: 1,
-              answersByStepId: {
-                scope: answer,
-              },
-              draftTextByStepId: {},
-            },
-          },
-        };
-        useChatStore.emit();
-        return {
-          completed: false,
-          state: null,
-        };
-      }),
-      submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Which scope should I use?');
-    expect(requireContainer().textContent).toContain('Balanced');
-
-    const firstStepButton = Array.from(
-      requireContainer().querySelectorAll('button')
-    ).find((candidate) => candidate.textContent?.includes('Balanced'));
-    expect(firstStepButton).toBeDefined();
-
-    await act(async () => {
-      firstStepButton?.click();
-    });
-
-    expect(requireContainer().textContent).toContain('How risky can the change be?');
-    expect(requireContainer().textContent).toContain('Aggressive');
-    expect(requireContainer().textContent).not.toContain('Which scope should I use?');
-    expect(requireContainer().textContent).not.toContain('Balanced');
-    expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
-    expect(
-      requireContainer()
-        .querySelector('[data-testid="questionnaire-step-panel"]')
-        ?.className
-    ).toContain('questionnaire-step-enter');
-  });
-
-  it('returns to the first unanswered question before submitting a skipped questionnaire step', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Need three decisions.',
-          questionnaire: {
-            intro: 'Need three decisions.',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-              {
-                id: 'risk',
-                prompt: 'How risky can the change be?',
-                choices: ['Safe', 'Moderate', 'Aggressive'],
-              },
-              {
-                id: 'timing',
-                prompt: 'How soon do you need it?',
-                choices: ['Today', 'This week', 'Later'],
-              },
-            ],
-          },
-        }),
-      ],
-      questionnaireDraftsByConversationId: {
-        'conv-1': {
-          assistantMessageId: 'msg-assistant-1',
-          currentStepIndex: 2,
-          answersByStepId: {
-            scope: 'Balanced',
-          },
-          draftTextByStepId: {},
-        },
-      },
-      recordActiveQuestionnaireAnswer: mock((_conversationId: string, answer: string) => {
-        chatState = {
-          ...chatState,
-          questionnaireDraftsByConversationId: {
-            ...chatState.questionnaireDraftsByConversationId,
-            'conv-1': {
-              assistantMessageId: 'msg-assistant-1',
-              currentStepIndex: 1,
-              answersByStepId: {
-                scope: 'Balanced',
-                timing: answer,
-              },
-              draftTextByStepId: {},
-            },
-          },
-        };
-        useChatStore.emit();
-        return {
-          completed: false,
-          state: null,
-        };
-      }),
-      submitActiveQuestionnaire: mock(async () => ({ status: 'sent' })),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('How soon do you need it?');
-
-    const lastStepButton = Array.from(
-      requireContainer().querySelectorAll('button')
-    ).find((candidate) => candidate.textContent?.includes('This week'));
-    expect(lastStepButton).toBeDefined();
-
-    await act(async () => {
-      lastStepButton?.click();
-    });
-
-    expect(chatState.recordActiveQuestionnaireAnswer).toHaveBeenCalledWith('conv-1', 'This week');
-    expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
-    expect(requireContainer().textContent).toContain('How risky can the change be?');
-    expect(requireContainer().textContent).not.toContain('How soon do you need it?');
-  });
-
-  it('lets the user navigate forward and backward between questionnaire steps', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Need two decisions.',
-          questionnaire: {
-            intro: 'Need two decisions.',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-              {
-                id: 'risk',
-                prompt: 'How risky can the change be?',
-                choices: ['Safe', 'Moderate', 'Aggressive'],
-              },
-            ],
-          },
-        }),
-      ],
-      setActiveQuestionnaireStep: mock((_conversationId: string, stepIndex: number) => {
-        chatState = {
-          ...chatState,
-          questionnaireDraftsByConversationId: {
-            ...chatState.questionnaireDraftsByConversationId,
-            'conv-1': {
-              assistantMessageId: 'msg-assistant-1',
-              currentStepIndex: stepIndex,
-              answersByStepId: {},
-              draftTextByStepId: {},
-            },
-          },
-        };
-        useChatStore.emit();
-      }),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().textContent).toContain('Which scope should I use?');
-
-    const nextButton = requireContainer().querySelector(
-      '[data-testid="questionnaire-step-nav-next"]'
-    ) as HTMLButtonElement | null;
-    expect(nextButton).not.toBeNull();
-
-    await act(async () => {
-      nextButton?.click();
-    });
-
-    expect(chatState.setActiveQuestionnaireStep).toHaveBeenCalledWith('conv-1', 1);
-    expect(requireContainer().textContent).toContain('How risky can the change be?');
-    expect(requireContainer().textContent).toContain('Aggressive');
-    expect(requireContainer().textContent).not.toContain('Which scope should I use?');
-
-    const previousButton = requireContainer().querySelector(
-      '[data-testid="questionnaire-step-nav-prev"]'
-    ) as HTMLButtonElement | null;
-    expect(previousButton).not.toBeNull();
-
-    await act(async () => {
-      previousButton?.click();
-    });
-
-    expect(chatState.setActiveQuestionnaireStep).toHaveBeenCalledWith('conv-1', 0);
-    expect(requireContainer().textContent).toContain('Which scope should I use?');
-    expect(requireContainer().textContent).toContain('Balanced');
-    expect(requireContainer().textContent).not.toContain('How risky can the change be?');
-    expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
-  });
-
-  it('renders compact step arrows around the questionnaire progress', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-assistant-1',
-          role: 'assistant',
-          content: 'Need two decisions.',
-          questionnaire: {
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-              {
-                id: 'risk',
-                prompt: 'How risky can the change be?',
-                choices: ['Safe', 'Moderate', 'Aggressive'],
-              },
-            ],
-          },
-        }),
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const footer = requireContainer().querySelector('[data-testid="questionnaire-footer"]');
-    const previousButton = requireContainer().querySelector('[data-testid="questionnaire-step-nav-prev"]');
-    const nextButton = requireContainer().querySelector('[data-testid="questionnaire-step-nav-next"]');
-    const counterShell = requireContainer().querySelector('[data-testid="questionnaire-step-counter-shell"]');
-    const counter = requireContainer().querySelector('[data-testid="questionnaire-step-counter"]');
-
-    expect(footer?.textContent).toContain('Question');
-    expect(counter?.textContent).toBe('1/2');
-    expect(counterShell).not.toBeNull();
-    expect(previousButton).not.toBeNull();
-    expect(nextButton).not.toBeNull();
-    expect(footer?.textContent).not.toContain('Voir la suite');
-    expect(footer?.textContent).not.toContain('Retour');
-  });
-
-  it('renders questionnaire response summaries with the dedicated user bubble layout', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'msg-user-1',
-          role: 'user',
-          content:
-            'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
-          questionnaire_response_summary: {
-            assistantMessageId: 'msg-assistant-1',
-            source: 'tool',
-            originToolCallId: 'call_question',
-            items: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                answer: 'Balanced',
-              },
-              {
-                id: 'risk',
-                prompt: 'How risky can the change be?',
-                answer: 'Stay below one day of rework',
-              },
-            ],
-          },
-        }),
-      ],
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    expect(requireContainer().querySelector('[data-testid="questionnaire-response-summary"]')).not.toBeNull();
-    expect(requireContainer().textContent).toContain('Reponses au questionnaire');
-    expect(requireContainer().textContent).toContain('Which scope should I use?');
-    expect(requireContainer().textContent).toContain('Stay below one day of rework');
-  });
-
-  it('reopens questionnaire responses in the footer instead of inline editing', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'assistant-questionnaire',
-          role: 'assistant',
-          content: 'Need two clarifications.',
-          questionnaire: {
-            intro: 'Need two clarifications.',
-            source: 'tool',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-              {
-                id: 'risk',
-                prompt: 'How risky can the change be?',
-                choices: ['Safe', 'Moderate', 'Aggressive'],
-                free_text_placeholder: 'Custom answer',
-              },
-            ],
-          },
-        }),
-        buildMessage({
-          id: 'user-questionnaire',
-          role: 'user',
-          content:
-            'Which scope should I use?: Balanced\nHow risky can the change be?: Stay below one day of rework',
-          questionnaire_response_summary: {
-            assistantMessageId: 'assistant-questionnaire',
-            source: 'tool',
-            originToolCallId: 'call_question',
-            items: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                answer: 'Balanced',
-              },
-              {
-                id: 'risk',
-                prompt: 'How risky can the change be?',
-                answer: 'Stay below one day of rework',
-              },
-            ],
-          },
-        }),
-      ],
-      startQuestionnaireResponseEdit: mock((messageId: string) => {
-        useChatStore.setState({
-          questionnaireDraftsByConversationId: {
-            'conv-1': {
-              mode: 'editing_response',
-              assistantMessageId: 'assistant-questionnaire',
-              responseMessageId: messageId,
-              currentStepIndex: 0,
-              answersByStepId: {
-                scope: 'Balanced',
-                risk: 'Stay below one day of rework',
-              },
-              draftTextByStepId: {
-                risk: 'Stay below one day of rework',
-              },
-            },
-          },
-        });
-        return true;
-      }),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const editButton = requireContainer().querySelector('button[title="common.edit"]');
-    expect(editButton).not.toBeNull();
-
-    await act(async () => {
-      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
-    });
-
-    expect(chatState.startQuestionnaireResponseEdit).toHaveBeenCalledWith('user-questionnaire');
-    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).not.toBeNull();
-    expect(requireContainer().querySelector('textarea')).toBeNull();
-    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
-
-    const balancedButton = Array.from(requireContainer().querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Balanced'
-    );
-    expect(balancedButton?.className).toContain('border-primary/50');
-  });
-
-  it('reopens questionnaire responses from conversation-indexed messages after reload', async () => {
-    const conversationMessages = [
-      buildMessage({
-        id: 'assistant-questionnaire',
-        role: 'assistant',
-        content: 'Need one clarification.',
-        questionnaire: {
-          source: 'tool',
-          questions: [
-            {
-              id: 'scope',
-              prompt: 'Which scope should I use?',
-              choices: ['Minimal', 'Balanced', 'Large'],
-            },
-          ],
-        },
-      }),
-      buildMessage({
-        id: 'user-questionnaire',
-        role: 'user',
-        content: 'Which scope should I use?: Balanced',
-        questionnaire_response_summary: {
-          assistantMessageId: 'assistant-questionnaire',
-          source: 'tool',
-          originToolCallId: 'call_question',
-          items: [
-            {
-              id: 'scope',
-              prompt: 'Which scope should I use?',
-              answer: 'Balanced',
-            },
-          ],
-        },
-      }),
-    ];
-    chatState = {
-      ...chatState,
-      messages: [],
-      messagesByConversationId: {
-        'conv-1': conversationMessages,
-      },
-      startQuestionnaireResponseEdit: mock((messageId: string) => {
-        chatState = {
-          ...chatState,
-          questionnaireDraftsByConversationId: {
-            'conv-1': {
-              mode: 'editing_response',
-              assistantMessageId: 'assistant-questionnaire',
-              responseMessageId: messageId,
-              currentStepIndex: 0,
-              answersByStepId: {
-                scope: 'Balanced',
-              },
-              draftTextByStepId: {},
-            },
-          },
-        };
-        useChatStore.emit();
-        return true;
-      }),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const editButton = requireContainer().querySelector('button[title="common.edit"]');
-    expect(editButton).not.toBeNull();
-
-    await act(async () => {
-      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
-    });
-
-    expect(chatState.startQuestionnaireResponseEdit).toHaveBeenCalledWith('user-questionnaire');
-    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).not.toBeNull();
-    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
-    expect(requireContainer().querySelectorAll('textarea')).toHaveLength(0);
-  });
-
-  it('does not fall back to raw text editing when questionnaire response edit cannot reopen', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'user-questionnaire',
-          role: 'user',
-          content: 'Which scope should I use?: Balanced',
-          questionnaire_response_summary: {
-            assistantMessageId: 'missing-assistant-questionnaire',
-            source: 'tool',
-            items: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                answer: 'Balanced',
-              },
-            ],
-          },
-        }),
-      ],
-      startQuestionnaireResponseEdit: mock(() => false),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const editButton = requireContainer().querySelector('button[title="common.edit"]');
-    expect(editButton).not.toBeNull();
-
-    await act(async () => {
-      editButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
-    });
-
-    expect(chatState.startQuestionnaireResponseEdit).toHaveBeenCalledWith('user-questionnaire');
-    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
-    expect(requireContainer().querySelectorAll('textarea')).toHaveLength(1);
   });
 
   it('consults peekComposerDraft when the selected conversation changes', async () => {
@@ -5269,8 +2299,8 @@ describe('ChatZone', () => {
       peekComposerDraft: peekMock as unknown as typeof chatState.peekComposerDraft,
     };
 
-    requireRoot().render(<ChatZone />);
     await act(async () => {
+      requireRoot().render(<ChatZone />);
       useChatStore.emit();
     });
 
@@ -5285,8 +2315,8 @@ describe('ChatZone', () => {
       pendingComposerDraftByConversationId: {},
     };
 
-    requireRoot().render(<ChatZone />);
     await act(async () => {
+      requireRoot().render(<ChatZone />);
       useChatStore.emit();
     });
 
@@ -5297,174 +2327,128 @@ describe('ChatZone', () => {
     ).not.toBeNull();
   });
 
-  it('cancels questionnaire response editing without touching the message history', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'assistant-questionnaire',
-          role: 'assistant',
-          content: 'Need one clarification.',
-          questionnaire: {
-            source: 'tool',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-            ],
-          },
-        }),
-        buildMessage({
-          id: 'user-questionnaire',
-          role: 'user',
-          content: 'Which scope should I use?: Balanced',
-          questionnaire_response_summary: {
-            assistantMessageId: 'assistant-questionnaire',
-            source: 'tool',
-            originToolCallId: 'call_question',
-            items: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                answer: 'Balanced',
-              },
-            ],
-          },
-        }),
-      ],
-      questionnaireDraftsByConversationId: {
-        'conv-1': {
-          mode: 'editing_response',
-          assistantMessageId: 'assistant-questionnaire',
-          responseMessageId: 'user-questionnaire',
-          currentStepIndex: 0,
-          answersByStepId: {
-            scope: 'Balanced',
-          },
-          draftTextByStepId: {},
-        },
-      },
-      cancelQuestionnaireSession: mock((conversationId: string) => {
-        const nextDrafts = { ...chatState.questionnaireDraftsByConversationId };
-        delete nextDrafts[conversationId];
-        chatState = {
-          ...chatState,
-          questionnaireDraftsByConversationId: nextDrafts,
-        };
-        useChatStore.emit();
-      }),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const cancelButton = Array.from(requireContainer().querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Annuler'
-    );
-    expect(cancelButton).not.toBeNull();
-
-    await act(async () => {
-      cancelButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
-    });
-
-    expect(chatState.cancelQuestionnaireSession).toHaveBeenCalledWith('conv-1');
-    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).toBeNull();
-    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
-    expect(chatState.editMessage).not.toHaveBeenCalled();
-    expect(chatState.submitActiveQuestionnaire).not.toHaveBeenCalled();
+  registerCompactionScenarios({
+    get chatState() {
+      return chatState;
+    },
+    set chatState(nextState) {
+      chatState = nextState;
+    },
+    get composerEditorValue() {
+      return composerEditorValue;
+    },
+    set composerEditorValue(value) {
+      composerEditorValue = value;
+    },
+    scrollMagnetActiveValues,
+    notifyInfoMock,
+    notifySuccessMock,
+    notifyErrorMock,
+    markdownRendererContentMock,
+    renderChatZone: () => <ChatZone />,
+    buildMessage,
+    buildCompactionEvent,
+    buildCompactionFootprint,
+    buildManualCompactionCompletedResult,
+    buildManualCompactionSkippedResult,
+    requireContainer,
+    requireRoot,
+    emitChatStore: () => useChatStore.emit(),
+    setChatStoreState: (state) => useChatStore.setState(state),
+    clearMarkdownRendererContentMock: () => markdownRendererContentMock.mockClear(),
   });
 
-  it('keeps only questionnaire cancel enabled while editing during streaming', async () => {
-    chatState = {
-      ...chatState,
-      messages: [
-        buildMessage({
-          id: 'assistant-questionnaire',
-          role: 'assistant',
-          content: 'Need one clarification.',
-          questionnaire: {
-            source: 'tool',
-            questions: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                choices: ['Minimal', 'Balanced', 'Large'],
-              },
-            ],
-          },
-        }),
-        buildMessage({
-          id: 'user-questionnaire',
-          role: 'user',
-          content: 'Which scope should I use?: Balanced',
-          questionnaire_response_summary: {
-            assistantMessageId: 'assistant-questionnaire',
-            source: 'tool',
-            items: [
-              {
-                id: 'scope',
-                prompt: 'Which scope should I use?',
-                answer: 'Balanced',
-              },
-            ],
-          },
-        }),
-      ],
-      questionnaireDraftsByConversationId: {
-        'conv-1': {
-          mode: 'editing_response',
-          assistantMessageId: 'assistant-questionnaire',
-          responseMessageId: 'user-questionnaire',
-          currentStepIndex: 0,
-          answersByStepId: {
-            scope: 'Balanced',
-          },
-          draftTextByStepId: {},
-        },
-      },
-      isStreaming: true,
-      sendState: 'streaming',
-      cancelQuestionnaireSession: mock((conversationId: string) => {
-        const nextDrafts = { ...chatState.questionnaireDraftsByConversationId };
-        delete nextDrafts[conversationId];
-        chatState = {
-          ...chatState,
-          questionnaireDraftsByConversationId: nextDrafts,
-        };
-        useChatStore.emit();
-      }),
-    };
-
-    await act(async () => {
-      requireRoot().render(<ChatZone />);
-    });
-
-    const cancelButton = Array.from(requireContainer().querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Annuler'
-    ) as HTMLButtonElement | undefined;
-    const submitButton = Array.from(requireContainer().querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Envoyer'
-    ) as HTMLButtonElement | undefined;
-    const choiceButton = Array.from(requireContainer().querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Balanced'
-    ) as HTMLButtonElement | undefined;
-    const textInput = requireContainer().querySelector('input[type="text"]') as HTMLInputElement | null;
-
-    expect(cancelButton).not.toBeNull();
-    expect(cancelButton?.disabled).toBe(false);
-    expect(submitButton?.disabled).toBe(true);
-    expect(choiceButton?.disabled).toBe(true);
-    expect(textInput?.disabled).toBe(true);
-
-    await act(async () => {
-      cancelButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
-    });
-
-    expect(chatState.cancelQuestionnaireSession).toHaveBeenCalledWith('conv-1');
-    expect(chatState.stopStreaming).not.toHaveBeenCalled();
-    expect(requireContainer().querySelector('[data-testid="questionnaire-footer"]')).toBeNull();
+  registerArchitectScenarios({
+    get appState() {
+      return appState;
+    },
+    set appState(nextState) {
+      appState = nextState;
+    },
+    get chatState() {
+      return chatState;
+    },
+    set chatState(nextState) {
+      chatState = nextState;
+    },
+    get composerEditorValue() {
+      return composerEditorValue;
+    },
+    set composerEditorValue(value) {
+      composerEditorValue = value;
+    },
+    get composerEditorSetTextCalls() {
+      return composerEditorSetTextCalls;
+    },
+    get composerEditorFocusCalls() {
+      return composerEditorFocusCalls;
+    },
+    get latestComposerProps() {
+      return latestComposerProps;
+    },
+    notifyInfoMock,
+    renderChatZone: () => <ChatZone />,
+    buildMessage,
+    requireContainer,
+    requireRoot,
+    emitAppStore: () => useAppStore.emit(),
+    emitChatStore: () => useChatStore.emit(),
   });
+
+  registerImplementScenarios({
+    get appState() {
+      return appState;
+    },
+    set appState(nextState) {
+      appState = nextState;
+    },
+    get chatState() {
+      return chatState;
+    },
+    set chatState(nextState) {
+      chatState = nextState;
+    },
+    get taskState() {
+      return taskState;
+    },
+    set taskState(nextState) {
+      taskState = nextState;
+    },
+    get composerEditorValue() {
+      return composerEditorValue;
+    },
+    set composerEditorValue(value) {
+      composerEditorValue = value;
+    },
+    get latestComposerProps() {
+      return latestComposerProps;
+    },
+    renderChatZone: () => <ChatZone />,
+    requireContainer,
+    requireRoot,
+    setComposerText,
+    clickButtonWithText,
+    emitAppStore: () => useAppStore.emit(),
+    emitChatStore: () => useChatStore.emit(),
+    emitTaskStore: () => useTaskStore.emit(),
+    getConversationGoal: (conversationId) =>
+      useConversationGoalStore.getState().goalsByConversationId[conversationId],
+  });
+
+  registerQuestionnaireApprovalScenarios({
+    get chatState() {
+      return chatState;
+    },
+    set chatState(nextState) {
+      chatState = nextState;
+    },
+    renderChatZone: () => <ChatZone />,
+    buildMessage,
+    requireContainer,
+    requireRoot,
+    emitChatStore: () => useChatStore.emit(),
+    setChatStoreState: (state) => useChatStore.setState(state),
+  });
+
+
 });

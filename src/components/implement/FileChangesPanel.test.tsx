@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { FileChangesPanel as FileChangesPanelComponent } from './FileChangesPanel';
@@ -42,6 +42,11 @@ let validateArtifactMock: ReturnType<typeof mock>;
 let unvalidateArtifactMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
+const hadInitialBackendTransport = Object.prototype.hasOwnProperty.call(
+  process.env,
+  'VITE_BACKEND_TRANSPORT',
+);
+const initialBackendTransport = process.env.VITE_BACKEND_TRANSPORT;
 const translationMock = createTranslationMock({
   'errors.degraded.fallback.dynamic': '{{message}}',
   'errors.degraded.worktree.checkedOut.title': 'Macro could not prepare the task workspace',
@@ -514,11 +519,6 @@ const flushRender = async () => {
   await Promise.resolve();
 };
 
-const waitForPostAssistantRefresh = async () => {
-  await new Promise((resolve) => window.setTimeout(resolve, 450));
-  await flushRender();
-};
-
 describe('FileChangesPanel', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -673,6 +673,25 @@ describe('FileChangesPanel', () => {
     useChatStore.setState({
       ...useChatStore.getState(),
       conversationRuntimeById: {},
+    });
+  };
+
+  const finishAssistantAndFlushPostAssistantRefresh = async () => {
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        finishAssistantRuntime();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(400);
+        await Promise.resolve();
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+    await act(async () => {
+      await flushRender();
     });
   };
 
@@ -832,7 +851,11 @@ describe('FileChangesPanel', () => {
     if (initialFileChangesState) {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
-    delete process.env.VITE_BACKEND_TRANSPORT;
+    if (hadInitialBackendTransport) {
+      process.env.VITE_BACKEND_TRANSPORT = initialBackendTransport;
+    } else {
+      delete process.env.VITE_BACKEND_TRANSPORT;
+    }
     await clearPreferencesForTest();
     mock.restore();
   });
@@ -3289,10 +3312,7 @@ describe('FileChangesPanel', () => {
 
     loadMergeWorkflowReviewMock.mockClear();
 
-    await act(async () => {
-      finishAssistantRuntime();
-      await waitForPostAssistantRefresh();
-    });
+    await finishAssistantAndFlushPostAssistantRefresh();
 
     expect(loadMergeWorkflowReviewMock).toHaveBeenCalledWith('task-1', { force: true });
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
@@ -3309,10 +3329,7 @@ describe('FileChangesPanel', () => {
 
     loadCurrentChangesMock.mockClear();
 
-    await act(async () => {
-      finishAssistantRuntime();
-      await waitForPostAssistantRefresh();
-    });
+    await finishAssistantAndFlushPostAssistantRefresh();
 
     expect(loadCurrentChangesMock).toHaveBeenCalledWith({ silent: true });
   });
@@ -3333,10 +3350,7 @@ describe('FileChangesPanel', () => {
 
     loadCurrentChangesMock.mockClear();
 
-    await act(async () => {
-      finishAssistantRuntime();
-      await waitForPostAssistantRefresh();
-    });
+    await finishAssistantAndFlushPostAssistantRefresh();
 
     expect(loadCurrentChangesMock).toHaveBeenCalledWith({
       silent: true,

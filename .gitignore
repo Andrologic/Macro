@@ -20,7 +20,7 @@ dist
 dist-ssr
 output/
 *.local
-coverage/
+/coverage/
 
 # Bun
 .bun/
