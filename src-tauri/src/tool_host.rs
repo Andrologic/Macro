@@ -94,13 +94,7 @@ fn unauthorized_response() -> impl IntoResponse {
 }
 
 fn command_error_response(error: CommandError) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiError {
-            message: error.message,
-        }),
-    )
-        .into_response()
+    (StatusCode::BAD_REQUEST, Json(error)).into_response()
 }
 
 async fn health() -> Json<HealthResponse> {

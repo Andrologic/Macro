@@ -34,6 +34,9 @@ mod tests {
         let _ = BackendError::NotFound("test".to_string());
         let _ = BackendError::PermissionDenied("test".to_string());
         let _ = BackendError::Validation("test".to_string());
+        let _ = BackendError::RevisionConflict {
+            message: "test".to_string(),
+        };
         let _ = BackendError::Internal {
             message: "test".to_string(),
         };
@@ -66,6 +69,13 @@ mod tests {
             BackendError::Validation("invalid branch".to_string()),
             "Validation",
             "invalid branch",
+        );
+        assert_serialized_error(
+            BackendError::RevisionConflict {
+                message: "stale content".to_string(),
+            },
+            "REVISION_CONFLICT",
+            "stale content",
         );
         assert_serialized_error(
             BackendError::NotFound("missing task".to_string()),
@@ -172,6 +182,9 @@ mod tests {
             BackendError::NotFound("not found".to_string()),
             BackendError::PermissionDenied("permission denied".to_string()),
             BackendError::Validation("validation".to_string()),
+            BackendError::RevisionConflict {
+                message: "revision conflict".to_string(),
+            },
             BackendError::Internal {
                 message: "internal".to_string(),
             },

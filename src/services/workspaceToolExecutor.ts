@@ -161,6 +161,7 @@ type PatchWriteCommitChange = {
   displayPath: string;
   realPath: string;
   newContent: string | null;
+  expectedRevision?: string | null;
   existsOptions?: {
     workspaceScope?: tauriIpc.WorkspaceScope;
     workspacePath?: string | null;
@@ -185,6 +186,7 @@ type PatchWriteRollbackSnapshot = {
   change: PatchWriteCommitChange;
   existed: boolean;
   content: string | null;
+  postMutationExpectedRevision?: string;
 };
 
 const formatToolError = (error: unknown): string => {
@@ -205,6 +207,75 @@ const formatToolError = (error: unknown): string => {
   }
 
   return String(error);
+};
+
+const normalizeExpectedRevision = (value: unknown): string | null =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+
+const EXPECTED_REVISION_ABSENT = "absent";
+
+const normalizeExpectedRevisionMap = (
+  value: unknown,
+): Record<string, string> => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(
+        ([path, revision]) =>
+          [
+            path.trim().replace(/\\/g, "/").replace(/^(?:\.\/)+/, "").replace(/^\/+|\/+$/g, ""),
+            normalizeExpectedRevision(revision),
+          ] as const,
+      )
+      .filter((entry): entry is readonly [string, string] => entry[1] !== null),
+  );
+};
+
+const normalizeExpectedRevisionPath = (value: string): string =>
+  value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^(?:\.\/)+/, "")
+    .replace(/^\/+|\/+$/g, "");
+
+const expectedRevisionConflict = (
+  path: string,
+  expectedRevision: string | null,
+  actualRevision: string | null | undefined,
+): string | null => {
+  if (!expectedRevision) return null;
+  if (expectedRevision.toLowerCase() === EXPECTED_REVISION_ABSENT) {
+    return actualRevision
+      ? `Stale content for "${path}": expected the file to be absent but found revision ${actualRevision}. Re-read the path and retry.`
+      : null;
+  }
+  if (!actualRevision) {
+    return `Cannot safely mutate "${path}": expected revision ${expectedRevision} but the current revision is unavailable. Re-read the file and retry.`;
+  }
+  if (actualRevision !== expectedRevision) {
+    return `Stale content for "${path}": expected revision ${expectedRevision} but found ${actualRevision}. Re-read the file and retry.`;
+  }
+  return null;
+};
+
+const validateExpectedFileRevision = async (params: {
+  path: string;
+  expectedRevision: string | null;
+  read: () => Promise<Awaited<ReturnType<typeof tauriIpc.fsReadFileWithOptions>>>;
+}): Promise<string | null> => {
+  if (!params.expectedRevision) return null;
+  try {
+    const current = await params.read();
+    return expectedRevisionConflict(
+      params.path,
+      params.expectedRevision,
+      current.revision,
+    );
+  } catch {
+    return expectedRevisionConflict(params.path, params.expectedRevision, null);
+  }
 };
 
 type CheckpointCaptureOptions = {
@@ -228,6 +299,7 @@ const readCheckpointSnapshot = async (
     return {
       exists: false,
       content: null,
+      revision: null,
       isBinary: false,
       size: 0,
       encoding: null,
@@ -249,6 +321,7 @@ const readCheckpointSnapshot = async (
   return {
     exists: true,
     content: content.content,
+    revision: content.revision ?? null,
     isBinary: false,
     size: content.size,
     encoding: content.encoding,
@@ -259,6 +332,7 @@ const readCheckpointSnapshot = async (
 const missingCheckpointSnapshot = (): AgentCodeCheckpointFileSnapshot => ({
   exists: false,
   content: null,
+  revision: null,
   isBinary: false,
   size: 0,
   encoding: null,
@@ -270,6 +344,7 @@ const snapshotFromReadResult = (
 ): AgentCodeCheckpointFileSnapshot => ({
   exists: true,
   content: result.content,
+  revision: result.revision ?? null,
   isBinary: false,
   size: result.size,
   encoding: result.encoding,
@@ -301,6 +376,7 @@ const buildCheckpointFile = (
 const restoreCheckpointSnapshot = async (
   options: CheckpointCaptureOptions,
   snapshot: AgentCodeCheckpointFileSnapshot,
+  expectedCurrent?: AgentCodeCheckpointFileSnapshot,
 ): Promise<void> => {
   const commonOptions = {
     workspaceScope: options.workspaceScope,
@@ -311,6 +387,7 @@ const restoreCheckpointSnapshot = async (
     if (await tauriIpc.fsExists(options.realPath, commonOptions)) {
       await tauriIpc.fsDelete({
         path: options.realPath,
+        expectedRevision: expectedCurrent?.revision ?? undefined,
         ...commonOptions,
       });
     }
@@ -328,6 +405,11 @@ const restoreCheckpointSnapshot = async (
     content: snapshot.content,
     createDirs: true,
     allowOutsideWorkspace: options.allowOutsideWorkspace,
+    expectedRevision: expectedCurrent
+      ? expectedCurrent.exists
+        ? expectedCurrent.revision ?? undefined
+        : EXPECTED_REVISION_ABSENT
+      : undefined,
     ...commonOptions,
   });
 };
@@ -375,7 +457,7 @@ const executeCheckpointedFileMutation = async <T>(
     ]);
   } catch (error) {
     try {
-      await restoreCheckpointSnapshot(options.checkpointOptions, before);
+      await restoreCheckpointSnapshot(options.checkpointOptions, before, after);
     } catch (rollbackError) {
       throw new Error(
         `Failed to record code checkpoint for ${options.checkpointOptions.displayPath}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -402,6 +484,7 @@ const rollbackPatchWriteChanges = async (
         ) {
           await tauriIpc.fsDelete({
             path: snapshot.change.realPath,
+            expectedRevision: snapshot.postMutationExpectedRevision,
             ...snapshot.change.deleteOptions,
           });
         }
@@ -422,6 +505,7 @@ const rollbackPatchWriteChanges = async (
         path: snapshot.change.realPath,
         content: snapshot.content,
         createDirs: true,
+        expectedRevision: snapshot.postMutationExpectedRevision,
         ...snapshot.change.writeOptions,
       });
     } catch (error) {
@@ -437,42 +521,57 @@ const commitPatchWriteChangesWithRollback = async (
 ): Promise<PatchWriteRollbackSnapshot[]> => {
   const snapshots: PatchWriteRollbackSnapshot[] = [];
 
-  try {
-    for (const change of changes) {
-      const existed = await tauriIpc.fsExists(
-        change.realPath,
-        change.existsOptions,
-      );
-      const content = existed
-        ? (
-            await tauriIpc.fsReadFileWithOptions({
-              path: change.realPath,
-              ...change.readOptions,
-            })
-          ).content
-        : null;
-      snapshots.push({ change, existed, content });
+  for (const change of changes) {
+    const existed = await tauriIpc.fsExists(
+      change.realPath,
+      change.existsOptions,
+    );
+    const current = existed
+      ? await tauriIpc.fsReadFileWithOptions({
+          path: change.realPath,
+          ...change.readOptions,
+        })
+      : null;
+    const revisionConflict = expectedRevisionConflict(
+      change.displayPath,
+      change.expectedRevision ?? null,
+      current?.revision,
+    );
+    if (revisionConflict) {
+      throw new Error(revisionConflict);
     }
+    const content = current?.content ?? null;
+    snapshots.push({ change, existed, content });
+  }
 
-    for (const change of changes) {
+  const appliedSnapshots: PatchWriteRollbackSnapshot[] = [];
+  try {
+    for (const [index, change] of changes.entries()) {
+      const snapshot = snapshots[index];
       if (change.newContent === null) {
         await tauriIpc.fsDelete({
           path: change.realPath,
+          expectedRevision: change.expectedRevision,
           ...change.deleteOptions,
         });
+        snapshot.postMutationExpectedRevision = EXPECTED_REVISION_ABSENT;
+        appliedSnapshots.push(snapshot);
         continue;
       }
 
-      await tauriIpc.fsWriteFile({
+      const result = await tauriIpc.fsWriteFile({
         path: change.realPath,
         content: change.newContent,
         createDirs: true,
+        expectedRevision: change.expectedRevision,
         ...change.writeOptions,
       });
+      snapshot.postMutationExpectedRevision = result.revision ?? undefined;
+      appliedSnapshots.push(snapshot);
     }
   } catch (error) {
     try {
-      await rollbackPatchWriteChanges(snapshots);
+      await rollbackPatchWriteChanges(appliedSnapshots);
     } catch (rollbackError) {
       throw new Error(
         `${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -1887,6 +1986,9 @@ export const executeWorkspaceTool = async (
       if (toolName === "write") {
         const inputPath = sanitizePathInput(toString(rawArgs.path));
         const content = toString(rawArgs.content);
+        const expectedRevision = normalizeExpectedRevision(
+          rawArgs.expected_revision,
+        );
         if (!inputPath) return "Missing path argument for write tool.";
 
         const { target, error } = await resolveMutatingVirtualTarget({
@@ -1925,6 +2027,17 @@ export const executeWorkspaceTool = async (
           workspacePath,
           allowOutsideWorkspace: true,
         };
+        const revisionConflict = await validateExpectedFileRevision({
+          path: resolved.virtualPath,
+          expectedRevision,
+          read: () =>
+            tauriIpc.fsReadFileWithOptions({
+              path: realPath,
+              allowOutsideWorkspace: true,
+              workspacePath,
+            }),
+        });
+        if (revisionConflict) return revisionConflict;
         const { writeResult, readback } = await executeCheckpointedFileMutation({
           executeOptions: options,
           toolName,
@@ -1937,6 +2050,7 @@ export const executeWorkspaceTool = async (
               createDirs: rawArgs.create_dirs !== false,
               allowOutsideWorkspace: true,
               workspacePath,
+              expectedRevision,
             });
             const validation = await tauriIpc.fsReadFileWithOptions({
               path: realPath,
@@ -1975,6 +2089,9 @@ export const executeWorkspaceTool = async (
         const oldText = toString(rawArgs.old_text);
         const newText = toString(rawArgs.new_text);
         const replaceAll = rawArgs.replace_all === true;
+        const expectedRevision = normalizeExpectedRevision(
+          rawArgs.expected_revision,
+        );
 
         if (!inputPath) return "Missing path argument for edit tool.";
         if (!oldText) return "Missing old_text argument for edit tool.";
@@ -2023,6 +2140,12 @@ export const executeWorkspaceTool = async (
         if (current.is_binary) {
           return `Cannot edit binary file: ${resolved.virtualPath}`;
         }
+        const revisionConflict = expectedRevisionConflict(
+          resolved.virtualPath,
+          expectedRevision,
+          current.revision,
+        );
+        if (revisionConflict) return revisionConflict;
 
         const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const occurrences = (
@@ -2052,6 +2175,7 @@ export const executeWorkspaceTool = async (
               createDirs: true,
               allowOutsideWorkspace: true,
               workspacePath,
+              expectedRevision,
             });
             return tauriIpc.fsReadFileWithOptions({
               path: realPath,
@@ -2088,6 +2212,9 @@ export const executeWorkspaceTool = async (
 
       if (toolName === "delete") {
         const inputPath = sanitizePathInput(toString(rawArgs.path));
+        const expectedRevision = normalizeExpectedRevision(
+          rawArgs.expected_revision,
+        );
 
         if (!inputPath) return "Missing path argument for delete tool.";
 
@@ -2134,6 +2261,12 @@ export const executeWorkspaceTool = async (
         if (current.is_binary) {
           return `Cannot delete binary file with checkpointing: ${resolved.virtualPath}`;
         }
+        const revisionConflict = expectedRevisionConflict(
+          resolved.virtualPath,
+          expectedRevision,
+          current.revision,
+        );
+        if (revisionConflict) return revisionConflict;
         const deletions = current.is_binary
           ? 0
           : countLogicalLines(current.content);
@@ -2155,6 +2288,7 @@ export const executeWorkspaceTool = async (
             await tauriIpc.fsDelete({
               path: realPath,
               workspacePath,
+              expectedRevision,
             });
           },
         });
@@ -2194,6 +2328,9 @@ export const executeWorkspaceTool = async (
         } catch (error) {
           return formatToolError(error);
         }
+        const expectedRevisions = normalizeExpectedRevisionMap(
+          rawArgs.expected_revisions,
+        );
 
         const pendingChanges: Array<{
           target: PatchTarget;
@@ -2204,6 +2341,7 @@ export const executeWorkspaceTool = async (
           bytesWritten: number;
           additions: number;
           deletions: number;
+          expectedRevision: string | null;
         }> = [];
 
         for (const operation of operations) {
@@ -2237,6 +2375,10 @@ export const executeWorkspaceTool = async (
               target.relativePath,
             ),
           };
+          const expectedRevision =
+            expectedRevisions[normalizeExpectedRevisionPath(operation.path)] ??
+            expectedRevisions[normalizeExpectedRevisionPath(patchTarget.displayPath)] ??
+            (operation.kind === "add" ? EXPECTED_REVISION_ABSENT : null);
 
           if (operation.kind === "add") {
             const newContent = joinTextLines(operation.lines, true);
@@ -2258,6 +2400,7 @@ export const executeWorkspaceTool = async (
               bytesWritten: newContent.length,
               additions: countLogicalLines(newContent),
               deletions: 0,
+              expectedRevision,
             });
             continue;
           }
@@ -2281,6 +2424,7 @@ export const executeWorkspaceTool = async (
               bytesWritten: 0,
               additions: 0,
               deletions: countLogicalLines(current.content),
+              expectedRevision,
             });
             continue;
           }
@@ -2310,6 +2454,7 @@ export const executeWorkspaceTool = async (
             bytesWritten: newContent.length,
             additions: stats.additions,
             deletions: stats.deletions,
+            expectedRevision,
           });
         }
 
@@ -2318,6 +2463,7 @@ export const executeWorkspaceTool = async (
             displayPath: change.target.displayPath,
             realPath: change.target.realPath,
             newContent: change.newContent,
+            expectedRevision: change.expectedRevision,
             existsOptions: {
               workspacePath: change.target.candidate.workspacePath,
             },
@@ -3375,6 +3521,7 @@ export const executeWorkspaceTool = async (
     if (toolName === "write") {
       const inputPath = sanitizePathInput(toString(args.path));
       const content = toString(args.content);
+      const expectedRevision = normalizeExpectedRevision(args.expected_revision);
       if (!inputPath) return "Missing path argument for write tool.";
       const resolvedPath = useMetadataWorkspace
         ? inputPath
@@ -3392,6 +3539,18 @@ export const executeWorkspaceTool = async (
         allowOutsideWorkspace:
           !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
       };
+      const revisionConflict = await validateExpectedFileRevision({
+        path: resolvedPath,
+        expectedRevision,
+        read: () =>
+          tauriIpc.fsReadFileWithOptions({
+            path,
+            allowOutsideWorkspace:
+              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          }),
+      });
+      if (revisionConflict) return revisionConflict;
       const { writeResult, readback } = await executeCheckpointedFileMutation({
         executeOptions: options,
         toolName,
@@ -3405,6 +3564,7 @@ export const executeWorkspaceTool = async (
             allowOutsideWorkspace:
               !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            expectedRevision,
           });
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
@@ -3441,6 +3601,7 @@ export const executeWorkspaceTool = async (
       const oldText = toString(args.old_text);
       const newText = toString(args.new_text);
       const replaceAll = args.replace_all === true;
+      const expectedRevision = normalizeExpectedRevision(args.expected_revision);
 
       if (!inputPath) return "Missing path argument for edit tool.";
       if (!oldText) return "Missing old_text argument for edit tool.";
@@ -3462,6 +3623,12 @@ export const executeWorkspaceTool = async (
       if (current.is_binary) {
         return `Cannot edit binary file: ${path}`;
       }
+      const revisionConflict = expectedRevisionConflict(
+        resolvedPath,
+        expectedRevision,
+        current.revision,
+      );
+      if (revisionConflict) return revisionConflict;
 
       const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const occurrences = (
@@ -3500,6 +3667,7 @@ export const executeWorkspaceTool = async (
             allowOutsideWorkspace:
               !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            expectedRevision,
           });
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
@@ -3534,6 +3702,7 @@ export const executeWorkspaceTool = async (
 
     if (toolName === "delete") {
       const inputPath = sanitizePathInput(toString(args.path));
+      const expectedRevision = normalizeExpectedRevision(args.expected_revision);
       if (!inputPath) return "Missing path argument for delete tool.";
 
       const resolvedPath = useMetadataWorkspace
@@ -3561,6 +3730,12 @@ export const executeWorkspaceTool = async (
       if (current.is_binary) {
         return `Cannot delete binary file with checkpointing: ${resolvedPath}`;
       }
+      const revisionConflict = expectedRevisionConflict(
+        resolvedPath,
+        expectedRevision,
+        current.revision,
+      );
+      if (revisionConflict) return revisionConflict;
       const deletions = current.is_binary ? 0 : countLogicalLines(current.content);
 
       await executeCheckpointedFileMutation({
@@ -3581,6 +3756,7 @@ export const executeWorkspaceTool = async (
             path,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
+            expectedRevision,
           });
         },
       });
@@ -3617,6 +3793,9 @@ export const executeWorkspaceTool = async (
       } catch (error) {
         return formatToolError(error);
       }
+      const expectedRevisions = normalizeExpectedRevisionMap(
+        args.expected_revisions,
+      );
 
       const pendingChanges: Array<{
         path: string;
@@ -3628,6 +3807,7 @@ export const executeWorkspaceTool = async (
         deletions: number;
         created: boolean;
         bytesWritten: number;
+        expectedRevision: string | null;
       }> = [];
 
       for (const operation of operations) {
@@ -3638,6 +3818,10 @@ export const executeWorkspaceTool = async (
           ? operation.path
           : resolveDirectPath(operation.path, mode, effectiveWorkspacePath);
         assertPathAllowed(mode, resolvedPath);
+        const expectedRevision =
+          expectedRevisions[normalizeExpectedRevisionPath(operation.path)] ??
+          expectedRevisions[normalizeExpectedRevisionPath(resolvedPath)] ??
+          (operation.kind === "add" ? EXPECTED_REVISION_ABSENT : null);
 
         if (operation.kind === "add") {
           const newContent = joinTextLines(operation.lines, true);
@@ -3658,6 +3842,7 @@ export const executeWorkspaceTool = async (
             deletions: 0,
             created: true,
             bytesWritten: newContent.length,
+            expectedRevision,
           });
           continue;
         }
@@ -3683,6 +3868,7 @@ export const executeWorkspaceTool = async (
             deletions: countLogicalLines(current.content),
             created: false,
             bytesWritten: 0,
+            expectedRevision,
           });
           continue;
         }
@@ -3712,6 +3898,7 @@ export const executeWorkspaceTool = async (
           deletions: stats.deletions,
           created: false,
           bytesWritten: newContent.length,
+          expectedRevision,
         });
       }
 
@@ -3720,6 +3907,7 @@ export const executeWorkspaceTool = async (
           displayPath: change.path,
           realPath: change.realPath,
           newContent: change.newContent,
+          expectedRevision: change.expectedRevision,
           existsOptions: {
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,

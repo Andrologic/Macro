@@ -198,6 +198,7 @@ fn backend_error_to_status(error: &BackendError) -> StatusCode {
         | BackendError::GitInvalidCommit { .. }
         | BackendError::NotFound(_) => StatusCode::NOT_FOUND,
         BackendError::Validation(_) => StatusCode::BAD_REQUEST,
+        BackendError::RevisionConflict { .. } => StatusCode::CONFLICT,
         BackendError::FilesystemPathOutsideWorkspace { .. } => StatusCode::FORBIDDEN,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -205,13 +206,7 @@ fn backend_error_to_status(error: &BackendError) -> StatusCode {
 
 fn backend_error_response(error: BackendError) -> axum::response::Response {
     let status = backend_error_to_status(&error);
-    (
-        status,
-        Json(ApiError {
-            message: error.to_string(),
-        }),
-    )
-        .into_response()
+    (status, Json(error)).into_response()
 }
 
 fn resolve_metadata_root_for_workspace(state: &HeadlessState) -> Result<PathBuf, BackendError> {
@@ -345,28 +340,12 @@ async fn tool_execute(
         &state.allowed_roots,
     ) {
         Ok(path) => path,
-        Err(error) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(ApiError {
-                    message: error.message,
-                }),
-            )
-                .into_response()
-        }
+        Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
     };
     payload.project_mounts = match payload.project_mounts.as_deref() {
         Some(mounts) => match validate_headless_project_mounts(mounts, &state.allowed_roots) {
             Ok(mounts) => Some(mounts),
-            Err(error) => {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(ApiError {
-                        message: error.message,
-                    }),
-                )
-                    .into_response()
-            }
+            Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
         },
         None => None,
     };
@@ -387,13 +366,7 @@ async fn tool_execute(
     .await
     {
         Ok(result) => (StatusCode::OK, Json(json!({ "result": result }))).into_response(),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                message: error.message,
-            }),
-        )
-            .into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
     }
 }
 

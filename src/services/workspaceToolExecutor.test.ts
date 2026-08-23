@@ -716,7 +716,11 @@ describe("workspaceToolExecutor helpers", () => {
   });
 
   it("applies apply_patch in virtual-root mode and returns validation details", async () => {
-    const writes: Array<{ path: string; content: string }> = [];
+    const writes: Array<{
+      path: string;
+      content: string;
+      expectedRevision?: string | null;
+    }> = [];
     const deletes: string[] = [];
 
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
@@ -751,11 +755,13 @@ describe("workspaceToolExecutor helpers", () => {
         fsWriteFile: async ({
           path,
           content,
+          expectedRevision,
         }: {
           path: string;
           content: string;
+          expectedRevision?: string | null;
         }) => {
-          writes.push({ path, content });
+          writes.push({ path, content, expectedRevision });
           return {
             path,
             bytes_written: content.length,
@@ -821,11 +827,13 @@ describe("workspaceToolExecutor helpers", () => {
       "C:/dev/macro-web/src/App.tsx",
       "C:/dev/macro-web/notes.md",
     ]);
+    expect(writes[1].expectedRevision).toBe("absent");
     expect(deletes).toEqual([]);
   });
 
   it("rolls back earlier apply_patch writes when a later virtual-root write fails", async () => {
     let appContent = "export const App = 'before';\n";
+    const laterContent = "export const later = 'before';\n";
     const writes: Array<{ path: string; content: string }> = [];
     const deletes: string[] = [];
 
@@ -833,7 +841,9 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
-        fsExists: async (path: string) => path === "C:/dev/macro-web/src/App.tsx",
+        fsExists: async (path: string) =>
+          path === "C:/dev/macro-web/src/App.tsx" ||
+          path === "C:/dev/macro-web/src/later.ts",
         fsReadFileWithOptions: async ({ path }: { path: string }) => {
           if (path === "C:/dev/macro-web/src/App.tsx") {
             return {
@@ -841,6 +851,15 @@ describe("workspaceToolExecutor helpers", () => {
               language: "typescript",
               is_binary: false,
               size: appContent.length,
+              encoding: "utf-8",
+            };
+          }
+          if (path === "C:/dev/macro-web/src/later.ts") {
+            return {
+              content: laterContent,
+              language: "typescript",
+              is_binary: false,
+              size: laterContent.length,
               encoding: "utf-8",
             };
           }
@@ -881,6 +900,10 @@ describe("workspaceToolExecutor helpers", () => {
           "+export const App = 'after';",
           "*** Add File: web/fail.md",
           "+fail",
+          "*** Update File: web/src/later.ts",
+          "@@",
+          "-export const later = 'before';",
+          "+export const later = 'after';",
           "*** End Patch",
         ].join("\n"),
       },
@@ -910,7 +933,84 @@ describe("workspaceToolExecutor helpers", () => {
       "export const App = 'after';\n",
       "export const App = 'before';\n",
     ]);
+    expect(writes.some((entry) => entry.path.endsWith("later.ts"))).toBe(false);
     expect(deletes).toEqual([]);
+  });
+
+  it("validates every expected patch revision before changing the first file", async () => {
+    const writes: string[] = [];
+    const checkpoints: unknown[] = [];
+    const files: Record<string, { content: string; revision: string }> = {
+      "C:/dev/macro-web/src/a.ts": {
+        content: "export const a = 1;\n",
+        revision: "revision-a",
+      },
+      "C:/dev/macro-web/src/b.ts": {
+        content: "export const b = 1;\n",
+        revision: "revision-b-current",
+      },
+    };
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async (path: string) => Boolean(files[path]),
+        fsReadFileWithOptions: async ({ path }: { path: string }) => ({
+          content: files[path].content,
+          language: "typescript",
+          is_binary: false,
+          size: files[path].content.length,
+          encoding: "utf-8",
+          revision: files[path].revision,
+        }),
+        fsWriteFile: async ({ path }: { path: string }) => {
+          writes.push(path);
+          return { path, bytes_written: 0, created: false };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: web/src/a.ts",
+          "@@",
+          "-export const a = 1;",
+          "+export const a = 2;",
+          "*** Update File: web/src/b.ts",
+          "@@",
+          "-export const b = 1;",
+          "+export const b = 2;",
+          "*** End Patch",
+        ].join("\n"),
+        expected_revisions: {
+          "web/src/a.ts": "revision-a",
+          "web/src/b.ts": "revision-b-stale",
+        },
+      },
+      "Implement",
+      {
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+          },
+        ],
+        onCodeCheckpoint: async (checkpoint: unknown) => {
+          checkpoints.push(checkpoint);
+        },
+      },
+    );
+
+    expect(result).toContain("Stale content for \"web/src/b.ts\"");
+    expect(writes).toEqual([]);
+    expect(checkpoints).toEqual([]);
   });
 
   it("reverts single-file mutations when checkpoint publication fails", async () => {
@@ -1366,6 +1466,51 @@ describe("workspaceToolExecutor helpers", () => {
     expect(result).toContain("old_text matched 2 locations");
     expect(result).toContain("replace_all");
     expect(writes).toEqual([]);
+  });
+
+  it("rejects a stale edit before writing or publishing a checkpoint", async () => {
+    const writes: string[] = [];
+    const checkpoints: unknown[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        validateToolExecution: async () => ({ allowed: true }),
+        fsReadFileWithOptions: async () => ({
+          content: "export const value = 1;\n",
+          language: "typescript",
+          is_binary: false,
+          size: 24,
+          encoding: "utf-8",
+          revision: "current-revision",
+        }),
+        fsWriteFile: async ({ content }: { content: string }) => {
+          writes.push(content);
+          return { path: "src/value.ts", bytes_written: content.length, created: false };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "edit",
+      {
+        path: "src/value.ts",
+        old_text: "value = 1",
+        new_text: "value = 2",
+        expected_revision: "stale-revision",
+      },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async (checkpoint: unknown) => {
+          checkpoints.push(checkpoint);
+        },
+      },
+    );
+
+    expect(result).toContain("Stale content for \"src/value.ts\"");
+    expect(writes).toEqual([]);
+    expect(checkpoints).toEqual([]);
   });
 
   it("returns a clear error when delete targets a directory", async () => {

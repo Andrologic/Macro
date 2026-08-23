@@ -197,6 +197,51 @@ pub(crate) fn content_revision(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+pub(crate) const EXPECTED_REVISION_ABSENT: &str = "absent";
+
+pub(crate) fn validate_expected_revision(
+    path: &str,
+    expected_revision: Option<&str>,
+    actual_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    let Some(expected) = expected_revision
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    if expected.eq_ignore_ascii_case(EXPECTED_REVISION_ABSENT) {
+        return if actual_revision.is_none() {
+            Ok(())
+        } else {
+            Err(BackendError::RevisionConflict {
+                message: format!(
+                    "Stale content for '{}': expected the file to be absent but found revision {}. Re-read the path and retry.",
+                    path,
+                    actual_revision.unwrap_or("unknown")
+                ),
+            })
+        };
+    }
+    let Some(actual) = actual_revision else {
+        return Err(BackendError::RevisionConflict {
+            message: format!(
+            "Cannot safely mutate '{}': expected revision {} but the current revision is unavailable. Re-read the file and retry.",
+            path, expected
+        ),
+        });
+    };
+    if actual != expected {
+        return Err(BackendError::RevisionConflict {
+            message: format!(
+                "Stale content for '{}': expected revision {} but found {}. Re-read the file and retry.",
+                path, expected, actual
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn wsl_name_from_linux_path(path: &str) -> String {
     path.trim_end_matches('/')
         .rsplit('/')
@@ -297,12 +342,13 @@ async fn read_wsl_file_internal(
     })
 }
 
-async fn write_wsl_file_internal(
+async fn write_wsl_file_internal_with_revision(
     workspace: &WslProjectPath,
     path: String,
     content: String,
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
 ) -> Result<WriteResultDto, BackendError> {
     let content_bytes = content.into_bytes();
     if content_bytes.len() as u64 > MAX_WRITE_SIZE_BYTES {
@@ -324,6 +370,7 @@ async fn write_wsl_file_internal(
     let script = r#"
 p=$1
 create_dirs=$2
+expected_revision=$3
 dir=$(dirname -- "$p")
 if [ "$create_dirs" = "1" ]; then
   mkdir -p -- "$dir"
@@ -339,6 +386,25 @@ created=0
 if [ ! -e "$p" ]; then created=1; fi
 tmp=$(mktemp "$dir/.macro-write.XXXXXX") || exit 6
 cat > "$tmp"
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+    actual_revision=absent
+  elif [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || { rm -f -- "$tmp"; exit 7; }
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ]; then
+    revision_matches=$([ "$actual_revision" = "absent" ] && printf '1' || printf '0')
+  else
+    revision_matches=$([ "$actual_revision" = "$expected_revision" ] && printf '1' || printf '0')
+  fi
+  if [ "$revision_matches" != "1" ]; then
+    rm -f -- "$tmp"
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
+fi
 if [ "$created" = "0" ] && cmp -s "$tmp" "$p"; then
   rm -f -- "$tmp"
   printf 'created=0 skipped=1\n'
@@ -350,12 +416,40 @@ printf 'created=%s skipped=0\n' "$created"
     let output = run_wsl_shell_with_stdin(
         &resolved,
         script,
-        &[resolved.linux_path.clone(), create_dirs_flag],
+        &[
+            resolved.linux_path.clone(),
+            create_dirs_flag,
+            expected_revision
+                .map(str::trim)
+                .map(|value| {
+                    if value.eq_ignore_ascii_case(EXPECTED_REVISION_ABSENT) {
+                        EXPECTED_REVISION_ABSENT
+                    } else {
+                        value
+                    }
+                })
+                .unwrap_or_default()
+                .to_string(),
+        ],
         content_bytes.clone(),
         WSL_FS_WRITE_TIMEOUT,
     )
     .await?;
     let stdout = output.stdout_text();
+    if let Some(actual) = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("revision_conflict actual="))
+    {
+        let actual_revision = if actual == EXPECTED_REVISION_ABSENT || actual == "unavailable" {
+            None
+        } else {
+            Some(actual)
+        };
+        validate_expected_revision(&path, expected_revision, actual_revision)?;
+        return Err(BackendError::RevisionConflict {
+            message: format!("Revision conflict while writing '{}'.", path),
+        });
+    }
     let skipped = stdout.contains("skipped=1");
     let created = stdout.contains("created=1");
     Ok(WriteResultDto {
@@ -537,14 +631,39 @@ async fn delete_wsl_path_internal(
     path: String,
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
+    delete_wsl_path_internal_with_revision(workspace, path, recursive, None).await
+}
+
+async fn delete_wsl_path_internal_with_revision(
+    workspace: &WslProjectPath,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
     let recursive_flag = if recursive.unwrap_or(false) { "1" } else { "0" }.to_string();
     let script = r#"
 p=$1
 recursive=$2
+expected_revision=$3
 if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+  if [ -n "$expected_revision" ]; then
+    printf 'revision_conflict actual=absent\n'
+    exit 0
+  fi
   printf 'Path not found: %s\n' "$p" >&2
   exit 4
+fi
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || exit 7
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ] || [ "$actual_revision" != "$expected_revision" ]; then
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
 fi
 if [ -d "$p" ] && [ ! -L "$p" ]; then
   if [ "$recursive" = "1" ]; then rm -rf -- "$p"; else rmdir -- "$p"; fi
@@ -552,13 +671,42 @@ else
   rm -f -- "$p"
 fi
 "#;
-    run_wsl_shell(
+    let output = run_wsl_shell(
         &resolved,
         script,
-        &[resolved.linux_path.clone(), recursive_flag],
+        &[
+            resolved.linux_path.clone(),
+            recursive_flag,
+            expected_revision
+                .map(str::trim)
+                .map(|value| {
+                    if value.eq_ignore_ascii_case(EXPECTED_REVISION_ABSENT) {
+                        EXPECTED_REVISION_ABSENT
+                    } else {
+                        value
+                    }
+                })
+                .unwrap_or_default()
+                .to_string(),
+        ],
         WSL_FS_WRITE_TIMEOUT,
     )
     .await?;
+    if let Some(actual) = output
+        .stdout_text()
+        .lines()
+        .find_map(|line| line.strip_prefix("revision_conflict actual="))
+    {
+        let actual_revision = if actual == EXPECTED_REVISION_ABSENT || actual == "unavailable" {
+            None
+        } else {
+            Some(actual)
+        };
+        validate_expected_revision(&path, expected_revision, actual_revision)?;
+        return Err(BackendError::RevisionConflict {
+            message: format!("Revision conflict while deleting '{}'.", path),
+        });
+    }
     Ok(())
 }
 
@@ -763,14 +911,34 @@ pub async fn write_file_internal(
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
 ) -> Result<WriteResultDto, BackendError> {
+    write_file_internal_with_revision(
+        workspace,
+        path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+        None,
+    )
+    .await
+}
+
+pub async fn write_file_internal_with_revision(
+    workspace: &Path,
+    path: String,
+    content: String,
+    create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<WriteResultDto, BackendError> {
     let workspace_string = workspace.to_string_lossy();
     if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
-        return write_wsl_file_internal(
+        return write_wsl_file_internal_with_revision(
             &wsl_workspace,
             path,
             content,
             create_dirs,
             allow_outside_workspace,
+            expected_revision,
         )
         .await;
     }
@@ -800,12 +968,17 @@ pub async fn write_file_internal(
         validate_path_for_write(&path_buf, workspace)?
     };
 
+    let existing_bytes = match tokio::fs::read(&validated_path).await {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error_to_backend_error(error, &validated_path)),
+    };
+    let actual_revision = existing_bytes.as_deref().map(content_revision);
+    validate_expected_revision(&path, expected_revision, actual_revision.as_deref())?;
+
     // Check if file already exists
-    let created = !validated_path.exists();
-    if !created {
-        let existing_bytes = tokio::fs::read(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+    let created = existing_bytes.is_none();
+    if let Some(existing_bytes) = existing_bytes.as_deref() {
         if existing_bytes == content_bytes {
             return Ok(WriteResultDto {
                 path: validated_path.to_string_lossy().to_string(),
@@ -840,6 +1013,23 @@ pub async fn write_file_internal(
     tokio::fs::write(&temp_path, content_bytes)
         .await
         .map_err(|e| io_error_to_backend_error(e, &temp_path))?;
+
+    if expected_revision.is_some() {
+        let latest_revision = match tokio::fs::read(&validated_path).await {
+            Ok(bytes) => Some(content_revision(&bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(io_error_to_backend_error(error, &validated_path));
+            }
+        };
+        if let Err(error) =
+            validate_expected_revision(&path, expected_revision, latest_revision.as_deref())
+        {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error);
+        }
+    }
 
     // Rename temp file to final path (atomic operation)
     match tokio::fs::rename(&temp_path, &validated_path).await {
@@ -880,6 +1070,7 @@ pub async fn fs_write_file(
     allow_outside_workspace: Option<bool>,
     workspace_scope: Option<String>,
     workspace_path: Option<String>,
+    expected_revision: Option<String>,
 ) -> Result<WriteResultDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -896,12 +1087,13 @@ pub async fn fs_write_file(
         workspace_scope.as_deref(),
     )
     .await?;
-    write_file_internal(
+    write_file_internal_with_revision(
         &workspace,
         effective_path,
         content,
         create_dirs,
         allow_outside_workspace,
+        expected_revision.as_deref(),
     )
     .await
 }
@@ -1591,6 +1783,33 @@ pub async fn delete_path_internal(
     Ok(())
 }
 
+pub async fn delete_path_internal_with_revision(
+    workspace: &Path,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    let workspace_string = workspace.to_string_lossy();
+    if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
+        return delete_wsl_path_internal_with_revision(
+            &wsl_workspace,
+            path,
+            recursive,
+            expected_revision,
+        )
+        .await;
+    }
+    if expected_revision.is_some() {
+        let actual_revision = match read_file_internal(workspace, path.clone(), Some(false)).await {
+            Ok(current) => Some(current.revision),
+            Err(BackendError::FilesystemNotFound { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        validate_expected_revision(&path, expected_revision, actual_revision.as_deref())?;
+    }
+    delete_path_internal(workspace, path, recursive).await
+}
+
 /// Format file permissions based on platform
 #[cfg(unix)]
 fn format_permissions(metadata: &std::fs::Metadata) -> String {
@@ -1678,6 +1897,7 @@ pub async fn fs_delete(
     recursive: Option<bool>,
     workspace_scope: Option<String>,
     workspace_path: Option<String>,
+    expected_revision: Option<String>,
 ) -> Result<(), BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -1694,7 +1914,13 @@ pub async fn fs_delete(
         workspace_scope.as_deref(),
     )
     .await?;
-    delete_path_internal(&workspace, effective_path, recursive).await
+    delete_path_internal_with_revision(
+        &workspace,
+        effective_path,
+        recursive,
+        expected_revision.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2354,6 +2580,85 @@ mod tests {
         assert!(!dto.skipped);
         let written = fs::read_to_string(workspace.path().join("file.txt")).unwrap();
         assert_eq!(written, "second");
+    }
+
+    #[tokio::test]
+    async fn test_write_with_revision_rejects_stale_content() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+
+        let error = write_file_internal_with_revision(
+            workspace.path(),
+            "guarded.txt".to_string(),
+            "updated".to_string(),
+            Some(true),
+            None,
+            Some("stale-revision"),
+        )
+        .await
+        .expect_err("stale write must fail");
+
+        assert!(error.to_string().contains("Stale content"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read guarded file"),
+            "current"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_with_revision_accepts_matching_content() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let revision = content_revision(b"current");
+
+        write_file_internal_with_revision(
+            workspace.path(),
+            "guarded.txt".to_string(),
+            "updated".to_string(),
+            Some(true),
+            None,
+            Some(&revision),
+        )
+        .await
+        .expect("matching revision should write");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("read guarded file"),
+            "updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_with_absent_revision_only_creates_a_missing_file() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("new.txt");
+
+        write_file_internal_with_revision(
+            workspace.path(),
+            "new.txt".to_string(),
+            "created".to_string(),
+            Some(true),
+            None,
+            Some(EXPECTED_REVISION_ABSENT),
+        )
+        .await
+        .expect("absent guard should allow creation");
+
+        let error = write_file_internal_with_revision(
+            workspace.path(),
+            "new.txt".to_string(),
+            "overwritten".to_string(),
+            Some(true),
+            None,
+            Some(EXPECTED_REVISION_ABSENT),
+        )
+        .await
+        .expect_err("absent guard must reject an existing file");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(fs::read_to_string(path).expect("read new file"), "created");
     }
 
     #[tokio::test]

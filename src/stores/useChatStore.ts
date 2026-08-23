@@ -6221,6 +6221,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "Never stage or commit on your own initiative. Use git_add or git_commit only after an explicit user request.",
       );
     }
+    if (
+      allowedToolIds.includes("read") &&
+      ["write", "edit", "delete", "apply_patch"].some((toolId) =>
+        allowedToolIds.includes(toolId),
+      )
+    ) {
+      systemInstructions.push(
+        "Workspace read results include a REVISION value. When a later write, edit, or delete depends on content you read, pass that value as expected_revision. For apply_patch, pass expected_revisions keyed by the exact patch paths. If Macro reports stale content, re-read before retrying instead of bypassing the guard.",
+      );
+    }
     if (allowedToolIds.includes("apply_patch")) {
       systemInstructions.push(
         "For coordinated file edits, use apply_patch instead of write/edit. Macro patch format is: *** Begin Patch, then one or more sections using *** Add File:, *** Update File:, or *** Delete File:, and finally *** End Patch. In update hunks, prefix context lines with a space, removals with -, additions with +, and separate hunks with @@ when needed. Use delete for a direct single-file removal when that is simpler than crafting a patch.",

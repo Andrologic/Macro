@@ -1,9 +1,10 @@
 use super::{
     apply_patch_hunks_to_content, build_post_write_response, command_error,
     commit_pending_file_changes_atomically, compute_line_change_stats, exact_edit_match_error,
-    format_with_line_numbers, fs, join_text_lines, json_arg_bool, json_arg_string, json_arg_u32,
-    parse_apply_patch, resolve_validated_tool_path, CommandError, CommandResult,
-    ParsedPatchOperation, PendingFileChange,
+    format_with_line_numbers, fs, join_text_lines, json_arg_bool, json_arg_string,
+    json_arg_string_map, json_arg_u32, normalize_tool_map_path, parse_apply_patch,
+    resolve_validated_tool_path, CommandError, CommandResult, ParsedPatchOperation,
+    PendingFileChange,
 };
 use crate::core::tool_policy::validate_tool_execution;
 use glob::Pattern;
@@ -665,15 +666,17 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let content = json_arg_string(args, "content")
                 .ok_or_else(|| command_error("Missing content argument for write tool."))?;
             let create_dirs = json_arg_bool(args, "create_dirs");
+            let expected_revision = json_arg_string(args, "expected_revision");
             let workspace = mount_workspace_path(mount)?;
             let absolute_path =
                 resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-            let write_result = fs::write_file_internal(
+            let write_result = fs::write_file_internal_with_revision(
                 &workspace,
                 relative_path.clone(),
                 content.clone(),
                 create_dirs,
                 Some(true),
+                expected_revision.as_deref(),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -693,6 +696,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 bytes_written: write_result.bytes_written,
                 additions: content.lines().count(),
                 deletions: 0,
+                expected_revision,
             };
             build_post_write_response(
                 &[change],
@@ -734,6 +738,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let new_text = json_arg_string(args, "new_text")
                 .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
             let replace_all = json_arg_bool(args, "replace_all").unwrap_or(false);
+            let expected_revision = json_arg_string(args, "expected_revision");
             let workspace = mount_workspace_path(mount)?;
             let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(true))
                 .await
@@ -742,6 +747,12 @@ pub(crate) async fn execute_virtual_workspace_tool(
             if current.is_binary {
                 return Ok(Some(format!("Cannot edit binary file: {}", display_path)));
             }
+            fs::validate_expected_revision(
+                &display_path,
+                expected_revision.as_deref(),
+                Some(&current.revision),
+            )
+            .map_err(|error| command_error(error.to_string()))?;
             let occurrences = current.content.matches(&old_text).count();
             if let Some(error) = exact_edit_match_error(&display_path, occurrences, replace_all) {
                 return Ok(Some(error));
@@ -753,12 +764,13 @@ pub(crate) async fn execute_virtual_workspace_tool(
             };
             let absolute_path =
                 resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-            let write_result = fs::write_file_internal(
+            let write_result = fs::write_file_internal_with_revision(
                 &workspace,
                 relative_path.clone(),
                 updated.clone(),
                 Some(true),
                 Some(true),
+                expected_revision.as_deref(),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -778,6 +790,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 bytes_written: write_result.bytes_written,
                 additions,
                 deletions,
+                expected_revision,
             };
             build_post_write_response(
                 &[change],
@@ -816,6 +829,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
             )?;
             let mount = resolved.mount;
             let relative_path = resolved.relative_path;
+            let expected_revision = json_arg_string(args, "expected_revision");
             if mount.is_read_only {
                 return Ok(Some(format!(
                     "Cannot delete from read-only project mount {}.",
@@ -848,11 +862,22 @@ pub(crate) async fn execute_virtual_workspace_tool(
             } else {
                 current.content.lines().count()
             };
-            fs::delete_path_internal(&workspace, relative_path.clone(), Some(false))
-                .await
-                .map_err(|error| {
-                    command_error(format!("Failed to delete {}: {}", display_path, error))
-                })?;
+            fs::validate_expected_revision(
+                &display_path,
+                expected_revision.as_deref(),
+                Some(&current.revision),
+            )
+            .map_err(|error| command_error(error.to_string()))?;
+            fs::delete_path_internal_with_revision(
+                &workspace,
+                relative_path.clone(),
+                Some(false),
+                expected_revision.as_deref(),
+            )
+            .await
+            .map_err(|error| {
+                command_error(format!("Failed to delete {}: {}", display_path, error))
+            })?;
             let change: PendingVirtualChange = PendingFileChange {
                 display_path: display_path.clone(),
                 effective_workspace: workspace,
@@ -864,6 +889,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 bytes_written: 0,
                 additions: 0,
                 deletions,
+                expected_revision,
             };
             build_post_write_response(
                 &[change],
@@ -883,6 +909,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 command_error("Missing patch_text argument for apply_patch tool.")
             })?;
             let explicit_project_id = json_arg_string(args, "project_id");
+            let expected_revisions = json_arg_string_map(args, "expected_revisions");
             let operations = parse_apply_patch(&patch_text)?;
             let mut pending_changes: Vec<PendingVirtualChange> = Vec::new();
 
@@ -907,6 +934,10 @@ pub(crate) async fn execute_virtual_workspace_tool(
             for operation in operations {
                 match operation {
                     ParsedPatchOperation::Add { path, lines } => {
+                        let expected_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned()
+                            .or_else(|| Some(fs::EXPECTED_REVISION_ABSENT.to_string()));
                         let resolved = resolve_virtual_mount_target(
                             virtual_context,
                             &path,
@@ -950,9 +981,13 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             bytes_written: new_content.len() as u64,
                             additions: new_content.lines().count(),
                             deletions: 0,
+                            expected_revision,
                         });
                     }
                     ParsedPatchOperation::Update { path, hunks } => {
+                        let expected_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned();
                         let resolved = resolve_virtual_mount_target(
                             virtual_context,
                             &path,
@@ -998,9 +1033,13 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             bytes_written: new_content.len() as u64,
                             additions,
                             deletions,
+                            expected_revision,
                         });
                     }
                     ParsedPatchOperation::Delete { path } => {
+                        let expected_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned();
                         let resolved = resolve_virtual_mount_target(
                             virtual_context,
                             &path,
@@ -1038,6 +1077,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             bytes_written: 0,
                             additions: 0,
                             deletions: deletion_count,
+                            expected_revision,
                         });
                     }
                 }

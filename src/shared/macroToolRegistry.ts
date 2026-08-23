@@ -6,6 +6,7 @@ export type JsonSchema =
       description?: string;
       enum?: string[];
       items?: JsonSchema;
+      additionalProperties?: JsonSchema | boolean;
     }
   | {
       type: "array";
@@ -437,7 +438,7 @@ export const MACRO_TOOL_REGISTRY = [
   ),
   copilotBuiltInOverrideTool(
     "read",
-    "Read a file from the local execution workspace by path. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.",
+    "Read a file from the local execution workspace by path. The response includes a SHA-256 revision that can guard a later mutation. In a virtual group root, prefer paths like api/src/server.ts or pass project_id.",
     {
       type: "object",
       properties: {
@@ -473,6 +474,11 @@ export const MACRO_TOOL_REGISTRY = [
           type: "boolean",
           description: "Create missing parent directories.",
         },
+        expected_revision: {
+          type: "string",
+          description:
+            'Optional SHA-256 revision returned by read. When provided, refuse the write if the file changed or no current revision is available. Use "absent" to require that a new file does not already exist.',
+        },
       },
       required: ["path", "content"],
     },
@@ -496,6 +502,11 @@ export const MACRO_TOOL_REGISTRY = [
           description:
             "Replace all matches. By default, the edit succeeds only when old_text matches exactly once.",
         },
+        expected_revision: {
+          type: "string",
+          description:
+            "Optional SHA-256 revision returned by read. When provided, refuse the edit if the file changed or no current revision is available.",
+        },
       },
       required: ["path", "old_text", "new_text"],
     },
@@ -511,6 +522,11 @@ export const MACRO_TOOL_REGISTRY = [
           type: "string",
           description:
             "Optional project identifier when you want to force which project to use.",
+        },
+        expected_revision: {
+          type: "string",
+          description:
+            "Optional SHA-256 revision returned by read. When provided, refuse the delete if the file changed or no current revision is available.",
         },
       },
       required: ["path"],
@@ -531,6 +547,15 @@ export const MACRO_TOOL_REGISTRY = [
           type: "string",
           description:
             "Patch text in Macro apply_patch format with add/update/delete file sections.",
+        },
+        expected_revisions: {
+          type: "object",
+          description:
+            'Optional map from normalized patch paths to SHA-256 revisions returned by read. Every provided revision is validated before the first file is changed; Add File paths are automatically guarded as "absent".',
+          additionalProperties: {
+            type: "string",
+            description: "Expected SHA-256 revision for this patch path.",
+          },
         },
       },
       required: ["patch_text"],

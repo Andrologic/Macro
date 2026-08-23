@@ -11,7 +11,10 @@ pub struct ToolValidationResult {
 pub struct ToolModePolicyResult {
     pub allowed_tool_ids: Vec<String>,
     pub enforce_macro_only_writes: bool,
+    pub capabilities: Vec<String>,
 }
+
+const TOOL_MODE_CAPABILITIES: &[&str] = &["content_revisions_v1"];
 
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[
@@ -202,12 +205,20 @@ pub fn get_mode_policy(mode: &str) -> ToolModePolicyResult {
         return ToolModePolicyResult {
             allowed_tool_ids: vec![],
             enforce_macro_only_writes: false,
+            capabilities: TOOL_MODE_CAPABILITIES
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
         };
     };
 
     ToolModePolicyResult {
         allowed_tool_ids: allowed_tool_ids.iter().map(|id| id.to_string()).collect(),
         enforce_macro_only_writes,
+        capabilities: TOOL_MODE_CAPABILITIES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
     }
 }
 

@@ -41,7 +41,7 @@ use crate::secrets;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use glob::Pattern;
 use regex::RegexBuilder;
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -141,9 +141,33 @@ pub struct DbInitializationStatusDto {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct CommandError {
     pub message: String,
+}
+
+impl CommandError {
+    pub fn code(&self) -> Option<&'static str> {
+        self.message
+            .contains("Revision conflict:")
+            .then_some("REVISION_CONFLICT")
+    }
+}
+
+impl Serialize for CommandError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let code = self.code();
+        let mut state =
+            serializer.serialize_struct("CommandError", 1 + usize::from(code.is_some()))?;
+        if let Some(code) = code {
+            state.serialize_field("code", code)?;
+        }
+        state.serialize_field("message", &self.message)?;
+        state.end()
+    }
 }
 
 impl From<DbError> for CommandError {
@@ -260,6 +284,32 @@ fn json_arg_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
                 .filter(|value| !value.trim().is_empty())
                 .collect::<Vec<_>>()
         })
+}
+
+pub(crate) fn json_arg_string_map(args: &Value, key: &str) -> HashMap<String, String> {
+    args.get(key)
+        .and_then(Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(path, revision)| {
+                    revision
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| (normalize_tool_map_path(path), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn normalize_tool_map_path(path: &str) -> String {
+    let mut normalized = path.trim().replace('\\', "/");
+    while normalized.starts_with("./") {
+        normalized = normalized[2..].to_string();
+    }
+    normalized.trim_matches('/').to_string()
 }
 
 pub(crate) fn format_with_line_numbers(lines: &[&str], start_line: usize) -> String {
@@ -452,6 +502,7 @@ pub(crate) struct PendingFileChange {
     pub(crate) bytes_written: u64,
     pub(crate) additions: usize,
     pub(crate) deletions: usize,
+    pub(crate) expected_revision: Option<String>,
 }
 
 pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPatchOperation>> {
@@ -880,8 +931,20 @@ async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> Co
                         change.display_path
                     )));
                 }
+                fs::validate_expected_revision(
+                    &change.display_path,
+                    change.expected_revision.as_deref(),
+                    Some(&current.revision),
+                )
+                .map_err(|error| command_error(error.to_string()))?;
                 Some(current.content)
             } else {
+                fs::validate_expected_revision(
+                    &change.display_path,
+                    change.expected_revision.as_deref(),
+                    None,
+                )
+                .map_err(|error| command_error(error.to_string()))?;
                 None
             };
         backups.push((
@@ -894,20 +957,22 @@ async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> Co
 
     for (applied_count, change) in changes.iter().enumerate() {
         let result = if let Some(new_content) = change.new_content.as_ref() {
-            fs::write_file_internal(
+            fs::write_file_internal_with_revision(
                 &change.effective_workspace,
                 change.effective_path.clone(),
                 new_content.clone(),
                 Some(true),
                 Some(false),
+                change.expected_revision.as_deref(),
             )
             .await
             .map(|_| ())
         } else {
-            fs::delete_path_internal(
+            fs::delete_path_internal_with_revision(
                 &change.effective_workspace,
                 change.effective_path.clone(),
                 Some(false),
+                change.expected_revision.as_deref(),
             )
             .await
         };
@@ -943,8 +1008,24 @@ pub(crate) async fn commit_pending_file_changes_atomically(
     let mut backups = Vec::with_capacity(changes.len());
     for change in changes {
         let backup = match tokio::fs::read(&change.absolute_path).await {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Ok(bytes) => {
+                fs::validate_expected_revision(
+                    &change.display_path,
+                    change.expected_revision.as_deref(),
+                    Some(&fs::content_revision(&bytes)),
+                )
+                .map_err(|error| command_error(error.to_string()))?;
+                Some(bytes)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::validate_expected_revision(
+                    &change.display_path,
+                    change.expected_revision.as_deref(),
+                    None,
+                )
+                .map_err(|error| command_error(error.to_string()))?;
+                None
+            }
             Err(error) => {
                 return Err(command_error(format!(
                     "Failed to prepare backup for {}: {}",
@@ -956,34 +1037,72 @@ pub(crate) async fn commit_pending_file_changes_atomically(
     }
 
     for (applied_count, change) in changes.iter().enumerate() {
-        let result = if let Some(new_content) = change.new_content.as_ref() {
-            write_file_atomically(&change.absolute_path, new_content).await
+        let revision_result = if change.expected_revision.is_some() {
+            let actual_revision = match tokio::fs::read(&change.absolute_path).await {
+                Ok(bytes) => Some(fs::content_revision(&bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return rollback_after_batch_failure(
+                        &backups,
+                        applied_count,
+                        command_error(format!(
+                            "Failed to revalidate {} before mutation: {}",
+                            change.display_path, error
+                        )),
+                    )
+                    .await;
+                }
+            };
+            fs::validate_expected_revision(
+                &change.display_path,
+                change.expected_revision.as_deref(),
+                actual_revision.as_deref(),
+            )
+            .map_err(|error| command_error(error.to_string()))
         } else {
-            tokio::fs::remove_file(&change.absolute_path)
-                .await
-                .map_err(|error| {
-                    command_error(format!(
-                        "Failed to delete {}: {}",
-                        change.display_path, error
-                    ))
-                })
+            Ok(())
+        };
+        let result = match revision_result {
+            Err(error) => Err(error),
+            Ok(()) => {
+                if let Some(new_content) = change.new_content.as_ref() {
+                    write_file_atomically(&change.absolute_path, new_content).await
+                } else {
+                    tokio::fs::remove_file(&change.absolute_path)
+                        .await
+                        .map_err(|error| {
+                            command_error(format!(
+                                "Failed to delete {}: {}",
+                                change.display_path, error
+                            ))
+                        })
+                }
+            }
         };
 
         if let Err(error) = result {
-            let rollback_errors = rollback_pending_file_changes(&backups[..applied_count]).await;
-            let rollback_suffix = if rollback_errors.is_empty() {
-                String::new()
-            } else {
-                format!(" Rollback errors: {}", rollback_errors.join("; "))
-            };
-            return Err(command_error(format!(
-                "{}{}",
-                error.message, rollback_suffix
-            )));
+            return rollback_after_batch_failure(&backups, applied_count, error).await;
         }
     }
 
     Ok(())
+}
+
+async fn rollback_after_batch_failure(
+    backups: &[(PathBuf, Option<Vec<u8>>)],
+    applied_count: usize,
+    error: CommandError,
+) -> CommandResult<()> {
+    let rollback_errors = rollback_pending_file_changes(&backups[..applied_count]).await;
+    let rollback_suffix = if rollback_errors.is_empty() {
+        String::new()
+    } else {
+        format!(" Rollback errors: {}", rollback_errors.join("; "))
+    };
+    Err(command_error(format!(
+        "{}{}",
+        error.message, rollback_suffix
+    )))
 }
 
 pub(crate) async fn build_post_write_response(
@@ -1243,6 +1362,7 @@ pub async fn execute_workspace_tool(
             let content = json_arg_string(&args, "content")
                 .ok_or_else(|| command_error("Missing content argument for write tool."))?;
             let create_dirs = json_arg_bool(&args, "create_dirs");
+            let expected_revision = json_arg_string(&args, "expected_revision");
             let effective_workspace = resolve_workspace_for_tool_path(
                 &workspace,
                 &git_state,
@@ -1254,12 +1374,13 @@ pub async fn execute_workspace_tool(
             let absolute_path =
                 resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), true)?;
 
-            let write_result = fs::write_file_internal(
+            let write_result = fs::write_file_internal_with_revision(
                 &effective_workspace,
                 effective_path.clone(),
                 content.clone(),
                 create_dirs,
                 Some(false),
+                expected_revision.as_deref(),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -1279,6 +1400,7 @@ pub async fn execute_workspace_tool(
                 bytes_written: write_result.bytes_written,
                 additions: content.lines().count(),
                 deletions: 0,
+                expected_revision,
             };
 
             build_post_write_response(
@@ -1303,6 +1425,7 @@ pub async fn execute_workspace_tool(
             let new_text = json_arg_string(&args, "new_text")
                 .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
             let replace_all = json_arg_bool(&args, "replace_all").unwrap_or(false);
+            let expected_revision = json_arg_string(&args, "expected_revision");
             let effective_workspace = resolve_workspace_for_tool_path(
                 &workspace,
                 &git_state,
@@ -1319,6 +1442,12 @@ pub async fn execute_workspace_tool(
             if current.is_binary {
                 return Ok(format!("Cannot edit binary file: {}", path));
             }
+            fs::validate_expected_revision(
+                &path,
+                expected_revision.as_deref(),
+                Some(&current.revision),
+            )
+            .map_err(|error| command_error(error.to_string()))?;
 
             let occurrences = current.content.matches(&old_text).count();
             if let Some(error) = exact_edit_match_error(&path, occurrences, replace_all) {
@@ -1334,12 +1463,13 @@ pub async fn execute_workspace_tool(
             let absolute_path =
                 resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), true)?;
 
-            let write_result = fs::write_file_internal(
+            let write_result = fs::write_file_internal_with_revision(
                 &effective_workspace,
                 effective_path.clone(),
                 updated.clone(),
                 Some(true),
                 Some(false),
+                expected_revision.as_deref(),
             )
             .await
             .map_err(|error| command_error(error.to_string()))?;
@@ -1360,6 +1490,7 @@ pub async fn execute_workspace_tool(
                 bytes_written: write_result.bytes_written,
                 additions,
                 deletions,
+                expected_revision,
             };
 
             build_post_write_response(
@@ -1387,6 +1518,7 @@ pub async fn execute_workspace_tool(
             let path = json_arg_string(&args, "path")
                 .ok_or_else(|| command_error("Missing path argument for delete tool."))?;
             let effective_path = remap_macro_tool_path(path.as_str());
+            let expected_revision = json_arg_string(&args, "expected_revision");
             let effective_workspace = resolve_workspace_for_tool_path(
                 &workspace,
                 &git_state,
@@ -1421,10 +1553,21 @@ pub async fn execute_workspace_tool(
             } else {
                 current.content.lines().count()
             };
+            fs::validate_expected_revision(
+                &path,
+                expected_revision.as_deref(),
+                Some(&current.revision),
+            )
+            .map_err(|error| command_error(error.to_string()))?;
 
-            fs::delete_path_internal(&effective_workspace, effective_path.clone(), Some(false))
-                .await
-                .map_err(|error| command_error(format!("Failed to delete {}: {}", path, error)))?;
+            fs::delete_path_internal_with_revision(
+                &effective_workspace,
+                effective_path.clone(),
+                Some(false),
+                expected_revision.as_deref(),
+            )
+            .await
+            .map_err(|error| command_error(format!("Failed to delete {}: {}", path, error)))?;
 
             let change = PendingFileChange {
                 display_path: path.clone(),
@@ -1437,6 +1580,7 @@ pub async fn execute_workspace_tool(
                 bytes_written: 0,
                 additions: 0,
                 deletions,
+                expected_revision,
             };
 
             build_post_write_response(
@@ -1450,6 +1594,7 @@ pub async fn execute_workspace_tool(
                 command_error("Missing patch_text argument for apply_patch tool.")
             })?;
             let operations = parse_apply_patch(&patch_text)?;
+            let expected_revisions = json_arg_string_map(&args, "expected_revisions");
 
             for operation in operations.iter() {
                 let operation_path = match operation {
@@ -1478,6 +1623,10 @@ pub async fn execute_workspace_tool(
             for operation in operations {
                 match operation {
                     ParsedPatchOperation::Add { path, lines } => {
+                        let expected_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned()
+                            .or_else(|| Some(fs::EXPECTED_REVISION_ABSENT.to_string()));
                         let effective_path = remap_macro_tool_path(path.as_str());
                         let effective_workspace = resolve_workspace_for_tool_path(
                             &workspace,
@@ -1518,9 +1667,13 @@ pub async fn execute_workspace_tool(
                             bytes_written: new_content.len() as u64,
                             additions: new_content.lines().count(),
                             deletions: 0,
+                            expected_revision,
                         });
                     }
                     ParsedPatchOperation::Update { path, hunks } => {
+                        let expected_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned();
                         let effective_path = remap_macro_tool_path(path.as_str());
                         let effective_workspace = resolve_workspace_for_tool_path(
                             &workspace,
@@ -1562,9 +1715,13 @@ pub async fn execute_workspace_tool(
                             bytes_written: new_content.len() as u64,
                             additions,
                             deletions,
+                            expected_revision,
                         });
                     }
                     ParsedPatchOperation::Delete { path } => {
+                        let expected_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned();
                         let effective_path = remap_macro_tool_path(path.as_str());
                         let effective_workspace = resolve_workspace_for_tool_path(
                             &workspace,
@@ -1597,6 +1754,7 @@ pub async fn execute_workspace_tool(
                             bytes_written: 0,
                             additions: 0,
                             deletions: deletion_count,
+                            expected_revision,
                         });
                     }
                 }
@@ -3606,11 +3764,12 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_patch_hunks_to_content, apply_provider_api_key_change,
+        apply_patch_hunks_to_content, apply_provider_api_key_change, command_error,
         commit_pending_file_changes_atomically, exact_edit_match_error, execute_workspace_tool,
         parse_apply_patch, reconcile_provider_secret_metadata, resolve_requested_workspace,
         resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation, PendingFileChange,
     };
+    use crate::commands::fs::content_revision;
     use crate::db::{models::ProviderAuthMetadata, repository};
     use crate::git::GitState;
     use crate::secrets;
@@ -3620,6 +3779,20 @@ mod tests {
     use tempfile::TempDir;
 
     static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn command_error_serializes_revision_conflicts_with_a_stable_code() {
+        let error = command_error(
+            "Failed to edit guarded.txt: Revision conflict: stale content".to_string(),
+        );
+        assert_eq!(
+            serde_json::to_value(error).expect("serialize command error"),
+            json!({
+                "code": "REVISION_CONFLICT",
+                "message": "Failed to edit guarded.txt: Revision conflict: stale content"
+            })
+        );
+    }
 
     #[test]
     fn exact_edit_requires_one_match_unless_replace_all_is_enabled() {
@@ -4046,6 +4219,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_workspace_tool_edit_rejects_a_stale_revision() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("guarded.txt");
+        fs::write(&path, "value = 1\n").expect("seed guarded file");
+
+        let error = execute_workspace_tool(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            "Implement".to_string(),
+            "edit".to_string(),
+            json!({
+                "path": "guarded.txt",
+                "old_text": "value = 1",
+                "new_text": "value = 2",
+                "expected_revision": "stale-revision"
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("stale edit must fail");
+
+        assert!(error.message.contains("Stale content"));
+        assert_eq!(
+            fs::read_to_string(path).expect("read guarded file"),
+            "value = 1\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_pending_file_changes_checks_all_revisions_before_writing() {
+        let workspace = TempDir::new().expect("workspace");
+        let first_path = workspace.path().join("first.txt");
+        let second_path = workspace.path().join("second.txt");
+        fs::write(&first_path, "first-original\n").expect("write first");
+        fs::write(&second_path, "second-original\n").expect("write second");
+
+        let changes = vec![
+            PendingFileChange {
+                display_path: "first.txt".to_string(),
+                effective_workspace: workspace.path().to_path_buf(),
+                effective_path: "first.txt".to_string(),
+                absolute_path: first_path.clone(),
+                status: "updated".to_string(),
+                new_content: Some("first-updated\n".to_string()),
+                created: false,
+                bytes_written: 14,
+                additions: 1,
+                deletions: 1,
+                expected_revision: Some(content_revision(b"first-original\n")),
+            },
+            PendingFileChange {
+                display_path: "second.txt".to_string(),
+                effective_workspace: workspace.path().to_path_buf(),
+                effective_path: "second.txt".to_string(),
+                absolute_path: second_path.clone(),
+                status: "updated".to_string(),
+                new_content: Some("second-updated\n".to_string()),
+                created: false,
+                bytes_written: 15,
+                additions: 1,
+                deletions: 1,
+                expected_revision: Some("stale-revision".to_string()),
+            },
+        ];
+
+        let error = commit_pending_file_changes_atomically(&changes)
+            .await
+            .expect_err("stale batch must fail before writing");
+
+        assert!(error.message.contains("Stale content for 'second.txt'"));
+        assert_eq!(
+            fs::read_to_string(first_path).expect("read first"),
+            "first-original\n"
+        );
+        assert_eq!(
+            fs::read_to_string(second_path).expect("read second"),
+            "second-original\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_pending_file_changes_rolls_back_a_late_revision_conflict() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("shared.txt");
+        fs::write(&path, "original\n").expect("write original");
+        let original_revision = content_revision(b"original\n");
+        let change = |content: &str| PendingFileChange {
+            display_path: "shared.txt".to_string(),
+            effective_workspace: workspace.path().to_path_buf(),
+            effective_path: "shared.txt".to_string(),
+            absolute_path: path.clone(),
+            status: "updated".to_string(),
+            new_content: Some(content.to_string()),
+            created: false,
+            bytes_written: content.len() as u64,
+            additions: 1,
+            deletions: 1,
+            expected_revision: Some(original_revision.clone()),
+        };
+
+        let error = commit_pending_file_changes_atomically(&[
+            change("first mutation\n"),
+            change("second mutation\n"),
+        ])
+        .await
+        .expect_err("the second mutation must observe the first revision change");
+
+        assert!(error.message.contains("Stale content for 'shared.txt'"));
+        assert_eq!(
+            fs::read_to_string(path).expect("read rolled back file"),
+            "original\n"
+        );
+    }
+
+    #[tokio::test]
     async fn commit_pending_file_changes_rolls_back_first_write_when_later_operation_fails() {
         let workspace = TempDir::new().expect("workspace");
         let first_path = workspace.path().join("first.txt");
@@ -4064,6 +4357,7 @@ mod tests {
                 bytes_written: 8,
                 additions: 1,
                 deletions: 1,
+                expected_revision: None,
             },
             PendingFileChange {
                 display_path: "missing.txt".to_string(),
@@ -4076,6 +4370,7 @@ mod tests {
                 bytes_written: 0,
                 additions: 0,
                 deletions: 0,
+                expected_revision: None,
             },
         ];
 
