@@ -141,6 +141,15 @@ describe("internalAgentProfile", () => {
     );
   });
 
+  it("fails closed for an unknown internal profile", () => {
+    expect(
+      filterToolIdsForInternalAgentProfile(
+        ["read", "apply_patch", "git_commit"],
+        "unknown_profile" as never
+      )
+    ).toEqual([]);
+  });
+
   it("provides distinct system guidance for specialized profiles", () => {
     expect(buildInternalAgentProfileSystemPrompt("plan_explorer")).toContain(
       "PLAN_EXPLORER"
