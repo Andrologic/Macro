@@ -126,6 +126,7 @@ type PatchValidationRecord = {
   size: number;
   encoding: string | null;
   language: string | null;
+  revision?: string | null;
 };
 
 type PatchChangeRecord = {
@@ -711,6 +712,9 @@ const buildStructuredWriteResponse = (
         : {}),
       bytes_written: input.bytesWritten,
       created: input.created,
+      ...(input.validation.revision
+        ? { revision: input.validation.revision }
+        : {}),
       files: [
         {
           path: input.path,
@@ -1847,7 +1851,7 @@ export const executeWorkspaceTool = async (
         });
 
         if (result.is_binary) {
-          return `File ${resolved.virtualPath} is binary (${result.size} bytes, encoding=${result.encoding}).`;
+          return `File ${resolved.virtualPath} is binary (${result.size} bytes, encoding=${result.encoding}, revision=${result.revision ?? "unavailable"}).`;
         }
 
         const startLine =
@@ -1877,7 +1881,7 @@ export const executeWorkspaceTool = async (
           notices.push(`REAL_PATH: ${resolved.realPath}`);
         }
 
-        return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\n${notices.join("\n")}\nLANGUAGE: ${result.language}\nSIZE: ${result.size}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
+        return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\n${notices.join("\n")}\nLANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
       }
 
       if (toolName === "write") {
@@ -1957,6 +1961,7 @@ export const executeWorkspaceTool = async (
             size: readback.size,
             encoding: readback.encoding,
             language: readback.language,
+            revision: readback.revision ?? null,
           },
           projectId: candidate.id,
           mountName: candidate.mountName,
@@ -2071,6 +2076,7 @@ export const executeWorkspaceTool = async (
             size: readback.size,
             encoding: readback.encoding,
             language: readback.language,
+            revision: readback.revision ?? null,
           },
           replacements: replaceAll ? occurrences : 1,
           projectId: candidate.id,
@@ -2168,6 +2174,7 @@ export const executeWorkspaceTool = async (
             size: 0,
             encoding: null,
             language: null,
+            revision: null,
           },
           projectId: candidate.id,
           mountName: candidate.mountName,
@@ -2345,6 +2352,7 @@ export const executeWorkspaceTool = async (
               size: 0,
               encoding: null,
               language: null,
+              revision: null,
             };
             afterCheckpoint = missingCheckpointSnapshot();
           } else {
@@ -2362,6 +2370,7 @@ export const executeWorkspaceTool = async (
                 size: readback.size,
                 encoding: readback.encoding,
                 language: readback.language,
+                revision: readback.revision ?? null,
               };
               afterCheckpoint = snapshotFromReadResult(readback);
             } catch (error) {
@@ -2376,6 +2385,7 @@ export const executeWorkspaceTool = async (
                 size: 0,
                 encoding: null,
                 language: null,
+                revision: null,
               };
               afterCheckpoint = {
                 exists: true,
@@ -3336,7 +3346,7 @@ export const executeWorkspaceTool = async (
       }
 
       if (result.is_binary) {
-        return `File ${resolvedPath} is binary (${result.size} bytes, encoding=${result.encoding}).`;
+        return `File ${resolvedPath} is binary (${result.size} bytes, encoding=${result.encoding}, revision=${result.revision ?? "unavailable"}).`;
       }
 
       const startLine =
@@ -3359,7 +3369,7 @@ export const executeWorkspaceTool = async (
         resolvedPath !== path
           ? `RESOLVED_PATH: ${resolvedPath} (from requested: ${inputPath})\n`
           : "";
-      return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
+      return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
     }
 
     if (toolName === "write") {
@@ -3420,6 +3430,7 @@ export const executeWorkspaceTool = async (
           size: readback.size,
           encoding: readback.encoding,
           language: readback.language,
+          revision: readback.revision ?? null,
         },
         rawPath: writeResult.path,
       });
@@ -3514,6 +3525,7 @@ export const executeWorkspaceTool = async (
           size: readback.size,
           encoding: readback.encoding,
           language: readback.language,
+          revision: readback.revision ?? null,
         },
         replacements: replaceAll ? occurrences : 1,
         rawPath: writeResult.path,
@@ -3588,6 +3600,7 @@ export const executeWorkspaceTool = async (
           size: 0,
           encoding: null,
           language: null,
+          revision: null,
         },
         rawPath: path,
       });
@@ -3747,6 +3760,7 @@ export const executeWorkspaceTool = async (
             size: 0,
             encoding: null,
             language: null,
+            revision: null,
           };
           afterCheckpoint = missingCheckpointSnapshot();
         } else {
@@ -3765,6 +3779,7 @@ export const executeWorkspaceTool = async (
               size: readback.size,
               encoding: readback.encoding,
               language: readback.language,
+              revision: readback.revision ?? null,
             };
             afterCheckpoint = snapshotFromReadResult(readback);
           } catch (error) {
@@ -3779,6 +3794,7 @@ export const executeWorkspaceTool = async (
               size: 0,
               encoding: null,
               language: null,
+              revision: null,
             };
             afterCheckpoint = {
               exists: true,

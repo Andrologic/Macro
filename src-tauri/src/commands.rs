@@ -1011,6 +1011,7 @@ pub(crate) async fn build_post_write_response(
                     "size": read_result.size,
                     "encoding": read_result.encoding,
                     "language": read_result.language,
+                    "revision": read_result.revision,
                 }),
                 Err(error) => {
                     errors.push(format!(
@@ -1025,6 +1026,7 @@ pub(crate) async fn build_post_write_response(
                         "size": 0,
                         "encoding": Value::Null,
                         "language": Value::Null,
+                        "revision": Value::Null,
                     })
                 }
             }
@@ -1052,6 +1054,7 @@ pub(crate) async fn build_post_write_response(
                 "size": 0,
                 "encoding": Value::Null,
                 "language": Value::Null,
+                "revision": Value::Null,
             })
         };
 
@@ -1199,8 +1202,8 @@ pub async fn execute_workspace_tool(
 
             if result.is_binary {
                 return Ok(format!(
-                    "File {} is binary ({} bytes, encoding={}).",
-                    path, result.size, result.encoding
+                    "File {} is binary ({} bytes, encoding={}, revision={}).",
+                    path, result.size, result.encoding, result.revision
                 ));
             }
 
@@ -1223,10 +1226,11 @@ pub async fn execute_workspace_tool(
 
             let numbered = format_with_line_numbers(&selected, effective_start);
             Ok(format!(
-                "FILE: {}\nSOURCE: WORKSPACE_FILE\nLANGUAGE: {}\nSIZE: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
+                "FILE: {}\nSOURCE: WORKSPACE_FILE\nLANGUAGE: {}\nSIZE: {}\nREVISION: {}\nLINES: {}-{}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
                 path,
                 result.language,
                 result.size,
+                result.revision,
                 effective_start,
                 effective_start + selected.len().saturating_sub(1),
                 numbered

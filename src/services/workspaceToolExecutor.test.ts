@@ -596,6 +596,8 @@ describe("workspaceToolExecutor helpers", () => {
           is_binary: false,
           size: 25,
           encoding: "utf-8",
+          revision:
+            "a6e6fcb7f89bc6c0d42cddc9f91f5d302e601384e87f1a0777a07e18b9ad54d2",
         }),
       },
     } as Partial<MockAppState>);
@@ -633,6 +635,9 @@ describe("workspaceToolExecutor helpers", () => {
 
     expect(result).toContain("FILE: web/src/App.tsx");
     expect(result).toContain("PROJECT_ID: web");
+    expect(result).toContain(
+      "REVISION: a6e6fcb7f89bc6c0d42cddc9f91f5d302e601384e87f1a0777a07e18b9ad54d2",
+    );
     expect(result).toContain("export const App = 'web';");
   });
 

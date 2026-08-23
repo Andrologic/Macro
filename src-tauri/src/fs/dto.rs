@@ -12,6 +12,8 @@ pub struct FileContentDto {
     pub size: u64,
     /// Encoding used ("utf-8", "base64", etc.)
     pub encoding: String,
+    /// SHA-256 digest of the exact file bytes read
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +102,8 @@ pub struct WriteResultDto {
     pub created: bool,
     /// Whether the write was skipped because the content was identical
     pub skipped: bool,
+    /// SHA-256 digest of the exact file bytes after the write
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
