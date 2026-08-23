@@ -3,7 +3,6 @@ import type {
   AgentCapability,
   DelegationAuthorization,
   DelegationError,
-  DelegationLimits,
   DelegationPolicyScope,
   DelegationPreflightInput,
   DelegationResult,
