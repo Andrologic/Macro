@@ -6,7 +6,9 @@ import {
   createTranslationMock,
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
+import { createDeferred } from '../../test-utils/deferred';
 import { installTauriRuntimeMock } from '../../test-utils/tauriRuntime';
+import { createStoreHookMock } from '../../test-utils/storeHookMock';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
@@ -230,50 +232,6 @@ type TaskState = {
   startTask: ReturnType<typeof mock>;
 };
 
-const createStoreHook = <T extends object,>(
-  getSnapshot: () => T,
-  setSnapshot: (nextState: T) => void,
-) => {
-  const listeners = new Set<() => void>();
-  const subscribe = (listener: () => void) => {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-      };
-  };
-
-  const hook = ((selector?: (state: T) => unknown) => {
-    const snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-    return selector ? selector(snapshot) : snapshot;
-  }) as ((selector?: (state: T) => unknown) => unknown) & {
-    emit: () => void;
-    getState: () => T;
-    setState: (
-      nextStateOrUpdater: Partial<T> | T | ((state: T) => Partial<T> | T),
-      replace?: boolean
-    ) => void;
-    subscribe: typeof subscribe;
-  };
-
-  hook.getState = getSnapshot;
-  hook.emit = () => {
-    listeners.forEach((listener) => listener());
-  };
-  hook.setState = (nextStateOrUpdater, replace = false) => {
-    const currentState = getSnapshot();
-    const nextState =
-      typeof nextStateOrUpdater === 'function'
-        ? nextStateOrUpdater(currentState)
-        : nextStateOrUpdater;
-    setSnapshot(
-      (replace ? nextState : { ...currentState, ...nextState }) as T
-    );
-    hook.emit();
-  };
-  hook.subscribe = subscribe;
-  return hook;
-};
-
 let appState: AppStoreState;
 let chatState: MockChatState;
 let providerState: ProviderState;
@@ -311,22 +269,22 @@ const getMockConversationRuntime = (
   };
 };
 
-const useAppStore = createStoreHook(() => appState, (nextState) => {
+const useAppStore = createStoreHookMock(() => appState, (nextState) => {
   appState = nextState;
 });
-const useChatStore = createStoreHook(() => chatState, (nextState) => {
+const useChatStore = createStoreHookMock(() => chatState, (nextState) => {
   chatState = nextState;
 });
-const useProviderStore = createStoreHook(() => providerState, (nextState) => {
+const useProviderStore = createStoreHookMock(() => providerState, (nextState) => {
   providerState = nextState;
 });
-const useSkillsStore = createStoreHook(() => skillsState, (nextState) => {
+const useSkillsStore = createStoreHookMock(() => skillsState, (nextState) => {
   skillsState = nextState;
 });
-const useShortcutsStore = createStoreHook(() => shortcutsState, (nextState) => {
+const useShortcutsStore = createStoreHookMock(() => shortcutsState, (nextState) => {
   shortcutsState = nextState;
 });
-const useTaskStore = createStoreHook(() => taskState, (nextState) => {
+const useTaskStore = createStoreHookMock(() => taskState, (nextState) => {
   taskState = nextState;
 });
 const translationMock = createTranslationMock({
@@ -386,27 +344,26 @@ let messageEditEditorValue = '';
 let composerEditorSetTextCalls: string[] = [];
 let composerEditorFocusCalls = 0;
 let latestComposerProps: Record<string, unknown> | null = null;
-let notifyInfoMock: ReturnType<typeof mock>;
-let notifySuccessMock: ReturnType<typeof mock>;
-let notifyWarningMock: ReturnType<typeof mock>;
-let notifyErrorMock: ReturnType<typeof mock>;
-let notifyActionRequiredMock: ReturnType<typeof mock>;
+const notifyInfoMock = mock(() => undefined);
+const notifySuccessMock = mock(() => undefined);
+const notifyWarningMock = mock(() => undefined);
+const notifyErrorMock = mock(() => undefined);
+const notifyActionRequiredMock = mock(() => undefined);
 
 let ChatZone!: typeof import('./ChatZone').default;
 let importCounter = 0;
 
 const resetNotifyMocks = () => {
-  notifyInfoMock = mock(() => undefined);
-  notifySuccessMock = mock(() => undefined);
-  notifyWarningMock = mock(() => undefined);
-  notifyErrorMock = mock(() => undefined);
-  notifyActionRequiredMock = mock(() => undefined);
+  notifyInfoMock.mockClear();
+  notifySuccessMock.mockClear();
+  notifyWarningMock.mockClear();
+  notifyErrorMock.mockClear();
+  notifyActionRequiredMock.mockClear();
 };
 
 const loadChatZoneModule = async () => {
   importCounter += 1;
   mock.restore();
-  resetNotifyMocks();
 
   installReactI18nextMock(translationMock);
 
@@ -634,6 +591,7 @@ const loadChatZoneModule = async () => {
     subscribePreference: mock(() => () => undefined),
   }));
 
+  await import('./AgentCodeReplayConfirmModal');
   ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
 };
 
@@ -949,6 +907,7 @@ describe('ChatZone', () => {
 
     await loadChatZoneModule();
     resetState();
+    resetNotifyMocks();
     markdownRendererContentMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -1546,26 +1505,28 @@ describe('ChatZone', () => {
   });
 
   it('keeps composer editing active when checkpoint restoration is canceled', async () => {
+    const preview = {
+      conversationId: 'conv-1',
+      messageId: 'msg-user-1',
+      targetCheckpointId: null,
+      affectedFiles: [
+        {
+          path: 'src/new-file.ts',
+          realPath: '/repo/src/new-file.ts',
+          action: 'delete',
+          status: 'created',
+          target: { exists: false, content: null },
+        },
+      ],
+    };
+    const previewDeferred = createDeferred<typeof preview>();
     chatState = {
       ...chatState,
       messages: [
         buildMessage({ id: 'msg-user-1', role: 'user', content: 'Original message' }),
         buildMessage({ id: 'msg-assistant-1', role: 'assistant', content: 'Code changed.' }),
       ],
-      getAgentCodeReplayPreview: mock(async () => ({
-        conversationId: 'conv-1',
-        messageId: 'msg-user-1',
-        targetCheckpointId: null,
-        affectedFiles: [
-          {
-            path: 'src/new-file.ts',
-            realPath: '/repo/src/new-file.ts',
-            action: 'delete',
-            status: 'created',
-            target: { exists: false, content: null },
-          },
-        ],
-      })),
+      getAgentCodeReplayPreview: mock(() => previewDeferred.promise),
     };
 
     await act(async () => {
@@ -1575,6 +1536,10 @@ describe('ChatZone', () => {
     await clickFirstMessageEditButton();
     await setComposerText('Edited message');
     await clickSendButton();
+    await act(async () => {
+      previewDeferred.resolve(preview);
+      await previewDeferred.promise;
+    });
 
     expect(requireContainer().textContent).toContain('Revenir au point de contrôle du code ?');
     expect(requireContainer().textContent).toContain('src/new-file.ts');
@@ -5269,8 +5234,8 @@ describe('ChatZone', () => {
       peekComposerDraft: peekMock as unknown as typeof chatState.peekComposerDraft,
     };
 
-    requireRoot().render(<ChatZone />);
     await act(async () => {
+      requireRoot().render(<ChatZone />);
       useChatStore.emit();
     });
 
@@ -5285,8 +5250,8 @@ describe('ChatZone', () => {
       pendingComposerDraftByConversationId: {},
     };
 
-    requireRoot().render(<ChatZone />);
     await act(async () => {
+      requireRoot().render(<ChatZone />);
       useChatStore.emit();
     });
 
