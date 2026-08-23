@@ -12,22 +12,32 @@ bun run hooks:install
 ```
 
 Before a push, `.githooks/pre-push` compares the complete proposed integration
-range, runs `dev/ci/classify-changes.mjs`, and selects a shared local profile:
+range and runs a fast, path-aware guard. It reports the remote profile that
+GitHub will execute, but deliberately leaves exhaustive validation to the pull
+request workflow:
 
-| Change | Local profile |
+| Change | Fast local checks |
 | --- | --- |
-| Documentation only | Version manifests and tracked-binary policy |
-| Frontend | Locked install, workflow policy, typecheck, tests, Vite build, and bundle budget |
-| Native or configuration | Complete frontend validation plus Rust tests for every target and doc tests |
-| Focused Windows job | Sidecar build plus `cargo check --all-targets` |
+| Every push | Whitespace errors in the pushed range, version manifests, and tracked-binary policy |
+| JavaScript or TypeScript | ESLint on changed files plus changed, sibling, and direct-relative-importing test files |
+| Rust | `cargo fmt --check` when an existing Rust source changes |
+| Workflows or CI scripts | Workflow syntax and repository Actions policy |
+| Bun manifests or lockfile | Frozen lockfile consistency, without installing packages |
+| Locales or i18n tooling | Translation audit |
+| Updater manifests or tooling | Updater configuration preflight |
 
-Every local profile prints the duration of each step and of the whole run.
-Frontend profiles typecheck once and build with Vite only; `tsc` is not run a
-second time inside the build step. Frontend tests run with bounded parallelism
-and per-file isolation, and coverage instrumentation stays opt-in so ordinary
-runs pay no coverage cost. Native and full profiles use `cargo test
---all-targets` so examples, binaries, and library tests share one compilation;
-the separate documentation-test pass reuses those artifacts.
+The hook never installs dependencies, type-checks the whole application, builds
+the frontend, or runs a complete frontend or Rust suite. If a selected check
+needs missing dependencies, it exits with an instruction to run `bun install`
+once. Use `bun run ci` whenever an exhaustive local rehearsal is useful. GitHub
+is the merge authority and runs the full shared profiles on clean runners.
+
+Those full profiles typecheck once and build with Vite only; `tsc` is not run a
+second time inside the build step. Frontend tests use bounded parallelism and
+per-file isolation, and coverage instrumentation stays opt-in. Native and full
+profiles use `cargo test --all-targets` so examples, binaries, and library tests
+share one compilation; the separate documentation-test pass reuses those
+artifacts.
 
 `bun run test:coverage` clears stale reports before running. It merges exact
 application line counts into `coverage/lcov.info` and writes global, per-domain,
@@ -38,10 +48,10 @@ summary when a test fails. Bun 1.3.14 LCOV reports do not identify functions or
 branches, so the summary marks those metrics as unavailable.
 
 The successful result is cached outside the worktree for the exact HEAD, target
-base, platform, and profile. Running `bun run ci:pre-push` manually immediately
-before `git push` therefore does not duplicate the expensive work. A dirty
-worktree is rejected because it would make the validation differ from the
-commits actually sent.
+base, platform, Bun version, and planned command list. Running
+`bun run ci:pre-push` manually immediately before `git push` therefore does not
+repeat the checks. A dirty worktree is rejected because it would make file-based
+lint and tests differ from the commits actually sent.
 
 The workflow files invoke the same `dev/ci/run-checks.mjs` profiles. Workflow
 syntax and repository security policy are checked locally by

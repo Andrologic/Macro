@@ -47,13 +47,16 @@ interpretation, maintenance rules, and the current refactoring sequence.
 
 The gate compares the complete pull request range against `origin/develop` for
 feature branches and against `origin/main` for release and hotfix branches. It
-uses the same classifier as GitHub Actions. Documentation stays lightweight;
-frontend changes run frontend tests and builds; native or configuration changes
-run the complete frontend and Rust profiles. On Windows, full local CI also
-checks every native target.
+always checks pushed whitespace, versions, and tracked binaries. It then runs
+ESLint for changed scripts and related tests for changed TypeScript,
+`cargo fmt --check` for changed Rust, and the relevant dependency-lock,
+workflow, updater, or translation policy checks. It does not install
+dependencies or run repository-wide typechecks, builds, or test suites.
 
-Use `bun run ci` when a full validation is explicitly required regardless of
-the changed paths. Use `bun run ci:workflows` after editing workflow policy.
+GitHub's pull request checks are the merge authority and run the exhaustive
+profiles on clean runners. Use `bun run ci` when a full validation is useful
+locally regardless of the changed paths. Use `bun run ci:workflows` after
+editing workflow policy.
 
 If a check cannot run on your machine, mention the exact command and reason in
 the pull request. Do not bypass hooks with `--no-verify`. Do not use GitHub
@@ -88,8 +91,8 @@ Pull requests should include:
 - notes for any limitations, follow-up work, or intentionally deferred checks.
 
 Keep a pull request in draft while work is incomplete. Mark it ready only after
-`bun run ci:pre-push` succeeds for its current HEAD. Before creating a release
-tag, run `bun run release:preflight` from a clean `main` checkout matching
-`origin/main`.
+`bun run ci:pre-push` succeeds for its current HEAD, then require every GitHub
+check before merge. Before creating a release tag, run
+`bun run release:preflight` from a clean `main` checkout matching `origin/main`.
 
 By contributing, you agree that your contribution will be licensed under the repository license, AGPL-3.0-or-later.
