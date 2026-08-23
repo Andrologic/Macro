@@ -36,12 +36,15 @@ and linked docs when a task needs detail.
   surrounding code already does so.
 - Never commit secrets, local provider keys, build artifacts, local databases,
   signing material, or generated release bundles.
-- Treat GitHub Actions as remote confirmation, never as a development loop.
-  Before pushing, opening a ready pull request, or updating an existing pull
-  request, run `bun run ci:pre-push` and fix failures locally.
+- Treat GitHub Actions as the exhaustive merge gate, never as a development
+  loop. Before pushing, opening a ready pull request, or updating an existing
+  pull request, run the fast changed-file gate with `bun run ci:pre-push` and
+  fix failures locally. Run `bun run ci` before releases and when a full local
+  rehearsal is explicitly needed.
 - Never bypass repository hooks with `--no-verify` unless the user explicitly
   authorizes it. After a remote CI failure, reproduce or explain the failure
-  locally and pass the relevant local profile before pushing another fix.
+  locally and pass the relevant focused check or full local profile before
+  pushing another fix.
 - Rerun an unchanged GitHub Actions job at most once, and only when its logs
   demonstrate a transient runner, service, or network failure.
 
@@ -60,7 +63,7 @@ Use the smallest validation set that proves the change.
 - Build the frontend: `bun run build`.
 - Check version manifests: `bun run version:check`.
 - Full local CI: `bun run ci`.
-- Differential pre-push CI: `bun run ci:pre-push`.
+- Fast differential pre-push gate: `bun run ci:pre-push`.
 - Validate GitHub workflow policy: `bun run ci:workflows`.
 - Install repository hooks: `bun run hooks:install`.
 - Validate a release before creating or pushing its tag: `bun run release:preflight`.
