@@ -13,6 +13,11 @@ autobins = false
 name = "macro"
 path = "src/main.rs"
 
+[[test]]
+name = "lsp_core"
+path = "tests/lsp_core.rs"
+harness = false
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -37,6 +42,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 unicode-normalization = "0.1"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
@@ -68,6 +74,7 @@ subtle = "2"
 flate2 = "1"
 tar = "0.4"
 urlencoding = "2"
+url = "2"
 portable-pty = "0.8"
 
 # Config
