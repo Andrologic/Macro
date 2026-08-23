@@ -1166,6 +1166,7 @@ export interface ToolValidationResultDto {
 export interface ToolModePolicyDto {
   allowed_tool_ids: string[];
   enforce_macro_only_writes: boolean;
+  capabilities?: string[];
 }
 
 export interface MCPDiscoverToolsResponseDto {
@@ -1705,6 +1706,7 @@ export async function fsWriteFile(params: {
   allowOutsideWorkspace?: boolean;
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
+  expectedRevision?: string | null;
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>("fs_write_file", {
     path: params.path,
@@ -1713,6 +1715,7 @@ export async function fsWriteFile(params: {
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+    expectedRevision: params.expectedRevision ?? null,
   });
 }
 
@@ -1785,12 +1788,14 @@ export async function fsDelete(params: {
   recursive?: boolean;
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
+  expectedRevision?: string | null;
 }): Promise<void> {
   return invoke("fs_delete", {
     path: params.path,
     recursive: params.recursive ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+    expectedRevision: params.expectedRevision ?? null,
   });
 }
 

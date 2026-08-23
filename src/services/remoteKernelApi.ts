@@ -5,7 +5,32 @@ import { remoteRequest, resolveRemoteConfig } from './providers/remoteHttp';
 interface RemoteToolModePolicy {
   allowed_tool_ids: string[];
   enforce_macro_only_writes: boolean;
+  capabilities?: string[];
 }
+
+const CONTENT_REVISIONS_CAPABILITY = 'content_revisions_v1';
+
+const requiresContentRevisions = (params: {
+  toolId: string;
+  args: Record<string, unknown>;
+}): boolean => {
+  if (['write', 'edit', 'delete'].includes(params.toolId)) {
+    return typeof params.args.expected_revision === 'string' && params.args.expected_revision.trim().length > 0;
+  }
+  if (params.toolId !== 'apply_patch') return false;
+  if (
+    params.args.expected_revisions &&
+    typeof params.args.expected_revisions === 'object' &&
+    !Array.isArray(params.args.expected_revisions) &&
+    Object.keys(params.args.expected_revisions).length > 0
+  ) {
+    return true;
+  }
+  return (
+    typeof params.args.patch_text === 'string' &&
+    params.args.patch_text.includes('*** Add File:')
+  );
+};
 
 interface RemoteToolValidation {
   allowed: boolean;
@@ -56,6 +81,14 @@ export const executeRemoteWorkspaceTool = async (params: {
   virtualRootEnabled?: boolean;
   focusedProjectId?: string | null;
 }): Promise<string> => {
+  if (requiresContentRevisions(params)) {
+    const policy = await getRemoteToolModePolicy(params.mode);
+    if (!policy.capabilities?.includes(CONTENT_REVISIONS_CAPABILITY)) {
+      throw new Error(
+        'The remote Macro kernel cannot enforce content revisions. Update the remote kernel before retrying this guarded mutation.'
+      );
+    }
+  }
   const payload = await remoteKernelRequest<{ result: string }>('/tools/execute', {
     method: 'POST',
     body: JSON.stringify({

@@ -86,6 +86,26 @@ describe('macroToolRegistry', () => {
     expect(() => requireMacroToolRegistryEntry('delete')).not.toThrow();
   });
 
+  it('publishes optimistic revision guards for every workspace mutation', () => {
+    for (const toolId of ['write', 'edit', 'delete']) {
+      const parameters = requireMacroToolRegistryEntry(toolId).parameters;
+      expect(parameters.type).toBe('object');
+      if (parameters.type === 'object') {
+        expect(parameters.properties?.expected_revision?.type).toBe('string');
+      }
+    }
+
+    const patchParameters = requireMacroToolRegistryEntry('apply_patch').parameters;
+    expect(patchParameters.type).toBe('object');
+    if (patchParameters.type === 'object') {
+      const revisions = patchParameters.properties?.expected_revisions;
+      expect(revisions?.type).toBe('object');
+      if (revisions?.type === 'object') {
+        expect(revisions.additionalProperties).toMatchObject({ type: 'string' });
+      }
+    }
+  });
+
   it('filters Copilot tools to the currently supported Macro runtime surface', () => {
     expect(
       filterCopilotSupportedToolIds([

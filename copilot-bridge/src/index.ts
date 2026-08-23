@@ -8,7 +8,7 @@ import {
   type ToolInvocation,
 } from '@github/copilot-sdk';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -1610,14 +1610,22 @@ const formatListResult = (
   return lines.join('\n');
 };
 
-const readTextFile = async (absolutePath: string): Promise<string> => {
+const readTextFileWithRevision = async (
+  absolutePath: string
+): Promise<{ text: string; revision: string }> => {
   const buffer = await fs.readFile(absolutePath);
   const content = buffer.subarray(0, MAX_READ_BYTES).toString('utf8');
-  if (buffer.byteLength > MAX_READ_BYTES) {
-    return `${content}\n\n[truncated to ${MAX_READ_BYTES} bytes]`;
-  }
-  return content;
+  return {
+    text:
+      buffer.byteLength > MAX_READ_BYTES
+        ? `${content}\n\n[truncated to ${MAX_READ_BYTES} bytes]`
+        : content,
+    revision: createHash('sha256').update(buffer).digest('hex'),
+  };
 };
+
+const readTextFile = async (absolutePath: string): Promise<string> =>
+  (await readTextFileWithRevision(absolutePath)).text;
 
 const formatWithLineNumbers = (lines: string[], startLine: number): string =>
   lines
@@ -1644,13 +1652,13 @@ const readWorkspaceFile = async (params: {
       throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
     }
     const absolutePath = ensureWithinWorkspace(workspacePath, target.relativePath);
-    const text = await readTextFile(absolutePath);
-    return `FILE: ${sanitizeRelativePath(params.pathValue)}\n\n${text}`;
+    const result = await readTextFileWithRevision(absolutePath);
+    return `FILE: ${sanitizeRelativePath(params.pathValue)}\nREVISION: ${result.revision}\n\n${result.text}`;
   }
 
   const absolutePath = ensureWithinWorkspace(target.candidate.workspacePath, target.relativePath);
-  const text = await readTextFile(absolutePath);
-  const allLines = text.replace(/\r\n/g, '\n').split('\n');
+  const result = await readTextFileWithRevision(absolutePath);
+  const allLines = result.text.replace(/\r\n/g, '\n').split('\n');
   const startLine = Math.max(1, params.startLine || 1);
   const endLine = Math.max(startLine, params.endLine || allLines.length);
   const slice = allLines.slice(startLine - 1, endLine);
@@ -1659,7 +1667,7 @@ const readWorkspaceFile = async (params: {
       ? `${target.candidate.mountName}/${target.relativePath === '.' ? '' : target.relativePath}`.replace(/\/$/, '')
       : target.relativePath;
 
-  return `FILE: ${virtualPath || target.candidate.mountName}\n\n${formatWithLineNumbers(slice, startLine)}`;
+  return `FILE: ${virtualPath || target.candidate.mountName}\nREVISION: ${result.revision}\n\n${formatWithLineNumbers(slice, startLine)}`;
 };
 
 const listWorkspace = async (params: {

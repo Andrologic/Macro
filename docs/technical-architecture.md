@@ -665,6 +665,14 @@ La couche d'exécution d'outils encapsule :
 
 Cette couche unifie l'exécution des outils côté produit.
 
+### 13.4 Révisions de contenu et mutations sûres
+
+Une lecture de fichier expose une `revision` calculée comme le SHA-256 hexadécimal minuscule des octets exacts. Les outils `write`, `edit` et `delete` acceptent cette valeur dans `expected_revision`; `apply_patch` accepte une table `expected_revisions` indexée par chemin relatif normalisé. Une mutation gardée échoue avec le code stable `REVISION_CONFLICT` si le contenu courant ne correspond plus. La valeur spéciale `absent` protège une création contre l'écrasement concurrent d'un fichier nouvellement apparu, et les sections `Add File` l'utilisent automatiquement.
+
+Les patchs multi-fichiers vérifient toutes les préconditions avant la première écriture, puis revalident chaque cible juste avant sa mutation. Une erreur déclenche le rollback des seules mutations déjà appliquées. Les checkpoints conservent aussi les révisions afin de protéger leurs restaurations contre une modification externe intervenue après la prévisualisation.
+
+Cette garantie est un contrôle optimiste « if-match » et non un verrou exclusif du système de fichiers. Les écritures utilisent un fichier temporaire et un renommage atomique, avec une dernière revalidation au plus près du renommage; une application externe qui n'utilise pas le protocole peut néanmoins gagner une course dans l'intervalle résiduel. Le pont Copilot calcule les mêmes révisions sur ses lectures locales. Un transport distant doit annoncer la capacité `content_revisions_v1` avant d'accepter une mutation gardée.
+
 ---
 
 ## 14. Skills

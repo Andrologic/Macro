@@ -59,13 +59,18 @@ const parseSnapshot = (
     return null;
   }
 
-  if (!isOptionalString(value.encoding) || !isOptionalString(value.language)) {
+  if (
+    !isOptionalString(value.revision) ||
+    !isOptionalString(value.encoding) ||
+    !isOptionalString(value.language)
+  ) {
     return null;
   }
 
   return {
     exists: value.exists,
     content: value.content,
+    revision: value.revision,
     isBinary: value.isBinary,
     size: value.size,
     encoding: value.encoding,
@@ -247,6 +252,7 @@ const copySnapshot = (
 const missingCheckpointSnapshot = (): AgentCodeCheckpointFileSnapshot => ({
   exists: false,
   content: null,
+  revision: null,
   isBinary: false,
   size: 0,
   encoding: null,
@@ -260,6 +266,9 @@ const snapshotsEqual = (
   if (left.exists !== right.exists) return false;
   if (!left.exists && !right.exists) return true;
   if (Boolean(left.isBinary) !== Boolean(right.isBinary)) return false;
+  if (left.revision && right.revision) {
+    return left.revision === right.revision;
+  }
   if (left.content !== null || right.content !== null) {
     return left.content === right.content;
   }
@@ -295,6 +304,7 @@ const readCurrentSnapshot = async (
   return {
     exists: true,
     content: current.is_binary ? null : current.content,
+    revision: current.revision ?? null,
     isBinary: current.is_binary,
     size: current.size,
     encoding: current.encoding,
@@ -518,6 +528,7 @@ export const restoreAgentCodeReplayPreview = async (
   const restoreSnapshot = async (
     file: AgentCodeReplayPreviewFile,
     snapshot: AgentCodeCheckpointFileSnapshot,
+    expectedCurrent?: AgentCodeCheckpointFileSnapshot,
   ): Promise<void> => {
     const commonOptions = {
       workspaceScope: (file.workspaceScope || undefined) as
@@ -531,6 +542,7 @@ export const restoreAgentCodeReplayPreview = async (
       if (exists) {
         await tauriIpc.fsDelete({
           path: file.realPath,
+          expectedRevision: expectedCurrent?.revision ?? undefined,
           ...commonOptions,
         });
       }
@@ -546,6 +558,11 @@ export const restoreAgentCodeReplayPreview = async (
       content: snapshot.content,
       createDirs: true,
       allowOutsideWorkspace: file.allowOutsideWorkspace,
+      expectedRevision: expectedCurrent
+        ? expectedCurrent.exists
+          ? expectedCurrent.revision ?? undefined
+          : "absent"
+        : undefined,
       ...commonOptions,
     });
   };
@@ -556,14 +573,14 @@ export const restoreAgentCodeReplayPreview = async (
   }> = [];
   try {
     for (const { file, current } of currentSnapshots) {
-      await restoreSnapshot(file, file.target);
+      await restoreSnapshot(file, file.target, current);
       restored.push({ file, current });
     }
   } catch (error) {
     const rollbackFailures: string[] = [];
     for (const { file, current } of restored.reverse()) {
       try {
-        await restoreSnapshot(file, current);
+        await restoreSnapshot(file, current, file.target);
       } catch (rollbackError) {
         rollbackFailures.push(`${file.path}: ${String(rollbackError)}`);
       }
@@ -580,7 +597,7 @@ export const restoreAgentCodeReplayPreview = async (
     const rollbackFailures: string[] = [];
     for (const { file, current } of restored.slice().reverse()) {
       try {
-        await restoreSnapshot(file, current);
+        await restoreSnapshot(file, current, file.target);
       } catch (error) {
         rollbackFailures.push(`${file.path}: ${String(error)}`);
       }
