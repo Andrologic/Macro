@@ -3591,11 +3591,13 @@ export async function terminalRun(params: {
   sessionId: string;
   command: string;
   timeoutMs?: number | null;
+  executionId?: string | null;
 }): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_run", {
     sessionId: params.sessionId,
     command: params.command,
     timeoutMs: params.timeoutMs ?? null,
+    executionId: params.executionId ?? null,
   });
 }
 
@@ -3607,8 +3609,12 @@ export async function terminalRead(
 
 export async function terminalKill(
   sessionId: string,
+  executionId?: string | null,
 ): Promise<TerminalSessionDto> {
-  return invoke<TerminalSessionDto>("terminal_kill", { sessionId });
+  return invoke<TerminalSessionDto>("terminal_kill", {
+    sessionId,
+    executionId: executionId ?? null,
+  });
 }
 
 export async function terminalListTabs(): Promise<TerminalTabDto[]> {

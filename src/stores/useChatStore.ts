@@ -451,6 +451,14 @@ const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
 const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
   "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
 const TOOL_EXECUTION_ABORTED_RESULT = "Tool execution aborted";
+let terminalToolExecutionCounter = 0;
+const createTerminalToolExecutionId = (): string => {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  terminalToolExecutionCounter += 1;
+  return `terminal-tool-${Date.now()}-${terminalToolExecutionCounter}`;
+};
 const IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE =
   "Plan mode is read-only. This assistant turn cannot edit files, update todos, run terminal commands, stage, commit, checkout, merge, reset, or stash. Inspect the repo and produce a concrete implementation plan instead.";
 const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
@@ -5446,15 +5454,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!command.trim())
           return "Missing command argument for terminal_run.";
 
-        const session = await useTerminalStore.getState().runCommand({
+        const executionId = createTerminalToolExecutionId();
+        const runPromise = useTerminalStore.getState().runCommand({
           sessionId,
           command,
+          executionId,
           timeoutMs:
             typeof args.timeout_ms === "number"
               ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
               : null,
         });
-        return JSON.stringify(session, null, 2);
+        const abortListener = () => {
+          void useTerminalStore
+            .getState()
+            .killSession(sessionId, executionId)
+            .catch(() => undefined);
+        };
+        signal.addEventListener("abort", abortListener, { once: true });
+        if (signal.aborted) abortListener();
+        try {
+          const session = await runPromise;
+          return JSON.stringify(session, null, 2);
+        } finally {
+          signal.removeEventListener("abort", abortListener);
+        }
       }
 
       if (normalizedToolName === "terminal_read") {

@@ -36,10 +36,13 @@ const DEFAULT_LEGACY_COMMAND_TIMEOUT_MS: u64 = 5 * 60 * 1_000;
 const MAX_LEGACY_COMMAND_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 #[cfg(not(windows))]
 const LEGACY_COMMAND_KILL_GRACE_MS: u64 = 2_000;
+#[cfg(not(windows))]
+const LEGACY_COMMAND_KILL_POLL_MS: u64 = 25;
+const LEGACY_COMMAND_DRAIN_TIMEOUT_MS: u64 = 2_000;
 const MAX_LEGACY_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const LEGACY_COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
-const TRUNCATED_OUTPUT_MARKER: &str =
-    "[terminal output truncated; beginning and latest output retained]\n";
+const INCOMPLETE_DRAIN_MARKER: &str =
+    "\n[terminal output drain timed out; remaining output was discarded]\n";
 const OUTPUT_FLUSH_DELAY_MS: u64 = 16;
 const LIVE_TERMINAL_CLOSE_GRACE_MS: u64 = 200;
 const DEFAULT_TERM: &str = "xterm-256color";
@@ -203,6 +206,11 @@ struct LegacyTerminalSessionRecord {
     output_truncated: bool,
     updated_at: String,
     pid: Option<u32>,
+    run_in_progress: bool,
+    kill_requested: bool,
+    active_execution_id: Option<String>,
+    pending_kill_execution_id: Option<String>,
+    execution_generation: u64,
     #[cfg(windows)]
     windows_job: Option<Arc<WindowsJob>>,
 }
@@ -2502,13 +2510,16 @@ async fn kill_process(pid: u32) -> CommandResult<()> {
     .map_err(|error| command_error(format!("Failed to kill process {}: {}", pid, error)))?;
 
     #[cfg(not(windows))]
-    let status = background_tokio_command("kill")
-        .args(["-TERM", "--", &format!("-{pid}")])
-        .status()
-        .await
-        .map_err(|error| {
-            command_error(format!("Failed to kill process group {}: {}", pid, error))
-        })?;
+    let status = {
+        let mut command = background_tokio_command("kill");
+        command
+            .args(["-TERM", "--", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command.status()
+    }
+    .await
+    .map_err(|error| command_error(format!("Failed to kill process group {}: {}", pid, error)))?;
 
     if !status.success() {
         return Err(command_error(format!(
@@ -2519,56 +2530,105 @@ async fn kill_process(pid: u32) -> CommandResult<()> {
 
     #[cfg(not(windows))]
     {
-        tokio::time::sleep(Duration::from_millis(LEGACY_COMMAND_KILL_GRACE_MS)).await;
-        let _ = background_tokio_command("kill")
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(LEGACY_COMMAND_KILL_GRACE_MS);
+        loop {
+            let mut probe = background_tokio_command("kill");
+            probe
+                .args(["-0", "--", &format!("-{pid}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let still_running = probe
+                .status()
+                .await
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !still_running {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(LEGACY_COMMAND_KILL_POLL_MS)).await;
+        }
+        let mut command = background_tokio_command("kill");
+        command
             .args(["-KILL", "--", &format!("-{pid}")])
-            .status()
-            .await;
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _ = command.status().await;
     }
 
     Ok(())
 }
 
+#[derive(Default)]
 struct BoundedChildOutput {
-    bytes: Vec<u8>,
-    truncated: bool,
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    total_bytes: usize,
 }
 
-fn push_bounded_output(head: &mut Vec<u8>, tail: &mut VecDeque<u8>, chunk: &[u8]) -> bool {
-    let mut remainder = chunk;
-    if head.len() < LEGACY_COMMAND_OUTPUT_HEAD_BYTES {
-        let head_remaining = LEGACY_COMMAND_OUTPUT_HEAD_BYTES - head.len();
-        let take = head_remaining.min(remainder.len());
-        head.extend_from_slice(&remainder[..take]);
-        remainder = &remainder[take..];
-    }
+impl BoundedChildOutput {
+    fn push(&mut self, chunk: &[u8]) {
+        self.total_bytes = self.total_bytes.saturating_add(chunk.len());
+        let mut remainder = chunk;
+        if self.head.len() < LEGACY_COMMAND_OUTPUT_HEAD_BYTES {
+            let head_remaining = LEGACY_COMMAND_OUTPUT_HEAD_BYTES - self.head.len();
+            let take = head_remaining.min(remainder.len());
+            self.head.extend_from_slice(&remainder[..take]);
+            remainder = &remainder[take..];
+        }
 
-    let tail_capacity =
-        MAX_LEGACY_COMMAND_OUTPUT_BYTES.saturating_sub(LEGACY_COMMAND_OUTPUT_HEAD_BYTES);
-    for byte in remainder {
-        tail.push_back(*byte);
-        if tail.len() > tail_capacity {
-            tail.pop_front();
+        let tail_capacity =
+            MAX_LEGACY_COMMAND_OUTPUT_BYTES.saturating_sub(LEGACY_COMMAND_OUTPUT_HEAD_BYTES);
+        for byte in remainder {
+            self.tail.push_back(*byte);
+            if self.tail.len() > tail_capacity {
+                self.tail.pop_front();
+            }
         }
     }
 
-    !remainder.is_empty() && remainder.len() > tail_capacity.saturating_sub(tail.len())
+    fn render(&self, drain_incomplete: bool) -> (String, bool) {
+        let retained_bytes = self.head.len().saturating_add(self.tail.len());
+        let omitted_bytes = self.total_bytes.saturating_sub(retained_bytes);
+        let mut output = Vec::with_capacity(
+            retained_bytes
+                .saturating_add(128)
+                .saturating_add(INCOMPLETE_DRAIN_MARKER.len()),
+        );
+        output.extend_from_slice(&self.head);
+        if omitted_bytes > 0 {
+            output.extend_from_slice(
+                format!(
+                    "\n[terminal output truncated: {omitted_bytes} bytes omitted; beginning and latest output retained]\n"
+                )
+                .as_bytes(),
+            );
+        }
+        output.extend(self.tail.iter().copied());
+        if drain_incomplete {
+            output.extend_from_slice(INCOMPLETE_DRAIN_MARKER.as_bytes());
+        }
+        (
+            String::from_utf8_lossy(&output).to_string(),
+            omitted_bytes > 0 || drain_incomplete,
+        )
+    }
 }
 
-async fn read_child_stream<T>(stream: Option<T>) -> CommandResult<BoundedChildOutput>
+async fn read_child_stream<T>(
+    stream: Option<T>,
+    output: Arc<StdMutex<BoundedChildOutput>>,
+) -> CommandResult<()>
 where
     T: tokio::io::AsyncRead + Unpin,
 {
     let Some(mut stream) = stream else {
-        return Ok(BoundedChildOutput {
-            bytes: Vec::new(),
-            truncated: false,
-        });
+        return Ok(());
     };
 
-    let mut head = Vec::with_capacity(LEGACY_COMMAND_OUTPUT_HEAD_BYTES);
-    let mut tail = VecDeque::new();
-    let mut truncated = false;
     let mut buffer = [0u8; 16 * 1024];
     loop {
         let count = stream
@@ -2578,16 +2638,155 @@ where
         if count == 0 {
             break;
         }
-        let before = head.len() + tail.len();
-        let _ = push_bounded_output(&mut head, &mut tail, &buffer[..count]);
-        truncated |= before + count > MAX_LEGACY_COMMAND_OUTPUT_BYTES;
+        output
+            .lock()
+            .map_err(|_| command_error("Failed to lock terminal output collector"))?
+            .push(&buffer[..count]);
     }
 
-    head.extend(tail);
-    Ok(BoundedChildOutput {
-        bytes: head,
-        truncated,
-    })
+    Ok(())
+}
+
+async fn finish_child_output(
+    mut stdout_task: tokio::task::JoinHandle<CommandResult<()>>,
+    mut stderr_task: tokio::task::JoinHandle<CommandResult<()>>,
+    output: Arc<StdMutex<BoundedChildOutput>>,
+) -> CommandResult<(String, bool, bool)> {
+    let drain_result = tokio::time::timeout(
+        Duration::from_millis(LEGACY_COMMAND_DRAIN_TIMEOUT_MS),
+        async {
+            (&mut stdout_task).await.map_err(|error| {
+                command_error(format!("Terminal stdout task failed: {}", error))
+            })??;
+            (&mut stderr_task).await.map_err(|error| {
+                command_error(format!("Terminal stderr task failed: {}", error))
+            })??;
+            Ok::<(), crate::commands::CommandError>(())
+        },
+    )
+    .await;
+
+    let drain_incomplete = match drain_result {
+        Ok(result) => {
+            result?;
+            false
+        }
+        Err(_) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            true
+        }
+    };
+
+    let (rendered, truncated) = output
+        .lock()
+        .map_err(|_| command_error("Failed to lock terminal output collector"))
+        .map(|output| output.render(drain_incomplete))?;
+    Ok((rendered, truncated, drain_incomplete))
+}
+
+#[cfg(not(windows))]
+struct LegacyProcessGroupGuard {
+    pid: Option<u32>,
+}
+
+#[cfg(not(windows))]
+impl LegacyProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for LegacyProcessGroupGuard {
+    fn drop(&mut self) {
+        let Some(pid) = self.pid else {
+            return;
+        };
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+struct LegacySessionRunGuard {
+    terminal_store: TerminalSessionStore,
+    session_id: String,
+    armed: bool,
+}
+
+impl LegacySessionRunGuard {
+    fn new(terminal_store: TerminalSessionStore, session_id: String) -> Self {
+        Self {
+            terminal_store,
+            session_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LegacySessionRunGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let terminal_store = self.terminal_store.clone();
+        let session_id = self.session_id.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let mut sessions = terminal_store.legacy_sessions.lock().await;
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    session.status = "killed".to_string();
+                    session.pid = None;
+                    session.run_in_progress = false;
+                    session.kill_requested = false;
+                    session.active_execution_id = None;
+                    #[cfg(windows)]
+                    {
+                        session.windows_job = None;
+                    }
+                    session.updated_at = current_timestamp();
+                }
+            });
+        }
+    }
+}
+
+#[cfg(windows)]
+struct LegacyProcessGroupGuard {
+    job: Option<Arc<WindowsJob>>,
+}
+
+#[cfg(windows)]
+impl LegacyProcessGroupGuard {
+    fn new(job: Option<Arc<WindowsJob>>) -> Self {
+        Self { job }
+    }
+
+    fn disarm(&mut self) {
+        self.job = None;
+    }
+}
+
+#[cfg(windows)]
+impl Drop for LegacyProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            let _ = job.terminate();
+        }
+    }
 }
 
 fn normalize_legacy_timeout_ms(timeout_ms: Option<u64>) -> u64 {
@@ -2595,26 +2794,6 @@ fn normalize_legacy_timeout_ms(timeout_ms: Option<u64>) -> u64 {
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_LEGACY_COMMAND_TIMEOUT_MS)
         .min(MAX_LEGACY_COMMAND_TIMEOUT_MS)
-}
-
-fn combine_bounded_child_output(
-    stdout: BoundedChildOutput,
-    stderr: BoundedChildOutput,
-) -> (String, bool) {
-    let mut head = Vec::with_capacity(LEGACY_COMMAND_OUTPUT_HEAD_BYTES);
-    let mut tail = VecDeque::new();
-    let total_len = stdout.bytes.len() + stderr.bytes.len();
-    let _ = push_bounded_output(&mut head, &mut tail, &stdout.bytes);
-    let _ = push_bounded_output(&mut head, &mut tail, &stderr.bytes);
-    let truncated =
-        stdout.truncated || stderr.truncated || total_len > MAX_LEGACY_COMMAND_OUTPUT_BYTES;
-    head.extend(tail);
-    let output = String::from_utf8_lossy(&head).to_string();
-    if truncated {
-        (format!("{TRUNCATED_OUTPUT_MARKER}{output}"), true)
-    } else {
-        (output, false)
-    }
 }
 
 #[cfg(not(windows))]
@@ -2690,6 +2869,11 @@ pub async fn create_legacy_session_internal(
         output_truncated: false,
         updated_at: current_timestamp(),
         pid: None,
+        run_in_progress: false,
+        kill_requested: false,
+        active_execution_id: None,
+        pending_kill_execution_id: None,
+        execution_generation: 0,
         #[cfg(windows)]
         windows_job: None,
     };
@@ -2708,6 +2892,7 @@ pub async fn run_legacy_session_internal(
     session_id: String,
     command: String,
     timeout_ms: Option<u64>,
+    execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
     let trimmed_command = command.trim();
     if trimmed_command.is_empty() {
@@ -2720,7 +2905,22 @@ pub async fn run_legacy_session_internal(
             .get_mut(&session_id)
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
-        if session.pid.is_some() {
+        if execution_id.is_some()
+            && session.pending_kill_execution_id.as_ref() == execution_id.as_ref()
+        {
+            session.pending_kill_execution_id = None;
+            session.status = "killed".to_string();
+            session.last_command = Some(trimmed_command.to_string());
+            session.output = "[terminal command cancelled before start]\n".to_string();
+            session.exit_code = None;
+            session.timed_out = false;
+            session.output_truncated = false;
+            session.updated_at = current_timestamp();
+            return Ok(session.to_dto());
+        }
+        session.pending_kill_execution_id = None;
+
+        if session.run_in_progress || session.kill_requested {
             return Err(command_error(
                 "A command is already running in this session",
             ));
@@ -2732,76 +2932,125 @@ pub async fn run_legacy_session_internal(
         session.exit_code = None;
         session.timed_out = false;
         session.output_truncated = false;
+        session.run_in_progress = true;
+        session.kill_requested = false;
+        session.active_execution_id = execution_id.clone();
+        session.execution_generation = session.execution_generation.saturating_add(1);
         session.updated_at = current_timestamp();
         session.cwd.clone()
     };
+    let mut session_run_guard =
+        LegacySessionRunGuard::new(terminal_store.clone(), session_id.clone());
 
-    let mut child = build_shell_command_compat(trimmed_command, &cwd)
-        .spawn()
-        .map_err(|error| command_error(format!("Failed to start terminal command: {}", error)))?;
+    let mut child = match build_shell_command_compat(trimmed_command, &cwd).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let mut sessions = terminal_store.legacy_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.status = "failed".to_string();
+                session.run_in_progress = false;
+                session.active_execution_id = None;
+                session.updated_at = current_timestamp();
+            }
+            session_run_guard.disarm();
+            return Err(command_error(format!(
+                "Failed to start terminal command: {}",
+                error
+            )));
+        }
+    };
     let pid = child.id();
     #[cfg(windows)]
-    let windows_job = Some(WindowsJob::assign(&child)?);
+    let windows_job = match WindowsJob::assign(&child) {
+        Ok(job) => Some(job),
+        Err(error) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let mut sessions = terminal_store.legacy_sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.status = "failed".to_string();
+                session.run_in_progress = false;
+                session.active_execution_id = None;
+                session.updated_at = current_timestamp();
+            }
+            session_run_guard.disarm();
+            return Err(error);
+        }
+    };
+    #[cfg(not(windows))]
+    let mut process_guard = LegacyProcessGroupGuard::new(pid);
+    #[cfg(windows)]
+    let mut process_guard = LegacyProcessGroupGuard::new(windows_job.clone());
 
-    {
+    let output = Arc::new(StdMutex::new(BoundedChildOutput::default()));
+    let stdout_task = tokio::spawn(read_child_stream(child.stdout.take(), output.clone()));
+    let stderr_task = tokio::spawn(read_child_stream(child.stderr.take(), output.clone()));
+
+    let kill_requested_before_registration = {
         let mut sessions = terminal_store.legacy_sessions.lock().await;
         let session = sessions
             .get_mut(&session_id)
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
-        session.pid = pid;
-        #[cfg(windows)]
-        {
-            session.windows_job = windows_job.clone();
-        }
-        session.updated_at = current_timestamp();
-    }
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdout_task = tokio::spawn(read_child_stream(stdout));
-    let stderr_task = tokio::spawn(read_child_stream(stderr));
-
-    let normalized_timeout_ms = normalize_legacy_timeout_ms(timeout_ms);
-    let mut timed_out = false;
-    let exit_status = match tokio::time::timeout(
-        Duration::from_millis(normalized_timeout_ms),
-        child.wait(),
-    )
-    .await
-    {
-        Ok(result) => result.map_err(|error| {
-            command_error(format!("Failed to wait for terminal command: {}", error))
-        })?,
-        Err(_) => {
-            timed_out = true;
-            #[cfg(not(windows))]
-            let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+        if session.kill_requested {
+            true
+        } else {
+            session.pid = pid;
             #[cfg(windows)]
-            let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
-            stopped
+            {
+                session.windows_job = windows_job.clone();
+            }
+            session.updated_at = current_timestamp();
+            false
         }
     };
 
-    let stdout_output = stdout_task
-        .await
-        .map_err(|error| command_error(format!("Terminal stdout task failed: {}", error)))??;
-    let stderr_output = stderr_task
-        .await
-        .map_err(|error| command_error(format!("Terminal stderr task failed: {}", error)))??;
-    let (combined_output, output_truncated) =
-        combine_bounded_child_output(stdout_output, stderr_output);
+    let normalized_timeout_ms = normalize_legacy_timeout_ms(timeout_ms);
+    let mut timed_out = false;
+    let exit_status = if kill_requested_before_registration {
+        #[cfg(not(windows))]
+        let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+        #[cfg(windows)]
+        let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+        stopped
+    } else {
+        match tokio::time::timeout(Duration::from_millis(normalized_timeout_ms), child.wait()).await
+        {
+            Ok(result) => result.map_err(|error| {
+                command_error(format!("Failed to wait for terminal command: {}", error))
+            })?,
+            Err(_) => {
+                timed_out = true;
+                #[cfg(not(windows))]
+                let stopped = stop_legacy_child_tree(&mut child, pid).await?;
+                #[cfg(windows)]
+                let stopped = stop_legacy_child_tree(&mut child, windows_job.clone()).await?;
+                stopped
+            }
+        }
+    };
+
+    let (combined_output, output_truncated, drain_incomplete) =
+        finish_child_output(stdout_task, stderr_task, output).await?;
+    if drain_incomplete {
+        drop(process_guard);
+    } else {
+        process_guard.disarm();
+    }
 
     let mut sessions = terminal_store.legacy_sessions.lock().await;
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
-    let was_killed = session.status == "killed";
+    let was_killed = session.kill_requested || session.status == "killed";
     session.output = combined_output;
     session.exit_code = exit_status.code();
     session.timed_out = timed_out;
     session.output_truncated = output_truncated;
     session.pid = None;
+    session.run_in_progress = false;
+    session.kill_requested = false;
+    session.active_execution_id = None;
     #[cfg(windows)]
     {
         session.windows_job = None;
@@ -2817,7 +3066,9 @@ pub async fn run_legacy_session_internal(
         "failed".to_string()
     };
 
-    Ok(session.to_dto())
+    let dto = session.to_dto();
+    session_run_guard.disarm();
+    Ok(dto)
 }
 
 pub async fn read_legacy_session_internal(
@@ -2834,22 +3085,41 @@ pub async fn read_legacy_session_internal(
 pub async fn kill_legacy_session_internal(
     terminal_store: TerminalSessionStore,
     session_id: String,
+    execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
-    let pid = {
-        let sessions = terminal_store.legacy_sessions.lock().await;
-        let session = sessions
-            .get(&session_id)
-            .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
-        session.pid
-    };
-
+    let pid;
+    let run_in_progress;
+    let execution_generation;
     #[cfg(windows)]
-    let windows_job = {
-        let sessions = terminal_store.legacy_sessions.lock().await;
-        sessions
-            .get(&session_id)
-            .and_then(|session| session.windows_job.clone())
-    };
+    let windows_job;
+    {
+        let mut sessions = terminal_store.legacy_sessions.lock().await;
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
+
+        if let Some(execution_id) = execution_id.as_ref() {
+            if !session.run_in_progress {
+                session.pending_kill_execution_id = Some(execution_id.clone());
+                session.status = "killed".to_string();
+                session.updated_at = current_timestamp();
+                return Ok(session.to_dto());
+            }
+            if session.active_execution_id.as_ref() != Some(execution_id) {
+                return Ok(session.to_dto());
+            }
+        }
+        session.kill_requested = true;
+        session.status = "killed".to_string();
+        session.updated_at = current_timestamp();
+        pid = session.pid;
+        run_in_progress = session.run_in_progress;
+        execution_generation = session.execution_generation;
+        #[cfg(windows)]
+        {
+            windows_job = session.windows_job.clone();
+        }
+    }
 
     #[cfg(not(windows))]
     if let Some(pid) = pid {
@@ -2866,8 +3136,14 @@ pub async fn kill_legacy_session_internal(
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
+    if session.execution_generation != execution_generation {
+        return Ok(session.to_dto());
+    }
     session.status = "killed".to_string();
     session.pid = None;
+    if pid.is_some() || !run_in_progress {
+        session.kill_requested = false;
+    }
     #[cfg(windows)]
     {
         session.windows_job = None;
@@ -2902,12 +3178,14 @@ pub async fn terminal_run(
     session_id: String,
     command: String,
     timeout_ms: Option<u64>,
+    execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
     run_legacy_session_internal(
         terminal_store.inner().clone(),
         session_id,
         command,
         timeout_ms,
+        execution_id,
     )
     .await
 }
@@ -2924,8 +3202,9 @@ pub async fn terminal_read(
 pub async fn terminal_kill(
     terminal_store: State<'_, TerminalSessionStore>,
     session_id: String,
+    execution_id: Option<String>,
 ) -> CommandResult<TerminalSessionDto> {
-    kill_legacy_session_internal(terminal_store.inner().clone(), session_id).await
+    kill_legacy_session_internal(terminal_store.inner().clone(), session_id, execution_id).await
 }
 
 #[cfg(test)]
@@ -2964,22 +3243,204 @@ mod tests {
     }
 
     #[test]
-    fn combined_legacy_output_is_bounded_and_marked() {
-        let stdout = BoundedChildOutput {
-            bytes: vec![b'a'; MAX_LEGACY_COMMAND_OUTPUT_BYTES],
-            truncated: false,
-        };
-        let stderr = BoundedChildOutput {
-            bytes: vec![b'z'; 128],
-            truncated: false,
-        };
+    fn bounded_legacy_output_retains_head_tail_and_exact_omission() {
+        let mut collected = BoundedChildOutput::default();
+        collected.push(&vec![b'a'; MAX_LEGACY_COMMAND_OUTPUT_BYTES]);
+        collected.push(&vec![b'z'; 128]);
 
-        let (output, truncated) = combine_bounded_child_output(stdout, stderr);
+        let (output, truncated) = collected.render(false);
         assert!(truncated);
-        assert!(output.starts_with(TRUNCATED_OUTPUT_MARKER));
+        assert!(output.starts_with(&"a".repeat(LEGACY_COMMAND_OUTPUT_HEAD_BYTES)));
+        assert!(output.contains("terminal output truncated: 128 bytes omitted"));
         assert!(output.contains(&"a".repeat(LEGACY_COMMAND_OUTPUT_HEAD_BYTES)));
         assert!(output.ends_with(&"z".repeat(128)));
-        assert!(output.len() <= MAX_LEGACY_COMMAND_OUTPUT_BYTES + TRUNCATED_OUTPUT_MARKER.len());
+        assert!(output.len() <= MAX_LEGACY_COMMAND_OUTPUT_BYTES + 128);
+    }
+
+    #[test]
+    fn incomplete_legacy_output_drain_is_visible() {
+        let mut collected = BoundedChildOutput::default();
+        collected.push(b"partial output");
+
+        let (output, truncated) = collected.render(true);
+        assert!(truncated);
+        assert!(output.starts_with("partial output"));
+        assert!(output.ends_with(INCOMPLETE_DRAIN_MARKER));
+    }
+
+    fn legacy_test_session(cwd: &Path) -> LegacyTerminalSessionRecord {
+        LegacyTerminalSessionRecord {
+            id: "terminal-test".to_string(),
+            project_id: "project-test".to_string(),
+            project_name: "Project Test".to_string(),
+            mount_name: "project-test".to_string(),
+            workspace_path: cwd.to_path_buf(),
+            cwd: cwd.to_path_buf(),
+            status: "idle".to_string(),
+            last_command: None,
+            output: String::new(),
+            exit_code: None,
+            timed_out: false,
+            output_truncated: false,
+            updated_at: current_timestamp(),
+            pid: None,
+            run_in_progress: false,
+            kill_requested: false,
+            active_execution_id: None,
+            pending_kill_execution_id: None,
+            execution_generation: 0,
+            #[cfg(windows)]
+            windows_job: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn killing_an_active_legacy_session_completes_the_pending_run() {
+        let temp = TempDir::new().expect("temp dir");
+        let terminal_store = TerminalSessionStore::default();
+        terminal_store.legacy_sessions.lock().await.insert(
+            "terminal-test".to_string(),
+            legacy_test_session(temp.path()),
+        );
+
+        let run_store = terminal_store.clone();
+        let run = tokio::spawn(async move {
+            run_legacy_session_internal(
+                run_store,
+                "terminal-test".to_string(),
+                "sleep 30".to_string(),
+                Some(60_000),
+                Some("execution-test".to_string()),
+            )
+            .await
+        });
+
+        for _ in 0..100 {
+            let has_pid = terminal_store
+                .legacy_sessions
+                .lock()
+                .await
+                .get("terminal-test")
+                .and_then(|session| session.pid)
+                .is_some();
+            if has_pid {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let killed = kill_legacy_session_internal(
+            terminal_store.clone(),
+            "terminal-test".to_string(),
+            Some("execution-test".to_string()),
+        )
+        .await
+        .expect("kill active session");
+        assert_eq!(killed.status, "killed");
+
+        let completed = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .expect("run should stop after cancellation")
+            .expect("run task")
+            .expect("run result");
+        assert_eq!(completed.status, "killed");
+        let session = terminal_store
+            .legacy_sessions
+            .lock()
+            .await
+            .get("terminal-test")
+            .expect("session")
+            .to_dto();
+        assert_eq!(session.status, "killed");
+    }
+
+    #[tokio::test]
+    async fn execution_scoped_kill_before_registration_cancels_only_its_run() {
+        let temp = TempDir::new().expect("temp dir");
+        let terminal_store = TerminalSessionStore::default();
+        terminal_store.legacy_sessions.lock().await.insert(
+            "terminal-test".to_string(),
+            legacy_test_session(temp.path()),
+        );
+
+        let killed = kill_legacy_session_internal(
+            terminal_store.clone(),
+            "terminal-test".to_string(),
+            Some("cancelled-execution".to_string()),
+        )
+        .await
+        .expect("record pending cancellation");
+        assert_eq!(killed.status, "killed");
+
+        let cancelled = run_legacy_session_internal(
+            terminal_store.clone(),
+            "terminal-test".to_string(),
+            "printf should-not-run".to_string(),
+            Some(5_000),
+            Some("cancelled-execution".to_string()),
+        )
+        .await
+        .expect("cancel matching execution");
+        assert_eq!(cancelled.status, "killed");
+        assert!(cancelled.output.contains("cancelled before start"));
+
+        let completed = run_legacy_session_internal(
+            terminal_store,
+            "terminal-test".to_string(),
+            "printf next-run".to_string(),
+            Some(5_000),
+            Some("next-execution".to_string()),
+        )
+        .await
+        .expect("run after scoped cancellation");
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.output, "next-run");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inherited_output_pipes_are_bounded_and_the_process_group_is_reaped() {
+        let temp = TempDir::new().expect("temp dir");
+        let child_pid_path = temp.path().join("background-child.pid");
+        let terminal_store = TerminalSessionStore::default();
+        terminal_store.legacy_sessions.lock().await.insert(
+            "terminal-test".to_string(),
+            legacy_test_session(temp.path()),
+        );
+        let command = format!(
+            "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'",
+            child_pid_path.display()
+        );
+
+        let completed = tokio::time::timeout(
+            Duration::from_secs(10),
+            run_legacy_session_internal(
+                terminal_store,
+                "terminal-test".to_string(),
+                command,
+                Some(60_000),
+                None,
+            ),
+        )
+        .await
+        .expect("inherited pipes must not block the session")
+        .expect("run result");
+        assert!(completed.output_truncated);
+        assert!(completed.output.contains("output drain timed out"));
+
+        let child_pid = fs::read_to_string(&child_pid_path)
+            .expect("child pid file")
+            .parse::<u32>()
+            .expect("child pid");
+        let child_probe = background_tokio_command("kill")
+            .args(["-0", &child_pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .expect("probe child process");
+        assert!(!child_probe.success(), "child process {child_pid} survived");
     }
 
     #[cfg(unix)]
@@ -2996,7 +3457,10 @@ mod tests {
         let parent_pid = child.id().expect("parent pid");
 
         for _ in 0..100 {
-            if child_pid_path.exists() {
+            if fs::read_to_string(&child_pid_path)
+                .ok()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -3010,6 +3474,8 @@ mod tests {
         let _ = child.wait().await;
         let child_probe = background_tokio_command("kill")
             .args(["-0", &child_pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .await
             .expect("probe child process");

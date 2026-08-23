@@ -207,6 +207,11 @@ async fn tool_execute(
                     session_id,
                     command,
                     payload.args.get("timeout_ms").and_then(Value::as_u64),
+                    payload
+                        .args
+                        .get("execution_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 )
                 .await
                 .and_then(|dto| {
@@ -255,15 +260,21 @@ async fn tool_execute(
                 .map(str::to_string);
 
             match session_id {
-                Ok(session_id) => {
-                    kill_legacy_session_internal(state.terminal_store.clone(), session_id)
-                        .await
-                        .and_then(|dto| {
-                            serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
-                                message: error.to_string(),
-                            })
-                        })
-                }
+                Ok(session_id) => kill_legacy_session_internal(
+                    state.terminal_store.clone(),
+                    session_id,
+                    payload
+                        .args
+                        .get("execution_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                )
+                .await
+                .and_then(|dto| {
+                    serde_json::to_string_pretty(&dto).map_err(|error| CommandError {
+                        message: error.to_string(),
+                    })
+                }),
                 Err(error) => Err(error),
             }
         }

@@ -701,6 +701,10 @@ Le curseur opaque suit actuellement le format interne `v1:<empreinte>:<offset>`.
 
 Le backend Tauri, le fallback TypeScript et les racines virtuelles multi-projets appliquent ce contrat Git ; le pont Copilot conserve son périmètre d'outils pris en charge. Un noyau distant doit annoncer `bounded_tool_output_v1` pour `list`, `read`, `glob` et `grep`, puis `bounded_git_output_v1` pour `git_status`, `git_log` et `git_diff`. Macro refuse l'exécution distante si la capacité propre à la famille d'outils manque, avant qu'une sortie non bornée puisse atteindre le contexte.
 
+Les commandes agent `terminal_run` conservent au maximum 1 Mio de sortie dans un collecteur partagé par stdout et stderr, dans l'ordre d'arrivée des blocs. Après dépassement, le résultat garde une tête de 64 Kio et la fin la plus récente, avec le nombre exact d'octets omis entre les deux. Après la fin ou l'arrêt du processus, le drainage des pipes est limité à 2 secondes ; une sortie résiduelle est abandonnée avec un marqueur explicite plutôt que de bloquer la génération indéfiniment.
+
+Une annulation de génération appelle `terminal_kill` avec l'identifiant unique de l'exécution concernée. Le backend mémorise cette demande même si elle précède l'enregistrement de la commande, empêche deux exécutions simultanées dans une session et termine le groupe de processus complet. Une génération monotone empêche aussi la finalisation tardive d'une annulation d'écraser l'état d'une commande suivante. Un garde de durée de vie détruit le groupe si la future Rust est abandonnée avant son nettoyage normal. Les sessions interactives visibles utilisent leur propre cycle de vie et ne sont pas concernées par ce protocole agent.
+
 ---
 
 ## 14. Skills

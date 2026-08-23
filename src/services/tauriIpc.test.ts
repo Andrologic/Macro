@@ -796,6 +796,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
       sessionId: "terminal-1",
       command: "git status",
       timeoutMs: 5000,
+      executionId: "execution-1",
     });
     await tauriIpc.terminalRead("terminal-1");
     await tauriIpc.terminalKill("terminal-1");
@@ -814,6 +815,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           sessionId: "terminal-1",
           command: "git status",
           timeoutMs: 5000,
+          executionId: "execution-1",
         },
       },
       {
@@ -826,6 +828,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
         command: "terminal_kill",
         payload: {
           sessionId: "terminal-1",
+          executionId: null,
         },
       },
     ]);
