@@ -1,9 +1,9 @@
 use super::{
     apply_patch_hunks_to_content, build_post_write_response, command_error,
-    commit_pending_file_changes_atomically, compute_line_change_stats, format_with_line_numbers,
-    fs, join_text_lines, json_arg_bool, json_arg_string, json_arg_u32, parse_apply_patch,
-    resolve_validated_tool_path, CommandError, CommandResult, ParsedPatchOperation,
-    PendingFileChange,
+    commit_pending_file_changes_atomically, compute_line_change_stats, exact_edit_match_error,
+    format_with_line_numbers, fs, join_text_lines, json_arg_bool, json_arg_string, json_arg_u32,
+    parse_apply_patch, resolve_validated_tool_path, CommandError, CommandResult,
+    ParsedPatchOperation, PendingFileChange,
 };
 use crate::core::tool_policy::validate_tool_execution;
 use glob::Pattern;
@@ -742,11 +742,8 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 return Ok(Some(format!("Cannot edit binary file: {}", display_path)));
             }
             let occurrences = current.content.matches(&old_text).count();
-            if occurrences == 0 {
-                return Ok(Some(format!(
-                    "No match found for old_text in {}.",
-                    display_path
-                )));
+            if let Some(error) = exact_edit_match_error(&display_path, occurrences, replace_all) {
+                return Ok(Some(error));
             }
             let updated = if replace_all {
                 current.content.replace(&old_text, &new_text)
@@ -1245,6 +1242,44 @@ mod tests {
                 .and_then(serde_json::Value::as_array)
                 .map(Vec::len),
             Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_exact_edit_rejects_ambiguous_old_text() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(
+            temp.path().join("app.ts"),
+            "const value = 1;\nconst value = 1;\n",
+        )
+        .expect("write fixture");
+        let mounts = vec![WorkspaceProjectMount {
+            project_id: "web".to_string(),
+            mount_name: "web".to_string(),
+            workspace_path: Some(temp.path().to_string_lossy().to_string()),
+            display_name: None,
+            is_read_only: false,
+        }];
+
+        let result = execute_virtual_workspace_tool(
+            "Implement",
+            "edit",
+            &json!({
+                "path": "app.ts",
+                "old_text": "const value = 1;",
+                "new_text": "const value = 2;"
+            }),
+            &mounts,
+            None,
+        )
+        .await
+        .expect("edit")
+        .expect("handled by virtual root");
+
+        assert!(result.contains("old_text matched 2 locations"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("app.ts")).expect("read fixture"),
+            "const value = 1;\nconst value = 1;\n"
         );
     }
 }

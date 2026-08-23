@@ -667,6 +667,23 @@ pub(crate) fn compute_line_change_stats(old_content: &str, new_content: &str) ->
     )
 }
 
+pub(crate) fn exact_edit_match_error(
+    path: &str,
+    occurrences: usize,
+    replace_all: bool,
+) -> Option<String> {
+    if occurrences == 0 {
+        return Some(format!("No match found for old_text in {}.", path));
+    }
+    if !replace_all && occurrences > 1 {
+        return Some(format!(
+            "Cannot edit {}: old_text matched {} locations. Provide more context so it matches exactly once, or set replace_all to true.",
+            path, occurrences
+        ));
+    }
+    None
+}
+
 fn build_diff_summary(changes: &[PendingFileChange]) -> String {
     changes
         .iter()
@@ -1300,8 +1317,8 @@ pub async fn execute_workspace_tool(
             }
 
             let occurrences = current.content.matches(&old_text).count();
-            if occurrences == 0 {
-                return Ok(format!("No match found for old_text in {}.", path));
+            if let Some(error) = exact_edit_match_error(&path, occurrences, replace_all) {
+                return Ok(error);
             }
 
             let updated = if replace_all {
@@ -3586,8 +3603,8 @@ pub async fn db_set_setting(
 mod tests {
     use super::{
         apply_patch_hunks_to_content, apply_provider_api_key_change,
-        commit_pending_file_changes_atomically, execute_workspace_tool, parse_apply_patch,
-        reconcile_provider_secret_metadata, resolve_requested_workspace,
+        commit_pending_file_changes_atomically, exact_edit_match_error, execute_workspace_tool,
+        parse_apply_patch, reconcile_provider_secret_metadata, resolve_requested_workspace,
         resolve_workspace_for_tool_path, DbPool, ParsedPatchOperation, PendingFileChange,
     };
     use crate::db::{models::ProviderAuthMetadata, repository};
@@ -3599,6 +3616,19 @@ mod tests {
     use tempfile::TempDir;
 
     static SECRET_STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn exact_edit_requires_one_match_unless_replace_all_is_enabled() {
+        assert_eq!(exact_edit_match_error("src/app.ts", 1, false), None);
+        assert_eq!(exact_edit_match_error("src/app.ts", 2, true), None);
+        assert_eq!(
+            exact_edit_match_error("src/app.ts", 0, false),
+            Some("No match found for old_text in src/app.ts.".to_string())
+        );
+        assert!(exact_edit_match_error("src/app.ts", 2, false)
+            .expect("ambiguous match")
+            .contains("old_text matched 2 locations"));
+    }
 
     fn lock_secret_store() -> MutexGuard<'static, ()> {
         SECRET_STORE_TEST_LOCK

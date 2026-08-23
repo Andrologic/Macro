@@ -1047,42 +1047,6 @@ const isMutatingWorkspaceTool = (toolName: string): boolean =>
   gitMutatingToolIds.has(toolName) ||
   toolName === "terminal_create_session";
 
-const getFirstActionableCandidate = (
-  candidates: ProjectWorkspaceCandidate[],
-  preferredIds: Array<string | null | undefined>,
-): ProjectWorkspaceCandidate | null => {
-  for (const preferredId of preferredIds) {
-    const preferred = getProjectWorkspaceCandidate(preferredId, candidates);
-    if (preferred && !preferred.isReadOnly) {
-      return preferred;
-    }
-  }
-  return candidates.find((candidate) => !candidate.isReadOnly) || null;
-};
-
-const hasExplicitProjectTarget = (
-  toolName: string,
-  args: ToolArgs,
-  candidates: ProjectWorkspaceCandidate[],
-): boolean => {
-  if (getExplicitToolProjectId(args, candidates)) {
-    return true;
-  }
-
-  const rawPath = sanitizePathInput(
-    isGitTool(toolName) ? toString(args.repo_path) : toString(args.path),
-  );
-  if (!rawPath) {
-    return false;
-  }
-
-  if (!isAbsolutePath(rawPath)) {
-    return Boolean(stripProjectAliasPrefix(rawPath, candidates));
-  }
-
-  return Boolean(findProjectByAbsolutePath(rawPath, candidates));
-};
-
 const resolveExplicitProjectTargetId = (
   rawPath: string,
   args: ToolArgs,
@@ -1197,39 +1161,9 @@ const resolveMutatingVirtualTarget = async (params: {
     return { target, error: null };
   }
 
-  if (target.explicitTarget) {
-    return {
-      target,
-      error: buildReadOnlyToolError(params.toolName, target.candidate),
-    };
-  }
-
-  const fallbackCandidate = getFirstActionableCandidate(params.candidates, [
-    params.focusedProjectId,
-    params.defaultProjectId,
-  ]);
-  if (!fallbackCandidate) {
-    return {
-      target,
-      error: buildReadOnlyToolError(params.toolName, target.candidate),
-    };
-  }
-
   return {
-    target: {
-      candidate: fallbackCandidate,
-      relativePath:
-        params.toolName === "write" ||
-        params.toolName === "edit" ||
-        params.toolName === "delete" ||
-        params.toolName === "apply_patch"
-          ? params.rawPath || "."
-          : ".",
-      explicitTarget: false,
-      usedFocusedProject: false,
-      matchCount: 1,
-    },
-    error: null,
+    target,
+    error: buildReadOnlyToolError(params.toolName, target.candidate),
   };
 };
 
@@ -1621,35 +1555,13 @@ export const executeWorkspaceTool = async (
     normalizeWorkspacePath(options.defaultWorkspacePath) ||
     normalizeWorkspacePath(options.workspacePath) ||
     normalizeWorkspacePath(getSelectedProjectRoot());
-  const explicitProjectTarget = hasExplicitProjectTarget(
-    toolName,
-    rawArgs,
-    candidates,
-  );
-
   if (!virtualRootCandidate && isMutatingWorkspaceTool(toolName)) {
     const routedCandidate = getProjectWorkspaceCandidate(
       effectiveProjectId,
       candidates,
     );
     if (routedCandidate?.isReadOnly) {
-      if (explicitProjectTarget) {
-        return buildReadOnlyToolError(toolName, routedCandidate);
-      }
-
-      const fallbackCandidate = getFirstActionableCandidate(candidates, [
-        focusedProjectId,
-        options.projectId,
-        routing.projectId,
-      ]);
-      if (!fallbackCandidate) {
-        return buildReadOnlyToolError(toolName, routedCandidate);
-      }
-
-      effectiveProjectId = fallbackCandidate.id;
-      effectiveWorkspacePath =
-        normalizeWorkspacePath(fallbackCandidate.workspacePath) ||
-        effectiveWorkspacePath;
+      return buildReadOnlyToolError(toolName, routedCandidate);
     }
   }
 
@@ -2103,6 +2015,9 @@ export const executeWorkspaceTool = async (
         ).length;
         if (occurrences === 0) {
           return `No match found for old_text in ${resolved.virtualPath}.`;
+        }
+        if (!replaceAll && occurrences > 1) {
+          return `Cannot edit ${resolved.virtualPath}: old_text matched ${occurrences} locations. Provide more context so it matches exactly once, or set replace_all to true.`;
         }
 
         const updated = replaceAll
@@ -3533,6 +3448,9 @@ export const executeWorkspaceTool = async (
       ).length;
       if (occurrences === 0) {
         return `No match found for old_text in ${path}.`;
+      }
+      if (!replaceAll && occurrences > 1) {
+        return `Cannot edit ${path}: old_text matched ${occurrences} locations. Provide more context so it matches exactly once, or set replace_all to true.`;
       }
 
       const updated = replaceAll
