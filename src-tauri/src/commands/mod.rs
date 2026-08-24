@@ -43,6 +43,8 @@ use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
@@ -938,14 +940,12 @@ pub(crate) fn resolve_validated_tool_path(
     }
 }
 
-async fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> CommandResult<()> {
-    write_bytes_atomically_with_parent_creation(path, bytes, true).await
-}
-
 async fn write_bytes_atomically_with_parent_creation(
     path: &Path,
     bytes: &[u8],
     create_dirs: bool,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
 ) -> CommandResult<()> {
     let parent = path
         .parent()
@@ -984,6 +984,42 @@ async fn write_bytes_atomically_with_parent_creation(
             error
         )));
     }
+    #[cfg(unix)]
+    if let Some(mode) = unix_mode {
+        if let Err(error) =
+            tokio::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(mode & 0o7777))
+                .await
+        {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(command_error(format!(
+                "Failed to restore permissions for {}: {}",
+                path.display(),
+                error
+            )));
+        }
+    }
+    if expected_revision.is_some() {
+        let latest_revision = match tokio::fs::read(path).await {
+            Ok(current) => Some(fs::content_revision(&current)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(command_error(format!(
+                    "Failed to revalidate {} before rollback: {}",
+                    path.display(),
+                    error
+                )));
+            }
+        };
+        if let Err(error) = fs::validate_expected_revision(
+            &path.to_string_lossy(),
+            expected_revision,
+            latest_revision.as_deref(),
+        ) {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(command_error(error.to_string()));
+        }
+    }
     if let Err(error) = tokio::fs::rename(&temp_path, path).await {
         let _ = tokio::fs::remove_file(&temp_path).await;
         return Err(command_error(format!(
@@ -997,12 +1033,12 @@ async fn write_bytes_atomically_with_parent_creation(
 }
 
 async fn rollback_pending_file_changes(
-    backups: &[(PathBuf, Option<Vec<u8>>)],
+    backups: &[(PathBuf, Option<Vec<u8>>, Option<u32>)],
     applied_changes: &[PendingFileChange],
 ) -> Vec<String> {
     debug_assert_eq!(backups.len(), applied_changes.len());
     let mut errors = Vec::new();
-    for ((path, backup), change) in backups.iter().zip(applied_changes).rev() {
+    for ((path, backup, unix_mode), change) in backups.iter().zip(applied_changes).rev() {
         let state_matches_applied_mutation = match change.new_content.as_ref() {
             Some(content) => match tokio::fs::read(path).await {
                 Ok(current) => {
@@ -1038,7 +1074,19 @@ async fn rollback_pending_file_changes(
 
         match backup {
             Some(bytes) => {
-                if let Err(error) = write_bytes_atomically(path, bytes).await {
+                let expected_revision = change
+                    .new_content
+                    .as_ref()
+                    .map(|content| fs::content_revision(content.as_bytes()));
+                if let Err(error) = write_bytes_atomically_with_parent_creation(
+                    path,
+                    bytes,
+                    true,
+                    expected_revision.as_deref(),
+                    *unix_mode,
+                )
+                .await
+                {
                     errors.push(format!(
                         "Failed to restore {} during rollback: {}",
                         path.display(),
@@ -1139,12 +1187,12 @@ async fn acquire_content_mutation_locks(
 }
 
 async fn rollback_pending_file_changes_via_fs(
-    backups: &[(PathBuf, String, String, Option<String>)],
+    backups: &[(PathBuf, String, String, Option<String>, Option<u32>)],
     applied_changes: &[PendingFileChange],
 ) -> Vec<String> {
     debug_assert_eq!(backups.len(), applied_changes.len());
     let mut errors = Vec::new();
-    for ((workspace, path, display_path, backup), change) in
+    for ((workspace, path, display_path, backup, unix_mode), change) in
         backups.iter().zip(applied_changes).rev()
     {
         let expected_applied_revision = change
@@ -1153,7 +1201,7 @@ async fn rollback_pending_file_changes_via_fs(
             .map(|content| fs::content_revision(content.as_bytes()));
         match backup {
             Some(content) => {
-                if let Err(error) = fs::write_file_internal_with_revision_unlocked(
+                if let Err(error) = fs::write_file_internal_with_revision_and_mode_unlocked(
                     workspace,
                     path.clone(),
                     content.clone(),
@@ -1164,6 +1212,7 @@ async fn rollback_pending_file_changes_via_fs(
                             .as_deref()
                             .unwrap_or(fs::EXPECTED_REVISION_ABSENT),
                     ),
+                    *unix_mode,
                 )
                 .await
                 {
@@ -1201,8 +1250,8 @@ async fn rollback_pending_file_changes_via_fs(
 /// Native targets keep raw bytes; WSL/virtual-fs targets keep the text
 /// content routed through the workspace fs primitives.
 enum MutationBackups {
-    Native(Vec<(PathBuf, Option<Vec<u8>>)>),
-    ViaFs(Vec<(PathBuf, String, String, Option<String>)>),
+    Native(Vec<(PathBuf, Option<Vec<u8>>, Option<u32>)>),
+    ViaFs(Vec<(PathBuf, String, String, Option<String>, Option<u32>)>),
 }
 
 fn normalize_pending_change_metadata(
@@ -1217,7 +1266,7 @@ fn normalize_pending_change_metadata(
         let (existed, unchanged) = match backups {
             MutationBackups::Native(values) => values
                 .get(index)
-                .map(|(_, backup)| {
+                .map(|(_, backup, _)| {
                     (
                         backup.is_some(),
                         backup
@@ -1228,7 +1277,7 @@ fn normalize_pending_change_metadata(
                 .unwrap_or((false, false)),
             MutationBackups::ViaFs(values) => values
                 .get(index)
-                .map(|(_, _, _, backup)| {
+                .map(|(_, _, _, backup, _)| {
                     (
                         backup.is_some(),
                         backup.as_deref() == Some(new_content.as_str()),
@@ -1321,7 +1370,7 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                         Some(&current.revision),
                     )
                     .map_err(|error| command_error(error.to_string()))?;
-                    Some(current.content)
+                    Some((current.content, current.unix_mode))
                 } else {
                     fs::validate_expected_revision(
                         &change.display_path,
@@ -1331,11 +1380,15 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                     .map_err(|error| command_error(error.to_string()))?;
                     None
                 };
+            let (backup, unix_mode) = backup
+                .map(|(content, unix_mode)| (Some(content), unix_mode))
+                .unwrap_or((None, None));
             backups.push((
                 change.effective_workspace.clone(),
                 change.effective_path.clone(),
                 change.display_path.clone(),
                 backup,
+                unix_mode,
             ));
         }
         return Ok(MutationBackups::ViaFs(backups));
@@ -1343,7 +1396,7 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
 
     let mut backups = Vec::with_capacity(changes.len());
     for change in changes {
-        let backup = match tokio::fs::read(&change.absolute_path).await {
+        let (backup, unix_mode) = match tokio::fs::read(&change.absolute_path).await {
             Ok(bytes) => {
                 fs::validate_expected_revision(
                     &change.display_path,
@@ -1351,7 +1404,26 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                     Some(&fs::content_revision(&bytes)),
                 )
                 .map_err(|error| command_error(error.to_string()))?;
-                Some(bytes)
+                let mode = match tokio::fs::metadata(&change.absolute_path).await {
+                    Ok(metadata) => {
+                        #[cfg(unix)]
+                        {
+                            Some(metadata.permissions().mode() & 0o7777)
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            let _ = metadata;
+                            None
+                        }
+                    }
+                    Err(error) => {
+                        return Err(command_error(format!(
+                            "Failed to inspect permissions for {}: {}",
+                            change.display_path, error
+                        )))
+                    }
+                };
+                (Some(bytes), mode)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 fs::validate_expected_revision(
@@ -1360,7 +1432,7 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                     None,
                 )
                 .map_err(|error| command_error(error.to_string()))?;
-                None
+                (None, None)
             }
             Err(error) => {
                 return Err(command_error(format!(
@@ -1369,7 +1441,7 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                 )))
             }
         };
-        backups.push((change.absolute_path.clone(), backup));
+        backups.push((change.absolute_path.clone(), backup, unix_mode));
     }
     Ok(MutationBackups::Native(backups))
 }
@@ -1450,18 +1522,17 @@ async fn apply_mutation_backups(
                     Err(error) => Err(error),
                     Ok(()) => {
                         if let Some(new_content) = change.new_content.as_ref() {
-                            if native_backups[applied_count].1.as_deref()
-                                == Some(new_content.as_bytes())
-                            {
-                                Ok(())
-                            } else {
-                                write_bytes_atomically_with_parent_creation(
-                                    &change.absolute_path,
-                                    new_content.as_bytes(),
-                                    create_dirs,
-                                )
-                                .await
-                            }
+                            fs::write_file_internal_with_revision_unlocked(
+                                &change.effective_workspace,
+                                change.effective_path.clone(),
+                                new_content.clone(),
+                                Some(create_dirs),
+                                Some(false),
+                                change.expected_revision.as_deref(),
+                            )
+                            .await
+                            .map_err(|error| command_error(error.to_string()))
+                            .map(|_| ())
                         } else {
                             tokio::fs::remove_file(&change.absolute_path)
                                 .await
@@ -1492,7 +1563,7 @@ async fn apply_mutation_backups(
 }
 
 async fn rollback_after_batch_failure(
-    backups: &[(PathBuf, Option<Vec<u8>>)],
+    backups: &[(PathBuf, Option<Vec<u8>>, Option<u32>)],
     changes: &[PendingFileChange],
     applied_count: usize,
     error: CommandError,
@@ -5326,14 +5397,18 @@ mod tests {
         rollback_pending_file_changes, tool_cancel_workspace, tool_execution_timeout,
         validate_agent_git_repo_path, DbPool, ParsedPatchOperation, PendingFileChange,
     };
-    use crate::commands::fs::{content_revision, EXPECTED_REVISION_ABSENT};
+    use crate::commands::fs::{
+        content_revision, install_write_before_revalidation_hook, EXPECTED_REVISION_ABSENT,
+    };
     use crate::commands::git::{GitFileStatus, GitStatusDto};
     use crate::git::GitState;
     use serde_json::{json, Value};
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
+    use tokio::sync::Barrier;
 
     async fn execute_readonly_workspace_tool(
         workspace: &Path,
@@ -6151,6 +6226,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn guarded_batch_revalidates_after_preparing_the_atomic_replacement() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("shared.txt");
+        fs::write(&path, "original\n").expect("seed shared file");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_before_revalidation_hook(
+            path.canonicalize().expect("canonical shared path"),
+            reached.clone(),
+            release.clone(),
+        );
+        let change = PendingFileChange {
+            display_path: "shared.txt".to_string(),
+            effective_workspace: workspace.path().to_path_buf(),
+            effective_path: "shared.txt".to_string(),
+            absolute_path: path.clone(),
+            status: "updated".to_string(),
+            new_content: Some("macro\n".to_string()),
+            created: false,
+            bytes_written: 6,
+            additions: 1,
+            deletions: 1,
+            expected_revision: Some(content_revision(b"original\n")),
+        };
+
+        let task = tokio::spawn(commit_and_validate_pending_file_changes(
+            vec![change],
+            Default::default(),
+        ));
+        reached.wait().await;
+        fs::write(&path, "external\n").expect("external writer wins before rename");
+        release.wait().await;
+
+        let error = task
+            .await
+            .expect("batch task")
+            .expect_err("second CAS must reject the stale replacement");
+        assert_eq!(error.code(), Some("REVISION_CONFLICT"));
+        assert_eq!(
+            fs::read_to_string(path).expect("read external winner"),
+            "external\n"
+        );
+    }
+
+    #[tokio::test]
     async fn commit_pending_file_changes_checks_all_revisions_before_writing() {
         let workspace = TempDir::new().expect("workspace");
         let first_path = workspace.path().join("first.txt");
@@ -6301,7 +6421,7 @@ mod tests {
             deletions: 1,
             expected_revision: None,
         };
-        let backups = vec![(path.clone(), Some(b"original\n".to_vec()))];
+        let backups = vec![(path.clone(), Some(b"original\n".to_vec()), None)];
 
         fs::write(&path, "external edit\n").expect("simulate external edit");
         let errors = rollback_pending_file_changes(&backups, &[change]).await;

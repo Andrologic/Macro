@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,6 +42,7 @@ struct HeadlessState {
     bearer_token: Option<BearerTokenDigest>,
     approval_token: Option<BearerTokenDigest>,
     allowed_roots: Vec<PathBuf>,
+    registry_project_paths: BTreeMap<String, PathBuf>,
     workspace_path: PathBuf,
     git_state: GitState,
     config_manager: ConfigManager,
@@ -608,6 +609,52 @@ async fn register_headless_project_config_roots(state: &HeadlessState) -> Result
     Ok(())
 }
 
+/// Derive the server-side project_id → canonical project path registry from
+/// the workspace project registry. Headless clients never get to declare
+/// where a project lives: this map is the source of truth used to reject
+/// inconsistent workspace_path/project_mount payloads before any policy or
+/// tool execution happens.
+async fn collect_registered_project_paths(
+    state: &HeadlessState,
+) -> Result<BTreeMap<String, PathBuf>, BackendError> {
+    let metadata_root = resolve_metadata_root_for_workspace(state)?;
+    let bootstrap = workspace::get_bootstrap(&state.workspace_path, &metadata_root).await?;
+    let projects = bootstrap
+        .standalone_projects
+        .into_iter()
+        .chain(
+            bootstrap
+                .project_groups
+                .into_iter()
+                .flat_map(|group| group.projects),
+        )
+        .collect::<Vec<_>>();
+
+    let mut registry = BTreeMap::new();
+    for project in projects {
+        if parse_wsl_unc_path(&project.path).is_some() {
+            tracing::warn!(
+                project_id = %project.id,
+                "Skipping an unsupported WSL project in the headless path registry"
+            );
+            continue;
+        }
+        match PathBuf::from(&project.path).canonicalize() {
+            Ok(canonical_path) => {
+                registry.insert(project.id, canonical_path);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    project_id = %project.id,
+                    %error,
+                    "Skipping an unresolvable project path in the headless registry"
+                );
+            }
+        }
+    }
+    Ok(registry)
+}
+
 fn bearer_token_authorizes(headers: &HeaderMap, expected: Option<&BearerTokenDigest>) -> bool {
     let Some(expected) = expected else {
         return true;
@@ -681,6 +728,7 @@ fn is_strict_observe_tool(tool_id: &str) -> bool {
             | "read"
             | "glob"
             | "grep"
+            | "ast_grep"
             | "git_status"
             | "git_log"
             | "git_branch_list"
@@ -817,6 +865,81 @@ async fn load_project_tools_policies(
         .collect()
 }
 
+/// Reject client-declared workspace_path/project_mount payloads whose paths
+/// disagree with the server-derived project registry. This runs before any
+/// policy evaluation so a request can no longer borrow project A's scoped
+/// policy while aiming tool execution at project B's files.
+fn validate_headless_workspace_consistency(
+    registry: &BTreeMap<String, PathBuf>,
+    focused_project_id: &str,
+    workspace_path: Option<&str>,
+    mounts: &[WorkspaceProjectMount],
+) -> Result<(), String> {
+    let focused_project_id = focused_project_id.trim();
+    let Some(focused_canonical_path) = registry.get(focused_project_id) else {
+        return Err(format!(
+            "focused_project_id '{focused_project_id}' is not registered in the headless project registry; register the workspace projects before executing tools"
+        ));
+    };
+
+    if let Some(raw_workspace_path) = workspace_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let canonical_workspace_path =
+            PathBuf::from(raw_workspace_path)
+                .canonicalize()
+                .map_err(|error| {
+                    format!("workspace_path '{raw_workspace_path}' is not accessible: {error}")
+                })?;
+        if canonical_workspace_path != *focused_canonical_path {
+            return Err(format!(
+                "workspace_path '{}' does not match the canonical path '{}' registered for focused_project_id '{}'; refusing to evaluate a foreign project path against this project's policy",
+                raw_workspace_path,
+                focused_canonical_path.display(),
+                focused_project_id
+            ));
+        }
+    }
+
+    for mount in mounts {
+        let project_id = mount.project_id.trim();
+        let Some(registered_canonical_path) = registry.get(project_id) else {
+            return Err(format!(
+                "project_mount '{}' claims unregistered project_id '{project_id}'; derive mounts from the workspace project registry",
+                mount.mount_name
+            ));
+        };
+        let Some(raw_mount_path) = mount
+            .workspace_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(format!(
+                "project_mount '{}' for project '{project_id}' must carry a workspace_path matching the registered canonical path",
+                mount.mount_name
+            ));
+        };
+        let canonical_mount_path = PathBuf::from(raw_mount_path).canonicalize().map_err(|error| {
+            format!(
+                "workspace_path '{raw_mount_path}' of project mount '{}' is not accessible: {error}",
+                mount.mount_name
+            )
+        })?;
+        if canonical_mount_path != *registered_canonical_path {
+            return Err(format!(
+                "project_mount '{}' claims project_id '{project_id}' but points at '{}' instead of the registered canonical path '{}'",
+                mount.mount_name,
+                raw_mount_path,
+                registered_canonical_path.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 async fn health(State(state): State<Arc<HeadlessState>>, headers: HeaderMap) -> impl IntoResponse {
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
@@ -891,6 +1014,35 @@ async fn tool_execute(
             "A focused_project_id is required for tool execution policy decisions",
         );
     };
+
+    // Canonicalize and cross-check every client-declared path against the
+    // server-derived project registry BEFORE any policy is loaded or
+    // evaluated, so a mismatched A-policy/B-path request is rejected on its
+    // own terms instead of being judged by the policy it claims.
+    payload.workspace_path = match validate_headless_workspace_path(
+        payload.workspace_path.as_deref(),
+        &state.workspace_path,
+        &state.allowed_roots,
+    ) {
+        Ok(path) => path,
+        Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
+    };
+    payload.project_mounts = match payload.project_mounts.as_deref() {
+        Some(mounts) => match validate_headless_project_mounts(mounts, &state.allowed_roots) {
+            Ok(mounts) => Some(mounts),
+            Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
+        },
+        None => None,
+    };
+    if let Err(error) = validate_headless_workspace_consistency(
+        &state.registry_project_paths,
+        project_id,
+        payload.workspace_path.as_deref(),
+        payload.project_mounts.as_deref().unwrap_or_default(),
+    ) {
+        return policy_denied_response(error);
+    }
+
     let mut affected_project_ids = payload
         .project_mounts
         .as_deref()
@@ -927,22 +1079,6 @@ async fn tool_execute(
             }
         }
     }
-
-    payload.workspace_path = match validate_headless_workspace_path(
-        payload.workspace_path.as_deref(),
-        &state.workspace_path,
-        &state.allowed_roots,
-    ) {
-        Ok(path) => path,
-        Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
-    };
-    payload.project_mounts = match payload.project_mounts.as_deref() {
-        Some(mounts) => match validate_headless_project_mounts(mounts, &state.allowed_roots) {
-            Ok(mounts) => Some(mounts),
-            Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
-        },
-        None => None,
-    };
 
     match execute_workspace_tool_controlled(
         state.workspace_path.clone(),
@@ -1268,12 +1404,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
         approval_token: approval_token.as_deref().map(BearerTokenDigest::new),
         allowed_roots,
+        registry_project_paths: BTreeMap::new(),
         workspace_path,
         git_state: GitState::new(),
         config_manager,
     };
     register_headless_project_config_roots(&state).await?;
-    let state = Arc::new(state);
+    let registry_project_paths = collect_registered_project_paths(&state).await?;
+    let state = Arc::new(HeadlessState {
+        registry_project_paths,
+        ..state
+    });
 
     let app = Router::new()
         .route("/health", get(health))
@@ -1357,6 +1498,31 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn registry_with_projects(root: &TempDir, names: &[&str]) -> BTreeMap<String, PathBuf> {
+        let mut registry = BTreeMap::new();
+        for name in names {
+            let project_dir = root.path().join(name);
+            fs::create_dir(&project_dir).expect("project directory");
+            registry.insert(
+                name.to_string(),
+                project_dir.canonicalize().expect("canonical project path"),
+            );
+        }
+        registry
+    }
+
+    fn headless_mount(project_id: &str, workspace_path: &str) -> WorkspaceProjectMount {
+        WorkspaceProjectMount {
+            project_id: project_id.to_string(),
+            mount_name: "web".to_string(),
+            workspace_path: Some(workspace_path.to_string()),
+            display_name: None,
+            is_read_only: false,
+        }
+    }
 
     fn bearer_headers(token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -1425,6 +1591,109 @@ mod tests {
                 .expect("valid strict policy");
         assert!(!strict_write.allowed);
         assert!(strict_read.allowed);
+    }
+
+    #[test]
+    fn strict_policy_treats_ast_grep_as_headless_observation() {
+        assert!(is_strict_observe_tool("ast_grep"));
+
+        let strict = json!({
+            "riskLevel": "strict",
+            "builtIn": {},
+            "modes": {}
+        });
+        let strict_ast_grep =
+            configured_tool_validation("Implement", "ast_grep", Some("src/app.ts"), &strict)
+                .expect("valid strict policy");
+
+        assert!(strict_ast_grep.allowed);
+    }
+
+    #[test]
+    fn headless_consistency_rejects_a_policy_from_project_a_aimed_at_project_b() {
+        let root = TempDir::new().expect("registry root");
+        let registry = registry_with_projects(&root, &["project-a", "project-b"]);
+        let project_b = registry.get("project-b").expect("project-b registered");
+
+        // Scenario A-policy/B-path: the request borrows project-a's scoped
+        // policy while pointing workspace_path at project-b's directory.
+        let error = validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            Some(project_b.to_str().expect("utf-8 project path")),
+            &[],
+        )
+        .expect_err("a foreign workspace path must be rejected before policies run");
+
+        assert!(error.contains("does not match the canonical path"));
+        assert!(error.contains("project-a"));
+
+        let consistent = validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            Some(
+                registry
+                    .get("project-a")
+                    .expect("project-a")
+                    .to_str()
+                    .expect("utf-8"),
+            ),
+            &[],
+        );
+        assert!(consistent.is_ok());
+    }
+
+    #[test]
+    fn headless_consistency_rejects_mount_claiming_another_projects_path() {
+        let root = TempDir::new().expect("registry root");
+        let registry = registry_with_projects(&root, &["project-a", "project-b"]);
+        let project_b = registry.get("project-b").expect("project-b registered");
+        let project_a = registry.get("project-a").expect("project-a registered");
+
+        let error = validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            None,
+            &[headless_mount(
+                "project-a",
+                project_b.to_str().expect("utf-8"),
+            )],
+        )
+        .expect_err("a mount claiming project-a must not resolve into project-b");
+
+        assert!(error.contains("instead of the registered canonical path"));
+
+        let consistent = validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            None,
+            &[headless_mount(
+                "project-a",
+                project_a.to_str().expect("utf-8"),
+            )],
+        );
+        assert!(consistent.is_ok());
+    }
+
+    #[test]
+    fn headless_consistency_fails_closed_for_unregistered_projects() {
+        let root = TempDir::new().expect("registry root");
+        let registry = registry_with_projects(&root, &["project-a"]);
+
+        let unknown_focus = validate_headless_workspace_consistency(&registry, "ghost", None, &[]);
+        assert!(unknown_focus
+            .expect_err("unknown focused project must fail closed")
+            .contains("not registered in the headless project registry"));
+
+        let unknown_mount = validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            None,
+            &[headless_mount("ghost", "/tmp/whatever")],
+        );
+        assert!(unknown_mount
+            .expect_err("mount with unregistered project must fail closed")
+            .contains("unregistered project_id"));
     }
 
     #[test]

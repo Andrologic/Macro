@@ -72,6 +72,9 @@ const parseSnapshot = (
   if (value.size !== undefined && typeof value.size !== "number") {
     return null;
   }
+  if (value.unixMode !== undefined && value.unixMode !== null && typeof value.unixMode !== "number") {
+    return null;
+  }
 
   if (
     !isOptionalString(value.revision) ||
@@ -89,6 +92,7 @@ const parseSnapshot = (
     size: value.size,
     encoding: value.encoding,
     language: value.language,
+    unixMode: value.unixMode,
   };
 };
 
@@ -332,6 +336,7 @@ const missingCheckpointSnapshot = (): AgentCodeCheckpointFileSnapshot => ({
   size: 0,
   encoding: null,
   language: null,
+  unixMode: null,
 });
 
 const snapshotsEqual = (
@@ -341,6 +346,7 @@ const snapshotsEqual = (
   if (left.exists !== right.exists) return false;
   if (!left.exists && !right.exists) return true;
   if (Boolean(left.isBinary) !== Boolean(right.isBinary)) return false;
+  if ((left.unixMode ?? null) !== (right.unixMode ?? null)) return false;
   if (left.revision && right.revision) {
     return left.revision === right.revision;
   }
@@ -384,6 +390,7 @@ const readCurrentSnapshot = async (
     size: current.size,
     encoding: current.encoding,
     language: current.language,
+    unixMode: current.unix_mode ?? null,
   };
 };
 
@@ -630,6 +637,7 @@ const restoreReplaySnapshot = async (
         ? expectedCurrent.revision ?? undefined
         : "absent"
       : undefined,
+    unixMode: snapshot.unixMode ?? undefined,
     ...commonOptions,
   });
   return result.revision ?? null;

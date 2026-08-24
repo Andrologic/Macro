@@ -391,6 +391,7 @@ const readCheckpointSnapshot = async (
       size: 0,
       encoding: null,
       language: null,
+      unixMode: null,
     };
   }
 
@@ -413,6 +414,7 @@ const readCheckpointSnapshot = async (
     size: content.size,
     encoding: content.encoding,
     language: content.language,
+    unixMode: content.unix_mode ?? null,
   };
 };
 
@@ -424,6 +426,7 @@ const missingCheckpointSnapshot = (): AgentCodeCheckpointFileSnapshot => ({
   size: 0,
   encoding: null,
   language: null,
+  unixMode: null,
 });
 
 const snapshotFromReadResult = (
@@ -436,11 +439,13 @@ const snapshotFromReadResult = (
   size: result.size,
   encoding: result.encoding,
   language: result.language,
+  unixMode: result.unix_mode ?? null,
 });
 
 const snapshotFromAppliedText = (
   content: string,
   revision: string | null | undefined,
+  unixMode?: number | null,
 ): AgentCodeCheckpointFileSnapshot => ({
   exists: true,
   content,
@@ -449,6 +454,7 @@ const snapshotFromAppliedText = (
   size: new TextEncoder().encode(content).byteLength,
   encoding: "utf-8",
   language: null,
+  unixMode: unixMode ?? null,
 });
 
 const buildCheckpointFile = (
@@ -2277,6 +2283,7 @@ export const executeWorkspaceTool = async (
             currentAfterMutation = snapshotFromAppliedText(
               content,
               result.revision,
+              result.unix_mode,
             );
             const validation = await tauriIpc.fsReadFileWithOptions({
               path: realPath,
@@ -2422,6 +2429,7 @@ export const executeWorkspaceTool = async (
             currentAfterMutation = snapshotFromAppliedText(
               updated,
               result.revision,
+              result.unix_mode,
             );
             const validation = await tauriIpc.fsReadFileWithOptions({
               path: realPath,
@@ -3431,6 +3439,7 @@ export const executeWorkspaceTool = async (
           currentAfterMutation = snapshotFromAppliedText(
             content,
             result.revision,
+            result.unix_mode,
           );
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
@@ -3553,6 +3562,7 @@ export const executeWorkspaceTool = async (
           currentAfterMutation = snapshotFromAppliedText(
             updated,
             result.revision,
+            result.unix_mode,
           );
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
