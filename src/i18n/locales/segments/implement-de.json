@@ -280,6 +280,7 @@
   "taskWorkspaceLabel": "Ausgangspunkt",
   "taskWorkspaceNew": "Neue Arbeit",
   "taskWorkspaceExisting": "Arbeit fortsetzen",
+  "taskWorkspaceExistingPanelHelp": "Wählen Sie einen vorhandenen Worktree oder einen lokalen Branch.",
   "taskWorkspaceLoading": "Branches und Worktrees werden geladen...",
   "taskWorkspaceNewHelp": "Branch und Worktree erstellen.",
   "taskWorkspaceSearch": "Branches und Worktrees durchsuchen...",

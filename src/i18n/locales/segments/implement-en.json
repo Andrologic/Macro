@@ -280,6 +280,7 @@
   "taskWorkspaceLabel": "Starting point",
   "taskWorkspaceNew": "New work",
   "taskWorkspaceExisting": "Resume work",
+  "taskWorkspaceExistingPanelHelp": "Choose an existing worktree or a local branch.",
   "taskWorkspaceLoading": "Loading branches and worktrees...",
   "taskWorkspaceNewHelp": "Create a branch and a worktree.",
   "taskWorkspaceSearch": "Search branches and worktrees...",

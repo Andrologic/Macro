@@ -22,7 +22,10 @@ use crate::core::error::{BackendError, Result};
 use crate::core::process::background_command;
 use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
-use crate::git::{GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME};
+use crate::git::{
+    GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME,
+    MACRO_WORKTREE_DIR_NAME,
+};
 use crate::project_path::{
     parse_wsl_unc_path, run_wsl_git_allow_failure, WslCommandOutput, WslProjectPath,
 };
@@ -5804,6 +5807,7 @@ fn build_git_task_start_points(repo: &Repository) -> Result<GitTaskStartPointsDt
     let macro_worktree_root = repo
         .workdir()
         .map(|workdir| workdir.join(".macro").join("worktrees"));
+    let macro_metadata_worktree = repo.path().join(MACRO_WORKTREE_DIR_NAME);
     for name in names.iter().flatten().flatten() {
         let Ok(worktree) = repo.find_worktree(name) else {
             continue;
@@ -5822,9 +5826,11 @@ fn build_git_task_start_points(repo: &Repository) -> Result<GitTaskStartPointsDt
             continue;
         }
         occupied_branches.insert(branch_name.clone());
-        if macro_worktree_root
-            .as_ref()
-            .is_some_and(|root| path.starts_with(root))
+        if branch_name == MACRO_BRANCH_NAME
+            || path == macro_metadata_worktree
+            || macro_worktree_root
+                .as_ref()
+                .is_some_and(|root| path.starts_with(root))
         {
             continue;
         }
@@ -5847,7 +5853,7 @@ fn build_git_task_start_points(repo: &Repository) -> Result<GitTaskStartPointsDt
         let Some(name) = branch.name()?.map(str::to_string) else {
             continue;
         };
-        if occupied_branches.contains(&name) {
+        if name == MACRO_BRANCH_NAME || occupied_branches.contains(&name) {
             continue;
         }
         let commit = branch
@@ -7046,6 +7052,7 @@ mod tests {
         repo.branch("feature/external", &head, false).unwrap();
         repo.branch("feature/internal", &head, false).unwrap();
         repo.branch("feature/free", &head, false).unwrap();
+        repo.branch(MACRO_BRANCH_NAME, &head, false).unwrap();
 
         let external_path = temp.path().join("external-worktree");
         let external_ref = repo.find_reference("refs/heads/feature/external").unwrap();
@@ -7063,6 +7070,18 @@ mod tests {
             "internal",
             &internal_root.join("task-internal"),
             Some(&internal_options),
+        )
+        .unwrap();
+
+        let metadata_ref = repo
+            .find_reference(&format!("refs/heads/{MACRO_BRANCH_NAME}"))
+            .unwrap();
+        let mut metadata_options = git2::WorktreeAddOptions::new();
+        metadata_options.reference(Some(&metadata_ref));
+        repo.worktree(
+            "macro-metadata",
+            &repo.path().join(MACRO_WORKTREE_DIR_NAME),
+            Some(&metadata_options),
         )
         .unwrap();
 
