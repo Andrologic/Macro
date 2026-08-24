@@ -535,6 +535,10 @@ fn resolve_requested_workspace(
         metadata_workspace.join(requested_path)
     };
 
+    if fs::has_expected_workspace_root(&candidate) {
+        return Ok(crate::fs::normalize_path(&candidate));
+    }
+
     let resolved = candidate
         .canonicalize()
         .map_err(|_| command_error(format!("Workspace path not found: {}", requested_workspace)))?;
@@ -2366,10 +2370,12 @@ pub async fn execute_workspace_tool_controlled(
     .await
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct WorkspaceToolExecutionOptions {
     pub capture_checkpoint_snapshots: bool,
     pub raw_checkpoint_snapshot: bool,
+    pub expected_workspace_roots:
+        Option<Arc<std::collections::BTreeMap<PathBuf, fs::WorkspaceRootIdentity>>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2389,7 +2395,8 @@ pub async fn execute_workspace_tool_controlled_with_options(
     internal_options: WorkspaceToolExecutionOptions,
 ) -> CommandResult<String> {
     let Some(timeout_duration) = tool_execution_timeout(tool_id.trim()) else {
-        return execute_workspace_tool_inner(
+        let expected_workspace_roots = internal_options.expected_workspace_roots.clone();
+        let execution = execute_workspace_tool_inner(
             default_workspace,
             metadata_workspace,
             git_state,
@@ -2403,8 +2410,11 @@ pub async fn execute_workspace_tool_controlled_with_options(
             focused_project_id,
             None,
             internal_options,
-        )
-        .await;
+        );
+        return match expected_workspace_roots {
+            Some(roots) => fs::with_expected_workspace_roots(roots, execution).await,
+            None => execution.await,
+        };
     };
     let registration = register_tool_execution(execution_id.as_deref());
     let cancellation = registration
@@ -2413,7 +2423,8 @@ pub async fn execute_workspace_tool_controlled_with_options(
     let _guard = registration.map(|(_, guard)| guard);
     let cancellation = cancellation.unwrap_or_else(|| Arc::new(ToolCancellation::new()));
     let tool_label = tool_id.trim().to_string();
-    let execution = execute_workspace_tool_inner(
+    let expected_workspace_roots = internal_options.expected_workspace_roots.clone();
+    let inner_execution = execute_workspace_tool_inner(
         default_workspace,
         metadata_workspace,
         git_state,
@@ -2428,6 +2439,12 @@ pub async fn execute_workspace_tool_controlled_with_options(
         Some(cancellation.clone()),
         internal_options,
     );
+    let execution = async move {
+        match expected_workspace_roots {
+            Some(roots) => fs::with_expected_workspace_roots(roots, inner_execution).await,
+            None => inner_execution.await,
+        }
+    };
     tokio::pin!(execution);
 
     if execution_id.is_some() {
@@ -5940,7 +5957,8 @@ mod tests {
         apply_mutation_backups, apply_patch_hunks_to_content, command_error,
         commit_and_validate_pending_file_changes,
         commit_and_validate_pending_file_changes_with_create_dirs, commit_with_post_mutation_gate,
-        exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
+        exact_edit_match_error, execute_workspace_tool,
+        execute_workspace_tool_controlled_with_options, format_bounded_git_status,
         parse_apply_patch, prepare_mutation_backups, provider_definition_patch_operations,
         register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
         resolve_requested_workspace, resolve_workspace_for_tool_path,
@@ -5948,8 +5966,9 @@ mod tests {
         rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
         validate_agent_git_repo_path, validate_checkpoint_size_values, validate_post_write_changes,
         wsl_mutation_backup_read_script, wsl_mutation_backup_write_script, DbPool,
-        ParsedPatchOperation, PendingFileChange, INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
-        MAX_CHECKPOINT_FILES_PER_MUTATION, MAX_CHECKPOINT_TOTAL_BYTES,
+        ParsedPatchOperation, PendingFileChange, WorkspaceToolExecutionOptions,
+        INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD, MAX_CHECKPOINT_FILES_PER_MUTATION,
+        MAX_CHECKPOINT_TOTAL_BYTES,
     };
     use crate::commands::fs::{
         content_revision, install_write_before_revalidation_hook, EXPECTED_REVISION_ABSENT,
@@ -5957,6 +5976,7 @@ mod tests {
     use crate::commands::git::{GitFileStatus, GitStatusDto};
     use crate::git::GitState;
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -5986,6 +6006,49 @@ mod tests {
         )
         .await
         .expect("execute read-only workspace tool")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn controlled_write_rejects_a_registered_root_replaced_by_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let container = TempDir::new().expect("container");
+        let workspace = container.path().join("workspace");
+        let original = container.path().join("workspace-original");
+        let outside = TempDir::new().expect("outside workspace");
+        fs::create_dir(&workspace).expect("create registered workspace");
+        let identity = crate::commands::fs::workspace_root_identity(&workspace)
+            .expect("workspace root identity");
+        let expected_roots = Arc::new(BTreeMap::from([(workspace.clone(), identity)]));
+
+        fs::rename(&workspace, &original).expect("move registered workspace");
+        symlink(outside.path(), &workspace).expect("replace workspace with external symlink");
+
+        let error = execute_workspace_tool_controlled_with_options(
+            workspace.clone(),
+            workspace.clone(),
+            GitState::new(),
+            "Implement".to_string(),
+            "write".to_string(),
+            json!({ "path": "escaped.txt", "content": "must not escape" }),
+            Some(workspace.to_string_lossy().into_owned()),
+            None,
+            None,
+            Some(false),
+            None,
+            None,
+            WorkspaceToolExecutionOptions {
+                expected_workspace_roots: Some(expected_roots),
+                ..WorkspaceToolExecutionOptions::default()
+            },
+        )
+        .await
+        .expect_err("replaced registered root must be rejected");
+
+        assert!(error.message.contains("changed after server validation"));
+        assert!(!outside.path().join("escaped.txt").exists());
+        assert!(!original.join("escaped.txt").exists());
     }
 
     #[test]
