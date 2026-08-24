@@ -1637,6 +1637,8 @@
     "delete": "Provider löschen",
     "deleted": "Provider gelöscht",
     "searchPlaceholder": "Provider suchen...",
+    "configuredTitle": "Konfigurierte Provider",
+    "unconfiguredTitle": "Zu konfigurierende Provider",
     "testSaveFirst": "Speichere den Provider vor dem Testen.",
     "testConnection": "Testverbindung",
     "saveProvider": "Provider speichern",

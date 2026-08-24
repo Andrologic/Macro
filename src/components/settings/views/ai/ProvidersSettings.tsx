@@ -14,6 +14,7 @@ import { cn } from '../../../../utils/cn';
 import type { ProviderConfig } from '../../../../types';
 import { isMacroAiProvider } from '../../../../config/macroAi';
 import { AndrologicProviderIcon } from '../../../ai/AndrologicProviderIcon';
+import { providerHasUsableCredentials } from '../../../../services/providerCredentials';
 
 interface EditingProvider {
   id: string;
@@ -124,7 +125,7 @@ export const ProvidersSettings: React.FC = () => {
   const apiKeyInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const filteredProviders = useMemo(() => {
-    const query = searchQuery.toLowerCase();
+    const query = searchQuery.trim().toLowerCase();
     return providerConfigs.filter(
       (provider) =>
         provider.name.toLowerCase().includes(query) ||
@@ -132,6 +133,35 @@ export const ProvidersSettings: React.FC = () => {
         provider.baseUrl.toLowerCase().includes(query)
     );
   }, [providerConfigs, searchQuery]);
+
+  const providerListItems = useMemo(
+    () =>
+      [
+        {
+          id: 'configured',
+          title: t('providers.configuredTitle', 'Configured providers'),
+          providers: filteredProviders.filter(providerHasUsableCredentials),
+        },
+        {
+          id: 'unconfigured',
+          title: t('providers.unconfiguredTitle', 'Providers to configure'),
+          providers: filteredProviders.filter(
+            (provider) => !providerHasUsableCredentials(provider)
+          ),
+        },
+      ]
+        .filter((group) => group.providers.length > 0)
+        .flatMap((group) => [
+          {
+            kind: 'heading' as const,
+            id: group.id,
+            title: group.title,
+            count: group.providers.length,
+          },
+          ...group.providers.map((provider) => ({ kind: 'provider' as const, provider })),
+        ]),
+    [filteredProviders, t]
+  );
 
   const translateAuthError = (code: string, fallback: string) =>
     t(`providers.authErrors.${code}`, fallback);
@@ -868,29 +898,45 @@ export const ProvidersSettings: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="flex items-center justify-between">
-        <div className="relative w-64">
+      <div className="flex items-center gap-3">
+        <div className="relative min-w-0 flex-1">
           <Icon
             name="search"
-            size={16}
+            size={17}
             className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
           />
           <Input
-            className="pl-9"
+            className="h-10 rounded-lg pl-10 pr-4"
             placeholder={t('providers.searchPlaceholder', 'Search providers...')}
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
+            aria-label={t('providers.searchPlaceholder', 'Search providers...')}
           />
         </div>
 
-        <Button onClick={handleCreate}>
-          <Icon name="plus" size={16} className="mr-2" />
+        <Button onClick={handleCreate} className="h-10 shrink-0 px-4">
+          <Icon name="plus" size={16} />
           {t('providers.add', 'Add Provider')}
         </Button>
       </div>
 
       <div className="grid grid-cols-1 gap-3">
-        {filteredProviders.map((provider) => {
+        {providerListItems.map((item) => {
+          if (item.kind === 'heading') {
+            return (
+              <div key={item.id} className="mt-3 flex items-center gap-2 px-1 first:mt-0">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                  {item.title}
+                </h3>
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground">
+                  {item.count}
+                </span>
+                <div className="h-px flex-1 bg-border/70" />
+              </div>
+            );
+          }
+
+          const provider = item.provider;
           const status = getProviderStatus(provider);
           const isManagedMacroAi = isMacroAiProvider(provider.id);
           const authError = authErrorsByProvider[provider.id];

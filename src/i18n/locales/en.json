@@ -1658,6 +1658,8 @@
     "delete": "Delete Provider",
     "deleted": "Provider deleted",
     "searchPlaceholder": "Search providers...",
+    "configuredTitle": "Configured providers",
+    "unconfiguredTitle": "Providers to configure",
     "testSaveFirst": "Please save the provider before testing.",
     "testConnection": "Test Connection",
     "saveProvider": "Save Provider",

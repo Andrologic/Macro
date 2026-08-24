@@ -1636,6 +1636,8 @@
     "delete": "프로바이더 삭제",
     "deleted": "프로바이더가 삭제되었습니다",
     "searchPlaceholder": "프로바이더 검색...",
+    "configuredTitle": "구성된 프로바이더",
+    "unconfiguredTitle": "구성이 필요한 프로바이더",
     "testSaveFirst": "테스트 전에 프로바이더를 저장하세요.",
     "testConnection": "연결 테스트",
     "saveProvider": "프로바이더 저장",

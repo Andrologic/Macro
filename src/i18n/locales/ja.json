@@ -1636,6 +1636,8 @@
     "delete": "プロバイダーを削除",
     "deleted": "プロバイダーを削除しました",
     "searchPlaceholder": "プロバイダーを検索...",
+    "configuredTitle": "設定済みプロバイダー",
+    "unconfiguredTitle": "設定が必要なプロバイダー",
     "testSaveFirst": "テスト前にプロバイダーを保存してください。",
     "testConnection": "テスト接続",
     "saveProvider": "プロバイダーを保存",
