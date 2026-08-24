@@ -1048,9 +1048,9 @@ fn validate_headless_workspace_consistency(
                 registered_project.canonical_path.display()
             ));
         }
-        if mount.is_read_only != registered_project.is_read_only {
+        if registered_project.is_read_only && !mount.is_read_only {
             return Err(format!(
-                "project_mount '{}' must use the server-authoritative read-only state for project '{project_id}'",
+                "project_mount '{}' cannot make server-authoritative read-only project '{project_id}' writable",
                 mount.mount_name
             ));
         }
@@ -2827,7 +2827,7 @@ mod tests {
             &[headless_mount("project-a", &workspace_path)],
         )
         .expect_err("a client cannot make a read-only mount writable");
-        assert!(error.contains("server-authoritative read-only state"));
+        assert!(error.contains("cannot make server-authoritative read-only project"));
 
         let mut authoritative_mount = headless_mount("project-a", &workspace_path);
         authoritative_mount.is_read_only = true;
@@ -2835,7 +2835,19 @@ mod tests {
             &registry,
             "project-a",
             None,
-            &[authoritative_mount],
+            std::slice::from_ref(&authoritative_mount),
+        )
+        .is_ok());
+
+        registry
+            .get_mut("project-a")
+            .expect("project-a")
+            .is_read_only = false;
+        assert!(validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            None,
+            std::slice::from_ref(&authoritative_mount),
         )
         .is_ok());
     }
