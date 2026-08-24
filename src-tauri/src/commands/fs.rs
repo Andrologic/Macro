@@ -1463,6 +1463,60 @@ async fn write_file_with_workspace_capability(
     })
 }
 
+pub(crate) async fn read_file_bytes_with_mode_internal(
+    workspace: &Path,
+    path: String,
+) -> Result<Option<(Vec<u8>, Option<u32>)>, BackendError> {
+    if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "Native capability reads cannot target a WSL workspace".to_string(),
+        });
+    }
+    let validated_path = validate_path_for_write(&PathBuf::from(&path), workspace)?;
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let (directory, relative_path) = open_workspace_capability(&workspace, &validated_path)?;
+        read_capability_file(&directory, &relative_path)
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))
+    })
+    .await
+    .map_err(capability_task_error)?
+}
+
+pub(crate) async fn write_file_bytes_with_revision_and_mode_unlocked(
+    workspace: &Path,
+    path: String,
+    content: Vec<u8>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> Result<WriteResultDto, BackendError> {
+    if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "Native capability writes cannot target a WSL workspace".to_string(),
+        });
+    }
+    if content.len() as u64 > MAX_WRITE_SIZE_BYTES {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: format!(
+                "Content exceeds maximum write size of {} bytes",
+                MAX_WRITE_SIZE_BYTES
+            ),
+        });
+    }
+    let unix_mode = validate_unix_mode(unix_mode)?;
+    let validated_path = validate_path_for_write(&PathBuf::from(&path), workspace)?;
+    write_file_with_workspace_capability(
+        workspace,
+        &validated_path,
+        &path,
+        &content,
+        Some(true),
+        expected_revision,
+        unix_mode,
+    )
+    .await
+}
+
 /// Internal function for writing files with atomic write support
 pub async fn write_file_internal(
     workspace: &Path,

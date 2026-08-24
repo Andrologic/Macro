@@ -43,6 +43,7 @@ const REMOTE_MUTATION_INTENT_STORAGE_PREFIX = 'macro.remoteMutationIntent.v1.';
 
 interface DurableRemoteMutationIntent {
   fingerprint: string;
+  requestFingerprint: string;
   executionId: string;
   createdAt: string;
 }
@@ -103,6 +104,8 @@ const loadDurableRemoteMutationIntent = (
     const parsed = JSON.parse(raw) as Partial<DurableRemoteMutationIntent>;
     if (
       parsed.fingerprint !== fingerprint ||
+      typeof parsed.requestFingerprint !== 'string' ||
+      parsed.requestFingerprint.trim().length === 0 ||
       typeof parsed.executionId !== 'string' ||
       parsed.executionId.trim().length === 0 ||
       typeof parsed.createdAt !== 'string'
@@ -361,6 +364,7 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
   focusedProjectId?: string | null;
   signal?: AbortSignal;
   checkpointRequired?: boolean;
+  invocationId?: string;
 }): Promise<RemoteWorkspaceToolExecution> => {
   const needsContentRevisions = requiresContentRevisions(params);
   const needsBoundedOutput = BOUNDED_OUTPUT_TOOL_IDS.has(params.toolId);
@@ -446,7 +450,7 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
     if (!config) {
       throw new Error('The remote Macro kernel is not configured.');
     }
-    mutationFingerprint = await remoteMutationFingerprint(
+    const requestFingerprint = await remoteMutationFingerprint(
       JSON.stringify({
         endpoint: {
           baseUrl: config.baseUrl,
@@ -456,11 +460,28 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
         request: requestPayload,
       }),
     );
+    const invocationId = params.invocationId?.trim() || createRemoteToolExecutionId();
+    mutationFingerprint = await remoteMutationFingerprint(
+      JSON.stringify({
+        endpoint: {
+          baseUrl: config.baseUrl,
+          apiPrefix: config.apiPrefix,
+          workspaceId: config.workspaceId ?? null,
+        },
+        invocationId,
+      }),
+    );
     const existingIntent = loadDurableRemoteMutationIntent(mutationFingerprint);
+    if (existingIntent && existingIntent.requestFingerprint !== requestFingerprint) {
+      throw new Error(
+        'The remote mutation invocation identity was reused with a different request.',
+      );
+    }
     executionId = existingIntent?.executionId ?? createRemoteToolExecutionId();
     if (!existingIntent) {
       persistDurableRemoteMutationIntent({
         fingerprint: mutationFingerprint,
+        requestFingerprint,
         executionId,
         createdAt: new Date().toISOString(),
       });

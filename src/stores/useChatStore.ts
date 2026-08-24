@@ -5673,6 +5673,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           projectMounts: executionContext.projectMounts,
           virtualRootEnabled: executionContext.virtualRootEnabled,
           workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
+          invocationId: toolCallId
+            ? `${conversationId}:${assistantTurnId}:${toolCallId}`
+            : undefined,
           onCodeCheckpoint: async (checkpoint) => {
             await recordAgentCodeCheckpoint({
               conversationId,

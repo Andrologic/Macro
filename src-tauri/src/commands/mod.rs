@@ -23,6 +23,7 @@ use crate::config::{
     ConfigChangeSource, ConfigDocumentKind, ConfigManager, ConfigPatchRequest, ConfigScope,
     JsonPatchOperation,
 };
+use crate::core::error::BackendError;
 use crate::core::tool_policy::{
     get_mode_policy, is_macro_scoped_path, validate_tool_execution, ToolModePolicyResult,
     ToolValidationResult,
@@ -45,7 +46,7 @@ use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -974,6 +975,7 @@ pub(crate) fn resolve_validated_tool_path(
     }
 }
 
+#[cfg(test)]
 async fn write_bytes_atomically_with_parent_creation(
     path: &Path,
     bytes: &[u8],
@@ -1066,6 +1068,7 @@ async fn write_bytes_atomically_with_parent_creation(
     Ok(())
 }
 
+#[cfg(test)]
 async fn rollback_pending_file_changes(
     backups: &[(PathBuf, Option<Vec<u8>>, Option<u32>)],
     applied_changes: &[PendingFileChange],
@@ -1270,6 +1273,7 @@ head -c "$2" -- "$1"
 "#
 }
 
+#[cfg(test)]
 async fn read_native_mutation_backup(
     path: &Path,
     display_path: &str,
@@ -1410,20 +1414,29 @@ async fn rollback_pending_file_changes_via_fs(
                 let result = if change_targets_wsl(change) {
                     write_wsl_backup_bytes(workspace, path, content, expected, *unix_mode).await
                 } else {
-                    write_bytes_atomically_with_parent_creation(
-                        &change.absolute_path,
-                        content,
-                        true,
+                    fs::write_file_bytes_with_revision_and_mode_unlocked(
+                        workspace,
+                        path.clone(),
+                        content.clone(),
                         expected,
                         *unix_mode,
                     )
                     .await
+                    .map(|_| ())
+                    .map_err(|error| command_error(error.to_string()))
                 };
                 if let Err(error) = result {
-                    errors.push(format!(
-                        "Failed to restore {} during rollback: {}",
-                        display_path, error.message
-                    ));
+                    if error.message.contains("Revision conflict") {
+                        errors.push(format!(
+                            "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
+                            display_path
+                        ));
+                    } else {
+                        errors.push(format!(
+                            "Failed to restore {} during rollback: {}",
+                            display_path, error.message
+                        ));
+                    }
                 }
             }
             None => {
@@ -1436,10 +1449,17 @@ async fn rollback_pending_file_changes_via_fs(
                     )
                     .await
                     {
-                        errors.push(format!(
-                            "Failed to remove created file {} during rollback: {}",
-                            display_path, error
-                        ));
+                        if error.to_string().contains("Revision conflict") {
+                            errors.push(format!(
+                                "Rollback conflict for {}: the current file no longer matches Macro's applied mutation; preserving the current filesystem state",
+                                display_path
+                            ));
+                        } else {
+                            errors.push(format!(
+                                "Failed to remove created file {} during rollback: {}",
+                                display_path, error
+                            ));
+                        }
                     }
                 }
             }
@@ -1454,10 +1474,7 @@ async fn rollback_pending_file_changes_via_fs(
 /// Native and WSL targets retain raw bytes so rollback also works for binary
 /// files. Non-WSL virtual-fs targets still route UTF-8 content through the
 /// workspace fs primitives.
-enum MutationBackups {
-    Native(Vec<(PathBuf, Option<Vec<u8>>, Option<u32>)>),
-    ViaFs(Vec<(PathBuf, String, String, Option<Vec<u8>>, Option<u32>)>),
-}
+struct MutationBackups(Vec<(PathBuf, String, String, Option<Vec<u8>>, Option<u32>)>);
 
 const INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD: &str = "__macro_checkpoint_snapshots";
 const MAX_CHECKPOINT_FILES_PER_MUTATION: usize = 64;
@@ -1495,15 +1512,11 @@ fn checkpoint_before_snapshots(
 ) -> CommandResult<Vec<Value>> {
     let mut snapshots = Vec::with_capacity(changes.len());
     for (index, change) in changes.iter().enumerate() {
-        let (backup, unix_mode) = match backups {
-            MutationBackups::Native(values) => values
-                .get(index)
-                .map(|(_, backup, unix_mode)| (backup.as_deref(), *unix_mode)),
-            MutationBackups::ViaFs(values) => values
-                .get(index)
-                .map(|(_, _, _, backup, unix_mode)| (backup.as_deref(), *unix_mode)),
-        }
-        .ok_or_else(|| command_error("Checkpoint snapshot alignment failed"))?;
+        let (backup, unix_mode) = backups
+            .0
+            .get(index)
+            .map(|(_, _, _, backup, unix_mode)| (backup.as_deref(), *unix_mode))
+            .ok_or_else(|| command_error("Checkpoint snapshot alignment failed"))?;
         let Some(bytes) = backup else {
             snapshots.push(missing_checkpoint_snapshot_json());
             continue;
@@ -1579,28 +1592,16 @@ fn normalize_pending_change_metadata(
         let Some(new_content) = change.new_content.as_ref() else {
             continue;
         };
-        let (existed, unchanged) = match backups {
-            MutationBackups::Native(values) => values
-                .get(index)
-                .map(|(_, backup, _)| {
-                    (
-                        backup.is_some(),
-                        backup
-                            .as_deref()
-                            .is_some_and(|bytes| bytes == new_content.as_bytes()),
-                    )
-                })
-                .unwrap_or((false, false)),
-            MutationBackups::ViaFs(values) => values
-                .get(index)
-                .map(|(_, _, _, backup, _)| {
-                    (
-                        backup.is_some(),
-                        backup.as_deref() == Some(new_content.as_bytes()),
-                    )
-                })
-                .unwrap_or((false, false)),
-        };
+        let (existed, unchanged) = backups
+            .0
+            .get(index)
+            .map(|(_, _, _, backup, _)| {
+                (
+                    backup.is_some(),
+                    backup.as_deref() == Some(new_content.as_bytes()),
+                )
+            })
+            .unwrap_or((false, false));
         change.created = !existed;
         change.status = if existed { "updated" } else { "created" }.to_string();
         change.bytes_written = if unchanged {
@@ -1625,14 +1626,7 @@ async fn rollback_mutation_backups(
     backups: &MutationBackups,
     changes: &[PendingFileChange],
 ) -> Vec<String> {
-    match backups {
-        MutationBackups::Native(native_backups) => {
-            rollback_pending_file_changes(native_backups, changes).await
-        }
-        MutationBackups::ViaFs(fs_backups) => {
-            rollback_pending_file_changes_via_fs(fs_backups, changes).await
-        }
-    }
+    rollback_pending_file_changes_via_fs(&backups.0, changes).await
 }
 
 fn validate_checkpoint_size_values(
@@ -1660,21 +1654,15 @@ fn validate_checkpoint_batch_size(
     changes: &[PendingFileChange],
     backups: &MutationBackups,
 ) -> CommandResult<()> {
-    let backup_bytes = match backups {
-        MutationBackups::Native(values) => {
-            values.iter().try_fold(0usize, |total, (_, backup, _)| {
-                total.checked_add(backup.as_ref().map_or(0, Vec::len))
-            })
-        }
-        MutationBackups::ViaFs(values) => values
-            .iter()
-            .try_fold(0usize, |total, (_, _, _, backup, _)| {
-                total.checked_add(backup.as_ref().map_or(0, Vec::len))
-            }),
-    }
-    .ok_or_else(|| {
-        command_error("Recoverable mutation checkpoint size overflowed its safety limit")
-    })?;
+    let backup_bytes = backups
+        .0
+        .iter()
+        .try_fold(0usize, |total, (_, _, _, backup, _)| {
+            total.checked_add(backup.as_ref().map_or(0, Vec::len))
+        })
+        .ok_or_else(|| {
+            command_error("Recoverable mutation checkpoint size overflowed its safety limit")
+        })?;
     let next_bytes = changes
         .iter()
         .try_fold(0usize, |total, change| {
@@ -1705,101 +1693,69 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
             )));
         }
     }
-    if changes.iter().any(change_targets_wsl) {
-        let mut backups = Vec::with_capacity(changes.len());
-        for change in changes {
-            let backup =
-                if fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
-                    .await
-                    .map_err(|error| {
-                        command_error(format!(
-                            "Failed to inspect {} before write: {}",
-                            change.display_path, error
-                        ))
-                    })?
-                {
-                    let (current, unix_mode) = if change_targets_wsl(change) {
-                        read_wsl_mutation_backup(
-                            &change.effective_workspace,
-                            &change.effective_path,
-                        )
+    let mut backups = Vec::with_capacity(changes.len());
+    for change in changes {
+        let backup = if change_targets_wsl(change) {
+            if fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before write: {}",
+                        change.display_path, error
+                    ))
+                })?
+            {
+                Some(
+                    read_wsl_mutation_backup(&change.effective_workspace, &change.effective_path)
                         .await
                         .map_err(|error| {
                             command_error(format!(
                                 "Failed to prepare backup for {}: {}",
                                 change.display_path, error.message
                             ))
-                        })?
-                    } else {
-                        read_native_mutation_backup(&change.absolute_path, &change.display_path)
-                            .await?
-                    };
-                    fs::validate_expected_revision(
-                        &change.display_path,
-                        change.expected_revision.as_deref(),
-                        Some(&fs::content_revision(&current)),
-                    )
-                    .map_err(|error| command_error(error.to_string()))?;
-                    Some((current, unix_mode))
-                } else {
-                    fs::validate_expected_revision(
-                        &change.display_path,
-                        change.expected_revision.as_deref(),
-                        None,
-                    )
-                    .map_err(|error| command_error(error.to_string()))?;
-                    None
-                };
-            let (backup, unix_mode) = backup
-                .map(|(content, unix_mode)| (Some(content), unix_mode))
-                .unwrap_or((None, None));
-            backups.push((
-                change.effective_workspace.clone(),
+                        })?,
+                )
+            } else {
+                None
+            }
+        } else {
+            fs::read_file_bytes_with_mode_internal(
+                &change.effective_workspace,
                 change.effective_path.clone(),
-                change.display_path.clone(),
-                backup,
-                unix_mode,
-            ));
-        }
-        let backups = MutationBackups::ViaFs(backups);
-        validate_checkpoint_batch_size(changes, &backups)?;
-        return Ok(backups);
-    }
-
-    let mut backups = Vec::with_capacity(changes.len());
-    for change in changes {
-        let (backup, unix_mode) = match tokio::fs::metadata(&change.absolute_path).await {
-            Ok(_) => {
-                let (bytes, mode) =
-                    read_native_mutation_backup(&change.absolute_path, &change.display_path)
-                        .await?;
-                fs::validate_expected_revision(
-                    &change.display_path,
-                    change.expected_revision.as_deref(),
-                    Some(&fs::content_revision(&bytes)),
-                )
-                .map_err(|error| command_error(error.to_string()))?;
-                (Some(bytes), mode)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::validate_expected_revision(
-                    &change.display_path,
-                    change.expected_revision.as_deref(),
-                    None,
-                )
-                .map_err(|error| command_error(error.to_string()))?;
-                (None, None)
-            }
-            Err(error) => {
-                return Err(command_error(format!(
-                    "Failed to prepare backup for {}: {}",
-                    change.display_path, error
-                )))
-            }
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?
         };
-        backups.push((change.absolute_path.clone(), backup, unix_mode));
+        if let Some((bytes, _)) = backup.as_ref() {
+            if bytes.len() as u64 > fs::MAX_WRITE_SIZE_BYTES {
+                return Err(command_error(format!(
+                    "Backup for {} exceeds maximum write size of {} bytes",
+                    change.display_path,
+                    fs::MAX_WRITE_SIZE_BYTES
+                )));
+            }
+        }
+        fs::validate_expected_revision(
+            &change.display_path,
+            change.expected_revision.as_deref(),
+            backup
+                .as_ref()
+                .map(|(bytes, _)| fs::content_revision(bytes))
+                .as_deref(),
+        )
+        .map_err(|error| command_error(error.to_string()))?;
+        let (backup, unix_mode) = backup
+            .map(|(content, unix_mode)| (Some(content), unix_mode))
+            .unwrap_or((None, None));
+        backups.push((
+            change.effective_workspace.clone(),
+            change.effective_path.clone(),
+            change.display_path.clone(),
+            backup,
+            unix_mode,
+        ));
     }
-    let backups = MutationBackups::Native(backups);
+    let backups = MutationBackups(backups);
     validate_checkpoint_batch_size(changes, &backups)?;
     Ok(backups)
 }
@@ -1809,132 +1765,47 @@ async fn apply_mutation_backups(
     backups: &MutationBackups,
     create_dirs: bool,
 ) -> CommandResult<()> {
-    match backups {
-        MutationBackups::ViaFs(fs_backups) => {
-            for (applied_count, change) in changes.iter().enumerate() {
-                let result = if let Some(new_content) = change.new_content.as_ref() {
-                    fs::write_file_internal_with_revision_and_mode_unlocked(
-                        &change.effective_workspace,
-                        change.effective_path.clone(),
-                        new_content.clone(),
-                        Some(create_dirs),
-                        Some(false),
-                        change.expected_revision.as_deref(),
-                        change.requested_unix_mode,
-                    )
-                    .await
-                    .map(|_| ())
-                } else {
-                    fs::delete_path_internal_with_revision_unlocked(
-                        &change.effective_workspace,
-                        change.effective_path.clone(),
-                        Some(false),
-                        change.expected_revision.as_deref(),
-                    )
-                    .await
-                };
+    for (applied_count, change) in changes.iter().enumerate() {
+        let result = if let Some(new_content) = change.new_content.as_ref() {
+            fs::write_file_internal_with_revision_and_mode_unlocked(
+                &change.effective_workspace,
+                change.effective_path.clone(),
+                new_content.clone(),
+                Some(create_dirs),
+                Some(false),
+                change.expected_revision.as_deref(),
+                change.requested_unix_mode,
+            )
+            .await
+            .map(|_| ())
+        } else {
+            fs::delete_path_internal_with_revision_unlocked(
+                &change.effective_workspace,
+                change.effective_path.clone(),
+                Some(false),
+                change.expected_revision.as_deref(),
+            )
+            .await
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to delete {}: {}", change.display_path, error),
+            })
+        };
 
-                if let Err(error) = result {
-                    let rollback_errors = rollback_pending_file_changes_via_fs(
-                        &fs_backups[..applied_count],
-                        &changes[..applied_count],
-                    )
-                    .await;
-                    return Err(command_error(format!(
-                        "{}{}",
-                        error,
-                        rollback_error_suffix(rollback_errors)
-                    )));
-                }
-            }
-            Ok(())
-        }
-        MutationBackups::Native(native_backups) => {
-            for (applied_count, change) in changes.iter().enumerate() {
-                let revision_result = if change.expected_revision.is_some() {
-                    let actual_revision = match tokio::fs::read(&change.absolute_path).await {
-                        Ok(bytes) => Some(fs::content_revision(&bytes)),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                        Err(error) => {
-                            return rollback_after_batch_failure(
-                                native_backups,
-                                changes,
-                                applied_count,
-                                command_error(format!(
-                                    "Failed to revalidate {} before mutation: {}",
-                                    change.display_path, error
-                                )),
-                            )
-                            .await;
-                        }
-                    };
-                    fs::validate_expected_revision(
-                        &change.display_path,
-                        change.expected_revision.as_deref(),
-                        actual_revision.as_deref(),
-                    )
-                    .map_err(|error| command_error(error.to_string()))
-                } else {
-                    Ok(())
-                };
-                let result = match revision_result {
-                    Err(error) => Err(error),
-                    Ok(()) => {
-                        if let Some(new_content) = change.new_content.as_ref() {
-                            fs::write_file_internal_with_revision_and_mode_unlocked(
-                                &change.effective_workspace,
-                                change.effective_path.clone(),
-                                new_content.clone(),
-                                Some(create_dirs),
-                                Some(false),
-                                change.expected_revision.as_deref(),
-                                change.requested_unix_mode,
-                            )
-                            .await
-                            .map_err(|error| command_error(error.to_string()))
-                            .map(|_| ())
-                        } else {
-                            tokio::fs::remove_file(&change.absolute_path)
-                                .await
-                                .map_err(|error| {
-                                    command_error(format!(
-                                        "Failed to delete {}: {}",
-                                        change.display_path, error
-                                    ))
-                                })
-                        }
-                    }
-                };
-
-                if let Err(error) = result {
-                    return rollback_after_batch_failure(
-                        native_backups,
-                        changes,
-                        applied_count,
-                        error,
-                    )
-                    .await;
-                }
-            }
-
-            Ok(())
+        if let Err(error) = result {
+            let rollback_errors = rollback_pending_file_changes_via_fs(
+                &backups.0[..applied_count],
+                &changes[..applied_count],
+            )
+            .await;
+            return Err(command_error(format!(
+                "{}{}",
+                error,
+                rollback_error_suffix(rollback_errors)
+            )));
         }
     }
-}
 
-async fn rollback_after_batch_failure(
-    backups: &[(PathBuf, Option<Vec<u8>>, Option<u32>)],
-    changes: &[PendingFileChange],
-    applied_count: usize,
-    error: CommandError,
-) -> CommandResult<()> {
-    let rollback_errors =
-        rollback_pending_file_changes(&backups[..applied_count], &changes[..applied_count]).await;
-    Err(command_error(format!(
-        "{}{}",
-        error.message,
-        rollback_error_suffix(rollback_errors)
-    )))
+    Ok(())
 }
 
 /// Applies pending changes and validates them before reporting success.
@@ -5951,15 +5822,16 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
+        apply_mutation_backups, apply_patch_hunks_to_content, command_error,
+        commit_and_validate_pending_file_changes,
         commit_and_validate_pending_file_changes_with_create_dirs, commit_with_post_mutation_gate,
         exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
-        parse_apply_patch, provider_definition_patch_operations, read_native_mutation_backup,
-        register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
-        resolve_requested_workspace, resolve_workspace_for_tool_path,
-        restore_deleted_provider_secrets, rollback_pending_file_changes,
-        rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
-        validate_agent_git_repo_path, validate_checkpoint_size_values,
+        parse_apply_patch, prepare_mutation_backups, provider_definition_patch_operations,
+        read_native_mutation_backup, register_tool_execution,
+        resolve_confined_wsl_repo_path_for_workspace, resolve_requested_workspace,
+        resolve_workspace_for_tool_path, restore_deleted_provider_secrets,
+        rollback_pending_file_changes, rollback_pending_file_changes_via_fs, tool_cancel_workspace,
+        tool_execution_timeout, validate_agent_git_repo_path, validate_checkpoint_size_values,
         wsl_mutation_backup_read_script, wsl_mutation_backup_write_script, DbPool,
         ParsedPatchOperation, PendingFileChange, INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
         MAX_CHECKPOINT_FILES_PER_MUTATION, MAX_CHECKPOINT_TOTAL_BYTES,
@@ -7478,6 +7350,50 @@ mod tests {
 
         assert!(error.message.contains("Parent directory does not exist"));
         assert!(!workspace.path().join("missing").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transactional_delete_rejects_a_parent_replaced_by_an_external_symlink() {
+        let workspace = TempDir::new().expect("workspace");
+        let outside = TempDir::new().expect("outside");
+        let parent = workspace.path().join("parent");
+        fs::create_dir(&parent).expect("create parent");
+        fs::write(parent.join("victim.txt"), "inside\n").expect("seed inside file");
+        fs::write(outside.path().join("victim.txt"), "outside\n").expect("seed outside file");
+        let change = PendingFileChange {
+            display_path: "parent/victim.txt".to_string(),
+            effective_workspace: workspace.path().to_path_buf(),
+            effective_path: "parent/victim.txt".to_string(),
+            absolute_path: parent.join("victim.txt"),
+            status: "deleted".to_string(),
+            new_content: None,
+            created: false,
+            bytes_written: 0,
+            additions: 0,
+            deletions: 1,
+            expected_revision: Some(content_revision(b"inside\n")),
+            requested_unix_mode: None,
+        };
+        let backups = prepare_mutation_backups(std::slice::from_ref(&change))
+            .await
+            .expect("prepare backup");
+        let moved_parent = workspace.path().join("moved-parent");
+        fs::rename(&parent, &moved_parent).expect("move validated parent");
+        std::os::unix::fs::symlink(outside.path(), &parent).expect("replace parent with symlink");
+
+        apply_mutation_backups(&[change], &backups, true)
+            .await
+            .expect_err("capability-confined delete must reject the swapped parent");
+
+        assert_eq!(
+            fs::read_to_string(outside.path().join("victim.txt")).expect("read outside file"),
+            "outside\n"
+        );
+        assert_eq!(
+            fs::read_to_string(moved_parent.join("victim.txt")).expect("read original file"),
+            "inside\n"
+        );
     }
 
     #[tokio::test]
