@@ -61,11 +61,48 @@ fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRo
 }
 
 #[cfg(windows)]
-fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
-    WorkspaceRootIdentity {
-        volume: metadata.volume_serial_number(),
-        file_index: metadata.file_index(),
+fn workspace_root_identity_from_handle(
+    handle: std::os::windows::io::RawHandle,
+    workspace: &Path,
+) -> Result<WorkspaceRootIdentity, BackendError> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    let result = unsafe { GetFileInformationByHandle(handle as _, &mut information) };
+    if result == 0 {
+        return Err(io_error_to_backend_error(
+            std::io::Error::last_os_error(),
+            workspace,
+        ));
     }
+
+    Ok(WorkspaceRootIdentity {
+        volume: Some(information.dwVolumeSerialNumber),
+        file_index: Some(
+            ((information.nFileIndexHigh as u64) << u32::BITS) | information.nFileIndexLow as u64,
+        ),
+    })
+}
+
+#[cfg(windows)]
+fn workspace_root_identity_from_std(
+    workspace: &Path,
+) -> Result<WorkspaceRootIdentity, BackendError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(workspace)
+        .map_err(|error| io_error_to_backend_error(error, workspace))?;
+    workspace_root_identity_from_handle(file.as_raw_handle(), workspace)
 }
 
 #[cfg(unix)]
@@ -78,18 +115,24 @@ fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> Workspa
 }
 
 #[cfg(windows)]
-fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> WorkspaceRootIdentity {
-    use cap_std::fs::MetadataExt;
-    WorkspaceRootIdentity {
-        volume: metadata.volume_serial_number(),
-        file_index: metadata.file_index(),
-    }
+fn workspace_root_identity_from_cap(
+    directory: &CapabilityDir,
+    workspace: &Path,
+) -> Result<WorkspaceRootIdentity, BackendError> {
+    use std::os::windows::io::AsRawHandle;
+    workspace_root_identity_from_handle(directory.as_raw_handle(), workspace)
 }
 
 pub fn workspace_root_identity(workspace: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
-    let metadata = std::fs::metadata(workspace)
-        .map_err(|error| io_error_to_backend_error(error, workspace))?;
-    Ok(workspace_root_identity_from_std(&metadata))
+    #[cfg(windows)]
+    return workspace_root_identity_from_std(workspace);
+
+    #[cfg(unix)]
+    {
+        let metadata = std::fs::metadata(workspace)
+            .map_err(|error| io_error_to_backend_error(error, workspace))?;
+        Ok(workspace_root_identity_from_std(&metadata))
+    }
 }
 
 tokio::task_local! {
@@ -215,11 +258,14 @@ fn open_workspace_capability(
     let directory = CapabilityDir::open_ambient_dir(&canonical_workspace, ambient_authority())
         .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?;
     if let Some(expected_identity) = expected_identity {
+        #[cfg(unix)]
         let actual_identity = workspace_root_identity_from_cap(
             &directory
                 .dir_metadata()
                 .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?,
         );
+        #[cfg(windows)]
+        let actual_identity = workspace_root_identity_from_cap(&directory, &canonical_workspace)?;
         if actual_identity != expected_identity {
             return Err(BackendError::FilesystemInvalidPath {
                 message: format!(
@@ -3151,6 +3197,19 @@ mod tests {
 
     fn setup_empty_workspace() -> TempDir {
         TempDir::new().expect("Failed to create temp directory")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_root_identity_matches_the_capability_directory() {
+        let workspace = setup_empty_workspace();
+        let expected = workspace_root_identity(workspace.path()).expect("read workspace identity");
+        let directory = CapabilityDir::open_ambient_dir(workspace.path(), ambient_authority())
+            .expect("open workspace capability");
+        let actual = workspace_root_identity_from_cap(&directory, workspace.path())
+            .expect("read capability identity");
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
