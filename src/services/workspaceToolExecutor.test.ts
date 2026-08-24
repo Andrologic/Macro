@@ -60,11 +60,9 @@ const registerWorkspaceToolExecutorMocks = (
     (appState as { remoteKernelModule?: Record<string, unknown> })
       .remoteKernelModule || {};
   const providedRead = rawTauriModule.fsReadFileWithOptions as
-    | ((...args: unknown[]) => Promise<Record<string, unknown>>)
-    | undefined;
+    ((...args: unknown[]) => Promise<Record<string, unknown>>) | undefined;
   const providedWrite = rawTauriModule.fsWriteFile as
-    | ((...args: unknown[]) => Promise<Record<string, unknown>>)
-    | undefined;
+    ((...args: unknown[]) => Promise<Record<string, unknown>>) | undefined;
   const tauriModule = {
     ...rawTauriModule,
     ...(providedRead
@@ -77,8 +75,8 @@ const registerWorkspaceToolExecutorMocks = (
                 result.revision === null
                   ? null
                   : typeof result.revision === "string"
-                  ? result.revision
-                  : "mock-revision",
+                    ? result.revision
+                    : "mock-revision",
             };
           },
         }
@@ -93,8 +91,8 @@ const registerWorkspaceToolExecutorMocks = (
                 result.revision === null
                   ? null
                   : typeof result.revision === "string"
-                  ? result.revision
-                  : "mock-revision",
+                    ? result.revision
+                    : "mock-revision",
             };
           },
         }
@@ -118,7 +116,11 @@ const registerWorkspaceToolExecutorMocks = (
     }),
     fsStat: async (path: string | { path: string }) => {
       const resolvedPath =
-        typeof path === "string" ? path : typeof path?.path === "string" ? path.path : "";
+        typeof path === "string"
+          ? path
+          : typeof path?.path === "string"
+            ? path.path
+            : "";
       return {
         path: resolvedPath,
         name: resolvedPath.split(/[\\/]/).pop() || "",
@@ -172,6 +174,10 @@ const registerWorkspaceToolExecutorMocks = (
   mock.module("./remoteKernelApi", () => ({
     canUseRemoteKernel: () => false,
     executeRemoteWorkspaceTool: async () => "",
+    executeRemoteWorkspaceToolDetailed: async () => ({
+      result: "",
+      checkpoint: null,
+    }),
     validateRemoteToolExecution: async () => ({
       allowed: true,
       enforce_macro_only_writes: false,
@@ -187,7 +193,7 @@ const registerWorkspaceToolExecutorMocks = (
   mock.module("../stores/useAppStore", () => ({
     useAppStore: Object.assign(
       <TSelected = typeof appStoreState>(
-        selector?: (state: typeof appStoreState) => TSelected
+        selector?: (state: typeof appStoreState) => TSelected,
       ) =>
         selector
           ? selector(appStoreState)
@@ -197,15 +203,15 @@ const registerWorkspaceToolExecutorMocks = (
         setState: (
           patch:
             | Partial<typeof appStoreState>
-            | ((state: typeof appStoreState) => Partial<typeof appStoreState>)
+            | ((state: typeof appStoreState) => Partial<typeof appStoreState>),
         ) => {
           Object.assign(
             appStoreState,
-            typeof patch === "function" ? patch(appStoreState) : patch
+            typeof patch === "function" ? patch(appStoreState) : patch,
           );
         },
         subscribe: () => () => undefined,
-      }
+      },
     ),
   }));
 };
@@ -278,7 +284,10 @@ describe("workspaceToolExecutor helpers", () => {
       "Implement",
       {
         workspacePath: "C:/dev/macro-web",
-        onCodeCheckpoint: async (checkpoint: { toolName: string; files: unknown[] }) => {
+        onCodeCheckpoint: async (checkpoint: {
+          toolName: string;
+          files: unknown[];
+        }) => {
           checkpoints.push(checkpoint);
         },
       },
@@ -384,7 +393,10 @@ describe("workspaceToolExecutor helpers", () => {
       "Implement",
       {
         workspacePath: "C:/dev/macro-web",
-        onCodeCheckpoint: async (checkpoint: { toolName: string; files: unknown[] }) => {
+        onCodeCheckpoint: async (checkpoint: {
+          toolName: string;
+          files: unknown[];
+        }) => {
           checkpoints.push(checkpoint);
         },
       },
@@ -395,7 +407,8 @@ describe("workspaceToolExecutor helpers", () => {
   });
 
   it("extracts explicit mutating project targets without falling back to focused repositories", async () => {
-    const { resolveExplicitMutatingToolProjectTargets } = await loadWorkspaceToolExecutor();
+    const { resolveExplicitMutatingToolProjectTargets } =
+      await loadWorkspaceToolExecutor();
     const routingOptions = {
       groupId: "macro-suite",
       focusedProjectId: "web",
@@ -561,7 +574,11 @@ describe("workspaceToolExecutor helpers", () => {
     };
 
     expect(() =>
-      resolveToolWorkspaceRouting("read", { path: "web/src/index.ts" }, options),
+      resolveToolWorkspaceRouting(
+        "read",
+        { path: "web/src/index.ts" },
+        options,
+      ),
     ).toThrow('Ambiguous project path prefix "web"');
   });
 
@@ -610,7 +627,8 @@ describe("workspaceToolExecutor helpers", () => {
   });
 
   it("binds mutating approval scopes to the canonical target project", async () => {
-    const { resolveMutatingToolApprovalScope } = await loadWorkspaceToolExecutor();
+    const { resolveMutatingToolApprovalScope } =
+      await loadWorkspaceToolExecutor();
     const projectMounts = [
       {
         projectId: "api-project",
@@ -779,18 +797,23 @@ describe("workspaceToolExecutor helpers", () => {
       },
     } as Partial<MockAppState>);
 
-    const result = await executeWorkspaceTool("list", { path: "/" }, "Implement", {
-      focusedProjectId: "web",
-      virtualRootEnabled: true,
-      projectMounts: [
-        {
-          projectId: "web",
-          mountName: "web",
-          displayName: "Web App",
-          workspacePath: "/repos/web",
-        },
-      ],
-    });
+    const result = await executeWorkspaceTool(
+      "list",
+      { path: "/" },
+      "Implement",
+      {
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "/repos/web",
+          },
+        ],
+      },
+    );
 
     expect(result).toContain("absolute filesystem roots are outside");
   });
@@ -1163,7 +1186,10 @@ describe("workspaceToolExecutor helpers", () => {
       "grep",
       { query: "needle" },
       "Implement",
-      { workspacePath: "C:/dev/macro-web", signal: controller.signal },
+      {
+        workspacePath: "C:/dev/macro-web",
+        signal: controller.signal,
+      },
     );
     controller.abort();
 
@@ -1565,7 +1591,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     );
 
-    expect(result).toContain("Stale content for \"web/src/b.ts\"");
+    expect(result).toContain('Stale content for "web/src/b.ts"');
     expect(writes).toEqual([]);
     expect(checkpoints).toEqual([]);
   });
@@ -1586,11 +1612,7 @@ describe("workspaceToolExecutor helpers", () => {
           size: content.length,
           encoding: "utf-8",
         }),
-        fsWriteFile: async ({
-          content: nextContent,
-        }: {
-          content: string;
-        }) => {
+        fsWriteFile: async ({ content: nextContent }: { content: string }) => {
           writes.push(nextContent);
           content = nextContent;
           return {
@@ -1773,8 +1795,14 @@ describe("workspaceToolExecutor helpers", () => {
         validateToolExecution: async () => ({ allowed: true }),
         executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
           if (toolId !== "apply_patch") return "UNSUPPORTED_WORKSPACE_TOOL";
-          contents.set("C:/dev/macro-web/src/a.ts", "export const a = 'after';\n");
-          contents.set("C:/dev/macro-web/src/b.ts", "export const b = 'after';\n");
+          contents.set(
+            "C:/dev/macro-web/src/a.ts",
+            "export const a = 'after';\n",
+          );
+          contents.set(
+            "C:/dev/macro-web/src/b.ts",
+            "export const b = 'after';\n",
+          );
           return JSON.stringify({
             ok: true,
             files: [
@@ -1796,7 +1824,8 @@ describe("workspaceToolExecutor helpers", () => {
         fsExists: async (path: string) => contents.has(path),
         fsReadFileWithOptions: async ({ path }: { path: string }) => {
           const content = contents.get(path);
-          if (content === undefined) throw new Error(`unexpected read: ${path}`);
+          if (content === undefined)
+            throw new Error(`unexpected read: ${path}`);
           return {
             content,
             language: "typescript",
@@ -1927,7 +1956,8 @@ describe("workspaceToolExecutor helpers", () => {
             path,
             bytes_written: nextContent.length,
             created: false,
-            revision: nextContent === before ? "restored-revision" : "applied-revision",
+            revision:
+              nextContent === before ? "restored-revision" : "applied-revision",
           };
         },
       },
@@ -1974,7 +2004,8 @@ describe("workspaceToolExecutor helpers", () => {
   });
 
   it("deletes a file from the routed worktree workspace", async () => {
-    const deletes: Array<{ path: string; expectedRevision?: string | null }> = [];
+    const deletes: Array<{ path: string; expectedRevision?: string | null }> =
+      [];
 
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
@@ -2084,9 +2115,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     );
 
-    expect(result).toBe(
-      'Error executing delete: project "API" is read-only.'
-    );
+    expect(result).toBe('Error executing delete: project "API" is read-only.');
   });
 
   it("does not reroute an implicit virtual-root mutation away from the focused read-only project", async () => {
@@ -2137,7 +2166,7 @@ describe("workspaceToolExecutor helpers", () => {
     );
 
     expect(result).toBe(
-      'Error executing write: project "Web App" is read-only.'
+      'Error executing write: project "Web App" is read-only.',
     );
     expect(writes).toEqual([]);
   });
@@ -2187,7 +2216,7 @@ describe("workspaceToolExecutor helpers", () => {
     );
 
     expect(result).toBe(
-      'Error executing write: project "Web App" is read-only.'
+      'Error executing write: project "Web App" is read-only.',
     );
     expect(writes).toEqual([]);
   });
@@ -2250,7 +2279,11 @@ describe("workspaceToolExecutor helpers", () => {
         }),
         fsWriteFile: async ({ content }: { content: string }) => {
           writes.push(content);
-          return { path: "src/value.ts", bytes_written: content.length, created: false };
+          return {
+            path: "src/value.ts",
+            bytes_written: content.length,
+            created: false,
+          };
         },
       },
     } as Partial<MockAppState>);
@@ -2286,7 +2319,9 @@ describe("workspaceToolExecutor helpers", () => {
           is_binary: false,
           size: content.length,
           encoding: "utf-8",
-          revision: content.includes("2") ? "updated-revision" : "read-revision",
+          revision: content.includes("2")
+            ? "updated-revision"
+            : "read-revision",
         }),
         fsWriteFile: async ({
           content: nextContent,
@@ -2433,7 +2468,8 @@ describe("workspaceToolExecutor helpers", () => {
             is_binary: false,
             size: content.length,
             encoding: "utf-8",
-            revision: reads === 1 ? "before-revision" : "guarded-readback-revision",
+            revision:
+              reads === 1 ? "before-revision" : "guarded-readback-revision",
           };
         },
         fsWriteFile: async (params: {
@@ -2542,7 +2578,9 @@ describe("workspaceToolExecutor helpers", () => {
       },
     );
 
-    expect(result).toContain('External modification detected for "web/src/value.ts"');
+    expect(result).toContain(
+      'External modification detected for "web/src/value.ts"',
+    );
     expect(result).toContain("macro-revision-1");
     expect(result).toContain("external-revision");
     expect(result).toContain("No code checkpoint was published");
@@ -2619,7 +2657,9 @@ describe("workspaceToolExecutor helpers", () => {
       },
     );
 
-    expect(result).toContain('External modification detected for "src/value.ts"');
+    expect(result).toContain(
+      'External modification detected for "src/value.ts"',
+    );
     expect(result).toContain("edited-revision");
     expect(result).toContain("external-revision");
     expect(result).toContain("No code checkpoint was published");
@@ -2869,8 +2909,9 @@ describe("workspaceToolExecutor helpers", () => {
     expect(writes[1].expectedRevision).toBe("backend:a");
   });
 
-  it("refuses remote mutations when recoverable checkpoints are required", async () => {
+  it("publishes recoverable checkpoints for remote mutations", async () => {
     let remoteExecutions = 0;
+    const checkpoints: unknown[] = [];
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       projectGroups: [],
       standaloneProjects: [],
@@ -2879,9 +2920,28 @@ describe("workspaceToolExecutor helpers", () => {
       },
       remoteKernelModule: {
         canUseRemoteKernel: () => true,
-        executeRemoteWorkspaceTool: async () => {
+        executeRemoteWorkspaceToolDetailed: async () => {
           remoteExecutions += 1;
-          return "remote write";
+          return {
+            result: "remote write",
+            checkpoint: {
+              files: [
+                {
+                  path: "src/value.ts",
+                  before: {
+                    exists: true,
+                    content: "before",
+                    revision: "before-revision",
+                  },
+                  after: {
+                    exists: true,
+                    content: "value",
+                    revision: "after-revision",
+                  },
+                },
+              ],
+            },
+          };
         },
       },
     } as Partial<MockAppState>);
@@ -2892,12 +2952,89 @@ describe("workspaceToolExecutor helpers", () => {
       "Implement",
       {
         workspacePath: "/remote/workspace",
-        onCodeCheckpoint: async () => undefined,
+        onCodeCheckpoint: async (checkpoint: unknown) =>
+          checkpoints.push(checkpoint),
       },
     );
 
-    expect(result).toContain("remote kernel cannot provide the before/after snapshots");
-    expect(remoteExecutions).toBe(0);
+    expect(result).toBe("remote write");
+    expect(remoteExecutions).toBe(1);
+    expect(checkpoints).toEqual([
+      {
+        toolName: "write",
+        files: [
+          expect.objectContaining({
+            path: "src/value.ts",
+            realPath: "src/value.ts",
+            workspacePath: "/remote/workspace",
+            status: "modified",
+          }),
+        ],
+      },
+    ]);
+  });
+
+  it("restores remote content and Unix mode when checkpoint persistence fails", async () => {
+    const compensations: Array<Record<string, unknown>> = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      projectGroups: [],
+      standaloneProjects: [],
+      tauriModule: { isTauriAvailable: () => false },
+      remoteKernelModule: {
+        canUseRemoteKernel: () => true,
+        executeRemoteWorkspaceToolDetailed: async () => ({
+          result: "remote write",
+          checkpoint: {
+            files: [
+              {
+                path: "bin/run.sh",
+                before: {
+                  exists: true,
+                  content: "#!/bin/sh\necho before\n",
+                  revision: "before-revision",
+                  unixMode: 0o755,
+                },
+                after: {
+                  exists: true,
+                  content: "#!/bin/sh\necho after\n",
+                  revision: "after-revision",
+                  unixMode: 0o755,
+                },
+              },
+            ],
+          },
+        }),
+        executeRemoteWorkspaceTool: async (params: Record<string, unknown>) => {
+          compensations.push(params);
+          return "restored";
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "bin/run.sh", content: "#!/bin/sh\necho after\n" },
+      "Implement",
+      {
+        workspacePath: "/remote/workspace",
+        onCodeCheckpoint: async () => {
+          throw new Error("checkpoint store unavailable");
+        },
+      },
+    );
+
+    expect(result).toContain("the mutation was reverted");
+
+    expect(compensations).toHaveLength(1);
+    expect(compensations[0]).toMatchObject({
+      toolId: "write",
+      args: {
+        path: "bin/run.sh",
+        content: "#!/bin/sh\necho before\n",
+        expected_revision: "after-revision",
+        unix_mode: 0o755,
+      },
+    });
   });
 
   it("rejects a stale edit before writing or publishing a checkpoint", async () => {
@@ -2918,7 +3055,11 @@ describe("workspaceToolExecutor helpers", () => {
         }),
         fsWriteFile: async ({ content }: { content: string }) => {
           writes.push(content);
-          return { path: "src/value.ts", bytes_written: content.length, created: false };
+          return {
+            path: "src/value.ts",
+            bytes_written: content.length,
+            created: false,
+          };
         },
       },
     } as Partial<MockAppState>);
@@ -2940,7 +3081,7 @@ describe("workspaceToolExecutor helpers", () => {
       },
     );
 
-    expect(result).toContain("Stale content for \"src/value.ts\"");
+    expect(result).toContain('Stale content for "src/value.ts"');
     expect(writes).toEqual([]);
     expect(checkpoints).toEqual([]);
   });
@@ -2981,7 +3122,7 @@ describe("workspaceToolExecutor helpers", () => {
     );
 
     expect(result).toBe(
-      "Cannot delete directory with delete tool: src. Only files are supported."
+      "Cannot delete directory with delete tool: src. Only files are supported.",
     );
   });
 

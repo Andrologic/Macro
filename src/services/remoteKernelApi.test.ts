@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   canUseRemoteKernel,
   executeRemoteWorkspaceTool,
+  executeRemoteWorkspaceToolDetailed,
   getRemoteToolModePolicy,
+  readRemoteWorkspaceCheckpointSnapshot,
   validateRemoteToolExecution,
 } from './remoteKernelApi';
 
@@ -82,8 +84,12 @@ describe('remoteKernelApi', () => {
 
     const result = await getRemoteToolModePolicy('Implement', 'project-1');
     expect(result.allowed_tool_ids).toEqual(['read', 'grep']);
-    expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/custom/tools/mode-policy?mode=Implement&projectId=project-1');
-    expect((fetchCalls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer token');
+    expect(fetchCalls[0].url).toBe(
+      'http://127.0.0.1:8787/custom/tools/mode-policy?mode=Implement&projectId=project-1',
+    );
+    expect((fetchCalls[0].init?.headers as Record<string, string>).Authorization).toBe(
+      'Bearer token',
+    );
   });
 
   it('calls validate and execute endpoints with apiPrefix', async () => {
@@ -94,7 +100,10 @@ describe('remoteKernelApi', () => {
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
       if (String(url).includes('/validate')) {
-        return jsonResponse({ allowed: true, enforce_macro_only_writes: false });
+        return jsonResponse({
+          allowed: true,
+          enforce_macro_only_writes: false,
+        });
       }
       if (String(url).includes('/mode-policy')) {
         return jsonResponse({
@@ -125,7 +134,9 @@ describe('remoteKernelApi', () => {
     });
     expect(result).toBe('{"ok":true}');
     expect(fetchCalls[0].url).toBe('http://127.0.0.1:8787/remote/api/tools/validate');
-    expect(fetchCalls[1].url).toBe('http://127.0.0.1:8787/remote/api/tools/mode-policy?mode=Implement');
+    expect(fetchCalls[1].url).toBe(
+      'http://127.0.0.1:8787/remote/api/tools/mode-policy?mode=Implement',
+    );
     expect(fetchCalls[2].url).toBe('http://127.0.0.1:8787/remote/api/tools/execute');
     expect(JSON.parse(String(fetchCalls[2].init?.body))).toEqual({
       mode: 'Implement',
@@ -137,6 +148,7 @@ describe('remoteKernelApi', () => {
       project_mounts: [],
       virtual_root_enabled: null,
       focused_project_id: null,
+      checkpoint_required: false,
     });
   });
 
@@ -279,7 +291,7 @@ describe('remoteKernelApi', () => {
           content: 'next',
           expected_revision: 'stale',
         },
-      })
+      }),
     ).rejects.toThrow('cannot enforce content revisions');
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].url).toContain('/tools/mode-policy');
@@ -323,15 +335,140 @@ describe('remoteKernelApi', () => {
     for (const [toolId, args] of [
       ['edit', { path: 'src/App.tsx', old_text: 'old', new_text: 'new' }],
       ['delete', { path: 'src/old.ts' }],
-      ['apply_patch', { patch_text: '*** Begin Patch\n*** Update File: src/App.tsx\n@@\n-old\n+new\n*** End Patch' }],
+      [
+        'apply_patch',
+        {
+          patch_text:
+            '*** Begin Patch\n*** Update File: src/App.tsx\n@@\n-old\n+new\n*** End Patch',
+        },
+      ],
     ] as const) {
       fetchCalls = [];
-      await expect(
-        executeRemoteWorkspaceTool({ mode: 'Implement', toolId, args }),
-      ).rejects.toThrow('cannot enforce content revisions');
+      await expect(executeRemoteWorkspaceTool({ mode: 'Implement', toolId, args })).rejects.toThrow(
+        'cannot enforce content revisions',
+      );
       expect(fetchCalls).toHaveLength(1);
       expect(fetchCalls[0].url).toContain('/tools/mode-policy');
     }
+  });
+
+  it('requires and returns recoverable snapshots for checkpointed remote mutations', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1', 'recoverable_checkpoints_v1'],
+        });
+      }
+      return jsonResponse({
+        result: '{"ok":true}',
+        checkpoint: {
+          files: [
+            {
+              path: 'src/App.tsx',
+              before: { exists: false, content: null, revision: null },
+              after: {
+                exists: true,
+                content: 'next',
+                revision: 'next-revision',
+              },
+            },
+          ],
+        },
+      });
+    }) as unknown as typeof fetch;
+
+    const execution = await executeRemoteWorkspaceToolDetailed({
+      mode: 'Implement',
+      toolId: 'write',
+      args: { path: 'src/App.tsx', content: 'next' },
+      checkpointRequired: true,
+    });
+    expect(execution.checkpoint?.files).toHaveLength(1);
+    expect(JSON.parse(String(fetchCalls[1].init?.body))).toMatchObject({
+      checkpoint_required: true,
+    });
+  });
+
+  it('reads recoverable snapshots through the dedicated authenticated endpoint', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['read'],
+          enforce_macro_only_writes: false,
+          capabilities: ['recoverable_checkpoints_v1'],
+        });
+      }
+      return jsonResponse({
+        snapshot: {
+          exists: true,
+          content: 'current',
+          revision: 'current-revision',
+          unixMode: 0o755,
+        },
+      });
+    }) as unknown as typeof fetch;
+
+    const snapshot = await readRemoteWorkspaceCheckpointSnapshot({
+      mode: 'Implement',
+      path: 'bin/run.sh',
+      projectId: 'project-1',
+      workspacePath: '/srv/project-1',
+    });
+
+    expect(snapshot.unixMode).toBe(0o755);
+    expect(fetchCalls[1].url).toEndWith('/tools/checkpoint-snapshot');
+    expect(JSON.parse(String(fetchCalls[1].init?.body))).toEqual({
+      mode: 'Implement',
+      path: 'bin/run.sh',
+      project_id: 'project-1',
+      workspace_path: '/srv/project-1',
+      workspace_scope: null,
+    });
+  });
+
+  it('rejects checkpointed mutations when the kernel omits snapshots', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1', 'recoverable_checkpoints_v1'],
+        });
+      }
+      return jsonResponse({
+        result: '{"ok":true}',
+        checkpoint: {
+          files: [
+            {
+              path: 'src/value.ts',
+              before: { exists: false, content: null, revision: null },
+              after: { exists: true, content: 'next', revision: null },
+            },
+          ],
+        },
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceToolDetailed({
+        mode: 'Implement',
+        toolId: 'write',
+        args: { path: 'src/value.ts', content: 'next' },
+        checkpointRequired: true,
+      }),
+    ).rejects.toThrow('without returning valid recoverable checkpoint snapshots');
   });
 
   it('rejects read-only tools before contacting an output-unaware remote kernel', async () => {
@@ -352,7 +489,7 @@ describe('remoteKernelApi', () => {
         mode: 'Implement',
         toolId: 'grep',
         args: { query: 'needle' },
-      })
+      }),
     ).rejects.toThrow('cannot guarantee bounded, resumable tool output');
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].url).toContain('/tools/mode-policy');
@@ -365,20 +502,23 @@ describe('remoteKernelApi', () => {
     globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init });
       return jsonResponse({
-        allowed_tool_ids: ['git_diff'],
+        allowed_tool_ids: ['git_branch_list', 'git_diff', 'git_get_tree'],
         enforce_macro_only_writes: false,
         capabilities: ['bounded_tool_output_v1'],
       });
     }) as unknown as typeof fetch;
 
-    await expect(
-      executeRemoteWorkspaceTool({
-        mode: 'Implement',
-        toolId: 'git_diff',
-        args: { mode: 'stat' },
-      })
-    ).rejects.toThrow('cannot guarantee bounded Git tool output');
-    expect(fetchCalls).toHaveLength(1);
+    for (const toolId of ['git_branch_list', 'git_diff', 'git_get_tree']) {
+      fetchCalls = [];
+      await expect(
+        executeRemoteWorkspaceTool({
+          mode: 'Implement',
+          toolId,
+          args: toolId === 'git_diff' ? { mode: 'stat' } : {},
+        }),
+      ).rejects.toThrow('cannot guarantee bounded Git tool output');
+      expect(fetchCalls).toHaveLength(1);
+    }
   });
 
   it('requires the dedicated structural-search capability for remote ast_grep', async () => {
@@ -399,7 +539,7 @@ describe('remoteKernelApi', () => {
         mode: 'Implement',
         toolId: 'ast_grep',
         args: { pattern: 'console.log($$$ARGS)' },
-      })
+      }),
     ).rejects.toThrow('does not support structural search');
     expect(fetchCalls).toHaveLength(1);
   });
@@ -508,9 +648,7 @@ describe('remoteKernelApi', () => {
     const cancelCall = cancelCalls[0];
     expect(cancelCall.init?.method).toBe('POST');
     expect(cancelCall.init?.signal?.aborted).toBe(false);
-    expect((cancelCall.init?.headers as Record<string, string>).Authorization).toBe(
-      'Bearer token',
-    );
+    expect((cancelCall.init?.headers as Record<string, string>).Authorization).toBe('Bearer token');
     expect(JSON.parse(String(cancelCall.init?.body))).toEqual({
       execution_id: JSON.parse(String(executeCall?.init?.body)).execution_id,
     });
@@ -616,7 +754,7 @@ describe('remoteKernelApi', () => {
           content: 'next',
           expected_revision: 'stale',
         },
-      })
+      }),
     ).rejects.toMatchObject({
       code: 'REVISION_CONFLICT',
       message: expect.stringContaining('Revision conflict'),

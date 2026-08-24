@@ -12,7 +12,8 @@ use macro_lib::commands::workspace_tools::{
     validate_headless_project_mounts, validate_headless_workspace_path,
 };
 use macro_lib::commands::{
-    execute_workspace_tool_controlled, git, tool_cancel_workspace, WorkspaceProjectMount,
+    execute_workspace_tool_controlled_with_options, git, tool_cancel_workspace,
+    WorkspaceProjectMount, WorkspaceToolExecutionOptions,
 };
 use macro_lib::config::{
     delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
@@ -88,6 +89,20 @@ struct ToolExecuteRequest {
     virtual_root_enabled: Option<bool>,
     #[serde(default)]
     focused_project_id: Option<String>,
+    #[serde(default)]
+    checkpoint_required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckpointSnapshotRequest {
+    mode: String,
+    path: String,
+    #[serde(alias = "projectId")]
+    project_id: String,
+    #[serde(default)]
+    workspace_path: Option<String>,
+    #[serde(default)]
+    workspace_scope: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1080,7 +1095,22 @@ async fn tool_execute(
         }
     }
 
-    match execute_workspace_tool_controlled(
+    if payload.checkpoint_required {
+        if !matches!(
+            payload.tool_id.as_str(),
+            "write" | "edit" | "delete" | "apply_patch"
+        ) {
+            return policy_denied_response(
+                "checkpoint_required is only valid for workspace file mutations",
+            );
+        }
+        if !payload.args.is_object() {
+            return policy_denied_response("Tool arguments must be a JSON object");
+        }
+    }
+
+    let checkpoint_required = payload.checkpoint_required;
+    match execute_workspace_tool_controlled_with_options(
         state.workspace_path.clone(),
         state.workspace_path.clone(),
         state.git_state.clone(),
@@ -1093,10 +1123,62 @@ async fn tool_execute(
         payload.virtual_root_enabled,
         payload.focused_project_id,
         payload.execution_id,
+        WorkspaceToolExecutionOptions {
+            capture_checkpoint_snapshots: checkpoint_required,
+            raw_checkpoint_snapshot: false,
+        },
     )
     .await
     {
-        Ok(result) => (StatusCode::OK, Json(json!({ "result": result }))).into_response(),
+        Ok(result) => {
+            if !checkpoint_required {
+                return (StatusCode::OK, Json(json!({ "result": result }))).into_response();
+            }
+            let mut parsed = match serde_json::from_str::<Value>(&result) {
+                Ok(Value::Object(parsed)) => parsed,
+                _ => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError {
+                            message:
+                                "The mutation result did not contain structured checkpoint data"
+                                    .to_string(),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+            let Some(checkpoint) = parsed.remove("__macro_checkpoint_snapshots") else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError {
+                        message: "The mutation result omitted required checkpoint snapshots"
+                            .to_string(),
+                    }),
+                )
+                    .into_response();
+            };
+            let sanitized = match serde_json::to_string_pretty(&Value::Object(parsed)) {
+                Ok(value) => value,
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError {
+                            message: format!("Failed to encode the mutation result: {error}"),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "result": sanitized,
+                    "checkpoint": checkpoint,
+                })),
+            )
+                .into_response()
+        }
         Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
     }
 }
@@ -1112,6 +1194,92 @@ async fn tool_cancel(
 
     let cancelled = tool_cancel_workspace(payload.execution_id);
     (StatusCode::OK, Json(json!({ "cancelled": cancelled }))).into_response()
+}
+
+async fn checkpoint_snapshot(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(mut payload): Json<CheckpointSnapshotRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+
+    let project_id = payload.project_id.trim().to_string();
+    if project_id.is_empty() {
+        return policy_denied_response(
+            "A project_id is required for checkpoint snapshot policy decisions",
+        );
+    }
+    if payload.path.trim().is_empty() {
+        return policy_denied_response("A path is required for checkpoint snapshots");
+    }
+
+    payload.workspace_path = match validate_headless_workspace_path(
+        payload.workspace_path.as_deref(),
+        &state.workspace_path,
+        &state.allowed_roots,
+    ) {
+        Ok(path) => path,
+        Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
+    };
+    if let Err(error) = validate_headless_workspace_consistency(
+        &state.registry_project_paths,
+        &project_id,
+        payload.workspace_path.as_deref(),
+        &[],
+    ) {
+        return policy_denied_response(error);
+    }
+
+    let tools = match load_project_tools_policy(&state, &project_id).await {
+        Ok(tools) => tools,
+        Err(error) => return policy_denied_response(error),
+    };
+    match configured_tool_validation(&payload.mode, "read", Some(&payload.path), &tools) {
+        Ok(validation) if validation.allowed => {}
+        Ok(validation) => {
+            return policy_denied_response(
+                validation
+                    .reason
+                    .unwrap_or_else(|| "The project denied checkpoint snapshot reads".to_string()),
+            );
+        }
+        Err(error) => return policy_denied_response(error),
+    }
+
+    match execute_workspace_tool_controlled_with_options(
+        state.workspace_path.clone(),
+        state.workspace_path.clone(),
+        state.git_state.clone(),
+        payload.mode,
+        "read".to_string(),
+        json!({ "path": payload.path }),
+        payload.workspace_path,
+        payload.workspace_scope,
+        None,
+        Some(false),
+        Some(project_id),
+        None,
+        WorkspaceToolExecutionOptions {
+            capture_checkpoint_snapshots: false,
+            raw_checkpoint_snapshot: true,
+        },
+    )
+    .await
+    {
+        Ok(snapshot) => match serde_json::from_str::<Value>(&snapshot) {
+            Ok(snapshot) => (StatusCode::OK, Json(json!({ "snapshot": snapshot }))).into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    message: format!("Failed to decode checkpoint snapshot: {error}"),
+                }),
+            )
+                .into_response(),
+        },
+        Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+    }
 }
 
 async fn workspace_bootstrap(
@@ -1421,10 +1589,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tools/mode-policy", get(tool_mode_policy))
         .route("/v1/tools/validate", post(tool_validate))
         .route("/v1/tools/execute", post(tool_execute))
+        .route("/v1/tools/checkpoint-snapshot", post(checkpoint_snapshot))
         .route("/v1/tools/cancel", post(tool_cancel))
         .route("/api/v1/tools/mode-policy", get(tool_mode_policy))
         .route("/api/v1/tools/validate", post(tool_validate))
         .route("/api/v1/tools/execute", post(tool_execute))
+        .route(
+            "/api/v1/tools/checkpoint-snapshot",
+            post(checkpoint_snapshot),
+        )
         .route("/api/v1/tools/cancel", post(tool_cancel))
         .route("/api/v1/config/snapshot", post(config_snapshot))
         .route("/api/v1/config/document", post(config_document))
@@ -1730,6 +1903,23 @@ mod tests {
             serde_json::from_value(json!({ "mode": "Implement", "tool_id": "read" }))
                 .expect("absent execution id");
         assert_eq!(absent.execution_id, None);
+
+        let checkpointed: ToolExecuteRequest = serde_json::from_value(json!({
+            "mode": "Implement",
+            "tool_id": "write",
+            "args": { "path": "src/value.ts", "content": "next" },
+            "checkpoint_required": true
+        }))
+        .expect("checkpointed mutation");
+        assert!(checkpointed.checkpoint_required);
+
+        let snapshot: CheckpointSnapshotRequest = serde_json::from_value(json!({
+            "mode": "Implement",
+            "path": "src/value.ts",
+            "projectId": "project-1"
+        }))
+        .expect("checkpoint snapshot project alias");
+        assert_eq!(snapshot.project_id, "project-1");
     }
 
     #[test]

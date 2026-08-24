@@ -114,6 +114,80 @@ pub(crate) struct GitBranchesToolPage {
     pub has_more: bool,
 }
 
+pub(crate) fn git_branch_snapshot_revision(repo: &Repository) -> Result<String> {
+    let mut reference_digests = Vec::<[u8; 32]>::new();
+    for pattern in ["refs/heads/*", "refs/remotes/*"] {
+        for reference in repo.references_glob(pattern)? {
+            let reference = reference?;
+            let mut hasher = Sha256::new();
+            hasher.update(reference.name_bytes());
+            hasher.update([0]);
+            if let Some(target) = reference.target() {
+                hasher.update(target.as_bytes());
+            }
+            hasher.update([0]);
+            if let Some(symbolic_target) = reference.symbolic_target()? {
+                hasher.update(symbolic_target.as_bytes());
+            }
+            reference_digests.push(hasher.finalize().into());
+        }
+    }
+    reference_digests.sort_unstable();
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"macro-git-branches-v1\0");
+    for digest in reference_digests {
+        hasher.update(digest);
+    }
+    hasher.update([0]);
+    if let Some(current) = get_branch_name(repo)? {
+        hasher.update(current.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub(crate) async fn wsl_git_branch_snapshot_revision(repo_path: &WslProjectPath) -> Result<String> {
+    let script = r#"
+tmp=$(mktemp) || exit $?
+trap 'rm -f -- "$tmp"' EXIT
+git -C "$1" for-each-ref --sort=refname \
+  --format='%(refname)%00%(objectname)%00%(symref)' \
+  refs/heads refs/remotes >"$tmp" || exit $?
+current=$(git -C "$1" symbolic-ref -q --short HEAD)
+symbolic_status=$?
+if [[ $symbolic_status -gt 1 ]]; then exit $symbolic_status; fi
+printf 'HEAD\0%s\n' "$current" >>"$tmp" || exit $?
+sha256sum -- "$tmp"
+"#;
+    let output = run_wsl_command_allow_failure(
+        repo_path,
+        "bash",
+        &[
+            "-c".to_string(),
+            script.to_string(),
+            "macro-git-branch-revision".to_string(),
+            repo_path.linux_path.clone(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    if !output.status.success() {
+        return Err(wsl_git_failure(
+            &output,
+            "git branch snapshot revision WSL failed",
+        ));
+    }
+    output
+        .stdout_text()
+        .split_whitespace()
+        .next()
+        .filter(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .ok_or_else(|| BackendError::Git {
+            message: "git branch snapshot revision WSL returned an invalid digest".to_string(),
+        })
+}
+
 pub(crate) struct GitTreeToolPage {
     pub branch: String,
     pub structure: Vec<GitNode>,

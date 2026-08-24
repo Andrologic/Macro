@@ -19,6 +19,7 @@ const TOOL_MODE_CAPABILITIES: &[&str] = &[
     "bounded_tool_output_v1",
     "bounded_git_output_v1",
     "structural_search_v1",
+    "recoverable_checkpoints_v1",
 ];
 
 fn architect_allowed_tool_ids() -> &'static [&'static str] {

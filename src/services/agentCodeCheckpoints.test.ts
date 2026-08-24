@@ -66,7 +66,10 @@ describe("agentCodeCheckpoints", () => {
         action: "delete",
         status: "created",
         target: expect.objectContaining({ exists: false, content: null }),
-        expectedCurrent: expect.objectContaining({ exists: true, content: "after-1" }),
+        expectedCurrent: expect.objectContaining({
+          exists: true,
+          content: "after-1",
+        }),
       }),
     ]);
   });
@@ -91,7 +94,10 @@ describe("agentCodeCheckpoints", () => {
         action: "modify",
         status: "modified",
         target: expect.objectContaining({ exists: true, content: "after-1" }),
-        expectedCurrent: expect.objectContaining({ exists: true, content: "after-2" }),
+        expectedCurrent: expect.objectContaining({
+          exists: true,
+          content: "after-2",
+        }),
       }),
     ]);
   });
@@ -526,6 +532,117 @@ describe("agentCodeCheckpoints", () => {
     mock.restore();
   });
 
+  it("replays a remote checkpoint with guarded revisions and the saved Unix mode", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const originalFetch = globalThis.fetch;
+    const originalTransport = process.env.VITE_BACKEND_TRANSPORT;
+    const originalBaseUrl = process.env.VITE_REMOTE_API_BASE_URL;
+    process.env.VITE_BACKEND_TRANSPORT = "remote";
+    process.env.VITE_REMOTE_API_BASE_URL = "http://127.0.0.1:8787";
+    mock.module("./tauriIpc", () => ({
+      isTauriAvailable: () => false,
+    }));
+    globalThis.fetch = mock(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const requestUrl = String(url);
+        if (requestUrl.includes("/mode-policy")) {
+          return new Response(
+            JSON.stringify({
+              allowed_tool_ids: ["read", "write"],
+              enforce_macro_only_writes: false,
+              capabilities: [
+                "content_revisions_v1",
+                "recoverable_checkpoints_v1",
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (requestUrl.includes("/checkpoint-snapshot")) {
+          return new Response(
+            JSON.stringify({
+              snapshot: {
+                exists: true,
+                content: "after",
+                revision: "after-revision",
+                unixMode: 0o644,
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (requestUrl.includes("/tools/execute")) {
+          writes.push(
+            JSON.parse(String(init?.body)) as Record<string, unknown>,
+          );
+          return new Response(
+            JSON.stringify({
+              result: JSON.stringify({
+                files: [{ validation: { revision: "restored-revision" } }],
+              }),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    ) as unknown as typeof fetch;
+    const modulePath = "./agentCodeCheckpoints.ts?remote-replay-test";
+    const module = await import(/* @vite-ignore */ modulePath);
+
+    await module.restoreAgentCodeReplayPreview({
+      conversationId: "conv-1",
+      messageId: "user-1",
+      targetCheckpointId: null,
+      affectedFiles: [
+        {
+          path: "bin/run.sh",
+          realPath: "bin/run.sh",
+          action: "modify",
+          status: "modified",
+          projectId: "project-1",
+          workspacePath: "/srv/project-1",
+          target: {
+            exists: true,
+            content: "#!/bin/sh\necho before\n",
+            revision: "before-revision",
+            unixMode: 0o755,
+          },
+          expectedCurrent: {
+            exists: true,
+            content: "after",
+            revision: "after-revision",
+            unixMode: 0o644,
+          },
+        },
+      ],
+    });
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({
+      mode: "Implement",
+      tool_id: "write",
+      args: {
+        path: "bin/run.sh",
+        expected_revision: "after-revision",
+        unix_mode: 0o755,
+      },
+      focused_project_id: "project-1",
+      workspace_path: "/srv/project-1",
+    });
+    globalThis.fetch = originalFetch;
+    if (originalTransport === undefined)
+      delete process.env.VITE_BACKEND_TRANSPORT;
+    else process.env.VITE_BACKEND_TRANSPORT = originalTransport;
+    if (originalBaseUrl === undefined)
+      delete process.env.VITE_REMOTE_API_BASE_URL;
+    else process.env.VITE_REMOTE_API_BASE_URL = originalBaseUrl;
+    mock.restore();
+  });
+
   it("persists a durable compaction frontier across save and reload", async () => {
     const settings = new Map<string, string>();
     const storageKey = "agentCodeCheckpoints:conv-1";
@@ -559,7 +676,11 @@ describe("agentCodeCheckpoints", () => {
     const messages = Array.from({ length: 201 }, (_, index) => {
       const turn = index + 1;
       return [
-        message(`user-${turn}`, "user", `2026-05-11T10:00:${String(index).padStart(2, "0")}.000Z`),
+        message(
+          `user-${turn}`,
+          "user",
+          `2026-05-11T10:00:${String(index).padStart(2, "0")}.000Z`,
+        ),
         message(
           `assistant-${turn}`,
           "assistant",
@@ -572,7 +693,13 @@ describe("agentCodeCheckpoints", () => {
       if (sequence === 1) {
         return checkpoint(1, "assistant-1", "src/old-created.ts", false, true);
       }
-      return checkpoint(sequence, `assistant-${sequence}`, `src/file-${sequence}.ts`, true, true);
+      return checkpoint(
+        sequence,
+        `assistant-${sequence}`,
+        `src/file-${sequence}.ts`,
+        true,
+        true,
+      );
     });
 
     await module.saveAgentCodeCheckpoints("conv-1", checkpoints);
