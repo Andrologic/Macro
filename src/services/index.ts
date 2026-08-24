@@ -155,6 +155,15 @@ export const services = {
     callProviderMethod('mcpDiscoverTools', server),
   mcpCallTool: (data: Parameters<ServiceProvider['mcpCallTool']>[0]) =>
     callProviderMethod('mcpCallTool', data),
+  mcpRuntimeGetSnapshot: () => callProviderMethod('mcpRuntimeGetSnapshot'),
+  mcpRuntimeConnect: (key: Parameters<ServiceProvider['mcpRuntimeConnect']>[0]) =>
+    callProviderMethod('mcpRuntimeConnect', key),
+  mcpRuntimeDisconnect: (key: Parameters<ServiceProvider['mcpRuntimeDisconnect']>[0]) =>
+    callProviderMethod('mcpRuntimeDisconnect', key),
+  mcpRuntimeRefreshCatalog: (key: Parameters<ServiceProvider['mcpRuntimeRefreshCatalog']>[0]) =>
+    callProviderMethod('mcpRuntimeRefreshCatalog', key),
+  mcpRuntimeCancelOperation: (operationId: string) =>
+    callProviderMethod('mcpRuntimeCancelOperation', operationId),
   listSkills: (data?: Parameters<ServiceProvider['listSkills']>[0]) =>
     callProviderMethod('listSkills', data),
   getSkill: (data: Parameters<ServiceProvider['getSkill']>[0]) =>

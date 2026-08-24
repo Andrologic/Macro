@@ -23,19 +23,19 @@ import type {
   ProjectGitFlowDetection,
   ProjectGitSetupCommitResult,
   ProjectGroup,
-  MCPServer,
-  MCPTransportConfig,
   SkillScriptRunResult,
 } from '../../types';
 import type { ServiceProvider } from '../contracts/serviceProvider';
 import { BUILT_IN_TOOLS } from '../tools/builtInTools';
 import { normalizeArchitectToolId } from '../architectToolNames';
-import { normalizeMCPServer } from '../mcp';
 import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../configDocuments';
 import {
   buildMCPServerSettingsPayload,
   buildToolSettingsPayload,
   normalizeMCPServerSettingsInput,
+  PersistedMCPServer,
+  toPersistedMCPServers,
+  toRuntimeMCPServers,
   writeStoredMCPServers,
   writeStoredToolEnablement,
 } from './clientSettingsStorage';
@@ -62,16 +62,6 @@ const normalizeToolEnablement = (settings: Record<string, boolean>): Record<stri
       .map(([id, enabled]) => [normalizeArchitectToolId(LEGACY_TOOL_ID_MAP[id] || id), enabled]),
   );
 
-type PersistedMCPServer = {
-  name?: string;
-  description?: string;
-  category?: string;
-  icon?: string;
-  website?: string;
-  enabled?: boolean;
-  transport?: MCPTransportConfig;
-};
-
 type ToolsConfigDocument = {
   builtIn?: Record<string, boolean>;
   mcpServers?: Record<string, PersistedMCPServer>;
@@ -91,38 +81,6 @@ const buildRemoteToolSettingsPayload = (
   }));
   return { tools: tools as unknown as Record<string, boolean> };
 };
-
-const toRuntimeMCPServers = (
-  servers: Record<string, PersistedMCPServer> = {},
-): Record<string, MCPServer> => Object.fromEntries(
-  Object.entries(servers).map(([id, server]) => {
-    const normalized = normalizeMCPServer({
-      id,
-      name: server.name ?? id,
-      description: server.description,
-      category: server.category as MCPServer['category'] | undefined,
-      icon: server.icon as MCPServer['icon'] | undefined,
-      website: server.website,
-      transport: server.transport,
-      config: { enabled: server.enabled === true },
-    });
-    return [normalized.id, normalized];
-  }),
-);
-
-const toPersistedMCPServers = (
-  servers: ReturnType<typeof normalizeMCPServerSettingsInput>,
-): Record<string, PersistedMCPServer> => Object.fromEntries(
-  Object.values(servers).map((server) => [server.id, {
-    name: server.name,
-    description: server.description,
-    category: server.category,
-    icon: server.icon,
-    website: server.website,
-    enabled: server.config?.enabled === true,
-    transport: server.transport,
-  }]),
-);
 
 export const getAppBootstrap = async (): Promise<AppBootstrapDto> => {
   const config = ensureRemoteConfig();
@@ -355,6 +313,21 @@ export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async () =>
 export const mcpCallTool: ServiceProvider['mcpCallTool'] = async () =>
   remoteUnsupported('mcpCallTool');
 
+export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = async () =>
+  remoteUnsupported('mcpRuntimeGetSnapshot');
+
+export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async () =>
+  remoteUnsupported('mcpRuntimeConnect');
+
+export const mcpRuntimeDisconnect: ServiceProvider['mcpRuntimeDisconnect'] = async () =>
+  remoteUnsupported('mcpRuntimeDisconnect');
+
+export const mcpRuntimeRefreshCatalog: ServiceProvider['mcpRuntimeRefreshCatalog'] = async () =>
+  remoteUnsupported('mcpRuntimeRefreshCatalog');
+
+export const mcpRuntimeCancelOperation: ServiceProvider['mcpRuntimeCancelOperation'] = async () =>
+  remoteUnsupported('mcpRuntimeCancelOperation');
+
 const isRemoteUnsupportedStatus = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
   const details = (error as { details?: unknown }).details;
@@ -488,6 +461,11 @@ export const provider: ServiceProvider = {
   updateMCPServerSettings,
   mcpDiscoverTools,
   mcpCallTool,
+  mcpRuntimeGetSnapshot,
+  mcpRuntimeConnect,
+  mcpRuntimeDisconnect,
+  mcpRuntimeRefreshCatalog,
+  mcpRuntimeCancelOperation,
   listSkills,
   getSkill,
   installSkillFromLocalPath,

@@ -1085,3 +1085,54 @@ describe("tauriIpc executeWorkspaceTool", () => {
     mock.restore();
   });
 });
+
+describe("tauriIpc persistent MCP runtime", () => {
+  beforeEach(() => {
+    invokeCalls.length = 0;
+    invokeMock.mockClear();
+  });
+
+  it("routes persistent MCP runtime operations through planned mcp_runtime_* commands", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const key = { serverId: "github", projectId: null, configGeneration: 3 };
+
+    await tauriIpc.mcpRuntimeGetSnapshot();
+    await tauriIpc.mcpRuntimeConnect(key);
+    await tauriIpc.mcpRuntimeDisconnect(key);
+    await tauriIpc.mcpRuntimeRefreshCatalog(key);
+    await tauriIpc.mcpRuntimeCancelOperation("operation-1");
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "mcp_runtime_get_snapshot",
+        payload: undefined,
+      },
+      {
+        command: "mcp_runtime_connect",
+        payload: { key },
+      },
+      {
+        command: "mcp_runtime_disconnect",
+        payload: { key },
+      },
+      {
+        command: "mcp_runtime_refresh_catalog",
+        payload: { key },
+      },
+      {
+        command: "mcp_runtime_cancel_operation",
+        payload: { operationId: "operation-1" },
+      },
+    ]);
+  });
+
+  it("exposes the planned runtime event channel name", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    expect(tauriIpc.MCP_RUNTIME_EVENT_NAME).toBe("mcp:runtime");
+  });
+
+  afterAll(() => {
+    mock.restore();
+  });
+});

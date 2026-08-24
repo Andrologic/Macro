@@ -121,4 +121,33 @@ describe('services index', () => {
       skillScripts: true,
     });
   });
+
+  it('routes persistent MCP runtime methods through providers and stays unsupported remotely', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    const { services } = await loadServicesModule();
+    const key = { serverId: 'github', projectId: null, configGeneration: 2 };
+
+    await expect(services.mcpRuntimeGetSnapshot()).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeGetSnapshot' },
+    });
+    await expect(services.mcpRuntimeConnect(key)).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeConnect' },
+    });
+    await expect(services.mcpRuntimeDisconnect(key)).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeDisconnect' },
+    });
+    await expect(services.mcpRuntimeRefreshCatalog(key)).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeRefreshCatalog' },
+    });
+    await expect(services.mcpRuntimeCancelOperation('operation-1')).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeCancelOperation' },
+    });
+  });
 });

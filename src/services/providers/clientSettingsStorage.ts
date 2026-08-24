@@ -1,5 +1,11 @@
 import { BUILT_IN_TOOLS, BUILT_IN_MCP_SERVERS } from '../tools/builtInTools';
-import type { MCPServer, Tool } from '../../types';
+import type {
+  MCPProtocolSettings,
+  MCPProtocolMode,
+  MCPServer,
+  MCPTransportConfig,
+  Tool,
+} from '../../types';
 import { normalizeArchitectToolId } from '../architectToolNames';
 import {
   isMCPServerRecord,
@@ -10,6 +16,127 @@ import type { MCPServerSettingsDto, ToolSettingsDto } from '../contracts/dtos';
 
 export const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
 export const MCP_SERVER_SETTINGS_STORAGE_KEY = 'macro_mcp_server_settings';
+
+export interface BoundedRange {
+  readonly min: number;
+  readonly max: number;
+}
+
+export const MCP_PROBE_TIMEOUT_MS_RANGE: BoundedRange = { min: 500, max: 15_000 };
+export const MCP_STARTUP_TIMEOUT_MS_RANGE: BoundedRange = { min: 1_000, max: 300_000 };
+export const MCP_OPERATION_TIMEOUT_MS_RANGE: BoundedRange = { min: 1_000, max: 600_000 };
+export const MCP_MAX_CONCURRENT_OPERATIONS_RANGE: BoundedRange = { min: 1, max: 16 };
+
+const MCP_PROTOCOL_MODES: readonly MCPProtocolMode[] = ['auto', 'legacy', 'modern'];
+
+export interface PersistedMCPServer {
+  name?: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  website?: string;
+  enabled?: boolean;
+  transport?: MCPTransportConfig;
+  protocol?: MCPProtocolSettings;
+  startupTimeoutMs?: number;
+  operationTimeoutMs?: number;
+  maxConcurrentOperations?: number;
+  disabledTools?: string[];
+}
+
+type MCPServerPolicyFields = Pick<
+  MCPServer,
+  | 'protocol'
+  | 'startupTimeoutMs'
+  | 'operationTimeoutMs'
+  | 'maxConcurrentOperations'
+  | 'disabledTools'
+>;
+
+export const clampBoundedNumber = (value: unknown, range: BoundedRange): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.min(range.max, Math.max(range.min, Math.round(value)));
+};
+
+export const normalizeMCPProtocolMode = (value: unknown): MCPProtocolMode | undefined =>
+  MCP_PROTOCOL_MODES.find((mode) => mode === value);
+
+export const normalizeMCPProtocolSettings = (
+  value: unknown
+): MCPProtocolSettings | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const source = value as Record<string, unknown>;
+  const mode = normalizeMCPProtocolMode(source.mode);
+  const probeTimeoutMs = clampBoundedNumber(source.probeTimeoutMs, MCP_PROBE_TIMEOUT_MS_RANGE);
+  if (!mode && probeTimeoutMs === undefined) {
+    return undefined;
+  }
+  const settings: MCPProtocolSettings = {};
+  if (mode) {
+    settings.mode = mode;
+  }
+  if (probeTimeoutMs !== undefined) {
+    settings.probeTimeoutMs = probeTimeoutMs;
+  }
+  return settings;
+};
+
+export const normalizeMCPDisabledTools = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return Array.from(
+    new Set(
+      value
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    )
+  );
+};
+
+export const normalizeMCPServerPolicy = (
+  server: Partial<MCPServerPolicyFields> | undefined
+): Partial<MCPServerPolicyFields> => {
+  const policy: Partial<MCPServerPolicyFields> = {};
+  if (!server) {
+    return policy;
+  }
+  const protocol = normalizeMCPProtocolSettings(server.protocol);
+  if (protocol) {
+    policy.protocol = protocol;
+  }
+  const startupTimeoutMs = clampBoundedNumber(
+    server.startupTimeoutMs,
+    MCP_STARTUP_TIMEOUT_MS_RANGE
+  );
+  if (startupTimeoutMs !== undefined) {
+    policy.startupTimeoutMs = startupTimeoutMs;
+  }
+  const operationTimeoutMs = clampBoundedNumber(
+    server.operationTimeoutMs,
+    MCP_OPERATION_TIMEOUT_MS_RANGE
+  );
+  if (operationTimeoutMs !== undefined) {
+    policy.operationTimeoutMs = operationTimeoutMs;
+  }
+  const maxConcurrentOperations = clampBoundedNumber(
+    server.maxConcurrentOperations,
+    MCP_MAX_CONCURRENT_OPERATIONS_RANGE
+  );
+  if (maxConcurrentOperations !== undefined) {
+    policy.maxConcurrentOperations = maxConcurrentOperations;
+  }
+  const disabledTools = normalizeMCPDisabledTools(server.disabledTools);
+  if (disabledTools) {
+    policy.disabledTools = disabledTools;
+  }
+  return policy;
+};
 
 const LEGACY_TOOL_ID_MAP: Record<string, string> = {
   'web-search': 'web_search',
@@ -211,3 +338,42 @@ export const normalizeMCPServerSettingsInput = (
     })
   );
 };
+
+export const toRuntimeMCPServers = (
+  servers: Record<string, PersistedMCPServer> = {}
+): Record<string, MCPServer> =>
+  Object.fromEntries(
+    Object.entries(servers).map(([id, server]) => {
+      const normalized = normalizeMCPServer({
+        id,
+        name: server.name ?? id,
+        description: server.description,
+        category: server.category as MCPServer['category'] | undefined,
+        icon: server.icon as MCPServer['icon'] | undefined,
+        website: server.website,
+        transport: server.transport,
+        ...normalizeMCPServerPolicy(server),
+        config: { enabled: server.enabled === true },
+      });
+      return [normalized.id, normalized];
+    })
+  );
+
+export const toPersistedMCPServers = (
+  servers: Record<string, MCPServer>
+): Record<string, PersistedMCPServer> =>
+  Object.fromEntries(
+    Object.values(servers).map((server) => [
+      server.id,
+      {
+        name: server.name,
+        description: server.description,
+        category: server.category,
+        icon: server.icon,
+        website: server.website,
+        enabled: server.config?.enabled === true,
+        transport: server.transport,
+        ...normalizeMCPServerPolicy(server),
+      },
+    ])
+  );

@@ -6,6 +6,27 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { TaskCatalogDto } from "./contracts/dtos";
 import type {
+  MCPCatalogDto,
+  MCPProtocolEra,
+  MCPProtocolMode,
+  MCPRuntimeEvent,
+  MCPRuntimeKey,
+  MCPRuntimeServerSnapshot,
+  MCPRuntimeSnapshotDto,
+  MCPRuntimeStatus,
+} from "./contracts/serviceProvider";
+
+export type {
+  MCPCatalogDto,
+  MCPProtocolEra,
+  MCPProtocolMode,
+  MCPRuntimeEvent,
+  MCPRuntimeKey,
+  MCPRuntimeServerSnapshot,
+  MCPRuntimeSnapshotDto,
+  MCPRuntimeStatus,
+};
+import type {
   ConfigDocument,
   ConfigDocumentKind,
   ConfigPatchRequest,
@@ -3656,6 +3677,39 @@ export async function mcpDeleteEnvSecret(params: {
     serverId: params.serverId,
     key: params.key,
   });
+}
+
+// ============ Persistent MCP runtime ============
+// Planned Tauri event channel for MCPRuntimeEvent payloads. The backend
+// command handlers are not wired yet; these wrappers exist so the frontend
+// contract is stable before the Rust runtime lands.
+
+export const MCP_RUNTIME_EVENT_NAME = "mcp:runtime";
+
+export async function mcpRuntimeGetSnapshot(): Promise<MCPRuntimeSnapshotDto> {
+  return invoke<MCPRuntimeSnapshotDto>("mcp_runtime_get_snapshot");
+}
+
+export async function mcpRuntimeConnect(
+  key: MCPRuntimeKey,
+): Promise<MCPRuntimeServerSnapshot> {
+  return invoke<MCPRuntimeServerSnapshot>("mcp_runtime_connect", { key });
+}
+
+export async function mcpRuntimeDisconnect(key: MCPRuntimeKey): Promise<void> {
+  return invoke("mcp_runtime_disconnect", { key });
+}
+
+export async function mcpRuntimeRefreshCatalog(
+  key: MCPRuntimeKey,
+): Promise<MCPCatalogDto> {
+  return invoke<MCPCatalogDto>("mcp_runtime_refresh_catalog", { key });
+}
+
+export async function mcpRuntimeCancelOperation(
+  operationId: string,
+): Promise<boolean> {
+  return invoke<boolean>("mcp_runtime_cancel_operation", { operationId });
 }
 
 export async function skillsList(params: {

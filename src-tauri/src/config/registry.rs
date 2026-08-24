@@ -418,6 +418,46 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
     diagnostics
 }
 
+fn validate_mcp_policy_bounds(value: &Value) -> Vec<(String, &'static str, String)> {
+    const BOUNDS: [(&str, u64, u64); 3] = [
+        ("startupTimeoutMs", 1_000, 300_000),
+        ("operationTimeoutMs", 1_000, 600_000),
+        ("maxConcurrentOperations", 1, 16),
+    ];
+    let mut violations = Vec::new();
+    let Some(servers) = value.get("mcpServers").and_then(Value::as_object) else {
+        return violations;
+    };
+    for (server_id, server) in servers {
+        for (field, minimum, maximum) in BOUNDS {
+            if let Some(number) = server.get(field).and_then(Value::as_u64) {
+                if !(minimum..=maximum).contains(&number) {
+                    violations.push((
+                        format!("/mcpServers/{server_id}/{field}"),
+                        "config.tools.mcp_policy_out_of_range",
+                        format!("{field} doit être compris entre {minimum} et {maximum}."),
+                    ));
+                }
+            }
+        }
+        if let Some(number) = server
+            .get("protocol")
+            .and_then(Value::as_object)
+            .and_then(|protocol| protocol.get("probeTimeoutMs"))
+            .and_then(Value::as_u64)
+        {
+            if !(500..=15_000).contains(&number) {
+                violations.push((
+                    format!("/mcpServers/{server_id}/protocol/probeTimeoutMs"),
+                    "config.tools.mcp_policy_out_of_range",
+                    "probeTimeoutMs doit être compris entre 500 et 15000.".to_string(),
+                ));
+            }
+        }
+    }
+    violations
+}
+
 fn validate_skill_paths(value: &Value, scope: &ConfigScope) -> Vec<(String, String)> {
     let mut diagnostics = Vec::new();
     let allowed_variables = ["${home}", "${projectRoot}", "${configDir}"];
@@ -569,6 +609,11 @@ pub fn validate_document(
     if kind == ConfigDocumentKind::Tools {
         diagnostics.extend(
             validate_mcp_secret_refs(value)
+                .into_iter()
+                .map(|(path, code, message)| diagnostic(kind, scope, Some(path), code, message)),
+        );
+        diagnostics.extend(
+            validate_mcp_policy_bounds(value)
                 .into_iter()
                 .map(|(path, code, message)| diagnostic(kind, scope, Some(path), code, message)),
         );
@@ -2015,6 +2060,35 @@ mod tests {
             entry.code == "config.tools.mcp_server_id_noncanonical"
                 && entry.path.as_deref() == Some("/mcpServers/GitHub Server")
         }));
+    }
+
+    #[test]
+    fn mcp_policy_bounds_are_enforced_by_runtime_validation() {
+        let mut document = sparse_document(ConfigDocumentKind::Tools);
+        document["mcpServers"] = json!({
+            "bounded_server": {
+                "transport": {"type": "stdio", "command": "bounded-mcp"},
+                "protocol": {"mode": "auto", "probeTimeoutMs": 15_001},
+                "startupTimeoutMs": 999,
+                "operationTimeoutMs": 600_001,
+                "maxConcurrentOperations": 17
+            }
+        });
+
+        let result = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+
+        assert!(!result.valid);
+        for path in [
+            "/mcpServers/bounded_server/protocol/probeTimeoutMs",
+            "/mcpServers/bounded_server/startupTimeoutMs",
+            "/mcpServers/bounded_server/operationTimeoutMs",
+            "/mcpServers/bounded_server/maxConcurrentOperations",
+        ] {
+            assert!(result.diagnostics.iter().any(|entry| {
+                entry.code == "config.tools.mcp_policy_out_of_range"
+                    && entry.path.as_deref() == Some(path)
+            }));
+        }
     }
 
     #[test]
