@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
+let availableStartPoints = {
+  worktrees: [] as Array<{ name: string; path: string; branchName: string; isDirty: boolean }>,
+  branches: [] as Array<{ name: string; commit: string }>,
+};
+
 mock.module('react-i18next', () => ({
   useTranslation: () => ({
     t: (_key: string, fallback: string) => fallback,
@@ -14,7 +19,7 @@ mock.module('../ui/Dialog', () => ({
 }));
 
 mock.module('../../services/tauriIpc', () => ({
-  gitWorktreeListAvailable: async () => [],
+  gitTaskStartPoints: async () => availableStartPoints,
 }));
 
 import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
@@ -49,6 +54,7 @@ describe('CreateImplementTaskDialog task type help', () => {
   let root: Root;
 
   beforeEach(() => {
+    availableStartPoints = { worktrees: [], branches: [] };
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 600 });
     container = document.createElement('div');
@@ -227,7 +233,53 @@ describe('CreateImplementTaskDialog task type help', () => {
     expect(onCreate).toHaveBeenCalledWith({
       projectId: 'mainline',
       taskKind: 'hotfix',
-      existingWorktree: null,
+      startPoint: { kind: 'new' },
+    });
+  });
+
+  it('groups resumable worktrees and branches and returns the selected branch', async () => {
+    availableStartPoints = {
+      worktrees: [{
+        name: 'external-worktree',
+        path: '/worktrees/external',
+        branchName: 'feature/in-editor',
+        isDirty: true,
+      }],
+      branches: [{ name: 'feature/without-worktree', commit: 'abc1234' }],
+    };
+    const onCreate = mock(() => undefined);
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[project('develop', 'Develop project', 'develop', 'main')]}
+          initialProjectId="develop"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={onCreate}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+
+    const findButton = (text: string) => Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes(text),
+    ) as HTMLButtonElement;
+    await act(async () => findButton('Resume work').click());
+    expect(container.textContent).toContain('Existing worktrees');
+    expect(container.textContent).toContain('Branches without a worktree');
+    expect(container.textContent).toContain('feature/in-editor');
+    expect(container.textContent).toContain('feature/without-worktree');
+
+    await act(async () => findButton('feature/without-worktree').click());
+    await act(async () => findButton('Feature').click());
+    await act(async () => findButton('Create task').click());
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: 'develop',
+      taskKind: 'feature',
+      startPoint: {
+        kind: 'branch',
+        branch: { name: 'feature/without-worktree', commit: 'abc1234' },
+      },
     });
   });
 });

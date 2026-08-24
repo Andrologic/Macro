@@ -291,6 +291,16 @@ export interface GitAvailableWorktreeDto {
   isDirty: boolean;
 }
 
+export interface GitAvailableTaskBranchDto {
+  name: string;
+  commit: string;
+}
+
+export interface GitTaskStartPointsDto {
+  worktrees: GitAvailableWorktreeDto[];
+  branches: GitAvailableTaskBranchDto[];
+}
+
 export interface GitWorktreeEnsureDto {
   taskId: string;
   worktreePath: string;
@@ -2528,10 +2538,10 @@ export async function gitWorktreeInspect(params: {
   });
 }
 
-export async function gitWorktreeListAvailable(params: {
+export async function gitTaskStartPoints(params: {
   repoPath: string;
-}): Promise<GitAvailableWorktreeDto[]> {
-  return invoke<GitAvailableWorktreeDto[]>("git_worktree_list_available", {
+}): Promise<GitTaskStartPointsDto> {
+  return invoke<GitTaskStartPointsDto>("git_task_start_points", {
     repoPath: params.repoPath,
   });
 }

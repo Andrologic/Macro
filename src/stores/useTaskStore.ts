@@ -2879,7 +2879,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(executionTask);
     const branchName = primaryTarget?.branchName || executionTask.assigned_branch;
     const knownWorktree = primaryTarget
-      ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
+      ? task.draft && task.branch_name
+        ? await ensureTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
+        : await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
     if (requestId !== taskActivationRequestId) return;
     if (knownWorktree) {
