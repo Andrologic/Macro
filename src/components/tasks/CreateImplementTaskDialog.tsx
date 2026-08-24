@@ -195,7 +195,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const startPointPicker = (
     <aside
       aria-label={t('implement.taskWorkspaceExisting', 'Resume work')}
-      className="flex min-h-0 w-[26rem] max-w-[44vw] shrink-0 flex-col border-l border-border bg-muted/10"
+      className="flex h-full min-h-0 w-full flex-col border-l border-border bg-muted/10"
     >
       <div className="shrink-0 border-b border-border px-4 py-4">
         <div className="flex items-center gap-2">
@@ -204,12 +204,6 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
             {t('implement.taskWorkspaceExisting', 'Resume work')}
           </h3>
         </div>
-        <p className="mt-1 text-[11px] text-muted-foreground">
-          {t(
-            'implement.taskWorkspaceExistingPanelHelp',
-            'Choose an existing worktree or a local branch.'
-          )}
-        </p>
       </div>
       <div className="shrink-0 p-3 pb-2">
         <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5">
@@ -383,7 +377,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       title={t('implement.createTaskDialogTitle', 'Create a task')}
       onClose={onClose}
       panelClassName={cn(
-        'flex h-[min(46rem,calc(100vh-2rem))] w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-[max-width] duration-150',
+        'flex h-[min(46rem,calc(100vh-2rem))] w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-[max-width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
         workspaceChoice === 'existing' && !isDirectEditProject && selectedProject
           ? 'max-w-5xl'
           : 'max-w-2xl'
@@ -394,12 +388,6 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <h2 className="text-base font-semibold text-foreground">
             {t('implement.createTaskDialogTitle', 'Create a task')}
           </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t(
-              'implement.createTaskDialogDescription',
-              'Choose the target project and the task type.'
-            )}
-          </p>
         </div>
         <button
           type="button"
@@ -417,9 +405,6 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <div>
             <div className="text-xs font-medium text-foreground">
               {t('implement.targetProject', 'Target project')}
-            </div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
-              {t('implement.targetProjectRequiredHelp', 'A project is required. Macro will not select one automatically.')}
             </div>
           </div>
           <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5">
@@ -592,13 +577,31 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                       {selectedWorktree?.branchName || selectedBranch?.name}
                     </span>
                   )}
+                  {!selectedWorktree && !selectedBranch && (
+                    <span className="block text-[11px] text-muted-foreground">
+                      {t(
+                        'implement.taskWorkspaceExistingHelp',
+                        'Reuse a worktree or create one from an existing branch.'
+                      )}
+                    </span>
+                  )}
                 </span>
               </button>
             </div>
           </fieldset>
         )}
         </div>
-        {workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && startPointPicker}
+        <div
+          aria-hidden={workspaceChoice !== 'existing'}
+          className={cn(
+            'min-h-0 shrink-0 overflow-hidden transition-[width,max-width,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
+            workspaceChoice === 'existing' && !isDirectEditProject && selectedProject
+              ? 'w-[26rem] max-w-[44vw] opacity-100'
+              : 'w-0 max-w-0 opacity-0'
+          )}
+        >
+          {workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && startPointPicker}
+        </div>
       </div>
 
       {tooltipAnchor && tooltipPosition && createPortal(

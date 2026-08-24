@@ -268,7 +268,13 @@ describe('CreateImplementTaskDialog task type help', () => {
     ) as HTMLButtonElement;
     const compactPanelClass = container.firstElementChild?.getAttribute('data-panel-class');
     expect(compactPanelClass).toContain('h-[min(46rem,calc(100vh-2rem))]');
+    expect(compactPanelClass).toContain('duration-300');
     expect(container.querySelector('[aria-label="Target project"]')?.className).toContain('flex-1');
+    expect(container.textContent).not.toContain('Choose the target project and the task type.');
+    expect(container.textContent).not.toContain('A project is required.');
+    expect(findButton('Resume work').textContent).toContain(
+      'Reuse a worktree or create one from an existing branch.'
+    );
     expect(container.querySelector('aside')).toBeNull();
     await act(async () => findButton('Resume work').click());
     const resumePanel = container.querySelector('aside[aria-label="Resume work"]');
