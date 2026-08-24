@@ -11,6 +11,7 @@ import type {
   MCPProtocolMode,
   MCPRuntimeEvent,
   MCPRuntimeKey,
+  MCPRuntimeSelector,
   MCPRuntimeServerSnapshot,
   MCPRuntimeSnapshotDto,
   MCPRuntimeStatus,
@@ -22,6 +23,7 @@ export type {
   MCPProtocolMode,
   MCPRuntimeEvent,
   MCPRuntimeKey,
+  MCPRuntimeSelector,
   MCPRuntimeServerSnapshot,
   MCPRuntimeSnapshotDto,
   MCPRuntimeStatus,
@@ -3680,9 +3682,8 @@ export async function mcpDeleteEnvSecret(params: {
 }
 
 // ============ Persistent MCP runtime ============
-// Planned Tauri event channel for MCPRuntimeEvent payloads. The backend
-// command handlers are not wired yet; these wrappers exist so the frontend
-// contract is stable before the Rust runtime lands.
+// Tauri commands for the persistent MCP runtime. The event channel remains
+// reserved for status/catalog push notifications added with the UI migration.
 
 export const MCP_RUNTIME_EVENT_NAME = "mcp:runtime";
 
@@ -3691,9 +3692,9 @@ export async function mcpRuntimeGetSnapshot(): Promise<MCPRuntimeSnapshotDto> {
 }
 
 export async function mcpRuntimeConnect(
-  key: MCPRuntimeKey,
+  selector: MCPRuntimeSelector,
 ): Promise<MCPRuntimeServerSnapshot> {
-  return invoke<MCPRuntimeServerSnapshot>("mcp_runtime_connect", { key });
+  return invoke<MCPRuntimeServerSnapshot>("mcp_runtime_connect", { selector });
 }
 
 export async function mcpRuntimeDisconnect(key: MCPRuntimeKey): Promise<void> {
@@ -3704,6 +3705,20 @@ export async function mcpRuntimeRefreshCatalog(
   key: MCPRuntimeKey,
 ): Promise<MCPCatalogDto> {
   return invoke<MCPCatalogDto>("mcp_runtime_refresh_catalog", { key });
+}
+
+export async function mcpRuntimeCallTool(params: {
+  key: MCPRuntimeKey;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  operationId: string;
+}): Promise<MCPCallToolResponseDto> {
+  return invoke<MCPCallToolResponseDto>("mcp_runtime_call_tool", {
+    key: params.key,
+    toolName: params.toolName,
+    arguments: params.arguments,
+    operationId: params.operationId,
+  });
 }
 
 export async function mcpRuntimeCancelOperation(

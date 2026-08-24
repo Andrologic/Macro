@@ -133,7 +133,9 @@ describe('services index', () => {
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeGetSnapshot' },
     });
-    await expect(services.mcpRuntimeConnect(key)).rejects.toMatchObject({
+    await expect(
+      services.mcpRuntimeConnect({ serverId: 'test', projectIds: ['project-1'] }),
+    ).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeConnect' },
     });
@@ -144,6 +146,17 @@ describe('services index', () => {
     await expect(services.mcpRuntimeRefreshCatalog(key)).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeRefreshCatalog' },
+    });
+    await expect(
+      services.mcpRuntimeCallTool({
+        key,
+        toolName: 'echo',
+        arguments: {},
+        operationId: 'call-1',
+      }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeCallTool' },
     });
     await expect(services.mcpRuntimeCancelOperation('operation-1')).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',

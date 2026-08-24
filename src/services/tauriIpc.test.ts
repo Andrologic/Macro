@@ -1097,9 +1097,16 @@ describe("tauriIpc persistent MCP runtime", () => {
     const key = { serverId: "github", projectId: null, configGeneration: 3 };
 
     await tauriIpc.mcpRuntimeGetSnapshot();
-    await tauriIpc.mcpRuntimeConnect(key);
+    const selector = { serverId: "test", projectIds: ["project-1"] };
+    await tauriIpc.mcpRuntimeConnect(selector);
     await tauriIpc.mcpRuntimeDisconnect(key);
     await tauriIpc.mcpRuntimeRefreshCatalog(key);
+    await tauriIpc.mcpRuntimeCallTool({
+      key,
+      toolName: "echo",
+      arguments: { value: "ok" },
+      operationId: "operation-1",
+    });
     await tauriIpc.mcpRuntimeCancelOperation("operation-1");
 
     expect(invokeCalls).toEqual([
@@ -1109,7 +1116,7 @@ describe("tauriIpc persistent MCP runtime", () => {
       },
       {
         command: "mcp_runtime_connect",
-        payload: { key },
+        payload: { selector },
       },
       {
         command: "mcp_runtime_disconnect",
@@ -1118,6 +1125,15 @@ describe("tauriIpc persistent MCP runtime", () => {
       {
         command: "mcp_runtime_refresh_catalog",
         payload: { key },
+      },
+      {
+        command: "mcp_runtime_call_tool",
+        payload: {
+          key,
+          toolName: "echo",
+          arguments: { value: "ok" },
+          operationId: "operation-1",
+        },
       },
       {
         command: "mcp_runtime_cancel_operation",
