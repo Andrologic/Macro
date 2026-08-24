@@ -674,6 +674,7 @@ pub(crate) struct PendingFileChange {
     pub(crate) additions: usize,
     pub(crate) deletions: usize,
     pub(crate) expected_revision: Option<String>,
+    pub(crate) requested_unix_mode: Option<u32>,
 }
 
 pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPatchOperation>> {
@@ -1427,6 +1428,115 @@ enum MutationBackups {
     ViaFs(Vec<(PathBuf, String, String, Option<Vec<u8>>, Option<u32>)>),
 }
 
+const INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD: &str = "__macro_checkpoint_snapshots";
+
+pub(crate) fn mutation_response_fields(
+    include_checkpoint_snapshots: bool,
+    mut fields: serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    if include_checkpoint_snapshots {
+        fields.insert(
+            INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD.to_string(),
+            Value::Bool(true),
+        );
+    }
+    fields
+}
+
+fn missing_checkpoint_snapshot_json() -> Value {
+    serde_json::json!({
+        "exists": false,
+        "content": Value::Null,
+        "revision": Value::Null,
+        "isBinary": false,
+        "size": 0,
+        "encoding": Value::Null,
+        "language": Value::Null,
+        "unixMode": Value::Null,
+    })
+}
+
+fn checkpoint_before_snapshots(
+    backups: &MutationBackups,
+    changes: &[PendingFileChange],
+) -> CommandResult<Vec<Value>> {
+    let mut snapshots = Vec::with_capacity(changes.len());
+    for (index, change) in changes.iter().enumerate() {
+        let (backup, unix_mode) = match backups {
+            MutationBackups::Native(values) => values
+                .get(index)
+                .map(|(_, backup, unix_mode)| (backup.as_deref(), *unix_mode)),
+            MutationBackups::ViaFs(values) => values
+                .get(index)
+                .map(|(_, _, _, backup, unix_mode)| (backup.as_deref(), *unix_mode)),
+        }
+        .ok_or_else(|| command_error("Checkpoint snapshot alignment failed"))?;
+        let Some(bytes) = backup else {
+            snapshots.push(missing_checkpoint_snapshot_json());
+            continue;
+        };
+        let content = std::str::from_utf8(bytes).map_err(|_| {
+            command_error(format!(
+                "Cannot checkpoint binary file {}; refusing to make an unrewindable remote edit.",
+                change.display_path
+            ))
+        })?;
+        snapshots.push(serde_json::json!({
+            "exists": true,
+            "content": content,
+            "revision": fs::content_revision(bytes),
+            "isBinary": false,
+            "size": bytes.len(),
+            "encoding": "utf-8",
+            "language": Value::Null,
+            "unixMode": unix_mode,
+        }));
+    }
+    Ok(snapshots)
+}
+
+async fn build_checkpoint_snapshot_payload(
+    changes: &[PendingFileChange],
+    before: Vec<Value>,
+) -> CommandResult<Value> {
+    let mut files = Vec::with_capacity(changes.len());
+    for (index, change) in changes.iter().enumerate() {
+        let after = if change.new_content.is_none() {
+            missing_checkpoint_snapshot_json()
+        } else {
+            let readback = fs::read_file_internal(
+                &change.effective_workspace,
+                change.effective_path.clone(),
+                Some(false),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+            if readback.is_binary {
+                return Err(command_error(format!(
+                    "Cannot checkpoint binary file {}; refusing to publish an unrewindable remote edit.",
+                    change.display_path
+                )));
+            }
+            serde_json::json!({
+                "exists": true,
+                "content": readback.content,
+                "revision": readback.revision,
+                "isBinary": false,
+                "size": readback.size,
+                "encoding": readback.encoding,
+                "language": readback.language,
+                "unixMode": readback.unix_mode,
+            })
+        };
+        files.push(serde_json::json!({
+            "path": change.display_path,
+            "before": before.get(index).cloned().unwrap_or_else(missing_checkpoint_snapshot_json),
+            "after": after,
+        }));
+    }
+    Ok(serde_json::json!({ "files": files }))
+}
+
 fn normalize_pending_change_metadata(
     changes: &mut [PendingFileChange],
     backups: &MutationBackups,
@@ -1610,13 +1720,14 @@ async fn apply_mutation_backups(
         MutationBackups::ViaFs(fs_backups) => {
             for (applied_count, change) in changes.iter().enumerate() {
                 let result = if let Some(new_content) = change.new_content.as_ref() {
-                    fs::write_file_internal_with_revision_unlocked(
+                    fs::write_file_internal_with_revision_and_mode_unlocked(
                         &change.effective_workspace,
                         change.effective_path.clone(),
                         new_content.clone(),
                         Some(create_dirs),
                         Some(false),
                         change.expected_revision.as_deref(),
+                        change.requested_unix_mode,
                     )
                     .await
                     .map(|_| ())
@@ -1677,13 +1788,14 @@ async fn apply_mutation_backups(
                     Err(error) => Err(error),
                     Ok(()) => {
                         if let Some(new_content) = change.new_content.as_ref() {
-                            fs::write_file_internal_with_revision_unlocked(
+                            fs::write_file_internal_with_revision_and_mode_unlocked(
                                 &change.effective_workspace,
                                 change.effective_path.clone(),
                                 new_content.clone(),
                                 Some(create_dirs),
                                 Some(false),
                                 change.expected_revision.as_deref(),
+                                change.requested_unix_mode,
                             )
                             .await
                             .map_err(|error| command_error(error.to_string()))
@@ -1772,12 +1884,19 @@ async fn commit_with_post_mutation_gate<G>(
 where
     G: FnOnce(&[PendingFileChange]) -> bool,
 {
+    let include_checkpoint_snapshots = extra_fields
+        .remove(INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let _mutation_guards = acquire_content_mutation_locks(&changes).await?;
     let backups = prepare_mutation_backups(&changes).await?;
+    let checkpoint_before = include_checkpoint_snapshots
+        .then(|| checkpoint_before_snapshots(&backups, &changes))
+        .transpose()?;
     normalize_pending_change_metadata(&mut changes, &backups, &mut extra_fields);
     apply_mutation_backups(&changes, &backups, create_dirs).await?;
 
-    let report = if post_mutation_gate(&changes) {
+    let mut report = if post_mutation_gate(&changes) {
         validate_post_write_changes(&changes).await
     } else {
         PostWriteValidationReport {
@@ -1795,7 +1914,26 @@ where
         }
     };
 
+    let checkpoint_payload = if report.errors.is_empty() {
+        if let Some(before) = checkpoint_before {
+            match build_checkpoint_snapshot_payload(&changes, before).await {
+                Ok(payload) => Some(payload),
+                Err(error) => {
+                    report.errors.push(error.message);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     if report.errors.is_empty() {
+        if let Some(payload) = checkpoint_payload {
+            extra_fields.insert(INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD.to_string(), payload);
+        }
         return assemble_post_write_response(&changes, report, extra_fields);
     }
 
@@ -2131,6 +2269,46 @@ pub async fn execute_workspace_tool_controlled(
     focused_project_id: Option<String>,
     execution_id: Option<String>,
 ) -> CommandResult<String> {
+    execute_workspace_tool_controlled_with_options(
+        default_workspace,
+        metadata_workspace,
+        git_state,
+        mode,
+        tool_id,
+        args,
+        workspace_path,
+        workspace_scope,
+        project_mounts,
+        virtual_root_enabled,
+        focused_project_id,
+        execution_id,
+        WorkspaceToolExecutionOptions::default(),
+    )
+    .await
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorkspaceToolExecutionOptions {
+    pub capture_checkpoint_snapshots: bool,
+    pub raw_checkpoint_snapshot: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_workspace_tool_controlled_with_options(
+    default_workspace: PathBuf,
+    metadata_workspace: PathBuf,
+    git_state: GitState,
+    mode: String,
+    tool_id: String,
+    args: Value,
+    workspace_path: Option<String>,
+    workspace_scope: Option<String>,
+    project_mounts: Option<Vec<WorkspaceProjectMount>>,
+    virtual_root_enabled: Option<bool>,
+    focused_project_id: Option<String>,
+    execution_id: Option<String>,
+    internal_options: WorkspaceToolExecutionOptions,
+) -> CommandResult<String> {
     let Some(timeout_duration) = tool_execution_timeout(tool_id.trim()) else {
         return execute_workspace_tool_inner(
             default_workspace,
@@ -2145,6 +2323,7 @@ pub async fn execute_workspace_tool_controlled(
             virtual_root_enabled,
             focused_project_id,
             None,
+            internal_options,
         )
         .await;
     };
@@ -2168,6 +2347,7 @@ pub async fn execute_workspace_tool_controlled(
         virtual_root_enabled,
         focused_project_id,
         Some(cancellation.clone()),
+        internal_options,
     );
     tokio::pin!(execution);
 
@@ -2214,6 +2394,7 @@ async fn execute_workspace_tool_inner(
     virtual_root_enabled: Option<bool>,
     focused_project_id: Option<String>,
     cancellation: Option<Arc<ToolCancellation>>,
+    internal_options: WorkspaceToolExecutionOptions,
 ) -> CommandResult<String> {
     let workspace = resolve_requested_workspace(
         &default_workspace,
@@ -2243,6 +2424,7 @@ async fn execute_workspace_tool_inner(
             project_mounts.as_deref().unwrap_or(&[]),
             focused_project_id.as_deref(),
             cancellation.clone(),
+            internal_options.capture_checkpoint_snapshots,
         )
         .await?
         {
@@ -2324,10 +2506,40 @@ async fn execute_workspace_tool_inner(
             )
             .await?;
 
+            let raw_checkpoint_snapshot = internal_options.raw_checkpoint_snapshot;
+            if raw_checkpoint_snapshot
+                && !fs::exists_internal(&effective_workspace, effective_path.clone())
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?
+            {
+                return serde_json::to_string(&missing_checkpoint_snapshot_json())
+                    .map_err(|error| command_error(error.to_string()));
+            }
+
             let result =
                 fs::read_file_internal(&effective_workspace, effective_path.clone(), Some(false))
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
+
+            if raw_checkpoint_snapshot {
+                if result.is_binary {
+                    return Err(command_error(format!(
+                        "Cannot checkpoint binary file {}; refusing an unrewindable remote replay.",
+                        path
+                    )));
+                }
+                return serde_json::to_string(&serde_json::json!({
+                    "exists": true,
+                    "content": result.content,
+                    "revision": result.revision,
+                    "isBinary": false,
+                    "size": result.size,
+                    "encoding": result.encoding,
+                    "language": result.language,
+                    "unixMode": result.unix_mode,
+                }))
+                .map_err(|error| command_error(error.to_string()));
+            }
 
             if result.is_binary {
                 return Ok(format!(
@@ -2375,6 +2587,7 @@ async fn execute_workspace_tool_inner(
                 .ok_or_else(|| command_error("Missing content argument for write tool."))?;
             let create_dirs = json_arg_bool(&args, "create_dirs");
             let expected_revision = json_arg_string(&args, "expected_revision");
+            let requested_unix_mode = json_arg_u32(&args, "unix_mode");
             let effective_workspace = resolve_workspace_for_tool_path(
                 &workspace,
                 &git_state,
@@ -2426,21 +2639,25 @@ async fn execute_workspace_tool_inner(
                 additions: content.lines().count(),
                 deletions: 0,
                 expected_revision,
+                requested_unix_mode,
             };
 
             commit_and_validate_pending_file_changes_with_create_dirs(
                 vec![change],
-                serde_json::Map::from_iter([
-                    (
-                        "path".to_string(),
-                        Value::String(absolute_path.to_string_lossy().to_string()),
-                    ),
-                    (
-                        "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(bytes_written)),
-                    ),
-                    ("created".to_string(), Value::Bool(created)),
-                ]),
+                mutation_response_fields(
+                    internal_options.capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        (
+                            "path".to_string(),
+                            Value::String(absolute_path.to_string_lossy().to_string()),
+                        ),
+                        (
+                            "bytes_written".to_string(),
+                            Value::Number(serde_json::Number::from(bytes_written)),
+                        ),
+                        ("created".to_string(), Value::Bool(created)),
+                    ]),
+                ),
                 create_dirs.unwrap_or(true),
             )
             .await
@@ -2509,26 +2726,30 @@ async fn execute_workspace_tool_inner(
                 additions,
                 deletions,
                 expected_revision: Some(mutation_revision),
+                requested_unix_mode: None,
             };
 
             commit_and_validate_pending_file_changes(
                 vec![change],
-                serde_json::Map::from_iter([
-                    (
-                        "replacements".to_string(),
-                        Value::Number(serde_json::Number::from(if replace_all {
-                            occurrences as u64
-                        } else {
-                            1
-                        })),
-                    ),
-                    ("path".to_string(), Value::String(path)),
-                    (
-                        "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(write_result_bytes)),
-                    ),
-                    ("created".to_string(), Value::Bool(false)),
-                ]),
+                mutation_response_fields(
+                    internal_options.capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        (
+                            "replacements".to_string(),
+                            Value::Number(serde_json::Number::from(if replace_all {
+                                occurrences as u64
+                            } else {
+                                1
+                            })),
+                        ),
+                        ("path".to_string(), Value::String(path)),
+                        (
+                            "bytes_written".to_string(),
+                            Value::Number(serde_json::Number::from(write_result_bytes)),
+                        ),
+                        ("created".to_string(), Value::Bool(false)),
+                    ]),
+                ),
             )
             .await
         }
@@ -2593,11 +2814,15 @@ async fn execute_workspace_tool_inner(
                 additions: 0,
                 deletions,
                 expected_revision: Some(mutation_revision),
+                requested_unix_mode: None,
             };
 
             commit_and_validate_pending_file_changes(
                 vec![change],
-                serde_json::Map::from_iter([("path".to_string(), Value::String(path))]),
+                mutation_response_fields(
+                    internal_options.capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([("path".to_string(), Value::String(path))]),
+                ),
             )
             .await
         }
@@ -2680,6 +2905,7 @@ async fn execute_workspace_tool_inner(
                             additions: new_content.lines().count(),
                             deletions: 0,
                             expected_revision,
+                            requested_unix_mode: None,
                         });
                     }
                     ParsedPatchOperation::Update { path, hunks } => {
@@ -2730,6 +2956,7 @@ async fn execute_workspace_tool_inner(
                             additions,
                             deletions,
                             expected_revision: Some(expected_revision),
+                            requested_unix_mode: None,
                         });
                     }
                     ParsedPatchOperation::Delete { path } => {
@@ -2771,6 +2998,7 @@ async fn execute_workspace_tool_inner(
                             additions: 0,
                             deletions: deletion_count,
                             expected_revision: Some(expected_revision),
+                            requested_unix_mode: None,
                         });
                     }
                 }
@@ -2779,10 +3007,13 @@ async fn execute_workspace_tool_inner(
             let applied_operations = pending_changes.len() as u64;
             commit_and_validate_pending_file_changes(
                 pending_changes,
-                serde_json::Map::from_iter([(
-                    "applied_operations".to_string(),
-                    Value::Number(serde_json::Number::from(applied_operations)),
-                )]),
+                mutation_response_fields(
+                    internal_options.capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([(
+                        "applied_operations".to_string(),
+                        Value::Number(serde_json::Number::from(applied_operations)),
+                    )]),
+                ),
             )
             .await
         }
@@ -3222,23 +3453,35 @@ async fn execute_workspace_tool_inner(
         }
         "git_branch_list" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
-            let cursor_scope = format!("git_branch_list\0{}", repo_path);
-            let page = tool_output::resolve_tool_page(
-                &args,
-                &cursor_scope,
-                tool_output::GIT_BRANCH_DEFAULT_LIMIT,
-                tool_output::GIT_BRANCH_MAX_LIMIT,
-            )?;
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let revision = git::wsl_git_branch_snapshot_revision(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let cursor_scope = format!("git_branch_list\0{}\0{}", repo_path, revision);
+                let page = tool_output::resolve_tool_page(
+                    &args,
+                    &cursor_scope,
+                    tool_output::GIT_BRANCH_DEFAULT_LIMIT,
+                    tool_output::GIT_BRANCH_MAX_LIMIT,
+                )?;
                 let branches =
                     git::build_wsl_git_branches_tool_page(&wsl_repo_path, page.offset, page.limit)
                         .await
                         .map_err(|error| command_error(error.to_string()))?;
+                let revision_after = git::wsl_git_branch_snapshot_revision(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                if revision_after != revision {
+                    return Err(command_error(
+                        "Repository branches changed while the page was being produced. Retry without a cursor.",
+                    ));
+                }
                 let returned = branches.local.len().saturating_add(branches.remote.len());
                 return serde_json::to_string_pretty(&serde_json::json!({
                     "repo_path": repo_path,
+                    "revision": revision,
                     "local": branches.local,
                     "remote": branches.remote,
                     "current": branches.current,
@@ -3252,8 +3495,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let args_for_task = args.clone();
+            let response_repo_path = repo_path.clone();
 
-            let branches = tokio::task::spawn_blocking(move || {
+            let (branches, page, cursor_scope, revision) = tokio::task::spawn_blocking(move || {
                 let validated =
                     validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
@@ -3262,9 +3507,26 @@ async fn execute_workspace_tool_inner(
                 let repo = repo
                     .lock()
                     .map_err(|_| command_error("Failed to lock repository"))?;
-
-                git::build_git_branches_tool_page(&repo, page.offset, page.limit)
-                    .map_err(|error| command_error(error.to_string()))
+                let revision = git::git_branch_snapshot_revision(&repo)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let cursor_scope =
+                    format!("git_branch_list\0{}\0{}", response_repo_path, revision);
+                let page = tool_output::resolve_tool_page(
+                    &args_for_task,
+                    &cursor_scope,
+                    tool_output::GIT_BRANCH_DEFAULT_LIMIT,
+                    tool_output::GIT_BRANCH_MAX_LIMIT,
+                )?;
+                let branches = git::build_git_branches_tool_page(&repo, page.offset, page.limit)
+                    .map_err(|error| command_error(error.to_string()))?;
+                let revision_after = git::git_branch_snapshot_revision(&repo)
+                    .map_err(|error| command_error(error.to_string()))?;
+                if revision_after != revision {
+                    return Err(command_error(
+                        "Repository branches changed while the page was being produced. Retry without a cursor.",
+                    ));
+                }
+                Ok((branches, page, cursor_scope, revision))
             })
             .await
             .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
@@ -3272,6 +3534,7 @@ async fn execute_workspace_tool_inner(
             let returned = branches.local.len().saturating_add(branches.remote.len());
             serde_json::to_string_pretty(&serde_json::json!({
                 "repo_path": repo_path,
+                "revision": revision,
                 "local": branches.local,
                 "remote": branches.remote,
                 "current": branches.current,
@@ -5609,6 +5872,7 @@ mod tests {
         rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
         validate_agent_git_repo_path, wsl_mutation_backup_read_script,
         wsl_mutation_backup_write_script, DbPool, ParsedPatchOperation, PendingFileChange,
+        INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
     };
     use crate::commands::fs::{
         content_revision, install_write_before_revalidation_hook, EXPECTED_REVISION_ABSENT,
@@ -5617,7 +5881,10 @@ mod tests {
     use crate::git::GitState;
     use serde_json::{json, Value};
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::Path;
+    use std::process::Command;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -6180,6 +6447,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn git_branch_cursor_is_invalidated_when_refs_change() {
+        let workspace = TempDir::new().expect("workspace");
+        let run_git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_git(&["init", "-b", "main"]);
+        run_git(&["config", "user.email", "macro@example.test"]);
+        run_git(&["config", "user.name", "Macro Test"]);
+        fs::write(workspace.path().join("seed.txt"), "seed\n").expect("seed file");
+        run_git(&["add", "seed.txt"]);
+        run_git(&["commit", "-m", "seed"]);
+        run_git(&["branch", "alpha"]);
+        run_git(&["branch", "beta"]);
+
+        let first = execute_readonly_workspace_tool(
+            workspace.path(),
+            "git_branch_list",
+            json!({ "repo_path": ".", "limit": 1 }),
+        )
+        .await;
+        let first: Value = serde_json::from_str(&first).expect("branch page");
+        let cursor = first["next_cursor"].as_str().expect("next cursor");
+
+        run_git(&["branch", "gamma"]);
+        let error = execute_workspace_tool(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            "Implement".to_string(),
+            "git_branch_list".to_string(),
+            json!({ "repo_path": ".", "limit": 1, "cursor": cursor }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("branch cursor must be bound to the ref snapshot");
+        assert!(error
+            .message
+            .contains("does not belong to this tool request"));
+    }
+
+    #[tokio::test]
     async fn execute_workspace_grep_bounds_matches_and_reports_skipped_files() {
         let workspace = TempDir::new().expect("workspace");
         fs::write(
@@ -6399,6 +6721,7 @@ mod tests {
             additions: 1,
             deletions: 0,
             expected_revision: Some("absent".to_string()),
+            requested_unix_mode: None,
         };
         let first = vec![change("first\n")];
         let second = vec![change("second\n")];
@@ -6436,6 +6759,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             expected_revision: Some(revision.clone()),
+            requested_unix_mode: None,
         };
         let first = vec![change("first\n")];
         let second = vec![change("second\n")];
@@ -6479,6 +6803,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             expected_revision: Some(content_revision(b"original\n")),
+            requested_unix_mode: None,
         };
 
         let task = tokio::spawn(commit_and_validate_pending_file_changes(
@@ -6521,6 +6846,7 @@ mod tests {
                 additions: 1,
                 deletions: 1,
                 expected_revision: Some(content_revision(b"first-original\n")),
+                requested_unix_mode: None,
             },
             PendingFileChange {
                 display_path: "second.txt".to_string(),
@@ -6534,6 +6860,7 @@ mod tests {
                 additions: 1,
                 deletions: 1,
                 expected_revision: Some("stale-revision".to_string()),
+                requested_unix_mode: None,
             },
         ];
 
@@ -6570,6 +6897,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             expected_revision: Some(original_revision.clone()),
+            requested_unix_mode: None,
         };
 
         let error = commit_and_validate_pending_file_changes(
@@ -6606,6 +6934,7 @@ mod tests {
                 additions: 1,
                 deletions: 1,
                 expected_revision: None,
+                requested_unix_mode: None,
             },
             PendingFileChange {
                 display_path: "missing.txt".to_string(),
@@ -6619,6 +6948,7 @@ mod tests {
                 additions: 0,
                 deletions: 0,
                 expected_revision: None,
+                requested_unix_mode: None,
             },
         ];
 
@@ -6650,6 +6980,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             expected_revision: None,
+            requested_unix_mode: None,
         };
         let backups = vec![(path.clone(), Some(b"original\n".to_vec()), None)];
 
@@ -6683,6 +7014,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             expected_revision: None,
+            requested_unix_mode: None,
         };
         let backups = vec![(
             workspace.path().to_path_buf(),
@@ -6739,6 +7071,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             expected_revision: None,
+            requested_unix_mode: None,
         }
     }
 
@@ -6810,6 +7143,92 @@ mod tests {
         assert_eq!(
             fs::read_to_string(path).expect("deleted file must be restored"),
             "original\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_deleted_file_validation_restores_its_unix_mode() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("run.sh");
+        fs::write(&path, "#!/bin/sh\necho original\n").expect("seed executable");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("set executable mode");
+        let mut change = pending_update_change(workspace.path(), "run.sh", "");
+        change.status = "deleted".to_string();
+        change.new_content = None;
+        change.deletions = 2;
+
+        commit_with_post_mutation_gate(vec![change], Default::default(), true, |_| false)
+            .await
+            .expect_err("injected validation failure must fail the call");
+
+        assert_eq!(
+            fs::metadata(&path).expect("restored metadata").mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recoverable_checkpoint_payload_contains_content_revisions_and_unix_modes() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("run.sh");
+        fs::write(&path, "#!/bin/sh\necho before\n").expect("seed executable");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("set executable mode");
+        let mut extra_fields = serde_json::Map::new();
+        extra_fields.insert(
+            INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD.to_string(),
+            Value::Bool(true),
+        );
+
+        let response = commit_and_validate_pending_file_changes(
+            vec![pending_update_change(
+                workspace.path(),
+                "run.sh",
+                "#!/bin/sh\necho after\n",
+            )],
+            extra_fields,
+        )
+        .await
+        .expect("checkpointed mutation");
+        let parsed: Value = serde_json::from_str(&response).expect("checkpoint response");
+        let file = &parsed[INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD]["files"][0];
+
+        assert_eq!(file["before"]["content"], "#!/bin/sh\necho before\n");
+        assert_eq!(file["after"]["content"], "#!/bin/sh\necho after\n");
+        assert_eq!(file["before"]["unixMode"], 0o755);
+        assert_eq!(file["after"]["unixMode"], 0o755);
+        assert!(file["before"]["revision"].as_str().is_some());
+        assert!(file["after"]["revision"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn recoverable_checkpoint_rejects_binary_before_applying_the_mutation() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("image.bin");
+        let original = vec![0, 159, 146, 150, 255];
+        fs::write(&path, &original).expect("seed binary");
+        let mut extra_fields = serde_json::Map::new();
+        extra_fields.insert(
+            INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD.to_string(),
+            Value::Bool(true),
+        );
+
+        let error = commit_and_validate_pending_file_changes(
+            vec![pending_update_change(
+                workspace.path(),
+                "image.bin",
+                "text replacement",
+            )],
+            extra_fields,
+        )
+        .await
+        .expect_err("binary before-state cannot become a recoverable text checkpoint");
+
+        assert!(error.message.contains("Cannot checkpoint binary file"));
+        assert_eq!(
+            fs::read(path).expect("binary must remain untouched"),
+            original
         );
     }
 

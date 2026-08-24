@@ -6,6 +6,11 @@ import type {
   ChatMessage,
 } from "../types";
 import * as tauriIpc from "./tauriIpc";
+import {
+  canUseRemoteKernel,
+  executeRemoteWorkspaceTool,
+  readRemoteWorkspaceCheckpointSnapshot,
+} from "./remoteKernelApi";
 
 const STORAGE_KEY_PREFIX = "agentCodeCheckpoints:";
 const REPLAY_RECOVERY_KEY_PREFIX = "agentCodeReplayRecovery:";
@@ -62,17 +67,18 @@ const parseSnapshot = (
     return null;
   }
 
-  if (
-    value.isBinary !== undefined &&
-    typeof value.isBinary !== "boolean"
-  ) {
+  if (value.isBinary !== undefined && typeof value.isBinary !== "boolean") {
     return null;
   }
 
   if (value.size !== undefined && typeof value.size !== "number") {
     return null;
   }
-  if (value.unixMode !== undefined && value.unixMode !== null && typeof value.unixMode !== "number") {
+  if (
+    value.unixMode !== undefined &&
+    value.unixMode !== null &&
+    typeof value.unixMode !== "number"
+  ) {
     return null;
   }
 
@@ -108,10 +114,8 @@ const parseCheckpointFile = (
     !isOptionalString(value.mountName) ||
     !isOptionalString(value.workspacePath) ||
     !isOptionalString(value.workspaceScope) ||
-    (
-      value.allowOutsideWorkspace !== undefined &&
-      typeof value.allowOutsideWorkspace !== "boolean"
-    )
+    (value.allowOutsideWorkspace !== undefined &&
+      typeof value.allowOutsideWorkspace !== "boolean")
   ) {
     return null;
   }
@@ -154,7 +158,9 @@ const parseCheckpoint = (value: unknown): AgentCodeCheckpoint | null => {
 
   const files = value.files
     .map(parseCheckpointFile)
-    .filter((file): file is AgentCodeCheckpoint["files"][number] => Boolean(file));
+    .filter((file): file is AgentCodeCheckpoint["files"][number] =>
+      Boolean(file),
+    );
   if (files.length !== value.files.length) {
     return null;
   }
@@ -172,7 +178,9 @@ const parseCheckpoint = (value: unknown): AgentCodeCheckpoint | null => {
   };
 };
 
-const parseCheckpoints = (raw: string | null | undefined): AgentCodeCheckpoint[] => {
+const parseCheckpoints = (
+  raw: string | null | undefined,
+): AgentCodeCheckpoint[] => {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -241,7 +249,9 @@ export const loadAgentCodeCheckpointHistory = async (
 ): Promise<AgentCodeCheckpointHistory> => {
   if (tauriIpc.isTauriAvailable()) {
     try {
-      const record = await tauriIpc.dbGetAppSetting(getStorageKey(conversationId));
+      const record = await tauriIpc.dbGetAppSetting(
+        getStorageKey(conversationId),
+      );
       return parseCheckpointHistory(record?.value_json ?? null);
     } catch {
       return parseCheckpointHistory(readLocalStorageRaw(conversationId));
@@ -267,42 +277,44 @@ export const saveAgentCodeCheckpoints = async (
     0,
     sorted.length - MAX_CHECKPOINTS_PER_CONVERSATION,
   );
-  const trimmed =
-    overflowCount > 0 ? sorted.slice(overflowCount) : sorted;
+  const trimmed = overflowCount > 0 ? sorted.slice(overflowCount) : sorted;
 
-  const previous = checkpointWriteQueues.get(conversationId) ?? Promise.resolve();
-  const write = previous.catch(() => undefined).then(async () => {
-    const previousRaw = await (tauriIpc.isTauriAvailable()
-      ? tauriIpc
-          .dbGetAppSetting(getStorageKey(conversationId))
-          .then((record) => record?.value_json ?? null)
-          .catch(() => readLocalStorageRaw(conversationId))
-      : Promise.resolve(readLocalStorageRaw(conversationId)));
-    const previousOldestCompleteSequence =
-      parseCheckpointHistory(previousRaw).oldestCompleteSequence;
-    let oldestCompleteSequence = previousOldestCompleteSequence;
-    if (overflowCount > 0 && trimmed.length > 0) {
-      oldestCompleteSequence = trimmed[0].sequence;
-    }
-    const serialized = JSON.stringify({
-      version: STORED_CHECKPOINTS_VERSION,
-      checkpoints: trimmed,
-      oldestCompleteSequence,
-    });
-
-    if (tauriIpc.isTauriAvailable()) {
-      // A desktop checkpoint is part of the durable replay record. Falling back
-      // to browser storage here would make a successful replay impossible after
-      // a restart, so surface the database failure to the caller instead.
-      await tauriIpc.dbSetAppSetting({
-        key: getStorageKey(conversationId),
-        valueJson: serialized,
+  const previous =
+    checkpointWriteQueues.get(conversationId) ?? Promise.resolve();
+  const write = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const previousRaw = await (tauriIpc.isTauriAvailable()
+        ? tauriIpc
+            .dbGetAppSetting(getStorageKey(conversationId))
+            .then((record) => record?.value_json ?? null)
+            .catch(() => readLocalStorageRaw(conversationId))
+        : Promise.resolve(readLocalStorageRaw(conversationId)));
+      const previousOldestCompleteSequence =
+        parseCheckpointHistory(previousRaw).oldestCompleteSequence;
+      let oldestCompleteSequence = previousOldestCompleteSequence;
+      if (overflowCount > 0 && trimmed.length > 0) {
+        oldestCompleteSequence = trimmed[0].sequence;
+      }
+      const serialized = JSON.stringify({
+        version: STORED_CHECKPOINTS_VERSION,
+        checkpoints: trimmed,
+        oldestCompleteSequence,
       });
-      return;
-    }
 
-    writeLocalStorage(conversationId, serialized);
-  });
+      if (tauriIpc.isTauriAvailable()) {
+        // A desktop checkpoint is part of the durable replay record. Falling back
+        // to browser storage here would make a successful replay impossible after
+        // a restart, so surface the database failure to the caller instead.
+        await tauriIpc.dbSetAppSetting({
+          key: getStorageKey(conversationId),
+          valueJson: serialized,
+        });
+        return;
+      }
+
+      writeLocalStorage(conversationId, serialized);
+    });
   checkpointWriteQueues.set(conversationId, write);
   try {
     await write;
@@ -321,8 +333,7 @@ export const clearAgentCodeCheckpoints = (conversationId: string): void => {
 const getConversationMessageIndex = (
   messages: ChatMessage[],
   messageId: string,
-): number =>
-  messages.findIndex((message) => message.id === messageId);
+): number => messages.findIndex((message) => message.id === messageId);
 
 const copySnapshot = (
   snapshot: AgentCodeCheckpointFileSnapshot,
@@ -360,6 +371,16 @@ const readCurrentSnapshot = async (
   file: AgentCodeReplayPreviewFile,
 ): Promise<AgentCodeCheckpointFileSnapshot> => {
   if (!tauriIpc.isTauriAvailable()) {
+    if (canUseRemoteKernel() && file.projectId && file.workspacePath) {
+      return readRemoteWorkspaceCheckpointSnapshot({
+        mode: file.workspaceScope === "metadata" ? "Architect" : "Implement",
+        path: file.realPath,
+        projectId: file.projectId,
+        workspacePath: file.workspacePath,
+        workspaceScope:
+          file.workspaceScope === "metadata" ? "metadata" : undefined,
+      });
+    }
     return file.expectedCurrent
       ? copySnapshot(file.expectedCurrent)
       : copySnapshot(file.target);
@@ -367,8 +388,7 @@ const readCurrentSnapshot = async (
 
   const commonOptions = {
     workspaceScope: (file.workspaceScope || undefined) as
-      | tauriIpc.WorkspaceScope
-      | undefined,
+      tauriIpc.WorkspaceScope | undefined,
     workspacePath: file.workspacePath ?? undefined,
   };
 
@@ -450,11 +470,15 @@ export const buildAgentCodeReplayPreview = (
 
   const keptCheckpoints = sortedCheckpoints.filter((checkpoint) => {
     const assistantIndex = getCheckpointMessageIndex(checkpoint);
-    return typeof assistantIndex === "number" && assistantIndex < targetMessageIndex;
+    return (
+      typeof assistantIndex === "number" && assistantIndex < targetMessageIndex
+    );
   });
   const undoneCheckpoints = sortedCheckpoints.filter((checkpoint) => {
     const assistantIndex = getCheckpointMessageIndex(checkpoint);
-    return typeof assistantIndex === "number" && assistantIndex > targetMessageIndex;
+    return (
+      typeof assistantIndex === "number" && assistantIndex > targetMessageIndex
+    );
   });
 
   if (undoneCheckpoints.length === 0) {
@@ -471,7 +495,10 @@ export const buildAgentCodeReplayPreview = (
     const keptMinimumSequence = keptCheckpoints.length
       ? Math.min(...keptCheckpoints.map((checkpoint) => checkpoint.sequence))
       : null;
-    if (keptMinimumSequence === null || keptMinimumSequence < oldestCompleteSequence) {
+    if (
+      keptMinimumSequence === null ||
+      keptMinimumSequence < oldestCompleteSequence
+    ) {
       throw new Error(
         `Cannot rewind conversation ${conversationId} to message ${messageId}: durable checkpoint history before sequence ${oldestCompleteSequence} was compacted, so this earlier target is no longer fully recoverable.`,
       );
@@ -536,18 +563,20 @@ export const buildAgentCodeReplayPreview = (
   }
 
   const affectedFiles = Array.from(affectedRealPaths).map((realPath) => {
-    const target = targetSnapshotByPath.get(realPath) ?? baselineByPath.get(realPath);
+    const target =
+      targetSnapshotByPath.get(realPath) ?? baselineByPath.get(realPath);
     if (!target) {
       throw new Error(`Missing checkpoint target for ${realPath}`);
     }
     const history = undoneHistoryByPath.get(realPath);
-    const status = history?.firstBeforeExists === false
-      ? "created"
-      : history?.deletedAfterTarget && target.target.exists
-        ? "deleted"
-      : target.target.exists
-        ? "modified"
-        : "deleted";
+    const status =
+      history?.firstBeforeExists === false
+        ? "created"
+        : history?.deletedAfterTarget && target.target.exists
+          ? "deleted"
+          : target.target.exists
+            ? "modified"
+            : "deleted";
     return {
       ...target,
       action: target.target.exists
@@ -604,10 +633,73 @@ const restoreReplaySnapshot = async (
   snapshot: AgentCodeCheckpointFileSnapshot,
   expectedCurrent?: AgentCodeCheckpointFileSnapshot,
 ): Promise<string | null> => {
+  if (
+    !tauriIpc.isTauriAvailable() &&
+    canUseRemoteKernel() &&
+    file.projectId &&
+    file.workspacePath
+  ) {
+    const mode = file.workspaceScope === "metadata" ? "Architect" : "Implement";
+    const current = await readRemoteWorkspaceCheckpointSnapshot({
+      mode,
+      path: file.realPath,
+      projectId: file.projectId,
+      workspacePath: file.workspacePath,
+      workspaceScope:
+        file.workspaceScope === "metadata" ? "metadata" : undefined,
+    });
+    if (!snapshot.exists) {
+      if (!current.exists) return null;
+      await executeRemoteWorkspaceTool({
+        mode,
+        toolId: "delete",
+        args: {
+          path: file.realPath,
+          expected_revision: current.revision,
+        },
+        projectId: file.projectId,
+        workspacePath: file.workspacePath,
+        workspaceScope:
+          file.workspaceScope === "metadata" ? "metadata" : undefined,
+        focusedProjectId: file.projectId,
+      });
+      return null;
+    }
+    if (snapshot.content === null) {
+      throw new Error(
+        `Cannot restore ${file.path}: checkpoint content is missing.`,
+      );
+    }
+    const result = await executeRemoteWorkspaceTool({
+      mode,
+      toolId: "write",
+      args: {
+        path: file.realPath,
+        content: snapshot.content,
+        create_dirs: true,
+        expected_revision: current.exists ? current.revision : "absent",
+        unix_mode: snapshot.unixMode ?? undefined,
+      },
+      projectId: file.projectId,
+      workspacePath: file.workspacePath,
+      workspaceScope:
+        file.workspaceScope === "metadata" ? "metadata" : undefined,
+      focusedProjectId: file.projectId,
+    });
+    try {
+      const parsed = JSON.parse(result) as {
+        files?: Array<{ validation?: { revision?: unknown } }>;
+      };
+      const revision = parsed.files?.[0]?.validation?.revision;
+      return typeof revision === "string" ? revision : null;
+    } catch {
+      return null;
+    }
+  }
+
   const commonOptions = {
     workspaceScope: (file.workspaceScope || undefined) as
-      | tauriIpc.WorkspaceScope
-      | undefined,
+      tauriIpc.WorkspaceScope | undefined,
     workspacePath: file.workspacePath ?? undefined,
   };
 
@@ -624,7 +716,9 @@ const restoreReplaySnapshot = async (
   }
 
   if (snapshot.content === null) {
-    throw new Error(`Cannot restore ${file.path}: checkpoint content is missing.`);
+    throw new Error(
+      `Cannot restore ${file.path}: checkpoint content is missing.`,
+    );
   }
 
   const result = await tauriIpc.fsWriteFile({
@@ -634,7 +728,7 @@ const restoreReplaySnapshot = async (
     allowOutsideWorkspace: false,
     expectedRevision: expectedCurrent
       ? expectedCurrent.exists
-        ? expectedCurrent.revision ?? undefined
+        ? (expectedCurrent.revision ?? undefined)
         : "absent"
       : undefined,
     unixMode: snapshot.unixMode ?? undefined,
@@ -738,7 +832,9 @@ export const buildAgentCodeReplayRollbackPreview = (
   ...preview,
   affectedFiles: preview.affectedFiles.map((file) => {
     if (!file.current) {
-      throw new Error(`Cannot prepare replay recovery for ${file.path}: current snapshot is missing.`);
+      throw new Error(
+        `Cannot prepare replay recovery for ${file.path}: current snapshot is missing.`,
+      );
     }
     return {
       ...file,
@@ -762,8 +858,13 @@ export const recoverAgentCodeReplayPreview = async (
       if (snapshotsEqual(current, file.target)) {
         continue;
       }
-      if (!file.expectedCurrent || !snapshotsEqual(current, file.expectedCurrent)) {
-        throw new Error("the file differs from both the original and rewound snapshots");
+      if (
+        !file.expectedCurrent ||
+        !snapshotsEqual(current, file.expectedCurrent)
+      ) {
+        throw new Error(
+          "the file differs from both the original and rewound snapshots",
+        );
       }
       await restoreReplaySnapshot(file, file.target, current);
     } catch (error) {

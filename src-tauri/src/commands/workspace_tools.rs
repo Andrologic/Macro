@@ -2,9 +2,9 @@ use super::{
     apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
     commit_and_validate_pending_file_changes_with_create_dirs, compute_line_change_stats,
     exact_edit_match_error, format_with_line_numbers, fs, join_text_lines, json_arg_bool,
-    json_arg_string, json_arg_string_map, json_arg_u32, normalize_tool_map_path, parse_apply_patch,
-    resolve_validated_tool_path, CommandError, CommandResult, ParsedPatchOperation,
-    PendingFileChange,
+    json_arg_string, json_arg_string_map, json_arg_u32, mutation_response_fields,
+    normalize_tool_map_path, parse_apply_patch, resolve_validated_tool_path, CommandError,
+    CommandResult, ParsedPatchOperation, PendingFileChange,
 };
 use crate::core::tool_policy::validate_tool_execution;
 use glob::Pattern;
@@ -824,6 +824,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
     mounts: &[WorkspaceProjectMount],
     focused_project_id: Option<&str>,
     cancellation: Option<Arc<super::ToolCancellation>>,
+    capture_checkpoint_snapshots: bool,
 ) -> CommandResult<VirtualToolResponse> {
     if mounts.is_empty() {
         return Ok(None);
@@ -1083,21 +1084,25 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 additions: content.lines().count(),
                 deletions: 0,
                 expected_revision,
+                requested_unix_mode: None,
             };
             commit_and_validate_pending_file_changes_with_create_dirs(
                 vec![change],
-                serde_json::Map::from_iter([
-                    ("path".to_string(), Value::String(display_path)),
-                    (
-                        "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(bytes_written)),
-                    ),
-                    ("created".to_string(), Value::Bool(created)),
-                    (
-                        "project_id".to_string(),
-                        Value::String(mount.project_id.clone()),
-                    ),
-                ]),
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        ("path".to_string(), Value::String(display_path)),
+                        (
+                            "bytes_written".to_string(),
+                            Value::Number(serde_json::Number::from(bytes_written)),
+                        ),
+                        ("created".to_string(), Value::Bool(created)),
+                        (
+                            "project_id".to_string(),
+                            Value::String(mount.project_id.clone()),
+                        ),
+                    ]),
+                ),
                 create_dirs.unwrap_or(true),
             )
             .await
@@ -1168,29 +1173,33 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 additions,
                 deletions,
                 expected_revision: Some(mutation_revision),
+                requested_unix_mode: None,
             };
             commit_and_validate_pending_file_changes(
                 vec![change],
-                serde_json::Map::from_iter([
-                    (
-                        "replacements".to_string(),
-                        Value::Number(serde_json::Number::from(if replace_all {
-                            occurrences as u64
-                        } else {
-                            1
-                        })),
-                    ),
-                    ("path".to_string(), Value::String(display_path)),
-                    (
-                        "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(bytes_written)),
-                    ),
-                    ("created".to_string(), Value::Bool(false)),
-                    (
-                        "project_id".to_string(),
-                        Value::String(mount.project_id.clone()),
-                    ),
-                ]),
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        (
+                            "replacements".to_string(),
+                            Value::Number(serde_json::Number::from(if replace_all {
+                                occurrences as u64
+                            } else {
+                                1
+                            })),
+                        ),
+                        ("path".to_string(), Value::String(display_path)),
+                        (
+                            "bytes_written".to_string(),
+                            Value::Number(serde_json::Number::from(bytes_written)),
+                        ),
+                        ("created".to_string(), Value::Bool(false)),
+                        (
+                            "project_id".to_string(),
+                            Value::String(mount.project_id.clone()),
+                        ),
+                    ]),
+                ),
             )
             .await
             .map(Some)
@@ -1260,16 +1269,20 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 additions: 0,
                 deletions,
                 expected_revision: Some(mutation_revision),
+                requested_unix_mode: None,
             };
             commit_and_validate_pending_file_changes(
                 vec![change],
-                serde_json::Map::from_iter([
-                    ("path".to_string(), Value::String(display_path)),
-                    (
-                        "project_id".to_string(),
-                        Value::String(mount.project_id.clone()),
-                    ),
-                ]),
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        ("path".to_string(), Value::String(display_path)),
+                        (
+                            "project_id".to_string(),
+                            Value::String(mount.project_id.clone()),
+                        ),
+                    ]),
+                ),
             )
             .await
             .map(Some)
@@ -1352,6 +1365,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             additions: new_content.lines().count(),
                             deletions: 0,
                             expected_revision,
+                            requested_unix_mode: None,
                         });
                     }
                     ParsedPatchOperation::Update { path, hunks } => {
@@ -1412,6 +1426,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             additions,
                             deletions,
                             expected_revision: Some(expected_revision),
+                            requested_unix_mode: None,
                         });
                     }
                     ParsedPatchOperation::Delete { path } => {
@@ -1464,6 +1479,7 @@ pub(crate) async fn execute_virtual_workspace_tool(
                             additions: 0,
                             deletions: deletion_count,
                             expected_revision: Some(expected_revision),
+                            requested_unix_mode: None,
                         });
                     }
                 }
@@ -1472,10 +1488,13 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let applied_operations = pending_changes.len() as u64;
             commit_and_validate_pending_file_changes(
                 pending_changes,
-                serde_json::Map::from_iter([(
-                    "applied_operations".to_string(),
-                    Value::Number(serde_json::Number::from(applied_operations)),
-                )]),
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([(
+                        "applied_operations".to_string(),
+                        Value::Number(serde_json::Number::from(applied_operations)),
+                    )]),
+                ),
             )
             .await
             .map(Some)
@@ -1542,6 +1561,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             expected_revision: None,
+            requested_unix_mode: None,
         }
     }
 
@@ -1780,6 +1800,7 @@ mod tests {
             &mounts,
             None,
             None,
+            false,
         )
         .await
         .expect("glob")
@@ -1835,6 +1856,7 @@ mod tests {
             &mounts,
             None,
             None,
+            false,
         )
         .await
         .expect("ast grep")
@@ -1878,6 +1900,7 @@ mod tests {
             &mounts,
             None,
             None,
+            false,
         )
         .await
         .expect("edit")
@@ -1902,6 +1925,7 @@ mod tests {
             &mounts,
             None,
             None,
+            false,
         )
         .await
         .expect("write")

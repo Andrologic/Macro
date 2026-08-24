@@ -1255,26 +1255,6 @@ pub async fn write_file_internal_with_revision_and_mode(
     .await
 }
 
-pub(crate) async fn write_file_internal_with_revision_unlocked(
-    workspace: &Path,
-    path: String,
-    content: String,
-    create_dirs: Option<bool>,
-    allow_outside_workspace: Option<bool>,
-    expected_revision: Option<&str>,
-) -> Result<WriteResultDto, BackendError> {
-    write_file_internal_with_revision_and_mode_unlocked(
-        workspace,
-        path,
-        content,
-        create_dirs,
-        allow_outside_workspace,
-        expected_revision,
-        None,
-    )
-    .await
-}
-
 pub(crate) async fn write_file_internal_with_revision_and_mode_unlocked(
     workspace: &Path,
     path: String,
