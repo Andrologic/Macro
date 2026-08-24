@@ -394,7 +394,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', block
         </button>
       </div>
 
-      <pre className="bg-[#1e1e1e] p-3 rounded-b-lg border border-border overflow-x-auto">
+      <pre className="markdown-code-scroll bg-[#1e1e1e] p-3 rounded-b-lg border border-border overflow-x-auto">
         <code
           className="text-sm font-mono whitespace-pre hljs-code"
           dangerouslySetInnerHTML={{ __html: highlighted }}
@@ -519,7 +519,8 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
       const blockKeyRef = useRef(++blockKeySeed);
       const languageMatch = /language-([^\s]+)/i.exec(className || '');
       const language = languageMatch?.[1] || '';
-      const codeText = getTextFromChildren(children).replace(/\n$/, '');
+      const rawCodeText = getTextFromChildren(children);
+      const codeText = rawCodeText.replace(/\n$/, '');
 
       if (language.toLowerCase() === 'mermaid' || language.toLowerCase() === 'mmd') {
         return (
@@ -533,7 +534,7 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
         return <div className="whitespace-pre-wrap text-sm text-muted-foreground">{codeText}</div>;
       }
 
-      const isBlock = !!language || codeText.includes('\n');
+      const isBlock = !!language || rawCodeText.endsWith('\n') || codeText.includes('\n');
       if (isBlock) {
         return (
           <CodeBlock
