@@ -266,11 +266,16 @@ describe('CreateImplementTaskDialog task type help', () => {
     const findButton = (text: string) => Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.includes(text),
     ) as HTMLButtonElement;
+    const compactPanelClass = container.firstElementChild?.getAttribute('data-panel-class');
+    expect(compactPanelClass).toContain('h-[min(46rem,calc(100vh-2rem))]');
+    expect(container.querySelector('[aria-label="Target project"]')?.className).toContain('flex-1');
     expect(container.querySelector('aside')).toBeNull();
     await act(async () => findButton('Resume work').click());
     const resumePanel = container.querySelector('aside[aria-label="Resume work"]');
     expect(resumePanel).not.toBeNull();
-    expect(container.firstElementChild?.getAttribute('data-panel-class')).toContain('max-w-5xl');
+    const expandedPanelClass = container.firstElementChild?.getAttribute('data-panel-class');
+    expect(expandedPanelClass).toContain('max-w-5xl');
+    expect(expandedPanelClass).toContain('h-[min(46rem,calc(100vh-2rem))]');
     expect(container.textContent).toContain('Existing worktrees');
     expect(container.textContent).toContain('Branches without a worktree');
     expect(container.textContent).toContain('feature/in-editor');
