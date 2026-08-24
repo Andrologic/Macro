@@ -14,7 +14,6 @@ import { SkillsView } from './views/SkillsView';
 import { ShortcutsView } from './views/ShortcutsView';
 import { PromptsView } from './views/PromptsView';
 import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
-import { ConfigurationView } from './views/ConfigurationView';
 import { useAppVersion } from '../../hooks/useAppVersion';
 import { Dialog } from '../ui/Dialog';
 
@@ -48,7 +47,6 @@ export const SettingsModal: React.FC = () => {
     { id: 'speech', icon: 'mic', label: t('settings.speech', 'Dictation') },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
     { id: 'skills', icon: 'sparkles', label: t('settings.skills', 'Skills') },
-    { id: 'configuration', icon: 'file-code', label: t('settings.configuration.title', 'JSON configuration') },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
     { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Git workflow' },
     { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
@@ -132,7 +130,6 @@ export const SettingsModal: React.FC = () => {
               {activeSettingsTab === 'speech' && <SpeechSettings />}
               {activeSettingsTab === 'tools' && <ToolsView />}
               {activeSettingsTab === 'skills' && <SkillsView />}
-              {activeSettingsTab === 'configuration' && <ConfigurationView />}
               {activeSettingsTab === 'prompts' && <PromptsView />}
               {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
               {activeSettingsTab === 'shortcuts' && <ShortcutsView />}
