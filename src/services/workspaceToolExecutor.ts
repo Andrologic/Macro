@@ -216,6 +216,63 @@ type PatchWriteRollbackSnapshot = {
   postMutationExpectedRevision?: string;
 };
 
+const rollbackSnapshotsFromBackendPatch = (
+  changes: PatchWriteCommitChange[],
+  beforeSnapshots: AgentCodeCheckpointFileSnapshot[],
+  backendResult: string,
+): PatchWriteRollbackSnapshot[] => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(backendResult);
+  } catch {
+    throw new Error(
+      "The transactional apply_patch backend returned an invalid response; no checkpoint can be recorded safely.",
+    );
+  }
+
+  const files =
+    parsed &&
+    typeof parsed === "object" &&
+    Array.isArray((parsed as { files?: unknown }).files)
+      ? (parsed as { files: unknown[] }).files
+      : null;
+  if (!files || files.length !== changes.length) {
+    throw new Error(
+      "The transactional apply_patch backend returned incomplete file validation; no checkpoint can be recorded safely.",
+    );
+  }
+
+  return changes.map((change, index) => {
+    const file = files[index];
+    const validation =
+      file && typeof file === "object"
+        ? (file as { validation?: unknown }).validation
+        : null;
+    const revision =
+      validation && typeof validation === "object"
+        ? (validation as { revision?: unknown }).revision
+        : null;
+    let postMutationExpectedRevision: string;
+    if (change.newContent === null) {
+      postMutationExpectedRevision = EXPECTED_REVISION_ABSENT;
+    } else if (typeof revision === "string") {
+      postMutationExpectedRevision = revision;
+    } else {
+      throw new Error(
+        `The transactional apply_patch backend did not return the applied revision for ${change.displayPath}; no checkpoint can be recorded safely.`,
+      );
+    }
+
+    const before = beforeSnapshots[index];
+    return {
+      change,
+      existed: before.exists,
+      content: before.content,
+      postMutationExpectedRevision,
+    };
+  });
+};
+
 const formatToolError = (error: unknown): string => {
   if (error instanceof Error) return error.message;
 
@@ -608,31 +665,28 @@ const commitPatchWriteChangesWithRollback = async (
   changes: PatchWriteCommitChange[],
 ): Promise<PatchWriteRollbackSnapshot[]> => {
   const snapshots: PatchWriteRollbackSnapshot[] = [];
-
   for (const change of changes) {
-    const existed = await tauriIpc.fsExists(
-      change.realPath,
-      change.existsOptions,
-    );
+    const existed = await tauriIpc.fsExists(change.realPath, change.existsOptions);
     const current = existed
       ? await tauriIpc.fsReadFileWithOptions({
           path: change.realPath,
           ...change.readOptions,
         })
       : null;
-    const revisionConflict = expectedRevisionConflict(
+    const conflict = expectedRevisionConflict(
       change.displayPath,
       change.expectedRevision ?? null,
       current?.revision,
     );
-    if (revisionConflict) {
-      throw new Error(revisionConflict);
-    }
-    const content = current?.content ?? null;
-    snapshots.push({ change, existed, content });
+    if (conflict) throw new Error(conflict);
+    snapshots.push({
+      change,
+      existed,
+      content: current?.content ?? null,
+    });
   }
 
-  const appliedSnapshots: PatchWriteRollbackSnapshot[] = [];
+  const applied: PatchWriteRollbackSnapshot[] = [];
   try {
     for (const [index, change] of changes.entries()) {
       const snapshot = snapshots[index];
@@ -643,23 +697,21 @@ const commitPatchWriteChangesWithRollback = async (
           ...change.deleteOptions,
         });
         snapshot.postMutationExpectedRevision = EXPECTED_REVISION_ABSENT;
-        appliedSnapshots.push(snapshot);
-        continue;
+      } else {
+        const result = await tauriIpc.fsWriteFile({
+          path: change.realPath,
+          content: change.newContent,
+          createDirs: true,
+          expectedRevision: change.expectedRevision,
+          ...change.writeOptions,
+        });
+        snapshot.postMutationExpectedRevision = result.revision ?? undefined;
       }
-
-      const result = await tauriIpc.fsWriteFile({
-        path: change.realPath,
-        content: change.newContent,
-        createDirs: true,
-        expectedRevision: change.expectedRevision,
-        ...change.writeOptions,
-      });
-      snapshot.postMutationExpectedRevision = result.revision ?? undefined;
-      appliedSnapshots.push(snapshot);
+      applied.push(snapshot);
     }
   } catch (error) {
     try {
-      await rollbackPatchWriteChanges(appliedSnapshots);
+      await rollbackPatchWriteChanges(applied);
     } catch (rollbackError) {
       throw new Error(
         `${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -667,7 +719,6 @@ const commitPatchWriteChangesWithRollback = async (
     }
     throw error;
   }
-
   return snapshots;
 };
 
@@ -1968,6 +2019,9 @@ export const executeWorkspaceTool = async (
       const explicitProjectId = getExplicitToolProjectId(rawArgs, candidates);
       const rawFsPath = sanitizePathInput(toString(rawArgs.path) || ".");
       const rawGitPath = sanitizePathInput(toString(rawArgs.repo_path) || ".");
+      if (/^[\\/]+$/.test(rawFsPath)) {
+        return `Error executing ${toolName}: absolute filesystem roots are outside the virtual workspace. Use "." for the project mount list or a mount-prefixed path.`;
+      }
       const prefixedFsPath =
         rawFsPath && !isAbsolutePath(rawFsPath)
           ? stripProjectAliasPrefix(rawFsPath, candidates)
@@ -2671,8 +2725,7 @@ export const executeWorkspaceTool = async (
           });
         }
 
-        const rollbackSnapshots = await commitPatchWriteChangesWithRollback(
-          pendingChanges.map((change) => ({
+        const backendChanges: PatchWriteCommitChange[] = pendingChanges.map((change) => ({
             displayPath: change.target.displayPath,
             realPath: change.target.realPath,
             newContent: change.newContent,
@@ -2691,8 +2744,22 @@ export const executeWorkspaceTool = async (
             deleteOptions: {
               workspacePath: change.target.candidate.workspacePath,
             },
-          })),
-        );
+          }));
+        const rollbackSnapshots = options.onCodeCheckpoint
+          ? rollbackSnapshotsFromBackendPatch(
+              backendChanges,
+              pendingChanges.map((change) => change.before),
+              await executeBackendTool("apply_patch", {
+                ...rawArgs,
+                expected_revisions: Object.fromEntries(
+                  operations.map((operation, index) => [
+                    operation.path,
+                    pendingChanges[index].expectedRevision,
+                  ]),
+                ),
+              }),
+            )
+          : await commitPatchWriteChangesWithRollback(backendChanges);
 
         const files: PatchChangeRecord[] = [];
         const validationFiles: PatchValidationRecord[] = [];
@@ -2924,13 +2991,8 @@ export const executeWorkspaceTool = async (
         const includeHidden = rawArgs.include_hidden === true;
         const isRegexp = rawArgs.is_regexp === true;
         const includePattern = toString(rawArgs.include_pattern);
-        let matcher: RegExp | null = null;
         if (isRegexp) {
-          try {
-            matcher = new RegExp(query, "i");
-          } catch {
-            return `Invalid regex pattern for grep: ${query}`;
-          }
+          return "Regular-expression grep requires the cancellable native or remote search backend; the JavaScript fallback refuses regex patterns to avoid uninterruptible backtracking.";
         }
 
         const results: Array<{
@@ -3012,9 +3074,7 @@ export const executeWorkspaceTool = async (
             for (let index = 0; index < lines.length; index += 1) {
               if (index % 256 === 0) assertToolExecutionActive();
               const line = lines[index];
-              const match = matcher
-                ? matcher.test(line)
-                : line.toLowerCase().includes(query.toLowerCase());
+              const match = line.toLowerCase().includes(query.toLowerCase());
               if (match) {
                 if (seenMatches < page.offset) {
                   seenMatches += 1;
@@ -3747,8 +3807,7 @@ export const executeWorkspaceTool = async (
         });
       }
 
-      const rollbackSnapshots = await commitPatchWriteChangesWithRollback(
-        pendingChanges.map((change) => ({
+      const backendChanges: PatchWriteCommitChange[] = pendingChanges.map((change) => ({
           displayPath: change.path,
           realPath: change.realPath,
           newContent: change.newContent,
@@ -3771,8 +3830,22 @@ export const executeWorkspaceTool = async (
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
           },
-        })),
-      );
+        }));
+      const rollbackSnapshots = options.onCodeCheckpoint
+        ? rollbackSnapshotsFromBackendPatch(
+            backendChanges,
+            pendingChanges.map((change) => change.before),
+            await executeBackendTool("apply_patch", {
+              ...args,
+              expected_revisions: Object.fromEntries(
+                operations.map((operation, index) => [
+                  operation.path,
+                  pendingChanges[index].expectedRevision,
+                ]),
+              ),
+            }),
+          )
+        : await commitPatchWriteChangesWithRollback(backendChanges);
 
       const files: PatchChangeRecord[] = [];
       const validationFiles: PatchValidationRecord[] = [];
@@ -3981,6 +4054,9 @@ export const executeWorkspaceTool = async (
       const includeHidden = args.include_hidden === true;
       const isRegexp = args.is_regexp === true;
       const includePattern = toString(args.include_pattern);
+      if (isRegexp) {
+        return "Regular-expression grep requires the cancellable native or remote search backend; the JavaScript fallback refuses regex patterns to avoid uninterruptible backtracking.";
+      }
       const files = (await readAllCandidateFiles(
         includeHidden,
         mode,
@@ -3989,14 +4065,6 @@ export const executeWorkspaceTool = async (
       )).sort((left, right) =>
         compareToolPaths(left.relative_path, right.relative_path),
       );
-      let matcher: RegExp | null = null;
-      if (isRegexp) {
-        try {
-          matcher = new RegExp(query, "i");
-        } catch {
-          return `Invalid regex pattern for grep: ${query}`;
-        }
-      }
       const results: Array<{
         path: string;
         line: number;
@@ -4053,9 +4121,7 @@ export const executeWorkspaceTool = async (
         for (let index = 0; index < lines.length; index += 1) {
           if (index % 256 === 0) assertToolExecutionActive();
           const line = lines[index];
-          const match = matcher
-            ? matcher.test(line)
-            : line.toLowerCase().includes(query.toLowerCase());
+          const match = line.toLowerCase().includes(query.toLowerCase());
           if (match) {
             if (seenMatches < page.offset) {
               seenMatches += 1;

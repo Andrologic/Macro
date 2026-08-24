@@ -2134,12 +2134,14 @@ const FRONTEND_RELAY_GIT_MUTATION_IDS = new Set([
   'git_reset',
   'git_stash',
 ]);
+const FRONTEND_RELAY_PAGED_GIT_READ_IDS = new Set([
+  'git_branch_list',
+  'git_get_tree',
+]);
 const TOOL_HOST_GIT_READ_IDS = new Set([
   'git_status',
   'git_log',
-  'git_branch_list',
   'git_diff',
-  'git_get_tree',
 ]);
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
@@ -2147,6 +2149,7 @@ const isFrontendRelayToolId = (toolId: string): boolean =>
   toolId === 'read_file' ||
   FRONTEND_RELAY_WORKSPACE_TOOL_IDS.has(toolId) ||
   FRONTEND_RELAY_GIT_MUTATION_IDS.has(toolId) ||
+  FRONTEND_RELAY_PAGED_GIT_READ_IDS.has(toolId) ||
   toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
   toolId.startsWith('plan_') ||

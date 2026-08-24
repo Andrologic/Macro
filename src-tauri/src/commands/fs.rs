@@ -30,9 +30,28 @@ const MAX_FILE_SEARCH_RESULTS: usize = 100;
 const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
 const WSL_FS_TIMEOUT: Duration = Duration::from_secs(5);
 const WSL_FS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-const WSL_LIST_LIMIT: usize = 20_000;
+const DIRECTORY_LIST_LIMIT: usize = 20_000;
 const WSL_DEFAULT_RECURSIVE_DEPTH: u32 = 8;
 const WSL_MAX_RECURSIVE_DEPTH: u32 = 32;
+
+fn ensure_directory_list_within_limit(count: usize, recursive: bool) -> Result<(), BackendError> {
+    if count <= DIRECTORY_LIST_LIMIT {
+        return Ok(());
+    }
+    Err(BackendError::Filesystem {
+        message: if recursive {
+            format!(
+                "Directory listing exceeds the safety limit of {} entries. Narrow the path, glob pattern, or recursion depth before retrying.",
+                DIRECTORY_LIST_LIMIT
+            )
+        } else {
+            format!(
+                "Directory listing exceeds the safety limit of {} entries. Narrow the path before retrying.",
+                DIRECTORY_LIST_LIMIT
+            )
+        },
+    })
+}
 
 // Default ignored directories/patterns
 static DEFAULT_IGNORED: [&str; 12] = [
@@ -633,7 +652,7 @@ done | head -n "$limit"
             resolved.linux_path.clone(),
             depth,
             include_hidden_flag,
-            WSL_LIST_LIMIT.saturating_add(1).to_string(),
+            DIRECTORY_LIST_LIMIT.saturating_add(1).to_string(),
         ],
         WSL_FS_TIMEOUT,
     )
@@ -678,14 +697,7 @@ done | head -n "$limit"
         });
     }
 
-    if entries.len() > WSL_LIST_LIMIT {
-        return Err(BackendError::Filesystem {
-            message: format!(
-                "Directory listing exceeds the WSL safety limit of {} entries. Narrow the path, glob pattern, or recursion depth before retrying.",
-                WSL_LIST_LIMIT
-            ),
-        });
-    }
+    ensure_directory_list_within_limit(entries.len(), recursive.unwrap_or(false))?;
 
     entries.sort_by(|a, b| {
         let a_is_dir = a.kind == "directory";
@@ -1382,6 +1394,7 @@ pub async fn list_dir_internal(
 
             let dto = create_dir_entry_dto(entry_path, workspace, &validated_path).await?;
             entries.push(dto);
+            ensure_directory_list_within_limit(entries.len(), true)?;
         }
     } else {
         // Non-recursive listing using read_dir
@@ -1398,6 +1411,7 @@ pub async fn list_dir_internal(
 
             let dto = create_dir_entry_dto(&entry_path, workspace, &validated_path).await?;
             entries.push(dto);
+            ensure_directory_list_within_limit(entries.len(), false)?;
         }
     }
 
@@ -3090,6 +3104,18 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_directory_list_safety_limit_is_fail_closed() {
+        assert!(ensure_directory_list_within_limit(DIRECTORY_LIST_LIMIT, true).is_ok());
+        let recursive_error =
+            ensure_directory_list_within_limit(DIRECTORY_LIST_LIMIT + 1, true).unwrap_err();
+        assert!(recursive_error.to_string().contains("recursion depth"));
+
+        let shallow_error =
+            ensure_directory_list_within_limit(DIRECTORY_LIST_LIMIT + 1, false).unwrap_err();
+        assert!(shallow_error.to_string().contains("Narrow the path"));
     }
 
     #[tokio::test]

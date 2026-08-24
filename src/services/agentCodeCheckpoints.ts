@@ -10,7 +10,17 @@ import * as tauriIpc from "./tauriIpc";
 const STORAGE_KEY_PREFIX = "agentCodeCheckpoints:";
 const REPLAY_RECOVERY_KEY_PREFIX = "agentCodeReplayRecovery:";
 const MAX_CHECKPOINTS_PER_CONVERSATION = 200;
+const STORED_CHECKPOINTS_VERSION = 2;
 const checkpointWriteQueues = new Map<string, Promise<void>>();
+
+export interface AgentCodeCheckpointHistory {
+  checkpoints: AgentCodeCheckpoint[];
+  oldestCompleteSequence: number | null;
+}
+
+export interface AgentCodeReplayCoverage {
+  oldestCompleteSequence?: number | null;
+}
 
 const getStorageKey = (conversationId: string): string =>
   `${STORAGE_KEY_PREFIX}${conversationId}`;
@@ -173,60 +183,121 @@ const parseCheckpoints = (raw: string | null | undefined): AgentCodeCheckpoint[]
   }
 };
 
-const readLocalStorage = (conversationId: string): AgentCodeCheckpoint[] => {
-  if (typeof window === "undefined" || !window.localStorage) return [];
-  return parseCheckpoints(window.localStorage.getItem(getStorageKey(conversationId)));
+const parseCheckpointHistory = (
+  raw: string | null | undefined,
+): AgentCodeCheckpointHistory => {
+  if (!raw) {
+    return { checkpoints: [], oldestCompleteSequence: null };
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return {
+        checkpoints: parseCheckpoints(raw),
+        oldestCompleteSequence: null,
+      };
+    }
+
+    if (!isRecord(parsed) || !Array.isArray(parsed.checkpoints)) {
+      return { checkpoints: [], oldestCompleteSequence: null };
+    }
+
+    return {
+      checkpoints: parsed.checkpoints
+        .map(parseCheckpoint)
+        .filter((checkpoint): checkpoint is AgentCodeCheckpoint =>
+          Boolean(checkpoint),
+        ),
+      oldestCompleteSequence:
+        typeof parsed.oldestCompleteSequence === "number"
+          ? parsed.oldestCompleteSequence
+          : null,
+    };
+  } catch {
+    return { checkpoints: [], oldestCompleteSequence: null };
+  }
+};
+
+const readLocalStorageRaw = (conversationId: string): string | null => {
+  if (typeof window === "undefined" || !window.localStorage) return null;
+  return window.localStorage.getItem(getStorageKey(conversationId));
 };
 
 const writeLocalStorage = (
   conversationId: string,
-  checkpoints: AgentCodeCheckpoint[],
+  serialized: string,
 ): void => {
   if (typeof window === "undefined" || !window.localStorage) return;
-  window.localStorage.setItem(
-    getStorageKey(conversationId),
-    JSON.stringify(checkpoints),
-  );
+  window.localStorage.setItem(getStorageKey(conversationId), serialized);
+};
+
+export const loadAgentCodeCheckpointHistory = async (
+  conversationId: string,
+): Promise<AgentCodeCheckpointHistory> => {
+  if (tauriIpc.isTauriAvailable()) {
+    try {
+      const record = await tauriIpc.dbGetAppSetting(getStorageKey(conversationId));
+      return parseCheckpointHistory(record?.value_json ?? null);
+    } catch {
+      return parseCheckpointHistory(readLocalStorageRaw(conversationId));
+    }
+  }
+
+  return parseCheckpointHistory(readLocalStorageRaw(conversationId));
 };
 
 export const loadAgentCodeCheckpoints = async (
   conversationId: string,
-): Promise<AgentCodeCheckpoint[]> => {
-  if (tauriIpc.isTauriAvailable()) {
-    try {
-      const record = await tauriIpc.dbGetAppSetting(getStorageKey(conversationId));
-      return parseCheckpoints(record?.value_json ?? null);
-    } catch {
-      return readLocalStorage(conversationId);
-    }
-  }
-
-  return readLocalStorage(conversationId);
-};
+): Promise<AgentCodeCheckpoint[]> =>
+  (await loadAgentCodeCheckpointHistory(conversationId)).checkpoints;
 
 export const saveAgentCodeCheckpoints = async (
   conversationId: string,
   checkpoints: AgentCodeCheckpoint[],
 ): Promise<void> => {
-  const trimmed = checkpoints
+  const sorted = checkpoints
     .slice()
-    .sort((left, right) => left.sequence - right.sequence)
-    .slice(-MAX_CHECKPOINTS_PER_CONVERSATION);
+    .sort((left, right) => left.sequence - right.sequence);
+  const overflowCount = Math.max(
+    0,
+    sorted.length - MAX_CHECKPOINTS_PER_CONVERSATION,
+  );
+  const trimmed =
+    overflowCount > 0 ? sorted.slice(overflowCount) : sorted;
 
   const previous = checkpointWriteQueues.get(conversationId) ?? Promise.resolve();
   const write = previous.catch(() => undefined).then(async () => {
+    const previousRaw = await (tauriIpc.isTauriAvailable()
+      ? tauriIpc
+          .dbGetAppSetting(getStorageKey(conversationId))
+          .then((record) => record?.value_json ?? null)
+          .catch(() => readLocalStorageRaw(conversationId))
+      : Promise.resolve(readLocalStorageRaw(conversationId)));
+    const previousOldestCompleteSequence =
+      parseCheckpointHistory(previousRaw).oldestCompleteSequence;
+    let oldestCompleteSequence = previousOldestCompleteSequence;
+    if (overflowCount > 0 && trimmed.length > 0) {
+      oldestCompleteSequence = trimmed[0].sequence;
+    }
+    const serialized = JSON.stringify({
+      version: STORED_CHECKPOINTS_VERSION,
+      checkpoints: trimmed,
+      oldestCompleteSequence,
+    });
+
     if (tauriIpc.isTauriAvailable()) {
       // A desktop checkpoint is part of the durable replay record. Falling back
       // to browser storage here would make a successful replay impossible after
       // a restart, so surface the database failure to the caller instead.
       await tauriIpc.dbSetAppSetting({
         key: getStorageKey(conversationId),
-        valueJson: JSON.stringify(trimmed),
+        valueJson: serialized,
       });
       return;
     }
 
-    writeLocalStorage(conversationId, trimmed);
+    writeLocalStorage(conversationId, serialized);
   });
   checkpointWriteQueues.set(conversationId, write);
   try {
@@ -321,6 +392,7 @@ export const buildAgentCodeReplayPreview = (
   messageId: string,
   messages: ChatMessage[],
   checkpoints: AgentCodeCheckpoint[],
+  coverage?: AgentCodeReplayCoverage,
 ): AgentCodeReplayPreview => {
   const targetMessageIndex = getConversationMessageIndex(messages, messageId);
   if (targetMessageIndex < 0) {
@@ -385,6 +457,18 @@ export const buildAgentCodeReplayPreview = (
       targetCheckpointId: keptCheckpoints.at(-1)?.id ?? null,
       affectedFiles: [],
     };
+  }
+
+  const oldestCompleteSequence = coverage?.oldestCompleteSequence ?? null;
+  if (oldestCompleteSequence !== null) {
+    const keptMinimumSequence = keptCheckpoints.length
+      ? Math.min(...keptCheckpoints.map((checkpoint) => checkpoint.sequence))
+      : null;
+    if (keptMinimumSequence === null || keptMinimumSequence < oldestCompleteSequence) {
+      throw new Error(
+        `Cannot rewind conversation ${conversationId} to message ${messageId}: durable checkpoint history before sequence ${oldestCompleteSequence} was compacted, so this earlier target is no longer fully recoverable.`,
+      );
+    }
   }
 
   const targetSnapshotByPath = new Map<string, AgentCodeReplayPreviewFile>();
@@ -512,7 +596,7 @@ const restoreReplaySnapshot = async (
   file: AgentCodeReplayPreviewFile,
   snapshot: AgentCodeCheckpointFileSnapshot,
   expectedCurrent?: AgentCodeCheckpointFileSnapshot,
-): Promise<void> => {
+): Promise<string | null> => {
   const commonOptions = {
     workspaceScope: (file.workspaceScope || undefined) as
       | tauriIpc.WorkspaceScope
@@ -529,14 +613,14 @@ const restoreReplaySnapshot = async (
         ...commonOptions,
       });
     }
-    return;
+    return null;
   }
 
   if (snapshot.content === null) {
     throw new Error(`Cannot restore ${file.path}: checkpoint content is missing.`);
   }
 
-  await tauriIpc.fsWriteFile({
+  const result = await tauriIpc.fsWriteFile({
     path: file.realPath,
     content: snapshot.content,
     createDirs: true,
@@ -547,6 +631,31 @@ const restoreReplaySnapshot = async (
         : "absent"
       : undefined,
     ...commonOptions,
+  });
+  return result.revision ?? null;
+};
+
+interface RestoredReplayEntry {
+  file: AgentCodeReplayPreviewFile;
+  current: AgentCodeCheckpointFileSnapshot;
+  appliedRevision: string | null;
+}
+
+const compensateRestoredEntry = async (
+  entry: RestoredReplayEntry,
+): Promise<void> => {
+  if (!entry.file.target.exists) {
+    await restoreReplaySnapshot(entry.file, entry.current, entry.file.target);
+    return;
+  }
+  if (!entry.appliedRevision) {
+    throw new Error(
+      `the revision applied by the restore is unknown for ${entry.file.path}, refusing an unguarded rollback`,
+    );
+  }
+  await restoreReplaySnapshot(entry.file, entry.current, {
+    ...entry.file.target,
+    revision: entry.appliedRevision,
   });
 };
 
@@ -571,22 +680,23 @@ export const restoreAgentCodeReplayPreview = async (
     );
   }
 
-  const restored: Array<{
-    file: AgentCodeReplayPreviewFile;
-    current: AgentCodeCheckpointFileSnapshot;
-  }> = [];
+  const restored: RestoredReplayEntry[] = [];
   try {
     for (const { file, current } of currentSnapshots) {
-      await restoreReplaySnapshot(file, file.target, current);
-      restored.push({ file, current });
+      const appliedRevision = await restoreReplaySnapshot(
+        file,
+        file.target,
+        current,
+      );
+      restored.push({ file, current, appliedRevision });
     }
   } catch (error) {
     const rollbackFailures: string[] = [];
-    for (const { file, current } of restored.reverse()) {
+    for (const entry of restored.reverse()) {
       try {
-        await restoreReplaySnapshot(file, current, file.target);
+        await compensateRestoredEntry(entry);
       } catch (rollbackError) {
-        rollbackFailures.push(`${file.path}: ${String(rollbackError)}`);
+        rollbackFailures.push(`${entry.file.path}: ${String(rollbackError)}`);
       }
     }
     if (rollbackFailures.length > 0) {
@@ -599,11 +709,11 @@ export const restoreAgentCodeReplayPreview = async (
 
   return async () => {
     const rollbackFailures: string[] = [];
-    for (const { file, current } of restored.slice().reverse()) {
+    for (const entry of restored.slice().reverse()) {
       try {
-        await restoreReplaySnapshot(file, current, file.target);
+        await compensateRestoredEntry(entry);
       } catch (error) {
-        rollbackFailures.push(`${file.path}: ${String(error)}`);
+        rollbackFailures.push(`${entry.file.path}: ${String(error)}`);
       }
     }
     if (rollbackFailures.length > 0) {

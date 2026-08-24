@@ -293,4 +293,337 @@ describe("agentCodeCheckpoints", () => {
     ]);
     mock.restore();
   });
+
+  it("preserves an external winner when compensating a failed multi-file restore with revisionless legacy targets", async () => {
+    const disk = new Map<string, { content: string; revision: string }>([
+      ["/repo/src/a.ts", { content: "after-a", revision: "after-a-rev" }],
+      ["/repo/src/b.ts", { content: "after-b", revision: "after-b-rev" }],
+    ]);
+    const writeAttempts: Array<Record<string, unknown>> = [];
+    mock.module("./tauriIpc", () => ({
+      isTauriAvailable: () => true,
+      fsExists: async () => true,
+      fsReadFileWithOptions: async (params: { path: string }) => {
+        const entry = disk.get(params.path)!;
+        return {
+          content: entry.content,
+          revision: entry.revision,
+          is_binary: false,
+          size: entry.content.length,
+          encoding: "utf-8",
+          language: "text",
+        };
+      },
+      fsWriteFile: async (params: {
+        path: string;
+        content: string;
+        expectedRevision?: string;
+      }) => {
+        writeAttempts.push(params);
+        const entry = disk.get(params.path);
+        if (
+          params.expectedRevision &&
+          (!entry || entry.revision !== params.expectedRevision)
+        ) {
+          throw new Error(`revision mismatch on ${params.path}`);
+        }
+        if (params.path.endsWith("b.ts")) {
+          throw new Error("b write failed");
+        }
+        const appliedRevision = "applied-a-rev";
+        if (params.path.endsWith("a.ts")) {
+          disk.set("/repo/src/a.ts", {
+            content: "external-a",
+            revision: "external-a-rev",
+          });
+        }
+        return {
+          path: params.path,
+          bytes_written: params.content.length,
+          created: false,
+          skipped: false,
+          revision: appliedRevision,
+        };
+      },
+      fsDelete: async () => undefined,
+    }));
+    const modulePath = "./agentCodeCheckpoints.ts?external-winner-test";
+    const module = await import(/* @vite-ignore */ modulePath);
+
+    await expect(
+      module.restoreAgentCodeReplayPreview({
+        conversationId: "conv-1",
+        messageId: "user-1",
+        targetCheckpointId: "checkpoint-1",
+        affectedFiles: [
+          {
+            path: "src/a.ts",
+            realPath: "/repo/src/a.ts",
+            action: "modify",
+            status: "modified",
+            target: {
+              exists: true,
+              content: "before-a",
+              revision: null,
+            },
+            expectedCurrent: {
+              exists: true,
+              content: "after-a",
+              revision: "after-a-rev",
+            },
+          },
+          {
+            path: "src/b.ts",
+            realPath: "/repo/src/b.ts",
+            action: "modify",
+            status: "modified",
+            target: {
+              exists: true,
+              content: "before-b",
+              revision: null,
+            },
+            expectedCurrent: {
+              exists: true,
+              content: "after-b",
+              revision: "after-b-rev",
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/rollback was incomplete/);
+
+    expect(writeAttempts).toEqual([
+      expect.objectContaining({
+        path: "/repo/src/a.ts",
+        content: "before-a",
+        expectedRevision: "after-a-rev",
+      }),
+      expect.objectContaining({
+        path: "/repo/src/b.ts",
+      }),
+      expect.objectContaining({
+        path: "/repo/src/a.ts",
+        content: "after-a",
+        expectedRevision: "applied-a-rev",
+      }),
+    ]);
+    expect(disk.get("/repo/src/a.ts")).toEqual({
+      content: "external-a",
+      revision: "external-a-rev",
+    });
+    mock.restore();
+  });
+
+  it("refuses an unguarded compensation when the applied revision is missing", async () => {
+    const disk = new Map<string, { content: string; revision: string }>([
+      ["/repo/src/a.ts", { content: "after-a", revision: "after-a-rev" }],
+      ["/repo/src/b.ts", { content: "after-b", revision: "after-b-rev" }],
+    ]);
+    const writeAttempts: Array<Record<string, unknown>> = [];
+    mock.module("./tauriIpc", () => ({
+      isTauriAvailable: () => true,
+      fsExists: async () => true,
+      fsReadFileWithOptions: async (params: { path: string }) => {
+        const entry = disk.get(params.path)!;
+        return {
+          content: entry.content,
+          revision: entry.revision,
+          is_binary: false,
+          size: entry.content.length,
+          encoding: "utf-8",
+          language: "text",
+        };
+      },
+      fsWriteFile: async (params: {
+        path: string;
+        content: string;
+        expectedRevision?: string;
+      }) => {
+        writeAttempts.push(params);
+        const entry = disk.get(params.path);
+        if (
+          params.expectedRevision &&
+          (!entry || entry.revision !== params.expectedRevision)
+        ) {
+          throw new Error(`revision mismatch on ${params.path}`);
+        }
+        if (params.path.endsWith("b.ts")) {
+          throw new Error("b write failed");
+        }
+        disk.set(params.path, {
+          content: params.content,
+          revision: "opaque-restored-rev",
+        });
+        return {
+          path: params.path,
+          bytes_written: params.content.length,
+          created: false,
+          skipped: false,
+        };
+      },
+      fsDelete: async () => undefined,
+    }));
+    const modulePath = "./agentCodeCheckpoints.ts?unguarded-compensation-test";
+    const module = await import(/* @vite-ignore */ modulePath);
+
+    await expect(
+      module.restoreAgentCodeReplayPreview({
+        conversationId: "conv-1",
+        messageId: "user-1",
+        targetCheckpointId: "checkpoint-1",
+        affectedFiles: [
+          {
+            path: "src/a.ts",
+            realPath: "/repo/src/a.ts",
+            action: "modify",
+            status: "modified",
+            target: {
+              exists: true,
+              content: "before-a",
+              revision: null,
+            },
+            expectedCurrent: {
+              exists: true,
+              content: "after-a",
+              revision: "after-a-rev",
+            },
+          },
+          {
+            path: "src/b.ts",
+            realPath: "/repo/src/b.ts",
+            action: "modify",
+            status: "modified",
+            target: {
+              exists: true,
+              content: "before-b",
+              revision: null,
+            },
+            expectedCurrent: {
+              exists: true,
+              content: "after-b",
+              revision: "after-b-rev",
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/refusing an unguarded rollback/);
+
+    expect(
+      writeAttempts.filter((attempt) => attempt.path === "/repo/src/a.ts"),
+    ).toEqual([
+      expect.objectContaining({
+        path: "/repo/src/a.ts",
+        content: "before-a",
+        expectedRevision: "after-a-rev",
+      }),
+    ]);
+    expect(disk.get("/repo/src/a.ts")).toEqual({
+      content: "before-a",
+      revision: "opaque-restored-rev",
+    });
+    mock.restore();
+  });
+
+  it("persists a durable compaction frontier across save and reload", async () => {
+    const settings = new Map<string, string>();
+    const storageKey = "agentCodeCheckpoints:conv-1";
+    mock.module("./tauriIpc", () => ({
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key: string) => {
+        const valueJson = settings.get(key);
+        return valueJson === undefined ? null : { key, value_json: valueJson };
+      },
+      dbSetAppSetting: async ({
+        key,
+        valueJson,
+      }: {
+        key: string;
+        valueJson: string;
+      }) => {
+        settings.set(key, valueJson);
+        return { key, value_json: valueJson };
+      },
+      fsExists: async () => true,
+      fsReadFileWithOptions: async () => {
+        throw new Error("not used");
+      },
+      fsWriteFile: async () => {
+        throw new Error("not used");
+      },
+      fsDelete: async () => undefined,
+    }));
+    const modulePath = "./agentCodeCheckpoints.ts?frontier-test";
+    const module = await import(/* @vite-ignore */ modulePath);
+    const messages = Array.from({ length: 201 }, (_, index) => {
+      const turn = index + 1;
+      return [
+        message(`user-${turn}`, "user", `2026-05-11T10:00:${String(index).padStart(2, "0")}.000Z`),
+        message(
+          `assistant-${turn}`,
+          "assistant",
+          `2026-05-11T10:00:${String(index).padStart(2, "0")}.500Z`,
+        ),
+      ];
+    }).flat();
+    const checkpoints = Array.from({ length: 201 }, (_, index) => {
+      const sequence = index + 1;
+      if (sequence === 1) {
+        return checkpoint(1, "assistant-1", "src/old-created.ts", false, true);
+      }
+      return checkpoint(sequence, `assistant-${sequence}`, `src/file-${sequence}.ts`, true, true);
+    });
+
+    await module.saveAgentCodeCheckpoints("conv-1", checkpoints);
+
+    const persisted = JSON.parse(settings.get(storageKey)!);
+    expect(persisted.version).toBe(2);
+    expect(persisted.checkpoints).toHaveLength(200);
+    expect(persisted.oldestCompleteSequence).toBe(2);
+    expect(persisted.checkpoints[0].sequence).toBe(2);
+
+    const history = await module.loadAgentCodeCheckpointHistory("conv-1");
+    expect(history.checkpoints).toHaveLength(200);
+    expect(history.oldestCompleteSequence).toBe(2);
+
+    expect(() =>
+      module.buildAgentCodeReplayPreview(
+        "conv-1",
+        "user-1",
+        messages,
+        history.checkpoints,
+        { oldestCompleteSequence: history.oldestCompleteSequence },
+      ),
+    ).toThrow(/no longer fully recoverable/);
+
+    const covered = module.buildAgentCodeReplayPreview(
+      "conv-1",
+      "user-150",
+      messages,
+      history.checkpoints,
+      { oldestCompleteSequence: history.oldestCompleteSequence },
+    );
+    expect(covered.targetCheckpointId).toBe("checkpoint-149");
+    expect(covered.affectedFiles).toHaveLength(52);
+    const coveredPaths = covered.affectedFiles.map(
+      (file: { path: string }) => file.path,
+    );
+    expect(coveredPaths).toContain("src/file-150.ts");
+    expect(coveredPaths).toContain("src/file-201.ts");
+    expect(coveredPaths).not.toContain("src/old-created.ts");
+
+    const appended = module.appendAgentCodeCheckpoint(
+      history.checkpoints,
+      checkpoint(202, "assistant-202", "src/file-202.ts", true, true),
+    );
+    await module.saveAgentCodeCheckpoints("conv-1", appended);
+    const reloaded = await module.loadAgentCodeCheckpointHistory("conv-1");
+    expect(reloaded.checkpoints).toHaveLength(200);
+    expect(reloaded.oldestCompleteSequence).toBe(3);
+
+    settings.set(storageKey, JSON.stringify(checkpoints.slice(0, 2)));
+    const legacy = await module.loadAgentCodeCheckpointHistory("conv-1");
+    expect(legacy.checkpoints).toHaveLength(2);
+    expect(legacy.oldestCompleteSequence).toBeNull();
+    mock.restore();
+  });
 });

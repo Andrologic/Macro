@@ -1891,7 +1891,7 @@ pub async fn execute_workspace_tool(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_workspace_tool_controlled(
+pub async fn execute_workspace_tool_controlled(
     default_workspace: PathBuf,
     metadata_workspace: PathBuf,
     git_state: GitState,
@@ -2996,17 +2996,30 @@ async fn execute_workspace_tool_inner(
         }
         "git_branch_list" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
+            let cursor_scope = format!("git_branch_list\0{}", repo_path);
+            let page = tool_output::resolve_tool_page(
+                &args,
+                &cursor_scope,
+                tool_output::GIT_BRANCH_DEFAULT_LIMIT,
+                tool_output::GIT_BRANCH_MAX_LIMIT,
+            )?;
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
-                let branches = git::build_wsl_git_branches(&wsl_repo_path)
-                    .await
-                    .map_err(|error| command_error(error.to_string()))?;
+                let branches =
+                    git::build_wsl_git_branches_tool_page(&wsl_repo_path, page.offset, page.limit)
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
+                let returned = branches.local.len().saturating_add(branches.remote.len());
                 return serde_json::to_string_pretty(&serde_json::json!({
                     "repo_path": repo_path,
                     "local": branches.local,
                     "remote": branches.remote,
-                    "current": branches.current
+                    "current": branches.current,
+                    "limit": page.limit,
+                    "offset": page.offset,
+                    "truncated": branches.has_more,
+                    "next_cursor": branches.has_more.then(|| tool_output::create_tool_cursor(&cursor_scope, page.offset.saturating_add(returned)))
                 }))
                 .map_err(|error| command_error(error.to_string()));
             }
@@ -3024,16 +3037,22 @@ async fn execute_workspace_tool_inner(
                     .lock()
                     .map_err(|_| command_error("Failed to lock repository"))?;
 
-                git::build_git_branches(&repo).map_err(|error| command_error(error.to_string()))
+                git::build_git_branches_tool_page(&repo, page.offset, page.limit)
+                    .map_err(|error| command_error(error.to_string()))
             })
             .await
             .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
 
+            let returned = branches.local.len().saturating_add(branches.remote.len());
             serde_json::to_string_pretty(&serde_json::json!({
                 "repo_path": repo_path,
                 "local": branches.local,
                 "remote": branches.remote,
-                "current": branches.current
+                "current": branches.current,
+                "limit": page.limit,
+                "offset": page.offset,
+                "truncated": branches.has_more,
+                "next_cursor": branches.has_more.then(|| tool_output::create_tool_cursor(&cursor_scope, page.offset.saturating_add(returned)))
             }))
             .map_err(|error| command_error(error.to_string()))
         }
@@ -3150,17 +3169,38 @@ async fn execute_workspace_tool_inner(
         "git_get_tree" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let branch = json_arg_string(&args, "branch");
+            let cursor_scope = format!(
+                "git_get_tree\0{}\0{}",
+                repo_path,
+                branch.as_deref().unwrap_or("HEAD")
+            );
+            let page = tool_output::resolve_tool_page(
+                &args,
+                &cursor_scope,
+                tool_output::GIT_TREE_DEFAULT_LIMIT,
+                tool_output::GIT_TREE_MAX_LIMIT,
+            )?;
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
-                let tree = git::build_wsl_git_tree(&wsl_repo_path, branch.as_deref())
-                    .await
-                    .map_err(|error| command_error(error.to_string()))?;
+                let tree = git::build_wsl_git_tree_tool_page(
+                    &wsl_repo_path,
+                    branch.as_deref(),
+                    page.offset,
+                    page.limit,
+                )
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+                let returned = tree.structure.len();
                 return serde_json::to_string_pretty(&serde_json::json!({
                     "repo_path": repo_path,
                     "branch": tree.branch,
                     "structure": tree.structure,
-                    "modified_files_count": tree.modified_files_count
+                    "modified_files_count": tree.modified_files_count,
+                    "limit": page.limit,
+                    "offset": page.offset,
+                    "truncated": tree.has_more,
+                    "next_cursor": tree.has_more.then(|| tool_output::create_tool_cursor(&cursor_scope, page.offset.saturating_add(returned)))
                 }))
                 .map_err(|error| command_error(error.to_string()));
             }
@@ -3178,17 +3218,22 @@ async fn execute_workspace_tool_inner(
                     .lock()
                     .map_err(|_| command_error("Failed to lock repository"))?;
 
-                git::build_git_tree(&repo, branch.as_deref())
+                git::build_git_tree_tool_page(&repo, branch.as_deref(), page.offset, page.limit)
                     .map_err(|error| command_error(error.to_string()))
             })
             .await
             .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
 
+            let returned = tree.structure.len();
             serde_json::to_string_pretty(&serde_json::json!({
                 "repo_path": repo_path,
                 "branch": tree.branch,
                 "structure": tree.structure,
-                "modified_files_count": tree.modified_files_count
+                "modified_files_count": tree.modified_files_count,
+                "limit": page.limit,
+                "offset": page.offset,
+                "truncated": tree.has_more,
+                "next_cursor": tree.has_more.then(|| tool_output::create_tool_cursor(&cursor_scope, page.offset.saturating_add(returned)))
             }))
             .map_err(|error| command_error(error.to_string()))
         }
