@@ -1338,7 +1338,11 @@ interface FileChangesState {
   resetRightDraft: () => void;
   saveRightDraft: () => Promise<void>;
   goToAdjacentDiff: (direction: 'previous' | 'next') => void;
-  commitStagedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
+  commitStagedChanges: (
+    repositoryId: string,
+    message?: string,
+    internalOptions?: { refreshChanges?: boolean }
+  ) => Promise<CommitTaskChangesResult>;
   commitAllReadyTaskRepositories: (options?: {
     modelConfig?: MetadataModelConfig | null;
     messagesByRepositoryId?: Record<string, string>;
@@ -2315,7 +2319,7 @@ export const createFileChangesStore = (
     state.openDiffModal(repository.id, nextChange.id);
   },
 
-  commitStagedChanges: async (repositoryId, message) => {
+  commitStagedChanges: async (repositoryId, message, internalOptions = {}) => {
     const task = ensureReviewTask(deps);
     const repository = get().getRepository(repositoryId);
     const commitMessage = (
@@ -2410,13 +2414,23 @@ export const createFileChangesStore = (
         lastError: null,
       });
 
-      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      const refreshChanges = internalOptions.refreshChanges !== false;
+      if (refreshChanges) {
+        await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      }
 
       const refreshedState = get();
       const nextRepositories = refreshedState.repositories.map((currentRepository) => (
         currentRepository.id === repositoryId
           ? {
               ...currentRepository,
+              ...(refreshChanges
+                ? {}
+                : {
+                    changes: [],
+                    stagedPaths: [],
+                    commitState: 'committed' as const,
+                  }),
               commitMessageDraft: commitMessage,
               lastCommitHash: hash,
             }
@@ -2532,6 +2546,8 @@ export const createFileChangesStore = (
     }
 
     const commits: CommitTaskChangesResult[] = [];
+    let batchError: unknown = null;
+    let attemptedCommit = false;
 
     for (const repositoryId of targetRepositoryIds) {
       const repository = get().getRepository(repositoryId);
@@ -2551,12 +2567,15 @@ export const createFileChangesStore = (
       }
 
       try {
-        const result = await get().commitStagedChanges(repositoryId, repositoryMessage);
+        attemptedCommit = true;
+        const result = await get().commitStagedChanges(repositoryId, repositoryMessage, {
+          refreshChanges: false,
+        });
         commits.push(result);
       } catch (error) {
         const messageText = toServiceError(error).message;
         const repositoryLabel = repository.projectId || repository.repoPath || repositoryId;
-        throw new Error(
+        batchError = new Error(
           tChanges(
             'implement.errors.repositoryCommitFailed',
             '{{repository}}: {{message}}',
@@ -2566,7 +2585,22 @@ export const createFileChangesStore = (
             }
           )
         );
+        break;
       }
+    }
+
+    if (attemptedCommit) {
+      try {
+        await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      } catch (refreshError) {
+        if (!batchError) {
+          throw refreshError;
+        }
+      }
+    }
+
+    if (batchError) {
+      throw batchError;
     }
 
     if (commits.length === 0) {
