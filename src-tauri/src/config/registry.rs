@@ -514,6 +514,35 @@ pub fn validate_document(
         }
     }
 
+    if kind == ConfigDocumentKind::Providers && matches!(scope, ConfigScope::User) {
+        let defaults = default_document(ConfigDocumentKind::Providers);
+        let default_providers = defaults.get("providers").and_then(Value::as_object);
+        if let Some(providers) = value.get("providers").and_then(Value::as_object) {
+            for (provider_id, definition) in providers {
+                let is_builtin =
+                    default_providers.is_some_and(|entries| entries.contains_key(provider_id));
+                let is_deleted = definition
+                    .get("deleted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let has_provider_type = definition
+                    .get("providerType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|provider_type| !provider_type.trim().is_empty());
+                if !is_builtin && !is_deleted && !has_provider_type {
+                    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+                    diagnostics.push(diagnostic(
+                        kind,
+                        scope,
+                        Some(format!("/providers/{escaped}/providerType")),
+                        "config.provider.type_missing",
+                        "providerType est obligatoire pour un provider personnalisé.",
+                    ));
+                }
+            }
+        }
+    }
+
     if matches!(scope, ConfigScope::Project { .. }) && !kind.supports_project_scope() {
         diagnostics.push(diagnostic(
             kind,
@@ -1549,6 +1578,24 @@ mod tests {
             .diagnostics
             .iter()
             .any(|entry| entry.code == "config.schema.invalid"));
+    }
+
+    #[test]
+    fn accepts_sparse_builtin_providers_but_requires_a_type_for_custom_providers() {
+        let mut builtin = sparse_document(ConfigDocumentKind::Providers);
+        builtin["providers"] = json!({ "openai": { "enabled": true } });
+        assert!(
+            validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &builtin).valid
+        );
+
+        let mut custom = sparse_document(ConfigDocumentKind::Providers);
+        custom["providers"] = json!({ "custom": { "enabled": true } });
+        let result = validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &custom);
+        assert!(!result.valid);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|entry| entry.code == "config.provider.type_missing"));
     }
 
     #[test]
