@@ -13,6 +13,10 @@ mock.module('../ui/Dialog', () => ({
   Dialog: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
+mock.module('../../services/tauriIpc', () => ({
+  gitWorktreeListAvailable: async () => [],
+}));
+
 import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
 import type { TaskProjectFilterOption } from './TaskProjectFilter';
 
@@ -162,7 +166,6 @@ describe('CreateImplementTaskDialog task type help', () => {
       buttons.Bugfix.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
     });
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
-    expect(container.querySelector('fieldset > p')).toBeNull();
   });
 
   it('recomputes task type availability from the selected project workflow', async () => {
@@ -221,6 +224,10 @@ describe('CreateImplementTaskDialog task type help', () => {
     await act(async () => hotfixButton.click());
     expect(createButton.disabled).toBe(false);
     await act(async () => createButton.click());
-    expect(onCreate).toHaveBeenCalledWith({ projectId: 'mainline', taskKind: 'hotfix' });
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: 'mainline',
+      taskKind: 'hotfix',
+      existingWorktree: null,
+    });
   });
 });

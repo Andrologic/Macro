@@ -134,6 +134,15 @@ pub struct GitWorktreeInspectionDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitAvailableWorktreeDto {
+    pub name: String,
+    pub path: String,
+    pub branch_name: String,
+    pub is_dirty: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitBranchWorktreeInspectionDto {
     pub worktree_key: String,
     pub worktree_path: String,
@@ -5760,6 +5769,78 @@ pub async fn git_worktree_inspect(
             .to_string(),
             is_dirty: inspection.is_dirty,
         })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// List healthy registered worktrees that can be attached to a new task.
+pub async fn git_worktree_list_available(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+) -> Result<Vec<GitAvailableWorktreeDto>> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_worktree_list_available"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        let names = repo.worktrees().map_err(|error| BackendError::Git {
+            message: format!("Failed to list registered worktrees: {error}"),
+        })?;
+        let mut available = Vec::new();
+        for name in names.iter().flatten().flatten() {
+            if name.starts_with("task") || name.starts_with("macro-integration-") {
+                continue;
+            }
+            let Ok(worktree) = repo.find_worktree(name) else {
+                continue;
+            };
+            let path = worktree.path().to_path_buf();
+            if path
+                .components()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|components| {
+                    components[0].as_os_str() == ".macro"
+                        && components[1].as_os_str() == "worktrees"
+                })
+            {
+                continue;
+            }
+            let Ok(worktree_repo) = git2::Repository::open(&path) else {
+                continue;
+            };
+            let Ok(head) = worktree_repo.head() else {
+                continue;
+            };
+            let Ok(branch_name) = head.shorthand().map(str::to_string) else {
+                continue;
+            };
+            if !head.is_branch() {
+                continue;
+            }
+            let is_dirty = worktree_repo
+                .statuses(None)
+                .map(|statuses| !statuses.is_empty())
+                .unwrap_or(false);
+            available.push(GitAvailableWorktreeDto {
+                name: name.to_string(),
+                path: path.to_string_lossy().into_owned(),
+                branch_name,
+                is_dirty,
+            });
+        }
+        available.sort_by(|left, right| left.branch_name.cmp(&right.branch_name));
+        Ok(available)
     })
     .await
     .map_err(to_join_error)?

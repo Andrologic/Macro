@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { getCreatableStandaloneTaskKinds } from '../../services/standaloneTaskKinds';
+import { gitWorktreeListAvailable, type GitAvailableWorktreeDto } from '../../services/tauriIpc';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
@@ -15,7 +16,11 @@ interface CreateImplementTaskDialogProps {
   initialProjectId: string | null;
   isCreating: boolean;
   onClose: () => void;
-  onCreate: (input: { projectId: string; taskKind: StandaloneTaskKind }) => void;
+  onCreate: (input: {
+    projectId: string;
+    taskKind: StandaloneTaskKind;
+    existingWorktree: GitAvailableWorktreeDto | null;
+  }) => void;
 }
 
 const TASK_KIND_OPTIONS: Array<{
@@ -96,6 +101,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const [tooltipSize, setTooltipSize] = useState(TOOLTIP_ESTIMATED_SIZE);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
+  const [worktrees, setWorktrees] = useState<GitAvailableWorktreeDto[]>([]);
+  const [workspaceChoice, setWorkspaceChoice] = useState<'new' | 'existing'>('new');
+  const [selectedWorktreePath, setSelectedWorktreePath] = useState<string | null>(null);
+  const [isLoadingWorktrees, setIsLoadingWorktrees] = useState(false);
   const editableProjects = useMemo(
     () => projects.filter((project) => !project.isReadOnly),
     [projects],
@@ -110,6 +119,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     );
   }, [editableProjects, query]);
   const selectedProject = editableProjects.find((project) => project.id === selectedProjectId) ?? null;
+  const selectedWorktree = worktrees.find((worktree) => worktree.path === selectedWorktreePath) ?? null;
   const isDirectEditProject = Boolean(
     selectedProject?.directEdit && selectedProject.gitSetupState === 'not_git'
   );
@@ -127,7 +137,11 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const selectedTaskKindIsCreatable = selectedTaskKind
     ? creatableTaskKinds.includes(selectedTaskKind)
     : false;
-  const canCreate = Boolean(selectedProject && selectedTaskKindIsCreatable) && !isCreating;
+  const canCreate = Boolean(
+    selectedProject &&
+    selectedTaskKindIsCreatable &&
+    (workspaceChoice === 'new' || selectedWorktree)
+  ) && !isCreating;
   const taskKindDescriptions: Record<StandaloneTaskKind, string> = {
     feature: t('implement.taskKindFeatureHelp', 'Feature creates a branch from the configured development branch and merges it back into that branch.'),
     bugfix: t('implement.taskKindBugfixHelp', 'Bugfix creates a branch from the configured development branch and merges it back into that branch.'),
@@ -173,11 +187,31 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     }
   }, [creatableTaskKinds, isDirectEditProject, selectedTaskKind]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setWorkspaceChoice('new');
+    setSelectedWorktreePath(null);
+    setWorktrees([]);
+    if (!selectedProject || isDirectEditProject) return () => { cancelled = true; };
+    setIsLoadingWorktrees(true);
+    void gitWorktreeListAvailable({ repoPath: selectedProject.path })
+      .then((items) => {
+        if (!cancelled) setWorktrees(items);
+      })
+      .catch(() => {
+        if (!cancelled) setWorktrees([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingWorktrees(false);
+      });
+    return () => { cancelled = true; };
+  }, [isDirectEditProject, selectedProject]);
+
   return (
     <Dialog
       title={t('implement.createTaskDialogTitle', 'Create a task')}
       onClose={onClose}
-      panelClassName="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+      panelClassName="w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
     >
       <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
         <div>
@@ -330,6 +364,96 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
             </span>
           ))}
         </fieldset>
+
+        {!isDirectEditProject && selectedProject && (
+          <fieldset className="space-y-2">
+            <legend className="text-xs font-medium text-foreground">
+              {t('implement.taskWorkspaceLabel', 'Working directory')}
+            </legend>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                aria-pressed={workspaceChoice === 'new'}
+                onClick={() => {
+                  setWorkspaceChoice('new');
+                  setSelectedWorktreePath(null);
+                }}
+                className={cn(
+                  'flex min-h-16 items-center gap-3 rounded-md border px-3 py-2 text-left',
+                  workspaceChoice === 'new' ? 'border-primary/30 bg-primary/10' : 'border-border bg-background hover:bg-accent/60'
+                )}
+              >
+                <Icon name="plus" size={14} className="text-muted-foreground" />
+                <span className="text-sm font-medium text-foreground">
+                  {t('implement.taskWorkspaceNew', 'New worktree')}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-pressed={workspaceChoice === 'existing'}
+                onClick={() => setWorkspaceChoice('existing')}
+                className={cn(
+                  'flex min-h-16 items-center gap-3 rounded-md border px-3 py-2 text-left',
+                  workspaceChoice === 'existing' ? 'border-primary/30 bg-primary/10' : 'border-border bg-background hover:bg-accent/60'
+                )}
+              >
+                <Icon name="folder-git-2" size={14} className="text-muted-foreground" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-foreground">
+                    {t('implement.taskWorkspaceExisting', 'Existing worktree')}
+                  </span>
+                  {selectedWorktree && (
+                    <span className="block truncate text-[11px] text-muted-foreground">
+                      {selectedWorktree.branchName}
+                    </span>
+                  )}
+                </span>
+              </button>
+            </div>
+            {workspaceChoice === 'existing' && (
+              <div className="ml-8 rounded-lg border border-border bg-muted/20 p-2 shadow-inner">
+                <div className="mb-2 text-[11px] font-medium text-muted-foreground">
+                  {t('implement.taskWorkspaceSelect', 'Select a worktree')}
+                </div>
+                <div className="max-h-36 space-y-2 overflow-y-auto">
+                {worktrees.map((worktree) => (
+                  <button
+                    key={worktree.path}
+                    type="button"
+                    aria-pressed={selectedWorktreePath === worktree.path}
+                    onClick={() => setSelectedWorktreePath(worktree.path)}
+                    className={cn(
+                      'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left',
+                      selectedWorktreePath === worktree.path ? 'border-primary/30 bg-primary/10' : 'border-border bg-background hover:bg-accent/60'
+                    )}
+                  >
+                    <Icon name="folder-git-2" size={14} className="text-muted-foreground" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-foreground">{worktree.branchName}</span>
+                      <span className="block truncate text-[11px] text-muted-foreground">{worktree.path}</span>
+                    </span>
+                    {worktree.isDirty && (
+                      <span className="text-[10px] text-amber-500">
+                        {t('implement.taskWorkspaceModified', 'Modified')}
+                      </span>
+                    )}
+                  </button>
+                ))}
+                {!isLoadingWorktrees && worktrees.length === 0 && (
+                  <p className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+                    {t('implement.taskWorkspaceNone', 'No external worktree is available for this project.')}
+                  </p>
+                )}
+                {isLoadingWorktrees && (
+                  <p className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+                    {t('implement.taskWorkspaceLoading', 'Loading worktrees...')}
+                  </p>
+                )}
+                </div>
+              </div>
+            )}
+          </fieldset>
+        )}
       </div>
 
       {tooltipAnchor && tooltipPosition && createPortal(
@@ -355,7 +479,11 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           isLoading={isCreating}
           onClick={() => {
             if (selectedProjectId && selectedTaskKind) {
-              onCreate({ projectId: selectedProjectId, taskKind: selectedTaskKind });
+              onCreate({
+                projectId: selectedProjectId,
+                taskKind: selectedTaskKind,
+                existingWorktree: workspaceChoice === 'existing' ? selectedWorktree : null,
+              });
             }
           }}
         >
