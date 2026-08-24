@@ -34,12 +34,13 @@ describe('architectPlanVersionDetection', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it('prefers package.json and permits reading outside the active workspace', async () => {
+  it('prefers package.json inside the selected project workspace', async () => {
     const invoke = installTauriRuntimeMock(mock(async (command, payload) => {
       expect(command).toBe('fs_read_file');
       expect(payload).toMatchObject({
         path: 'C:/projects/macro/package.json',
-        allowOutsideWorkspace: true,
+        allowOutsideWorkspace: false,
+        workspacePath: 'C:/projects/macro/',
       });
       return { content: JSON.stringify({ version: 'v1.8.0' }) };
     }));
@@ -57,7 +58,10 @@ describe('architectPlanVersionDetection', () => {
     installTauriRuntimeMock(mock(async (_command, payload) => {
       const path = String(payload?.path);
       readPaths.push(path);
-      expect(payload?.allowOutsideWorkspace).toBe(true);
+      expect(payload).toMatchObject({
+        allowOutsideWorkspace: false,
+        workspacePath: '/projects/desktop',
+      });
 
       if (path.endsWith('/package.json')) {
         throw new Error('missing package manifest');

@@ -17,19 +17,50 @@ import {
   getMacroToolRegistryEntry,
   type JsonSchema,
 } from '../../src/shared/macroToolRegistry';
-
 const MIN_CLI_VERSION = '1.0.12';
 const CLI_NAME = 'copilot';
-const MAX_READ_BYTES = 256_000;
-const MAX_GREP_RESULTS = 200;
-const MAX_GLOB_RESULTS = 500;
-const FRONTEND_TOOL_TIMEOUT_MS = 300_000;
-const DEFAULT_COPILOT_SEND_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_FRONTEND_TOOL_TIMEOUT_MS = 300_000;
+const TERMINAL_RUN_TIMEOUT_MARGIN_MS = 30_000;
+const MAX_TERMINAL_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const COPILOT_COMPLETION_MARGIN_MS = 30_000;
+const DEFAULT_COPILOT_SEND_TIMEOUT_MS =
+  MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS + COPILOT_COMPLETION_MARGIN_MS;
 const MIN_COPILOT_SEND_TIMEOUT_MS = 60 * 1000;
 const TOOL_HOST_URL_ENV = 'MACRO_TOOL_HOST_URL';
 const TOOL_HOST_BEARER_TOKEN_ENV = 'MACRO_TOOL_HOST_BEARER_TOKEN';
 
 type JsonRecord = Record<string, unknown>;
+
+const frontendToolTimeoutMs = (
+  toolName: string,
+  args: JsonRecord,
+  sessionTimeoutMs = DEFAULT_COPILOT_SEND_TIMEOUT_MS
+): number => {
+  const relayBudget = Math.max(1, sessionTimeoutMs - COPILOT_COMPLETION_MARGIN_MS);
+  if (toolName === 'question' || toolName.startsWith('need_')) {
+    return Math.min(
+      MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
+      relayBudget
+    );
+  }
+  if (toolName !== 'terminal_run') {
+    return Math.min(DEFAULT_FRONTEND_TOOL_TIMEOUT_MS, relayBudget);
+  }
+
+  const requested = args.timeout_ms;
+  const requestedMs =
+    typeof requested === 'number' && Number.isFinite(requested)
+      ? Math.max(0, Math.floor(requested))
+      : DEFAULT_FRONTEND_TOOL_TIMEOUT_MS - TERMINAL_RUN_TIMEOUT_MARGIN_MS;
+  return Math.min(
+    relayBudget,
+    MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
+    Math.max(
+      DEFAULT_FRONTEND_TOOL_TIMEOUT_MS,
+      requestedMs + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
+    ),
+  );
+};
 
 interface BridgeProjectMount {
   project_id: string;
@@ -418,6 +449,7 @@ class BridgeControlChannel {
     toolCallId: string;
     toolName: string;
     args: JsonRecord;
+    sessionTimeoutMs: number;
   }): Promise<RelayToolResult> {
     if (this.pendingToolResults.has(params.toolCallId)) {
       return Promise.reject(
@@ -445,7 +477,7 @@ class BridgeControlChannel {
             `Timed out waiting for Macro to execute tool "${params.toolName}".`
           )
         );
-      }, FRONTEND_TOOL_TIMEOUT_MS);
+      }, frontendToolTimeoutMs(params.toolName, params.args, params.sessionTimeoutMs));
 
       this.pendingToolResults.set(params.toolCallId, {
         resolve,
@@ -683,66 +715,6 @@ const validateToolViaHost = async (params: {
       payload.reason || `Tool ${params.toolId} is not allowed in this mode.`
     );
   }
-};
-
-const normalizeUrl = (input: string): string => {
-  const trimmed = input.trim();
-  if (!trimmed) return trimmed;
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-};
-
-const stripHtmlToText = (html: string): string =>
-  html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const extractPageTitle = (html: string): string => {
-  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
-  return match?.[1]?.replace(/\s+/g, ' ').trim() || '';
-};
-
-const fetchWebPageDirect = async (inputUrl: string): Promise<string> => {
-  const normalizedUrl = normalizeUrl(inputUrl);
-  if (!normalizedUrl) {
-    throw new BridgeError('invalid_url', 'URL is required for web_fetch.');
-  }
-
-  const parsed = new URL(normalizedUrl);
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new BridgeError('invalid_url', 'Only HTTP and HTTPS URLs are supported.');
-  }
-
-  const response = await fetch(normalizedUrl, {
-    method: 'GET',
-    headers: {
-      Accept: 'text/html,application/xhtml+xml',
-      'User-Agent': 'Macro/1.0 (+https://macro.app)',
-    },
-  });
-
-  if (!response.ok) {
-    throw new BridgeError('web_fetch_failed', `Failed to fetch URL (${response.status}).`);
-  }
-
-  const html = await response.text();
-  const title = extractPageTitle(html) || parsed.hostname.replace(/^www\./i, '');
-  const content = stripHtmlToText(html).slice(0, 12000);
-  const snippet = content.slice(0, 350);
-
-  return JSON.stringify(
-    {
-      url: normalizedUrl,
-      title,
-      snippet,
-      content,
-    },
-    null,
-    2
-  );
 };
 
 const parseToolContextBlocks = (text: string): Array<{ tool: string | null; body: string }> => {
@@ -1430,7 +1402,27 @@ const ensureWithinWorkspace = (workspacePath: string, inputPath: string): string
   return resolved;
 };
 
-const isHiddenName = (name: string): boolean => name.startsWith('.');
+const isWithinCanonicalWorkspace = (canonicalWorkspacePath: string, canonicalPath: string): boolean => {
+  const relative = path.relative(canonicalWorkspacePath, canonicalPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
+
+const resolveCanonicalWorkspacePath = async (
+  workspacePath: string,
+  inputPath: string,
+  knownCanonicalWorkspacePath?: string
+): Promise<{ canonicalWorkspacePath: string; canonicalPath: string }> => {
+  const lexicalPath = ensureWithinWorkspace(workspacePath, inputPath);
+  const canonicalWorkspacePath = knownCanonicalWorkspacePath || await fs.realpath(workspacePath);
+  const canonicalPath = await fs.realpath(lexicalPath);
+  if (!isWithinCanonicalWorkspace(canonicalWorkspacePath, canonicalPath)) {
+    throw new BridgeError(
+      'path_outside_workspace',
+      `Path resolves outside the workspace, possibly through a symbolic link: ${inputPath}`
+    );
+  }
+  return { canonicalWorkspacePath, canonicalPath };
+};
 
 const pathExists = async (value: string): Promise<boolean> => {
   try {
@@ -1557,330 +1549,6 @@ const resolveWorkspaceTarget = async (params: {
   };
 };
 
-const walkEntries = async (
-  rootPath: string,
-  relativePath = '.',
-  options?: {
-    recursive?: boolean;
-    includeHidden?: boolean;
-    maxDepth?: number;
-  },
-  depth = 0
-): Promise<Array<{ relativePath: string; absolutePath: string; kind: 'file' | 'directory' }>> => {
-  const absolutePath = ensureWithinWorkspace(rootPath, relativePath);
-  const directoryEntries = await fs.readdir(absolutePath, { withFileTypes: true });
-  const result: Array<{ relativePath: string; absolutePath: string; kind: 'file' | 'directory' }> = [];
-
-  for (const entry of directoryEntries) {
-    if (!options?.includeHidden && isHiddenName(entry.name)) {
-      continue;
-    }
-
-    const nextRelative = relativePath === '.' ? entry.name : path.posix.join(relativePath, entry.name);
-    const nextAbsolute = path.join(absolutePath, entry.name);
-    const kind = entry.isDirectory() ? 'directory' : 'file';
-    result.push({ relativePath: nextRelative, absolutePath: nextAbsolute, kind });
-
-    const canRecurse =
-      entry.isDirectory() &&
-      options?.recursive &&
-      (options.maxDepth == null || depth < options.maxDepth - 1);
-    if (canRecurse) {
-      result.push(...await walkEntries(rootPath, nextRelative, options, depth + 1));
-    }
-  }
-
-  return result;
-};
-
-const formatListResult = (
-  entries: Array<{ relativePath: string; kind: 'file' | 'directory' }>,
-  label: string
-): string => {
-  const lines = [`PATH: ${label}`];
-  if (entries.length === 0) {
-    lines.push('(empty)');
-    return lines.join('\n');
-  }
-
-  for (const entry of entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath))) {
-    lines.push(`${entry.kind === 'directory' ? '[dir]' : '[file]'} ${entry.relativePath}`);
-  }
-
-  return lines.join('\n');
-};
-
-const readTextFile = async (absolutePath: string): Promise<string> => {
-  const buffer = await fs.readFile(absolutePath);
-  const content = buffer.subarray(0, MAX_READ_BYTES).toString('utf8');
-  if (buffer.byteLength > MAX_READ_BYTES) {
-    return `${content}\n\n[truncated to ${MAX_READ_BYTES} bytes]`;
-  }
-  return content;
-};
-
-const formatWithLineNumbers = (lines: string[], startLine: number): string =>
-  lines
-    .map((line, index) => `${String(startLine + index).padStart(4, ' ')} | ${line}`)
-    .join('\n');
-
-const readWorkspaceFile = async (params: {
-  context: WorkspaceContext;
-  pathValue: string;
-  projectId?: string | null;
-  startLine?: number;
-  endLine?: number;
-}): Promise<string> => {
-  const target = await resolveWorkspaceTarget({
-    rawPath: params.pathValue,
-    projectId: params.projectId,
-    context: params.context,
-    searchExistingPath: true,
-  });
-
-  if (!target.candidate) {
-    const workspacePath = params.context.defaultWorkspacePath;
-    if (!workspacePath) {
-      throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
-    }
-    const absolutePath = ensureWithinWorkspace(workspacePath, target.relativePath);
-    const text = await readTextFile(absolutePath);
-    return `FILE: ${sanitizeRelativePath(params.pathValue)}\n\n${text}`;
-  }
-
-  const absolutePath = ensureWithinWorkspace(target.candidate.workspacePath, target.relativePath);
-  const text = await readTextFile(absolutePath);
-  const allLines = text.replace(/\r\n/g, '\n').split('\n');
-  const startLine = Math.max(1, params.startLine || 1);
-  const endLine = Math.max(startLine, params.endLine || allLines.length);
-  const slice = allLines.slice(startLine - 1, endLine);
-  const virtualPath =
-    params.context.virtualRootEnabled
-      ? `${target.candidate.mountName}/${target.relativePath === '.' ? '' : target.relativePath}`.replace(/\/$/, '')
-      : target.relativePath;
-
-  return `FILE: ${virtualPath || target.candidate.mountName}\n\n${formatWithLineNumbers(slice, startLine)}`;
-};
-
-const listWorkspace = async (params: {
-  context: WorkspaceContext;
-  pathValue?: string | null;
-  projectId?: string | null;
-  recursive?: boolean;
-  includeHidden?: boolean;
-  maxDepth?: number;
-}): Promise<string> => {
-  const target = await resolveWorkspaceTarget({
-    rawPath: params.pathValue,
-    projectId: params.projectId,
-    context: params.context,
-    searchExistingPath: true,
-  });
-
-  if (target.virtualRoot) {
-    return formatListResult(
-      params.context.candidates.map((candidate) => ({
-        relativePath: candidate.mountName,
-        kind: 'directory' as const,
-      })),
-      '.'
-    );
-  }
-
-  if (!target.candidate) {
-    const workspacePath = params.context.defaultWorkspacePath;
-    if (!workspacePath) {
-      throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
-    }
-    const entries = await walkEntries(workspacePath, target.relativePath, {
-      recursive: params.recursive,
-      includeHidden: params.includeHidden,
-      maxDepth: params.maxDepth,
-    });
-    return formatListResult(
-      entries.map((entry) => ({ relativePath: entry.relativePath, kind: entry.kind })),
-      sanitizeRelativePath(params.pathValue)
-    );
-  }
-
-  const entries = await walkEntries(target.candidate.workspacePath, target.relativePath, {
-    recursive: params.recursive,
-    includeHidden: params.includeHidden,
-    maxDepth: params.maxDepth,
-  });
-  const normalizedEntries = entries.map((entry) => ({
-    relativePath: params.context.virtualRootEnabled
-      ? path.posix.join(target.candidate!.mountName, entry.relativePath)
-      : entry.relativePath,
-    kind: entry.kind,
-  }));
-
-  return formatListResult(normalizedEntries, sanitizeRelativePath(params.pathValue));
-};
-
-const pathMatchesGlob = (inputPath: string, pattern: string): boolean => {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '__DOUBLE_STAR__')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\?/g, '.')
-    .replace(/__DOUBLE_STAR__/g, '.*');
-  return new RegExp(`^${escaped}$`, 'i').test(inputPath);
-};
-
-const globWorkspace = async (params: {
-  context: WorkspaceContext;
-  pattern: string;
-  projectId?: string | null;
-  includeHidden?: boolean;
-}): Promise<string> => {
-  const explicitTarget = await resolveWorkspaceTarget({
-    rawPath: '.',
-    projectId: params.projectId,
-    context: params.context,
-  });
-
-  const candidates =
-    explicitTarget.candidate
-      ? [explicitTarget.candidate]
-      : params.context.candidates.length > 0
-        ? params.context.candidates
-        : params.context.defaultWorkspacePath
-          ? [{
-              id: '__default__',
-              mountName: '',
-              displayName: 'Workspace',
-              workspacePath: params.context.defaultWorkspacePath,
-            }]
-          : [];
-
-  const matches: string[] = [];
-  for (const candidate of candidates) {
-    const entries = await walkEntries(candidate.workspacePath, '.', {
-      recursive: true,
-      includeHidden: params.includeHidden,
-    });
-
-    for (const entry of entries) {
-      if (entry.kind !== 'file') continue;
-      const relativePath = entry.relativePath.replace(/\\/g, '/');
-      const virtualPath =
-        params.context.virtualRootEnabled && candidate.mountName
-          ? path.posix.join(candidate.mountName, relativePath)
-          : relativePath;
-      if (pathMatchesGlob(virtualPath, params.pattern) || pathMatchesGlob(relativePath, params.pattern)) {
-        matches.push(virtualPath);
-        if (matches.length >= MAX_GLOB_RESULTS) {
-          return matches.join('\n');
-        }
-      }
-    }
-  }
-
-  return matches.join('\n') || '(no matches)';
-};
-
-const grepWorkspace = async (params: {
-  context: WorkspaceContext;
-  query: string;
-  projectId?: string | null;
-  includePattern?: string | null;
-  includeHidden?: boolean;
-  isRegexp?: boolean;
-  maxResults?: number;
-}): Promise<string> => {
-  const explicitTarget = await resolveWorkspaceTarget({
-    rawPath: '.',
-    projectId: params.projectId,
-    context: params.context,
-  });
-
-  const candidates =
-    explicitTarget.candidate
-      ? [explicitTarget.candidate]
-      : params.context.candidates.length > 0
-        ? params.context.candidates
-        : params.context.defaultWorkspacePath
-          ? [{
-              id: '__default__',
-              mountName: '',
-              displayName: 'Workspace',
-              workspacePath: params.context.defaultWorkspacePath,
-            }]
-          : [];
-
-  const matcher = params.isRegexp
-    ? new RegExp(params.query, 'i')
-    : null;
-  const results: string[] = [];
-  const maxResults = Math.max(1, Math.min(params.maxResults || MAX_GREP_RESULTS, MAX_GREP_RESULTS));
-
-  for (const candidate of candidates) {
-    const entries = await walkEntries(candidate.workspacePath, '.', {
-      recursive: true,
-      includeHidden: params.includeHidden,
-    });
-
-    for (const entry of entries) {
-      if (entry.kind !== 'file') continue;
-
-      const relativePath = entry.relativePath.replace(/\\/g, '/');
-      const virtualPath =
-        params.context.virtualRootEnabled && candidate.mountName
-          ? path.posix.join(candidate.mountName, relativePath)
-          : relativePath;
-
-      if (params.includePattern && !pathMatchesGlob(virtualPath, params.includePattern) && !pathMatchesGlob(relativePath, params.includePattern)) {
-        continue;
-      }
-
-      const text = await readTextFile(entry.absolutePath);
-      const lines = text.replace(/\r\n/g, '\n').split('\n');
-      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-        const line = lines[lineIndex];
-        const matched = matcher ? matcher.test(line) : line.toLowerCase().includes(params.query.toLowerCase());
-        if (!matched) continue;
-
-        results.push(`${virtualPath}:${lineIndex + 1}: ${line}`);
-        if (results.length >= maxResults) {
-          return results.join('\n');
-        }
-      }
-    }
-  }
-
-  return results.join('\n') || '(no matches)';
-};
-
-const findReadFileTarget = async (context: WorkspaceContext, fileValue: string): Promise<string> => {
-  const normalized = sanitizeRelativePath(fileValue);
-  if (normalized.includes('/')) {
-    return normalized;
-  }
-
-  const matches: string[] = [];
-  for (const candidate of context.candidates) {
-    const entries = await walkEntries(candidate.workspacePath, '.', { recursive: true });
-    for (const entry of entries) {
-      if (entry.kind !== 'file') continue;
-      if (path.basename(entry.relativePath).toLowerCase() === normalized.toLowerCase()) {
-        const virtualPath = context.virtualRootEnabled
-          ? path.posix.join(candidate.mountName, entry.relativePath)
-          : entry.relativePath;
-        matches.push(virtualPath);
-        if (matches.length > 1) {
-          throw new BridgeError(
-            'ambiguous_file',
-            `File "${fileValue}" matches multiple workspace files. Provide a more specific path.`
-          );
-        }
-      }
-    }
-  }
-
-  return matches[0] || normalized;
-};
-
 const CHAT_SAFE_TOOL_IDS = new Set([
   'question',
   'skill_activate',
@@ -1897,18 +1565,18 @@ const CHAT_SAFE_TOOL_IDS = new Set([
   'terminal_read',
   'terminal_kill',
 ]);
-const TOOL_HOST_WORKSPACE_MUTATION_IDS = new Set([
+const FRONTEND_RELAY_WORKSPACE_TOOL_IDS = new Set([
+  'list',
+  'read',
+  'glob',
+  'grep',
+  'ast_grep',
   'write',
   'edit',
   'delete',
   'apply_patch',
 ]);
-const TOOL_HOST_TOOL_IDS = new Set([
-  'git_status',
-  'git_log',
-  'git_branch_list',
-  'git_diff',
-  'git_get_tree',
+const FRONTEND_RELAY_GIT_MUTATION_IDS = new Set([
   'git_add',
   'git_commit',
   'git_checkout',
@@ -1916,9 +1584,23 @@ const TOOL_HOST_TOOL_IDS = new Set([
   'git_reset',
   'git_stash',
 ]);
+const FRONTEND_RELAY_PAGED_GIT_READ_IDS = new Set([
+  'git_branch_list',
+  'git_get_tree',
+]);
+const TOOL_HOST_GIT_READ_IDS = new Set([
+  'git_status',
+  'git_log',
+  'git_diff',
+]);
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
   toolId === 'question' ||
+  toolId === 'read_file' ||
+  toolId === 'web_fetch' ||
+  FRONTEND_RELAY_WORKSPACE_TOOL_IDS.has(toolId) ||
+  FRONTEND_RELAY_GIT_MUTATION_IDS.has(toolId) ||
+  FRONTEND_RELAY_PAGED_GIT_READ_IDS.has(toolId) ||
   toolId.startsWith('terminal_') ||
   toolId.startsWith('need_') ||
   toolId.startsWith('plan_') ||
@@ -1940,19 +1622,6 @@ const inferMacroMode = (allowedToolIds: string[]): string => {
     return 'Chat';
   }
   return 'Implement';
-};
-
-const maybeValidateLocalWorkspaceTool = async (
-  mode: string,
-  toolId: string,
-  pathValue?: string | null
-): Promise<void> => {
-  if (!pathValue || mode !== 'Architect') return;
-  await validateToolViaHost({
-    mode,
-    toolId,
-    path: pathValue,
-  });
 };
 
 const routeToolHostTarget = async (params: {
@@ -2005,90 +1674,10 @@ const executeCopilotMacroTool = async (
       toolCallId: invocation?.toolCallId || `${toolId}_${randomUUID()}`,
       toolName: toolId,
       args,
+      sessionTimeoutMs: normalizeCopilotSendTimeoutMs(request.copilot_send_timeout_ms),
     });
     recordRelayResult?.(result);
     return result.result;
-  }
-
-  if (toolId === 'read_file') {
-    const fileValue = typeof args.file === 'string' ? args.file : '';
-    const target = await findReadFileTarget(context, fileValue);
-    await maybeValidateLocalWorkspaceTool(mode, 'read', target);
-    return readWorkspaceFile({
-      context,
-      pathValue: target,
-    });
-  }
-
-  if (toolId === 'list') {
-    const pathValue = typeof args.path === 'string' ? args.path : '.';
-    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
-    return listWorkspace({
-      context,
-      pathValue,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      recursive: args.recursive === true,
-      includeHidden: args.include_hidden === true,
-      maxDepth: typeof args.max_depth === 'number' ? args.max_depth : undefined,
-    });
-  }
-
-  if (toolId === 'read') {
-    const pathValue = typeof args.path === 'string' ? args.path : '';
-    await maybeValidateLocalWorkspaceTool(mode, toolId, pathValue);
-    return readWorkspaceFile({
-      context,
-      pathValue,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      startLine: typeof args.start_line === 'number' ? args.start_line : undefined,
-      endLine: typeof args.end_line === 'number' ? args.end_line : undefined,
-    });
-  }
-
-  if (TOOL_HOST_WORKSPACE_MUTATION_IDS.has(toolId)) {
-    const rawPath = typeof args.path === 'string' ? args.path : '.';
-    const routed = await routeToolHostTarget({
-      context,
-      rawPath,
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      preferFocusedProject: true,
-      searchExistingPath: toolId === 'edit' || toolId === 'delete',
-    });
-
-    const nextArgs: JsonRecord = { ...args };
-    if (toolId !== 'apply_patch') {
-      nextArgs.path = routed.relativePath || '.';
-    }
-    delete nextArgs.project_id;
-
-    return executeToolHost({
-      mode,
-      toolId,
-      args: nextArgs,
-      workspacePath: routed.workspacePath,
-      workspaceScope: mode === 'Architect' ? 'metadata' : null,
-    });
-  }
-
-  if (toolId === 'glob') {
-    return globWorkspace({
-      context,
-      pattern: typeof args.pattern === 'string' ? args.pattern : '',
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      includeHidden: args.include_hidden === true,
-    });
-  }
-
-  if (toolId === 'grep') {
-    return grepWorkspace({
-      context,
-      query: typeof args.query === 'string' ? args.query : '',
-      projectId: typeof args.project_id === 'string' ? args.project_id : null,
-      includePattern: typeof args.include_pattern === 'string' ? args.include_pattern : null,
-      includeHidden: args.include_hidden === true,
-      isRegexp: args.is_regexp === true,
-      maxResults: typeof args.max_results === 'number' ? args.max_results : undefined,
-    });
   }
 
   if (toolId === 'mark_source_passage') {
@@ -2103,11 +1692,7 @@ const executeCopilotMacroTool = async (
     return editSourcePassage(request.messages, args);
   }
 
-  if (toolId === 'web_fetch') {
-    return fetchWebPageDirect(typeof args.url === 'string' ? args.url : '');
-  }
-
-  if (TOOL_HOST_TOOL_IDS.has(toolId)) {
+  if (TOOL_HOST_GIT_READ_IDS.has(toolId)) {
     const rawRepoPath = typeof args.repo_path === 'string' ? args.repo_path : '.';
     const routed = await routeToolHostTarget({
       context,
@@ -2381,6 +1966,7 @@ export const __testables = {
   closeCopilotThinkingBlock,
   createCopilotSessionEventState,
   getCopilotReasoningSummary,
+  frontendToolTimeoutMs,
   handleCopilotSessionEvent,
   normalizeCopilotSendTimeoutMs,
   inferMacroMode,

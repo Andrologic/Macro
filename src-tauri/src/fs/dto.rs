@@ -12,6 +12,11 @@ pub struct FileContentDto {
     pub size: u64,
     /// Encoding used ("utf-8", "base64", etc.)
     pub encoding: String,
+    /// SHA-256 digest of the exact file bytes read
+    pub revision: String,
+    /// Unix permission bits when available (for example `0o755`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unix_mode: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +105,11 @@ pub struct WriteResultDto {
     pub created: bool,
     /// Whether the write was skipped because the content was identical
     pub skipped: bool,
+    /// SHA-256 digest of the exact file bytes after the write
+    pub revision: String,
+    /// Unix permission bits after the write when available
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unix_mode: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -232,6 +232,8 @@ type FileChangesTauriDeps = Pick<
   | 'gitDiff'
   | 'gitMergeCheck'
   | 'gitReadFilePair'
+  | 'fsExists'
+  | 'fsReadFileWithOptions'
   | 'fsWriteFile'
   | 'gitAdd'
   | 'gitCommit'
@@ -2225,11 +2227,33 @@ export const createFileChangesStore = (
     }));
 
     try {
+      const path = resolveChangeFilePath(repository.worktreePath, change.path);
+      const workspaceOptions = {
+        workspacePath: repository.worktreePath,
+      };
+      const exists = await deps.tauri.fsExists(path, workspaceOptions);
+      let expectedRevision = 'absent';
+      if (exists) {
+        const current = await deps.tauri.fsReadFileWithOptions({
+          path,
+          allowOutsideWorkspace: false,
+          ...workspaceOptions,
+        });
+        if (!current.revision) {
+          throw new Error(
+            `Cannot safely save ${change.path}: the current revision is unavailable. Reload the diff and retry.`,
+          );
+        }
+        expectedRevision = current.revision;
+      }
+
       await deps.tauri.fsWriteFile({
-        path: resolveChangeFilePath(repository.worktreePath, change.path),
+        path,
         content: nextContent,
         createDirs: true,
-        allowOutsideWorkspace: true,
+        allowOutsideWorkspace: false,
+        workspacePath: repository.worktreePath,
+        expectedRevision,
       });
 
       set((state) => ({

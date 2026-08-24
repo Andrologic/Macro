@@ -36,8 +36,6 @@ use std::ffi::OsStr;
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 use tokio::fs;
@@ -83,7 +81,36 @@ static WORKSPACE_STATE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<
 static NEW_REPO_TARGET_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
 #[cfg(test)]
-static CANCEL_NEW_REPO_AFTER_INIT: AtomicBool = AtomicBool::new(false);
+static CANCEL_NEW_REPO_AFTER_INIT_PATHS: OnceLock<StdMutex<HashSet<PathBuf>>> = OnceLock::new();
+
+#[cfg(test)]
+fn new_repo_cancellation_key(project_path: &Path) -> PathBuf {
+    std::fs::canonicalize(project_path).unwrap_or_else(|_| {
+        project_path
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .and_then(|parent| project_path.file_name().map(|name| parent.join(name)))
+            .unwrap_or_else(|| absolutize_path(project_path))
+    })
+}
+
+#[cfg(test)]
+fn schedule_new_repo_cancellation_after_init(project_path: &Path) {
+    CANCEL_NEW_REPO_AFTER_INIT_PATHS
+        .get_or_init(|| StdMutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(new_repo_cancellation_key(project_path));
+}
+
+#[cfg(test)]
+fn take_new_repo_cancellation_after_init(project_path: &Path) -> bool {
+    CANCEL_NEW_REPO_AFTER_INIT_PATHS
+        .get_or_init(|| StdMutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&new_repo_cancellation_key(project_path))
+}
 
 fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
     std::fs::canonicalize(metadata_root).unwrap_or_else(|_| absolutize_path(metadata_root))
@@ -3067,7 +3094,7 @@ async fn create_new_project_repo_with_cancel_locked(
     }
 
     #[cfg(test)]
-    if CANCEL_NEW_REPO_AFTER_INIT.swap(false, Ordering::SeqCst) {
+    if take_new_repo_cancellation_after_init(&project_path) {
         return rollback_created_new_repo(&project_path, project_operation_cancelled_error()).await;
     }
 
@@ -8163,7 +8190,7 @@ mod tests {
         let project_path = parent_path.join("backend-api");
         stdfs::create_dir_all(&parent_path).expect("create parent");
 
-        CANCEL_NEW_REPO_AFTER_INIT.store(true, Ordering::SeqCst);
+        schedule_new_repo_cancellation_after_init(&project_path);
 
         let result = create_new_project_repo(
             &workspace_path,

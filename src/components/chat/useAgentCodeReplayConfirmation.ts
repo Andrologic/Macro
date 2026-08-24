@@ -18,6 +18,7 @@ interface UseAgentCodeReplayConfirmationParams {
     messageId: string,
   ) => Promise<AgentCodeReplayPreview | null>;
   restoreAgentCodeForReplay: (preview: AgentCodeReplayPreview) => Promise<void>;
+  rollbackPendingAgentCodeReplay: (conversationId: string) => Promise<void>;
   editMessage: (
     messageId: string,
     content: string,
@@ -31,6 +32,7 @@ interface UseAgentCodeReplayConfirmationParams {
 export const useAgentCodeReplayConfirmation = ({
   getAgentCodeReplayPreview,
   restoreAgentCodeForReplay,
+  rollbackPendingAgentCodeReplay,
   editMessage,
   setMessageImages,
   getMessageImages,
@@ -103,15 +105,24 @@ export const useAgentCodeReplayConfirmation = ({
     setIsReplayConfirmationSubmitting(true);
     try {
       await restoreAgentCodeForReplay(pending.preview);
-      await runReplay({
-        ...pending,
-        skipAgentCodeReplayCheck: true,
-      });
-      setPendingReplayConfirmation(null);
+      try {
+        await runReplay({
+          ...pending,
+          skipAgentCodeReplayCheck: true,
+        });
+        setPendingReplayConfirmation(null);
+      } finally {
+        await rollbackPendingAgentCodeReplay(pending.preview.conversationId);
+      }
     } finally {
       setIsReplayConfirmationSubmitting(false);
     }
-  }, [pendingReplayConfirmation, restoreAgentCodeForReplay, runReplay]);
+  }, [
+    pendingReplayConfirmation,
+    restoreAgentCodeForReplay,
+    rollbackPendingAgentCodeReplay,
+    runReplay,
+  ]);
 
   return {
     pendingReplayConfirmation,

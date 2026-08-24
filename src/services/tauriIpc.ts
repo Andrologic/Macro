@@ -922,6 +922,8 @@ export interface FsFileContentDto {
   is_binary: boolean;
   size: number;
   encoding: string;
+  revision?: string;
+  unix_mode?: number;
 }
 
 export interface FsDirEntryDto {
@@ -978,6 +980,8 @@ export interface FsWriteResultDto {
   bytes_written: number;
   created: boolean;
   skipped: boolean;
+  revision?: string;
+  unix_mode?: number;
 }
 
 export interface WorkspaceBootstrapDto {
@@ -1189,6 +1193,7 @@ export interface ToolValidationResultDto {
 export interface ToolModePolicyDto {
   allowed_tool_ids: string[];
   enforce_macro_only_writes: boolean;
+  capabilities?: string[];
 }
 
 export interface MCPDiscoverToolsResponseDto {
@@ -1728,6 +1733,8 @@ export async function fsWriteFile(params: {
   allowOutsideWorkspace?: boolean;
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
+  expectedRevision?: string | null;
+  unixMode?: number | null;
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>("fs_write_file", {
     path: params.path,
@@ -1736,6 +1743,8 @@ export async function fsWriteFile(params: {
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+    expectedRevision: params.expectedRevision ?? null,
+    unixMode: params.unixMode ?? null,
   });
 }
 
@@ -1808,12 +1817,14 @@ export async function fsDelete(params: {
   recursive?: boolean;
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
+  expectedRevision?: string | null;
 }): Promise<void> {
   return invoke("fs_delete", {
     path: params.path,
     recursive: params.recursive ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+    expectedRevision: params.expectedRevision ?? null,
   });
 }
 
@@ -2139,11 +2150,32 @@ export async function gitStatus(repoPath: string): Promise<GitStatusDto> {
 export async function gitLog(params: {
   repoPath: string;
   limit?: number;
+  offset?: number;
   branch?: string;
 }): Promise<GitCommit[]> {
   return invoke<GitCommit[]>("git_log", {
     repoPath: params.repoPath,
     limit: params.limit ?? null,
+    offset: params.offset ?? null,
+    branch: params.branch ?? null,
+  });
+}
+
+export interface GitLogPageDto {
+  commits: GitCommit[];
+  revision: string;
+}
+
+export async function gitLogPage(params: {
+  repoPath: string;
+  limit?: number;
+  offset?: number;
+  branch?: string;
+}): Promise<GitLogPageDto> {
+  return invoke<GitLogPageDto>("git_log_page", {
+    repoPath: params.repoPath,
+    limit: params.limit ?? null,
+    offset: params.offset ?? null,
     branch: params.branch ?? null,
   });
 }
@@ -2346,6 +2378,9 @@ export async function gitDiff(params: {
   contextLines?: number;
   ignoreWhitespace?: boolean;
   paths?: string[];
+  mode?: "patch" | "stat" | "name_only";
+  maxBytes?: number;
+  requireComplete?: boolean;
 }): Promise<string> {
   return invoke<string>("git_diff", {
     repoPath: params.repoPath,
@@ -2354,6 +2389,9 @@ export async function gitDiff(params: {
     contextLines: params.contextLines ?? null,
     ignoreWhitespace: params.ignoreWhitespace ?? null,
     paths: params.paths ?? null,
+    mode: params.mode ?? null,
+    maxBytes: params.maxBytes ?? null,
+    requireComplete: params.requireComplete ?? null,
   });
 }
 
@@ -3390,6 +3428,10 @@ export async function dbSetAppSetting(params: {
   });
 }
 
+export async function dbDeleteAppSetting(key: string): Promise<boolean> {
+  return invoke<boolean>("db_delete_app_setting", { key });
+}
+
 export async function dbCompareAndSwapAppSetting(params: {
   key: string;
   expectedValueJson: string | null;
@@ -3520,6 +3562,7 @@ export async function executeWorkspaceTool(params: {
   projectMounts?: ProjectMount[];
   virtualRootEnabled?: boolean;
   focusedProjectId?: string | null;
+  executionId?: string | null;
 }): Promise<string> {
   return invoke<string>("tool_execute_workspace", {
     mode: params.mode,
@@ -3536,7 +3579,12 @@ export async function executeWorkspaceTool(params: {
     })),
     virtualRootEnabled: params.virtualRootEnabled ?? null,
     focusedProjectId: params.focusedProjectId ?? null,
+    executionId: params.executionId ?? null,
   });
+}
+
+export async function cancelWorkspaceTool(executionId: string): Promise<boolean> {
+  return invoke<boolean>("tool_cancel_workspace", { executionId });
 }
 
 export async function mcpDiscoverTools(params: {
@@ -3678,11 +3726,13 @@ export async function terminalRun(params: {
   sessionId: string;
   command: string;
   timeoutMs?: number | null;
+  executionId?: string | null;
 }): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_run", {
     sessionId: params.sessionId,
     command: params.command,
     timeoutMs: params.timeoutMs ?? null,
+    executionId: params.executionId ?? null,
   });
 }
 
@@ -3694,8 +3744,12 @@ export async function terminalRead(
 
 export async function terminalKill(
   sessionId: string,
+  executionId?: string | null,
 ): Promise<TerminalSessionDto> {
-  return invoke<TerminalSessionDto>("terminal_kill", { sessionId });
+  return invoke<TerminalSessionDto>("terminal_kill", {
+    sessionId,
+    executionId: executionId ?? null,
+  });
 }
 
 export async function terminalListTabs(): Promise<TerminalTabDto[]> {
@@ -3972,6 +4026,12 @@ export interface NativeWebSearchResult {
   score: number;
 }
 
+export interface NativeWebFetchResource {
+  url: string;
+  contentType: string | null;
+  bodyBase64: string;
+}
+
 export async function webSearchGetSecretStatus(
   provider: 'tavily' | 'brave',
 ): Promise<WebSearchSecretStatus> {
@@ -3992,6 +4052,16 @@ export async function webSearchExecute(input: {
   return invoke<NativeWebSearchResult[]>('web_search_execute', {
     query: input.query,
     includeRawContent: input.includeRawContent ?? false,
+  });
+}
+
+export async function webFetchExecute(input: {
+  url: string;
+  resourceKind: "page" | "favicon";
+}): Promise<NativeWebFetchResource> {
+  return invoke<NativeWebFetchResource>("web_fetch_execute", {
+    url: input.url,
+    resourceKind: input.resourceKind,
   });
 }
 

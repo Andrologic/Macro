@@ -693,10 +693,12 @@ export interface PendingToolApproval {
 export interface AgentCodeCheckpointFileSnapshot {
   exists: boolean;
   content: string | null;
+  revision?: string | null;
   isBinary?: boolean;
   size?: number;
   encoding?: string | null;
   language?: string | null;
+  unixMode?: number | null;
 }
 
 export type AgentCodeCheckpointFileStatus = 'created' | 'modified' | 'deleted';

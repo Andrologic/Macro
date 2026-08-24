@@ -280,6 +280,43 @@ const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: 
   };
 });
 
+const resolveMockWorkspaceFile = (path: string): {
+  base: string;
+  relative: string;
+  content: string | null | undefined;
+} => {
+  const normalized = path.replace(/\\/g, '/');
+  const base = normalized.startsWith(`${worktreeAPath}/`)
+    ? worktreeAPath
+    : worktreeBPath;
+  const relative = normalized.slice(base.length + 1);
+  return {
+    base,
+    relative,
+    content: currentFiles[base]?.[relative],
+  };
+};
+
+const fsExistsMock = mock(async (path: string) => {
+  const { content } = resolveMockWorkspaceFile(path);
+  return content !== undefined && content !== null;
+});
+
+const fsReadFileWithOptionsMock = mock(async ({ path }: { path: string }) => {
+  const { content } = resolveMockWorkspaceFile(path);
+  if (content === undefined || content === null) {
+    throw new Error(`File not found: ${path}`);
+  }
+  return {
+    content,
+    language: 'TypeScript',
+    is_binary: false,
+    size: content.length,
+    encoding: 'utf-8',
+    revision: `revision:${content}`,
+  };
+});
+
 const gitRestorePathsMock = mock(async ({
   repoPath,
   paths,
@@ -583,6 +620,8 @@ describe('useFileChangesStore', () => {
       hasChanges: false,
     }));
     gitReadFilePairMock.mockClear();
+    fsExistsMock.mockClear();
+    fsReadFileWithOptionsMock.mockClear();
     fsWriteFileMock.mockClear();
     gitRestorePathsMock.mockClear();
     gitAddMock.mockClear();
@@ -600,6 +639,8 @@ describe('useFileChangesStore', () => {
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
         fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
@@ -698,6 +739,8 @@ describe('useFileChangesStore', () => {
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
         fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
@@ -746,6 +789,8 @@ describe('useFileChangesStore', () => {
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
         fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
@@ -813,6 +858,8 @@ describe('useFileChangesStore', () => {
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
         fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
@@ -844,6 +891,8 @@ describe('useFileChangesStore', () => {
         gitDiff: gitDiffMock,
         gitMergeCheck: gitMergeCheckMock,
         gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
         fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
@@ -1215,6 +1264,19 @@ describe('useFileChangesStore', () => {
     const change = useFileChangesStore.getState().getChange(repositoryIdA, changeIdA);
     const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
     expect(fsWriteFileMock).toHaveBeenCalledTimes(1);
+    expect(fsReadFileWithOptionsMock).toHaveBeenCalledWith({
+      path: `${worktreeAPath}/src/main.ts`,
+      allowOutsideWorkspace: false,
+      workspacePath: worktreeAPath,
+    });
+    expect(fsWriteFileMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: `${worktreeAPath}/src/main.ts`,
+        allowOutsideWorkspace: false,
+        workspacePath: worktreeAPath,
+        expectedRevision: expect.stringContaining('revision:const value = 8;'),
+      }),
+    );
     expect(session?.isDirty).toBe(false);
     expect(session?.rightDraftContent).toContain('const value = 9;');
     expect(change?.modifiedContent).toContain('const value = 9;');
