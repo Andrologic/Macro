@@ -184,6 +184,31 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("creates providers without a separate enabled flag", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.createProviderConfig({
+      name: "OpenRouter",
+      providerType: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "test-api-key",
+      isLocal: false,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_create_provider_config",
+        payload: {
+          name: "OpenRouter",
+          providerType: "openrouter",
+          baseUrl: "https://openrouter.ai/api/v1",
+          apiKey: "test-api-key",
+          isLocal: false,
+        },
+      },
+    ]);
+  });
+
   it("sends speech recordings as a raw IPC body with provider metadata headers", async () => {
     const tauriIpc = await loadTauriIpc();
     const audio = new Uint8Array([1, 2, 3]);

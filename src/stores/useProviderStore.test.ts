@@ -355,6 +355,39 @@ describe('useProviderStore secret resolution', () => {
     expect(providerStore.useProviderStore.getState().connectionStatus['provider-openai']).toBeUndefined();
   });
 
+  it('activates a provider when a stored API key exists even if legacy config disabled it', async () => {
+    listProviderConfigsMock.mockImplementationOnce(async () => [
+      {
+        id: 'provider-openai',
+        name: 'OpenAI',
+        provider_type: 'openai',
+        base_url: 'https://api.openai.com/v1',
+        api_key: null,
+        has_stored_api_key: true,
+        is_enabled: false,
+        is_local: false,
+        auth_status: null,
+        auth_source: null,
+        plan_type: null,
+        account_label: null,
+        token_expires_at: null,
+        created_at: '2026-04-04T00:00:00.000Z',
+        updated_at: '2026-04-04T00:00:00.000Z',
+      },
+    ]);
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      hasStoredApiKey: true,
+      isEnabled: true,
+    });
+    expect(providerStore.providerHasCredentials(
+      providerStore.useProviderStore.getState().providerConfigs[0]
+    )).toBe(true);
+  });
+
   it('reveals a stored key once and caches it for the session', async () => {
     const providerStore = await loadProviderStore();
     await providerStore.useProviderStore.getState().loadProviderConfigs();
@@ -442,6 +475,9 @@ describe('useProviderStore secret resolution', () => {
     });
 
     expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: false })
+    );
     expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
       hasStoredApiKey: false,
       apiKey: undefined,
@@ -458,6 +494,9 @@ describe('useProviderStore secret resolution', () => {
     });
 
     expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: true })
+    );
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(listProviderModelsMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
@@ -499,7 +538,7 @@ describe('useProviderStore secret resolution', () => {
       baseUrl: undefined,
       apiKey: undefined,
       isLocal: true,
-      isEnabled: undefined,
+      isEnabled: true,
     });
     expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
       providerType: 'anthropic',
@@ -515,20 +554,23 @@ describe('useProviderStore secret resolution', () => {
       providerType: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       apiKey: 'test-api-key',
-      isEnabled: true,
       isLocal: false,
     });
 
     expect(createProviderConfigMock).toHaveBeenCalledTimes(1);
-    expect(createProviderConfigMock).toHaveBeenCalledWith(
-      expect.objectContaining({ isEnabled: true })
-    );
+    expect(createProviderConfigMock).toHaveBeenCalledWith({
+      name: 'Created Provider',
+      providerType: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      isLocal: false,
+    });
     expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
     expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
     expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
   });
 
-  it('preserves enabled state and infers local custom Ollama providers', async () => {
+  it('infers local custom Ollama providers without a separate enabled flag', async () => {
     const providerStore = await loadProviderStore();
 
     await providerStore.useProviderStore.getState().createProviderConfig({
@@ -536,12 +578,11 @@ describe('useProviderStore secret resolution', () => {
       providerType: 'ollama',
       baseUrl: 'http://localhost:11434/v1',
       apiKey: '',
-      isEnabled: false,
       isLocal: false,
     });
 
     expect(createProviderConfigMock).toHaveBeenCalledWith(
-      expect.objectContaining({ isEnabled: false, isLocal: true })
+      expect.objectContaining({ isLocal: true })
     );
   });
 
@@ -582,7 +623,6 @@ describe('useProviderStore secret resolution', () => {
         providerType: 'openai',
         baseUrl: 'https://api.openai.com/v1',
         apiKey: 'test-api-key',
-        isEnabled: true,
         isLocal: false,
       })
     ).rejects.toThrow('Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.');

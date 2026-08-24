@@ -282,6 +282,7 @@ const mergeLocalProviderConfig = async (
       ...provider,
       apiKey: hasExistingApiKey ? provider.apiKey : localApiKey || provider.apiKey,
       apiKeyLoaded: provider.apiKeyLoaded || !!(hasExistingApiKey ? provider.apiKey : localApiKey),
+      isEnabled: provider.isEnabled || !!localApiKey,
       baseUrl: localBaseUrl || provider.baseUrl,
     });
   });
@@ -307,8 +308,8 @@ const mergeRuntimeProviderConfigState = (
   });
 };
 
-const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderConfig =>
-  applyNativeToolCallingToProviderConfig({
+const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderConfig => {
+  const normalized = {
     id: config.id,
     name: config.name,
     providerType: config.provider_type,
@@ -316,7 +317,7 @@ const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderC
     apiKey: undefined,
     hasStoredApiKey: config.has_stored_api_key,
     apiKeyLoaded: false,
-    isEnabled: config.is_enabled,
+    isEnabled: config.is_enabled || config.has_stored_api_key,
     isLocal: config.is_local,
     authStatus:
       (config.auth_status as ProviderConfig['authStatus']) ??
@@ -329,7 +330,13 @@ const normalizeDbProviderConfig = (config: tauriIpc.DbProviderConfig): ProviderC
     planType: config.plan_type ?? undefined,
     accountLabel: config.account_label ?? undefined,
     tokenExpiresAt: config.token_expires_at ?? undefined,
+  } satisfies ProviderConfig;
+
+  return applyNativeToolCallingToProviderConfig({
+    ...normalized,
+    isEnabled: normalized.isEnabled || providerHasAuthSession(normalized),
   });
+};
 
 const toProviderStatus = (
   config: ProviderConfig,
@@ -645,6 +652,7 @@ const applyCopilotStatusPatch = (
             authStatus: status.auth_status as ProviderConfig['authStatus'],
             authSource: status.auth_source ?? undefined,
             accountLabel: status.account_label ?? undefined,
+            isEnabled: success,
           })
         : provider
     ),
@@ -739,7 +747,7 @@ interface ProviderStore {
   resolveProviderApiKey: (providerId: string, options?: { forceRefresh?: boolean }) => Promise<string | undefined>;
   updateProviderConfig: (id: string, updates: Partial<ProviderConfig>) => Promise<void>;
   createProviderConfig: (
-    config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>
+    config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded' | 'isEnabled'>
   ) => Promise<void>;
   deleteProviderConfig: (id: string) => Promise<void>;
   startChatGptAuth: (providerId?: string) => Promise<void>;
@@ -981,10 +989,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       await loadProviderModels(provider.id);
       const models = get().modelsByProvider[provider.id] || [];
 
-      if (!provider.isEnabled) {
-        continue;
-      }
-
       if (provider.id === selectedProviderId) {
         connectivityChecks.push(get().refreshModelsForProviderIfNeeded(provider.id, 'boot'));
         continue;
@@ -992,6 +996,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       if (provider.providerType === 'copilot') {
         connectivityChecks.push(testConnection(provider.id));
+        continue;
+      }
+
+      if (!providerHasCredentials(provider)) {
         continue;
       }
 
@@ -2362,13 +2370,23 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       const currentApiKey = currentConfig?.apiKey?.trim() ?? '';
       const nextApiKey =
         updates.apiKey === undefined ? currentApiKey : updates.apiKey.trim();
+      const nextIsLocal =
+        updates.providerType === undefined
+          ? updates.isLocal ?? currentConfig?.isLocal ?? false
+          : inferIsLocalProvider(providerType ?? '', updates.isLocal ?? false);
+      const nextIsEnabled = isLinkedProviderType(providerType)
+        ? updates.isEnabled
+        : nextIsLocal ||
+          (updates.apiKey === undefined
+            ? !!currentConfig?.hasStoredApiKey || !!currentApiKey
+            : !!nextApiKey);
       const shouldInvalidateReachability =
         !!currentConfig &&
         (
           (updates.baseUrl !== undefined && updates.baseUrl !== currentConfig.baseUrl) ||
           updates.providerType !== undefined ||
           updates.apiKey !== undefined && nextApiKey !== currentApiKey ||
-          updates.isEnabled === false
+          nextIsEnabled === false
         );
       const persistedUpdates: Partial<ProviderConfig> = isLinkedProviderType(providerType)
         ? {
@@ -2378,10 +2396,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           }
         : {
             ...updates,
-            isLocal:
-              updates.providerType === undefined
-                ? updates.isLocal
-                : inferIsLocalProvider(providerType ?? '', updates.isLocal ?? false),
+            isLocal: nextIsLocal,
+            isEnabled: nextIsEnabled,
           };
 
       await ipcUpdateProviderConfig({
@@ -2436,7 +2452,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  createProviderConfig: async (config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded'>) => {
+  createProviderConfig: async (
+    config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded' | 'isEnabled'>
+  ) => {
     try {
       requireProviderConfigurationIpc();
       providerConfigMutationVersion += 1;
@@ -2447,7 +2465,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
         isLocal: inferIsLocalProvider(config.providerType, config.isLocal),
-        isEnabled: config.isEnabled,
       });
 
       const newConfig = normalizeCreatedProviderConfig(created, config.apiKey);

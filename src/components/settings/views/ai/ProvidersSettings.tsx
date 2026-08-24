@@ -8,7 +8,6 @@ import {
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
-import { Switch } from '../../../ui/Switch';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
@@ -24,7 +23,6 @@ interface EditingProvider {
   hasStoredApiKey: boolean;
   apiKeyLoaded: boolean;
   apiKeyTouched: boolean;
-  isEnabled: boolean;
   isLocal: boolean;
   providerType: string;
   copilotSendTimeoutMinutes: string;
@@ -381,14 +379,6 @@ export const ProvidersSettings: React.FC = () => {
       };
     }
 
-    if (!provider.isEnabled) {
-      return {
-        label: t('providers.status.disabled', 'Disabled'),
-        dot: 'bg-muted-foreground',
-        text: 'text-muted-foreground',
-      };
-    }
-
     if (!provider.hasStoredApiKey && !provider.apiKey) {
       return {
         label: t('providers.status.noKey', 'No key'),
@@ -436,7 +426,6 @@ export const ProvidersSettings: React.FC = () => {
       hasStoredApiKey: config.hasStoredApiKey,
       apiKeyLoaded: config.apiKeyLoaded === true,
       apiKeyTouched: false,
-      isEnabled: config.isEnabled,
       isLocal: config.isLocal,
       providerType: config.providerType,
       copilotSendTimeoutMinutes: timeoutMsToMinutesInput(providerSettings?.copilotSendTimeoutMs),
@@ -454,7 +443,6 @@ export const ProvidersSettings: React.FC = () => {
       hasStoredApiKey: false,
       apiKeyLoaded: true,
       apiKeyTouched: false,
-      isEnabled: true,
       isLocal: false,
       providerType: 'openai',
       copilotSendTimeoutMinutes: String(DEFAULT_COPILOT_SEND_TIMEOUT_MINUTES),
@@ -473,7 +461,6 @@ export const ProvidersSettings: React.FC = () => {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
           apiKey: editingProvider.apiKey,
-          isEnabled: editingProvider.isEnabled,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
         });
@@ -487,7 +474,6 @@ export const ProvidersSettings: React.FC = () => {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
           apiKey: apiKeyUpdate,
-          isEnabled: editingProvider.isEnabled,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
         });
@@ -667,7 +653,7 @@ export const ProvidersSettings: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4">
             <div className="space-y-1">
               <label className="text-sm font-medium">{t('common.type', 'Type')}</label>
               <select
@@ -698,23 +684,6 @@ export const ProvidersSettings: React.FC = () => {
               </select>
             </div>
 
-            <div className="space-y-1">
-              <label className="text-sm font-medium">{t('common.status', 'Status')}</label>
-              <div className="flex h-9 items-center px-1">
-                <span className="mr-3 text-sm text-muted-foreground">
-                  {editingProvider.isEnabled
-                    ? t('common.enabled', 'Enabled')
-                    : t('common.disabled', 'Disabled')}
-                </span>
-                <Switch
-                  checked={editingProvider.isEnabled}
-                  aria-label={t('common.enabled', 'Enabled')}
-                  onCheckedChange={(checked) =>
-                    setEditingProvider({ ...editingProvider, isEnabled: checked })
-                  }
-                />
-              </div>
-            </div>
           </div>
 
           {showLinkedFields && (

@@ -1923,7 +1923,6 @@ export async function createProviderConfig(params: {
   baseUrl: string;
   apiKey?: string;
   isLocal: boolean;
-  isEnabled: boolean;
 }): Promise<DbProviderConfig> {
   return invoke<DbProviderConfig>("db_create_provider_config", {
     name: params.name,
@@ -1931,7 +1930,6 @@ export async function createProviderConfig(params: {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey ?? null,
     isLocal: params.isLocal,
-    isEnabled: params.isEnabled,
   });
 }
 
