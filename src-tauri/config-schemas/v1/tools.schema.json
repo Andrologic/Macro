@@ -180,6 +180,39 @@
       },
       "additionalProperties": false
     },
+    "McpProtocolMode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "legacy",
+        "modern"
+      ]
+    },
+    "McpProtocolSettings": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpProtocolMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "probeTimeoutMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 15000.0,
+          "minimum": 500.0
+        }
+      },
+      "additionalProperties": false
+    },
     "McpServerDefinition": {
       "type": "object",
       "required": [
@@ -198,6 +231,15 @@
             "null"
           ]
         },
+        "disabledTools": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "enabled": {
           "type": [
             "boolean",
@@ -210,11 +252,48 @@
             "null"
           ]
         },
+        "maxConcurrentOperations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 16.0,
+          "minimum": 1.0
+        },
         "name": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "operationTimeoutMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 600000.0,
+          "minimum": 1000.0
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpProtocolSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startupTimeoutMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 300000.0,
+          "minimum": 1000.0
         },
         "transport": {
           "$ref": "#/definitions/McpTransport"

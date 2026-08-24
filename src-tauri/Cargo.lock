@@ -2976,6 +2976,7 @@ dependencies = [
  "git2",
  "glob",
  "json-patch",
+ "libc",
  "notify",
  "objc2",
  "objc2-app-kit",

@@ -21,8 +21,6 @@ import type {
   AIProvider,
   ChatMessage,
   Conversation,
-  MCPServer,
-  MCPTransportConfig,
   Project,
   ProjectGitFlowDetection,
   ProjectGitSetupCommitResult,
@@ -40,12 +38,14 @@ import { parseToolTracesJson } from '../toolTraceState';
 import { parseDbContextRefs } from '../chatDbMappers';
 import {
   normalizeMCPServerSettingsInput,
+  PersistedMCPServer,
+  toPersistedMCPServers,
+  toRuntimeMCPServers,
 } from './clientSettingsStorage';
 import {
   isMCPEnvSecretRef,
   isSensitiveMCPEnvKey,
 } from '../mcp';
-import { normalizeMCPServer } from '../mcp';
 import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../configDocuments';
 
 const LEGACY_TOOL_ID_MAP: Record<string, string> = {
@@ -61,55 +61,10 @@ const normalizeToolSettings = (settings: Record<string, boolean>): Record<string
   );
 };
 
-type PersistedMCPServer = {
-  name?: string;
-  description?: string;
-  category?: string;
-  icon?: string;
-  website?: string;
-  enabled?: boolean;
-  transport?: MCPTransportConfig;
-};
-
 type ToolsConfigDocument = {
   builtIn?: Record<string, boolean>;
   mcpServers?: Record<string, PersistedMCPServer>;
 };
-
-const toRuntimeMCPServers = (
-  servers: Record<string, PersistedMCPServer> = {},
-): Record<string, MCPServer> => Object.fromEntries(
-  Object.entries(servers).map(([id, server]) => {
-    const normalized = normalizeMCPServer({
-      id,
-      name: server.name ?? id,
-      description: server.description,
-      category: server.category as MCPServer['category'] | undefined,
-      icon: server.icon as MCPServer['icon'] | undefined,
-      website: server.website,
-      transport: server.transport,
-      config: { enabled: server.enabled === true },
-    });
-    return [normalized.id, normalized];
-  }),
-);
-
-const toPersistedMCPServers = (
-  servers: ReturnType<typeof normalizeMCPServerSettingsInput>,
-): Record<string, PersistedMCPServer> => Object.fromEntries(
-  Object.values(servers).map((server) => [
-    server.id,
-    {
-      name: server.name,
-      description: server.description,
-      category: server.category,
-      icon: server.icon,
-      website: server.website,
-      enabled: server.config?.enabled === true,
-      transport: server.transport,
-    },
-  ]),
-);
 
 const secureMCPServerEnv = async (
   servers: ReturnType<typeof normalizeMCPServerSettingsInput>
@@ -668,6 +623,23 @@ export const mcpCallTool: ServiceProvider['mcpCallTool'] = async (data) => {
   return tauriIpc.mcpCallTool(data);
 };
 
+export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = async () =>
+  tauriIpc.mcpRuntimeGetSnapshot();
+
+export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async (key) =>
+  tauriIpc.mcpRuntimeConnect(key);
+
+export const mcpRuntimeDisconnect: ServiceProvider['mcpRuntimeDisconnect'] = async (key) => {
+  await tauriIpc.mcpRuntimeDisconnect(key);
+};
+
+export const mcpRuntimeRefreshCatalog: ServiceProvider['mcpRuntimeRefreshCatalog'] = async (key) =>
+  tauriIpc.mcpRuntimeRefreshCatalog(key);
+
+export const mcpRuntimeCancelOperation: ServiceProvider['mcpRuntimeCancelOperation'] = async (
+  operationId,
+) => tauriIpc.mcpRuntimeCancelOperation(operationId);
+
 export const listSkills: ServiceProvider['listSkills'] = async (data) =>
   tauriIpc.skillsList({ projectRoots: data?.projectRoots ?? [] });
 
@@ -728,6 +700,11 @@ export const provider: ServiceProvider = {
   updateMCPServerSettings,
   mcpDiscoverTools,
   mcpCallTool,
+  mcpRuntimeGetSnapshot,
+  mcpRuntimeConnect,
+  mcpRuntimeDisconnect,
+  mcpRuntimeRefreshCatalog,
+  mcpRuntimeCancelOperation,
   listSkills,
   getSkill,
   installSkillFromLocalPath,

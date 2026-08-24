@@ -333,6 +333,28 @@ export interface MCPHttpTransportConfig {
 
 export type MCPTransportConfig = MCPStdioTransportConfig | MCPHttpTransportConfig;
 
+export type MCPProtocolMode = 'auto' | 'legacy' | 'modern';
+
+export interface MCPProtocolSettings {
+  mode?: MCPProtocolMode;
+  probeTimeoutMs?: number;
+}
+
+export interface MCPServerDefinition {
+  name?: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  website?: string;
+  enabled?: boolean;
+  transport: MCPTransportConfig;
+  protocol?: MCPProtocolSettings;
+  startupTimeoutMs?: number;
+  operationTimeoutMs?: number;
+  maxConcurrentOperations?: number;
+  disabledTools?: string[];
+}
+
 export interface MCPTool {
   id: string;
   serverId: string;
@@ -352,6 +374,11 @@ export interface MCPServer {
   icon: IconName;
   website?: string;
   transport?: MCPTransportConfig;
+  protocol?: MCPProtocolSettings;
+  startupTimeoutMs?: number;
+  operationTimeoutMs?: number;
+  maxConcurrentOperations?: number;
+  disabledTools?: string[];
   tools?: MCPTool[];
   lastError?: string | null;
   discoveredAt?: string | null;
