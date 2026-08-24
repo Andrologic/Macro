@@ -2220,7 +2220,9 @@
   },
   "goal": {
     "bannerLabel": "Objectif de la conversation",
-    "modeLabel": "Mode Goal",
+    "shortLabel": "Goal",
+    "edit": "Modifier l’objectif",
+    "editHint": "Modifier l’objectif actuel dans la zone de saisie",
     "status": {
       "executorRunning": "L’agent travaille",
       "executorRunningDescription": "L’agent travaille pour atteindre l’objectif.",
@@ -2257,7 +2259,8 @@
     "commandMissingObjectiveDescription": "Écrivez /goal, puis décrivez le résultat que l’agent doit atteindre.",
     "executionFailed": "Le tour de l’agent a échoué.",
     "commandDescription": "Poursuivre le travail jusqu’à la validation de l’objectif par un agent indépendant",
-    "commandHint": "Démarrer le mode Goal et décrire l’objectif"
+    "commandHint": "Démarrer le mode Goal et décrire l’objectif",
+    "removeCommand": "Retirer la commande Goal"
   },
   "composer": {
     "searchingFiles": "Recherche de fichiers...",
