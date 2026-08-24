@@ -1865,6 +1865,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn builtin_provider_overrides_remain_valid_after_default_values_are_stripped() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
+            .await
+            .expect("providers");
+
+        let result = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Providers,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![
+                    JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/providers".to_string(),
+                        from: None,
+                        value: Some(json!({})),
+                    },
+                    JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/providers/openai".to_string(),
+                        from: None,
+                        value: Some(json!({
+                            "providerType": "openai",
+                            "name": "OpenAI",
+                            "enabled": true,
+                            "baseUrl": "https://api.openai.com/v1",
+                            "isLocal": false
+                        })),
+                    },
+                ],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect("activate built-in provider");
+
+        assert_eq!(
+            result.document.value.pointer("/providers/openai"),
+            Some(&json!({ "enabled": true }))
+        );
+        assert_eq!(
+            manager
+                .effective_user_document(ConfigDocumentKind::Providers)
+                .await
+                .pointer("/providers/openai/providerType"),
+            Some(&json!("openai"))
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_provider_deletion_tombstones_remain_valid_sparse_overrides() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
+            .await
+            .expect("providers");
+
+        let result = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Providers,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![
+                    JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/providers".to_string(),
+                        from: None,
+                        value: Some(json!({})),
+                    },
+                    JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/providers/openai".to_string(),
+                        from: None,
+                        value: Some(json!({ "deleted": true })),
+                    },
+                ],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect("delete built-in provider");
+
+        assert_eq!(
+            result.document.value.pointer("/providers/openai"),
+            Some(&json!({ "deleted": true }))
+        );
+        let effective = manager
+            .effective_user_document(ConfigDocumentKind::Providers)
+            .await;
+        assert_eq!(
+            effective.pointer("/providers/openai/providerType"),
+            Some(&json!("openai"))
+        );
+        assert_eq!(
+            effective.pointer("/providers/openai/deleted"),
+            Some(&json!(true))
+        );
+    }
+
+    #[tokio::test]
     async fn sensitive_agent_patch_waits_for_explicit_approval() {
         let (_temp, manager) = manager().await;
         let document = manager

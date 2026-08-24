@@ -135,13 +135,16 @@
     },
     "ProviderDefinition": {
       "type": "object",
-      "required": [
-        "providerType"
-      ],
       "properties": {
         "baseUrl": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -171,7 +174,10 @@
           "additionalProperties": true
         },
         "providerType": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "secretRef": {
           "type": [

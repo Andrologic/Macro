@@ -3331,10 +3331,12 @@ export async function listProviderModels(
 export async function upsertProviderModels(params: {
   providerId: string;
   models: DbProviderModelInput[];
+  replaceDiscovered?: boolean;
 }): Promise<DbAiModel[]> {
   return invoke<DbAiModel[]>("db_upsert_provider_models", {
     providerId: params.providerId,
     models: params.models,
+    replaceDiscovered: params.replaceDiscovered ?? false,
   });
 }
 

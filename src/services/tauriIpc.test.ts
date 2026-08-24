@@ -1110,3 +1110,51 @@ describe("tauriIpc executeWorkspaceTool", () => {
     mock.restore();
   });
 });
+
+describe("tauriIpc provider models", () => {
+  beforeEach(() => {
+    invokeCalls.length = 0;
+    invokeMock.mockClear();
+  });
+
+  it("marks exhaustive provider scans as replacements", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.upsertProviderModels({
+      providerId: "provider-openai",
+      models: [],
+      replaceDiscovered: true,
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_upsert_provider_models",
+        payload: {
+          providerId: "provider-openai",
+          models: [],
+          replaceDiscovered: true,
+        },
+      },
+    ]);
+  });
+
+  it("keeps partial provider model enrichments non-destructive", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.upsertProviderModels({
+      providerId: "provider-openai",
+      models: [],
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "db_upsert_provider_models",
+        payload: {
+          providerId: "provider-openai",
+          models: [],
+          replaceDiscovered: false,
+        },
+      },
+    ]);
+  });
+});

@@ -4941,6 +4941,13 @@ async fn configured_provider_configs(
     let now = chrono::Utc::now().to_rfc3339();
     let mut providers = Vec::with_capacity(definitions.len());
     for (id, definition) in definitions {
+        if definition
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let status = legacy_status.get(id);
         let provider_type = definition
             .get("providerType")
@@ -5467,15 +5474,11 @@ pub async fn db_delete_provider_config(
 
     let lock = provider_mutation_lock(&id);
     let _guard = lock.lock().await;
-    let previous_config = configured_provider_configs(config_manager.inner(), &pool)
+    configured_provider_configs(config_manager.inner(), &pool)
         .await?
         .into_iter()
         .find(|provider| provider.id == id)
         .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
-    let document = config_manager
-        .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
-        .await
-        .map_err(|error| command_error(error.message))?;
     let escaped = id.replace('~', "~0").replace('/', "~1");
     let previous_api_key = secrets::get_api_key(&id)
         .map_err(|error| command_error(format!("Failed to read provider secret: {error}")))?;
@@ -5497,21 +5500,10 @@ pub async fn db_delete_provider_config(
             "Failed to delete provider ChatGPT session: {error}"
         )));
     }
-    let definition = if document
-        .value
+    let is_builtin = crate::config::default_document(ConfigDocumentKind::Providers)
         .pointer(&format!("/providers/{escaped}"))
-        .is_some()
-    {
-        None
-    } else {
-        Some(serde_json::json!({
-            "providerType": previous_config.provider_type,
-            "name": previous_config.name,
-            "enabled": false,
-            "baseUrl": previous_config.base_url,
-            "isLocal": previous_config.is_local,
-        }))
-    };
+        .is_some();
+    let definition = is_builtin.then(|| serde_json::json!({ "deleted": true }));
     if let Err(error) = patch_provider_definition(config_manager.inner(), &id, definition).await {
         restore_deleted_provider_secrets(
             &id,
@@ -5541,6 +5533,7 @@ pub async fn db_upsert_provider_models(
     config_manager: State<'_, ConfigManager>,
     provider_id: String,
     models: Vec<ProviderModelInput>,
+    replace_discovered: Option<bool>,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
 
@@ -5582,9 +5575,15 @@ pub async fn db_upsert_provider_models(
         .await?;
     }
 
-    repository::upsert_provider_models(&pool, &provider_id, &models)
-        .await
-        .map_err(CommandError::from)?;
+    if replace_discovered.unwrap_or(false) {
+        repository::replace_discovered_provider_models(&pool, &provider_id, &models)
+            .await
+            .map_err(CommandError::from)?;
+    } else {
+        repository::upsert_provider_models(&pool, &provider_id, &models)
+            .await
+            .map_err(CommandError::from)?;
+    }
 
     configured_provider_models(config_manager.inner(), &pool, &provider_id).await
 }

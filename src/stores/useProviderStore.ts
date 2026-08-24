@@ -87,6 +87,47 @@ const modelRefreshInFlightByProviderId = new Map<string, Promise<AIModel[]>>();
 const lastModelRefreshStartedAtByProviderId = new Map<string, number>();
 let providerConfigMutationVersion = 0;
 const providerSettingsRequestVersionById = new Map<string, number>();
+const providerModelScanGenerationById = new Map<string, number>();
+const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
+
+const invalidateProviderModelScans = (providerId: string): number => {
+  const nextGeneration = (providerModelScanGenerationById.get(providerId) ?? 0) + 1;
+  providerModelScanGenerationById.set(providerId, nextGeneration);
+  return nextGeneration;
+};
+
+const enqueueProviderModelPersistence = <T>(
+  providerId: string,
+  persist: () => Promise<T>,
+): Promise<T> => {
+  const previous = providerModelPersistenceQueueById.get(providerId) ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(persist);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  providerModelPersistenceQueueById.set(providerId, tail);
+  void tail.finally(() => {
+    if (providerModelPersistenceQueueById.get(providerId) === tail) {
+      providerModelPersistenceQueueById.delete(providerId);
+    }
+  });
+  return result;
+};
+
+const persistProviderModelsIfCurrent = async (
+  providerId: string,
+  models: tauriIpc.DbProviderModelInput[],
+): Promise<boolean> => {
+  const generation = providerModelScanGenerationById.get(providerId) ?? 0;
+  return enqueueProviderModelPersistence(providerId, async () => {
+    if ((providerModelScanGenerationById.get(providerId) ?? 0) !== generation) {
+      return false;
+    }
+    await tauriIpc.upsertProviderModels({ providerId, models });
+    return (providerModelScanGenerationById.get(providerId) ?? 0) === generation;
+  });
+};
 
 const startProviderSettingsRequest = (providerId: string): number => {
   const nextVersion = (providerSettingsRequestVersionById.get(providerId) ?? 0) + 1;
@@ -959,10 +1000,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             (model) => model.contextWindowSource === 'models_dev',
           );
           if (reliableCatalogModels.length === 0) return;
-          await tauriIpc.upsertProviderModels({
-            providerId: currentProviderId,
-            models: reliableCatalogModels.map(toDbProviderModelInput),
-          });
+          await persistProviderModelsIfCurrent(
+            currentProviderId,
+            reliableCatalogModels.map(toDbProviderModelInput),
+          );
         },
       ),
     );
@@ -1221,6 +1262,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   scanModelsForProvider: async (providerId: string) => {
+    const scanGeneration = providerModelScanGenerationById.get(providerId) ?? 0;
+    const isCurrentScan = () =>
+      (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration;
     const { providerConfigs, modelsByProvider, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
 
@@ -1251,8 +1295,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       try {
         void refreshModelContextCatalog();
         const updated = tauriIpc.isTauriAvailable()
-          ? await tauriIpc.aiSyncProviderModels(providerId)
+          ? await enqueueProviderModelPersistence(providerId, async () => {
+              if (!isCurrentScan()) {
+                return null;
+              }
+              return tauriIpc.aiSyncProviderModels(providerId);
+            })
           : [];
+        if (!updated || !isCurrentScan()) {
+          return get().modelsByProvider[providerId] || [];
+        }
         let normalized = enrichModelsWithCatalogContextLimits(
           updated.map((model) => normalizeDbModel(model, config.providerType)),
           {
@@ -1266,10 +1318,18 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             (model) => model.contextWindowSource === 'models_dev',
           );
           if (hasCatalogEnrichment) {
-            const persisted = await tauriIpc.upsertProviderModels({
-              providerId,
-              models: normalized.map(toDbProviderModelInput),
+            const persisted = await enqueueProviderModelPersistence(providerId, async () => {
+              if (!isCurrentScan()) {
+                return null;
+              }
+              return tauriIpc.upsertProviderModels({
+                providerId,
+                models: normalized.map(toDbProviderModelInput),
+              });
             });
+            if (!persisted || !isCurrentScan()) {
+              return get().modelsByProvider[providerId] || [];
+            }
             normalized = enrichModelsWithCatalogContextLimits(
               persisted.map((model) => normalizeDbModel(model, config.providerType)),
               {
@@ -1328,6 +1388,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         return normalized;
       } catch (error) {
+        if (!isCurrentScan()) {
+          return get().modelsByProvider[providerId] || [];
+        }
         if (tauriIpc.isTauriAvailable()) {
           try {
             await get().loadProviderConfigs();
@@ -1354,6 +1417,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     const requiresApiKey = !config.isLocal;
     const apiKey = requiresApiKey ? await resolveProviderApiKey(providerId) : undefined;
+    if (!isCurrentScan()) {
+      return get().modelsByProvider[providerId] || [];
+    }
     if (requiresApiKey && !apiKey) {
       return modelsByProvider[providerId] || [];
     }
@@ -1370,6 +1436,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         providerId: config.providerType,
         providerType: config.providerType,
       });
+
+      if (!isCurrentScan()) {
+        return get().modelsByProvider[providerId] || [];
+      }
 
       if (!result.success) {
         set((state) => ({
@@ -1388,9 +1458,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       if (tauriIpc.isTauriAvailable()) {
         void refreshModelContextCatalog();
-        const updated = await tauriIpc.upsertProviderModels({
-          providerId,
-          models: result.models.map((model) => {
+        const updated = await enqueueProviderModelPersistence(providerId, async () => {
+          if (!isCurrentScan()) {
+            return null;
+          }
+          return tauriIpc.upsertProviderModels({
+            providerId,
+            replaceDiscovered: true,
+            models: result.models.map((model) => {
             const existingModel = (modelsByProvider[providerId] || []).find(
               (candidate) => candidate.id === model.id,
             );
@@ -1455,8 +1530,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               context_limits_updated_at:
                 userOverrideContext?.contextLimitsUpdatedAt ?? contextLimitsUpdatedAt,
             };
-          }),
+            }),
+          });
         });
+
+        if (!updated || !isCurrentScan()) {
+          return get().modelsByProvider[providerId] || [];
+        }
 
         const normalized = enrichModelsWithCatalogContextLimits(
           mergeProviderModelContextLimitOverlays(
@@ -1568,6 +1648,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         return { ...normalized, isFree: computeIsFreeModel(normalized) };
       });
 
+      if (!isCurrentScan()) {
+        return get().modelsByProvider[providerId] || [];
+      }
+
       set((state) => ({
         modelsByProvider: { ...state.modelsByProvider, [providerId]: models },
         ...withReachabilityRecord(state, providerId, {
@@ -1580,6 +1664,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       return models;
     } catch (error) {
+      if (!isCurrentScan()) {
+        return get().modelsByProvider[providerId] || [];
+      }
       const message = error instanceof Error ? error.message : 'Failed to scan models';
       set((state) => ({
         ...withReachabilityRecord(state, providerId, {
@@ -1860,10 +1947,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     )?.providerType;
 
     if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.upsertProviderModels({
-        providerId,
-        models: [toDbProviderModelInput(nextModel)],
-      });
+      const persisted = await persistProviderModelsIfCurrent(providerId, [
+        toDbProviderModelInput(nextModel),
+      ]);
+      if (!persisted) return;
     }
 
     set((state) => {
@@ -1920,10 +2007,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     };
 
     if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.upsertProviderModels({
-        providerId,
-        models: [toDbProviderModelInput(nextModel)],
-      });
+      const persisted = await persistProviderModelsIfCurrent(providerId, [
+        toDbProviderModelInput(nextModel),
+      ]);
+      if (!persisted) return;
     }
 
     set((state) => {
@@ -1991,10 +2078,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         });
 
     if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.upsertProviderModels({
-        providerId,
-        models: [toDbProviderModelInput(nextModel)],
-      });
+      const persisted = await persistProviderModelsIfCurrent(providerId, [
+        toDbProviderModelInput(nextModel),
+      ]);
+      if (!persisted) return;
     }
 
     set((state) => {
@@ -2380,6 +2467,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           (updates.apiKey === undefined
             ? !!currentConfig?.hasStoredApiKey || !!currentApiKey
             : !!nextApiKey);
+      const apiKeyChanged =
+        !isLinkedProviderType(providerType) &&
+        updates.apiKey !== undefined &&
+        (nextApiKey !== currentApiKey ||
+          !!currentConfig?.hasStoredApiKey !== !!nextApiKey);
       const shouldInvalidateReachability =
         !!currentConfig &&
         (
@@ -2410,9 +2502,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         isEnabled: persistedUpdates.isEnabled,
       });
 
-      // Update local state
-      set((state) => ({
-        providerConfigs: state.providerConfigs.map((c) =>
+      if (apiKeyChanged) {
+        invalidateProviderModelScans(id);
+      }
+
+      set((state) => {
+        const providerConfigs = state.providerConfigs.map((c) =>
           c.id === id
             ? applyNativeToolCallingToProviderConfig({
                 ...c,
@@ -2427,24 +2522,102 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                   persistedUpdates.apiKey === undefined ? c.apiKeyLoaded : true,
               })
             : c
-        ),
-        providers: state.providers.map((p) =>
-          p.id === id
-            ? applyNativeToolCallingToProvider(
-                {
-                  ...p,
-                  name: persistedUpdates.name ?? p.name,
-                  baseUrl: persistedUpdates.baseUrl ?? p.baseUrl,
-                  isEnabled: persistedUpdates.isEnabled ?? p.isEnabled,
-                },
-                get().providerConfigs.find((provider) => provider.id === id)?.providerType
-              )
-            : p
-        ),
-        ...(shouldInvalidateReachability
-          ? clearProviderReachability(state, id)
-          : {}),
-      }));
+        );
+        const updatedProvider = providerConfigs.find((provider) => provider.id === id);
+        const selectedProviderBecameUnavailable =
+          state.selectedProviderId === id &&
+          (!updatedProvider || !providerHasCredentials(updatedProvider));
+        const fallbackProvider = selectedProviderBecameUnavailable
+          ? providerConfigs.find(
+              (provider) => provider.id !== id && providerHasCredentials(provider)
+            ) ?? null
+          : null;
+        const selectedProviderKeyChanged =
+          apiKeyChanged && !!nextApiKey && state.selectedProviderId === id;
+        const nextSelectedProviderId = selectedProviderBecameUnavailable
+          ? fallbackProvider?.id ?? null
+          : state.selectedProviderId;
+        const nextSelectedModelId = selectedProviderBecameUnavailable
+          ? getFirstEnabledModelId(
+              nextSelectedProviderId
+                ? state.modelsByProvider[nextSelectedProviderId] ?? []
+                : []
+            )
+          : selectedProviderKeyChanged
+            ? null
+            : state.selectedModelId;
+        const modelsByProvider = apiKeyChanged
+          ? { ...state.modelsByProvider, [id]: [] }
+          : state.modelsByProvider;
+
+        return {
+          providerConfigs,
+          providers: state.providers.map((p) =>
+            p.id === id
+              ? applyNativeToolCallingToProvider(
+                  {
+                    ...p,
+                    name: persistedUpdates.name ?? p.name,
+                    baseUrl: persistedUpdates.baseUrl ?? p.baseUrl,
+                    isEnabled: persistedUpdates.isEnabled ?? p.isEnabled,
+                  },
+                  updatedProvider?.providerType
+                )
+              : p
+          ),
+          modelsByProvider,
+          selectedProviderId: nextSelectedProviderId,
+          selectedModelId: nextSelectedModelId,
+          selectedReasoningEffort:
+            selectedProviderBecameUnavailable || selectedProviderKeyChanged
+              ? resolveSelectedReasoningEffort({
+                  providerId: nextSelectedProviderId,
+                  modelId: nextSelectedModelId,
+                  modelsByProvider,
+                  unsupported: state.reasoningUnsupportedModelKeys,
+                  requested: null,
+                })
+              : state.selectedReasoningEffort,
+          ...(shouldInvalidateReachability
+            ? clearProviderReachability(state, id)
+            : {}),
+          ...(apiKeyChanged ? { isLoadingModels: false } : {}),
+        };
+      });
+
+      if (apiKeyChanged && (nextApiKey || nextIsLocal)) {
+        const models = await get().scanModelsForProvider(id);
+        if (get().selectedProviderId === id) {
+          const selectedModelId = getFirstEnabledModelId(models);
+          set({
+            selectedModelId,
+            selectedReasoningEffort: resolveSelectedReasoningEffort({
+              providerId: id,
+              modelId: selectedModelId,
+              modelsByProvider: get().modelsByProvider,
+              unsupported: get().reasoningUnsupportedModelKeys,
+              requested: null,
+            }),
+          });
+        }
+      } else if (apiKeyChanged) {
+        const persistedModels = await enqueueProviderModelPersistence(id, () =>
+          tauriIpc.upsertProviderModels({
+            providerId: id,
+            models: [],
+            replaceDiscovered: true,
+          })
+        );
+        const remainingModels = persistedModels.map((model) =>
+          normalizeDbModel(model, providerType ?? currentConfig?.providerType ?? '')
+        );
+        set((state) => ({
+          modelsByProvider: {
+            ...state.modelsByProvider,
+            [id]: remainingModels,
+          },
+        }));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update provider';
       set({ lastError: message });
@@ -2477,6 +2650,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
 
       await get().loadProviderSettings(created.id);
+      if (providerHasCredentials(newConfig) && !isLinkedProviderType(newConfig.providerType)) {
+        await get().scanModelsForProvider(created.id);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create provider';
       set({ lastError: message });
@@ -2489,6 +2665,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       requireProviderConfigurationIpc();
       providerConfigMutationVersion += 1;
       startProviderSettingsRequest(id);
+      invalidateProviderModelScans(id);
 
       await tauriIpc.deleteProviderConfig(id);
 
@@ -2544,8 +2721,24 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             unsupported: state.reasoningUnsupportedModelKeys,
             requested: selectedModelStillAvailable ? state.selectedReasoningEffort : null,
           }),
+          isLoadingModels: false,
         };
       });
+
+      try {
+        await enqueueProviderModelPersistence(id, () =>
+          tauriIpc.upsertProviderModels({
+            providerId: id,
+            models: [],
+            replaceDiscovered: true,
+          })
+        );
+      } catch (cleanupError) {
+        const message = cleanupError instanceof Error
+          ? `Provider deleted, but model cleanup failed: ${cleanupError.message}`
+          : 'Provider deleted, but model cleanup failed.';
+        set({ lastError: message });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete provider';
       set({ lastError: message });
