@@ -147,6 +147,7 @@ import { buildArchitectPlanToolFollowUpInstruction } from "../services/architect
 import { normalizeArchitectToolId } from "../services/architectToolNames";
 import { selectInjectableMCPToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
+import { notify } from "../components/ui/toastService";
 import {
   callScopedMcpTool,
   resolveScopedMcpRuntime,
@@ -5390,6 +5391,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         normalizedToolName,
         args,
         operation.mcpServers,
+        {
+          projectIds:
+            operation.scopedTurnConfiguration?.projectIds ??
+            operation.executionContext.projectIds,
+          signal,
+        },
       );
       return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
     }
@@ -8454,22 +8461,63 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
     const toolsState = useToolsStore.getState();
+    const providerSupportsNativeToolCalling =
+      params.providerSupportsNativeToolCalling ??
+      useProviderStore.getState().selectedSupportsNativeToolCalling();
     const scopedMcpRuntime = scopedTurnConfiguration
       ? await resolveScopedMcpRuntime(
           scopedTurnConfiguration.mcpServers,
-          toolsState.mcpServers,
+          toolsState.mcpServers ?? [],
+          { projectIds: scopedTurnConfiguration.projectIds },
         )
       : {
-          servers: toolsState.mcpServers,
+          // Compatibility path for runtimes without the scoped configuration
+          // API. Tool execution still acquires an authoritative backend key.
+          servers: toolsState.mcpServers ?? [],
           tools: toolsState.getEnabledMCPTools(),
+          failures: [],
         };
+    if (scopedMcpRuntime.failures.length > 0) {
+      const unavailableServers = scopedMcpRuntime.failures
+        .map((failure) => `${failure.serverId} (${failure.code})`)
+        .join(", ");
+      devLogger.warn("Scoped MCP servers are unavailable", {
+        failures: scopedMcpRuntime.failures,
+      });
+      notify.warning("Some MCP servers are unavailable", {
+        description: unavailableServers,
+      });
+    }
     const scopedMcpTools = scopedMcpRuntime.tools;
-    const frozenMcpToolIds = new Set(scopedMcpTools.map((tool) => tool.id));
-    const allowedToolIds = applyScopedToolRestrictions(
-      taskAllowedToolIds,
+    const injectableMcpToolIds = selectInjectableMCPToolIds({
+      enabledToolIds: scopedMcpTools.map((tool) => tool.id),
+      supportsNativeToolCalling: providerSupportsNativeToolCalling,
+      providerType: params.providerConfig.providerType,
+      mode: params.modeAtSend,
+      agentType: params.agentTypeAtSend ?? null,
+    });
+    const policyAllowedMcpToolIds = applyScopedToolRestrictions(
+      filterDeniedToolIdsForRiskLevel(
+        filterToolIdsForInternalAgentProfile(
+          injectableMcpToolIds,
+          internalAgentProfile,
+        ),
+        riskLevel,
+        params.modeAtSend,
+      ),
       scopedTurnConfiguration,
-    ).filter((toolId) => !isMCPToolId(toolId) || frozenMcpToolIds.has(toolId));
-    const mcpTools = scopedMcpTools.filter((tool) => allowedToolIds.includes(tool.id));
+    );
+    const injectableMcpToolIdsSet = new Set(policyAllowedMcpToolIds);
+    const allowedToolIds = Array.from(new Set(applyScopedToolRestrictions(
+      [
+        ...taskAllowedToolIds.filter((toolId) => !isMCPToolId(toolId)),
+        ...policyAllowedMcpToolIds,
+      ],
+      scopedTurnConfiguration,
+    )));
+    const mcpTools = scopedMcpTools.filter((tool) =>
+      injectableMcpToolIdsSet.has(tool.id),
+    );
     const showToolTraces = false;
     const skillPermissionSnapshot = useSkillsStore
       .getState()
