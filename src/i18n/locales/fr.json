@@ -1657,6 +1657,8 @@
     "delete": "Supprimer le provider",
     "deleted": "Provider supprimé",
     "searchPlaceholder": "Rechercher des providers...",
+    "configuredTitle": "Providers configurés",
+    "unconfiguredTitle": "Providers à configurer",
     "testSaveFirst": "Enregistrez le provider avant de le tester.",
     "testConnection": "Tester la connexion",
     "saveProvider": "Enregistrer le provider",
