@@ -244,6 +244,18 @@ const writeLocalStorage = (
   window.localStorage.setItem(getStorageKey(conversationId), serialized);
 };
 
+export const serializeAgentCodeCheckpointHistory = (
+  checkpoints: AgentCodeCheckpoint[],
+  oldestCompleteSequence: number | null,
+): string =>
+  JSON.stringify({
+    version: STORED_CHECKPOINTS_VERSION,
+    checkpoints: cloneCheckpoints(checkpoints).sort(
+      (left, right) => left.sequence - right.sequence,
+    ),
+    oldestCompleteSequence,
+  });
+
 export const loadAgentCodeCheckpointHistory = async (
   conversationId: string,
 ): Promise<AgentCodeCheckpointHistory> => {
@@ -296,11 +308,10 @@ export const saveAgentCodeCheckpoints = async (
       if (overflowCount > 0 && trimmed.length > 0) {
         oldestCompleteSequence = trimmed[0].sequence;
       }
-      const serialized = JSON.stringify({
-        version: STORED_CHECKPOINTS_VERSION,
-        checkpoints: trimmed,
+      const serialized = serializeAgentCodeCheckpointHistory(
+        trimmed,
         oldestCompleteSequence,
-      });
+      );
 
       if (tauriIpc.isTauriAvailable()) {
         // A desktop checkpoint is part of the durable replay record. Falling back
@@ -505,12 +516,27 @@ export const buildAgentCodeReplayPreview = (
     }
   }
 
-  const targetSnapshotByPath = new Map<string, AgentCodeReplayPreviewFile>();
-  const affectedRealPaths = new Set<string>();
+  const getCheckpointFileIdentity = (
+    file: Pick<
+      AgentCodeCheckpoint["files"][number],
+      "projectId" | "workspaceScope" | "workspacePath" | "realPath"
+    >,
+  ): string =>
+    JSON.stringify([
+      file.projectId ?? null,
+      file.workspaceScope ?? null,
+      file.workspacePath ?? null,
+      file.realPath,
+    ]);
+  const targetSnapshotByIdentity = new Map<
+    string,
+    AgentCodeReplayPreviewFile
+  >();
+  const affectedFileIdentities = new Set<string>();
 
   for (const checkpoint of keptCheckpoints) {
     for (const file of checkpoint.files) {
-      targetSnapshotByPath.set(file.realPath, {
+      targetSnapshotByIdentity.set(getCheckpointFileIdentity(file), {
         path: file.path,
         realPath: file.realPath,
         action: file.after.exists ? "modify" : "delete",
@@ -525,28 +551,29 @@ export const buildAgentCodeReplayPreview = (
     }
   }
 
-  const baselineByPath = new Map<string, AgentCodeReplayPreviewFile>();
-  const expectedCurrentByPath = new Map<
+  const baselineByIdentity = new Map<string, AgentCodeReplayPreviewFile>();
+  const expectedCurrentByIdentity = new Map<
     string,
     AgentCodeCheckpointFileSnapshot
   >();
-  const undoneHistoryByPath = new Map<
+  const undoneHistoryByIdentity = new Map<
     string,
     { firstBeforeExists: boolean; deletedAfterTarget: boolean }
   >();
   for (const checkpoint of undoneCheckpoints) {
     for (const file of checkpoint.files) {
-      affectedRealPaths.add(file.realPath);
-      expectedCurrentByPath.set(file.realPath, copySnapshot(file.after));
-      const existingHistory = undoneHistoryByPath.get(file.realPath);
-      undoneHistoryByPath.set(file.realPath, {
+      const identity = getCheckpointFileIdentity(file);
+      affectedFileIdentities.add(identity);
+      expectedCurrentByIdentity.set(identity, copySnapshot(file.after));
+      const existingHistory = undoneHistoryByIdentity.get(identity);
+      undoneHistoryByIdentity.set(identity, {
         firstBeforeExists:
           existingHistory?.firstBeforeExists ?? file.before.exists,
         deletedAfterTarget:
           Boolean(existingHistory?.deletedAfterTarget) || !file.after.exists,
       });
-      if (!baselineByPath.has(file.realPath)) {
-        baselineByPath.set(file.realPath, {
+      if (!baselineByIdentity.has(identity)) {
+        baselineByIdentity.set(identity, {
           path: file.path,
           realPath: file.realPath,
           action: file.before.exists ? "modify" : "delete",
@@ -562,13 +589,13 @@ export const buildAgentCodeReplayPreview = (
     }
   }
 
-  const affectedFiles = Array.from(affectedRealPaths).map((realPath) => {
+  const affectedFiles = Array.from(affectedFileIdentities).map((identity) => {
     const target =
-      targetSnapshotByPath.get(realPath) ?? baselineByPath.get(realPath);
+      targetSnapshotByIdentity.get(identity) ?? baselineByIdentity.get(identity);
     if (!target) {
-      throw new Error(`Missing checkpoint target for ${realPath}`);
+      throw new Error(`Missing checkpoint target for ${identity}`);
     }
-    const history = undoneHistoryByPath.get(realPath);
+    const history = undoneHistoryByIdentity.get(identity);
     const status =
       history?.firstBeforeExists === false
         ? "created"
@@ -585,8 +612,8 @@ export const buildAgentCodeReplayPreview = (
           : "modify"
         : "delete",
       status,
-      expectedCurrent: expectedCurrentByPath.has(realPath)
-        ? copySnapshot(expectedCurrentByPath.get(realPath)!)
+      expectedCurrent: expectedCurrentByIdentity.has(identity)
+        ? copySnapshot(expectedCurrentByIdentity.get(identity)!)
         : undefined,
     } satisfies AgentCodeReplayPreviewFile;
   });

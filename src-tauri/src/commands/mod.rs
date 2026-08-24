@@ -650,6 +650,14 @@ pub(crate) enum ParsedPatchOperation {
     Delete { path: String },
 }
 
+impl ParsedPatchOperation {
+    pub(crate) fn path(&self) -> &str {
+        match self {
+            Self::Add { path, .. } | Self::Update { path, .. } | Self::Delete { path } => path,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PatchHunk {
     pub(crate) lines: Vec<PatchHunkLine>,
@@ -790,6 +798,29 @@ pub(crate) fn parse_apply_patch(patch_text: &str) -> CommandResult<Vec<ParsedPat
     }
 
     Ok(operations)
+}
+
+pub fn validate_workspace_tool_execution(
+    mode: &str,
+    tool_id: &str,
+    args: &Value,
+) -> CommandResult<ToolValidationResult> {
+    let candidate_path =
+        json_arg_string(args, "path").or_else(|| json_arg_string(args, "repo_path"));
+    let validation = validate_tool_execution(mode, tool_id, candidate_path.as_deref());
+    if !validation.allowed || tool_id.trim() != "apply_patch" {
+        return Ok(validation);
+    }
+
+    let patch_text = json_arg_string(args, "patch_text")
+        .ok_or_else(|| command_error("Missing patch_text argument for apply_patch tool."))?;
+    for operation in parse_apply_patch(&patch_text)? {
+        let target_validation = validate_tool_execution(mode, tool_id, Some(operation.path()));
+        if !target_validation.allowed {
+            return Ok(target_validation);
+        }
+    }
+    Ok(validation)
 }
 
 fn split_text_lines(content: &str) -> (Vec<String>, bool) {
@@ -2404,11 +2435,7 @@ async fn execute_workspace_tool_inner(
     let mode_trimmed = mode.trim().to_string();
     let tool_trimmed = tool_id.trim().to_string();
 
-    let candidate_path =
-        json_arg_string(&args, "path").or_else(|| json_arg_string(&args, "repo_path"));
-
-    let validation =
-        validate_tool_execution(&mode_trimmed, &tool_trimmed, candidate_path.as_deref());
+    let validation = validate_workspace_tool_execution(&mode_trimmed, &tool_trimmed, &args)?;
 
     if !validation.allowed {
         return Ok(validation

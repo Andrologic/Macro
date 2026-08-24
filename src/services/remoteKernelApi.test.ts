@@ -186,6 +186,46 @@ describe('remoteKernelApi', () => {
     expect(secondId).not.toBe(firstId);
   });
 
+  it('retries a lost mutation response once with the same execution id and body', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    let executeAttempts = 0;
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: [
+            'content_revisions_v1',
+            'idempotent_tool_execution_v1',
+          ],
+        });
+      }
+      executeAttempts += 1;
+      if (executeAttempts === 1) {
+        throw new TypeError('connection closed after request upload');
+      }
+      return jsonResponse({ result: 'written' });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'write',
+        args: { path: 'src/App.tsx', content: 'next' },
+        focusedProjectId: 'project-1',
+      }),
+    ).resolves.toBe('written');
+
+    const executeCalls = fetchCalls.filter((call) => call.url.includes('/tools/execute'));
+    expect(executeCalls).toHaveLength(2);
+    expect(executeCalls[0].init?.body).toBe(executeCalls[1].init?.body);
+    const firstPayload = JSON.parse(String(executeCalls[0].init?.body));
+    const secondPayload = JSON.parse(String(executeCalls[1].init?.body));
+    expect(secondPayload.execution_id).toBe(firstPayload.execution_id);
+  });
+
   it('uses the routed project when checking execution capabilities', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
@@ -362,7 +402,11 @@ describe('remoteKernelApi', () => {
         return jsonResponse({
           allowed_tool_ids: ['write'],
           enforce_macro_only_writes: false,
-          capabilities: ['content_revisions_v1', 'recoverable_checkpoints_v1'],
+          capabilities: [
+            'content_revisions_v1',
+            'recoverable_checkpoints_v1',
+            'idempotent_tool_execution_v1',
+          ],
         });
       }
       return jsonResponse({
@@ -444,7 +488,11 @@ describe('remoteKernelApi', () => {
         return jsonResponse({
           allowed_tool_ids: ['write'],
           enforce_macro_only_writes: false,
-          capabilities: ['content_revisions_v1', 'recoverable_checkpoints_v1'],
+          capabilities: [
+            'content_revisions_v1',
+            'recoverable_checkpoints_v1',
+            'idempotent_tool_execution_v1',
+          ],
         });
       }
       return jsonResponse({
@@ -697,7 +745,7 @@ describe('remoteKernelApi', () => {
         return jsonResponse({
           allowed_tool_ids: ['write'],
           enforce_macro_only_writes: false,
-          capabilities: ['content_revisions_v1'],
+          capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
         });
       }
       executeSignal = init?.signal as AbortSignal | undefined;
@@ -732,7 +780,7 @@ describe('remoteKernelApi', () => {
         return jsonResponse({
           allowed_tool_ids: ['write'],
           enforce_macro_only_writes: false,
-          capabilities: ['content_revisions_v1'],
+          capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
         });
       }
       return new Response(

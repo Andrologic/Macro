@@ -291,6 +291,7 @@ import {
   recoverAgentCodeReplayPreview,
   restoreAgentCodeReplayPreview,
   saveAgentCodeCheckpoints,
+  serializeAgentCodeCheckpointHistory,
 } from "../services/agentCodeCheckpoints";
 import {
   LinkedConversationDeletionSagaCorruptionError,
@@ -9047,12 +9048,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     try {
       await serializeAgentCodeCheckpointMutation(params.conversationId, async () => {
         const existing = await getLoadedAgentCodeCheckpoints(params.conversationId);
+        const checkpointHistory = await loadAgentCodeCheckpointHistory(
+          params.conversationId,
+        );
         const pruned = pruneAgentCodeCheckpointsToMessageIds(
           existing,
           params.conversationId,
           plan.keptMessageIds,
         );
         const checkpointsChanged = pruned.length !== existing.length;
+        const codeCheckpointsJson = checkpointsChanged
+          ? serializeAgentCodeCheckpointHistory(
+              pruned,
+              checkpointHistory.oldestCompleteSequence,
+            )
+          : null;
 
         if (tauriIpc.isTauriAvailable()) {
           if (params.replayRecovery) {
@@ -9067,14 +9077,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
               providerInputItemsJson: params.replayRecovery.providerInputItems
                 ? JSON.stringify(params.replayRecovery.providerInputItems)
                 : null,
-              codeCheckpointsJson: checkpointsChanged ? JSON.stringify(pruned) : null,
+              codeCheckpointsJson,
               deleteContextCompactionState: plan.shouldDeleteContextCompactionState,
             });
           } else {
             await tauriIpc.dbTrimConversationReplay({
               conversationId: params.conversationId,
               afterMessageId: params.messageId,
-              codeCheckpointsJson: checkpointsChanged ? JSON.stringify(pruned) : null,
+              codeCheckpointsJson,
               deleteContextCompactionState: plan.shouldDeleteContextCompactionState,
             });
           }

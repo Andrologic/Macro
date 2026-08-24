@@ -514,6 +514,58 @@ export const registerReplayAndEditingScenarios = (
       ]);
     });
 
+    it('preserves the durable checkpoint compaction frontier in an atomic replay trim', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const checkpoint: AgentCodeCheckpoint = {
+        id: 'checkpoint-2',
+        conversationId: 'chat-conv',
+        assistantMessageId: 'replay-assistant',
+        toolCallId: 'call-2',
+        toolName: 'write',
+        sequence: 2,
+        createdAt: '2026-04-14T10:01:00.000Z',
+        files: [],
+      };
+      context.appSettingValues.set(
+        'agentCodeCheckpoints:chat-conv',
+        JSON.stringify({
+          version: 2,
+          checkpoints: [checkpoint],
+          oldestCompleteSequence: 2,
+        }),
+      );
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-conv', '')],
+        messages: [
+          { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+          { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+        ],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        agentCodeCheckpointsByConversationId: { 'chat-conv': [checkpoint] },
+      }));
+
+      await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+        skipAgentCodeReplayCheck: true,
+      });
+
+      const prepareCalls = (dbPrepareConversationReplayMock as unknown as {
+        mock: { calls: Array<Array<unknown>> };
+      }).mock.calls;
+      const call = prepareCalls.at(-1)?.[0] as
+        | { codeCheckpointsJson?: string | null }
+        | undefined;
+      const persisted = JSON.parse(call?.codeCheckpointsJson ?? 'null');
+      expect(persisted).toEqual({
+        version: 2,
+        checkpoints: [],
+        oldestCompleteSequence: 2,
+      });
+    });
+
     it('keeps the transcript tail in state when the atomic replay trim fails', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';
