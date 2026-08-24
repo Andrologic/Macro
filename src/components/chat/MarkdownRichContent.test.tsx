@@ -118,6 +118,37 @@ describe('MarkdownRichContent media rendering', () => {
   });
 });
 
+describe('MarkdownRichContent code block rendering', () => {
+  it('keeps horizontal scrolling on the padded container', () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'```text\nconst value = "a long line";\n```'} />
+    );
+
+    expect(markup).toContain('<pre class="markdown-code-scroll');
+    expect(markup).toContain('overflow-x-auto');
+    expect(markup).toContain('class="text-sm font-mono whitespace-pre hljs-code"');
+  });
+
+  it('renders a one-line fence without a language as a block', () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'```\none line\n```'} />
+    );
+
+    expect(markup).toContain('<pre class="markdown-code-scroll');
+    expect(markup).toContain('>one ');
+    expect(markup).toContain('>line</span>');
+  });
+
+  it('keeps inline code inline', () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownRichContent content={'Use `one line` inline.'} />
+    );
+
+    expect(markup).not.toContain('<pre');
+    expect(markup).toContain('<code');
+  });
+});
+
 describe('MarkdownRichContent context references', () => {
   it('renders inline skill references as chips inside normal markdown text', () => {
     const markup = renderToStaticMarkup(
