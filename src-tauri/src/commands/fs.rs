@@ -132,6 +132,31 @@ fn open_workspace_capability(
     Ok((Arc::new(directory), relative_path))
 }
 
+#[derive(Clone)]
+pub(crate) struct WorkspaceCapabilityTarget {
+    directory: Arc<CapabilityDir>,
+    relative_path: PathBuf,
+    validated_path: PathBuf,
+}
+
+pub(crate) async fn open_workspace_capability_target_internal(
+    workspace: &Path,
+    path: String,
+) -> Result<WorkspaceCapabilityTarget, BackendError> {
+    let validated_path = validate_path_for_write(&PathBuf::from(&path), workspace)?;
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let (directory, relative_path) = open_workspace_capability(&workspace, &validated_path)?;
+        Ok(WorkspaceCapabilityTarget {
+            directory,
+            relative_path,
+            validated_path,
+        })
+    })
+    .await
+    .map_err(capability_task_error)?
+}
+
 fn read_capability_file(
     directory: &CapabilityDir,
     relative_path: &Path,
@@ -142,9 +167,30 @@ fn read_capability_file(
         Err(error) => return Err(error),
     };
     let mut file = file.into_std();
-    let mode = metadata_unix_mode(&file.metadata()?);
+    let metadata = file.metadata()?;
+    if metadata.len() > MAX_WRITE_SIZE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file exceeds maximum recoverable mutation size of {} bytes",
+                MAX_WRITE_SIZE_BYTES
+            ),
+        ));
+    }
+    let mode = metadata_unix_mode(&metadata);
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    std::io::Read::by_ref(&mut file)
+        .take(MAX_WRITE_SIZE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_WRITE_SIZE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file exceeds maximum recoverable mutation size of {} bytes",
+                MAX_WRITE_SIZE_BYTES
+            ),
+        ));
+    }
     Ok(Some((bytes, mode)))
 }
 
@@ -1298,8 +1344,6 @@ async fn write_file_with_workspace_capability(
 ) -> Result<WriteResultDto, BackendError> {
     let workspace = workspace.to_path_buf();
     let validated_path = validated_path.to_path_buf();
-    let display_path = display_path.to_string();
-    let content = content_bytes.to_vec();
     let (directory, relative_path) = tokio::task::spawn_blocking({
         let workspace = workspace.clone();
         let validated_path = validated_path.clone();
@@ -1307,6 +1351,37 @@ async fn write_file_with_workspace_capability(
     })
     .await
     .map_err(capability_task_error)??;
+
+    let target = WorkspaceCapabilityTarget {
+        directory,
+        relative_path,
+        validated_path,
+    };
+    write_file_with_capability_target(
+        &target,
+        display_path,
+        content_bytes,
+        create_dirs,
+        expected_revision,
+        unix_mode,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_file_with_capability_target(
+    target: &WorkspaceCapabilityTarget,
+    display_path: &str,
+    content_bytes: &[u8],
+    create_dirs: Option<bool>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> Result<WriteResultDto, BackendError> {
+    let directory = target.directory.clone();
+    let relative_path = target.relative_path.clone();
+    let validated_path = target.validated_path.clone();
+    let display_path = display_path.to_string();
+    let content = content_bytes.to_vec();
 
     let existing = tokio::task::spawn_blocking({
         let directory = directory.clone();
@@ -1463,19 +1538,13 @@ async fn write_file_with_workspace_capability(
     })
 }
 
-pub(crate) async fn read_file_bytes_with_mode_internal(
-    workspace: &Path,
-    path: String,
+pub(crate) async fn read_file_bytes_with_mode_from_capability_target(
+    target: &WorkspaceCapabilityTarget,
 ) -> Result<Option<(Vec<u8>, Option<u32>)>, BackendError> {
-    if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
-        return Err(BackendError::FilesystemInvalidPath {
-            message: "Native capability reads cannot target a WSL workspace".to_string(),
-        });
-    }
-    let validated_path = validate_path_for_write(&PathBuf::from(&path), workspace)?;
-    let workspace = workspace.to_path_buf();
+    let directory = target.directory.clone();
+    let relative_path = target.relative_path.clone();
+    let validated_path = target.validated_path.clone();
     tokio::task::spawn_blocking(move || {
-        let (directory, relative_path) = open_workspace_capability(&workspace, &validated_path)?;
         read_capability_file(&directory, &relative_path)
             .map_err(|error| io_error_to_backend_error(error, &validated_path))
     })
@@ -1483,18 +1552,18 @@ pub(crate) async fn read_file_bytes_with_mode_internal(
     .map_err(capability_task_error)?
 }
 
-pub(crate) async fn write_file_bytes_with_revision_and_mode_unlocked(
-    workspace: &Path,
-    path: String,
+pub(crate) fn capability_target_language(target: &WorkspaceCapabilityTarget) -> String {
+    get_file_language(&target.validated_path).unwrap_or_else(|| "Unknown".to_string())
+}
+
+pub(crate) async fn write_file_bytes_with_capability_target_unlocked(
+    target: &WorkspaceCapabilityTarget,
+    display_path: &str,
     content: Vec<u8>,
+    create_dirs: bool,
     expected_revision: Option<&str>,
     unix_mode: Option<u32>,
 ) -> Result<WriteResultDto, BackendError> {
-    if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
-        return Err(BackendError::FilesystemInvalidPath {
-            message: "Native capability writes cannot target a WSL workspace".to_string(),
-        });
-    }
     if content.len() as u64 > MAX_WRITE_SIZE_BYTES {
         return Err(BackendError::FilesystemFileTooLarge {
             message: format!(
@@ -1503,18 +1572,34 @@ pub(crate) async fn write_file_bytes_with_revision_and_mode_unlocked(
             ),
         });
     }
-    let unix_mode = validate_unix_mode(unix_mode)?;
-    let validated_path = validate_path_for_write(&PathBuf::from(&path), workspace)?;
-    write_file_with_workspace_capability(
-        workspace,
-        &validated_path,
-        &path,
+    write_file_with_capability_target(
+        target,
+        display_path,
         &content,
-        Some(true),
+        Some(create_dirs),
         expected_revision,
-        unix_mode,
+        validate_unix_mode(unix_mode)?,
     )
     .await
+}
+
+pub(crate) async fn delete_file_with_capability_target_unlocked(
+    target: &WorkspaceCapabilityTarget,
+    display_path: &str,
+    expected_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    let current = read_file_bytes_with_mode_from_capability_target(target).await?;
+    let actual_revision = current
+        .as_ref()
+        .map(|(bytes, _)| content_revision(bytes.as_slice()));
+    validate_expected_revision(display_path, expected_revision, actual_revision.as_deref())?;
+    let directory = target.directory.clone();
+    let relative_path = target.relative_path.clone();
+    let validated_path = target.validated_path.clone();
+    tokio::task::spawn_blocking(move || directory.remove_file(&relative_path))
+        .await
+        .map_err(capability_task_error)?
+        .map_err(|error| io_error_to_backend_error(error, &validated_path))
 }
 
 /// Internal function for writing files with atomic write support
