@@ -25,7 +25,7 @@ use std::os::windows::fs::MetadataExt;
 
 // Constants
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
-const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+pub(crate) const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 const MAX_FILE_SEARCH_RESULTS: usize = 100;
 const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
 const WSL_FS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -256,6 +256,40 @@ fn bytes_look_binary(bytes: &[u8]) -> bool {
 
 pub(crate) fn content_revision(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+pub(crate) async fn file_content_revision_internal(
+    workspace: &Path,
+    path: String,
+) -> Result<String, BackendError> {
+    let workspace_string = workspace.to_string_lossy();
+    if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
+        let resolved = resolve_wsl_path(&wsl_workspace, &path, Some(false))?;
+        let canonical =
+            canonical_wsl_path_within_workspace(&wsl_workspace, &resolved, Some(false)).await?;
+        let output = run_wsl_shell(
+            &canonical,
+            r#"sha256sum -- "$1""#,
+            &[canonical.linux_path.clone()],
+            WSL_FS_TIMEOUT,
+        )
+        .await?;
+        let stdout = output.stdout_text();
+        let revision = stdout
+            .split_whitespace()
+            .next()
+            .filter(|value| value.len() == 64)
+            .ok_or_else(|| BackendError::Filesystem {
+                message: format!("Failed to read content revision for '{}'.", path),
+            })?;
+        return Ok(revision.to_string());
+    }
+
+    let validated_path = validate_path(&PathBuf::from(&path), workspace)?;
+    let bytes = tokio::fs::read(&validated_path)
+        .await
+        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+    Ok(content_revision(&bytes))
 }
 
 pub(crate) const EXPECTED_REVISION_ABSENT: &str = "absent";

@@ -3,6 +3,7 @@ export const TOOL_OUTPUT_LIMITS = {
     defaultLines: 500,
     maxLines: 3_000,
     maxBytes: 256 * 1024,
+    rawMaxBytes: 40 * 1024,
     maxColumns: 2_000,
     timeoutMs: 5_000,
   },
@@ -165,8 +166,8 @@ export const paginateTextBytes = (
 
   const maxBytes = resolveToolLimit(
     args.max_bytes,
-    TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes,
-    TOOL_OUTPUT_LIMITS.read.maxBytes,
+    TOOL_OUTPUT_LIMITS.read.rawMaxBytes,
+    TOOL_OUTPUT_LIMITS.read.rawMaxBytes,
   );
   let end = Math.min(bytes.byteLength, offset + maxBytes);
   while (end > offset && end < bytes.byteLength && isUtf8ContinuationByte(bytes[end])) {

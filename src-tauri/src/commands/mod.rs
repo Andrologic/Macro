@@ -939,16 +939,32 @@ pub(crate) fn resolve_validated_tool_path(
 }
 
 async fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> CommandResult<()> {
+    write_bytes_atomically_with_parent_creation(path, bytes, true).await
+}
+
+async fn write_bytes_atomically_with_parent_creation(
+    path: &Path,
+    bytes: &[u8],
+    create_dirs: bool,
+) -> CommandResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| command_error(format!("Invalid file path: {}", path.display())))?;
-    tokio::fs::create_dir_all(parent).await.map_err(|error| {
-        command_error(format!(
-            "Failed to create parent directory for {}: {}",
+    if create_dirs {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            command_error(format!(
+                "Failed to create parent directory for {}: {}",
+                path.display(),
+                error
+            ))
+        })?;
+    } else if !parent.exists() {
+        return Err(command_error(format!(
+            "Parent directory does not exist for {}: {}",
             path.display(),
-            error
-        ))
-    })?;
+            parent.display()
+        )));
+    }
 
     let file_name = path
         .file_name()
@@ -978,10 +994,6 @@ async fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> CommandResult<()> 
     }
 
     Ok(())
-}
-
-async fn write_file_atomically(path: &Path, content: &str) -> CommandResult<()> {
-    write_bytes_atomically(path, content.as_bytes()).await
 }
 
 async fn rollback_pending_file_changes(
@@ -1183,113 +1195,150 @@ async fn rollback_pending_file_changes_via_fs(
     errors
 }
 
-async fn commit_pending_file_changes_via_fs(changes: &[PendingFileChange]) -> CommandResult<()> {
-    let mut backups = Vec::with_capacity(changes.len());
-    for change in changes {
-        let backup =
-            if fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
-                .await
-                .map_err(|error| {
-                    command_error(format!(
-                        "Failed to inspect {} before write: {}",
-                        change.display_path, error
-                    ))
-                })?
-            {
-                let current = fs::read_file_internal(
-                    &change.effective_workspace,
-                    change.effective_path.clone(),
-                    Some(false),
-                )
-                .await
-                .map_err(|error| {
-                    command_error(format!(
-                        "Failed to prepare backup for {}: {}",
-                        change.display_path, error
-                    ))
-                })?;
-                if current.is_binary {
-                    return Err(command_error(format!(
-                        "Cannot apply a batched patch to binary file {} in WSL.",
-                        change.display_path
-                    )));
-                }
-                fs::validate_expected_revision(
-                    &change.display_path,
-                    change.expected_revision.as_deref(),
-                    Some(&current.revision),
-                )
-                .map_err(|error| command_error(error.to_string()))?;
-                Some(current.content)
-            } else {
-                fs::validate_expected_revision(
-                    &change.display_path,
-                    change.expected_revision.as_deref(),
-                    None,
-                )
-                .map_err(|error| command_error(error.to_string()))?;
-                None
-            };
-        backups.push((
-            change.effective_workspace.clone(),
-            change.effective_path.clone(),
-            change.display_path.clone(),
-            backup,
-        ));
-    }
-
-    for (applied_count, change) in changes.iter().enumerate() {
-        let result = if let Some(new_content) = change.new_content.as_ref() {
-            fs::write_file_internal_with_revision_unlocked(
-                &change.effective_workspace,
-                change.effective_path.clone(),
-                new_content.clone(),
-                Some(true),
-                Some(false),
-                change.expected_revision.as_deref(),
-            )
-            .await
-            .map(|_| ())
-        } else {
-            fs::delete_path_internal_with_revision_unlocked(
-                &change.effective_workspace,
-                change.effective_path.clone(),
-                Some(false),
-                change.expected_revision.as_deref(),
-            )
-            .await
-        };
-
-        if let Err(error) = result {
-            let rollback_errors = rollback_pending_file_changes_via_fs(
-                &backups[..applied_count],
-                &changes[..applied_count],
-            )
-            .await;
-            let rollback_suffix = if rollback_errors.is_empty() {
-                String::new()
-            } else {
-                format!(" Rollback errors: {}", rollback_errors.join("; "))
-            };
-            return Err(command_error(format!("{}{}", error, rollback_suffix)));
-        }
-    }
-
-    Ok(())
+/// Snapshots retained until post-mutation validation has finished so any
+/// later failure can still be compensated.
+///
+/// Native targets keep raw bytes; WSL/virtual-fs targets keep the text
+/// content routed through the workspace fs primitives.
+enum MutationBackups {
+    Native(Vec<(PathBuf, Option<Vec<u8>>)>),
+    ViaFs(Vec<(PathBuf, String, String, Option<String>)>),
 }
 
-/// Applies a validated batch with best-effort filesystem atomicity.
-///
-/// Each write uses a temporary file in the destination directory followed by a
-/// rename. If an operation fails after earlier files were mutated, the earlier
-/// files are rolled back in reverse order. Disk or permission errors during
-/// rollback are surfaced to the caller.
-pub(crate) async fn commit_pending_file_changes_atomically(
+fn normalize_pending_change_metadata(
+    changes: &mut [PendingFileChange],
+    backups: &MutationBackups,
+    extra_fields: &mut serde_json::Map<String, Value>,
+) {
+    for (index, change) in changes.iter_mut().enumerate() {
+        let Some(new_content) = change.new_content.as_ref() else {
+            continue;
+        };
+        let (existed, unchanged) = match backups {
+            MutationBackups::Native(values) => values
+                .get(index)
+                .map(|(_, backup)| {
+                    (
+                        backup.is_some(),
+                        backup
+                            .as_deref()
+                            .is_some_and(|bytes| bytes == new_content.as_bytes()),
+                    )
+                })
+                .unwrap_or((false, false)),
+            MutationBackups::ViaFs(values) => values
+                .get(index)
+                .map(|(_, _, _, backup)| {
+                    (
+                        backup.is_some(),
+                        backup.as_deref() == Some(new_content.as_str()),
+                    )
+                })
+                .unwrap_or((false, false)),
+        };
+        change.created = !existed;
+        change.status = if existed { "updated" } else { "created" }.to_string();
+        change.bytes_written = if unchanged {
+            0
+        } else {
+            new_content.len() as u64
+        };
+    }
+
+    if let [change] = changes {
+        if change.new_content.is_some() {
+            extra_fields.insert("created".to_string(), Value::Bool(change.created));
+            extra_fields.insert(
+                "bytes_written".to_string(),
+                Value::Number(serde_json::Number::from(change.bytes_written)),
+            );
+        }
+    }
+}
+
+async fn rollback_mutation_backups(
+    backups: &MutationBackups,
     changes: &[PendingFileChange],
-) -> CommandResult<()> {
-    let _mutation_guards = acquire_content_mutation_locks(changes).await?;
+) -> Vec<String> {
+    match backups {
+        MutationBackups::Native(native_backups) => {
+            rollback_pending_file_changes(native_backups, changes).await
+        }
+        MutationBackups::ViaFs(fs_backups) => {
+            rollback_pending_file_changes_via_fs(fs_backups, changes).await
+        }
+    }
+}
+
+async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResult<MutationBackups> {
+    for change in changes {
+        if change
+            .new_content
+            .as_ref()
+            .is_some_and(|content| content.len() as u64 > fs::MAX_WRITE_SIZE_BYTES)
+        {
+            return Err(command_error(format!(
+                "Content for {} exceeds maximum write size of {} bytes",
+                change.display_path,
+                fs::MAX_WRITE_SIZE_BYTES
+            )));
+        }
+    }
     if changes.iter().any(change_targets_wsl) {
-        return commit_pending_file_changes_via_fs(changes).await;
+        let mut backups = Vec::with_capacity(changes.len());
+        for change in changes {
+            let backup =
+                if fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
+                    .await
+                    .map_err(|error| {
+                        command_error(format!(
+                            "Failed to inspect {} before write: {}",
+                            change.display_path, error
+                        ))
+                    })?
+                {
+                    let current = fs::read_file_internal(
+                        &change.effective_workspace,
+                        change.effective_path.clone(),
+                        Some(false),
+                    )
+                    .await
+                    .map_err(|error| {
+                        command_error(format!(
+                            "Failed to prepare backup for {}: {}",
+                            change.display_path, error
+                        ))
+                    })?;
+                    if current.is_binary {
+                        return Err(command_error(format!(
+                            "Cannot apply a batched patch to binary file {} in WSL.",
+                            change.display_path
+                        )));
+                    }
+                    fs::validate_expected_revision(
+                        &change.display_path,
+                        change.expected_revision.as_deref(),
+                        Some(&current.revision),
+                    )
+                    .map_err(|error| command_error(error.to_string()))?;
+                    Some(current.content)
+                } else {
+                    fs::validate_expected_revision(
+                        &change.display_path,
+                        change.expected_revision.as_deref(),
+                        None,
+                    )
+                    .map_err(|error| command_error(error.to_string()))?;
+                    None
+                };
+            backups.push((
+                change.effective_workspace.clone(),
+                change.effective_path.clone(),
+                change.display_path.clone(),
+                backup,
+            ));
+        }
+        return Ok(MutationBackups::ViaFs(backups));
     }
 
     let mut backups = Vec::with_capacity(changes.len());
@@ -1322,58 +1371,124 @@ pub(crate) async fn commit_pending_file_changes_atomically(
         };
         backups.push((change.absolute_path.clone(), backup));
     }
+    Ok(MutationBackups::Native(backups))
+}
 
-    for (applied_count, change) in changes.iter().enumerate() {
-        let revision_result = if change.expected_revision.is_some() {
-            let actual_revision = match tokio::fs::read(&change.absolute_path).await {
-                Ok(bytes) => Some(fs::content_revision(&bytes)),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => {
+async fn apply_mutation_backups(
+    changes: &[PendingFileChange],
+    backups: &MutationBackups,
+    create_dirs: bool,
+) -> CommandResult<()> {
+    match backups {
+        MutationBackups::ViaFs(fs_backups) => {
+            for (applied_count, change) in changes.iter().enumerate() {
+                let result = if let Some(new_content) = change.new_content.as_ref() {
+                    fs::write_file_internal_with_revision_unlocked(
+                        &change.effective_workspace,
+                        change.effective_path.clone(),
+                        new_content.clone(),
+                        Some(create_dirs),
+                        Some(false),
+                        change.expected_revision.as_deref(),
+                    )
+                    .await
+                    .map(|_| ())
+                } else {
+                    fs::delete_path_internal_with_revision_unlocked(
+                        &change.effective_workspace,
+                        change.effective_path.clone(),
+                        Some(false),
+                        change.expected_revision.as_deref(),
+                    )
+                    .await
+                };
+
+                if let Err(error) = result {
+                    let rollback_errors = rollback_pending_file_changes_via_fs(
+                        &fs_backups[..applied_count],
+                        &changes[..applied_count],
+                    )
+                    .await;
+                    return Err(command_error(format!(
+                        "{}{}",
+                        error,
+                        rollback_error_suffix(rollback_errors)
+                    )));
+                }
+            }
+            Ok(())
+        }
+        MutationBackups::Native(native_backups) => {
+            for (applied_count, change) in changes.iter().enumerate() {
+                let revision_result = if change.expected_revision.is_some() {
+                    let actual_revision = match tokio::fs::read(&change.absolute_path).await {
+                        Ok(bytes) => Some(fs::content_revision(&bytes)),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(error) => {
+                            return rollback_after_batch_failure(
+                                native_backups,
+                                changes,
+                                applied_count,
+                                command_error(format!(
+                                    "Failed to revalidate {} before mutation: {}",
+                                    change.display_path, error
+                                )),
+                            )
+                            .await;
+                        }
+                    };
+                    fs::validate_expected_revision(
+                        &change.display_path,
+                        change.expected_revision.as_deref(),
+                        actual_revision.as_deref(),
+                    )
+                    .map_err(|error| command_error(error.to_string()))
+                } else {
+                    Ok(())
+                };
+                let result = match revision_result {
+                    Err(error) => Err(error),
+                    Ok(()) => {
+                        if let Some(new_content) = change.new_content.as_ref() {
+                            if native_backups[applied_count].1.as_deref()
+                                == Some(new_content.as_bytes())
+                            {
+                                Ok(())
+                            } else {
+                                write_bytes_atomically_with_parent_creation(
+                                    &change.absolute_path,
+                                    new_content.as_bytes(),
+                                    create_dirs,
+                                )
+                                .await
+                            }
+                        } else {
+                            tokio::fs::remove_file(&change.absolute_path)
+                                .await
+                                .map_err(|error| {
+                                    command_error(format!(
+                                        "Failed to delete {}: {}",
+                                        change.display_path, error
+                                    ))
+                                })
+                        }
+                    }
+                };
+
+                if let Err(error) = result {
                     return rollback_after_batch_failure(
-                        &backups,
+                        native_backups,
                         changes,
                         applied_count,
-                        command_error(format!(
-                            "Failed to revalidate {} before mutation: {}",
-                            change.display_path, error
-                        )),
+                        error,
                     )
                     .await;
                 }
-            };
-            fs::validate_expected_revision(
-                &change.display_path,
-                change.expected_revision.as_deref(),
-                actual_revision.as_deref(),
-            )
-            .map_err(|error| command_error(error.to_string()))
-        } else {
-            Ok(())
-        };
-        let result = match revision_result {
-            Err(error) => Err(error),
-            Ok(()) => {
-                if let Some(new_content) = change.new_content.as_ref() {
-                    write_file_atomically(&change.absolute_path, new_content).await
-                } else {
-                    tokio::fs::remove_file(&change.absolute_path)
-                        .await
-                        .map_err(|error| {
-                            command_error(format!(
-                                "Failed to delete {}: {}",
-                                change.display_path, error
-                            ))
-                        })
-                }
             }
-        };
 
-        if let Err(error) = result {
-            return rollback_after_batch_failure(&backups, changes, applied_count, error).await;
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 async fn rollback_after_batch_failure(
@@ -1384,48 +1499,147 @@ async fn rollback_after_batch_failure(
 ) -> CommandResult<()> {
     let rollback_errors =
         rollback_pending_file_changes(&backups[..applied_count], &changes[..applied_count]).await;
-    let rollback_suffix = if rollback_errors.is_empty() {
-        String::new()
-    } else {
-        format!(" Rollback errors: {}", rollback_errors.join("; "))
-    };
     Err(command_error(format!(
         "{}{}",
-        error.message, rollback_suffix
+        error.message,
+        rollback_error_suffix(rollback_errors)
     )))
 }
 
-pub(crate) async fn build_post_write_response(
-    changes: &[PendingFileChange],
+/// Applies pending changes and validates them before reporting success.
+///
+/// Mutations are only considered committed once every target re-reads with the
+/// produced revisions. Until then the snapshots and per-path mutation locks
+/// are held: on any post-mutation validation failure all still-restorable
+/// targets are restored (CAS-guarded, never overwriting an external edit),
+/// rollback continues past conflicts, and every error is aggregated into the
+/// returned failure. A failed call therefore never leaves a Macro mutation
+/// silently applied.
+pub(crate) async fn commit_and_validate_pending_file_changes(
+    changes: Vec<PendingFileChange>,
     extra_fields: serde_json::Map<String, Value>,
 ) -> CommandResult<String> {
-    let mut files = Vec::new();
-    let mut validation_files = Vec::new();
-    let mut errors = Vec::new();
+    commit_with_post_mutation_gate(changes, extra_fields, true, |_| true).await
+}
+
+pub(crate) async fn commit_and_validate_pending_file_changes_with_create_dirs(
+    changes: Vec<PendingFileChange>,
+    extra_fields: serde_json::Map<String, Value>,
+    create_dirs: bool,
+) -> CommandResult<String> {
+    commit_with_post_mutation_gate(changes, extra_fields, create_dirs, |_| true).await
+}
+
+/// Testable variant of [`commit_and_validate_pending_file_changes`].
+///
+/// `post_mutation_gate` runs after the mutations were applied but before the
+/// filesystem readback. Returning `false` simulates a failed post-mutation
+/// validation; the closure may also mutate the filesystem to simulate an
+/// external writer racing with Macro between the mutations and their
+/// compensation.
+async fn commit_with_post_mutation_gate<G>(
+    mut changes: Vec<PendingFileChange>,
+    mut extra_fields: serde_json::Map<String, Value>,
+    create_dirs: bool,
+    post_mutation_gate: G,
+) -> CommandResult<String>
+where
+    G: FnOnce(&[PendingFileChange]) -> bool,
+{
+    let _mutation_guards = acquire_content_mutation_locks(&changes).await?;
+    let backups = prepare_mutation_backups(&changes).await?;
+    normalize_pending_change_metadata(&mut changes, &backups, &mut extra_fields);
+    apply_mutation_backups(&changes, &backups, create_dirs).await?;
+
+    let report = if post_mutation_gate(&changes) {
+        validate_post_write_changes(&changes).await
+    } else {
+        PostWriteValidationReport {
+            files: Vec::new(),
+            validation_files: Vec::new(),
+            errors: changes
+                .iter()
+                .map(|change| {
+                    format!(
+                        "Injected post-mutation validation failure for {}.",
+                        change.display_path
+                    )
+                })
+                .collect::<Vec<_>>(),
+        }
+    };
+
+    if report.errors.is_empty() {
+        return assemble_post_write_response(&changes, report, extra_fields);
+    }
+
+    let rollback_errors = rollback_mutation_backups(&backups, &changes).await;
+    Err(command_error(format!(
+        "Post-mutation validation failed; Macro's mutations were rolled back where still possible. Validation errors: {}{}",
+        report.errors.join("; "),
+        rollback_error_suffix(rollback_errors)
+    )))
+}
+
+struct PostWriteValidationReport {
+    files: Vec<Value>,
+    validation_files: Vec<Value>,
+    errors: Vec<String>,
+}
+
+/// Re-reads every mutated target after the mutations were applied.
+///
+/// Readback or existence problems are collected as errors instead of being
+/// returned immediately so the caller can compensate the whole batch before
+/// reporting a failure.
+async fn validate_post_write_changes(changes: &[PendingFileChange]) -> PostWriteValidationReport {
+    let mut report = PostWriteValidationReport {
+        files: Vec::with_capacity(changes.len()),
+        validation_files: Vec::with_capacity(changes.len()),
+        errors: Vec::new(),
+    };
 
     for change in changes {
-        let validation = if change.new_content.is_some() {
-            match fs::read_file_internal(
+        let validation = if let Some(new_content) = change.new_content.as_ref() {
+            let metadata =
+                fs::stat_internal(&change.effective_workspace, change.effective_path.clone()).await;
+            let revision = fs::file_content_revision_internal(
                 &change.effective_workspace,
                 change.effective_path.clone(),
-                None,
             )
-            .await
-            {
-                Ok(read_result) => serde_json::json!({
-                    "path": change.display_path,
-                    "exists": true,
-                    "readable": true,
-                    "is_binary": read_result.is_binary,
-                    "size": read_result.size,
-                    "encoding": read_result.encoding,
-                    "language": read_result.language,
-                    "revision": read_result.revision,
-                }),
-                Err(error) => {
-                    errors.push(format!(
+            .await;
+            match (metadata, revision) {
+                (Ok(metadata), Ok(readback_revision)) => {
+                    let expected_revision = fs::content_revision(new_content.as_bytes());
+                    if expected_revision != readback_revision {
+                        report.errors.push(format!(
+                            "External modification detected for {} after mutation: expected revision {} but guarded readback found {}. Preserving the external state.",
+                            change.display_path, expected_revision, readback_revision
+                        ));
+                    }
+                    serde_json::json!({
+                        "path": change.display_path,
+                        "exists": true,
+                        "readable": true,
+                        "is_binary": false,
+                        "size": metadata.size,
+                        "encoding": "utf-8",
+                        "language": metadata.language,
+                        "revision": readback_revision,
+                    })
+                }
+                (metadata, revision) => {
+                    let details = [
+                        metadata.err().map(|error| error.to_string()),
+                        revision.err().map(|error| error.to_string()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                    report.errors.push(format!(
                         "Validation failed for {}: {}",
-                        change.display_path, error
+                        change.display_path, details
                     ));
                     serde_json::json!({
                         "path": change.display_path,
@@ -1440,35 +1654,48 @@ pub(crate) async fn build_post_write_response(
                 }
             }
         } else {
-            let exists =
-                fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
-                    .await
-                    .map_err(|error| {
-                        command_error(format!(
-                            "Failed to validate deleted file {}: {}",
-                            change.display_path, error
-                        ))
-                    })?;
-            if exists {
-                errors.push(format!(
-                    "Deletion validation failed for {}: file still exists.",
-                    change.display_path
-                ));
+            match fs::exists_internal(&change.effective_workspace, change.effective_path.clone())
+                .await
+            {
+                Ok(exists) => {
+                    if exists {
+                        report.errors.push(format!(
+                            "Deletion validation failed for {}: file still exists.",
+                            change.display_path
+                        ));
+                    }
+                    serde_json::json!({
+                        "path": change.display_path,
+                        "exists": exists,
+                        "readable": false,
+                        "is_binary": false,
+                        "size": 0,
+                        "encoding": Value::Null,
+                        "language": Value::Null,
+                        "revision": Value::Null,
+                    })
+                }
+                Err(error) => {
+                    report.errors.push(format!(
+                        "Failed to validate deleted file {}: {}",
+                        change.display_path, error
+                    ));
+                    serde_json::json!({
+                        "path": change.display_path,
+                        "exists": false,
+                        "readable": false,
+                        "is_binary": false,
+                        "size": 0,
+                        "encoding": Value::Null,
+                        "language": Value::Null,
+                        "revision": Value::Null,
+                    })
+                }
             }
-            serde_json::json!({
-                "path": change.display_path,
-                "exists": exists,
-                "readable": false,
-                "is_binary": false,
-                "size": 0,
-                "encoding": Value::Null,
-                "language": Value::Null,
-                "revision": Value::Null,
-            })
         };
 
-        validation_files.push(validation.clone());
-        files.push(serde_json::json!({
+        report.validation_files.push(validation.clone());
+        report.files.push(serde_json::json!({
             "path": change.display_path,
             "status": change.status,
             "additions": change.additions,
@@ -1479,8 +1706,23 @@ pub(crate) async fn build_post_write_response(
         }));
     }
 
+    report
+}
+
+fn assemble_post_write_response(
+    changes: &[PendingFileChange],
+    report: PostWriteValidationReport,
+    extra_fields: serde_json::Map<String, Value>,
+) -> CommandResult<String> {
+    let succeeded = report.errors.is_empty();
+    let PostWriteValidationReport {
+        files,
+        validation_files,
+        errors,
+    } = report;
+
     let mut response = serde_json::Map::new();
-    response.insert("ok".to_string(), Value::Bool(errors.is_empty()));
+    response.insert("ok".to_string(), Value::Bool(succeeded));
     response.insert("files".to_string(), Value::Array(files));
     response.insert(
         "diff".to_string(),
@@ -1490,7 +1732,7 @@ pub(crate) async fn build_post_write_response(
     response.insert(
         "validation".to_string(),
         serde_json::json!({
-            "all_files_readable": errors.is_empty(),
+            "all_files_readable": succeeded,
             "files": validation_files,
         }),
     );
@@ -1502,6 +1744,14 @@ pub(crate) async fn build_post_write_response(
 
     serde_json::to_string_pretty(&Value::Object(response))
         .map_err(|error| command_error(error.to_string()))
+}
+
+fn rollback_error_suffix(rollback_errors: Vec<String>) -> String {
+    if rollback_errors.is_empty() {
+        String::new()
+    } else {
+        format!(" Rollback errors: {}", rollback_errors.join("; "))
+    }
 }
 
 fn format_bounded_git_status(
@@ -1910,45 +2160,62 @@ async fn execute_workspace_tool_inner(
             let absolute_path =
                 resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), true)?;
 
-            let write_result = fs::write_file_internal_with_revision(
-                &effective_workspace,
-                effective_path.clone(),
-                content.clone(),
-                create_dirs,
-                Some(false),
-                expected_revision.as_deref(),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
+            if !create_dirs.unwrap_or(true) {
+                let parent = absolute_path.parent();
+                if !parent.is_some_and(Path::exists) {
+                    return Err(command_error(format!(
+                        "Parent directory does not exist for {}: {}",
+                        path,
+                        parent
+                            .map(|value| value.display().to_string())
+                            .unwrap_or_default()
+                    )));
+                }
+            }
+
+            let existed = fs::exists_internal(&effective_workspace, effective_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before write: {}",
+                        path, error
+                    ))
+                })?;
+            let created = !existed;
+            let bytes_written = content.len() as u64;
 
             let change = PendingFileChange {
                 display_path: path.clone(),
                 effective_workspace,
                 effective_path,
-                absolute_path,
-                status: if write_result.created {
+                absolute_path: absolute_path.clone(),
+                status: if created {
                     "created".to_string()
                 } else {
                     "updated".to_string()
                 },
                 new_content: Some(content.clone()),
-                created: write_result.created,
-                bytes_written: write_result.bytes_written,
+                created,
+                bytes_written,
                 additions: content.lines().count(),
                 deletions: 0,
                 expected_revision,
             };
 
-            build_post_write_response(
-                &[change],
+            commit_and_validate_pending_file_changes_with_create_dirs(
+                vec![change],
                 serde_json::Map::from_iter([
-                    ("path".to_string(), Value::String(write_result.path)),
+                    (
+                        "path".to_string(),
+                        Value::String(absolute_path.to_string_lossy().to_string()),
+                    ),
                     (
                         "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                        Value::Number(serde_json::Number::from(bytes_written)),
                     ),
-                    ("created".to_string(), Value::Bool(write_result.created)),
+                    ("created".to_string(), Value::Bool(created)),
                 ]),
+                create_dirs.unwrap_or(true),
             )
             .await
         }
@@ -2002,38 +2269,24 @@ async fn execute_workspace_tool_inner(
             let absolute_path =
                 resolve_validated_tool_path(&effective_workspace, effective_path.as_str(), true)?;
 
-            let write_result = fs::write_file_internal_with_revision(
-                &effective_workspace,
-                effective_path.clone(),
-                updated.clone(),
-                Some(true),
-                Some(false),
-                Some(&mutation_revision),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
-
             let (additions, deletions) = compute_line_change_stats(&current.content, &updated);
+            let write_result_bytes = updated.len() as u64;
             let change = PendingFileChange {
                 display_path: path.clone(),
                 effective_workspace,
                 effective_path,
                 absolute_path,
-                status: if write_result.created {
-                    "created".to_string()
-                } else {
-                    "updated".to_string()
-                },
-                new_content: Some(updated),
-                created: write_result.created,
-                bytes_written: write_result.bytes_written,
+                status: "updated".to_string(),
+                new_content: Some(updated.clone()),
+                created: false,
+                bytes_written: write_result_bytes,
                 additions,
                 deletions,
                 expected_revision: Some(mutation_revision),
             };
 
-            build_post_write_response(
-                &[change],
+            commit_and_validate_pending_file_changes(
+                vec![change],
                 serde_json::Map::from_iter([
                     (
                         "replacements".to_string(),
@@ -2043,12 +2296,12 @@ async fn execute_workspace_tool_inner(
                             1
                         })),
                     ),
-                    ("path".to_string(), Value::String(write_result.path)),
+                    ("path".to_string(), Value::String(path)),
                     (
                         "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                        Value::Number(serde_json::Number::from(write_result_bytes)),
                     ),
-                    ("created".to_string(), Value::Bool(write_result.created)),
+                    ("created".to_string(), Value::Bool(false)),
                 ]),
             )
             .await
@@ -2102,15 +2355,6 @@ async fn execute_workspace_tool_inner(
                 .clone()
                 .unwrap_or_else(|| current.revision.clone());
 
-            fs::delete_path_internal_with_revision(
-                &effective_workspace,
-                effective_path.clone(),
-                Some(false),
-                Some(&mutation_revision),
-            )
-            .await
-            .map_err(|error| command_error(format!("Failed to delete {}: {}", path, error)))?;
-
             let change = PendingFileChange {
                 display_path: path.clone(),
                 effective_workspace,
@@ -2125,8 +2369,8 @@ async fn execute_workspace_tool_inner(
                 expected_revision: Some(mutation_revision),
             };
 
-            build_post_write_response(
-                &[change],
+            commit_and_validate_pending_file_changes(
+                vec![change],
                 serde_json::Map::from_iter([("path".to_string(), Value::String(path))]),
             )
             .await
@@ -2306,13 +2550,12 @@ async fn execute_workspace_tool_inner(
                 }
             }
 
-            commit_pending_file_changes_atomically(&pending_changes).await?;
-
-            build_post_write_response(
-                &pending_changes,
+            let applied_operations = pending_changes.len() as u64;
+            commit_and_validate_pending_file_changes(
+                pending_changes,
                 serde_json::Map::from_iter([(
                     "applied_operations".to_string(),
-                    Value::Number(serde_json::Number::from(pending_changes.len() as u64)),
+                    Value::Number(serde_json::Number::from(applied_operations)),
                 )]),
             )
             .await
@@ -5029,7 +5272,8 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_patch_hunks_to_content, command_error, commit_pending_file_changes_atomically,
+        apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
+        commit_and_validate_pending_file_changes_with_create_dirs, commit_with_post_mutation_gate,
         exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
         parse_apply_patch, provider_definition_patch_operations, register_tool_execution,
         resolve_confined_wsl_repo_path_for_workspace, resolve_requested_workspace,
@@ -5037,7 +5281,7 @@ mod tests {
         rollback_pending_file_changes, tool_cancel_workspace, tool_execution_timeout,
         validate_agent_git_repo_path, DbPool, ParsedPatchOperation, PendingFileChange,
     };
-    use crate::commands::fs::content_revision;
+    use crate::commands::fs::{content_revision, EXPECTED_REVISION_ABSENT};
     use crate::commands::git::{GitFileStatus, GitStatusDto};
     use crate::git::GitState;
     use serde_json::{json, Value};
@@ -5810,8 +6054,8 @@ mod tests {
         let second = vec![change("second\n")];
 
         let (first_result, second_result) = tokio::join!(
-            commit_pending_file_changes_atomically(&first),
-            commit_pending_file_changes_atomically(&second),
+            commit_and_validate_pending_file_changes(first.clone(), Default::default()),
+            commit_and_validate_pending_file_changes(second.clone(), Default::default()),
         );
 
         assert_eq!(
@@ -5847,8 +6091,8 @@ mod tests {
         let second = vec![change("second\n")];
 
         let (first_result, second_result) = tokio::join!(
-            commit_pending_file_changes_atomically(&first),
-            commit_pending_file_changes_atomically(&second),
+            commit_and_validate_pending_file_changes(first.clone(), Default::default()),
+            commit_and_validate_pending_file_changes(second.clone(), Default::default()),
         );
 
         assert_eq!(
@@ -5898,7 +6142,7 @@ mod tests {
             },
         ];
 
-        let error = commit_pending_file_changes_atomically(&changes)
+        let error = commit_and_validate_pending_file_changes(changes, Default::default())
             .await
             .expect_err("stale batch must fail before writing");
 
@@ -5933,10 +6177,10 @@ mod tests {
             expected_revision: Some(original_revision.clone()),
         };
 
-        let error = commit_pending_file_changes_atomically(&[
-            change("first mutation\n"),
-            change("second mutation\n"),
-        ])
+        let error = commit_and_validate_pending_file_changes(
+            vec![change("first mutation\n"), change("second mutation\n")],
+            Default::default(),
+        )
         .await
         .expect_err("the second mutation must observe the first revision change");
 
@@ -5983,7 +6227,7 @@ mod tests {
             },
         ];
 
-        let error = commit_pending_file_changes_atomically(&changes)
+        let error = commit_and_validate_pending_file_changes(changes, Default::default())
             .await
             .expect_err("second operation should fail");
 
@@ -6024,6 +6268,268 @@ mod tests {
             fs::read_to_string(path).expect("read preserved external edit"),
             "external edit\n"
         );
+    }
+
+    fn pending_update_change(workspace: &Path, name: &str, new_content: &str) -> PendingFileChange {
+        PendingFileChange {
+            display_path: name.to_string(),
+            effective_workspace: workspace.to_path_buf(),
+            effective_path: name.to_string(),
+            absolute_path: workspace.join(name),
+            status: "updated".to_string(),
+            new_content: Some(new_content.to_string()),
+            created: false,
+            bytes_written: new_content.len() as u64,
+            additions: 1,
+            deletions: 1,
+            expected_revision: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_post_mutation_validation_restores_the_previous_file_state() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("shared.txt");
+        fs::write(&path, "original\n").expect("seed file");
+
+        let error = commit_with_post_mutation_gate(
+            vec![pending_update_change(
+                workspace.path(),
+                "shared.txt",
+                "macro mutation\n",
+            )],
+            Default::default(),
+            true,
+            |_| false,
+        )
+        .await
+        .expect_err("injected validation failure must fail the call");
+
+        assert!(error.message.contains("Post-mutation validation failed"));
+        assert!(error
+            .message
+            .contains("Injected post-mutation validation failure for shared.txt"));
+        assert_eq!(
+            fs::read_to_string(path).expect("read restored file"),
+            "original\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_post_mutation_validation_removes_created_files_again() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("created.txt");
+        let mut change = pending_update_change(workspace.path(), "created.txt", "new content\n");
+        change.status = "created".to_string();
+        change.created = true;
+        change.expected_revision = Some(EXPECTED_REVISION_ABSENT.to_string());
+
+        let error =
+            commit_with_post_mutation_gate(vec![change], Default::default(), true, |_| false)
+                .await
+                .expect_err("injected validation failure must fail the call");
+
+        assert!(error
+            .message
+            .contains("Injected post-mutation validation failure"));
+        assert!(!path.exists(), "created file must be removed again");
+    }
+
+    #[tokio::test]
+    async fn failed_post_mutation_validation_restores_a_deleted_file() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("deleted.txt");
+        fs::write(&path, "original\n").expect("seed file");
+        let mut change = pending_update_change(workspace.path(), "deleted.txt", "");
+        change.status = "deleted".to_string();
+        change.new_content = None;
+        change.deletions = 1;
+
+        let error =
+            commit_with_post_mutation_gate(vec![change], Default::default(), true, |_| false)
+                .await
+                .expect_err("injected validation failure must fail the call");
+
+        assert!(error.message.contains("Post-mutation validation failed"));
+        assert_eq!(
+            fs::read_to_string(path).expect("deleted file must be restored"),
+            "original\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_rollback_continues_past_conflicts_and_preserves_external_edits() {
+        let workspace = TempDir::new().expect("workspace");
+        let first_path = workspace.path().join("first.txt");
+        let second_path = workspace.path().join("second.txt");
+        fs::write(&first_path, "first-original\n").expect("write first");
+        fs::write(&second_path, "second-original\n").expect("write second");
+        let changes = vec![
+            pending_update_change(workspace.path(), "first.txt", "first-updated\n"),
+            pending_update_change(workspace.path(), "second.txt", "second-updated\n"),
+        ];
+
+        let error = commit_with_post_mutation_gate(changes, Default::default(), true, |applied| {
+            let second = applied
+                .iter()
+                .find(|change| change.display_path == "second.txt")
+                .expect("second change");
+            fs::write(&second.absolute_path, "external edit\n")
+                .expect("simulate external writer racing Macro");
+            false
+        })
+        .await
+        .expect_err("injected validation failure must fail the call");
+
+        assert!(error.message.contains("Post-mutation validation failed"));
+        assert!(error.message.contains("Rollback conflict for second.txt"));
+        assert_eq!(
+            fs::read_to_string(first_path).expect("restorable target must roll back"),
+            "first-original\n"
+        );
+        assert_eq!(
+            fs::read_to_string(second_path).expect("external edit must never be overwritten"),
+            "external edit\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn guarded_readback_rejects_and_preserves_an_external_winner() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("shared.txt");
+        fs::write(&path, "original\n").expect("seed file");
+        let error = commit_with_post_mutation_gate(
+            vec![pending_update_change(
+                workspace.path(),
+                "shared.txt",
+                "macro mutation\n",
+            )],
+            Default::default(),
+            true,
+            |applied| {
+                fs::write(&applied[0].absolute_path, "external edit\n")
+                    .expect("simulate external writer before readback");
+                true
+            },
+        )
+        .await
+        .expect_err("divergent readback must fail the call");
+
+        assert!(error.message.contains("External modification detected"));
+        assert!(error.message.contains("Rollback conflict for shared.txt"));
+        assert_eq!(
+            fs::read_to_string(path).expect("external winner must survive"),
+            "external edit\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_and_validate_returns_the_standard_response_when_readback_succeeds() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("shared.txt");
+        fs::write(&path, "original\n").expect("seed file");
+        let mut extra_fields = serde_json::Map::new();
+        extra_fields.insert("tool".to_string(), Value::String("write".to_string()));
+
+        let response = commit_and_validate_pending_file_changes(
+            vec![pending_update_change(
+                workspace.path(),
+                "shared.txt",
+                "updated\n",
+            )],
+            extra_fields,
+        )
+        .await
+        .expect("validated batch must succeed");
+
+        let parsed: Value = serde_json::from_str(&response).expect("json response");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["files"].as_array().map(Vec::len), Some(1));
+        assert_eq!(parsed["files"][0]["validation"]["readable"], true);
+        assert_eq!(parsed["validation"]["all_files_readable"], true);
+        assert_eq!(parsed["errors"].as_array().map(Vec::len), Some(0));
+        assert_eq!(
+            parsed["files"][0]["validation"]["revision"],
+            content_revision(b"updated\n")
+        );
+        assert_eq!(parsed["tool"], "write");
+        assert_eq!(
+            fs::read_to_string(path).expect("read mutated file"),
+            "updated\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_write_validation_accepts_content_above_the_interactive_read_limit() {
+        let workspace = TempDir::new().expect("workspace");
+        let content = "x".repeat(10 * 1024 * 1024 + 1);
+
+        let response = commit_and_validate_pending_file_changes(
+            vec![pending_update_change(
+                workspace.path(),
+                "large.txt",
+                &content,
+            )],
+            Default::default(),
+        )
+        .await
+        .expect("an allowed write must not fail the guarded readback");
+        let parsed: Value = serde_json::from_str(&response).expect("json response");
+
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["files"][0]["validation"]["readable"], true);
+        assert_eq!(
+            parsed["files"][0]["validation"]["size"],
+            content.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn transactional_write_honors_create_dirs_false_at_apply_time() {
+        let workspace = TempDir::new().expect("workspace");
+        let change = pending_update_change(workspace.path(), "missing/file.txt", "content\n");
+
+        let error = commit_and_validate_pending_file_changes_with_create_dirs(
+            vec![change],
+            Default::default(),
+            false,
+        )
+        .await
+        .expect_err("the transactional apply must not create a missing parent");
+
+        assert!(error.message.contains("Parent directory does not exist"));
+        assert!(!workspace.path().join("missing").exists());
+    }
+
+    #[tokio::test]
+    async fn transactional_write_preserves_noop_write_metadata() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("same.txt");
+        fs::write(&path, "same\n").expect("seed file");
+        let before_modified = fs::metadata(&path)
+            .expect("metadata before")
+            .modified()
+            .expect("modified before");
+
+        let response = commit_and_validate_pending_file_changes(
+            vec![pending_update_change(
+                workspace.path(),
+                "same.txt",
+                "same\n",
+            )],
+            Default::default(),
+        )
+        .await
+        .expect("identical write");
+        let parsed: Value = serde_json::from_str(&response).expect("json response");
+        let after_modified = fs::metadata(&path)
+            .expect("metadata after")
+            .modified()
+            .expect("modified after");
+
+        assert_eq!(parsed["bytes_written"], 0);
+        assert_eq!(parsed["files"][0]["bytes_written"], 0);
+        assert_eq!(before_modified, after_modified);
     }
 }
 

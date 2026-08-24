@@ -71,4 +71,16 @@ describe("conversationFileTool", () => {
     expect(rawFirst! + rawSecond!).toBe(content);
     expect(second).toContain("TRUNCATED: false");
   });
+
+  it("keeps raw recovery pages below the shared spill threshold", () => {
+    const page = formatConversationFilePage({
+      label: "tool-output.txt",
+      source: "CONTEXT_SNIPPET",
+      content: "x".repeat(100_000),
+      args: { raw: true, max_bytes: 256_000 },
+    });
+
+    expect(page).toContain("TRUNCATED: true");
+    expect(new TextEncoder().encode(page).byteLength).toBeLessThan(50 * 1024);
+  });
 });

@@ -194,6 +194,29 @@ describe('remoteKernelApi', () => {
     expect(fetchCalls[0].url).toContain('/tools/mode-policy');
   });
 
+  it('requires revision support for write even without an explicit revision', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return jsonResponse({
+        allowed_tool_ids: ['write'],
+        enforce_macro_only_writes: false,
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'write',
+        args: { path: 'src/App.tsx', content: 'next' },
+      }),
+    ).rejects.toThrow('cannot enforce content revisions');
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].url).toContain('/tools/mode-policy');
+  });
+
   it('requires revision support for implicit edit, delete, and patch guards', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
