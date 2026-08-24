@@ -343,9 +343,16 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
             .and_then(Value::as_object)
         {
             for (header_name, header_value) in headers {
-                if header_value
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("macro-secret://"))
+                let Some(reference) = header_value.as_str() else {
+                    continue;
+                };
+                if reference.starts_with("macro-secret://")
+                    && !matches!(
+                        crate::commands::mcp::parse_mcp_env_secret_ref(reference),
+                        Some((reference_server_id, reference_key))
+                            if reference_server_id == expected_server_id
+                                && reference_key.eq_ignore_ascii_case(header_name)
+                    )
                 {
                     diagnostics.push((
                         format!(
@@ -353,8 +360,8 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
                             server_id.replace('~', "~0").replace('/', "~1"),
                             header_name.replace('~', "~0").replace('/', "~1")
                         ),
-                        "config.tools.mcp_secret_ref_unsupported",
-                        "Les références de secrets dans les en-têtes MCP distants ne sont pas prises en charge dans cette version."
+                        "config.tools.mcp_header_secret_ref_invalid",
+                        "La référence de secret doit cibler ce serveur MCP et le même nom d’en-tête."
                             .to_string(),
                     ));
                 }
@@ -2116,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_mcp_headers_reject_unresolved_secret_references() {
+    fn remote_mcp_headers_accept_scoped_secret_references_and_reject_invalid_ones() {
         let mut document = sparse_document(ConfigDocumentKind::Tools);
         document["mcpServers"] = json!({
             "remote": {
@@ -2130,10 +2137,15 @@ mod tests {
             }
         });
 
-        let result = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
-        assert!(!result.valid);
-        assert!(result.diagnostics.iter().any(|entry| {
-            entry.code == "config.tools.mcp_secret_ref_unsupported"
+        let valid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(valid.valid, "{:?}", valid.diagnostics);
+
+        document["mcpServers"]["remote"]["transport"]["headers"]["Authorization"] =
+            json!("macro-secret://mcp-env/other/AUTHORIZATION");
+        let invalid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(!invalid.valid);
+        assert!(invalid.diagnostics.iter().any(|entry| {
+            entry.code == "config.tools.mcp_header_secret_ref_invalid"
                 && entry.path.as_deref()
                     == Some("/mcpServers/remote/transport/headers/Authorization")
         }));

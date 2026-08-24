@@ -71,11 +71,17 @@ walkdir = "2"
 cap-std = "=4.0.3"
 
 # AI
-# MCP dual-era runtime (plan Lot C): official Rust SDK, exact pin per plan §4.1.
-# Minimal surface: client role only; stdio transport stays Macro-owned
-# (see src/commands/mcp/rmcp_adapter.rs).
-rmcp = { version = "=3.1.3", default-features = false, features = ["client"] }
+# MCP dual-era runtime (plan Lots C/E): official Rust SDK, exact pin per plan §4.1.
+# Client role only; stdio and Streamable HTTP transports stay Macro-owned:
+# stdio framing in src/commands/mcp/rmcp_adapter.rs, guarded HTTP in
+# src/commands/mcp/streamable_http.rs (SSRF pinning, redirect policy,
+# header precedence). The rmcp reqwest feature stays off so the HTTP stack
+# remains Macro's own reqwest 0.12.
+rmcp = { version = "=3.1.3", default-features = false, features = ["client", "transport-streamable-http-client"] }
 reqwest = { version = "0.12", features = ["stream", "json", "multipart"] }
+http = "1"
+bytes = "1"
+sse-stream = "0.2.4"
 futures = "0.3"
 axum = "0.8"
 tower-http = { version = "0.6.8", features = ["cors"] }
@@ -100,7 +106,6 @@ tauri-plugin-notification = "2.3.3"
 [dev-dependencies]
 tempfile = "3"
 rmcp = { version = "=3.1.3", default-features = false, features = ["client", "server", "transport-async-rw"] }
-
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6.3"
 
