@@ -2178,6 +2178,7 @@ export const executeWorkspaceTool = async (
       toolId: backendToolName,
       path,
       projectId: backendFocusedProjectId ?? "",
+      args,
     });
   };
 

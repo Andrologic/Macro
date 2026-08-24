@@ -3,6 +3,7 @@ import type { AgentCodeCheckpoint, ChatMessage } from "../types";
 import {
   buildAgentCodeReplayPreview,
   buildAgentCodeReplayRollbackPreview,
+  serializeAgentCodeCheckpointHistory,
 } from "./agentCodeCheckpoints";
 
 const message = (
@@ -99,6 +100,52 @@ describe("agentCodeCheckpoints", () => {
           content: "after-2",
         }),
       }),
+    ]);
+  });
+
+  it("keeps remote files from distinct projects separate when their relative paths match", () => {
+    const messages = [
+      message("user-1", "user", "2026-05-11T10:00:00.000Z"),
+      message("assistant-1", "assistant", "2026-05-11T10:00:01.000Z"),
+    ];
+    const remoteCheckpoint = checkpoint(
+      1,
+      "assistant-1",
+      "src/index.ts",
+      true,
+      true,
+    );
+    const template = remoteCheckpoint.files[0];
+    remoteCheckpoint.files = [
+      {
+        ...template,
+        path: "api/src/index.ts",
+        realPath: "src/index.ts",
+        projectId: "api",
+        workspacePath: "/repos/api",
+        workspaceScope: "default",
+      },
+      {
+        ...template,
+        path: "web/src/index.ts",
+        realPath: "src/index.ts",
+        projectId: "web",
+        workspacePath: "/repos/web",
+        workspaceScope: "default",
+      },
+    ];
+
+    const preview = buildAgentCodeReplayPreview(
+      "conv-1",
+      "user-1",
+      messages,
+      [remoteCheckpoint],
+    );
+
+    expect(preview.affectedFiles).toHaveLength(2);
+    expect(preview.affectedFiles.map((file) => file.projectId).sort()).toEqual([
+      "api",
+      "web",
     ]);
   });
 
@@ -553,6 +600,7 @@ describe("agentCodeCheckpoints", () => {
               capabilities: [
                 "content_revisions_v1",
                 "recoverable_checkpoints_v1",
+                "idempotent_tool_execution_v1",
               ],
             }),
             { status: 200, headers: { "content-type": "application/json" } },
@@ -665,6 +713,7 @@ describe("agentCodeCheckpoints", () => {
               capabilities: [
                 "content_revisions_v1",
                 "recoverable_checkpoints_v1",
+                "idempotent_tool_execution_v1",
               ],
             }),
             { status: 200, headers: { "content-type": "application/json" } },
@@ -819,6 +868,17 @@ describe("agentCodeCheckpoints", () => {
     const history = await module.loadAgentCodeCheckpointHistory("conv-1");
     expect(history.checkpoints).toHaveLength(200);
     expect(history.oldestCompleteSequence).toBe(2);
+
+    const replaySerialized = serializeAgentCodeCheckpointHistory(
+      history.checkpoints.slice(0, 100),
+      history.oldestCompleteSequence,
+    );
+    expect(JSON.parse(replaySerialized)).toEqual(
+      expect.objectContaining({
+        version: 2,
+        oldestCompleteSequence: 2,
+      }),
+    );
 
     expect(() =>
       module.buildAgentCodeReplayPreview(

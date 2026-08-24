@@ -399,6 +399,99 @@ pub(crate) fn resolve_virtual_mount_target<'a>(
     }
 }
 
+pub fn affected_virtual_tool_project_ids(
+    tool_id: &str,
+    args: &Value,
+    mounts: &[WorkspaceProjectMount],
+    focused_project_id: Option<&str>,
+) -> CommandResult<Vec<String>> {
+    if mounts.is_empty() {
+        return Ok(focused_project_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default());
+    }
+    let context = VirtualWorkspaceContext {
+        mounts,
+        focused_project_id,
+    };
+    let all_mounts = || {
+        mounts
+            .iter()
+            .filter(|mount| mount_has_workspace(mount))
+            .map(|mount| mount.project_id.clone())
+            .collect::<Vec<_>>()
+    };
+    let resolve_one = |path: &str, project_id: Option<&str>| {
+        resolve_virtual_mount_target(context, path, project_id)
+            .map(|target| target.mount.project_id.clone())
+    };
+
+    let mut affected = match tool_id.trim() {
+        "glob" | "grep" => {
+            let project_id = json_arg_string(args, "project_id");
+            match project_id.as_deref() {
+                Some(project_id) => vec![resolve_one(".", Some(project_id))?],
+                None => all_mounts(),
+            }
+        }
+        "list" => {
+            let path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+            let project_id = json_arg_string(args, "project_id");
+            let normalized = normalize_tool_path(&path);
+            if project_id.is_none() && (normalized.is_empty() || normalized == ".") {
+                focused_project_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| vec![value.to_string()])
+                    .unwrap_or_default()
+            } else {
+                vec![resolve_one(&path, project_id.as_deref())?]
+            }
+        }
+        "ast_grep" => {
+            let path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+            let project_id = json_arg_string(args, "project_id");
+            let normalized = normalize_tool_path(&path);
+            if project_id.is_none() && (normalized.is_empty() || normalized == ".") {
+                all_mounts()
+            } else {
+                vec![resolve_one(&path, project_id.as_deref())?]
+            }
+        }
+        "apply_patch" => {
+            let patch_text = json_arg_string(args, "patch_text").ok_or_else(|| {
+                command_error("Missing patch_text argument for apply_patch tool.")
+            })?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let mut project_ids = Vec::new();
+            for operation in parse_apply_patch(&patch_text)? {
+                project_ids.push(resolve_one(
+                    operation.path(),
+                    explicit_project_id.as_deref(),
+                )?);
+            }
+            project_ids
+        }
+        "read" | "write" | "edit" | "delete" => {
+            let path = json_arg_string(args, "path").ok_or_else(|| {
+                command_error(format!("Missing path argument for {tool_id} tool."))
+            })?;
+            let project_id = json_arg_string(args, "project_id");
+            vec![resolve_one(&path, project_id.as_deref())?]
+        }
+        _ => focused_project_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default(),
+    };
+    affected.sort();
+    affected.dedup();
+    Ok(affected)
+}
+
 trait EmptyStringExt {
     fn if_empty<'a>(&'a self, fallback: &'a str) -> &'a str;
 }
@@ -1013,9 +1106,24 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 numbered
             )))
         }
-        "glob" | "grep" => execute_virtual_workspace_search_tool(tool_id, args, mounts)
-            .await
-            .map(Some),
+        "glob" | "grep" => {
+            let explicit_project_id = json_arg_string(args, "project_id");
+            if let Some(project_id) = explicit_project_id.as_deref() {
+                let resolved =
+                    resolve_virtual_mount_target(virtual_context, ".", Some(project_id))?;
+                execute_virtual_workspace_search_tool(
+                    tool_id,
+                    args,
+                    std::slice::from_ref(resolved.mount),
+                )
+                .await
+                .map(Some)
+            } else {
+                execute_virtual_workspace_search_tool(tool_id, args, mounts)
+                    .await
+                    .map(Some)
+            }
+        }
         "ast_grep" => execute_virtual_ast_search(args, virtual_context, cancellation)
             .await
             .map(Some),
@@ -1506,10 +1614,11 @@ pub(crate) async fn execute_virtual_workspace_tool(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_virtual_ast_candidates, collect_virtual_scan_candidates,
-        execute_virtual_workspace_tool, resolve_virtual_mount_target,
-        validate_headless_project_mounts, validate_headless_workspace_path, CandidateScanBudget,
-        ResolvedMountTarget, VirtualWorkspaceContext, WorkspaceProjectMount,
+        affected_virtual_tool_project_ids, collect_virtual_ast_candidates,
+        collect_virtual_scan_candidates, execute_virtual_workspace_tool,
+        resolve_virtual_mount_target, validate_headless_project_mounts,
+        validate_headless_workspace_path, CandidateScanBudget, ResolvedMountTarget,
+        VirtualWorkspaceContext, WorkspaceProjectMount,
     };
     use crate::commands::{
         commit_and_validate_pending_file_changes, commit_with_post_mutation_gate, PendingFileChange,
@@ -1590,6 +1699,67 @@ mod tests {
 
         assert!(error.contains("Ambiguous virtual-root path"));
         assert!(error.contains("project_id"));
+    }
+
+    #[test]
+    fn affected_projects_follow_the_actual_virtual_tool_targets() {
+        let mounts = vec![
+            mount("api", "api", Some("API")),
+            mount("web", "web", Some("Web")),
+        ];
+
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "write",
+                &json!({ "path": "api/src/index.ts" }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("routed write"),
+            vec!["api"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "apply_patch",
+                &json!({
+                    "patch_text": "*** Begin Patch\n*** Add File: api/a.txt\n+a\n*** Add File: web/b.txt\n+b\n*** End Patch"
+                }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("multi-project patch"),
+            vec!["api", "web"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "glob",
+                &json!({ "pattern": "**/*.ts", "project_id": "api" }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("project-scoped glob"),
+            vec!["api"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "grep",
+                &json!({ "query": "needle" }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("global grep"),
+            vec!["api", "web"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "list",
+                &json!({ "path": "." }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("virtual mount listing"),
+            vec!["web"]
+        );
     }
 
     #[test]

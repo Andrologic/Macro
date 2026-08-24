@@ -14,6 +14,7 @@ const BOUNDED_TOOL_OUTPUT_CAPABILITY = 'bounded_tool_output_v1';
 const BOUNDED_GIT_OUTPUT_CAPABILITY = 'bounded_git_output_v1';
 const STRUCTURAL_SEARCH_CAPABILITY = 'structural_search_v1';
 const RECOVERABLE_CHECKPOINTS_CAPABILITY = 'recoverable_checkpoints_v1';
+const IDEMPOTENT_TOOL_EXECUTION_CAPABILITY = 'idempotent_tool_execution_v1';
 const INTERRUPTIBLE_REMOTE_TOOL_IDS = new Set(['list', 'read', 'glob', 'grep', 'ast_grep']);
 const MUTATING_REMOTE_TOOL_IDS = new Set([
   'write',
@@ -112,6 +113,7 @@ export const validateRemoteToolExecution = async (params: {
   toolId: string;
   path?: string;
   projectId: string;
+  args?: Record<string, unknown>;
 }): Promise<RemoteToolValidation> => {
   return remoteKernelRequest<RemoteToolValidation>('/tools/validate', {
     method: 'POST',
@@ -120,6 +122,7 @@ export const validateRemoteToolExecution = async (params: {
       tool_id: params.toolId,
       path: params.path,
       projectId: params.projectId,
+      args: params.args ?? {},
     }),
   });
 };
@@ -152,12 +155,14 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
   const needsBoundedOutput = BOUNDED_OUTPUT_TOOL_IDS.has(params.toolId);
   const needsBoundedGitOutput = BOUNDED_GIT_OUTPUT_TOOL_IDS.has(params.toolId);
   const needsStructuralSearch = params.toolId === 'ast_grep';
+  const needsIdempotentMutation = MUTATING_REMOTE_TOOL_IDS.has(params.toolId);
   if (
     needsContentRevisions ||
     needsBoundedOutput ||
     needsBoundedGitOutput ||
     needsStructuralSearch ||
-    params.checkpointRequired
+    params.checkpointRequired ||
+    needsIdempotentMutation
   ) {
     const policy = await getRemoteToolModePolicy(
       params.mode,
@@ -192,6 +197,14 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
         'The remote Macro kernel cannot provide recoverable code checkpoints. Update the remote kernel before retrying this mutation.',
       );
     }
+    if (
+      needsIdempotentMutation &&
+      !policy.capabilities?.includes(IDEMPOTENT_TOOL_EXECUTION_CAPABILITY)
+    ) {
+      throw new Error(
+        'The remote Macro kernel cannot replay mutation results idempotently. Update the remote kernel before retrying this mutation.',
+      );
+    }
   }
   if (MUTATING_REMOTE_TOOL_IDS.has(params.toolId) && params.signal?.aborted) {
     throw params.signal.reason instanceof Error
@@ -217,29 +230,44 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
   }
 
   try {
-    const payload = await remoteKernelRequest<RemoteWorkspaceToolExecution>('/tools/execute', {
-      method: 'POST',
-      signal: interruptible ? signal : undefined,
-      timeoutMs: remoteToolTimeoutMs(params.toolId),
-      body: JSON.stringify({
-        mode: params.mode,
-        tool_id: params.toolId,
-        execution_id: executionId,
-        args: params.args,
-        workspace_path: params.workspacePath ?? null,
-        workspace_scope: params.workspaceScope ?? null,
-        project_mounts: (params.projectMounts ?? []).map((mount) => ({
-          project_id: mount.projectId,
-          mount_name: mount.mountName,
-          workspace_path: mount.workspacePath ?? null,
-          display_name: mount.displayName,
-          is_read_only: Boolean(mount.isReadOnly),
-        })),
-        virtual_root_enabled: params.virtualRootEnabled ?? null,
-        focused_project_id: params.focusedProjectId ?? null,
-        checkpoint_required: params.checkpointRequired ?? false,
-      }),
+    const requestBody = JSON.stringify({
+      mode: params.mode,
+      tool_id: params.toolId,
+      execution_id: executionId,
+      args: params.args,
+      workspace_path: params.workspacePath ?? null,
+      workspace_scope: params.workspaceScope ?? null,
+      project_mounts: (params.projectMounts ?? []).map((mount) => ({
+        project_id: mount.projectId,
+        mount_name: mount.mountName,
+        workspace_path: mount.workspacePath ?? null,
+        display_name: mount.displayName,
+        is_read_only: Boolean(mount.isReadOnly),
+      })),
+      virtual_root_enabled: params.virtualRootEnabled ?? null,
+      focused_project_id: params.focusedProjectId ?? null,
+      checkpoint_required: params.checkpointRequired ?? false,
     });
+    const requestExecution = (): Promise<RemoteWorkspaceToolExecution> =>
+      remoteKernelRequest<RemoteWorkspaceToolExecution>('/tools/execute', {
+        method: 'POST',
+        signal: interruptible ? signal : undefined,
+        timeoutMs: remoteToolTimeoutMs(params.toolId),
+        body: requestBody,
+      });
+    let payload: RemoteWorkspaceToolExecution;
+    try {
+      payload = await requestExecution();
+    } catch (error) {
+      const isTransportFailure =
+        needsIdempotentMutation &&
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: unknown }).code === 'REMOTE_REQUEST_ERROR';
+      if (!isTransportFailure) throw error;
+      payload = await requestExecution();
+    }
 
     if (params.checkpointRequired) {
       const files = payload.checkpoint?.files;
