@@ -7,8 +7,10 @@ mod rmcp_adapter;
 mod runtime;
 mod runtime_connector;
 mod stdio;
+mod streamable_http;
 mod types;
 
+pub(crate) use self::ids::parse_mcp_env_secret_ref;
 use self::ids::{
     build_mcp_env_secret_id, build_mcp_env_secret_ref, is_canonical_mcp_server_id,
     is_valid_mcp_env_key,
