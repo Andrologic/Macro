@@ -1981,6 +1981,7 @@
     "commitPromptDescription": "Dieser Prompt steuert die intelligente Commit-Generierung. Macro validiert weiterhin die finale Nachricht und entfernt Scopes vor dem Commit.",
     "reasoningEffort": "Reasoning",
     "defaultReasoning": "Standard",
+    "reasoningUnavailable": "Von diesem Modell nicht unterstützt",
     "contextWindowLabel": "Kontext",
     "contextWindowUnknown": "Geschätzt",
     "contextWindowSet": "Setzen",

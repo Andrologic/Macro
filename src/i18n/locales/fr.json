@@ -2001,6 +2001,7 @@
     "commitPromptDescription": "Ce prompt guide la génération intelligente des commits. Macro valide toujours le message final et retire les scopes avant de commit.",
     "reasoningEffort": "Raisonnement",
     "defaultReasoning": "Par défaut",
+    "reasoningUnavailable": "Non pris en charge par ce modèle",
     "contextWindowLabel": "Contexte",
     "contextWindowUnknown": "Estimé",
     "contextWindowSet": "Définir",
