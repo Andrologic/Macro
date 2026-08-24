@@ -2204,7 +2204,9 @@
   },
   "goal": {
     "bannerLabel": "Objetivo de la conversación",
-    "modeLabel": "Modo Goal",
+    "shortLabel": "Goal",
+    "edit": "Editar objetivo",
+    "editHint": "Editar el objetivo actual en el editor",
     "status": {
       "executorRunning": "El agente está trabajando",
       "executorRunningDescription": "El agente está trabajando para alcanzar el objetivo.",
@@ -2241,7 +2243,8 @@
     "commandMissingObjectiveDescription": "Escribe /goal seguido del resultado que quieres que alcance el agente.",
     "executionFailed": "El turno del agente falló.",
     "commandDescription": "Seguir trabajando hasta que una revisión independiente acepte el objetivo",
-    "commandHint": "Iniciar el modo Goal y describir el objetivo"
+    "commandHint": "Iniciar el modo Goal y describir el objetivo",
+    "removeCommand": "Quitar el comando Goal"
   },
   "composer": {
     "searchingFiles": "Buscando archivos...",

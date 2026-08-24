@@ -2199,7 +2199,9 @@
   },
   "goal": {
     "bannerLabel": "会話の目標",
-    "modeLabel": "Goalモード",
+    "shortLabel": "Goal",
+    "edit": "目標を編集",
+    "editHint": "入力欄で現在の目標を編集",
     "status": {
       "executorRunning": "エージェントが作業中",
       "executorRunningDescription": "エージェントが目標の達成に向けて作業しています。",
@@ -2236,7 +2238,8 @@
     "commandMissingObjectiveDescription": "/goal に続けて、エージェントに達成してほしい結果を入力してください。",
     "executionFailed": "エージェントターンに失敗しました。",
     "commandDescription": "独立した確認で目標が承認されるまで作業を続ける",
-    "commandHint": "Goalモードを開始して目標を入力"
+    "commandHint": "Goalモードを開始して目標を入力",
+    "removeCommand": "Goalコマンドを削除"
   },
   "composer": {
     "searchingFiles": "ファイルを検索中...",
