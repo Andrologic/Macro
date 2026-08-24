@@ -1,4 +1,12 @@
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
@@ -1120,6 +1128,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const {
     activeConversationGoal,
     activateConversationGoal,
+    beginConversationGoalEdit,
+    settleConversationGoalEdit,
     setConversationGoalStatus,
     clearConversationGoal,
   } = useConversationGoalStore(useShallow((state) => ({
@@ -1127,6 +1137,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? state.goalsByConversationId[selectedConversationId] ?? null
       : null,
     activateConversationGoal: state.activateGoal,
+    beginConversationGoalEdit: state.beginGoalEdit,
+    settleConversationGoalEdit: state.settleGoalEdit,
     setConversationGoalStatus: state.setOperationalStatus,
     clearConversationGoal: state.clearGoal,
   })));
@@ -1153,6 +1165,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     useState<ComposerEditSession | null>(null);
   const [goalComposerEditSession, setGoalComposerEditSession] =
     useState<GoalComposerEditSession | null>(null);
+  const goalComposerEditSessionRef = useRef<GoalComposerEditSession | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
@@ -1183,6 +1196,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     pendingSpeechInsertionRef.current = null;
   }, [composerDraftContextKey]);
   const activeComposerDraftContextKeyRef = useRef<string | null>(null);
+  const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
   const latestComposerDraftRef = useRef({
     text: '',
     images: [] as MessageImageAttachment[],
@@ -1565,6 +1579,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   }, [addComposerContextRef, clearComposerContextRefs, inputValue]);
 
+  useLayoutEffect(() => {
+    if (renderedComposerDraftContextKeyRef.current === composerDraftContextKey) return;
+    renderedComposerDraftContextKeyRef.current = composerDraftContextKey;
+    goalComposerEditSessionRef.current = null;
+  }, [composerDraftContextKey]);
+
   useEffect(() => {
     const previousContextKey = activeComposerDraftContextKeyRef.current;
     if (previousContextKey === composerDraftContextKey) return;
@@ -1597,6 +1617,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       contextRefs: [],
     };
     setComposerEditSession(null);
+    goalComposerEditSessionRef.current = null;
     setGoalComposerEditSession(null);
     setInputValue(nextDraft.text);
     setComposerImages([...nextDraft.images]);
@@ -2479,6 +2500,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [applySavedComposerDraft]);
 
   const restoreGoalComposerDraft = useCallback((session: GoalComposerEditSession) => {
+    if (goalComposerEditSessionRef.current !== session) return;
+    goalComposerEditSessionRef.current = null;
     setGoalComposerEditSession(null);
     applySavedComposerDraft(session);
   }, [applySavedComposerDraft]);
@@ -2540,15 +2563,29 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const internalAgentProfile =
       getConflictAssistantInternalAgentProfile(conversationId);
     let tracksGoalTurn = false;
+    let goalEditTransactionId: string | null = null;
 
     if (goalCommand?.kind === 'activate') {
-      activateConversationGoal({
-        conversationId,
-        objective: goalCommand.objective,
-        providerId: selectedProviderId,
-        modelId: selectedModelId,
-        reasoningEffort: selectedReasoningEffort,
-      });
+      if (goalComposerEditSession) {
+        const transaction = beginConversationGoalEdit({
+          conversationId,
+          objective: goalCommand.objective,
+          providerId: selectedProviderId,
+          modelId: selectedModelId,
+          reasoningEffort: selectedReasoningEffort,
+          expectedGoalId: goalComposerEditSession.goalId,
+        });
+        if (!transaction) return;
+        goalEditTransactionId = transaction.transactionId;
+      } else {
+        activateConversationGoal({
+          conversationId,
+          objective: goalCommand.objective,
+          providerId: selectedProviderId,
+          modelId: selectedModelId,
+          reasoningEffort: selectedReasoningEffort,
+        });
+      }
       tracksGoalTurn = true;
     } else {
       const currentGoal = useConversationGoalStore.getState()
@@ -2572,7 +2609,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
       if (result.status === 'sent') {
-        if (tracksGoalTurn) {
+        if (goalEditTransactionId) {
+          if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
+            setConversationGoalStatus(conversationId, 'executor_running');
+          }
+        } else if (tracksGoalTurn) {
           setConversationGoalStatus(conversationId, 'executor_running');
         }
         if (internalAgentProfile) {
@@ -2580,13 +2621,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         }
         if (goalComposerEditSession) {
           const targetDraftKey = `conversation:${goalComposerEditSession.conversationId}`;
-          const restoredDraft = {
-            text: goalComposerEditSession.savedDraftText,
-            images: [...goalComposerEditSession.savedDraftImages],
-            contextRefs: cloneContextRefs(goalComposerEditSession.savedDraftContextRefs),
-          };
-          saveComposerDraftForContext(targetDraftKey, restoredDraft);
-          if (activeComposerDraftContextKeyRef.current === targetDraftKey) {
+          if (
+            goalComposerEditSessionRef.current === goalComposerEditSession &&
+            activeComposerDraftContextKeyRef.current === targetDraftKey
+          ) {
+            saveComposerDraftForContext(targetDraftKey, {
+              text: goalComposerEditSession.savedDraftText,
+              images: [...goalComposerEditSession.savedDraftImages],
+              contextRefs: cloneContextRefs(goalComposerEditSession.savedDraftContextRefs),
+            });
             restoreGoalComposerDraft(goalComposerEditSession);
           }
         } else {
@@ -2598,11 +2641,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           setInputValue('');
         }
         resetPromptHistoryNavigation();
+      } else if (goalEditTransactionId) {
+        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
       } else if (tracksGoalTurn) {
         setConversationGoalStatus(conversationId, 'paused');
       }
     } catch (error) {
-      if (tracksGoalTurn) {
+      if (goalEditTransactionId) {
+        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
+      } else if (tracksGoalTurn) {
         setConversationGoalStatus(
           conversationId,
           'error',
@@ -2649,6 +2696,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       images: savedDraft.savedDraftImages,
       contextRefs: savedDraft.savedDraftContextRefs,
     });
+    goalComposerEditSessionRef.current = savedDraft;
     setGoalComposerEditSession(savedDraft);
     clearComposerContextRefs();
     setComposerImages([]);

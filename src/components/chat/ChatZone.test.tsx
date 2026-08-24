@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
+import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   createTranslationMock,
@@ -13,6 +14,7 @@ import {
 } from '../../test-utils/tauriRuntime';
 import { createStoreHookMock } from '../../test-utils/storeHookMock';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
+import type { ComposerDraft } from '../../stores/useChatStore';
 import { registerArchitectScenarios } from './__tests__/architect.scenarios';
 import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
 import { registerImplementScenarios } from './__tests__/implement.scenarios';
@@ -165,6 +167,10 @@ export type MockChatState = {
   peekComposerDraft: ReturnType<typeof mock>;
   consumeComposerDraft: ReturnType<typeof mock>;
   acknowledgeComposerDraft: ReturnType<typeof mock>;
+  saveComposerDraftForContext: ReturnType<typeof mock>;
+  getComposerDraftForContext: ReturnType<typeof mock>;
+  clearComposerDraftForContext: ReturnType<typeof mock>;
+  migrateComposerDraftContext: ReturnType<typeof mock>;
   architectPlanNamingRecovery: {
     conversationId: string;
     planId: string;
@@ -246,6 +252,7 @@ let providerState: ProviderState;
 let shortcutsState: ShortcutsState;
 let taskState: TaskState;
 let skillsState: { getSkillById: ReturnType<typeof mock>; refreshSkills: ReturnType<typeof mock> };
+let composerDraftsByContextKey: Record<string, ComposerDraft>;
 
 const getMockConversationRuntime = (
   state: MockChatState,
@@ -709,6 +716,7 @@ const buildProjectGroups = () => [
 
 const resetState = () => {
   useConversationGoalStore.setState({ goalsByConversationId: {} });
+  composerDraftsByContextKey = {};
   appState = {
     mode: 'Chat',
     agentType: 'build',
@@ -777,6 +785,33 @@ const resetState = () => {
     peekComposerDraft: mock(() => null),
     consumeComposerDraft: mock(() => null),
     acknowledgeComposerDraft: mock(() => undefined),
+    saveComposerDraftForContext: mock((contextKey: string, draft: ComposerDraft) => {
+      composerDraftsByContextKey[contextKey] = {
+        text: draft.text,
+        images: [...draft.images],
+        contextRefs: draft.contextRefs.map((ref) => ({ ...ref })),
+      };
+    }),
+    getComposerDraftForContext: mock((contextKey: string) => {
+      const draft = composerDraftsByContextKey[contextKey];
+      return draft
+        ? {
+            text: draft.text,
+            images: [...draft.images],
+            contextRefs: draft.contextRefs.map((ref) => ({ ...ref })),
+          }
+        : null;
+    }),
+    clearComposerDraftForContext: mock((contextKey: string) => {
+      delete composerDraftsByContextKey[contextKey];
+    }),
+    migrateComposerDraftContext: mock((fromContextKey: string, toContextKey: string) => {
+      if (!fromContextKey || !toContextKey || fromContextKey === toContextKey) return;
+      const draft = composerDraftsByContextKey[fromContextKey];
+      if (!draft) return;
+      delete composerDraftsByContextKey[fromContextKey];
+      composerDraftsByContextKey[toContextKey] = draft;
+    }),
     architectPlanNamingRecovery: null,
     setArchitectPlanNamingRecoveryStage: mock(() => undefined),
     retryArchitectPlanNamingRecovery: mock(async () => false),
@@ -1256,7 +1291,7 @@ describe('ChatZone', () => {
         throw new Error('Provider unavailable');
       }),
     };
-    useConversationGoalStore.getState().activateGoal({
+    const originalGoal = useConversationGoalStore.getState().activateGoal({
       conversationId: 'conv-1',
       objective: 'Finish the authentication migration',
     });
@@ -1280,6 +1315,9 @@ describe('ChatZone', () => {
     expect(getComposerEditor().value).toBe(
       '/goal Finish the authentication migration safely',
     );
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conv-1'],
+    ).toEqual(originalGoal);
     const removeGoalControl = requireContainer().querySelector(
       '[data-chat-goal-command-control="true"]',
     );
@@ -1291,6 +1329,116 @@ describe('ChatZone', () => {
     });
 
     expect(getComposerEditor().value).toBe('Draft kept during retry');
+  });
+
+  it('does not overwrite a newer draft when a Goal send resolves after a conversation round trip', async () => {
+    const sendDeferred = createDeferred<{ status: 'sent' }>();
+    chatState = {
+      ...chatState,
+      conversations: [
+        buildConversation(),
+        { ...buildConversation(), id: 'conv-2', title: 'Second conversation' },
+      ],
+      sendMessage: mock(() => sendDeferred.promise),
+    };
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Original conv-1 draft');
+
+    const editGoalButton = requireContainer().querySelector(
+      'button[aria-label="Edit goal"]',
+    );
+    await act(async () => {
+      editGoalButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await setComposerText('/goal Finish the authentication migration safely');
+    await clickSendButton();
+
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-1' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    expect(getComposerEditor().value).toBe('Original conv-1 draft');
+
+    await setComposerText('Newer conv-1 draft');
+    await act(async () => {
+      sendDeferred.resolve({ status: 'sent' });
+      await sendDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Newer conv-1 draft');
+
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-1' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    expect(getComposerEditor().value).toBe('Newer conv-1 draft');
+  });
+
+  it('invalidates Goal restoration during the layout phase of a conversation switch', async () => {
+    const sendDeferred = createDeferred<{ status: 'sent' }>();
+    const draftRef = {
+      kind: 'file',
+      id: 'file:/repo/private-a.ts',
+      title: 'private-a.ts',
+      data: {},
+    };
+    chatState = {
+      ...chatState,
+      conversations: [
+        buildConversation(),
+        { ...buildConversation(), id: 'conv-2', title: 'Second conversation' },
+      ],
+      composerContextRefs: [draftRef],
+      sendMessage: mock(() => sendDeferred.promise),
+    };
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Private conv-1 draft');
+
+    const editGoalButton = requireContainer().querySelector(
+      'button[aria-label="Edit goal"]',
+    );
+    await act(async () => {
+      editGoalButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await setComposerText('/goal Finish the authentication migration safely');
+    await clickSendButton();
+
+    await act(async () => {
+      flushSync(() => {
+        useChatStore.setState({ selectedConversationId: 'conv-2' });
+      });
+      sendDeferred.resolve({ status: 'sent' });
+      await sendDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('');
+    expect(chatState.composerContextRefs).toEqual([]);
   });
 
   it('activates Goal mode from the Architect composer with the current provider selection', async () => {
