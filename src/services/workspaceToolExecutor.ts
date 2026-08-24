@@ -76,6 +76,7 @@ export interface ExecuteWorkspaceToolOptions {
   groupId?: string | null;
   projectMounts?: ProjectMount[];
   virtualRootEnabled?: boolean;
+  invocationId?: string;
   onCodeCheckpoint?: (checkpoint: {
     toolName: string;
     files: AgentCodeCheckpointFile[];
@@ -2036,6 +2037,7 @@ export const executeWorkspaceTool = async (
         virtualRootEnabled,
         focusedProjectId: backendFocusedProjectId,
         signal: combinedSignal.signal,
+        invocationId: options.invocationId,
       };
       const checkpointRequired =
         isWriteTool(backendToolName) && Boolean(options.onCodeCheckpoint);
@@ -2131,6 +2133,9 @@ export const executeWorkspaceTool = async (
               projectMounts: [],
               virtualRootEnabled: false,
               focusedProjectId: file.projectId,
+              invocationId: options.invocationId
+                ? `${options.invocationId}:checkpoint-rollback:${file.path}`
+                : undefined,
             });
           } catch (rollbackError) {
             rollbackErrors.push(

@@ -300,6 +300,7 @@ describe('remoteKernelApi', () => {
       toolId: 'write',
       args: { path: 'src/reconnect.ts', content: 'next' },
       focusedProjectId: 'project-1',
+      invocationId: 'tool-call-reconnect',
     };
     await expect(executeRemoteWorkspaceTool(request)).rejects.toMatchObject({
       code: 'REMOTE_REQUEST_ERROR',
@@ -312,6 +313,42 @@ describe('remoteKernelApi', () => {
     );
     expect(executionIds.length).toBeGreaterThanOrEqual(2);
     expect(new Set(executionIds.map((payload) => payload.execution_id)).size).toBe(1);
+  });
+
+  it('does not reuse an unresolved identity for a distinct logical invocation', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    let online = false;
+    const executionIds: string[] = [];
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['git_stash'],
+          enforce_macro_only_writes: false,
+          capabilities: ['idempotent_tool_execution_v1'],
+        });
+      }
+      if (String(url).includes('/tools/execute')) {
+        executionIds.push(JSON.parse(String(init?.body)).execution_id as string);
+        if (online) return jsonResponse({ result: 'stashed' });
+      }
+      throw new TypeError('network unavailable');
+    }) as unknown as typeof fetch;
+
+    const request = {
+      mode: 'Implement' as const,
+      toolId: 'git_stash',
+      args: { action: 'push' },
+    };
+    await expect(
+      executeRemoteWorkspaceTool({ ...request, invocationId: 'tool-call-stash-1' }),
+    ).rejects.toMatchObject({ code: 'REMOTE_REQUEST_ERROR' });
+    online = true;
+    await expect(
+      executeRemoteWorkspaceTool({ ...request, invocationId: 'tool-call-stash-2' }),
+    ).resolves.toBe('stashed');
+
+    expect(new Set(executionIds).size).toBe(2);
   });
 
   it('uses the routed project when checking execution capabilities', async () => {
