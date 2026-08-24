@@ -438,6 +438,10 @@
     "deletingConversations": "삭제 중...",
     "typeMessage": "메시지를 입력하거나 /로 컨텍스트 추가...",
     "send": "보내다",
+    "steerActiveTurn": "진행 중인 턴 조정",
+    "queueNextTurn": "다음 턴에 추가",
+    "secondaryAction": "대체 작업",
+    "activeTurnSendFailed": "메시지를 보내지 못했습니다",
     "stop": "멈추다",
     "saveRegenerate": "저장 및 재생성",
     "mermaidDiagram": "인어 다이어그램",
@@ -2022,6 +2026,11 @@
     "recordingHint": "지금 바로가기를 누르세요... (취소하려면 Esc를 누르세요)",
     "promptHistoryBehavior": "프롬프트 히스토리 동작",
     "promptHistoryBehaviorDesc": "상황별 ArrowUp/ArrowDown 대신 전용 단축키(Ctrl/Cmd + ArrowUp/ArrowDown)를 사용하세요.",
+    "activeTurnSendBehavior": "응답 중 기본 작업",
+    "activeTurnSendBehaviorSteer": "Enter로 진행 중인 턴을 조정하고 보조 단축키로 메시지를 대기열에 추가합니다.",
+    "activeTurnSendBehaviorQueue": "Enter로 메시지를 대기열에 추가하고 보조 단축키로 진행 중인 턴을 조정합니다.",
+    "queue": "대기열",
+    "steer": "조정",
     "disabledInContextualMode": "상황별 ArrowUp/ArrowDown 모드가 활성화된 동안에는 비활성화됩니다.",
     "conflictWith": "갈등",
     "recordShortcut": "녹음 바로가기",
@@ -2089,6 +2098,10 @@
       "historyNext": {
         "label": "다음 프롬프트",
         "description": "채팅 입력에서 다음 프롬프트로 이동"
+      },
+      "secondarySend": {
+        "label": "Composer 보조 작업",
+        "description": "응답 중 대체 작업 사용"
       }
     }
   },

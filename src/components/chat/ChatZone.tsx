@@ -31,6 +31,7 @@ import type {
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useSpeechToTextStore } from '../../stores/useSpeechToTextStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
+import { formatBindingForDisplay } from '../../shortcuts/utils';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon, type IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
@@ -1021,6 +1022,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     lastError,
     stopStreaming,
     sendMessage,
+    submitDuringActiveTurn = async () => 'steered' as const,
     clearLastError,
     clearConversationRuntimeError,
     editMessage,
@@ -1077,6 +1079,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     lastError: state.lastError,
     stopStreaming: state.stopStreaming,
     sendMessage: state.sendMessage,
+    submitDuringActiveTurn: state.submitDuringActiveTurn,
     clearLastError: state.clearLastError,
     clearConversationRuntimeError: state.clearConversationRuntimeError,
     editMessage: state.editMessage,
@@ -1143,6 +1146,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     clearConversationGoal: state.clearGoal,
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
+  const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
+  const secondarySendBinding = useShortcutsStore(
+    (state) => state.bindings?.['chat.secondarySend'] ?? 'Mod+Enter',
+  );
   const speechLanguage = useSpeechToTextStore((state) => state.language);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -2506,11 +2513,39 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     applySavedComposerDraft(session);
   }, [applySavedComposerDraft]);
 
-  const sendComposerMessage = async (textOverride?: string) => {
+  const sendComposerMessage = async (
+    textOverride?: string,
+    activeBehaviorOverride?: 'steer' | 'queue',
+  ) => {
     if (isComposerDisabled || activeQuestionnaire) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
+    if (isBusySending) {
+      if (!selectedConversationId || !text) return;
+      try {
+        await submitDuringActiveTurn(
+          {
+            conversationId: selectedConversationId,
+            content: text,
+            taskId: implementTaskIdForSend,
+          },
+          activeBehaviorOverride ?? activeTurnSendBehavior,
+        );
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(`conversation:${selectedConversationId}`);
+        composerEditorRef.current?.clear();
+        clearComposerContextRefs();
+        setComposerImages([]);
+        setInputValue('');
+        resetPromptHistoryNavigation();
+      } catch (error) {
+        notify.error(t('chat.activeTurnSendFailed', 'Message not sent'), {
+          description: toServiceError(error).message,
+        });
+      }
+      return;
+    }
     if (composerEditSession) {
       if (!text || isBusySending) return;
       await requestReplay({
@@ -2956,6 +2991,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setMessageImages,
     getMessageImages,
     onEditCommitted: handleEditCommitted,
+  });
+
+  useEffect(() => {
+    const handleSecondarySend = () => {
+      if (!isBusySending) return;
+      void sendComposerMessage(
+        undefined,
+        activeTurnSendBehavior === 'steer' ? 'queue' : 'steer',
+      );
+    };
+    window.addEventListener('macro:composer-secondary-send', handleSecondarySend);
+    return () => window.removeEventListener('macro:composer-secondary-send', handleSecondarySend);
   });
 
   const handleCopy = async (content: string, messageId: string) => {
@@ -3643,7 +3690,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     <Suspense fallback={<ComposerFallbackStatus />}>
                       <LazyComposerEditor
                         ref={composerEditorRef}
-                        editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                        editable={!!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                         readOnly={isSpeechEnhancing}
                         className={isSpeechEnhancing ? 'speech-cleanup-text' : undefined}
                         placeholder={
@@ -3726,7 +3773,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       <Icon name="x" size={14} />
                     </button>
                   )}
-                  {isStreaming ? (
+                  {isStreaming && !showSpeechRecordingBar && (
                     <button
                       onClick={handleStopStreaming}
                       data-tour-id="chat-stop-button"
@@ -3735,35 +3782,39 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       <Icon name="square" size={14} />
                       <span className="text-xs">{t('chat.stop')}</span>
                     </button>
-                  ) : !showSpeechRecordingBar ? (
+                  )}
+                  {!showSpeechRecordingBar ? (
                     <>
-                      <SpeechDictationButton
-                        phase={speechDictation.phase}
-                        elapsedSeconds={speechDictation.elapsedSeconds}
-                        disabled={isBusySending || isComposerDisabled}
-                        label={t('speech.button.start', 'Start dictation')}
-                        recordingLabel={t('speech.button.stop', 'Stop dictation')}
-                        transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
-                        onToggle={() => {
-                          void speechDictation.toggle();
-                        }}
-                      />
+                      {!isStreaming && (
+                        <SpeechDictationButton
+                          phase={speechDictation.phase}
+                          elapsedSeconds={speechDictation.elapsedSeconds}
+                          disabled={isComposerDisabled}
+                          label={t('speech.button.start', 'Start dictation')}
+                          recordingLabel={t('speech.button.stop', 'Stop dictation')}
+                          transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
+                          onToggle={() => {
+                            void speechDictation.toggle();
+                          }}
+                        />
+                      )}
                       <button
                         onClick={handleSend}
                         data-tour-id="chat-send-button"
-                        disabled={isBusySending || speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
+                        title={isStreaming
+                          ? `${activeTurnSendBehavior === 'steer'
+                            ? t('chat.steerActiveTurn', 'Steer active turn')
+                            : t('chat.queueNextTurn', 'Queue for next turn')}. ${t('chat.secondaryAction', 'Alternate action')}: ${formatBindingForDisplay(secondarySendBinding)}`
+                          : t('chat.send', 'Send')}
+                        disabled={speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
                         className={cn(
                           'rounded-lg px-3 h-9 flex items-center transition-colors',
-                          isBusySending || speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
+                          speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
                             ? 'bg-muted text-muted-foreground cursor-not-allowed'
                             : 'bg-primary hover:bg-primary/90 text-primary-foreground'
                         )}
                       >
-                        {isBusySending ? (
-                          <SpinnerIcon size={14} />
-                        ) : (
-                          <Icon name="arrow-up" size={14} />
-                        )}
+                        <Icon name="arrow-up" size={14} />
                       </button>
                     </>
                   ) : null}

@@ -461,6 +461,10 @@
     "typeMessage": "Type a message, or / to add context...",
     "send": "Send",
     "stop": "Stop",
+    "steerActiveTurn": "Steer active turn",
+    "queueNextTurn": "Queue for next turn",
+    "secondaryAction": "Alternate action",
+    "activeTurnSendFailed": "Message not sent",
     "saveRegenerate": "Save & Regenerate",
     "mermaidDiagram": "Mermaid diagram",
     "copyCode": "Copy code",
@@ -2089,6 +2093,11 @@
     "recordingHint": "Press your shortcut now... (Esc to cancel)",
     "promptHistoryBehavior": "Prompt history behavior",
     "promptHistoryBehaviorDesc": "Use dedicated shortcuts (Ctrl/Cmd + ArrowUp/ArrowDown) instead of contextual ArrowUp/ArrowDown.",
+    "activeTurnSendBehavior": "Default action during a response",
+    "activeTurnSendBehaviorSteer": "Enter steers the active turn. The secondary shortcut queues the message.",
+    "activeTurnSendBehaviorQueue": "Enter queues the message. The secondary shortcut steers the active turn.",
+    "queue": "Queue",
+    "steer": "Steer",
     "disabledInContextualMode": "Disabled while contextual ArrowUp/ArrowDown mode is active.",
     "conflictWith": "Conflict with",
     "recordShortcut": "Record shortcut",
@@ -2156,6 +2165,10 @@
       "historyNext": {
         "label": "Prompt history next",
         "description": "Navigate to the next prompt in chat input"
+      },
+      "secondarySend": {
+        "label": "Secondary composer action",
+        "description": "Use the alternate action while a response is running"
       }
     }
   },

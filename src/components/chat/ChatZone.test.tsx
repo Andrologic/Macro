@@ -152,6 +152,7 @@ export type MockChatState = {
   lastError: string | null;
   stopStreaming: ReturnType<typeof mock>;
   sendMessage: ReturnType<typeof mock>;
+  submitDuringActiveTurn: ReturnType<typeof mock>;
   clearLastError: ReturnType<typeof mock>;
   clearConversationRuntimeError: ReturnType<typeof mock>;
   editMessage: ReturnType<typeof mock>;
@@ -770,6 +771,7 @@ const resetState = () => {
     lastError: null,
     stopStreaming: mock(() => undefined),
     sendMessage: mock(async () => ({ status: 'sent' })),
+    submitDuringActiveTurn: mock(async () => 'steered'),
     clearLastError: mock(() => undefined),
     clearConversationRuntimeError: mock(() => undefined),
     editMessage: mock(async () => undefined),
@@ -2384,6 +2386,8 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(markdownRendererContentMock.mock.calls.map(([content]) => content)).toContain('Réponse partielle');
     expect(requireContainer().textContent).toContain('Stop');
+    expect(requireContainer().querySelector('[data-tour-id="chat-send-button"]')).not.toBeNull();
+    expect(getComposerEditor().hasAttribute('disabled')).toBe(false);
   });
 
   it('renders live context diagnostics while a visible conversation is streaming', async () => {
