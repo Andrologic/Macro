@@ -234,6 +234,8 @@ describe('copilot bridge tool registration', () => {
       'git_merge',
       'git_reset',
       'git_stash',
+      'git_branch_list',
+      'git_get_tree',
     ];
     const tools = __testables.buildMacroTools(
       {

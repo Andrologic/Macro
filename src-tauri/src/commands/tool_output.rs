@@ -30,6 +30,10 @@ pub(crate) const GIT_STATUS_DEFAULT_LIMIT: usize = 200;
 pub(crate) const GIT_STATUS_MAX_LIMIT: usize = 1_000;
 pub(crate) const GIT_LOG_DEFAULT_LIMIT: usize = 50;
 pub(crate) const GIT_LOG_MAX_LIMIT: usize = 200;
+pub(crate) const GIT_BRANCH_DEFAULT_LIMIT: usize = 100;
+pub(crate) const GIT_BRANCH_MAX_LIMIT: usize = 500;
+pub(crate) const GIT_TREE_DEFAULT_LIMIT: usize = 200;
+pub(crate) const GIT_TREE_MAX_LIMIT: usize = 2_000;
 pub(crate) const GIT_DIFF_MAX_BYTES: usize = 256 * 1024;
 pub(crate) const GIT_DIFF_MAX_CONTEXT_LINES: u32 = 64;
 

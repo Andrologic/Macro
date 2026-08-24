@@ -130,6 +130,7 @@ describe('remoteKernelApi', () => {
     expect(JSON.parse(String(fetchCalls[2].init?.body))).toEqual({
       mode: 'Implement',
       tool_id: 'read',
+      execution_id: expect.any(String),
       args: { path: 'src/App.tsx' },
       workspace_path: 'C:/dev/Smartcards',
       workspace_scope: null,
@@ -137,6 +138,40 @@ describe('remoteKernelApi', () => {
       virtual_root_enabled: null,
       focused_project_id: null,
     });
+  });
+
+  it('sends a unique execution_id with every execute payload', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['read'],
+          enforce_macro_only_writes: false,
+          capabilities: ['bounded_tool_output_v1'],
+        });
+      }
+      return jsonResponse({ result: 'ok' });
+    }) as unknown as typeof fetch;
+
+    await executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'read',
+      args: { path: 'src/App.tsx' },
+    });
+    await executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'read',
+      args: { path: 'src/other.tsx' },
+    });
+
+    const firstId = JSON.parse(String(fetchCalls[1].init?.body)).execution_id;
+    const secondId = JSON.parse(String(fetchCalls[3].init?.body)).execution_id;
+    expect(typeof firstId).toBe('string');
+    expect(firstId.length).toBeGreaterThan(0);
+    expect(secondId).not.toBe(firstId);
   });
 
   it('uses the routed project when checking execution capabilities', async () => {
@@ -363,5 +398,133 @@ describe('remoteKernelApi', () => {
 
     await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
     expect(abortObserved).toBe(true);
+  });
+
+  it('sends an independent authenticated cancel request carrying the execution_id on abort', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+
+    let resolveExecuteStarted: (() => void) | undefined;
+    const executeStarted = new Promise<void>((resolve) => {
+      resolveExecuteStarted = resolve;
+    });
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['grep'],
+          enforce_macro_only_writes: false,
+          capabilities: ['bounded_tool_output_v1'],
+        });
+      }
+      if (String(url).includes('/tools/cancel')) {
+        return jsonResponse({ cancelled: true });
+      }
+      resolveExecuteStarted?.();
+      const signal = init?.signal as AbortSignal | undefined;
+      if (signal?.aborted) {
+        return Promise.reject(new DOMException('Aborted', 'AbortError'));
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    const controller = new AbortController();
+    const execution = executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'grep',
+      args: { query: 'needle' },
+      signal: controller.signal,
+    });
+    await executeStarted;
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+
+    const cancelCalls = fetchCalls.filter((call) => call.url.includes('/tools/cancel'));
+    expect(cancelCalls).toHaveLength(1);
+    const executeCall = fetchCalls.find((call) => call.url.includes('/tools/execute'));
+    const cancelCall = cancelCalls[0];
+    expect(cancelCall.init?.method).toBe('POST');
+    expect(cancelCall.init?.signal?.aborted).toBe(false);
+    expect((cancelCall.init?.headers as Record<string, string>).Authorization).toBe(
+      'Bearer token',
+    );
+    expect(JSON.parse(String(cancelCall.init?.body))).toEqual({
+      execution_id: JSON.parse(String(executeCall?.init?.body)).execution_id,
+    });
+  });
+
+  it('does not send a cancellation request when the execution completes normally', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_AUTH_TOKEN', 'token');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['read'],
+          enforce_macro_only_writes: false,
+          capabilities: ['bounded_tool_output_v1'],
+        });
+      }
+      return jsonResponse({ result: 'ok' });
+    }) as unknown as typeof fetch;
+
+    const controller = new AbortController();
+    await executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'read',
+      args: { path: 'src/App.tsx' },
+      signal: controller.signal,
+    });
+
+    expect(fetchCalls.some((call) => call.url.includes('/tools/cancel'))).toBe(false);
+  });
+
+  it('preserves structured headless errors such as actionable revision conflicts', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1'],
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          code: 'REVISION_CONFLICT',
+          message:
+            'Revision conflict: "src/App.tsx" changed since it was read. Re-read the file and retry.',
+        }),
+        { status: 409, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'write',
+        args: {
+          path: 'src/App.tsx',
+          content: 'next',
+          expected_revision: 'stale',
+        },
+      })
+    ).rejects.toMatchObject({
+      code: 'REVISION_CONFLICT',
+      message: expect.stringContaining('Revision conflict'),
+      details: { status: 409 },
+    });
   });
 });

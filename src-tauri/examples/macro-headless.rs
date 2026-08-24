@@ -11,7 +11,9 @@ use axum::{Json, Router};
 use macro_lib::commands::workspace_tools::{
     validate_headless_project_mounts, validate_headless_workspace_path,
 };
-use macro_lib::commands::{execute_workspace_tool, git, WorkspaceProjectMount};
+use macro_lib::commands::{
+    execute_workspace_tool_controlled, git, tool_cancel_workspace, WorkspaceProjectMount,
+};
 use macro_lib::config::{
     delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
     resolve_standalone_config_root, ConfigApiError, ConfigChangeSource, ConfigDocumentKind,
@@ -73,6 +75,8 @@ struct ToolExecuteRequest {
     tool_id: String,
     #[serde(default)]
     args: Value,
+    #[serde(default, alias = "executionId")]
+    execution_id: Option<String>,
     #[serde(default)]
     workspace_path: Option<String>,
     #[serde(default)]
@@ -83,6 +87,12 @@ struct ToolExecuteRequest {
     virtual_root_enabled: Option<bool>,
     #[serde(default)]
     focused_project_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolCancelRequest {
+    #[serde(default, alias = "executionId")]
+    execution_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -598,20 +608,19 @@ async fn register_headless_project_config_roots(state: &HeadlessState) -> Result
     Ok(())
 }
 
-fn authorized(headers: &HeaderMap, state: &HeadlessState) -> bool {
-    let Some(expected) = state.bearer_token.as_ref() else {
+fn bearer_token_authorizes(headers: &HeaderMap, expected: Option<&BearerTokenDigest>) -> bool {
+    let Some(expected) = expected else {
         return true;
     };
 
-    let Some(auth_value) = headers.get(header::AUTHORIZATION) else {
-        return false;
-    };
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|auth_value| expected.authorizes(Some(auth_value)))
+}
 
-    let Ok(auth_str) = auth_value.to_str() else {
-        return false;
-    };
-
-    expected.authorizes(Some(auth_str))
+fn authorized(headers: &HeaderMap, state: &HeadlessState) -> bool {
+    bearer_token_authorizes(headers, state.bearer_token.as_ref())
 }
 
 fn unauthorized_response() -> impl IntoResponse {
@@ -909,12 +918,12 @@ async fn tool_execute(
                     validation
                         .reason
                         .unwrap_or_else(|| "Tool execution is denied by policy".to_string()),
-                ))
+                ));
             }
             Err(error) => {
                 return policy_denied_response(format!(
                     "Project '{policy_project_id}' has an invalid tool policy: {error}",
-                ))
+                ));
             }
         }
     }
@@ -935,7 +944,7 @@ async fn tool_execute(
         None => None,
     };
 
-    match execute_workspace_tool(
+    match execute_workspace_tool_controlled(
         state.workspace_path.clone(),
         state.workspace_path.clone(),
         state.git_state.clone(),
@@ -947,12 +956,26 @@ async fn tool_execute(
         payload.project_mounts,
         payload.virtual_root_enabled,
         payload.focused_project_id,
+        payload.execution_id,
     )
     .await
     {
         Ok(result) => (StatusCode::OK, Json(json!({ "result": result }))).into_response(),
         Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
     }
+}
+
+async fn tool_cancel(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ToolCancelRequest>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+
+    let cancelled = tool_cancel_workspace(payload.execution_id);
+    (StatusCode::OK, Json(json!({ "cancelled": cancelled }))).into_response()
 }
 
 async fn workspace_bootstrap(
@@ -1257,9 +1280,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tools/mode-policy", get(tool_mode_policy))
         .route("/v1/tools/validate", post(tool_validate))
         .route("/v1/tools/execute", post(tool_execute))
+        .route("/v1/tools/cancel", post(tool_cancel))
         .route("/api/v1/tools/mode-policy", get(tool_mode_policy))
         .route("/api/v1/tools/validate", post(tool_validate))
         .route("/api/v1/tools/execute", post(tool_execute))
+        .route("/api/v1/tools/cancel", post(tool_cancel))
         .route("/api/v1/config/snapshot", post(config_snapshot))
         .route("/api/v1/config/document", post(config_document))
         .route("/api/v1/config/schema", post(config_schema))
@@ -1416,5 +1441,39 @@ mod tests {
 
         assert!(project_tools_from_snapshot(&snapshot, "missing-project").is_err());
         assert!(project_tools_from_snapshot(&snapshot, "").is_err());
+    }
+
+    #[test]
+    fn tool_execute_request_parses_snake_and_camel_execution_ids() {
+        let snake: ToolExecuteRequest = serde_json::from_value(
+            json!({ "mode": "Implement", "tool_id": "read", "execution_id": "exec-1" }),
+        )
+        .expect("snake_case execution id");
+        assert_eq!(snake.execution_id.as_deref(), Some("exec-1"));
+
+        let camel: ToolExecuteRequest = serde_json::from_value(
+            json!({ "mode": "Implement", "tool_id": "read", "executionId": "exec-2" }),
+        )
+        .expect("camelCase execution id alias");
+        assert_eq!(camel.execution_id.as_deref(), Some("exec-2"));
+
+        let absent: ToolExecuteRequest =
+            serde_json::from_value(json!({ "mode": "Implement", "tool_id": "read" }))
+                .expect("absent execution id");
+        assert_eq!(absent.execution_id, None);
+    }
+
+    #[test]
+    fn bearer_token_authorizes_gates_unauthenticated_cancel_calls() {
+        let headers = bearer_headers("agent-secret");
+        let digest = BearerTokenDigest::new("agent-secret");
+
+        assert!(bearer_token_authorizes(&headers, Some(&digest)));
+        assert!(!bearer_token_authorizes(&HeaderMap::new(), Some(&digest)));
+        assert!(!bearer_token_authorizes(
+            &bearer_headers("intruder"),
+            Some(&digest)
+        ));
+        assert!(bearer_token_authorizes(&HeaderMap::new(), None));
     }
 }

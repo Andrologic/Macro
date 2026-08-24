@@ -63,6 +63,31 @@ const extractPayload = <T>(payload: unknown, key?: string): T => {
   };
 };
 
+interface RemoteStructuredErrorBody {
+  code?: unknown;
+  message?: unknown;
+}
+
+const readStructuredErrorBody = (
+  body: unknown,
+): { code?: string; message?: string } | null => {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const candidate = body as RemoteStructuredErrorBody;
+  return {
+    code:
+      typeof candidate.code === 'string' && candidate.code.trim().length > 0
+        ? candidate.code
+        : undefined,
+    message:
+      typeof candidate.message === 'string' &&
+      candidate.message.trim().length > 0
+        ? candidate.message
+        : undefined,
+  };
+};
+
 export const remoteRequest = async <T>(
   path: string,
   options: RequestInit & {
@@ -102,9 +127,10 @@ export const remoteRequest = async <T>(
       : await response.text().catch(() => null);
 
     if (!response.ok) {
+      const structured = readStructuredErrorBody(body);
       throw {
-        code: 'REMOTE_REQUEST_FAILED',
-        message: `Remote request failed (${response.status})`,
+        code: structured?.code ?? 'REMOTE_REQUEST_FAILED',
+        message: structured?.message ?? `Remote request failed (${response.status})`,
         details: {
           status: response.status,
           url,
@@ -116,10 +142,11 @@ export const remoteRequest = async <T>(
     return extractPayload<T>(body, payloadKey);
   } catch (error) {
     if (
+      !(error instanceof Error) &&
       typeof error === 'object' &&
       error !== null &&
       'code' in error &&
-      (error as { code?: string }).code === 'REMOTE_REQUEST_FAILED'
+      typeof (error as { code?: unknown }).code === 'string'
     ) {
       throw error;
     }

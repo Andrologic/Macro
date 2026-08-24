@@ -13,7 +13,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use git2::{
     BranchType, Commit, DiffFormat, DiffStatsFormat, Oid, Repository, RepositoryState, ResetType,
-    StashFlags, Status, StatusEntry,
+    StashFlags, Status, StatusEntry, TreeWalkMode, TreeWalkResult,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -24,8 +24,8 @@ use crate::fs::validate_path;
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::{GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME};
 use crate::project_path::{
-    parse_wsl_unc_path, run_wsl_git_allow_failure, run_wsl_git_bounded_allow_failure,
-    WslCommandOutput, WslProjectPath,
+    parse_wsl_unc_path, run_wsl_command_allow_failure, run_wsl_git_allow_failure,
+    run_wsl_git_bounded_allow_failure, WslCommandOutput, WslProjectPath,
 };
 use crate::workspace;
 use crate::workspace::metadata::{direct_checkpoint_id, WorkspaceRecoverMissingMetadataRequestDto};
@@ -104,6 +104,20 @@ pub struct GitBranch {
     pub name: String,
     pub is_head: bool,
     pub commit: String,
+}
+
+pub(crate) struct GitBranchesToolPage {
+    pub local: Vec<GitBranch>,
+    pub remote: Vec<GitBranch>,
+    pub current: Option<String>,
+    pub has_more: bool,
+}
+
+pub(crate) struct GitTreeToolPage {
+    pub branch: String,
+    pub structure: Vec<GitNode>,
+    pub modified_files_count: u32,
+    pub has_more: bool,
 }
 
 #[derive(Serialize)]
@@ -589,17 +603,6 @@ fn wsl_status_label(code: char) -> String {
     .to_string()
 }
 
-fn parse_wsl_status_path(raw: &str) -> (Option<String>, String) {
-    if let Some((old_path, new_path)) = raw.split_once(" -> ") {
-        (
-            Some(old_path.trim().to_string()),
-            new_path.trim().to_string(),
-        )
-    } else {
-        (None, raw.trim().to_string())
-    }
-}
-
 fn parse_wsl_branch_line(line: &str) -> String {
     let value = line.strip_prefix("## ").unwrap_or(line).trim();
     if let Some(branch) = value.strip_prefix("No commits yet on ") {
@@ -616,6 +619,86 @@ fn parse_wsl_branch_line(line: &str) -> String {
         .next()
         .unwrap_or("DETACHED")
         .to_string()
+}
+
+struct ParsedWslPorcelainStatus {
+    branch: String,
+    staged_files: Vec<GitFileStatus>,
+    unstaged_files: Vec<GitFileStatus>,
+    untracked_files: Vec<GitFileStatus>,
+    conflicted_files: Vec<String>,
+}
+
+fn parse_wsl_porcelain_v1_z(stdout: &[u8]) -> ParsedWslPorcelainStatus {
+    let records = stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut parsed = ParsedWslPorcelainStatus {
+        branch: "DETACHED".to_string(),
+        staged_files: Vec::new(),
+        unstaged_files: Vec::new(),
+        untracked_files: Vec::new(),
+        conflicted_files: Vec::new(),
+    };
+    let mut index = 0usize;
+    while index < records.len() {
+        let record = records[index];
+        index += 1;
+        if record.is_empty() {
+            continue;
+        }
+        if record.starts_with(b"## ") {
+            parsed.branch = parse_wsl_branch_line(&String::from_utf8_lossy(record));
+            continue;
+        }
+        if record.len() < 3 {
+            continue;
+        }
+
+        let index_status = record[0] as char;
+        let worktree_status = record[1] as char;
+        let path = String::from_utf8_lossy(&record[3..]).into_owned();
+        if path.is_empty() {
+            continue;
+        }
+        let is_rename_or_copy =
+            matches!(index_status, 'R' | 'C') || matches!(worktree_status, 'R' | 'C');
+        let old_path = if is_rename_or_copy && index < records.len() {
+            let original = String::from_utf8_lossy(records[index]).into_owned();
+            index += 1;
+            Some(original)
+        } else {
+            None
+        };
+        let is_conflict = index_status == 'U'
+            || worktree_status == 'U'
+            || matches!((index_status, worktree_status), ('A', 'A') | ('D', 'D'));
+        if is_conflict {
+            parsed.conflicted_files.push(path);
+            continue;
+        }
+        if index_status == '?' && worktree_status == '?' {
+            parsed.untracked_files.push(GitFileStatus {
+                path,
+                status: "untracked".to_string(),
+                old_path: None,
+            });
+            continue;
+        }
+        if index_status != ' ' {
+            parsed.staged_files.push(GitFileStatus {
+                path: path.clone(),
+                status: wsl_status_label(index_status),
+                old_path: old_path.clone(),
+            });
+        }
+        if worktree_status != ' ' {
+            parsed.unstaged_files.push(GitFileStatus {
+                path,
+                status: wsl_status_label(worktree_status),
+                old_path,
+            });
+        }
+    }
+    parsed
 }
 
 fn parse_wsl_commit_line(line: &str) -> Option<GitCommitDto> {
@@ -702,64 +785,19 @@ pub(crate) async fn build_wsl_git_status(repo_path: &WslProjectPath) -> Result<G
         &[
             "status".to_string(),
             "--porcelain=v1".to_string(),
+            "-z".to_string(),
             "--branch".to_string(),
         ],
         WSL_GIT_TIMEOUT,
         "git status WSL failed",
     )
     .await?;
-    let mut branch = "DETACHED".to_string();
-    let mut staged_files = Vec::new();
-    let mut unstaged_files = Vec::new();
-    let mut untracked_files = Vec::new();
-    let mut conflicted_files = Vec::new();
-
-    for line in status_output.stdout_text().lines() {
-        if line.starts_with("## ") {
-            branch = parse_wsl_branch_line(line);
-            continue;
-        }
-        if line.len() < 3 {
-            continue;
-        }
-        let mut chars = line.chars();
-        let index_status = chars.next().unwrap_or(' ');
-        let worktree_status = chars.next().unwrap_or(' ');
-        let raw_path = line.get(3..).unwrap_or("").trim();
-        let (old_path, path) = parse_wsl_status_path(raw_path);
-        if path.is_empty() {
-            continue;
-        }
-        let is_conflict = index_status == 'U'
-            || worktree_status == 'U'
-            || matches!((index_status, worktree_status), ('A', 'A') | ('D', 'D'));
-        if is_conflict {
-            conflicted_files.push(path);
-            continue;
-        }
-        if index_status == '?' && worktree_status == '?' {
-            untracked_files.push(GitFileStatus {
-                path,
-                status: "untracked".to_string(),
-                old_path: None,
-            });
-            continue;
-        }
-        if index_status != ' ' {
-            staged_files.push(GitFileStatus {
-                path: path.clone(),
-                status: wsl_status_label(index_status),
-                old_path: old_path.clone(),
-            });
-        }
-        if worktree_status != ' ' {
-            unstaged_files.push(GitFileStatus {
-                path,
-                status: wsl_status_label(worktree_status),
-                old_path: None,
-            });
-        }
-    }
+    let parsed_status = parse_wsl_porcelain_v1_z(&status_output.stdout);
+    let branch = parsed_status.branch;
+    let staged_files = parsed_status.staged_files;
+    let unstaged_files = parsed_status.unstaged_files;
+    let untracked_files = parsed_status.untracked_files;
+    let conflicted_files = parsed_status.conflicted_files;
 
     let head_commit = wsl_head_commit(repo_path).await?;
     let has_origin = run_wsl_git_allow_failure(
@@ -1025,6 +1063,82 @@ pub(crate) async fn build_wsl_git_branches(repo_path: &WslProjectPath) -> Result
     })
 }
 
+pub(crate) async fn build_wsl_git_branches_tool_page(
+    repo_path: &WslProjectPath,
+    offset: usize,
+    limit: usize,
+) -> Result<GitBranchesToolPage> {
+    let current_output = run_wsl_git_allow_failure(
+        repo_path,
+        &["branch".to_string(), "--show-current".to_string()],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    let current = current_output
+        .status
+        .success()
+        .then(|| current_output.stdout_text())
+        .filter(|value| !value.is_empty());
+    let script = concat!(
+        "{ git -C \"$1\" for-each-ref --sort=refname ",
+        "--format='local%09%(refname:short)%09%(objectname:short)' refs/heads; ",
+        "git -C \"$1\" for-each-ref --sort=refname ",
+        "--format='remote%09%(refname:short)%09%(objectname:short)' refs/remotes; } ",
+        "| tail -n +\"$2\" | head -n \"$3\"",
+    );
+    let output = run_wsl_command_allow_failure(
+        repo_path,
+        "sh",
+        &[
+            "-c".to_string(),
+            script.to_string(),
+            "macro-git-branches".to_string(),
+            repo_path.linux_path.clone(),
+            offset.saturating_add(1).to_string(),
+            limit.saturating_add(1).to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    if !output.status.success() {
+        return Err(wsl_git_failure(&output, "git branch list WSL failed"));
+    }
+
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+    let mut count = 0usize;
+    for line in output.stdout_text().lines() {
+        if count >= limit {
+            break;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let kind = parts.next().unwrap_or_default();
+        let name = parts.next().unwrap_or_default().to_string();
+        let commit = parts.next().unwrap_or_default().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let branch = GitBranch {
+            is_head: kind == "local" && current.as_deref() == Some(name.as_str()),
+            name,
+            commit,
+        };
+        if kind == "local" {
+            local.push(branch);
+        } else {
+            remote.push(branch);
+        }
+        count += 1;
+    }
+    let has_more = output.stdout_text().lines().count() > limit;
+    Ok(GitBranchesToolPage {
+        local,
+        remote,
+        current,
+        has_more,
+    })
+}
+
 pub(crate) async fn wsl_git_add(repo_path: &WslProjectPath, paths: &[String]) -> Result<()> {
     let mut args = vec!["add".to_string(), "--".to_string()];
     if paths.is_empty() {
@@ -1238,11 +1352,8 @@ pub(crate) async fn wsl_git_diff(
         Some(head) => Some(wsl_resolve_commit_oid(repo_path, head, "diff head").await?),
         None => None,
     };
-    match (resolved_base, resolved_head) {
-        (Some(base), Some(head)) => args.push(format!("{}..{}", base, head)),
-        (Some(base), None) => args.push(base),
-        (None, Some(head)) => args.push(head),
-        (None, None) => {}
+    if let Some(range) = wsl_diff_range(resolved_base.as_deref(), resolved_head.as_deref()) {
+        args.push(range);
     }
     if let Some(paths) = options.paths {
         if !paths.is_empty() {
@@ -1276,6 +1387,15 @@ pub(crate) async fn wsl_git_diff(
         });
     }
     Ok(output.stdout.text("GIT DIFF"))
+}
+
+fn wsl_diff_range(base: Option<&str>, head: Option<&str>) -> Option<String> {
+    match (base, head) {
+        (Some(base), Some(head)) => Some(format!("{}..{}", base, head)),
+        (Some(base), None) => Some(base.to_string()),
+        (None, Some(head)) => Some(format!("HEAD..{}", head)),
+        (None, None) => None,
+    }
 }
 
 pub(crate) async fn build_wsl_git_tree(
@@ -1332,6 +1452,86 @@ pub(crate) async fn build_wsl_git_tree(
         branch: branch_name,
         structure,
         modified_files_count: status_count,
+    })
+}
+
+pub(crate) async fn build_wsl_git_tree_tool_page(
+    repo_path: &WslProjectPath,
+    branch: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> Result<GitTreeToolPage> {
+    let branch_name = if let Some(branch) = branch {
+        validate_refspec(branch)?;
+        branch.to_string()
+    } else {
+        build_wsl_git_status(repo_path).await?.branch
+    };
+    let tree_ref = if branch_name == "DETACHED" {
+        wsl_resolve_commit_oid(repo_path, "HEAD", "tree reference").await?
+    } else {
+        wsl_resolve_commit_oid(repo_path, &branch_name, "tree reference").await?
+    };
+    let script = concat!(
+        "git -C \"$1\" ls-tree -r -z ",
+        "--format='%(objectname)%x09%(objecttype)%x09%(path)' \"$2\" ",
+        "| tail -z -n +\"$3\" | head -z -n \"$4\"",
+    );
+    let output = run_wsl_command_allow_failure(
+        repo_path,
+        "sh",
+        &[
+            "-c".to_string(),
+            script.to_string(),
+            "macro-git-tree".to_string(),
+            repo_path.linux_path.clone(),
+            tree_ref,
+            offset.saturating_add(1).to_string(),
+            limit.saturating_add(1).to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    if !output.status.success() {
+        return Err(wsl_git_failure(&output, "git tree WSL failed"));
+    }
+    let records = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect::<Vec<_>>();
+    let has_more = records.len() > limit;
+    let mut structure = Vec::with_capacity(limit.min(records.len()));
+    for record in records.into_iter().take(limit) {
+        let mut fields = record.splitn(3, |byte| *byte == b'\t');
+        let hash = String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
+        let kind = String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
+        let path = String::from_utf8_lossy(fields.next().unwrap_or_default()).into_owned();
+        if path.is_empty() {
+            continue;
+        }
+        let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
+        structure.push(GitNode {
+            name,
+            path,
+            node_type: if kind == "tree" { "directory" } else { "file" }.to_string(),
+            status: None,
+            children: None,
+            hash: Some(hash),
+        });
+    }
+    let status = build_wsl_git_status(repo_path).await?;
+    let modified_files_count = status
+        .staged_files
+        .len()
+        .saturating_add(status.unstaged_files.len())
+        .saturating_add(status.untracked_files.len())
+        .saturating_add(status.conflicted_files.len()) as u32;
+    Ok(GitTreeToolPage {
+        branch: branch_name,
+        structure,
+        modified_files_count,
+        has_more,
     })
 }
 
@@ -3083,6 +3283,60 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
     })
 }
 
+pub(crate) fn build_git_branches_tool_page(
+    repo: &Repository,
+    offset: usize,
+    limit: usize,
+) -> Result<GitBranchesToolPage> {
+    let current = get_branch_name(repo)?;
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+    let mut position = 0usize;
+    let mut retained = 0usize;
+    let mut has_more = false;
+
+    for (branch_type, destination) in [
+        (BranchType::Local, &mut local),
+        (BranchType::Remote, &mut remote),
+    ] {
+        for branch in repo.branches(Some(branch_type))? {
+            let (branch, _) = branch?;
+            if position < offset {
+                position += 1;
+                continue;
+            }
+            if retained >= limit {
+                has_more = true;
+                break;
+            }
+            let name = branch.name()?.unwrap_or("").to_string();
+            let commit = branch
+                .get()
+                .peel_to_commit()
+                .map(|commit| short_hash(commit.id()))
+                .unwrap_or_default();
+            destination.push(GitBranch {
+                is_head: branch_type == BranchType::Local
+                    && current.as_deref() == Some(name.as_str()),
+                name,
+                commit,
+            });
+            position += 1;
+            retained += 1;
+        }
+        if has_more {
+            break;
+        }
+    }
+
+    Ok(GitBranchesToolPage {
+        local,
+        remote,
+        current,
+        has_more,
+    })
+}
+
 pub(crate) fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Result<()> {
     ensure_clean(repo)?;
 
@@ -4030,9 +4284,7 @@ pub(crate) fn diff_repo(
     };
 
     let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_unmodified(false);
+    opts.include_unmodified(false);
 
     if let Some(lines) = options.context_lines {
         opts.context_lines(lines);
@@ -4399,6 +4651,68 @@ pub fn build_git_tree(repo: &Repository, branch: Option<&str>) -> Result<Predict
         branch: branch_name,
         structure,
         modified_files_count: status_map.len() as u32,
+    })
+}
+
+pub(crate) fn build_git_tree_tool_page(
+    repo: &Repository,
+    branch: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> Result<GitTreeToolPage> {
+    let branch_name = if let Some(branch) = branch {
+        validate_refspec(branch)?;
+        branch.to_string()
+    } else {
+        get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string())
+    };
+    let commit = resolve_commit(repo, &branch_name).or_else(|_| {
+        get_head_commit(repo)?.ok_or_else(|| BackendError::GitInvalidCommit {
+            message: "No commits found".to_string(),
+        })
+    })?;
+    let tree = commit.tree()?;
+    let mut status_map = build_status_map(repo)?;
+    for (path, status) in build_submodule_status_map(repo)? {
+        status_map.insert(path, status);
+    }
+    let mut position = 0usize;
+    let mut structure = Vec::with_capacity(limit.saturating_add(1));
+    tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+        let Ok(name) = entry.name() else {
+            return TreeWalkResult::Ok;
+        };
+        let node_type = match entry.kind() {
+            Some(git2::ObjectType::Blob) => "file",
+            Some(git2::ObjectType::Commit) => "directory",
+            _ => return TreeWalkResult::Ok,
+        };
+        if position < offset {
+            position += 1;
+            return TreeWalkResult::Ok;
+        }
+        if structure.len() > limit {
+            return TreeWalkResult::Abort;
+        }
+        let path = format!("{}{}", root, name);
+        structure.push(GitNode {
+            name: name.to_string(),
+            status: status_map.get(&path).cloned(),
+            path,
+            node_type: node_type.to_string(),
+            children: None,
+            hash: Some(entry.id().to_string()),
+        });
+        position += 1;
+        TreeWalkResult::Ok
+    })?;
+    let has_more = structure.len() > limit;
+    structure.truncate(limit);
+    Ok(GitTreeToolPage {
+        branch: branch_name,
+        structure,
+        modified_files_count: status_map.len() as u32,
+        has_more,
     })
 }
 
@@ -6986,6 +7300,40 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    #[test]
+    fn test_wsl_diff_range_matches_native_four_way_contract() {
+        assert_eq!(wsl_diff_range(None, None), None);
+        assert_eq!(wsl_diff_range(Some("base"), None).as_deref(), Some("base"));
+        assert_eq!(
+            wsl_diff_range(None, Some("head")).as_deref(),
+            Some("HEAD..head")
+        );
+        assert_eq!(
+            wsl_diff_range(Some("base"), Some("head")).as_deref(),
+            Some("base..head")
+        );
+    }
+
+    #[test]
+    fn test_parse_wsl_porcelain_v1_z_preserves_special_paths_and_renames() {
+        let payload = concat!(
+            "## feature/unicode...origin/feature/unicode\0",
+            "?? spaces and → unicode.txt\0",
+            " M tab\tand\nnewline.txt\0",
+            "R  new -> literal.txt\0old\tname.txt\0",
+        );
+        let parsed = parse_wsl_porcelain_v1_z(payload.as_bytes());
+
+        assert_eq!(parsed.branch, "feature/unicode");
+        assert_eq!(parsed.untracked_files[0].path, "spaces and → unicode.txt");
+        assert_eq!(parsed.unstaged_files[0].path, "tab\tand\nnewline.txt");
+        assert_eq!(parsed.staged_files[0].path, "new -> literal.txt");
+        assert_eq!(
+            parsed.staged_files[0].old_path.as_deref(),
+            Some("old\tname.txt")
+        );
+    }
+
     fn init_repo() -> (TempDir, Repository) {
         let temp = TempDir::new().expect("temp dir");
         let repo = Repository::init(temp.path()).expect("init repo");
@@ -7472,6 +7820,21 @@ mod tests {
     }
 
     #[test]
+    fn test_git_branch_tool_page_is_bounded_and_resumable() {
+        let (_temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/a", &head, false).unwrap();
+        repo.branch("feature/b", &head, false).unwrap();
+
+        let first = build_git_branches_tool_page(&repo, 0, 1).unwrap();
+        assert_eq!(first.local.len() + first.remote.len(), 1);
+        assert!(first.has_more);
+        let second = build_git_branches_tool_page(&repo, 1, 1).unwrap();
+        assert_eq!(second.local.len() + second.remote.len(), 1);
+        assert!(second.has_more);
+    }
+
+    #[test]
     fn test_git_checkout_branch() {
         let (_temp, repo) = init_repo();
         checkout_repo(&repo, "feature", true).unwrap();
@@ -7789,6 +8152,16 @@ mod tests {
         let (_temp, repo) = init_repo();
         let tree = build_git_tree(&repo, None).unwrap();
         assert!(tree.structure.iter().any(|n| n.path == "README.md"));
+    }
+
+    #[test]
+    fn test_git_tree_tool_page_returns_flat_bounded_nodes() {
+        let (_temp, repo) = init_repo();
+        let page = build_git_tree_tool_page(&repo, None, 0, 1).unwrap();
+        assert_eq!(page.structure.len(), 1);
+        assert_eq!(page.structure[0].path, "README.md");
+        assert!(page.structure[0].children.is_none());
+        assert!(!page.has_more);
     }
 
     #[test]

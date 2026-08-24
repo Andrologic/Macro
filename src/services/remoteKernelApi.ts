@@ -35,6 +35,24 @@ interface RemoteToolValidation {
 const remoteKernelRequest = async <T>(path: string, options: RequestInit = {}): Promise<T> =>
   remoteRequest<T>(path, options);
 
+let remoteToolExecutionCounter = 0;
+
+const createRemoteToolExecutionId = (): string => {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  remoteToolExecutionCounter += 1;
+  return `remote-tool-${Date.now()}-${remoteToolExecutionCounter}`;
+};
+
+export const cancelRemoteWorkspaceTool = async (executionId: string): Promise<boolean> => {
+  const result = await remoteKernelRequest<{ cancelled?: boolean }>('/tools/cancel', {
+    method: 'POST',
+    body: JSON.stringify({ execution_id: executionId }),
+  });
+  return Boolean(result?.cancelled);
+};
+
 export const canUseRemoteKernel = (): boolean => {
   try {
     return isRemoteServiceRuntime() && resolveRemoteConfig() !== null;
@@ -130,26 +148,50 @@ export const executeRemoteWorkspaceTool = async (params: {
       );
     }
   }
-  const payload = await remoteKernelRequest<{ result: string }>('/tools/execute', {
-    method: 'POST',
-    signal: params.signal,
-    body: JSON.stringify({
-      mode: params.mode,
-      tool_id: params.toolId,
-      args: params.args,
-      workspace_path: params.workspacePath ?? null,
-      workspace_scope: params.workspaceScope ?? null,
-      project_mounts: (params.projectMounts ?? []).map((mount) => ({
-        project_id: mount.projectId,
-        mount_name: mount.mountName,
-        workspace_path: mount.workspacePath ?? null,
-        display_name: mount.displayName,
-        is_read_only: Boolean(mount.isReadOnly),
-      })),
-      virtual_root_enabled: params.virtualRootEnabled ?? null,
-      focused_project_id: params.focusedProjectId ?? null,
-    }),
-  });
+  const executionId = createRemoteToolExecutionId();
+  const signal = params.signal;
+  const sendCancellation = (): void => {
+    void cancelRemoteWorkspaceTool(executionId).catch(() => false);
+  };
+  const abortListener =
+    signal && !signal.aborted
+      ? (): void => {
+          sendCancellation();
+        }
+      : undefined;
+  if (signal?.aborted) {
+    sendCancellation();
+  } else if (abortListener && signal) {
+    signal.addEventListener('abort', abortListener, { once: true });
+  }
 
-  return payload.result;
+  try {
+    const payload = await remoteKernelRequest<{ result: string }>('/tools/execute', {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        mode: params.mode,
+        tool_id: params.toolId,
+        execution_id: executionId,
+        args: params.args,
+        workspace_path: params.workspacePath ?? null,
+        workspace_scope: params.workspaceScope ?? null,
+        project_mounts: (params.projectMounts ?? []).map((mount) => ({
+          project_id: mount.projectId,
+          mount_name: mount.mountName,
+          workspace_path: mount.workspacePath ?? null,
+          display_name: mount.displayName,
+          is_read_only: Boolean(mount.isReadOnly),
+        })),
+        virtual_root_enabled: params.virtualRootEnabled ?? null,
+        focused_project_id: params.focusedProjectId ?? null,
+      }),
+    });
+
+    return payload.result;
+  } finally {
+    if (abortListener && signal) {
+      signal.removeEventListener('abort', abortListener);
+    }
+  }
 };

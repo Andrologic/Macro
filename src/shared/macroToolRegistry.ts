@@ -877,6 +877,14 @@ export const MACRO_TOOL_REGISTRY = [
     properties: {
       repo_path: { type: "string" },
       project_id: { type: "string" },
+      limit: {
+        type: "number",
+        description: `Maximum branches per page. Defaults to ${TOOL_OUTPUT_LIMITS.git.branchDefaultResults} and is capped at ${TOOL_OUTPUT_LIMITS.git.branchMaxResults}.`,
+      },
+      cursor: {
+        type: "string",
+        description: "Opaque next_cursor returned by the previous branch page.",
+      },
     },
     required: [],
   }),
@@ -916,6 +924,14 @@ export const MACRO_TOOL_REGISTRY = [
         repo_path: { type: "string" },
         project_id: { type: "string" },
         branch: { type: "string" },
+        limit: {
+          type: "number",
+          description: `Maximum tree nodes per page. Defaults to ${TOOL_OUTPUT_LIMITS.git.treeDefaultResults} and is capped at ${TOOL_OUTPUT_LIMITS.git.treeMaxResults}.`,
+        },
+        cursor: {
+          type: "string",
+          description: "Opaque next_cursor returned by the previous tree page.",
+        },
       },
       required: [],
     },

@@ -285,6 +285,7 @@ import {
   createAgentCodeCheckpoint,
   hydrateAgentCodeReplayPreviewCurrentState,
   getAgentCodeReplayRecoveryKey,
+  loadAgentCodeCheckpointHistory,
   loadAgentCodeCheckpoints,
   pruneAgentCodeCheckpointsToMessageIds,
   recoverAgentCodeReplayPreview,
@@ -14798,14 +14799,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
         state,
         target.conversation_id,
       );
-      const checkpoints = await getLoadedAgentCodeCheckpoints(
+      const checkpointHistory = await loadAgentCodeCheckpointHistory(
         target.conversation_id,
       );
+      const checkpoints =
+        get().agentCodeCheckpointsByConversationId[target.conversation_id] ??
+        checkpointHistory.checkpoints;
       const preview = buildAgentCodeReplayPreview(
         target.conversation_id,
         messageId,
         conversationMessages,
         checkpoints,
+        checkpointHistory,
       );
       return hydrateAgentCodeReplayPreviewCurrentState(preview);
     },

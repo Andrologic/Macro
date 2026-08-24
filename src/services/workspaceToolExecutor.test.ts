@@ -630,6 +630,30 @@ describe("workspaceToolExecutor helpers", () => {
     );
   });
 
+  it("rejects an absolute filesystem root instead of treating it as the virtual root", async () => {
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool("list", { path: "/" }, "Implement", {
+      focusedProjectId: "web",
+      virtualRootEnabled: true,
+      projectMounts: [
+        {
+          projectId: "web",
+          mountName: "web",
+          displayName: "Web App",
+          workspacePath: "/repos/web",
+        },
+      ],
+    });
+
+    expect(result).toContain("absolute filesystem roots are outside");
+  });
+
   it("fans out glob results across projects and prefixes virtual paths", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
@@ -1007,6 +1031,47 @@ describe("workspaceToolExecutor helpers", () => {
     expect(cancelledIds).toEqual([executionId as string]);
   });
 
+  it("refuses regular expressions in the non-cancellable JavaScript grep fallback", async () => {
+    let fileReads = 0;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        fsListDir: async () => [
+          {
+            path: "C:/dev/macro-web/src/value.ts",
+            relative_path: "src/value.ts",
+            name: "value.ts",
+            kind: "file",
+            is_hidden: false,
+            is_readonly: false,
+          },
+        ],
+        fsReadFileWithOptions: async () => {
+          fileReads += 1;
+          return {
+            content: "aaaa!\n",
+            language: "typescript",
+            is_binary: false,
+            size: 6,
+            encoding: "utf-8",
+            revision: "revision-a",
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "grep",
+      { query: "(a+)+$", is_regexp: true },
+      "Implement",
+      { workspacePath: "C:/dev/macro-web" },
+    );
+
+    expect(result).toContain("JavaScript fallback refuses regex patterns");
+    expect(fileReads).toBe(0);
+  });
+
   it("passes an explicit project selector to the backend after stripping routing arguments", async () => {
     let backendParams: Record<string, unknown> | null = null;
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
@@ -1192,6 +1257,9 @@ describe("workspaceToolExecutor helpers", () => {
               is_binary: false,
               size: appContent.length,
               encoding: "utf-8",
+              revision: appContent.includes("after")
+                ? "applied-app-revision"
+                : "before-app-revision",
             };
           }
           if (path === "C:/dev/macro-web/src/later.ts") {
@@ -1294,6 +1362,14 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
+          if (toolId === "apply_patch") {
+            throw new Error(
+              'Stale content for "web/src/b.ts": expected revision revision-b-stale but found revision-b-current.',
+            );
+          }
+          return "UNSUPPORTED_WORKSPACE_TOOL";
+        },
         fsExists: async (path: string) => Boolean(files[path]),
         fsReadFileWithOptions: async ({ path }: { path: string }) => ({
           content: files[path].content,
@@ -1417,6 +1493,25 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
+          if (toolId !== "apply_patch") return "UNSUPPORTED_WORKSPACE_TOOL";
+          appContent = "export const App = 'after';\n";
+          noteExists = true;
+          noteContent = "hello\n";
+          return JSON.stringify({
+            ok: true,
+            files: [
+              {
+                path: "web/src/App.tsx",
+                validation: { revision: "applied-app-revision" },
+              },
+              {
+                path: "web/notes.md",
+                validation: { revision: "applied-note-revision" },
+              },
+            ],
+          });
+        },
         fsExists: async (path: string) =>
           path === "C:/dev/macro-web/src/App.tsx" ||
           (path === "C:/dev/macro-web/notes.md" && noteExists),
@@ -1428,6 +1523,9 @@ describe("workspaceToolExecutor helpers", () => {
               is_binary: false,
               size: appContent.length,
               encoding: "utf-8",
+              revision: appContent.includes("after")
+                ? "applied-app-revision"
+                : "before-app-revision",
             };
           }
           if (path === "C:/dev/macro-web/notes.md" && noteExists) {
@@ -1437,6 +1535,7 @@ describe("workspaceToolExecutor helpers", () => {
               is_binary: false,
               size: noteContent.length,
               encoding: "utf-8",
+              revision: "applied-note-revision",
             };
           }
           throw new Error(`unexpected read: ${path}`);
@@ -1515,8 +1614,6 @@ describe("workspaceToolExecutor helpers", () => {
     expect(noteExists).toBe(false);
     expect(writes.map((entry) => entry.path)).toEqual([
       "C:/dev/macro-web/src/App.tsx",
-      "C:/dev/macro-web/notes.md",
-      "C:/dev/macro-web/src/App.tsx",
     ]);
     expect(deletes).toEqual(["C:/dev/macro-web/notes.md"]);
   });
@@ -1533,6 +1630,28 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
+          if (toolId !== "apply_patch") return "UNSUPPORTED_WORKSPACE_TOOL";
+          contents.set("C:/dev/macro-web/src/a.ts", "export const a = 'after';\n");
+          contents.set("C:/dev/macro-web/src/b.ts", "export const b = 'after';\n");
+          return JSON.stringify({
+            ok: true,
+            files: [
+              {
+                path: "web/src/a.ts",
+                validation: {
+                  revision: "applied:C:/dev/macro-web/src/a.ts",
+                },
+              },
+              {
+                path: "web/src/b.ts",
+                validation: {
+                  revision: "applied:C:/dev/macro-web/src/b.ts",
+                },
+              },
+            ],
+          });
+        },
         fsExists: async (path: string) => contents.has(path),
         fsReadFileWithOptions: async ({ path }: { path: string }) => {
           const content = contents.get(path);
@@ -1633,6 +1752,19 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
+          if (toolId !== "apply_patch") return "UNSUPPORTED_WORKSPACE_TOOL";
+          content = "export const value = 'after';\n";
+          return JSON.stringify({
+            ok: true,
+            files: [
+              {
+                path: "web/src/value.ts",
+                validation: { revision: "applied-revision" },
+              },
+            ],
+          });
+        },
         fsExists: async () => true,
         fsReadFileWithOptions: async () => {
           if (content.includes("after")) {
@@ -1696,7 +1828,7 @@ describe("workspaceToolExecutor helpers", () => {
     expect(result).toContain("Validation failed after apply_patch");
     expect(result).toContain("mutations were reverted");
     expect(content).toBe(before);
-    expect(writes).toEqual(["export const value = 'after';\n", before]);
+    expect(writes).toEqual([before]);
     expect(checkpointCalls).toBe(0);
   });
 
@@ -2460,6 +2592,36 @@ describe("workspaceToolExecutor helpers", () => {
       tauriModule: {
         isTauriAvailable: () => true,
         validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async ({ toolId }: { toolId: string }) => {
+          if (toolId !== "apply_patch") return "UNSUPPORTED_WORKSPACE_TOOL";
+          files.set("C:/dev/macro-web/src/a.ts", {
+            content: "export const a = 'after';\n",
+            revision: "backend:a",
+          });
+          files.set("C:/dev/macro-web/src/b.ts", {
+            content: "export const b = 'after';\n",
+            revision: "backend:b",
+          });
+          queueMicrotask(() => {
+            files.set("C:/dev/macro-web/src/b.ts", {
+              content: "export const b = 'EXTERNAL';\n",
+              revision: "external:b",
+            });
+          });
+          return JSON.stringify({
+            ok: true,
+            files: [
+              {
+                path: "web/src/a.ts",
+                validation: { revision: "backend:a" },
+              },
+              {
+                path: "web/src/b.ts",
+                validation: { revision: "backend:b" },
+              },
+            ],
+          });
+        },
         fsExists: async (path: string) => files.has(path),
         fsReadFileWithOptions: async ({ path }: { path: string }) => {
           const file = files.get(path);
@@ -2560,12 +2722,10 @@ describe("workspaceToolExecutor helpers", () => {
     );
     expect(files.get("C:/dev/macro-web/src/b.ts")?.revision).toBe("external:b");
     expect(writes.map((entry) => entry.path)).toEqual([
-      "C:/dev/macro-web/src/a.ts",
-      "C:/dev/macro-web/src/b.ts",
       "C:/dev/macro-web/src/b.ts",
       "C:/dev/macro-web/src/a.ts",
     ]);
-    expect(writes[3].expectedRevision).toMatch(/^applied:/);
+    expect(writes[1].expectedRevision).toBe("backend:a");
   });
 
   it("refuses remote mutations when recoverable checkpoints are required", async () => {
