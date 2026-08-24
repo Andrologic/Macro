@@ -759,6 +759,97 @@ describe('ComposerEditor context references', () => {
 
     expect(document.body.querySelector('[data-slash-context-menu="true"]')).not.toBeNull();
     expect(document.body.textContent).toContain('test-skill');
+    expect(
+      document.body.querySelector('[data-slash-context-option="command:/goal"]'),
+    ).toBeNull();
+  });
+
+  it('keeps the Goal command in editor state without an inline control', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('/goal Finish the authentication migration');
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
+    expect(editorRef.current?.getTextContent()).toBe(
+      '/goal Finish the authentication migration',
+    );
+  });
+
+  it('leaves lookalike and mid-sentence Goal commands as plain text', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('/goals list');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      editorRef.current?.setText('Explain /goal behavior');
+      await Promise.resolve();
+    });
+    expect(editorRef.current?.getTextContent()).toBe('Explain /goal behavior');
+  });
+
+  it('inserts the highlighted Goal command from the slash menu', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/goa')).not.toBeNull();
+    const goalOption = document.body.querySelector(
+      '[data-slash-context-option="command:/goal"]',
+    );
+    expect(goalOption).not.toBeNull();
+    expect(goalOption?.textContent).toContain('Goal');
+    expect(goalOption?.textContent).not.toContain('/goal');
+    expect(goalOption?.className).toContain('border-primary/35');
+    expect(goalOption?.textContent).not.toContain('Goal mode');
+    expect(goalOption?.querySelectorAll('svg')).toHaveLength(1);
+    expect(goalOption?.querySelector('.rounded-full')).toBeNull();
+
+    await act(async () => {
+      goalOption?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-goal-command-marker="true"]')).toBeNull();
+    expect(editorRef.current?.getTextContent()).toBe('/goal ');
   });
 
   it('does not open the slash context menu inside paths or urls', async () => {
@@ -964,12 +1055,12 @@ describe('ComposerEditor context references', () => {
   });
 
   it('navigates slash context with arrows and selects with Enter', async () => {
-    const alphaSkill = buildSkill('global:agents:alpha:aaa', { name: 'alpha' });
-    const betaSkill = buildSkill('global:agents:beta:bbb', { name: 'beta' });
-    skills = [alphaSkill, betaSkill];
+    const betaSkill = buildSkill('global:agents:beta:aaa', { name: 'beta' });
+    const betterSkill = buildSkill('global:agents:better:bbb', { name: 'better' });
+    skills = [betaSkill, betterSkill];
     settingsBySkillId = {
-      [alphaSkill.id]: { enabled: true, scriptsEnabled: false },
       [betaSkill.id]: { enabled: true, scriptsEnabled: false },
+      [betterSkill.id]: { enabled: true, scriptsEnabled: false },
     };
     const onPromptHistory = mock(() => undefined);
     const editorRef = React.createRef<ComposerEditorHandle>();
@@ -996,7 +1087,7 @@ describe('ComposerEditor context references', () => {
     });
 
     expect(
-      document.body.querySelector('[data-slash-context-option="skill:beta"]')?.getAttribute('aria-selected')
+      document.body.querySelector('[data-slash-context-option="skill:better"]')?.getAttribute('aria-selected')
     ).toBe('true');
     expect(onPromptHistory).not.toHaveBeenCalled();
 
@@ -1005,7 +1096,7 @@ describe('ComposerEditor context references', () => {
       await Promise.resolve();
     });
 
-    expect(editorRef.current?.getTextContent().trim()).toBe('[skill: beta]');
+    expect(editorRef.current?.getTextContent().trim()).toBe('[skill: better]');
   });
 
   it('selects the active slash context option with Tab', async () => {

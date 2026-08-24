@@ -2200,7 +2200,9 @@
   },
   "goal": {
     "bannerLabel": "Konversationsziel",
-    "modeLabel": "Goal-Modus",
+    "shortLabel": "Goal",
+    "edit": "Ziel bearbeiten",
+    "editHint": "Aktuelles Ziel im Eingabefeld bearbeiten",
     "status": {
       "executorRunning": "Agent arbeitet",
       "executorRunningDescription": "Der Agent arbeitet auf das Ziel hin.",
@@ -2237,7 +2239,8 @@
     "commandMissingObjectiveDescription": "Schreibe /goal gefolgt vom gewünschten Ergebnis.",
     "executionFailed": "Der Agentenlauf ist fehlgeschlagen.",
     "commandDescription": "Weiterarbeiten, bis eine unabhängige Überprüfung das Ziel akzeptiert",
-    "commandHint": "Goal-Modus starten und das Ziel beschreiben"
+    "commandHint": "Goal-Modus starten und das Ziel beschreiben",
+    "removeCommand": "Goal-Befehl entfernen"
   },
   "composer": {
     "searchingFiles": "Dateien werden gesucht...",

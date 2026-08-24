@@ -30,6 +30,8 @@ import type { ContextRefKind, ContextReference } from '../../../types';
 import { cn } from '../../../utils/cn';
 import { MentionNode, $createMentionNode, type MentionSurface } from './MentionNode';
 import { MentionPlugin } from './MentionPlugin';
+import { GoalCommandNode } from './GoalCommandNode';
+import { GoalCommandPlugin } from './GoalCommandPlugin';
 import { LexicalComposer } from './SafeLexicalComposer';
 import { SlashContextMenuPlugin } from './SlashContextMenuPlugin';
 import {
@@ -488,6 +490,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           ignoreHistoryMergeTagChange={false}
         />
         <ComposerHistoryPlugin />
+        {surface === 'composer' && <GoalCommandPlugin />}
         {syncContextRefs && <MentionPlugin />}
         {syncContextRefs && surface === 'composer' && <SlashContextMenuPlugin />}
       </>
@@ -526,7 +529,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     const initialConfig = useMemo(() => ({
       namespace: 'MacroComposer',
       theme: composerTheme,
-      nodes: [MentionNode],
+      nodes: [MentionNode, GoalCommandNode],
       editorState: initializeComposerState,
       onError: (error: Error) => {
         console.error('[ComposerEditor]', error);
