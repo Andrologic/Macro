@@ -37,15 +37,43 @@ const buildSkill = (
       },
   resources: [{ path: 'references/style.md', kind: 'reference', sizeBytes: 12 }],
   scripts: [{ path: 'scripts/check.sh', kind: 'script', sizeBytes: 20 }],
+  contentHash: `sha256:test-${id}`,
   validationErrors: [],
   isValid: true,
   ...overrides,
 });
 
 let importCounter = 0;
+let configuredPermissions: Record<string, unknown> = {};
 
 const loadSkillsStore = async (skills: SkillManifest[]) => {
   mock.restore();
+
+  const stored = JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}') as {
+    skills?: Record<string, Record<string, unknown>>;
+  };
+  configuredPermissions = Object.fromEntries(
+    Object.entries(stored.skills ?? {}).map(([id, value]) => {
+      const skill = skills.find((candidate) => candidate.id === id);
+      const scriptsEnabled = value.scriptsEnabled === true;
+      return [
+        id,
+        {
+          enabled: value.enabled === true,
+          scriptsEnabled,
+          ...(scriptsEnabled && skill?.contentHash
+            ? {
+                trust: {
+                  contentHash: skill.contentHash,
+                  grantedAt: '2026-08-20T12:00:00Z',
+                  grantedBy: 'user',
+                },
+              }
+            : {}),
+        },
+      ];
+    }),
+  );
 
   const services = {
     listSkills: mock(async (data?: { projectRoots?: unknown[] }) => ({
@@ -112,6 +140,29 @@ const loadSkillsStore = async (skills: SkillManifest[]) => {
 
   mock.module('../services', () => ({ services }));
   mock.module('./useAppStore', () => ({ useAppStore }));
+  mock.module('./useConfigStore', () => ({
+    selectEffectiveConfigDocument: (
+      snapshot: { effective?: Record<string, unknown> } | null,
+      kind: string,
+    ) => snapshot?.effective?.[kind] ?? null,
+    useConfigStore: {
+      getState: () => ({
+        snapshot: {
+          effective: {
+            skills: { permissions: configuredPermissions },
+          },
+        },
+      }),
+    },
+  }));
+  mock.module('../services/configDocuments', () => ({
+    patchUserConfigTopLevel: mock(async (_kind: string, key: string, value: unknown) => {
+      if (key === 'permissions') {
+        configuredPermissions = value as Record<string, unknown>;
+      }
+      return { status: 'applied' };
+    }),
+  }));
 
   importCounter += 1;
   const module = await import(`./useSkillsStore.ts?skills-store-test=${importCounter}`);
@@ -143,15 +194,15 @@ describe('useSkillsStore', () => {
       projectRoots: [PROJECT_ROOT],
     });
     expect(useSkillsStore.getState().getEnabledSkills()).toEqual([skill]);
-    expect(useSkillsStore.getState().getSkillSettings(skill.id)).toEqual({
+    expect(useSkillsStore.getState().getSkillSettings(skill.id)).toMatchObject({
       enabled: true,
       scriptsEnabled: true,
+      trust: { contentHash: skill.contentHash },
     });
-    expect(JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}')).toEqual({
-      version: 2,
-      skills: {
-        [skill.id]: { enabled: true, scriptsEnabled: true },
-      },
+    expect(configuredPermissions[skill.id]).toMatchObject({
+      enabled: true,
+      scriptsEnabled: true,
+      trust: { contentHash: skill.contentHash },
     });
   });
 
@@ -168,10 +219,9 @@ describe('useSkillsStore', () => {
       enabled: true,
       scriptsEnabled: false,
     });
-    expect(JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}')).toMatchObject({
-      skills: {
-        [skill.id]: { enabled: true, scriptsEnabled: false },
-      },
+    expect(configuredPermissions[skill.id]).toMatchObject({
+      enabled: true,
+      scriptsEnabled: false,
     });
   });
 
@@ -433,7 +483,7 @@ describe('useSkillsStore', () => {
     ).toEqual([skill]);
   });
 
-  it('migrates legacy settings when a single new skill id matches', async () => {
+  it('does not import legacy skill settings', async () => {
     const skill = buildSkill('global:agents:formatter:aaa111', { name: 'formatter' });
     localStorage.setItem(
       'macro_skill_settings',
@@ -449,14 +499,8 @@ describe('useSkillsStore', () => {
     await useSkillsStore.getState().loadSettings();
 
     expect(useSkillsStore.getState().getSkillSettings(skill.id)).toEqual({
-      enabled: true,
-      scriptsEnabled: true,
-    });
-    const stored = JSON.parse(localStorage.getItem('macro_skill_settings') ?? '{}');
-    expect(stored.skills['global:formatter']).toBeUndefined();
-    expect(stored.skills[skill.id]).toEqual({
-      enabled: true,
-      scriptsEnabled: true,
+      enabled: false,
+      scriptsEnabled: false,
     });
   });
 

@@ -1631,8 +1631,11 @@ mod tests {
     use super::*;
     #[cfg(target_os = "windows")]
     use std::env;
+    #[cfg(target_os = "windows")]
     use std::fs;
+    #[cfg(target_os = "windows")]
     use std::sync::Mutex;
+    #[cfg(target_os = "windows")]
     use tempfile::TempDir;
 
     #[cfg(target_os = "windows")]

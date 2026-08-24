@@ -16,20 +16,381 @@ use crate::project_path::{
     run_wsl_shell_with_stdin, wsl_unc_path, WslProjectPath,
 };
 use crate::WorkspaceRoot;
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::{LazyLock, Mutex};
+#[cfg(test)]
+use tokio::sync::Barrier;
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceRootIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+}
+
+#[cfg(unix)]
+fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
+    use std::os::unix::fs::MetadataExt;
+    WorkspaceRootIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(windows)]
+fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
+    WorkspaceRootIdentity {
+        volume: metadata.volume_serial_number(),
+        file_index: metadata.file_index(),
+    }
+}
+
+#[cfg(unix)]
+fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> WorkspaceRootIdentity {
+    use cap_std::fs::MetadataExt;
+    WorkspaceRootIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(windows)]
+fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> WorkspaceRootIdentity {
+    use cap_std::fs::MetadataExt;
+    WorkspaceRootIdentity {
+        volume: metadata.volume_serial_number(),
+        file_index: metadata.file_index(),
+    }
+}
+
+pub fn workspace_root_identity(workspace: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    let metadata = std::fs::metadata(workspace)
+        .map_err(|error| io_error_to_backend_error(error, workspace))?;
+    Ok(workspace_root_identity_from_std(&metadata))
+}
+
+tokio::task_local! {
+    static EXPECTED_WORKSPACE_ROOTS: Arc<BTreeMap<PathBuf, WorkspaceRootIdentity>>;
+}
+
+pub async fn with_expected_workspace_roots<F, T>(
+    roots: Arc<BTreeMap<PathBuf, WorkspaceRootIdentity>>,
+    operation: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
+    EXPECTED_WORKSPACE_ROOTS.scope(roots, operation).await
+}
+
+pub fn has_expected_workspace_root(workspace: &Path) -> bool {
+    let workspace = normalize_path(workspace);
+    EXPECTED_WORKSPACE_ROOTS
+        .try_with(|roots| roots.contains_key(&workspace))
+        .unwrap_or(false)
+}
+
+fn expected_workspace_root_identity(workspace: &Path) -> Option<WorkspaceRootIdentity> {
+    let workspace = normalize_path(workspace);
+    EXPECTED_WORKSPACE_ROOTS
+        .try_with(|roots| roots.get(&workspace).copied())
+        .ok()
+        .flatten()
+}
+
 // Constants
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
-const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+pub(crate) const MAX_WRITE_SIZE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 const MAX_FILE_SEARCH_RESULTS: usize = 100;
 const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
 const WSL_FS_TIMEOUT: Duration = Duration::from_secs(5);
 const WSL_FS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-const WSL_LIST_LIMIT: usize = 1_000;
+const DIRECTORY_LIST_LIMIT: usize = 20_000;
+const WSL_DEFAULT_RECURSIVE_DEPTH: u32 = 8;
+const WSL_MAX_RECURSIVE_DEPTH: u32 = 32;
+
+#[cfg(test)]
+static WRITE_BEFORE_REVALIDATION_HOOKS: LazyLock<
+    Mutex<HashMap<PathBuf, (Arc<Barrier>, Arc<Barrier>)>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+pub(crate) fn install_write_before_revalidation_hook(
+    path: PathBuf,
+    reached: Arc<Barrier>,
+    release: Arc<Barrier>,
+) {
+    WRITE_BEFORE_REVALIDATION_HOOKS
+        .lock()
+        .expect("write hook mutex")
+        .insert(path, (reached, release));
+}
+
+#[cfg(test)]
+async fn pause_before_write_revalidation(path: &Path) {
+    let hook = WRITE_BEFORE_REVALIDATION_HOOKS
+        .lock()
+        .expect("write hook mutex")
+        .remove(path);
+    if let Some((reached, release)) = hook {
+        reached.wait().await;
+        release.wait().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_before_write_revalidation(_path: &Path) {}
+
+fn validate_unix_mode(mode: Option<u32>) -> Result<Option<u32>, BackendError> {
+    match mode {
+        Some(value) if value > 0o7777 => Err(BackendError::Validation(format!(
+            "Invalid Unix mode {:o}; expected permission bits between 0000 and 7777",
+            value
+        ))),
+        _ => Ok(mode),
+    }
+}
+
+fn capability_task_error(error: tokio::task::JoinError) -> BackendError {
+    BackendError::Internal {
+        message: format!("Capability filesystem task failed: {error}"),
+    }
+}
+
+fn open_workspace_capability(
+    workspace: &Path,
+    validated_path: &Path,
+    expected_identity: Option<WorkspaceRootIdentity>,
+) -> Result<(Arc<CapabilityDir>, PathBuf), BackendError> {
+    let lexical_workspace = normalize_path(workspace);
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(|error| io_error_to_backend_error(error, workspace))?;
+    let relative_path = validated_path
+        .strip_prefix(&lexical_workspace)
+        .or_else(|_| validated_path.strip_prefix(&canonical_workspace))
+        .map(Path::to_path_buf)
+        .map_err(|_| BackendError::FilesystemInvalidPath {
+            message: format!(
+                "Path '{}' cannot be addressed relative to workspace '{}'",
+                validated_path.display(),
+                workspace.display()
+            ),
+        })?;
+    if relative_path.as_os_str().is_empty()
+        || relative_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: format!(
+                "Path '{}' is not a writable file target inside the workspace",
+                validated_path.display()
+            ),
+        });
+    }
+    let directory = CapabilityDir::open_ambient_dir(&canonical_workspace, ambient_authority())
+        .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?;
+    if let Some(expected_identity) = expected_identity {
+        let actual_identity = workspace_root_identity_from_cap(
+            &directory
+                .dir_metadata()
+                .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?,
+        );
+        if actual_identity != expected_identity {
+            return Err(BackendError::FilesystemInvalidPath {
+                message: format!(
+                    "Workspace root '{}' changed after server validation",
+                    workspace.display()
+                ),
+            });
+        }
+    }
+    Ok((Arc::new(directory), relative_path))
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkspaceCapabilityTarget {
+    directory: Arc<CapabilityDir>,
+    relative_path: PathBuf,
+    validated_path: PathBuf,
+}
+
+pub(crate) async fn open_workspace_capability_target_internal(
+    workspace: &Path,
+    path: String,
+) -> Result<WorkspaceCapabilityTarget, BackendError> {
+    let validated_path = validate_path_for_write(&PathBuf::from(&path), workspace)?;
+    let workspace = workspace.to_path_buf();
+    let expected_identity = expected_workspace_root_identity(&workspace);
+    tokio::task::spawn_blocking(move || {
+        let (directory, relative_path) =
+            open_workspace_capability(&workspace, &validated_path, expected_identity)?;
+        Ok(WorkspaceCapabilityTarget {
+            directory,
+            relative_path,
+            validated_path,
+        })
+    })
+    .await
+    .map_err(capability_task_error)?
+}
+
+fn read_capability_file(
+    directory: &CapabilityDir,
+    relative_path: &Path,
+) -> std::io::Result<Option<(Vec<u8>, Option<u32>)>> {
+    let file = match directory.open(relative_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut file = file.into_std();
+    let metadata = file.metadata()?;
+    if metadata.len() > MAX_WRITE_SIZE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file exceeds maximum recoverable mutation size of {} bytes",
+                MAX_WRITE_SIZE_BYTES
+            ),
+        ));
+    }
+    let mode = metadata_unix_mode(&metadata);
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(MAX_WRITE_SIZE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_WRITE_SIZE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file exceeds maximum recoverable mutation size of {} bytes",
+                MAX_WRITE_SIZE_BYTES
+            ),
+        ));
+    }
+    Ok(Some((bytes, mode)))
+}
+
+#[cfg(unix)]
+fn apply_unix_mode_to_open_file(
+    file: &std::fs::File,
+    requested_mode: Option<u32>,
+    inherited_mode: Option<u32>,
+    content: &[u8],
+) -> std::io::Result<Option<u32>> {
+    let current_mode = file.metadata()?.permissions().mode() & 0o7777;
+    let desired_mode = requested_mode.or(inherited_mode).unwrap_or(current_mode);
+    let desired_mode = if requested_mode.is_none() && content.starts_with(b"#!") {
+        desired_mode | 0o111
+    } else {
+        desired_mode
+    };
+    if desired_mode != current_mode {
+        file.set_permissions(std::fs::Permissions::from_mode(desired_mode))?;
+    }
+    Ok(Some(desired_mode))
+}
+
+#[cfg(not(unix))]
+fn apply_unix_mode_to_open_file(
+    _file: &std::fs::File,
+    _requested_mode: Option<u32>,
+    _inherited_mode: Option<u32>,
+    _content: &[u8],
+) -> std::io::Result<Option<u32>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn metadata_unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    Some(metadata.permissions().mode() & 0o7777)
+}
+
+#[cfg(not(unix))]
+fn metadata_unix_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+#[cfg(unix)]
+async fn apply_unix_mode(
+    path: &Path,
+    requested_mode: Option<u32>,
+    inherited_mode: Option<u32>,
+    content: &[u8],
+) -> Result<Option<u32>, BackendError> {
+    let current_mode = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| io_error_to_backend_error(error, path))?
+        .permissions()
+        .mode()
+        & 0o7777;
+    let desired_mode = requested_mode.or(inherited_mode).unwrap_or(current_mode);
+    let desired_mode = if requested_mode.is_none() && content.starts_with(b"#!") {
+        desired_mode | 0o111
+    } else {
+        desired_mode
+    };
+    if desired_mode != current_mode {
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(desired_mode))
+            .await
+            .map_err(|error| io_error_to_backend_error(error, path))?;
+    }
+    Ok(Some(desired_mode))
+}
+
+#[cfg(not(unix))]
+async fn apply_unix_mode(
+    _path: &Path,
+    _requested_mode: Option<u32>,
+    _inherited_mode: Option<u32>,
+    _content: &[u8],
+) -> Result<Option<u32>, BackendError> {
+    Ok(None)
+}
+
+fn ensure_directory_list_within_limit(count: usize, recursive: bool) -> Result<(), BackendError> {
+    if count <= DIRECTORY_LIST_LIMIT {
+        return Ok(());
+    }
+    Err(BackendError::Filesystem {
+        message: if recursive {
+            format!(
+                "Directory listing exceeds the safety limit of {} entries. Narrow the path, glob pattern, or recursion depth before retrying.",
+                DIRECTORY_LIST_LIMIT
+            )
+        } else {
+            format!(
+                "Directory listing exceeds the safety limit of {} entries. Narrow the path before retrying.",
+                DIRECTORY_LIST_LIMIT
+            )
+        },
+    })
+}
 
 // Default ignored directories/patterns
 static DEFAULT_IGNORED: [&str; 12] = [
@@ -183,13 +544,155 @@ fn resolve_wsl_path(
     Ok(resolved)
 }
 
+pub(crate) async fn canonical_wsl_path_within_workspace(
+    workspace: &WslProjectPath,
+    resolved: &WslProjectPath,
+    allow_outside_workspace: Option<bool>,
+) -> Result<WslProjectPath, BackendError> {
+    if allow_outside_workspace.unwrap_or(false) {
+        return Ok(resolved.clone());
+    }
+    let script = r#"
+root=$(realpath -e -- "$1") || exit 4
+target=$(realpath -m -- "$2") || exit 4
+case "$target" in
+  "$root"|"$root"/*) printf 'inside\n%s' "$target" ;;
+  *) printf 'outside' ;;
+esac
+"#;
+    let output = run_wsl_shell(
+        workspace,
+        script,
+        &[workspace.linux_path.clone(), resolved.linux_path.clone()],
+        WSL_FS_TIMEOUT,
+    )
+    .await?;
+    let stdout = output.stdout_text();
+    let mut lines = stdout.lines();
+    if lines.next() != Some("inside") {
+        return Err(wsl_path_outside_workspace(&resolved.original_path));
+    }
+    let canonical_linux_path = lines.next().ok_or_else(|| BackendError::Filesystem {
+        message: "Failed to resolve the canonical WSL target path".to_string(),
+    })?;
+    Ok(WslProjectPath {
+        distro: resolved.distro.clone(),
+        unc_path: wsl_unc_path(&resolved.distro, canonical_linux_path),
+        linux_path: canonical_linux_path.to_string(),
+        original_path: resolved.original_path.clone(),
+    })
+}
+
+pub(crate) async fn ensure_wsl_path_within_workspace(
+    workspace: &WslProjectPath,
+    resolved: &WslProjectPath,
+    allow_outside_workspace: Option<bool>,
+) -> Result<(), BackendError> {
+    canonical_wsl_path_within_workspace(workspace, resolved, allow_outside_workspace)
+        .await
+        .map(|_| ())
+}
+
+fn wsl_list_depth(recursive: Option<bool>, max_depth: Option<u32>) -> u32 {
+    if recursive.unwrap_or(false) {
+        max_depth
+            .unwrap_or(WSL_DEFAULT_RECURSIVE_DEPTH)
+            .clamp(1, WSL_MAX_RECURSIVE_DEPTH)
+    } else {
+        1
+    }
+}
+
 fn epoch_to_rfc3339(value: &str) -> Option<String> {
     let seconds = value.trim().split('.').next()?.parse::<i64>().ok()?;
     chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).map(|time| time.to_rfc3339())
 }
 
 fn bytes_look_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0) || std::str::from_utf8(bytes).is_err()
+    bytes.iter().take(8192).any(|byte| *byte == 0)
+}
+
+pub(crate) fn content_revision(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+pub(crate) async fn file_content_revision_internal(
+    workspace: &Path,
+    path: String,
+) -> Result<String, BackendError> {
+    let workspace_string = workspace.to_string_lossy();
+    if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
+        let resolved = resolve_wsl_path(&wsl_workspace, &path, Some(false))?;
+        let canonical =
+            canonical_wsl_path_within_workspace(&wsl_workspace, &resolved, Some(false)).await?;
+        let output = run_wsl_shell(
+            &canonical,
+            r#"sha256sum -- "$1""#,
+            &[canonical.linux_path.clone()],
+            WSL_FS_TIMEOUT,
+        )
+        .await?;
+        let stdout = output.stdout_text();
+        let revision = stdout
+            .split_whitespace()
+            .next()
+            .filter(|value| value.len() == 64)
+            .ok_or_else(|| BackendError::Filesystem {
+                message: format!("Failed to read content revision for '{}'.", path),
+            })?;
+        return Ok(revision.to_string());
+    }
+
+    let validated_path = validate_path(&PathBuf::from(&path), workspace)?;
+    let bytes = tokio::fs::read(&validated_path)
+        .await
+        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+    Ok(content_revision(&bytes))
+}
+
+pub(crate) const EXPECTED_REVISION_ABSENT: &str = "absent";
+
+pub(crate) fn validate_expected_revision(
+    path: &str,
+    expected_revision: Option<&str>,
+    actual_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    let Some(expected) = expected_revision
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    if expected.eq_ignore_ascii_case(EXPECTED_REVISION_ABSENT) {
+        return if actual_revision.is_none() {
+            Ok(())
+        } else {
+            Err(BackendError::RevisionConflict {
+                message: format!(
+                    "Stale content for '{}': expected the file to be absent but found revision {}. Re-read the path and retry.",
+                    path,
+                    actual_revision.unwrap_or("unknown")
+                ),
+            })
+        };
+    }
+    let Some(actual) = actual_revision else {
+        return Err(BackendError::RevisionConflict {
+            message: format!(
+            "Cannot safely mutate '{}': expected revision {} but the current revision is unavailable. Re-read the file and retry.",
+            path, expected
+        ),
+        });
+    };
+    if actual != expected {
+        return Err(BackendError::RevisionConflict {
+            message: format!(
+                "Stale content for '{}': expected revision {} but found {}. Re-read the file and retry.",
+                path, expected, actual
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn wsl_name_from_linux_path(path: &str) -> String {
@@ -245,7 +748,9 @@ async fn read_wsl_file_internal(
     allow_outside_workspace: Option<bool>,
 ) -> Result<FileContentDto, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
-    let (kind, size, _, _, _) = wsl_stat_raw(&resolved).await?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
+    let (kind, size, _, permissions, _) = wsl_stat_raw(&resolved).await?;
+    let unix_mode = u32::from_str_radix(permissions.trim(), 8).ok();
     if kind != "file" && kind != "symlink" {
         return Err(BackendError::FilesystemIsDirectory {
             message: format!("The path '{}' is a directory, not a file.", path),
@@ -262,11 +767,24 @@ async fn read_wsl_file_internal(
 
     let output = run_wsl_shell(
         &resolved,
-        r#"cat -- "$1""#,
-        &[resolved.linux_path.clone()],
+        r#"head -c "$2" -- "$1""#,
+        &[
+            resolved.linux_path.clone(),
+            MAX_FILE_SIZE_BYTES.saturating_add(1).to_string(),
+        ],
         WSL_FS_TIMEOUT,
     )
     .await?;
+    if output.stdout.len() as u64 > MAX_FILE_SIZE_BYTES {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: format!(
+                "The file '{}' exceeds the maximum allowed size of {} bytes.",
+                path, MAX_FILE_SIZE_BYTES
+            ),
+        });
+    }
+    let size = output.stdout.len() as u64;
+    let revision = content_revision(&output.stdout);
     if bytes_look_binary(&output.stdout) {
         return Ok(FileContentDto {
             is_binary: true,
@@ -274,6 +792,8 @@ async fn read_wsl_file_internal(
             encoding: "none".to_string(),
             language: "binary".to_string(),
             size,
+            revision,
+            unix_mode,
         });
     }
     let content = String::from_utf8(output.stdout).map_err(|error| BackendError::Filesystem {
@@ -286,15 +806,20 @@ async fn read_wsl_file_internal(
         is_binary: false,
         size,
         encoding: "utf-8".to_string(),
+        revision,
+        unix_mode,
     })
 }
 
-async fn write_wsl_file_internal(
+async fn write_wsl_file_internal_with_revision(
     workspace: &WslProjectPath,
     path: String,
     content: String,
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+    acquire_lock: bool,
 ) -> Result<WriteResultDto, BackendError> {
     let content_bytes = content.into_bytes();
     if content_bytes.len() as u64 > MAX_WRITE_SIZE_BYTES {
@@ -307,6 +832,17 @@ async fn write_wsl_file_internal(
     }
 
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
+    let canonical_target =
+        canonical_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(&super::wsl_content_mutation_key(&canonical_target))
+                .lock_owned()
+                .await,
+        )
+    } else {
+        None
+    };
     let create_dirs_flag = if create_dirs.unwrap_or(true) {
         "1"
     } else {
@@ -316,6 +852,8 @@ async fn write_wsl_file_internal(
     let script = r#"
 p=$1
 create_dirs=$2
+expected_revision=$3
+requested_mode=$4
 dir=$(dirname -- "$p")
 if [ "$create_dirs" = "1" ]; then
   mkdir -p -- "$dir"
@@ -329,27 +867,92 @@ if [ -d "$p" ]; then
 fi
 created=0
 if [ ! -e "$p" ]; then created=1; fi
+current_mode=''
+if [ "$created" = "0" ]; then current_mode=$(stat -c '%a' -- "$p") || exit 7; fi
 tmp=$(mktemp "$dir/.macro-write.XXXXXX") || exit 6
 cat > "$tmp"
-if [ "$created" = "0" ] && cmp -s "$tmp" "$p"; then
+if [ -n "$requested_mode" ]; then
+  chmod "$requested_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+elif [ -n "$current_mode" ]; then
+  chmod "$current_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+fi
+if [ -z "$requested_mode" ] && [ "$(head -c 2 -- "$tmp")" = '#!' ]; then
+  chmod a+x -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+fi
+tmp_mode=$(stat -c '%a' -- "$tmp") || { rm -f -- "$tmp"; exit 8; }
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+    actual_revision=absent
+  elif [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || { rm -f -- "$tmp"; exit 7; }
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ]; then
+    revision_matches=$([ "$actual_revision" = "absent" ] && printf '1' || printf '0')
+  else
+    revision_matches=$([ "$actual_revision" = "$expected_revision" ] && printf '1' || printf '0')
+  fi
+  if [ "$revision_matches" != "1" ]; then
+    rm -f -- "$tmp"
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
+fi
+if [ "$created" = "0" ] && [ "$current_mode" = "$tmp_mode" ] && cmp -s "$tmp" "$p"; then
   rm -f -- "$tmp"
-  printf 'created=0 skipped=1\n'
+  printf 'created=0 skipped=1 mode=%s\n' "$current_mode"
   exit 0
 fi
 mv -f -- "$tmp" "$p"
-printf 'created=%s skipped=0\n' "$created"
+printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
 "#;
     let output = run_wsl_shell_with_stdin(
-        &resolved,
+        &canonical_target,
         script,
-        &[resolved.linux_path.clone(), create_dirs_flag],
+        &[
+            canonical_target.linux_path.clone(),
+            create_dirs_flag,
+            expected_revision
+                .map(str::trim)
+                .map(|value| {
+                    if value.eq_ignore_ascii_case(EXPECTED_REVISION_ABSENT) {
+                        EXPECTED_REVISION_ABSENT
+                    } else {
+                        value
+                    }
+                })
+                .unwrap_or_default()
+                .to_string(),
+            unix_mode
+                .map(|mode| format!("{:o}", mode))
+                .unwrap_or_default(),
+        ],
         content_bytes.clone(),
         WSL_FS_WRITE_TIMEOUT,
     )
     .await?;
     let stdout = output.stdout_text();
+    if let Some(actual) = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("revision_conflict actual="))
+    {
+        let actual_revision = if actual == EXPECTED_REVISION_ABSENT || actual == "unavailable" {
+            None
+        } else {
+            Some(actual)
+        };
+        validate_expected_revision(&path, expected_revision, actual_revision)?;
+        return Err(BackendError::RevisionConflict {
+            message: format!("Revision conflict while writing '{}'.", path),
+        });
+    }
     let skipped = stdout.contains("skipped=1");
     let created = stdout.contains("created=1");
+    let written_mode = stdout
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("mode="))
+        .and_then(|mode| u32::from_str_radix(mode, 8).ok());
     Ok(WriteResultDto {
         path: resolved.unc_path,
         bytes_written: if skipped {
@@ -359,6 +962,8 @@ printf 'created=%s skipped=0\n' "$created"
         },
         created,
         skipped,
+        revision: content_revision(&content_bytes),
+        unix_mode: written_mode,
     })
 }
 
@@ -371,6 +976,7 @@ async fn list_wsl_dir_internal(
     allow_outside_workspace: Option<bool>,
 ) -> Result<Vec<DirEntryDto>, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, allow_outside_workspace)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, allow_outside_workspace).await?;
     let (kind, _, _, _, _) = wsl_stat_raw(&resolved).await?;
     if kind != "directory" {
         return Err(BackendError::FilesystemIsFile {
@@ -378,27 +984,24 @@ async fn list_wsl_dir_internal(
         });
     }
 
-    let depth = if recursive.unwrap_or(false) {
-        max_depth.unwrap_or(8).clamp(1, 32)
-    } else {
-        1
-    };
+    let depth = wsl_list_depth(recursive, max_depth).to_string();
     let include_hidden_flag = if include_hidden.unwrap_or(false) {
         "1"
     } else {
         "0"
     }
     .to_string();
-    let ignored = DEFAULT_IGNORED.join("|");
     let script = r#"
 root=$1
 depth=$2
 include_hidden=$3
 limit=$4
-ignored=$5
-find "$root" -mindepth 1 -maxdepth "$depth" -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null |
+find "$root" -mindepth 1 -maxdepth "$depth" \
+  \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt \
+     -o -name dist -o -name build -o -name __pycache__ -o -name .cache \
+     -o -name .DS_Store -o -name Thumbs.db -o -name .idea \) -prune -o \
+  -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null |
 while IFS="$(printf '\t')" read -r full rel name type size mtime perm; do
-  case "|$ignored|" in *"|$name|"*) continue;; esac
   if [ "$include_hidden" != "1" ]; then
     case "$name" in .*) continue;; esac
   fi
@@ -410,10 +1013,9 @@ done | head -n "$limit"
         script,
         &[
             resolved.linux_path.clone(),
-            depth.to_string(),
+            depth,
             include_hidden_flag,
-            WSL_LIST_LIMIT.to_string(),
-            ignored,
+            DIRECTORY_LIST_LIMIT.saturating_add(1).to_string(),
         ],
         WSL_FS_TIMEOUT,
     )
@@ -458,6 +1060,8 @@ done | head -n "$limit"
         });
     }
 
+    ensure_directory_list_within_limit(entries.len(), recursive.unwrap_or(false))?;
+
     entries.sort_by(|a, b| {
         let a_is_dir = a.kind == "directory";
         let b_is_dir = b.kind == "directory";
@@ -475,6 +1079,7 @@ async fn stat_wsl_internal(
     path: String,
 ) -> Result<FileStatsDto, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let (kind, size, modified, permissions, symlink_target) = wsl_stat_raw(&resolved).await?;
     let name = wsl_name_from_linux_path(&resolved.linux_path);
     let symlink_target = symlink_target.map(|target| {
@@ -513,6 +1118,7 @@ async fn wsl_exists_internal(
     path: String,
 ) -> Result<bool, BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let output = run_wsl_shell(
         &resolved,
         r#"if [ -e "$1" ] || [ -L "$1" ]; then printf '1'; else printf '0'; fi"#,
@@ -528,14 +1134,50 @@ async fn delete_wsl_path_internal(
     path: String,
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
+    delete_wsl_path_internal_with_revision(workspace, path, recursive, None, false).await
+}
+
+async fn delete_wsl_path_internal_with_revision(
+    workspace: &WslProjectPath,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+    acquire_lock: bool,
+) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    let canonical_target = canonical_wsl_path_within_workspace(workspace, &resolved, None).await?;
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(&super::wsl_content_mutation_key(&canonical_target))
+                .lock_owned()
+                .await,
+        )
+    } else {
+        None
+    };
     let recursive_flag = if recursive.unwrap_or(false) { "1" } else { "0" }.to_string();
     let script = r#"
 p=$1
 recursive=$2
+expected_revision=$3
 if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+  if [ -n "$expected_revision" ]; then
+    printf 'revision_conflict actual=absent\n'
+    exit 0
+  fi
   printf 'Path not found: %s\n' "$p" >&2
   exit 4
+fi
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || exit 7
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ] || [ "$actual_revision" != "$expected_revision" ]; then
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
 fi
 if [ -d "$p" ] && [ ! -L "$p" ]; then
   if [ "$recursive" = "1" ]; then rm -rf -- "$p"; else rmdir -- "$p"; fi
@@ -543,13 +1185,42 @@ else
   rm -f -- "$p"
 fi
 "#;
-    run_wsl_shell(
-        &resolved,
+    let output = run_wsl_shell(
+        &canonical_target,
         script,
-        &[resolved.linux_path.clone(), recursive_flag],
+        &[
+            canonical_target.linux_path.clone(),
+            recursive_flag,
+            expected_revision
+                .map(str::trim)
+                .map(|value| {
+                    if value.eq_ignore_ascii_case(EXPECTED_REVISION_ABSENT) {
+                        EXPECTED_REVISION_ABSENT
+                    } else {
+                        value
+                    }
+                })
+                .unwrap_or_default()
+                .to_string(),
+        ],
         WSL_FS_WRITE_TIMEOUT,
     )
     .await?;
+    if let Some(actual) = output
+        .stdout_text()
+        .lines()
+        .find_map(|line| line.strip_prefix("revision_conflict actual="))
+    {
+        let actual_revision = if actual == EXPECTED_REVISION_ABSENT || actual == "unavailable" {
+            None
+        } else {
+            Some(actual)
+        };
+        validate_expected_revision(&path, expected_revision, actual_revision)?;
+        return Err(BackendError::RevisionConflict {
+            message: format!("Revision conflict while deleting '{}'.", path),
+        });
+    }
     Ok(())
 }
 
@@ -559,6 +1230,7 @@ async fn create_wsl_dir_internal(
     recursive: Option<bool>,
 ) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
+    ensure_wsl_path_within_workspace(workspace, &resolved, None).await?;
     let recursive_flag = if recursive.unwrap_or(true) { "1" } else { "0" }.to_string();
     let script = r#"
 p=$1
@@ -586,6 +1258,8 @@ async fn copy_wsl_path_internal(
 ) -> Result<u64, BackendError> {
     let src_resolved = resolve_wsl_path(workspace, &src, None)?;
     let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
+    ensure_wsl_path_within_workspace(workspace, &src_resolved, None).await?;
+    ensure_wsl_path_within_workspace(workspace, &dest_resolved, None).await?;
     let script = r#"
 src=$1
 dest=$2
@@ -614,6 +1288,8 @@ async fn move_wsl_path_internal(
 ) -> Result<(), BackendError> {
     let src_resolved = resolve_wsl_path(workspace, &src, None)?;
     let dest_resolved = resolve_wsl_path(workspace, &dest, None)?;
+    ensure_wsl_path_within_workspace(workspace, &src_resolved, None).await?;
+    ensure_wsl_path_within_workspace(workspace, &dest_resolved, None).await?;
     let script = r#"
 src=$1
 dest=$2
@@ -659,6 +1335,7 @@ pub async fn read_file_internal(
     let file_metadata = tokio::fs::metadata(&validated_path)
         .await
         .map_err(|e| io_error_to_backend_error(e, &validated_path))?; // Get file metadata
+    let unix_mode = metadata_unix_mode(&file_metadata);
 
     // Check if it's a file
     if !file_metadata.is_file() {
@@ -682,6 +1359,19 @@ pub async fn read_file_internal(
 
     // Verify if binary or text file
     let is_binary = is_binary_file(&validated_path)?;
+    let bytes = tokio::fs::read(&validated_path)
+        .await
+        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+    if bytes.len() as u64 > MAX_FILE_SIZE_BYTES {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: format!(
+                "The file '{}' exceeds the maximum allowed size of {} bytes.",
+                path, MAX_FILE_SIZE_BYTES
+            ),
+        });
+    }
+    let actual_size = bytes.len() as u64;
+    let revision = content_revision(&bytes);
     if is_binary {
         // Return binary file response
         Ok(FileContentDto {
@@ -689,13 +1379,19 @@ pub async fn read_file_internal(
             content: "".to_string(),
             encoding: "none".to_string(),
             language: "binary".to_string(),
-            size: file_metadata.len(),
+            size: actual_size,
+            revision,
+            unix_mode,
         })
     } else {
         // Read text file content
-        let content = tokio::fs::read_to_string(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+        let content = String::from_utf8(bytes).map_err(|e| BackendError::Filesystem {
+            message: format!(
+                "Invalid UTF-8 returned for {}: {}",
+                validated_path.display(),
+                e
+            ),
+        })?;
         // Detect language
         let language = get_file_language(&validated_path).unwrap_or_else(|| "Unknown".to_string());
         // Return text file response
@@ -703,8 +1399,10 @@ pub async fn read_file_internal(
             content,
             language,
             is_binary: false,
-            size: file_metadata.len(),
+            size: actual_size,
             encoding: "utf-8".to_string(),
+            revision,
+            unix_mode,
         })
     }
 }
@@ -736,6 +1434,277 @@ pub async fn fs_read_file(
     read_file_internal(&workspace, effective_path, allow_outside_workspace).await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn write_file_with_workspace_capability(
+    workspace: &Path,
+    validated_path: &Path,
+    display_path: &str,
+    content_bytes: &[u8],
+    create_dirs: Option<bool>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> Result<WriteResultDto, BackendError> {
+    let workspace = workspace.to_path_buf();
+    let validated_path = validated_path.to_path_buf();
+    let expected_identity = expected_workspace_root_identity(&workspace);
+    let (directory, relative_path) = tokio::task::spawn_blocking({
+        let workspace = workspace.clone();
+        let validated_path = validated_path.clone();
+        move || open_workspace_capability(&workspace, &validated_path, expected_identity)
+    })
+    .await
+    .map_err(capability_task_error)??;
+
+    let target = WorkspaceCapabilityTarget {
+        directory,
+        relative_path,
+        validated_path,
+    };
+    write_file_with_capability_target(
+        &target,
+        display_path,
+        content_bytes,
+        create_dirs,
+        expected_revision,
+        unix_mode,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_file_with_capability_target(
+    target: &WorkspaceCapabilityTarget,
+    display_path: &str,
+    content_bytes: &[u8],
+    create_dirs: Option<bool>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> Result<WriteResultDto, BackendError> {
+    let directory = target.directory.clone();
+    let relative_path = target.relative_path.clone();
+    let validated_path = target.validated_path.clone();
+    let display_path = display_path.to_string();
+    let content = content_bytes.to_vec();
+
+    let existing = tokio::task::spawn_blocking({
+        let directory = directory.clone();
+        let relative_path = relative_path.clone();
+        move || read_capability_file(&directory, &relative_path)
+    })
+    .await
+    .map_err(capability_task_error)?
+    .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+    let existing_mode = existing.as_ref().and_then(|(_, mode)| *mode);
+    let actual_revision = existing
+        .as_ref()
+        .map(|(bytes, _)| content_revision(bytes.as_slice()));
+    validate_expected_revision(&display_path, expected_revision, actual_revision.as_deref())?;
+
+    let created = existing.is_none();
+    if existing
+        .as_ref()
+        .is_some_and(|(bytes, _)| bytes.as_slice() == content.as_slice())
+    {
+        let resulting_mode = tokio::task::spawn_blocking({
+            let directory = directory.clone();
+            let relative_path = relative_path.clone();
+            let content = content.clone();
+            move || -> std::io::Result<Option<u32>> {
+                let file = directory.open(&relative_path)?.into_std();
+                apply_unix_mode_to_open_file(&file, unix_mode, existing_mode, &content)
+            }
+        })
+        .await
+        .map_err(capability_task_error)?
+        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+        return Ok(WriteResultDto {
+            path: validated_path.to_string_lossy().to_string(),
+            bytes_written: 0,
+            created: false,
+            skipped: true,
+            revision: content_revision(&content),
+            unix_mode: resulting_mode,
+        });
+    }
+
+    let parent = relative_path
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: format!("Path '{}' has no parent directory", display_path),
+        })?
+        .to_path_buf();
+    let should_create_dirs = create_dirs.unwrap_or(true);
+    tokio::task::spawn_blocking({
+        let directory = directory.clone();
+        let parent = parent.clone();
+        move || -> std::io::Result<()> {
+            if should_create_dirs {
+                if !parent.as_os_str().is_empty() {
+                    directory.create_dir_all(&parent)?;
+                }
+            } else if !parent.as_os_str().is_empty() && !directory.is_dir(&parent) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "parent directory does not exist",
+                ));
+            }
+            Ok(())
+        }
+    })
+    .await
+    .map_err(capability_task_error)?
+    .map_err(|error| {
+        if !should_create_dirs && error.kind() == std::io::ErrorKind::NotFound {
+            BackendError::FilesystemDirectoryNotFound {
+                message: format!(
+                    "Parent directory does not exist for {}: {}",
+                    display_path,
+                    parent.display()
+                ),
+            }
+        } else {
+            io_error_to_backend_error(error, &validated_path)
+        }
+    })?;
+
+    let temp_suffix = format!("tmp.{}", uuid::Uuid::new_v4());
+    let temp_path = relative_path.with_extension(temp_suffix);
+    let resulting_mode = tokio::task::spawn_blocking({
+        let directory = directory.clone();
+        let temp_path = temp_path.clone();
+        let content = content.clone();
+        move || -> std::io::Result<Option<u32>> {
+            let mut options = CapabilityOpenOptions::new();
+            options.write(true).create_new(true);
+            let mut file = directory.open_with(&temp_path, &options)?.into_std();
+            file.write_all(&content)?;
+            file.flush()?;
+            let mode = apply_unix_mode_to_open_file(&file, unix_mode, existing_mode, &content)?;
+            file.sync_all()?;
+            Ok(mode)
+        }
+    })
+    .await
+    .map_err(capability_task_error)?
+    .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+
+    pause_before_write_revalidation(&validated_path).await;
+    if expected_revision.is_some() {
+        let latest_revision = tokio::task::spawn_blocking({
+            let directory = directory.clone();
+            let relative_path = relative_path.clone();
+            move || {
+                read_capability_file(&directory, &relative_path)
+                    .map(|current| current.map(|(bytes, _)| content_revision(&bytes)))
+            }
+        })
+        .await
+        .map_err(capability_task_error)?
+        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+        if let Err(error) =
+            validate_expected_revision(&display_path, expected_revision, latest_revision.as_deref())
+        {
+            let _ = tokio::task::spawn_blocking({
+                let directory = directory.clone();
+                let temp_path = temp_path.clone();
+                move || directory.remove_file(&temp_path)
+            })
+            .await;
+            return Err(error);
+        }
+    }
+
+    tokio::task::spawn_blocking({
+        let directory = directory.clone();
+        let temp_path = temp_path.clone();
+        let relative_path = relative_path.clone();
+        move || directory.rename(&temp_path, &directory, &relative_path)
+    })
+    .await
+    .map_err(capability_task_error)?
+    .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+
+    tracing::info!(
+        operation = "fs_write_file",
+        path = %validated_path.display(),
+        bytes_written = content.len(),
+        created,
+        "File written successfully through a workspace capability"
+    );
+    Ok(WriteResultDto {
+        path: validated_path.to_string_lossy().to_string(),
+        bytes_written: content.len() as u64,
+        created,
+        skipped: false,
+        revision: content_revision(&content),
+        unix_mode: resulting_mode,
+    })
+}
+
+pub(crate) async fn read_file_bytes_with_mode_from_capability_target(
+    target: &WorkspaceCapabilityTarget,
+) -> Result<Option<(Vec<u8>, Option<u32>)>, BackendError> {
+    let directory = target.directory.clone();
+    let relative_path = target.relative_path.clone();
+    let validated_path = target.validated_path.clone();
+    tokio::task::spawn_blocking(move || {
+        read_capability_file(&directory, &relative_path)
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))
+    })
+    .await
+    .map_err(capability_task_error)?
+}
+
+pub(crate) fn capability_target_language(target: &WorkspaceCapabilityTarget) -> String {
+    get_file_language(&target.validated_path).unwrap_or_else(|| "Unknown".to_string())
+}
+
+pub(crate) async fn write_file_bytes_with_capability_target_unlocked(
+    target: &WorkspaceCapabilityTarget,
+    display_path: &str,
+    content: Vec<u8>,
+    create_dirs: bool,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> Result<WriteResultDto, BackendError> {
+    if content.len() as u64 > MAX_WRITE_SIZE_BYTES {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: format!(
+                "Content exceeds maximum write size of {} bytes",
+                MAX_WRITE_SIZE_BYTES
+            ),
+        });
+    }
+    write_file_with_capability_target(
+        target,
+        display_path,
+        &content,
+        Some(create_dirs),
+        expected_revision,
+        validate_unix_mode(unix_mode)?,
+    )
+    .await
+}
+
+pub(crate) async fn delete_file_with_capability_target_unlocked(
+    target: &WorkspaceCapabilityTarget,
+    display_path: &str,
+    expected_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    let current = read_file_bytes_with_mode_from_capability_target(target).await?;
+    let actual_revision = current
+        .as_ref()
+        .map(|(bytes, _)| content_revision(bytes.as_slice()));
+    validate_expected_revision(display_path, expected_revision, actual_revision.as_deref())?;
+    let directory = target.directory.clone();
+    let relative_path = target.relative_path.clone();
+    let validated_path = target.validated_path.clone();
+    tokio::task::spawn_blocking(move || directory.remove_file(&relative_path))
+        .await
+        .map_err(capability_task_error)?
+        .map_err(|error| io_error_to_backend_error(error, &validated_path))
+}
+
 /// Internal function for writing files with atomic write support
 pub async fn write_file_internal(
     workspace: &Path,
@@ -744,14 +1713,103 @@ pub async fn write_file_internal(
     create_dirs: Option<bool>,
     allow_outside_workspace: Option<bool>,
 ) -> Result<WriteResultDto, BackendError> {
+    write_file_internal_with_revision(
+        workspace,
+        path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+        None,
+    )
+    .await
+}
+
+pub async fn write_file_internal_with_revision(
+    workspace: &Path,
+    path: String,
+    content: String,
+    create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<WriteResultDto, BackendError> {
+    write_file_internal_with_revision_and_mode(
+        workspace,
+        path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+        expected_revision,
+        None,
+    )
+    .await
+}
+
+pub async fn write_file_internal_with_revision_and_mode(
+    workspace: &Path,
+    path: String,
+    content: String,
+    create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> Result<WriteResultDto, BackendError> {
+    write_file_internal_with_revision_impl(
+        workspace,
+        path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+        expected_revision,
+        unix_mode,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn write_file_internal_with_revision_and_mode_unlocked(
+    workspace: &Path,
+    path: String,
+    content: String,
+    create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> Result<WriteResultDto, BackendError> {
+    write_file_internal_with_revision_impl(
+        workspace,
+        path,
+        content,
+        create_dirs,
+        allow_outside_workspace,
+        expected_revision,
+        unix_mode,
+        false,
+    )
+    .await
+}
+
+async fn write_file_internal_with_revision_impl(
+    workspace: &Path,
+    path: String,
+    content: String,
+    create_dirs: Option<bool>,
+    allow_outside_workspace: Option<bool>,
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+    acquire_lock: bool,
+) -> Result<WriteResultDto, BackendError> {
+    let unix_mode = validate_unix_mode(unix_mode)?;
     let workspace_string = workspace.to_string_lossy();
     if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
-        return write_wsl_file_internal(
+        return write_wsl_file_internal_with_revision(
             &wsl_workspace,
             path,
             content,
             create_dirs,
             allow_outside_workspace,
+            expected_revision,
+            unix_mode,
+            acquire_lock,
         )
         .await;
     }
@@ -780,19 +1838,56 @@ pub async fn write_file_internal(
     } else {
         validate_path_for_write(&path_buf, workspace)?
     };
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(
+                &super::native_content_mutation_key(&validated_path).await,
+            )
+            .lock_owned()
+            .await,
+        )
+    } else {
+        None
+    };
+    if !allow_outside {
+        return write_file_with_workspace_capability(
+            workspace,
+            &validated_path,
+            &path,
+            content_bytes,
+            create_dirs,
+            expected_revision,
+            unix_mode,
+        )
+        .await;
+    }
+
+    let existing_mode = match tokio::fs::metadata(&validated_path).await {
+        Ok(metadata) => metadata_unix_mode(&metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error_to_backend_error(error, &validated_path)),
+    };
+    let existing_bytes = match tokio::fs::read(&validated_path).await {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error_to_backend_error(error, &validated_path)),
+    };
+    let actual_revision = existing_bytes.as_deref().map(content_revision);
+    validate_expected_revision(&path, expected_revision, actual_revision.as_deref())?;
 
     // Check if file already exists
-    let created = !validated_path.exists();
-    if !created {
-        let existing_bytes = tokio::fs::read(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+    let created = existing_bytes.is_none();
+    if let Some(existing_bytes) = existing_bytes.as_deref() {
         if existing_bytes == content_bytes {
+            let resulting_mode =
+                apply_unix_mode(&validated_path, unix_mode, existing_mode, content_bytes).await?;
             return Ok(WriteResultDto {
                 path: validated_path.to_string_lossy().to_string(),
                 bytes_written: 0,
                 created: false,
                 skipped: true,
+                revision: content_revision(content_bytes),
+                unix_mode: resulting_mode,
             });
         }
     }
@@ -810,6 +1905,14 @@ pub async fn write_file_internal(
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| io_error_to_backend_error(e, parent))?;
+    } else if !should_create_dirs && !parent.exists() {
+        return Err(BackendError::FilesystemDirectoryNotFound {
+            message: format!(
+                "Parent directory does not exist for {}: {}",
+                validated_path.display(),
+                parent.display()
+            ),
+        });
     }
 
     // Atomic write implementation using temp file + rename
@@ -820,6 +1923,32 @@ pub async fn write_file_internal(
     tokio::fs::write(&temp_path, content_bytes)
         .await
         .map_err(|e| io_error_to_backend_error(e, &temp_path))?;
+    let resulting_mode =
+        match apply_unix_mode(&temp_path, unix_mode, existing_mode, content_bytes).await {
+            Ok(mode) => mode,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(error);
+            }
+        };
+
+    pause_before_write_revalidation(&validated_path).await;
+    if expected_revision.is_some() {
+        let latest_revision = match tokio::fs::read(&validated_path).await {
+            Ok(bytes) => Some(content_revision(&bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(io_error_to_backend_error(error, &validated_path));
+            }
+        };
+        if let Err(error) =
+            validate_expected_revision(&path, expected_revision, latest_revision.as_deref())
+        {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error);
+        }
+    }
 
     // Rename temp file to final path (atomic operation)
     match tokio::fs::rename(&temp_path, &validated_path).await {
@@ -845,6 +1974,8 @@ pub async fn write_file_internal(
         bytes_written: content_bytes.len() as u64,
         created,
         skipped: false,
+        revision: content_revision(content_bytes),
+        unix_mode: resulting_mode,
     })
 }
 
@@ -859,6 +1990,8 @@ pub async fn fs_write_file(
     allow_outside_workspace: Option<bool>,
     workspace_scope: Option<String>,
     workspace_path: Option<String>,
+    expected_revision: Option<String>,
+    unix_mode: Option<u32>,
 ) -> Result<WriteResultDto, BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -875,12 +2008,14 @@ pub async fn fs_write_file(
         workspace_scope.as_deref(),
     )
     .await?;
-    write_file_internal(
+    write_file_internal_with_revision_and_mode(
         &workspace,
         effective_path,
         content,
         create_dirs,
         allow_outside_workspace,
+        expected_revision.as_deref(),
+        unix_mode,
     )
     .await
 }
@@ -963,6 +2098,7 @@ pub async fn list_dir_internal(
 
             let dto = create_dir_entry_dto(entry_path, workspace, &validated_path).await?;
             entries.push(dto);
+            ensure_directory_list_within_limit(entries.len(), true)?;
         }
     } else {
         // Non-recursive listing using read_dir
@@ -979,6 +2115,7 @@ pub async fn list_dir_internal(
 
             let dto = create_dir_entry_dto(&entry_path, workspace, &validated_path).await?;
             entries.push(dto);
+            ensure_directory_list_within_limit(entries.len(), false)?;
         }
     }
 
@@ -1525,7 +2662,7 @@ pub async fn exists_internal(workspace: &Path, path: String) -> Result<bool, Bac
     }
 }
 
-pub async fn delete_path_internal(
+pub(crate) async fn delete_path_internal_unlocked(
     workspace: &Path,
     path: String,
     recursive: Option<bool>,
@@ -1538,36 +2675,105 @@ pub async fn delete_path_internal(
     let path_buf = PathBuf::from(&path);
     let validated_path = validate_path(&path_buf, workspace)?;
 
-    let metadata = tokio::fs::metadata(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-
-    if metadata.is_file() {
-        tokio::fs::remove_file(&validated_path)
-            .await
-            .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-    } else if metadata.is_dir() {
-        let should_recurse = recursive.unwrap_or(false);
-        if should_recurse {
-            tokio::fs::remove_dir_all(&validated_path)
-                .await
-                .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-        } else {
-            tokio::fs::remove_dir(&validated_path)
-                .await
-                .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
+    let workspace_path = workspace.to_path_buf();
+    let capability_target = validated_path.clone();
+    let expected_identity = expected_workspace_root_identity(&workspace_path);
+    let is_directory = tokio::task::spawn_blocking(move || -> Result<bool, BackendError> {
+        let (directory, relative_path) =
+            open_workspace_capability(&workspace_path, &capability_target, expected_identity)?;
+        let metadata = directory
+            .metadata(&relative_path)
+            .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
+        let is_directory = metadata.is_dir();
+        if metadata.is_file() {
+            directory
+                .remove_file(&relative_path)
+                .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
+        } else if is_directory {
+            if recursive.unwrap_or(false) {
+                directory
+                    .remove_dir_all(&relative_path)
+                    .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
+            } else {
+                directory
+                    .remove_dir(&relative_path)
+                    .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
+            }
         }
-    }
+        Ok(is_directory)
+    })
+    .await
+    .map_err(capability_task_error)??;
 
     tracing::info!(
         operation = "fs_delete",
         path = %validated_path.display(),
-        is_directory = metadata.is_dir(),
+        is_directory,
         recursive = recursive.unwrap_or(false),
-        "File or directory deleted"
+        "File or directory deleted through a workspace capability"
     );
-
     Ok(())
+}
+
+pub async fn delete_path_internal_with_revision(
+    workspace: &Path,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    delete_path_internal_with_revision_impl(workspace, path, recursive, expected_revision, true)
+        .await
+}
+
+pub(crate) async fn delete_path_internal_with_revision_unlocked(
+    workspace: &Path,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+) -> Result<(), BackendError> {
+    delete_path_internal_with_revision_impl(workspace, path, recursive, expected_revision, false)
+        .await
+}
+
+async fn delete_path_internal_with_revision_impl(
+    workspace: &Path,
+    path: String,
+    recursive: Option<bool>,
+    expected_revision: Option<&str>,
+    acquire_lock: bool,
+) -> Result<(), BackendError> {
+    let workspace_string = workspace.to_string_lossy();
+    if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
+        return delete_wsl_path_internal_with_revision(
+            &wsl_workspace,
+            path,
+            recursive,
+            expected_revision,
+            acquire_lock,
+        )
+        .await;
+    }
+    let validated_path = validate_path(&PathBuf::from(&path), workspace)?;
+    let _mutation_guard = if acquire_lock {
+        Some(
+            super::content_mutation_lock(
+                &super::native_content_mutation_key(&validated_path).await,
+            )
+            .lock_owned()
+            .await,
+        )
+    } else {
+        None
+    };
+    if expected_revision.is_some() {
+        let actual_revision = match read_file_internal(workspace, path.clone(), Some(false)).await {
+            Ok(current) => Some(current.revision),
+            Err(BackendError::FilesystemNotFound { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        validate_expected_revision(&path, expected_revision, actual_revision.as_deref())?;
+    }
+    delete_path_internal_unlocked(workspace, path, recursive).await
 }
 
 /// Format file permissions based on platform
@@ -1657,6 +2863,7 @@ pub async fn fs_delete(
     recursive: Option<bool>,
     workspace_scope: Option<String>,
     workspace_path: Option<String>,
+    expected_revision: Option<String>,
 ) -> Result<(), BackendError> {
     let effective_path = if is_macro_scoped_path(&path) {
         map_macro_virtual_path(&path)
@@ -1673,7 +2880,13 @@ pub async fn fs_delete(
         workspace_scope.as_deref(),
     )
     .await?;
-    delete_path_internal(&workspace, effective_path, recursive).await
+    delete_path_internal_with_revision(
+        &workspace,
+        effective_path,
+        recursive,
+        expected_revision.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1941,6 +3154,20 @@ mod tests {
     }
 
     #[test]
+    fn wsl_recursive_list_depth_is_bounded_by_default_and_at_the_upper_limit() {
+        assert_eq!(wsl_list_depth(Some(false), Some(20)), 1);
+        assert_eq!(
+            wsl_list_depth(Some(true), None),
+            WSL_DEFAULT_RECURSIVE_DEPTH
+        );
+        assert_eq!(wsl_list_depth(Some(true), Some(0)), 1);
+        assert_eq!(
+            wsl_list_depth(Some(true), Some(WSL_MAX_RECURSIVE_DEPTH + 10)),
+            WSL_MAX_RECURSIVE_DEPTH
+        );
+    }
+
+    #[test]
     fn test_search_workspace_files_respects_ignores_limit_and_virtual_paths() {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path();
@@ -2148,6 +3375,10 @@ mod tests {
         let dto = result.unwrap();
         assert!(!dto.is_binary);
         assert_eq!(dto.content, "Hello, World!\n");
+        assert_eq!(
+            dto.revision,
+            "c98c24b677eff44860afea6f493bbaec5bb1c4cbb209c6fc2bbb47f66ff2ad31"
+        );
         // Language detection may vary for .txt files, so we just check it's not empty
         assert!(!dto.language.is_empty());
         assert!(!dto.encoding.is_empty());
@@ -2291,6 +3522,10 @@ mod tests {
         let dto = result.unwrap();
         assert!(dto.created);
         assert!(!dto.skipped);
+        assert_eq!(
+            dto.revision,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
         let written = fs::read_to_string(workspace.path().join("new.txt")).unwrap();
         assert_eq!(written, "hello");
     }
@@ -2325,6 +3560,192 @@ mod tests {
         assert!(!dto.skipped);
         let written = fs::read_to_string(workspace.path().join("file.txt")).unwrap();
         assert_eq!(written, "second");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_write_preserves_existing_unix_mode() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("script.sh");
+        fs::write(&path, "#!/bin/sh\necho old\n").expect("seed script");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+            .expect("mark script executable");
+        let revision = content_revision(b"#!/bin/sh\necho old\n");
+
+        let result = write_file_internal_with_revision(
+            workspace.path(),
+            "script.sh".to_string(),
+            "#!/bin/sh\necho new\n".to_string(),
+            Some(true),
+            None,
+            Some(&revision),
+        )
+        .await
+        .expect("replace executable script");
+
+        assert_eq!(result.unix_mode, Some(0o755));
+        assert_eq!(
+            fs::metadata(path)
+                .expect("script metadata")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_new_shebang_file_is_executable_and_explicit_mode_is_restored() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("script.sh");
+        let created = write_file_internal_with_revision(
+            workspace.path(),
+            "script.sh".to_string(),
+            "#!/bin/sh\necho hi\n".to_string(),
+            Some(true),
+            None,
+            Some(EXPECTED_REVISION_ABSENT),
+        )
+        .await
+        .expect("create shebang script");
+        assert_eq!(created.unix_mode.unwrap_or_default() & 0o111, 0o111);
+
+        let restored = write_file_internal_with_revision_and_mode(
+            workspace.path(),
+            "script.sh".to_string(),
+            "#!/bin/sh\necho hi\n".to_string(),
+            Some(true),
+            None,
+            Some(&created.revision),
+            Some(0o640),
+        )
+        .await
+        .expect("restore explicit checkpoint mode");
+        assert_eq!(restored.unix_mode, Some(0o640));
+        assert_eq!(
+            fs::metadata(path)
+                .expect("script metadata")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o640
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_with_revision_rejects_stale_content() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+
+        let error = write_file_internal_with_revision(
+            workspace.path(),
+            "guarded.txt".to_string(),
+            "updated".to_string(),
+            Some(true),
+            None,
+            Some("stale-revision"),
+        )
+        .await
+        .expect_err("stale write must fail");
+
+        assert!(error.to_string().contains("Stale content"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("read guarded file"),
+            "current"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_with_revision_accepts_matching_content() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let revision = content_revision(b"current");
+
+        write_file_internal_with_revision(
+            workspace.path(),
+            "guarded.txt".to_string(),
+            "updated".to_string(),
+            Some(true),
+            None,
+            Some(&revision),
+        )
+        .await
+        .expect("matching revision should write");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("read guarded file"),
+            "updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_guarded_writes_allow_exactly_one_winner() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let revision = content_revision(b"current");
+
+        let first = write_file_internal_with_revision(
+            &workspace_path,
+            "guarded.txt".to_string(),
+            "first".to_string(),
+            Some(true),
+            None,
+            Some(&revision),
+        );
+        let second = write_file_internal_with_revision(
+            &workspace_path,
+            "guarded.txt".to_string(),
+            "second".to_string(),
+            Some(true),
+            None,
+            Some(&revision),
+        );
+
+        let (first_result, second_result) = tokio::join!(first, second);
+        assert_eq!(
+            usize::from(first_result.is_ok()) + usize::from(second_result.is_ok()),
+            1
+        );
+        let failure = first_result.err().or_else(|| second_result.err()).unwrap();
+        assert!(matches!(failure, BackendError::RevisionConflict { .. }));
+        let content = fs::read_to_string(path).expect("read winning content");
+        assert!(content == "first" || content == "second");
+    }
+
+    #[tokio::test]
+    async fn test_write_with_absent_revision_only_creates_a_missing_file() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("new.txt");
+
+        write_file_internal_with_revision(
+            workspace.path(),
+            "new.txt".to_string(),
+            "created".to_string(),
+            Some(true),
+            None,
+            Some(EXPECTED_REVISION_ABSENT),
+        )
+        .await
+        .expect("absent guard should allow creation");
+
+        let error = write_file_internal_with_revision(
+            workspace.path(),
+            "new.txt".to_string(),
+            "overwritten".to_string(),
+            Some(true),
+            None,
+            Some(EXPECTED_REVISION_ABSENT),
+        )
+        .await
+        .expect_err("absent guard must reject an existing file");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(fs::read_to_string(path).expect("read new file"), "created");
     }
 
     #[tokio::test]
@@ -2429,6 +3850,52 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn test_write_rejects_parent_replaced_by_external_symlink_after_validation() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = setup_empty_workspace();
+        let outside = setup_empty_workspace();
+        let parent = workspace.path().join("parent");
+        fs::create_dir(&parent).expect("create original parent");
+        let target = parent
+            .canonicalize()
+            .expect("canonical parent")
+            .join("guarded.txt");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_before_revalidation_hook(target, reached.clone(), release.clone());
+
+        let workspace_path = workspace.path().to_path_buf();
+        let mut write = tokio::spawn(async move {
+            write_file_internal_with_revision(
+                &workspace_path,
+                "parent/guarded.txt".to_string(),
+                "must stay confined".to_string(),
+                Some(true),
+                None,
+                Some(EXPECTED_REVISION_ABSENT),
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut write => panic!("write finished before the race hook: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                panic!("write did not reach the race hook")
+            }
+        }
+        fs::rename(&parent, workspace.path().join("parent-original"))
+            .expect("move validated parent");
+        symlink(outside.path(), &parent).expect("replace parent with external symlink");
+        release.wait().await;
+
+        assert!(write.await.expect("write task").is_err());
+        assert!(!outside.path().join("guarded.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn test_write_readonly_directory() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -2466,6 +3933,18 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_directory_list_safety_limit_is_fail_closed() {
+        assert!(ensure_directory_list_within_limit(DIRECTORY_LIST_LIMIT, true).is_ok());
+        let recursive_error =
+            ensure_directory_list_within_limit(DIRECTORY_LIST_LIMIT + 1, true).unwrap_err();
+        assert!(recursive_error.to_string().contains("recursion depth"));
+
+        let shallow_error =
+            ensure_directory_list_within_limit(DIRECTORY_LIST_LIMIT + 1, false).unwrap_err();
+        assert!(shallow_error.to_string().contains("Narrow the path"));
     }
 
     #[tokio::test]

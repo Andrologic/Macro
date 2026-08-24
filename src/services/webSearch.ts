@@ -6,11 +6,13 @@
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { WebSearchResult } from '../stores/useCitationsStore';
+import { isTauriAvailable, webFetchExecute, webSearchExecute } from './tauriIpc';
 
 export type SearchProvider = 'tavily' | 'brave';
 
 export interface WebSearchOptions {
   provider?: SearchProvider;
+  configured?: boolean;
   tavilyApiKey?: string;
   braveApiKey?: string;
   maxResults?: number;
@@ -94,6 +96,10 @@ export async function webSearch(
 
   if (braveApiKey) {
     return searchWithBrave(query, braveApiKey, resultCount);
+  }
+
+  if (options.configured && isTauriAvailable()) {
+    return webSearchExecute({ query, includeRawContent });
   }
 
   throw new Error('No search API key configured. Please add a Tavily or Brave Search API key in settings.');
@@ -304,35 +310,27 @@ function normalizeFaviconMimeType(contentType: string | null, url: string): stri
   return null;
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
   }
-  return btoa(binary);
+  return bytes;
 }
 
 async function fetchFaviconDataUrl(pageUrl: string, html: string): Promise<string | undefined> {
   for (const faviconUrl of getFaviconCandidates(html, pageUrl)) {
     try {
-      const response = await tauriFetch(faviconUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'image/avif,image/webp,image/png,image/svg+xml,image/*,*/*;q=0.8',
-          'User-Agent': 'Macro/1.0 (+https://macro.app)',
-        },
+      const resource = await webFetchExecute({
+        url: faviconUrl,
+        resourceKind: 'favicon',
       });
-
-      if (!response.ok) continue;
-      const arrayBuffer = await response.arrayBuffer();
-      if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > MAX_FAVICON_BYTES) continue;
-
-      const mimeType = normalizeFaviconMimeType(response.headers.get('content-type'), faviconUrl);
+      const bytes = base64ToBytes(resource.bodyBase64);
+      if (bytes.byteLength === 0 || bytes.byteLength > MAX_FAVICON_BYTES) continue;
+      const mimeType = normalizeFaviconMimeType(resource.contentType, resource.url);
       if (!mimeType) continue;
-
-      return `data:${mimeType};base64,${arrayBufferToBase64(arrayBuffer)}`;
+      return `data:${mimeType};base64,${resource.bodyBase64}`;
     } catch {
       // Favicons are decorative. Page fetching should still succeed without one.
     }
@@ -391,27 +389,24 @@ export async function fetchWebPage(inputUrl: string): Promise<WebFetchResult> {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error('Seuls les liens HTTP/HTTPS sont supportés');
   }
-
-  const response = await tauriFetch(normalizedUrl, {
-    method: 'GET',
-    headers: {
-      'Accept': 'text/html,application/xhtml+xml',
-      'User-Agent': 'Macro/1.0 (+https://macro.app)',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Impossible de récupérer la page (${response.status})`);
+  if (!isTauriAvailable()) {
+    throw new Error(
+      'web_fetch nécessite le transport desktop sécurisé pour vérifier la destination réseau',
+    );
   }
-
-  const html = await response.text();
+  const resource = await webFetchExecute({
+    url: normalizedUrl,
+    resourceKind: 'page',
+  });
+  const fetchedUrl = resource.url;
+  const html = new TextDecoder().decode(base64ToBytes(resource.bodyBase64));
   const { title, content } = htmlToText(html);
   const snippet = content.slice(0, 350);
-  const favicon = await fetchFaviconDataUrl(normalizedUrl, html);
+  const favicon = await fetchFaviconDataUrl(fetchedUrl, html);
 
   return {
-    url: normalizedUrl,
-    title: title || extractDomain(normalizedUrl),
+    url: fetchedUrl,
+    title: title || extractDomain(fetchedUrl),
     snippet,
     content: content.slice(0, 12000),
     favicon,

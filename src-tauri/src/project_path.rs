@@ -1,9 +1,10 @@
 use crate::core::error::{BackendError, Result};
 use crate::core::process::background_tokio_command;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +47,112 @@ impl WslCommandOutput {
             (false, false) => format!("{}\n{}", stdout, stderr),
         }
     }
+}
+
+#[derive(Debug)]
+pub struct BoundedWslStream {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    total_bytes: usize,
+}
+
+impl BoundedWslStream {
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        self.head.len().saturating_add(self.tail.len())
+    }
+
+    pub fn truncated(&self) -> bool {
+        self.total_bytes > self.retained_bytes()
+    }
+
+    pub fn text(&self, label: &str) -> String {
+        let mut text = String::from_utf8_lossy(&self.head).into_owned();
+        if self.truncated() {
+            let omitted = self.total_bytes.saturating_sub(self.retained_bytes());
+            text.push_str(&format!(
+                "\n\n[... {label} TRUNCATED: omitted {omitted} bytes; retained the first {} and last {} bytes ...]\n\n",
+                self.head.len(),
+                self.tail.len()
+            ));
+        }
+        if !self.tail.is_empty() {
+            let tail = self.tail.iter().copied().collect::<Vec<_>>();
+            text.push_str(&String::from_utf8_lossy(&tail));
+        }
+        text.trim().to_string()
+    }
+}
+
+struct BoundedByteCollector {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    head_limit: usize,
+    tail_limit: usize,
+    total_bytes: usize,
+}
+
+impl BoundedByteCollector {
+    fn new(max_bytes: usize) -> Self {
+        let max_bytes = max_bytes.max(2);
+        let tail_limit = max_bytes / 4;
+        Self {
+            head: Vec::with_capacity(max_bytes.saturating_sub(tail_limit)),
+            tail: VecDeque::with_capacity(tail_limit),
+            head_limit: max_bytes.saturating_sub(tail_limit),
+            tail_limit,
+            total_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len());
+        let head_remaining = self.head_limit.saturating_sub(self.head.len());
+        let split = head_remaining.min(bytes.len());
+        self.head.extend_from_slice(&bytes[..split]);
+        if split < bytes.len() && self.tail_limit > 0 {
+            self.tail.extend(&bytes[split..]);
+            let excess = self.tail.len().saturating_sub(self.tail_limit);
+            self.tail.drain(..excess);
+        }
+    }
+
+    fn finish(self) -> BoundedWslStream {
+        BoundedWslStream {
+            head: self.head,
+            tail: self.tail,
+            total_bytes: self.total_bytes,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BoundedWslCommandOutput {
+    pub status: ExitStatus,
+    pub stdout: BoundedWslStream,
+    pub stderr: BoundedWslStream,
+}
+
+async fn read_bounded_stream<R>(
+    mut reader: R,
+    max_bytes: usize,
+) -> std::io::Result<BoundedWslStream>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut collector = BoundedByteCollector::new(max_bytes);
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        collector.push(&chunk[..read]);
+    }
+    Ok(collector.finish())
 }
 
 fn normalize_wsl_linux_path(parts: &[&str]) -> String {
@@ -268,6 +375,72 @@ async fn run_wsl_command_raw(
     Ok(output)
 }
 
+async fn run_wsl_command_bounded_raw(
+    wsl_path: &WslProjectPath,
+    program: &str,
+    args: &[String],
+    timeout_duration: Duration,
+    stdout_max_bytes: usize,
+) -> Result<BoundedWslCommandOutput> {
+    let mut command = background_tokio_command("wsl.exe");
+    command
+        .arg("-d")
+        .arg(&wsl_path.distro)
+        .arg("--")
+        .arg(program)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for arg in args {
+        command.arg(arg);
+    }
+    let mut child = command.spawn().map_err(classify_wsl_launch_error)?;
+    let stdout = child.stdout.take().ok_or_else(|| BackendError::Git {
+        message: "Failed to capture bounded WSL stdout.".to_string(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| BackendError::Git {
+        message: "Failed to capture bounded WSL stderr.".to_string(),
+    })?;
+    let stdout_task = tokio::spawn(read_bounded_stream(stdout, stdout_max_bytes));
+    let stderr_task = tokio::spawn(read_bounded_stream(stderr, 64 * 1024));
+
+    let status = match timeout(timeout_duration, child.wait()).await {
+        Ok(result) => result.map_err(|error| BackendError::Git {
+            message: format!("WSL command failed: {error}"),
+        })?,
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(BackendError::Git {
+                message: "WSL command timed out.".to_string(),
+            });
+        }
+    };
+    let stdout = stdout_task
+        .await
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to join bounded WSL stdout reader: {error}"),
+        })?
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to read bounded WSL stdout: {error}"),
+        })?;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to join bounded WSL stderr reader: {error}"),
+        })?
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to read bounded WSL stderr: {error}"),
+        })?;
+    Ok(BoundedWslCommandOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 pub async fn run_wsl_command_with_stdin(
     wsl_path: &WslProjectPath,
     program: &str,
@@ -325,6 +498,39 @@ pub async fn run_wsl_git_allow_failure(
     if !output.status.success()
         && output
             .stderr_text()
+            .to_lowercase()
+            .contains("git: not found")
+    {
+        return Err(BackendError::Git {
+            message: format!(
+                "Git is not available in WSL distribution '{}'.",
+                wsl_path.distro
+            ),
+        });
+    }
+    Ok(output)
+}
+
+pub async fn run_wsl_git_bounded_allow_failure(
+    wsl_path: &WslProjectPath,
+    args: &[String],
+    timeout_duration: Duration,
+    stdout_max_bytes: usize,
+) -> Result<BoundedWslCommandOutput> {
+    let mut git_args = vec!["-C".to_string(), wsl_path.linux_path.clone()];
+    git_args.extend(args.iter().cloned());
+    let output = run_wsl_command_bounded_raw(
+        wsl_path,
+        "git",
+        &git_args,
+        timeout_duration,
+        stdout_max_bytes,
+    )
+    .await?;
+    if !output.status.success()
+        && output
+            .stderr
+            .text("WSL STDERR")
             .to_lowercase()
             .contains("git: not found")
     {
@@ -402,5 +608,19 @@ mod tests {
             error,
             BackendError::FilesystemPathOutsideWorkspace { .. }
         ));
+    }
+
+    #[test]
+    fn bounded_wsl_stream_retains_head_tail_and_exact_byte_count() {
+        let mut collector = BoundedByteCollector::new(8);
+        collector.push(b"abcdefghij");
+        let output = collector.finish();
+        assert_eq!(output.total_bytes(), 10);
+        assert_eq!(output.retained_bytes(), 8);
+        assert!(output.truncated());
+        let text = output.text("TEST");
+        assert!(text.starts_with("abcdef"));
+        assert!(text.ends_with("ij"));
+        assert!(text.contains("omitted 2 bytes"));
     }
 }

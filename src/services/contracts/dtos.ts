@@ -80,6 +80,7 @@ export interface DebugResetProjectReportDto {
 export interface FileContentDto {
   content: string;
   language: string;
+  revision?: string;
 }
 
 export interface ToolSettingsDto {

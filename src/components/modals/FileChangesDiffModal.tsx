@@ -556,7 +556,7 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
                     variant="secondary"
                     size="sm"
                     onClick={() => resetRightDraft()}
-                    disabled={!canEdit || isSaving}
+                    disabled={!change.canEdit || isBusy}
                   >
                     {t('implement.resetDraft', 'Reset draft')}
                   </Button>

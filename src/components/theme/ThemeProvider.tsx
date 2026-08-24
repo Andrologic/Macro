@@ -35,6 +35,7 @@ export function useTheme() {
 
 const THEME_CACHE_KEY = 'macro-theme-cache';
 const THEME_CACHE_VERSION = '2';
+const themeCache = new Map<string, CachedTheme>();
 let initialThemeSetupKey: string | null = null;
 let initialThemeSetupPromise: Promise<InitialThemeSetupResult> | null = null;
 let initialThemeSetupResult: InitialThemeSetupResult | null = null;
@@ -92,23 +93,21 @@ const defaultTheme: Theme = {
  */
 const loadThemeFromCache = (themeId: string): Theme | null => {
   try {
-    const cached = localStorage.getItem(`${THEME_CACHE_KEY}-${themeId}`);
+    const cached = themeCache.get(`${THEME_CACHE_KEY}-${themeId}`);
     if (!cached) return null;
-
-    const parsed: CachedTheme = JSON.parse(cached);
     
     // Check version
-    if (parsed.version !== THEME_CACHE_VERSION) {
+    if (cached.version !== THEME_CACHE_VERSION) {
       return null;
     }
 
     // Check cache expiry (7 days)
     const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
-    if (Date.now() - parsed.timestamp > CACHE_TTL) {
+    if (Date.now() - cached.timestamp > CACHE_TTL) {
       return null;
     }
 
-    return parsed.theme;
+    return cached.theme;
   } catch {
     return null;
   }
@@ -125,7 +124,7 @@ const saveThemeToCache = (themeId: string, theme: Theme): void => {
       theme,
       timestamp: Date.now(),
     };
-    localStorage.setItem(`${THEME_CACHE_KEY}-${themeId}`, JSON.stringify(cache));
+    themeCache.set(`${THEME_CACHE_KEY}-${themeId}`, cache);
   } catch (error) {
     console.warn('[ThemeProvider] Failed to cache theme:', error);
   }

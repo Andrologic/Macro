@@ -22,6 +22,7 @@ export interface PendingProjectCreation {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ReturnType<typeof resolveProjectGitFlowSettings>;
+  directEdit?: boolean;
 }
 
 export interface PendingGitFlowConfirmation {

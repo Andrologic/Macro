@@ -38,6 +38,7 @@ import type {
 } from '../types';
 import { devLogger } from '../utils/devLogger';
 import { useProviderStore } from '../stores/useProviderStore';
+import { formatConversationFilePage } from './conversationFileTool';
 
 interface ActiveStreamResources {
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
@@ -1441,7 +1442,7 @@ const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>):
   }
 
   if (toolName === 'terminal_create_session') {
-    return typeof args.project_id === 'string' ? args.project_id.trim() : undefined;
+    return typeof args.cwd === 'string' ? args.cwd.trim() : undefined;
   }
 
   if (toolName === 'terminal_run') {
@@ -1704,6 +1705,10 @@ const createStreamAccumulator = (
 const WEB_SEARCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_search'));
 const WEB_FETCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));
 const QUESTION_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('question'));
+const CONFIG_LIST_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('config_list'));
+const CONFIG_GET_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('config_get'));
+const CONFIG_VALIDATE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('config_validate'));
+const CONFIG_PATCH_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('config_patch'));
 const MAX_SKILL_TOOL_ENUM_IDS = 120;
 const MARK_SOURCE_PASSAGE_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('mark_source_passage')
@@ -1776,10 +1781,11 @@ const buildSkillToolShape = (
   if (
     skillIds.length > 0 &&
     skillIds.length <= MAX_SKILL_TOOL_ENUM_IDS &&
+    'type' in parameters &&
     parameters.type === 'object'
   ) {
     const skillIdSchema = parameters.properties?.skill_id;
-    if (skillIdSchema?.type === 'string') {
+    if (skillIdSchema && 'type' in skillIdSchema && skillIdSchema.type === 'string') {
       parameters.properties = {
         ...parameters.properties,
         skill_id: {
@@ -2260,6 +2266,10 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
   if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);
   if (allowedTools.has('question')) tools.push(QUESTION_TOOL);
+  if (allowedTools.has('config_list')) tools.push(CONFIG_LIST_TOOL);
+  if (allowedTools.has('config_get')) tools.push(CONFIG_GET_TOOL);
+  if (allowedTools.has('config_validate')) tools.push(CONFIG_VALIDATE_TOOL);
+  if (allowedTools.has('config_patch')) tools.push(CONFIG_PATCH_TOOL);
   if (allowedTools.has('skill_activate') && skillToolIds.length > 0) {
     tools.push(buildSkillToolShape('skill_activate', skillToolIds));
   }
@@ -2291,7 +2301,9 @@ const collectAllowedTools = (params: {
   if (
     allowedTools.has('web_search') &&
     enableWebSearch &&
-    (webSearchOptions?.tavilyApiKey || webSearchOptions?.braveApiKey)
+    (webSearchOptions?.configured ||
+      webSearchOptions?.tavilyApiKey ||
+      webSearchOptions?.braveApiKey)
   ) {
     tools.push(WEB_SEARCH_TOOL);
   }
@@ -3079,7 +3091,12 @@ const streamChatViaNativeToolCallingProvider = async (
           }
 
           if (!customToolResult && toolName === 'web_search') {
-            if (!enableWebSearch || (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)) {
+            if (
+              !enableWebSearch ||
+              (!webSearchOptions?.configured &&
+                !webSearchOptions?.tavilyApiKey &&
+                !webSearchOptions?.braveApiKey)
+            ) {
               toolResult = 'Web search is not configured for this provider.';
               onToolResult?.(toolName, toolResult);
               toolResults.push({ tool_call_id: toolCall.id, content: toolResult, tool_name: toolName });
@@ -3133,6 +3150,8 @@ const streamChatViaNativeToolCallingProvider = async (
                 path: requestedRaw,
                 start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
                 end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
+                max_lines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
+                cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
               });
 
               if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
@@ -3182,17 +3201,21 @@ const streamChatViaNativeToolCallingProvider = async (
                 } else {
                   const label = contextMatch.path || contextMatch.title || contextMatch.source;
                   const content = (contextMatch.content || contextMatch.snippet || '').trim();
-                  const base = content
-                    ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
-                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
-
                   const isDocx = /\.docx$/i.test(label || '');
                   const extractNotice =
                     extractText && isDocx
-                      ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                      ? 'Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
                       : '';
 
-                  toolResult = `${base}${extractNotice}`;
+                  toolResult = content
+                    ? formatConversationFilePage({
+                        label,
+                        source: 'CONTEXT_SNIPPET',
+                        content,
+                        args,
+                        notice: extractNotice,
+                      })
+                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ''}`;
                 }
               }
             }
@@ -3948,7 +3971,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             }
 
             if (!customToolResult && toolName === 'web_search') {
-              if (!enableWebSearch || (!webSearchOptions?.tavilyApiKey && !webSearchOptions?.braveApiKey)) {
+              if (
+                !enableWebSearch ||
+                (!webSearchOptions?.configured &&
+                  !webSearchOptions?.tavilyApiKey &&
+                  !webSearchOptions?.braveApiKey)
+              ) {
                 toolResult = 'Web search is not configured for this provider.';
                 onToolResult?.(toolName, toolResult);
                 toolResults.push({
@@ -4012,6 +4040,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                   path: requestedRaw,
                   start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
                   end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
+                  max_lines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
+                  cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
                 });
 
                 if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
@@ -4062,17 +4092,21 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 } else {
                   const label = match.path || match.title || match.source;
                   const content = (match.content || match.snippet || '').trim();
-                  const base = content
-                    ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
-                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
-
                   const isDocx = /\.docx$/i.test(label || '');
                   const extractNotice =
                     extractText && isDocx
-                      ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                      ? 'Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
                       : '';
 
-                  toolResult = `${base}${extractNotice}`;
+                  toolResult = content
+                    ? formatConversationFilePage({
+                        label,
+                        source: 'CONTEXT_SNIPPET',
+                        content,
+                        args,
+                        notice: extractNotice,
+                      })
+                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ''}`;
                 }
               }
             }

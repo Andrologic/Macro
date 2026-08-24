@@ -13,7 +13,42 @@ interface MermaidRendererProps {
 }
 
 let renderCount = 0;
-const mermaidCache = new Map<string, string>();
+const MAX_MERMAID_CACHE_ENTRIES = 64;
+
+const createBoundedLruCache = (maxEntries: number) => {
+  const entries = new Map<string, string>();
+
+  return {
+    get(key: string): string | undefined {
+      const value = entries.get(key);
+      if (value === undefined) return undefined;
+
+      entries.delete(key);
+      entries.set(key, value);
+      return value;
+    },
+    set(key: string, value: string): void {
+      entries.delete(key);
+      entries.set(key, value);
+
+      while (entries.size > maxEntries) {
+        const leastRecentlyUsedKey = entries.keys().next().value;
+        if (leastRecentlyUsedKey === undefined) break;
+        entries.delete(leastRecentlyUsedKey);
+      }
+    },
+    get size(): number {
+      return entries.size;
+    },
+  };
+};
+
+const mermaidCache = createBoundedLruCache(MAX_MERMAID_CACHE_ENTRIES);
+
+export const __testables = {
+  createBoundedLruCache,
+  MAX_MERMAID_CACHE_ENTRIES,
+};
 
 const cleanupRenderArtifacts = (diagramId: string): void => {
   if (typeof document === 'undefined') {

@@ -1,9 +1,14 @@
 use crate::commands::terminal::TerminalSessionStore;
 use crate::commands::{CommandError, DbPool};
+use crate::config::{
+    ConfigChangeSource, ConfigDocumentKind, ConfigManager, ConfigPatchRequest, ConfigScope,
+    ConfigWatcherState, JsonPatchOperation,
+};
 use crate::core::error::{BackendError, Result};
 use crate::db::repository;
 use crate::git::GitState;
-use crate::project_path::parse_wsl_unc_path;
+use crate::project_icon::{resolve_project_icon, ProjectIconResolutionDto};
+use crate::project_path::{classify_project_path, parse_wsl_unc_path};
 use crate::workspace;
 use crate::workspace::metadata::{
     CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
@@ -21,7 +26,9 @@ use crate::workspace::metadata::{
 };
 use crate::WorkspaceMetadataRoot;
 use crate::WorkspaceRoot;
+use futures::{stream, StreamExt};
 use serde::Deserialize;
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,6 +81,132 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
             Ok(fallback)
         }
         Err(error) => Err(error),
+    }
+}
+
+async fn register_project_config_roots(
+    projects: impl IntoIterator<Item = ProjectDto>,
+    git_state: GitState,
+    config_manager: &ConfigManager,
+    config_watcher: &ConfigWatcherState,
+) {
+    for project in projects {
+        let project_path = PathBuf::from(&project.path);
+        if parse_wsl_unc_path(&project.path).is_some() {
+            continue;
+        }
+        let metadata_root =
+            match resolve_metadata_root(project_path.clone(), git_state.clone()).await {
+                Ok(root) => root,
+                Err(error) => {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "Impossible de résoudre la configuration @macro du projet"
+                    );
+                    continue;
+                }
+            };
+        let config_file = metadata_root
+            .join("projects")
+            .join(&project.id)
+            .join("config")
+            .join("git.json");
+        let initialize_git_config = !config_file.exists();
+        match config_manager
+            .register_project_root(&project.id, metadata_root)
+            .await
+        {
+            Ok(config_root) => {
+                if initialize_git_config {
+                    let detection = workspace::detect_project_git_flow(
+                        &project_path,
+                        Some(project.path.as_str()),
+                    );
+                    let state = if detection.repo_detected && !detection.requires_confirmation {
+                        "ready"
+                    } else {
+                        "configuration_required"
+                    };
+                    let mut operations = vec![JsonPatchOperation {
+                        op: "add".to_string(),
+                        path: "/configurationState".to_string(),
+                        from: None,
+                        value: Some(json!(state)),
+                    }];
+                    if state == "ready" {
+                        if let Some(main_branch) = detection.suggested_main_branch {
+                            operations.push(JsonPatchOperation {
+                                op: "add".to_string(),
+                                path: "/mainBranch".to_string(),
+                                from: None,
+                                value: Some(json!(main_branch)),
+                            });
+                        }
+                        if let Some(base_branch) = detection.suggested_base_branch {
+                            operations.push(JsonPatchOperation {
+                                op: "add".to_string(),
+                                path: "/baseBranch".to_string(),
+                                from: None,
+                                value: Some(json!(base_branch)),
+                            });
+                        }
+                    }
+                    match config_manager
+                        .get_document(
+                            ConfigDocumentKind::Git,
+                            ConfigScope::Project {
+                                project_id: project.id.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(document) => {
+                            if let Err(error) = config_manager
+                                .apply_patch(ConfigPatchRequest {
+                                    kind: ConfigDocumentKind::Git,
+                                    scope: ConfigScope::Project {
+                                        project_id: project.id.clone(),
+                                    },
+                                    expected_etag: document.etag,
+                                    patch: operations,
+                                    source: ConfigChangeSource::UserInterface,
+                                })
+                                .await
+                            {
+                                tracing::warn!(
+                                    project_id = %project.id,
+                                    code = %error.code,
+                                    message = %error.message,
+                                    "Impossible d’initialiser la configuration Git détectée du projet"
+                                );
+                            }
+                        }
+                        Err(error) => tracing::warn!(
+                            project_id = %project.id,
+                            code = %error.code,
+                            message = %error.message,
+                            "Impossible de préparer le document Git du projet"
+                        ),
+                    }
+                }
+                if let Err(error) = config_watcher.watch_project_root(&project.id, &config_root) {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "Impossible de surveiller la configuration du projet"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    project_id = %project.id,
+                    code = %error.code,
+                    message = %error.message,
+                    "Impossible de charger la configuration du projet"
+                );
+            }
+        }
     }
 }
 
@@ -180,22 +313,120 @@ async fn load_live_terminal_project_ids(
 pub async fn workspace_get_bootstrap(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
 ) -> Result<WorkspaceBootstrapDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::get_bootstrap(&workspace_path, &metadata_root).await
+    let bootstrap = workspace::get_bootstrap(&workspace_path, &metadata_root).await?;
+    let projects = bootstrap
+        .standalone_projects
+        .iter()
+        .chain(
+            bootstrap
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .cloned()
+        .collect::<Vec<_>>();
+    register_project_config_roots(
+        projects,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(bootstrap)
+}
+
+#[tauri::command]
+pub async fn workspace_resolve_project_icons(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_ids: Vec<String>,
+) -> Result<Vec<ProjectIconResolutionDto>> {
+    if project_ids.len() > 256 {
+        return Err(BackendError::Validation(
+            "At most 256 project icons can be resolved at once.".to_string(),
+        ));
+    }
+
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    let bootstrap = workspace::get_bootstrap(&workspace_path, &metadata_root).await?;
+    let projects_by_id = bootstrap
+        .standalone_projects
+        .iter()
+        .chain(
+            bootstrap
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .map(|project| (project.id.clone(), project.path.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut seen = HashSet::new();
+    let requested_ids = project_ids
+        .into_iter()
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty() && seen.insert(project_id.clone()))
+        .collect::<Vec<_>>();
+
+    Ok(stream::iter(requested_ids)
+        .map(|project_id| {
+            let project_path = projects_by_id
+                .get(&project_id)
+                .map(|path| classify_project_path(&workspace_path, path));
+            async move {
+                let icon = match project_path {
+                    Some(project_path) => match resolve_project_icon(project_path).await {
+                        Ok(icon) => icon,
+                        Err(error) => {
+                            tracing::warn!(
+                                action = "workspace_resolve_project_icon_failed",
+                                project_id = %project_id,
+                                error = %error
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                ProjectIconResolutionDto { project_id, icon }
+            }
+        })
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await)
 }
 
 #[tauri::command]
 pub async fn workspace_list_projects(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
 ) -> Result<Vec<ProjectGroupDto>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::list_projects(&workspace_path, &metadata_root).await
+    let groups = workspace::list_projects(&workspace_path, &metadata_root).await?;
+    let projects = groups
+        .iter()
+        .flat_map(|group| group.projects.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    register_project_config_roots(
+        projects,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(groups)
 }
 
 #[tauri::command]
@@ -418,6 +649,7 @@ pub async fn workspace_create_project(
     group_name: Option<String>,
     path: Option<String>,
     git_flow_settings: Option<ProjectGitFlowSettingsDto>,
+    direct_edit: Option<bool>,
     request_id: Option<String>,
 ) -> Result<ProjectDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
@@ -431,6 +663,7 @@ pub async fn workspace_create_project(
         group_name,
         path,
         git_flow_settings,
+        direct_edit: direct_edit.unwrap_or(false),
     };
 
     workspace::create_project_with_cancel(
@@ -471,6 +704,7 @@ pub async fn workspace_create_project_with_git_setup(
         group_name,
         path: Some(path),
         git_flow_settings,
+        direct_edit: false,
     };
 
     workspace::create_project_with_git_setup(
@@ -671,6 +905,7 @@ pub async fn workspace_update_project_access(
     terminal_store: State<'_, TerminalSessionStore>,
     project_id: String,
     user_read_only: bool,
+    direct_edit: Option<bool>,
     confirmed_migration: bool,
 ) -> Result<ProjectDto> {
     tracing::info!(
@@ -688,11 +923,18 @@ pub async fn workspace_update_project_access(
         .map_err(to_backend_db_error)?;
     let live_terminal_project_ids =
         load_live_terminal_project_ids(&db_pool, terminal_store.inner()).await?;
+    let current_project = workspace::get_project(&workspace_path, &metadata_root, &project_id)
+        .await?
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
+    let next_direct_edit = direct_edit.unwrap_or(current_project.direct_edit);
+    let target_read_only = user_read_only
+        || (current_project.git_setup_state != "ready"
+            && !(current_project.git_setup_state == "not_git" && next_direct_edit));
     let access_preview = workspace::preview_project_access_change(
         &workspace_path,
         &metadata_root,
         &project_id,
-        user_read_only,
+        target_read_only,
         &worktrees,
         &live_terminal_project_ids,
     )
@@ -713,11 +955,12 @@ pub async fn workspace_update_project_access(
         &metadata_root,
         &project_id,
         user_read_only,
+        Some(next_direct_edit),
         confirmed_migration,
         Some(&access_preview),
     )
     .await?;
-    if user_read_only {
+    if target_read_only {
         repository::update_git_worktree_project_access(&db_pool, &project_id, false, true)
             .await
             .map_err(to_backend_db_error)?;
@@ -833,6 +1076,7 @@ pub async fn workspace_create_manual_feature_draft(
     title: Option<String>,
     description: Option<String>,
     task_kind: String,
+    existing_branch_name: Option<String>,
 ) -> Result<ManualFeatureDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
@@ -849,6 +1093,7 @@ pub async fn workspace_create_manual_feature_draft(
         title.as_deref(),
         description.as_deref(),
         &task_kind,
+        existing_branch_name.as_deref(),
     )
     .await
 }

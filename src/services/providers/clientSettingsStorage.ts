@@ -22,47 +22,14 @@ const normalizeToolId = (id: string): string =>
 const normalizeToolSettings = (settings: Record<string, boolean>): Record<string, boolean> =>
   Object.fromEntries(Object.entries(settings).map(([id, enabled]) => [normalizeToolId(id), enabled]));
 
-const getBrowserStorage = (): Storage | null => {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      return localStorage;
-    }
-  } catch {
-    // Ignore storage access errors and fall back to defaults.
-  }
-
-  return null;
-};
+const transientSettings = new Map<string, Record<string, unknown>>();
 
 const readStoredRecord = (key: string): Record<string, unknown> => {
-  const storage = getBrowserStorage();
-  if (!storage) {
-    return {};
-  }
-
-  try {
-    const raw = storage.getItem(key);
-    if (!raw || raw === 'undefined') {
-      return {};
-    }
-
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch (error) {
-    console.error(`Failed to parse persisted settings from ${key}`, error);
-    return {};
-  }
+  return transientSettings.get(key) ?? {};
 };
 
 const writeStoredRecord = (key: string, value: Record<string, unknown>): void => {
-  const storage = getBrowserStorage();
-  if (!storage) {
-    return;
-  }
-
-  storage.setItem(key, JSON.stringify(value));
+  transientSettings.set(key, structuredClone(value));
 };
 
 export const readStoredToolEnablement = (): Record<string, boolean> => {

@@ -63,14 +63,41 @@ const extractPayload = <T>(payload: unknown, key?: string): T => {
   };
 };
 
+interface RemoteStructuredErrorBody {
+  code?: unknown;
+  message?: unknown;
+}
+
+const readStructuredErrorBody = (
+  body: unknown,
+): { code?: string; message?: string } | null => {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+  const candidate = body as RemoteStructuredErrorBody;
+  return {
+    code:
+      typeof candidate.code === 'string' && candidate.code.trim().length > 0
+        ? candidate.code
+        : undefined,
+    message:
+      typeof candidate.message === 'string' &&
+      candidate.message.trim().length > 0
+        ? candidate.message
+        : undefined,
+  };
+};
+
 export const remoteRequest = async <T>(
   path: string,
   options: RequestInit & {
     payloadKey?: string;
+    /** Per-request transport deadline. `null` disables the automatic timeout. */
+    timeoutMs?: number | null;
   } = {}
 ): Promise<T> => {
   const config = ensureRemoteConfig();
-  const { payloadKey, ...requestOptions } = options;
+  const { payloadKey, timeoutMs = config.timeoutMs, ...requestOptions } = options;
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...(requestOptions.body ? { 'Content-Type': 'application/json' } : {}),
@@ -81,11 +108,13 @@ export const remoteRequest = async <T>(
     headers.Authorization = `Bearer ${config.authToken}`;
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+  const controller = timeoutMs === null ? null : new AbortController();
+  const timeoutId = controller && timeoutMs !== null
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
   const combinedSignal = createCombinedAbortSignal([
     requestOptions.signal ?? undefined,
-    controller.signal,
+    controller?.signal,
   ]);
   const url = toAbsoluteApiUrl(config, path);
 
@@ -102,9 +131,10 @@ export const remoteRequest = async <T>(
       : await response.text().catch(() => null);
 
     if (!response.ok) {
+      const structured = readStructuredErrorBody(body);
       throw {
-        code: 'REMOTE_REQUEST_FAILED',
-        message: `Remote request failed (${response.status})`,
+        code: structured?.code ?? 'REMOTE_REQUEST_FAILED',
+        message: structured?.message ?? `Remote request failed (${response.status})`,
         details: {
           status: response.status,
           url,
@@ -116,10 +146,11 @@ export const remoteRequest = async <T>(
     return extractPayload<T>(body, payloadKey);
   } catch (error) {
     if (
+      !(error instanceof Error) &&
       typeof error === 'object' &&
       error !== null &&
       'code' in error &&
-      (error as { code?: string }).code === 'REMOTE_REQUEST_FAILED'
+      typeof (error as { code?: unknown }).code === 'string'
     ) {
       throw error;
     }
@@ -130,7 +161,7 @@ export const remoteRequest = async <T>(
       }
       throw {
         code: 'REMOTE_TIMEOUT',
-        message: `Remote request timed out after ${config.timeoutMs}ms`,
+        message: `Remote request timed out after ${timeoutMs}ms`,
         details: { url },
       };
     }
@@ -144,7 +175,9 @@ export const remoteRequest = async <T>(
       },
     };
   } finally {
-    clearTimeout(timeoutId);
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
     combinedSignal.dispose();
   }
 };

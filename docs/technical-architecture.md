@@ -103,6 +103,37 @@ Il fournit les capacités natives suivantes :
 - providers IA côté backend
 - fondation expérimentale du kernel headless HTTP
 
+### 3.6 Registre de configuration
+
+Le module Rust `config` est l’unique autorité pour les réglages durables. Il
+regroupe les contrats Serde, les valeurs par défaut, les JSON Schema, le
+catalogue de paramètres, les migrations, la fusion, la provenance, les ETags,
+les écritures atomiques, le watcher et le classement de sécurité.
+
+Le frontend consomme un snapshot typé via `useConfigStore`. Les stores métier
+ne doivent pas conserver une copie persistante concurrente d’un réglage. Le
+transport utilise les mêmes contrats via IPC Tauri ou via l’API headless.
+
+Les documents globaux vivent dans le dossier de configuration de
+l’application. Les surcharges projet autorisées vivent sous
+`@macro/projects/<project-id>/config`. L’état temporaire vit dans `state.json`,
+les caches et données métier dans SQLite, et les secrets dans le fichier privé
+`provider-secrets.json`.
+
+Une zone privée `.runtime` conserve les baselines approuvées et les propositions
+sensibles en attente. Le snapshot effectif est toujours construit depuis la
+baseline approuvée, y compris après un redémarrage. Les verrous locaux sont
+complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
+verrou avant toute écriture. Le watcher desktop coalesce les événements puis
+rescane les documents chargés et les nouveaux documents projet.
+
+Chaque tour agent charge un snapshot correspondant à ses identifiants de projet
+et à son projet de focus. Le modèle, le niveau de risque, les outils autorisés
+et les limites issus de ce snapshot sont figés pour toute la durée du tour,
+y compris lors d’un retry après overflow.
+
+Les détails normatifs sont décrits dans `docs/configuration.md`.
+
 ---
 
 ## 4. Stack technique
@@ -631,6 +662,14 @@ Cette séparation permet :
 - d'exposer un état clair dans l'interface
 - de gérer les conflits metadata de façon explicite
 
+### 12.7 Exécution directe sans dépôt Git
+
+Un projet `not_git` peut être marqué `directEdit`. Il est alors modifiable dans Implement, mais reste non actionnable dans Architect. Les tâches directes s'exécutent dans le chemin du projet, sans provisionnement de branche ou de worktree, et le filtre de capacités retire tous les outils Git du runtime agent.
+
+La revue repose sur un dépôt de point de restauration privé stocké dans les données applicatives de Macro. Son worktree pointe vers le dossier du projet, sans y créer de `.git`. Le premier démarrage capture une base ; les commandes natives de revue, validation, dévalidation, restauration et acceptation réutilisent ensuite le modèle de diff existant. Le dépôt privé exclut notamment `.git`, `.macro`, les dépendances, les sorties de build et les secrets usuels. L'identité du point de restauration combine l'identifiant de tâche et le chemin canonique du projet.
+
+Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`.
+
 ---
 
 ## 13. Outils, politiques d'accès et exécution
@@ -644,7 +683,7 @@ L'objectif est de limiter les droits selon le contexte fonctionnel.
 Exemples :
 
 - Architect peut manipuler les metadata et certains outils de planification
-- Chat reste plus restreint
+- Chat reste plus restreint, mais peut recevoir l'outil terminal agentique généraliste
 - Implement a accès à davantage d'outils de workspace et Git
 
 ### 13.2 Validation d'exécution
@@ -664,6 +703,68 @@ La couche d'exécution d'outils encapsule :
 - le fallback entre transport Tauri et transport distant
 
 Cette couche unifie l'exécution des outils côté produit.
+
+### 13.4 Révisions de contenu et mutations sûres
+
+Une lecture de fichier expose une `revision` calculée comme le SHA-256 hexadécimal minuscule des octets exacts. Les outils `write`, `edit` et `delete` acceptent cette valeur dans `expected_revision`; `apply_patch` accepte une table `expected_revisions` indexée par chemin relatif normalisé. Une mutation gardée échoue avec le code stable `REVISION_CONFLICT` si le contenu courant ne correspond plus. La valeur spéciale `absent` protège une création contre l'écrasement concurrent d'un fichier nouvellement apparu, et les sections `Add File` l'utilisent automatiquement.
+
+Les patchs multi-fichiers vérifient toutes les préconditions avant la première écriture, puis revalident chaque cible juste avant sa mutation. La mutation, sa relecture de validation et la publication du checkpoint forment une transaction compensable : un échec sur l'une de ces étapes déclenche le rollback des seules mutations déjà appliquées. Le rollback tente toutes les restaurations, même si l'une d'elles rencontre un conflit, puis restitue l'ensemble des erreurs. Avant chaque restauration, il exige que le contenu courant corresponde encore à la révision écrite par Macro, ou que la cible soit toujours absente après une suppression. Une modification externe divergente est préservée et signalée comme conflit de rollback au lieu d'être écrasée. Les checkpoints conservent aussi les révisions afin de protéger leurs restaurations contre une modification externe intervenue après la prévisualisation.
+
+L'historique durable des checkpoints conserve une frontière de compaction `oldestCompleteSequence`. Un replay qui élague des checkpoints sérialise toujours le document versionné complet et ne peut donc pas remettre cette frontière à `null`. Les fichiers sont indexés pendant la préparation du replay par l'identité composite projet, scope, workspace et chemin réel ; deux montages qui utilisent le même chemin relatif restent des cibles distinctes.
+
+Dans un processus Macro, chaque mutation acquiert un verrou associé à la cible canonique avant de valider la révision et le conserve jusqu'à la fin de l'écriture, de la suppression ou du rollback. Les lots multi-fichiers trient et dédupliquent leurs verrous avant acquisition afin d'éviter les interblocages. Les écritures et suppressions natives confinées ouvrent la racine du workspace comme une capacité : lecture de révision, création du temporaire et renommage restent relatifs au même handle, de sorte qu'un parent remplacé simultanément par un symlink ne peut pas rediriger l'effet hors du workspace. Les checkpoints refusent aussi les lots de plus de 64 fichiers ou dont les contenus avant/après dépassent 64 Mio. Lorsqu'un agent omet la révision pour `edit`, `delete` ou une mise à jour/suppression par patch, le fallback frontend réutilise automatiquement la révision observée pendant la préparation afin de conserver la protection optimiste. Le headless lie chaque mutation à un `execution_id` et à l'empreinte exacte de sa requête. Il synchronise un enregistrement `pending` avant de détacher l'effet du cycle HTTP, puis écrit et synchronise un enregistrement `completed` avant de publier le résultat. Le client persiste l'identifiant dans le stockage du webview sous l'identité de l'invocation logique avant l'envoi, borne chaque attente et consulte `/tools/executions/{execution_id}` après une perte de transport ; un second envoi de la même invocation réutilise exactement le même identifiant et le même corps, tandis que deux invocations distinctes au contenu identique restent séparées. Un `pending` retrouvé après redémarrage n'est jamais rejoué : le serveur renvoie un état indéterminé jusqu'à résolution explicite. Le journal réserve au plus quatre résultats simultanés de 80 Mio, reste sous 512 Mio et n'évince que des résultats terminés. Si la persistance du checkpoint côté client échoue, Macro restaure chaque cible en ordre inverse avec la révision après mutation comme garde. La relecture nécessaire aux checkpoints passe par la route authentifiée `/tools/checkpoint-snapshot`, mais la restauration de code lors du replay d'un ancien message reste désactivée hors Tauri tant que son marqueur de reprise n'est pas transportable.
+
+Les remplacements atomiques conservent les bits de permission Unix de la cible. Un nouveau fichier commençant par un shebang reçoit les bits exécutables, conformément au comportement de l'outil `write` d'Oh My Pi. Les checkpoints enregistrent également le mode Unix et le réappliquent lors d'un replay ou d'une compensation ; une restauration ne doit donc pas transformer silencieusement un script exécutable en fichier ordinaire. Sous WSL, cette garantie est appliquée au fichier temporaire avant la dernière validation de révision et le renommage.
+
+Les chemins d'une racine virtuelle multi-projets sont toujours relatifs à un montage : les chemins absolus, préfixes de lecteur et composants parents `..` sont rejetés avant la sélection du projet. L'accès natif revalide ensuite la cible canonique avec `allow_outside_workspace=false`. Sous WSL, une vérification `realpath` du workspace et de la cible empêche aussi un lien symbolique interne de rediriger une lecture ou une mutation hors du projet.
+
+### 13.5 Sorties bornées et reprise
+
+Les outils de lecture du workspace et d'inspection Git ne peuvent pas injecter une sortie arbitrairement grande dans le contexte agent. Leur contrat est additif : les réponses structurées paginables ajoutent `limit`, `offset`, `truncated` et `next_cursor`. `list`, `glob` et `git_status` ajoutent aussi `total_count`, car leur résultat est complètement matérialisé avant pagination. `grep` et `git_log` exposent `total_count=null` avec `total_is_exact=false` lorsqu'ils s'arrêtent après avoir trouvé l'élément qui prouve qu'une page suivante existe.
+
+Les limites partagées sont les suivantes :
+
+- `read` : 500 lignes par défaut, 3 000 au maximum, 256 Kio de contenu par page et 2 000 caractères par ligne ;
+- `list` : 200 entrées par défaut, 1 000 au maximum ;
+- `glob` : 200 chemins par défaut, 1 000 au maximum ;
+- `grep` : 50 correspondances par défaut, 200 au maximum et 512 caractères par ligne de résultat ;
+- `git_status` : 200 changements par défaut, 1 000 au maximum ;
+- `git_log` : 50 commits par défaut, 200 au maximum ;
+- `git_diff` : 256 Kio de patch au maximum et 64 lignes de contexte par hunk.
+
+Les lectures ont aussi une durée maximale : 5 secondes pour `list`, `read` et `glob`, 30 secondes pour `grep` et `ast_grep`. Le frontend associe un identifiant opaque à chaque exécution interruptible. Sur desktop, l'annulation d'une génération déclenche une commande Tauri dédiée qui réveille le travail enregistré et l'abandonne avec le code stable `TOOL_EXECUTION_CANCELLED`; une tombstone courte et bornée conserve aussi une annulation arrivée juste avant l'enregistrement de l'exécution. L'expiration utilise `TOOL_EXECUTION_TIMEOUT`. La recherche structurelle propage en plus un jeton coopératif jusque dans son worker bloquant et vérifie ce jeton entre les étapes de parcours ; un parse individuel reste borné par la limite de 4 Mio par fichier. Le transport distant combine le même `AbortSignal` avec une échéance propre à l'outil, et le fallback TypeScript vérifie l'annulation et l'échéance entre ses opérations asynchrones et pendant ses boucles longues.
+
+L'annulation active reste volontairement limitée aux outils de lecture `list`, `read`, `glob`, `grep` et `ast_grep`. Macro n'interrompt pas une mutation de fichier ou de dépôt au milieu de son application : leur cohérence repose sur les préconditions de révision, les écritures atomiques et les rollbacks décrits plus haut.
+
+`git_diff` accepte les modes `patch`, `stat` et `name_only`. Le mode patch utilise un collecteur tête-fin borné : une troncature conserve les premiers 75 % et les derniers 25 % de la capacité, insère un marqueur avec le nombre exact d'octets omis et devient une erreur si `require_complete=true`. Sous WSL, stdout et stderr sont drainés en continu dans des collecteurs bornés ; la limite s'applique donc à la mémoire capturée pendant l'exécution et pas seulement à la chaîne renvoyée. Les vues de synthèse doivent être privilégiées avant un patch portant sur une modification large.
+
+`grep` ignore les fichiers binaires et les fichiers de plus de 4 Mio, puis rend ces omissions visibles dans `skipped_files`. Le pont Copilot relaie `list`, `read`, `glob`, `grep`, `ast_grep`, `write`, `edit`, `delete` et `apply_patch` au frontend. Ce relais transmet les arguments originaux à l'exécuteur commun afin de conserver les montages de la racine virtuelle, le projet focalisé, l'annulation, les checkpoints et la politique d'approbation. Les mutations Git suivent le même relais ; seules les inspections Git en lecture seule utilisent directement le tool host natif confiné. L'approbation technique du custom tool par le SDK Copilot autorise uniquement l'appel du handler : toute décision utilisateur nécessaire reste prise par la frontière frontend avant l'exécution. `read_file` est également relayé afin de pouvoir relire les pièces jointes et les sorties `tool-output://` avec leurs arguments de pagination brute.
+
+`web_fetch` suit la même frontière frontend afin que la politique de sécurité Macro décide avant toute requête. Sur desktop, la récupération passe ensuite par une commande Rust dédiée : chaque hôte est résolu avant connexion, toutes ses adresses doivent être publiques, l'adresse retenue est épinglée dans le client HTTP, les redirections automatiques sont désactivées et chaque destination est résolue puis revalidée. Les hôtes locaux, privés, réservés et link-local, les URL avec identifiants, les types de contenu inattendus, les réponses trop volumineuses et plus de cinq redirections sont refusés. Le service échoue fermé hors du transport desktop sécurisé au lieu d'utiliser un fetch direct incapable de garantir ces propriétés. Les favicons traversent la même commande avec une limite plus faible.
+
+Sous WSL, l'énumération récursive utilise une profondeur de 8 par défaut, borne toute profondeur explicite à 32 et s'arrête avant d'accumuler plus de 20 000 entrées. Si une arborescence dépasse cette limite de sécurité, l'opération échoue explicitement et demande de réduire le chemin ou la profondeur au lieu d'annoncer un total ou un scan complet erroné.
+
+Le curseur opaque suit actuellement le format interne `v1:<empreinte>:<offset>`. L'empreinte FNV-1a lie le curseur aux paramètres sémantiques de la requête ; elle sert à détecter une réutilisation accidentelle et n'est pas une primitive de sécurité. Un curseur de `read` inclut aussi la révision SHA-256 du fichier, celui de `git_status` une révision de l'ensemble ordonné des changements, celui de `git_log` le commit de tête résolu avec les indicateurs staged/unstaged qui déterminent ses pseudo-commits, et celui de `git_branch_list` une empreinte stable des références locales et distantes ainsi que de la branche courante. Si l'une de ces sources change entre deux pages, la reprise échoue et l'agent doit recommencer sans curseur. Les arbres de fichiers peuvent encore changer entre deux pages de `list`, `glob` ou `grep`; leur pagination reste déterministe pour un instantané logique inchangé, sans verrouiller le système de fichiers ni le dépôt.
+
+Le backend Tauri, le fallback TypeScript et les racines virtuelles multi-projets appliquent ce contrat Git ; le pont Copilot conserve son périmètre d'outils pris en charge. Un noyau distant doit annoncer `bounded_tool_output_v1` pour `list`, `read`, `glob` et `grep`, puis `bounded_git_output_v1` pour `git_status`, `git_log`, `git_branch_list`, `git_diff` et `git_get_tree`. Macro refuse l'exécution distante si la capacité propre à la famille d'outils manque, avant qu'une sortie non bornée puisse atteindre le contexte.
+
+Les commandes agent `terminal_run` conservent au maximum 1 Mio de sortie dans un collecteur partagé par stdout et stderr, dans l'ordre d'arrivée des blocs. Après dépassement, le résultat garde une tête de 64 Kio et la fin la plus récente, avec le nombre exact d'octets omis entre les deux. Après la fin ou l'arrêt du processus, le drainage des pipes est limité à 2 secondes ; une sortie résiduelle est abandonnée avec un marqueur explicite plutôt que de bloquer la génération indéfiniment.
+
+Une annulation de génération appelle `terminal_kill` avec l'identifiant unique de l'exécution concernée. Le backend mémorise cette demande même si elle précède l'enregistrement de la commande, empêche deux exécutions simultanées dans une session et termine le groupe de processus complet. Une génération monotone empêche aussi la finalisation tardive d'une annulation d'écraser l'état d'une commande suivante. Un garde de durée de vie détruit le groupe si la future Rust est abandonnée avant son nettoyage normal. Les sessions interactives visibles utilisent leur propre cycle de vie et ne sont pas concernées par ce protocole agent.
+
+La frontière frontend qui remet les résultats d'outils au flux applique une défense commune inspirée des artefacts de session d'Oh My Pi. Au-delà de 50 Kio, Macro persiste le texte complet comme citation fichier de portée conversation, sous une adresse stable `tool-output://<conversation>/<appel>.txt`, puis attend la confirmation durable avant de publier cette adresse. Le contexte ne reçoit ensuite qu'une tête et une fin de 20 Kio avec le nombre d'octets omis. Si la persistance échoue ou si le runtime ne peut pas la garantir, l'aperçu reste borné, signale que le contenu complet est indisponible et n'annonce aucune adresse de récupération.
+
+`read_file` utilise le même contrat de pagination que `read` pour les contenus joints : empreinte de contenu liée au curseur, lignes numérotées, limite de 500 lignes par défaut, plafond de 3 000 lignes et 256 Kio de contenu avant l'enveloppe commune de spill. Son mode `raw=true` pagine au maximum 40 Kio d'octets UTF-8 sans couper de point de code afin que chaque réponse complète reste sous le seuil commun de 50 Kio ; il sert notamment à relire exactement une sortie `tool-output://` composée d'une seule ligne longue.
+
+`ast_grep` s'appuie directement sur `ast-grep-core` et `ast-grep-language` dans le backend Rust, sans dépendre d'un binaire installé sur la machine. Les 28 parseurs intégrés couvrent les principaux langages de Macro. Une recherche est en lecture seule, limitée à 30 secondes, 16 Kio par motif, 4 Mio par fichier, 2 Kio par extrait, 512 octets par capture, 32 captures et 4 Kio de captures cumulées par correspondance, puis 200 correspondances par page. Toute capture tronquée le signale dans la correspondance. Le curseur est lié au motif, à la portée, au langage et aux options ; les kernels distants doivent annoncer `structural_search_v1`. Le frontend conserve la même politique d'observation, d'annulation et de racine virtuelle que `grep`. En mode Architect, cette lecture reste volontairement attachée aux sources du projet ; la portée metadata est réservée aux mutations `Macro/...`, afin que l'architecte puisse analyser le code qu'il planifie sans confondre les deux arbres.
+
+### 13.6 Terminal agentique indépendant des projets
+
+Les quatre appels techniques `terminal_create_session`, `terminal_run`, `terminal_read` et `terminal_kill` forment l'outil terminal agentique et partagent un seul interrupteur visible. Ce terminal ne passe pas par l'exécuteur de workspace et son schéma n'expose aucun `project_id`. Le frontend crée toujours ses sessions avec `project_id: null`; son répertoire initial est le dossier personnel ou tout répertoire existant demandé. Une session rattachée à un projet par le terminal manuel de l'application est refusée par l'outil agentique.
+
+Dans chaque mode qui expose l'outil, `toolSecurityPolicy` force chaque `terminal_run` à demander une approbation avant l'exécution, quel que soit le niveau de risque, y compris YOLO et Strict. Cette décision précède l'évaluation habituelle du niveau de risque, ignore les autorisations mémorisées et désactive l'action qui autorise des appels similaires pour toute la conversation. La création, la lecture et l'arrêt d'une session agentique restent des opérations d'observation. Le bridge Copilot relaie les quatre appels au frontend afin qu'ils traversent le même contrôle. Le tool host natif refuse explicitement les appels terminal directs, car ce chemin ne possède pas de mécanisme de review utilisateur.
+
+Le terminal manuel reste un sous-système distinct et peut conserver un rattachement à la tâche, au projet et au worktree pour la navigation de l'interface.
 
 ---
 
@@ -766,6 +867,21 @@ En mode Implement, le chat sert aussi de couche d'interaction pour :
 
 Le chat n'est donc pas seulement un canal textuel, mais une couche d'orchestration utilisateur.
 
+### 15.4 Sous-agents
+
+Les sous-agents sont des exécutions enfants rattachées à une conversation parente. Ils ne sont pas des tâches Macro supplémentaires et ne créent pas de worktree dans leur première version.
+
+Le socle est séparé en quatre couches :
+
+- `subagentPolicy` calcule les permissions effectives par intersection, construit un contexte explicite et applique les limites de profondeur, de concurrence et de budget ;
+- `subagentRuntime` gère la file par conversation, les transitions, le timeout et l'annulation autour d'un `ChildTurnExecutor` injecté ;
+- la table SQLite `agent_runs` conserve le cycle de vie durable, la filiation, les résultats, les erreurs et la consommation ;
+- `conversationGoalAudit` spécialise ces contrats pour produire et valider un verdict structuré du profil `goal_auditor`.
+
+La première politique est volontairement restrictive : enfants en lecture seule, profondeur maximale de un et aucune délégation agent-visible. Un verdict de goal n'est appliqué que si l'identifiant et la révision attendue sont encore courants.
+
+Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
+
 ---
 
 ## 16. Fondation expérimentale : backend distant et kernel headless
@@ -799,10 +915,10 @@ Le kernel headless expose une API HTTP basée sur axum.
 Cette API couvre au minimum :
 
 - `GET /health`
-- `GET /v1/tools/mode-policy`
+- `GET /v1/tools/mode-policy?mode=<mode>&projectId=<project-id>`
 - `POST /v1/tools/validate`
 - `POST /v1/tools/execute`
-- `GET /api/v1/tools/mode-policy`
+- `GET /api/v1/tools/mode-policy?mode=<mode>&projectId=<project-id>`
 - `POST /api/v1/tools/validate`
 - `POST /api/v1/tools/execute`
 - `GET /api/v1/workspace/bootstrap`
@@ -822,7 +938,9 @@ Les capabilities runtime séparent les skills en deux niveaux : `skills` pour la
 
 ### 16.3 Protection expérimentale
 
-Le kernel headless peut être protégé par un bearer token. Le token est facultatif uniquement sur une adresse loopback et obligatoire sur toute autre adresse. Lorsqu'il est configuré, il protège aussi `/health`. Sans token sur loopback, `/health` est public comme le reste du prototype local.
+Le kernel headless peut être protégé par un bearer token. Le token est facultatif uniquement sur une adresse loopback et obligatoire sur toute autre adresse. Lorsqu'il est configuré, il protège aussi `/health`. Sans token sur loopback, `/health` est public comme le reste du prototype local. Sa politique n'est évaluée que pour les projets réellement touchés après routage : une cible explicite utilise son projet, un patch utilise l'union de ses cibles et une recherche globale conserve l'intersection de tous les montages parcourus. Le registre serveur conserve le chemin canonique et l'état de lecture seule de chaque projet ; un client ne peut pas déclarer un montage plus permissif et toute mutation d'un projet autoritairement en lecture seule est refusée. `web_fetch` et les outils terminal restent retirés de la politique tant que le transport headless ne possède pas leurs exécuteurs confinés, approuvables et annulables.
+
+Les patches de configuration headless sont toujours attribués à une source agent. L’acceptation ou le rejet d’un changement sensible exige un second bearer défini par `MACRO_HEADLESS_APPROVAL_TOKEN`, différent de `MACRO_HEADLESS_BEARER_TOKEN`. Ce second secret représente une décision utilisateur ponctuelle et n’est jamais remplacé par le bearer agent. Les décisions de politique d’outils sont fermées par défaut : elles exigent un projet chargé et une exécution multi-projet doit être autorisée par chaque projet affecté.
 
 Le tool host desktop est toujours limité à `127.0.0.1`, génère un token éphémère et exige ce token pour tous ses endpoints d'outils. Son endpoint `/health` reste volontairement public : il n'expose qu'un état de vie non sensible et ne doit pas devenir accessible hors localhost.
 

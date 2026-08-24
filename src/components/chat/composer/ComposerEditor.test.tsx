@@ -1078,7 +1078,7 @@ describe('ComposerEditor context references', () => {
       );
     });
 
-    expect(await openSlashMenu(editorRef, '/be')).not.toBeNull();
+    expect(await openSlashMenu(editorRef, '/agents')).not.toBeNull();
     const editable = container.querySelector('[data-shortcut-chat-input="true"]');
 
     await act(async () => {
@@ -1119,7 +1119,7 @@ describe('ComposerEditor context references', () => {
       );
     });
 
-    expect(await openSlashMenu(editorRef, '/al')).not.toBeNull();
+    expect(await openSlashMenu(editorRef, '/alpha')).not.toBeNull();
     const editable = container.querySelector('[data-shortcut-chat-input="true"]');
 
     await act(async () => {

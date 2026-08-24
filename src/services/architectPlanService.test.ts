@@ -45,6 +45,17 @@ interface LoadArchitectPlanServiceOptions {
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
   const appSettings = new Map<string, string>();
+  const configDocuments = new Map(['runtime', 'settings', 'agents', 'providers', 'tools', 'skills', 'git'].map((kind) => [kind, {
+    kind,
+    scope: { type: 'user' },
+    value: { $schema: `./schemas/v1/${kind}.schema.json`, schemaVersion: 1 } as Record<string, unknown>,
+    etag: `${kind}-etag-0`,
+    readOnly: false,
+    invalid: false,
+    filePath: `${kind}.json`,
+    diagnostics: [],
+  }]));
+  let configRevision = 0;
   const workspaceFilesByWorkspacePath = options.filesByWorkspacePath ?? {};
   const normalizeMockPath = (value: string): string =>
     value.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -96,6 +107,40 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     ...actualTauriIpc,
     aiGetDevProviderOverrides: async () => null,
     isTauriAvailable: () => options.tauriAvailable === true,
+    configGetDocument: async (kind: string) => configDocuments.get(kind),
+    configGetSnapshot: async () => ({
+      schemaVersion: 1,
+      effective: Object.fromEntries(
+        [...configDocuments.entries()].map(([kind, document]) => [kind, document.value]),
+      ),
+      documents: [...configDocuments.values()],
+      provenance: [],
+      diagnostics: [],
+      pendingRestartPaths: [],
+    }),
+    configListPendingChanges: async () => [],
+    configApplyPatch: async (request: {
+      kind: string;
+      patch: Array<{ op: string; path: string; value?: unknown }>;
+    }) => {
+      const current = configDocuments.get(request.kind);
+      if (!current) throw new Error(`Missing configuration document ${request.kind}`);
+      const value = { ...current.value };
+      for (const operation of request.patch) {
+        const key = operation.path.replace(/^\//, '').replaceAll('~1', '/').replaceAll('~0', '~');
+        if (operation.op === 'remove') delete value[key];
+        else value[key] = operation.value;
+      }
+      configRevision += 1;
+      const document = { ...current, value, etag: `${request.kind}-etag-${configRevision}` };
+      configDocuments.set(request.kind, document);
+      return {
+        status: 'applied',
+        document,
+        pendingChange: null,
+        restartRequired: false,
+      };
+    },
     dbGetAppSetting: async (key: string) => {
       const value = appSettings.get(key);
       return value === undefined ? null : { key, value_json: value, updated_at: '' };
@@ -247,8 +292,11 @@ describe('architectPlanService', () => {
       removeEventListener: () => undefined,
     };
     (globalThis as { localStorage?: unknown }).localStorage = storage;
-    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('develop'));
-    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+    const preferences = await import('./preferences');
+    await preferences.savePreferences({
+      [preferences.PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
+      [preferences.PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+    });
     service = await loadArchitectPlanService();
   });
 
@@ -258,25 +306,34 @@ describe('architectPlanService', () => {
     delete (globalThis as { localStorage?: unknown }).localStorage;
   });
 
-  it('allows main as the target branch in mainline mode', () => {
-    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
-    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+  it('allows main as the target branch in mainline mode', async () => {
+    const preferences = await import('./preferences');
+    await preferences.savePreferences({
+      [preferences.PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'main',
+      [preferences.PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+    });
 
     expect(service.resolveTargetBranch('main')).toBe('main');
     expect(service.resolveTargetBranch('feature/foo')).toBe('feature/foo');
     expect(service.resolveTargetBranch('hotfix/foo')).toBe('hotfix/foo');
   });
 
-  it('keeps legacy develop target branches readable in mainline mode', () => {
-    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
-    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+  it('keeps legacy develop target branches readable in mainline mode', async () => {
+    const preferences = await import('./preferences');
+    await preferences.savePreferences({
+      [preferences.PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'main',
+      [preferences.PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+    });
 
     expect(service.resolveTargetBranch('develop')).toBe('develop');
   });
 
-  it('rejects release and bugfix target branches in mainline mode', () => {
-    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
-    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+  it('rejects release and bugfix target branches in mainline mode', async () => {
+    const preferences = await import('./preferences');
+    await preferences.savePreferences({
+      [preferences.PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'main',
+      [preferences.PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+    });
 
     expect(() => service.resolveTargetBranch('release/foo')).toThrow(
       'Mainline workflow uses "main" as the development branch and only allows feature/* or hotfix/* work branches.'
@@ -286,9 +343,12 @@ describe('architectPlanService', () => {
     );
   });
 
-  it('keeps typed Git workflow target branches available for develop-based projects', () => {
-    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('develop'));
-    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+  it('keeps typed Git workflow target branches available for develop-based projects', async () => {
+    const preferences = await import('./preferences');
+    await preferences.savePreferences({
+      [preferences.PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
+      [preferences.PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+    });
 
     expect(service.resolveTargetBranch('release/foo')).toBe('release/foo');
     expect(service.resolveTargetBranch('hotfix/foo')).toBe('hotfix/foo');
@@ -705,8 +765,11 @@ describe('architectPlanService', () => {
   });
 
   it('uses project development branches as effective feature plan targets even when storage branch is main', async () => {
-    storage.setItem('macro_architectGitBaseBranch', JSON.stringify('main'));
-    storage.setItem('macro_architectGitMainBranch', JSON.stringify('main'));
+    const preferences = await import('./preferences');
+    await preferences.savePreferences({
+      [preferences.PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'main',
+      [preferences.PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'main',
+    });
 
     const created = await service.createArchitectPlan({
       branchName: 'main',

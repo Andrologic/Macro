@@ -1,6 +1,6 @@
 mod app_quit_state;
-#[path = "commands.rs"]
 pub mod commands;
+pub mod config;
 pub mod core;
 mod db;
 mod dev_overrides;
@@ -10,12 +10,15 @@ mod macos_traffic_lights;
 mod macos_window_menu;
 mod secrets;
 mod speech;
+mod state_manager;
 
 // Placeholder modules for critical manual implementation
 mod fs;
 pub mod git;
+pub mod lsp;
 
 mod ai;
+mod project_icon;
 pub mod project_path;
 mod tool_host;
 pub mod workspace;
@@ -23,7 +26,10 @@ pub mod workspace;
 use ai::AiState;
 use app_quit_state::AppQuitState;
 use commands::DbPool;
-use core::{finalize_desktop_workspace_path, init_logging, init_process_environment, load_config};
+use core::{
+    apply_runtime_workspace, finalize_desktop_workspace_path, init_logging,
+    init_process_environment, load_config,
+};
 use fs::watcher::init_watcher;
 use git::GitState;
 use serde::Serialize;
@@ -238,6 +244,8 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppQuitState::default())
         .manage(DbPool::default())
@@ -279,6 +287,61 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
             let app_data_dir = app_handle.path().app_data_dir()?;
+            let state_manager =
+                state_manager::StateManager::initialize(&app_data_dir).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to initialize Macro state storage: {error}"
+                    ))
+                })?;
+            app.manage(state_manager);
+            let app_config_dir = app_handle.path().app_config_dir()?;
+            let config_root = config::resolve_config_root(&app_config_dir).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to resolve Macro configuration directory: {}",
+                    error.message
+                ))
+            })?;
+            let config_manager = tauri::async_runtime::block_on(config::ConfigManager::initialize(
+                config_root.clone(),
+            ))
+            .map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to initialize Macro configuration: {}",
+                    error.message
+                ))
+            })?;
+            let config_snapshot = tauri::async_runtime::block_on(config_manager.get_snapshot(&[]))
+                .map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to read Macro runtime configuration: {}",
+                        error.message
+                    ))
+                })?;
+            if let Some(runtime) = config_snapshot.effective.get("runtime") {
+                apply_runtime_workspace(&mut config, runtime).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to apply Macro runtime configuration: {error}"
+                    ))
+                })?;
+            }
+            config::install_runtime_config_manager(config_manager.clone()).map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to install Macro configuration manager: {}",
+                    error.message
+                ))
+            })?;
+            let config_watcher = config::ConfigWatcher::start(
+                config_root,
+                config_manager.clone(),
+                app_handle.clone(),
+            )
+            .map_err(|error| {
+                std::io::Error::other(format!(
+                    "Failed to initialize Macro configuration watcher: {error}"
+                ))
+            })?;
+            app.manage(config_manager);
+            app.manage(config_watcher);
             secrets::init(&app_data_dir).map_err(|error| {
                 std::io::Error::other(format!(
                     "Failed to initialize provider secret storage: {}",
@@ -320,9 +383,6 @@ pub fn run() {
             let tool_host_config = tool_host::start(
                 workspace_metadata_root.clone(),
                 app.state::<GitState>().inner().clone(),
-                app.state::<commands::terminal::TerminalSessionStore>()
-                    .inner()
-                    .clone(),
             )?;
             app.manage(tool_host_config);
 
@@ -351,6 +411,27 @@ pub fn run() {
             // Database commands
             commands::db_get_initialization_status,
             commands::db_retry_initialize,
+            config::config_get_snapshot,
+            config::config_get_document,
+            config::config_get_schema,
+            config::config_validate_document,
+            config::config_apply_patch,
+            config::config_reset_path,
+            config::config_reload,
+            config::config_open_directory,
+            config::config_accept_pending_change,
+            config::config_reject_pending_change,
+            config::config_list_pending_changes,
+            config::config_list_orphan_secrets,
+            config::config_delete_orphan_secret,
+            config::config_list,
+            config::config_get,
+            config::config_validate,
+            config::config_patch,
+            state_manager::state_get_snapshot,
+            state_manager::state_set_value,
+            state_manager::state_delete_value,
+            state_manager::state_clear,
             frontend_log,
             show_main_window,
             window_close,
@@ -432,6 +513,7 @@ pub fn run() {
             commands::db_list_git_worktrees,
             // Workspace commands
             commands::workspace::workspace_get_bootstrap,
+            commands::workspace::workspace_resolve_project_icons,
             commands::workspace::workspace_list_projects,
             commands::workspace::workspace_list_tasks,
             commands::workspace::workspace_get_metadata,
@@ -479,10 +561,15 @@ pub fn run() {
             commands::tool_get_mode_policy,
             commands::tool_validate_execution,
             commands::tool_execute_workspace,
+            commands::tool_cancel_workspace,
             commands::mcp::mcp_discover_tools,
             commands::mcp::mcp_call_tool,
             commands::mcp::mcp_store_env_secret,
             commands::mcp::mcp_delete_env_secret,
+            commands::web_search::web_search_get_secret_status,
+            commands::web_search::web_search_set_secret,
+            commands::web_search::web_search_execute,
+            commands::web_search::web_fetch_execute,
             commands::skills::skills_list,
             commands::skills::skills_get,
             commands::skills::skills_install_from_local_path,
@@ -523,6 +610,7 @@ pub fn run() {
             commands::git::git_status,
             commands::git::git_fetch,
             commands::git::git_log,
+            commands::git::git_log_page,
             commands::git::git_branch_list,
             commands::git::git_branch_create,
             commands::git::git_branch_delete,
@@ -544,6 +632,15 @@ pub fn run() {
             commands::git::git_read_file_pair,
             commands::git::git_review_snapshot,
             commands::git::git_review_file,
+            commands::git::direct_checkpoint_ensure,
+            commands::git::direct_checkpoint_resolve_id,
+            commands::git::direct_checkpoint_remove,
+            commands::git::direct_review_snapshot,
+            commands::git::direct_review_file,
+            commands::git::direct_stage_paths,
+            commands::git::direct_unstage_paths,
+            commands::git::direct_restore_worktree_paths,
+            commands::git::direct_accept_changes,
             commands::git::git_read_conflict_file,
             commands::git::git_write_conflict_resolution,
             commands::git::git_accept_conflict_side,
@@ -553,6 +650,7 @@ pub fn run() {
             commands::git::git_branch_worktree_create,
             commands::git::git_branch_worktree_remove,
             commands::git::git_worktree_inspect,
+            commands::git::git_task_start_points,
             commands::git::git_worktree_create,
             commands::git::git_worktree_remove,
             commands::git::git_push,
@@ -580,6 +678,7 @@ pub fn run() {
             commands::db_set_setting,
             commands::db_get_app_setting,
             commands::db_set_app_setting,
+            commands::db_delete_app_setting,
             commands::db_compare_and_swap_app_setting,
             commands::db_get_project_context_state,
             commands::db_upsert_project_context_state,

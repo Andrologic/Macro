@@ -61,10 +61,11 @@ import {
 import { Icon, IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
+import { ProjectIcon } from '../project/ProjectIcon';
 import { cn } from '../../utils/cn';
 import { notify } from '../ui/toastService';
 import { TaskStatusIndicator } from './TaskStatusIndicator';
-import type { StandaloneTaskKind, TaskStatus } from '../../types';
+import type { Project, StandaloneTaskKind, TaskStatus } from '../../types';
 import { useVirtualList } from '../../hooks/useVirtualList';
 import { ProjectWorkspaceEmptyState } from '../shared/ProjectWorkspaceEmptyState';
 import { getDependencyBlockedMessage } from '../implement/TaskBlockedState';
@@ -219,6 +220,7 @@ interface TaskContextBadgeDescriptor {
   key: 'project' | 'plan' | 'plan_finalization' | 'standalone' | 'draft';
   label: string;
   icon?: IconName;
+  project?: Pick<Project, 'id' | 'path'>;
   tone?: TaskContextBadgeTone;
   title?: string;
 }
@@ -233,7 +235,7 @@ interface TaskItemProps {
   mergeWorkflowRuntime?: MergeWorkflowRuntimeState | null;
   multiRepoPresentation?: MultiRepoTaskPresentation | null;
   isSelected: boolean;
-  projectName?: string | null;
+  project?: Pick<Project, 'id' | 'name' | 'path'> | null;
   planLabel: string;
   planKind?: ArchitectPlanKind | null;
   isAssistantRunning: boolean;
@@ -253,7 +255,7 @@ const TaskItem: React.FC<TaskItemProps> = ({
   mergeWorkflowRuntime,
   multiRepoPresentation,
   isSelected,
-  projectName,
+  project,
   planLabel,
   planKind,
   isAssistantRunning,
@@ -274,12 +276,12 @@ const TaskItem: React.FC<TaskItemProps> = ({
   const taskMenuRef = useRef<HTMLDivElement>(null);
   const trimmedPlanLabel = planLabel.trim();
   const contextBadges: TaskContextBadgeDescriptor[] = [];
-  const trimmedProjectName = projectName?.trim() ?? '';
-  if (trimmedProjectName.length > 0) {
+  const trimmedProjectName = project?.name.trim() ?? '';
+  if (project && trimmedProjectName.length > 0) {
     contextBadges.push({
       key: 'project',
       label: trimmedProjectName,
-      icon: 'folder-git-2',
+      project,
       title: trimmedProjectName,
     });
   }
@@ -512,7 +514,11 @@ const TaskItem: React.FC<TaskItemProps> = ({
                     taskContextBadgeToneClassName[badge.tone ?? 'default']
                   )}
                 >
-                  {badge.icon && <Icon name={badge.icon} size={10} className="shrink-0 text-current" />}
+                  {badge.project ? (
+                    <ProjectIcon project={badge.project} size={10} className="text-current" />
+                  ) : badge.icon ? (
+                    <Icon name={badge.icon} size={10} className="shrink-0 text-current" />
+                  ) : null}
                   <span className="truncate">{badge.label}</span>
                 </span>
               ))}
@@ -834,9 +840,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const handleCreateManualFeature = async ({
     projectId,
     taskKind,
+    startPoint,
   }: {
     projectId: string;
     taskKind: StandaloneTaskKind;
+    startPoint:
+      | { kind: 'new' }
+      | { kind: 'worktree'; worktree: import('../../services/tauriIpc').GitAvailableWorktreeDto }
+      | { kind: 'branch'; branch: import('../../services/tauriIpc').GitAvailableTaskBranchDto };
   }) => {
     if (taskMutationDisabled || taskExecutionDisabled) {
       notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
@@ -904,6 +915,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         title: provisionalTitle,
         description: '',
         taskKind,
+        existingBranchName: startPoint.kind === 'worktree'
+          ? startPoint.worktree.branchName
+          : startPoint.kind === 'branch'
+            ? startPoint.branch.name
+            : null,
       });
       await activateTask(taskId);
       if (!(await selectConversation(conversation.id))) {
@@ -1296,7 +1312,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
 
   const buildTaskCommandModalState = async (task: ImplementTask) => {
     const executionTask = retargetTaskForCurrentScope(task);
-    const registry = await loadTaskProjectCommandRegistry();
     const taskProjectIds = getTaskCommandProjectIds(executionTask);
     const taskGroup =
       getProjectGroupByProjectId(projectGroups, executionTask.project_id) ||
@@ -1306,6 +1321,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       taskProjectIds
         .map((projectId) => getProjectById(projectId))
         .filter((project): project is NonNullable<ReturnType<typeof getProjectById>> => Boolean(project));
+    const registry = await loadTaskProjectCommandRegistry(
+      modalProjectsSource.map((project) => project.id),
+    );
 
     return {
       taskId: executionTask.id,
@@ -2123,7 +2141,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                         mergeWorkflowRuntime={mergeWorkflowRuntimeByTaskId[row.task.id] ?? null}
                         multiRepoPresentation={row.multiRepoPresentation}
                         isSelected={selectedTaskId === row.task.id}
-                        projectName={getProjectById(row.task.project_id)?.name ?? null}
+                        project={getProjectById(row.task.project_id) ?? null}
                         planLabel={getTaskPlanLabel(row.task)}
                         planKind={planKindsById.get(row.task.plan_id) ?? null}
                         isAssistantRunning={runningTaskIds.has(row.task.id)}

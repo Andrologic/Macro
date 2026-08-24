@@ -4,12 +4,15 @@ import { useTranslation } from 'react-i18next';
 import { useSkillsStore } from '../../../stores/useSkillsStore';
 import { useProviderStore } from '../../../stores/useProviderStore';
 import { useAppStore } from '../../../stores/useAppStore';
+import { useConfigStore } from '../../../stores/useConfigStore';
 import { getServiceRuntimeCapabilities } from '../../../services';
 import { loadPreference, PREF_KEYS } from '../../../services/preferences';
 import { DEFAULT_TOOL_RISK_LEVEL } from '../../../services/toolSecurityPolicy';
 import { normalizeSkillLookupName } from '../../../services/skills/identity';
+import { isSkillTrustCurrent } from '../../../services/skills/settings';
 import type { Project, SkillManifest, SkillSettings, ToolRiskLevel } from '../../../types';
 import { SkillCard } from './SkillCard';
+import { SkillSourcesPanel } from './SkillSourcesPanel';
 import { Icon } from '../../ui/Icon';
 import { Input } from '../../ui/Input';
 import { Textarea } from '../../ui/Textarea';
@@ -22,6 +25,13 @@ type SkillCreateLocation = {
   label: string;
   description: string;
   projectId?: string;
+  destinationId?: string;
+};
+
+type SkillsConfig = {
+  installDestinations?: Record<string, { scope: 'user' | 'project'; path: string }>;
+  defaultGlobalDestination?: string | null;
+  defaultProjectDestination?: string | null;
 };
 
 const DEFAULT_SKILL_NAME = 'new-skill';
@@ -44,6 +54,8 @@ export const SkillsView: React.FC = () => {
     setSkillScriptsEnabled,
   } = useSkillsStore();
   const projectGroups = useAppStore((state) => state.projectGroups);
+  const standaloneProjects = useAppStore((state) => state.standaloneProjects);
+  const configSnapshot = useConfigStore((state) => state.snapshot);
   const nativeToolsSupported = useProviderStore((state) =>
     state.selectedSupportsNativeToolCalling()
   );
@@ -58,27 +70,45 @@ export const SkillsView: React.FC = () => {
   const [createLocationId, setCreateLocationId] = useState('global');
 
   const projectsWithPaths = useMemo<Project[]>(
-    () => projectGroups
-      .flatMap((group) => group.projects)
+    () => [
+      ...(standaloneProjects ?? []),
+      ...projectGroups.flatMap((group) => group.projects),
+    ]
       .filter((project) => project.path.trim().length > 0),
-    [projectGroups],
+    [projectGroups, standaloneProjects],
   );
 
-  const createLocations = useMemo<SkillCreateLocation[]>(() => [
-    {
-      id: 'global',
+  const createLocations = useMemo<SkillCreateLocation[]>(() => {
+    const globalConfig = (configSnapshot?.effective.skills ?? {}) as SkillsConfig;
+    const globalDestinations = Object.entries(globalConfig.installDestinations ?? {})
+      .filter(([, destination]) => destination.scope === 'user');
+    const globalDefault = globalConfig.defaultGlobalDestination;
+    const locations: SkillCreateLocation[] = globalDestinations.map(([id, destination]) => ({
+      id: id === globalDefault ? 'global' : `global:${id}`,
       destinationKind: 'global',
-      label: t('skills.createGlobalLocation', 'Global skills'),
-      description: '~/.agents/skills',
-    },
-    ...projectsWithPaths.map((project) => ({
-      id: `project:${project.id}`,
-      destinationKind: 'project' as const,
-      projectId: project.id,
-      label: project.name,
-      description: `${project.path}/.agents/skills`,
-    })),
-  ], [projectsWithPaths, t]);
+      destinationId: id,
+      label: id === globalDefault
+        ? t('skills.createGlobalLocation', 'Global skills')
+        : `${t('skills.createGlobalLocation', 'Global skills')} · ${id}`,
+      description: destination.path,
+    }));
+    for (const project of projectsWithPaths) {
+      const projectConfig = (configSnapshot?.projectEffective[project.id]?.skills ?? globalConfig) as SkillsConfig;
+      const projectDefault = projectConfig.defaultProjectDestination;
+      for (const [id, destination] of Object.entries(projectConfig.installDestinations ?? {})) {
+        if (destination.scope !== 'project') continue;
+        locations.push({
+          id: id === projectDefault ? `project:${project.id}` : `project:${project.id}:${id}`,
+          destinationKind: 'project',
+          destinationId: id,
+          projectId: project.id,
+          label: id === projectDefault ? project.name : `${project.name} · ${id}`,
+          description: destination.path,
+        });
+      }
+    }
+    return locations;
+  }, [configSnapshot, projectsWithPaths, t]);
   const skillCreationSupported = runtimeCapabilities.skills && runtimeCapabilities.skillCreation !== false;
 
   useEffect(() => {
@@ -168,6 +198,7 @@ export const SkillsView: React.FC = () => {
       name: createName,
       description: createDescription,
       destinationKind: selectedLocation.destinationKind,
+      destinationId: selectedLocation.destinationId ?? null,
       projectId: selectedLocation.projectId ?? null,
     });
     const error = useSkillsStore.getState().lastError;
@@ -259,6 +290,12 @@ export const SkillsView: React.FC = () => {
     if (skill.scripts.length > 0 && toolRiskLevel === 'strict') {
       reasons.push(t('skills.unavailable.strictScripts', 'Strict risk mode blocks skill scripts.'));
     }
+    if (skill.scripts.length > 0 && settings.scriptsEnabled && !isSkillTrustCurrent(settings, skill.contentHash)) {
+      reasons.push(t(
+        'skills.unavailable.trustChanged',
+        'The skill content changed. Approve the current version before running scripts.',
+      ));
+    }
     return Array.from(new Set(reasons));
   };
 
@@ -294,6 +331,8 @@ export const SkillsView: React.FC = () => {
           </span>
         </div>
       )}
+
+      <SkillSourcesPanel projects={projectsWithPaths} onChanged={refreshSkills} />
 
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Input
@@ -434,6 +473,7 @@ export const SkillsView: React.FC = () => {
                   {t('skills.createLocationLabel', 'Location')}
                 </span>
                 <select
+                  aria-label={t('skills.createLocationLabel', 'Location')}
                   value={createLocationId}
                   onChange={(event) => setCreateLocationId(event.target.value)}
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { FileChangesPanel as FileChangesPanelComponent } from './FileChangesPanel';
@@ -25,6 +25,9 @@ let useTaskStore!: typeof UseTaskStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
 let useProviderStore!: typeof UseProviderStoreHook;
 let useFileChangesStore!: typeof UseFileChangesStoreHook;
+let clearPreferencesForTest!: typeof import('../../services/preferences').clearPreferences;
+let loadPersistedPreferenceForTest!: typeof import('../../services/preferences').loadPersistedPreference;
+let savePreferenceForTest!: typeof import('../../services/preferences').savePreference;
 let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
 let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
 let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
@@ -39,6 +42,11 @@ let validateArtifactMock: ReturnType<typeof mock>;
 let unvalidateArtifactMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
+const hadInitialBackendTransport = Object.prototype.hasOwnProperty.call(
+  process.env,
+  'VITE_BACKEND_TRANSPORT',
+);
+const initialBackendTransport = process.env.VITE_BACKEND_TRANSPORT;
 const translationMock = createTranslationMock({
   'errors.degraded.fallback.dynamic': '{{message}}',
   'errors.degraded.worktree.checkedOut.title': 'Macro could not prepare the task workspace',
@@ -63,6 +71,77 @@ const translationMock = createTranslationMock({
   'errors.degraded.service.resourcePressure.nextStep':
     'Wait a moment, then retry. If this keeps happening, close extra project windows or terminals.',
 });
+
+const installFileChangesRuntimeMock = () => {
+  const documentKinds = ['runtime', 'settings', 'agents', 'providers', 'tools', 'skills', 'git'] as const;
+  const documents = new Map(documentKinds.map((kind) => [kind, {
+    kind,
+    scope: { type: 'user' },
+    value: { $schema: `./schemas/v1/${kind}.schema.json`, schemaVersion: 1 } as Record<string, unknown>,
+    etag: `${kind}-etag-0`,
+    readOnly: false,
+    invalid: false,
+    filePath: `${kind}.json`,
+    diagnostics: [],
+  }]));
+  let etagRevision = 0;
+
+  installTauriRuntimeMock(mock(async (command: string, payload?: Record<string, unknown>) => {
+    if (command === 'plugin:store|load') return 1;
+    if (command === 'plugin:store|get') return [undefined, false];
+    if (command === 'config_get_snapshot') {
+      return {
+        schemaVersion: 1,
+        effective: {
+          runtime: {},
+          settings: {},
+          agents: {},
+          providers: {},
+          tools: {},
+          skills: {},
+          git: {},
+        },
+        documents: [...documents.values()],
+        provenance: [],
+        diagnostics: [],
+        pendingRestartPaths: [],
+      };
+    }
+    if (command === 'config_get_document') {
+      return documents.get(String(payload?.kind) as typeof documentKinds[number]);
+    }
+    if (command === 'config_apply_patch') {
+      const request = payload?.request as {
+        kind: typeof documentKinds[number];
+        patch: Array<{ op: string; path: string; value?: unknown }>;
+      };
+      const current = documents.get(request.kind);
+      if (!current) return undefined;
+      const value = { ...current.value };
+      for (const operation of request.patch) {
+        const key = operation.path.replace(/^\//, '').replaceAll('~1', '/').replaceAll('~0', '~');
+        if (operation.op === 'remove') delete value[key];
+        else value[key] = operation.value;
+      }
+      etagRevision += 1;
+      const document = { ...current, value, etag: `${request.kind}-etag-${etagRevision}` };
+      documents.set(request.kind, document);
+      return {
+        status: 'applied',
+        document,
+        pendingChange: null,
+        restartRequired: false,
+      };
+    }
+    if (command === 'state_get_snapshot' || command === 'state_clear') {
+      return { schemaVersion: 1, values: {} };
+    }
+    if (command === 'state_set_value') {
+      return { schemaVersion: 1, values: { [String(payload?.key)]: payload?.value } };
+    }
+    return undefined;
+  }));
+};
 
 class ResizeObserverTestMock {
   private callback: ResizeObserverCallback;
@@ -113,6 +192,9 @@ const loadFileChangesPanelModules = async () => {
   const preferencesModule = await import(
     `../../services/preferences.ts?file-changes-panel-preferences-test=${importCounter}`
   );
+  clearPreferencesForTest = preferencesModule.clearPreferences;
+  loadPersistedPreferenceForTest = preferencesModule.loadPersistedPreference;
+  savePreferenceForTest = preferencesModule.savePreference;
   mock.module('../../services/preferences', () => ({
     ...preferencesModule,
   }));
@@ -437,11 +519,6 @@ const flushRender = async () => {
   await Promise.resolve();
 };
 
-const waitForPostAssistantRefresh = async () => {
-  await new Promise((resolve) => window.setTimeout(resolve, 450));
-  await flushRender();
-};
-
 describe('FileChangesPanel', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -599,6 +676,25 @@ describe('FileChangesPanel', () => {
     });
   };
 
+  const finishAssistantAndFlushPostAssistantRefresh = async () => {
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        finishAssistantRuntime();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(400);
+        await Promise.resolve();
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+    await act(async () => {
+      await flushRender();
+    });
+  };
+
   const buildBlockedMergeWorkflowRuntime = (
     overrides: Partial<{
       blockingKind: 'repository_dirty' | 'merge_conflict' | 'merge_in_progress' | null;
@@ -680,11 +776,7 @@ describe('FileChangesPanel', () => {
 
   beforeEach(async () => {
     mock.restore();
-    installTauriRuntimeMock(mock(async (command: string) => {
-      if (command === 'plugin:store|load') return 1;
-      if (command === 'plugin:store|get') return [undefined, false];
-      return undefined;
-    }));
+    installFileChangesRuntimeMock();
     resizeObserverWidth = 640;
     globalThis.ResizeObserver = ResizeObserverTestMock as unknown as typeof ResizeObserver;
     notifySuccessMock = mock(() => undefined);
@@ -732,7 +824,8 @@ describe('FileChangesPanel', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    window.localStorage.setItem('macro_metadataModelConfig', JSON.stringify({ mode: 'conversation' }));
+    await clearPreferencesForTest();
+    await savePreferenceForTest('metadataModelConfig', { mode: 'conversation' });
   });
 
   afterEach(async () => {
@@ -758,8 +851,12 @@ describe('FileChangesPanel', () => {
     if (initialFileChangesState) {
       useFileChangesStore.setState(initialFileChangesState, true);
     }
-    delete process.env.VITE_BACKEND_TRANSPORT;
-    window.localStorage.removeItem('macro_metadataModelConfig');
+    if (hadInitialBackendTransport) {
+      process.env.VITE_BACKEND_TRANSPORT = initialBackendTransport;
+    } else {
+      delete process.env.VITE_BACKEND_TRANSPORT;
+    }
+    await clearPreferencesForTest();
     mock.restore();
   });
 
@@ -1282,7 +1379,7 @@ describe('FileChangesPanel', () => {
   });
 
   it('asks for the metadata model choice the first time a commit is generated', async () => {
-    window.localStorage.removeItem('macro_metadataModelConfig');
+    await clearPreferencesForTest();
     const repository = buildRepository(true);
     seedStores(repository);
 
@@ -1314,7 +1411,9 @@ describe('FileChangesPanel', () => {
     });
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
-    expect(window.localStorage.getItem('macro_metadataModelConfig')).toContain('conversation');
+    expect(await loadPersistedPreferenceForTest<{ mode: string }>('metadataModelConfig')).toEqual({
+      mode: 'conversation',
+    });
   });
 
   it('shows the backend commit error message when the commit rejects with an object payload', async () => {
@@ -1484,15 +1583,12 @@ describe('FileChangesPanel', () => {
 
   it('uses the latest saved metadata model config when retrying after generation fails', async () => {
     const repository = buildRepository(true);
-    window.localStorage.setItem(
-      'macro_metadataModelConfig',
-      JSON.stringify({
-        mode: 'dedicated',
-        providerId: 'provider-a',
-        modelId: 'model-a',
-        reasoningEffort: null,
-      })
-    );
+    await savePreferenceForTest('metadataModelConfig', {
+      mode: 'dedicated',
+      providerId: 'provider-a',
+      modelId: 'model-a',
+      reasoningEffort: null,
+    });
     commitAllReadyTaskRepositoriesMock = mock(async () => {
       const error = new Error('model unavailable');
       error.name = 'SmartCommitMessageGenerationError';
@@ -3216,10 +3312,7 @@ describe('FileChangesPanel', () => {
 
     loadMergeWorkflowReviewMock.mockClear();
 
-    await act(async () => {
-      finishAssistantRuntime();
-      await waitForPostAssistantRefresh();
-    });
+    await finishAssistantAndFlushPostAssistantRefresh();
 
     expect(loadMergeWorkflowReviewMock).toHaveBeenCalledWith('task-1', { force: true });
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
@@ -3236,10 +3329,7 @@ describe('FileChangesPanel', () => {
 
     loadCurrentChangesMock.mockClear();
 
-    await act(async () => {
-      finishAssistantRuntime();
-      await waitForPostAssistantRefresh();
-    });
+    await finishAssistantAndFlushPostAssistantRefresh();
 
     expect(loadCurrentChangesMock).toHaveBeenCalledWith({ silent: true });
   });
@@ -3260,10 +3350,7 @@ describe('FileChangesPanel', () => {
 
     loadCurrentChangesMock.mockClear();
 
-    await act(async () => {
-      finishAssistantRuntime();
-      await waitForPostAssistantRefresh();
-    });
+    await finishAssistantAndFlushPostAssistantRefresh();
 
     expect(loadCurrentChangesMock).toHaveBeenCalledWith({
       silent: true,

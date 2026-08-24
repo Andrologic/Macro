@@ -1010,6 +1010,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     editMessage,
     getAgentCodeReplayPreview,
     restoreAgentCodeForReplay,
+    rollbackPendingAgentCodeReplay,
     getMessageImages,
     setMessageImages,
     architectPlanNamingRecovery,
@@ -1065,6 +1066,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     editMessage: state.editMessage,
     getAgentCodeReplayPreview: state.getAgentCodeReplayPreview,
     restoreAgentCodeForReplay: state.restoreAgentCodeForReplay,
+    rollbackPendingAgentCodeReplay: state.rollbackPendingAgentCodeReplay,
     getMessageImages: state.getMessageImages,
     setMessageImages: state.setMessageImages,
     architectPlanNamingRecovery: state.architectPlanNamingRecovery,
@@ -2813,6 +2815,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   } = useAgentCodeReplayConfirmation({
     getAgentCodeReplayPreview,
     restoreAgentCodeForReplay,
+    rollbackPendingAgentCodeReplay,
     editMessage,
     setMessageImages,
     getMessageImages,

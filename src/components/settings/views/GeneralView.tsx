@@ -24,6 +24,7 @@ import { Select } from '../../ui/Select';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { ToolSecuritySettingsSection } from './ToolSecuritySettingsSection';
+import { notify } from '../../ui/toastService';
 
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
@@ -42,7 +43,56 @@ export const GeneralView: React.FC = () => {
         String(CHAT_MAX_TURNS_DEFAULT)
     );
     const chatMaxTurnsTouchedRef = useRef(false);
+    const chatMaxTurnsSaveRevisionRef = useRef(0);
+    const projectOpenSaveRevisionsRef = useRef<Record<ProjectOpenAction, number>>({
+        editor: 0,
+        terminal: 0,
+        files: 0,
+    });
     const [isChatMaxTurnsEnabled, setIsChatMaxTurnsEnabled] = useState(true);
+
+    const reportSaveFailure = (error: unknown) => {
+        notify.error(t('settings.configuration.saveFailed', 'Could not save configuration'), {
+            description: error instanceof Error ? error.message : String(error),
+        });
+    };
+
+    const persistChatMaxTurns = async (
+        value: ChatMaxTurnsPreference,
+        previous: { enabled: boolean; maxTurns: number; draft: string }
+    ) => {
+        const revision = ++chatMaxTurnsSaveRevisionRef.current;
+        try {
+            await savePreference(PREF_KEYS.CHAT_MAX_TURNS, value);
+        } catch (error) {
+            if (chatMaxTurnsSaveRevisionRef.current === revision) {
+                setIsChatMaxTurnsEnabled(previous.enabled);
+                setChatMaxTurns(previous.maxTurns);
+                setChatMaxTurnsDraft(previous.draft);
+            }
+            reportSaveFailure(error);
+        }
+    };
+
+    const persistProjectOpenApp = async (
+        action: ProjectOpenAction,
+        nextValue: string,
+        previousValue: string
+    ) => {
+        const revision = projectOpenSaveRevisionsRef.current[action] + 1;
+        projectOpenSaveRevisionsRef.current[action] = revision;
+        try {
+            await saveProjectOpenAppPreference(action, nextValue);
+        } catch (error) {
+            if (projectOpenSaveRevisionsRef.current[action] === revision) {
+                setSelectedProjectOpenApps((current) => ({
+                    ...current,
+                    [action]: previousValue,
+                }));
+            }
+            reportSaveFailure(error);
+        }
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -116,33 +166,43 @@ export const GeneralView: React.FC = () => {
         }
 
         const nextValue = normalizeChatMaxTurns(numericValue) ?? CHAT_MAX_TURNS_DEFAULT;
+        const previous = {
+            enabled: isChatMaxTurnsEnabled,
+            maxTurns: chatMaxTurns,
+            draft: String(chatMaxTurns),
+        };
         setChatMaxTurns(nextValue);
         setChatMaxTurnsDraft(String(nextValue));
         if (nextValue !== chatMaxTurns) {
-            void savePreference(PREF_KEYS.CHAT_MAX_TURNS, nextValue);
+            void persistChatMaxTurns(nextValue, previous);
         }
     };
 
     const updateChatMaxTurnsEnabled = (enabled: boolean) => {
         chatMaxTurnsTouchedRef.current = true;
+        const previous = {
+            enabled: isChatMaxTurnsEnabled,
+            maxTurns: chatMaxTurns,
+            draft: chatMaxTurnsDraft,
+        };
         setIsChatMaxTurnsEnabled(enabled);
         if (enabled) {
             const nextValue = normalizeChatMaxTurns(chatMaxTurns);
             if (nextValue === CHAT_MAX_TURNS_DISABLED) {
                 setChatMaxTurns(CHAT_MAX_TURNS_DEFAULT);
                 setChatMaxTurnsDraft(String(CHAT_MAX_TURNS_DEFAULT));
-                void savePreference(PREF_KEYS.CHAT_MAX_TURNS, CHAT_MAX_TURNS_DEFAULT);
+                void persistChatMaxTurns(CHAT_MAX_TURNS_DEFAULT, previous);
                 return;
             }
 
             setChatMaxTurns(nextValue);
             setChatMaxTurnsDraft(String(nextValue));
-            void savePreference(PREF_KEYS.CHAT_MAX_TURNS, nextValue);
+            void persistChatMaxTurns(nextValue, previous);
             return;
         }
 
         setChatMaxTurnsDraft(String(chatMaxTurns));
-        void savePreference(PREF_KEYS.CHAT_MAX_TURNS, CHAT_MAX_TURNS_DISABLED);
+        void persistChatMaxTurns(CHAT_MAX_TURNS_DISABLED, previous);
     };
 
     const handleChatMaxTurnsKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -199,11 +259,12 @@ export const GeneralView: React.FC = () => {
                 disabled={isLoadingProjectOpenApps}
                 onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
                     const nextValue = event.target.value;
+                    const previousValue = selectedProjectOpenApps[action];
                     setSelectedProjectOpenApps((current) => ({
                         ...current,
                         [action]: nextValue,
                     }));
-                    void saveProjectOpenAppPreference(action, nextValue);
+                    void persistProjectOpenApp(action, nextValue, previousValue);
                 }}
             >
                 {renderProjectOpenOptions(projectOpenApps[action])}

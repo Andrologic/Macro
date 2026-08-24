@@ -84,8 +84,11 @@ const gitBranchListMock = mock(async () => ({
   current: 'develop',
 }));
 const gitBranchDeleteMock = mock(async () => undefined);
+const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-0000000000000001');
+const directCheckpointRemoveMock = mock(async () => true);
 const workspaceDeleteManualFeatureDraftMock = mock(async () => undefined);
 const workspaceDeleteManualFeatureMock = mock(async () => undefined);
+const workspaceArchiveManualFeatureMock = mock(async () => undefined);
 const dbAppSettings = new Map<string, string>();
 const dbGetAppSettingMock = mock(async (key: string) => {
   const valueJson = dbAppSettings.get(key);
@@ -226,6 +229,8 @@ const appStoreState = {
     id: string;
     name: string;
     path: string;
+    directEdit?: boolean;
+    gitSetupState?: 'ready' | 'not_git';
   }>,
   activeArchitectPlanId: null as string | null,
   activePlanContext: null as { targetBranch?: string | null } | null,
@@ -233,6 +238,8 @@ const appStoreState = {
     id: string;
     name: string;
     path: string;
+    directEdit?: boolean;
+    gitSetupState?: 'ready' | 'not_git';
   },
   setMode: mock((_mode: 'Implement') => undefined),
   setSelectedTask: mock((_taskId: string | null) => undefined),
@@ -260,10 +267,13 @@ mock.module('../services/tauriIpc', () => ({
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  directCheckpointResolveId: directCheckpointResolveIdMock,
+  directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
+  workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -289,10 +299,13 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  directCheckpointResolveId: directCheckpointResolveIdMock,
+  directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
+  workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -720,6 +733,10 @@ describe('useTaskStore merge workflow review loading', () => {
       current: 'develop',
     }));
     gitBranchDeleteMock.mockClear();
+    directCheckpointResolveIdMock.mockClear();
+    directCheckpointResolveIdMock.mockImplementation(async () => 'task-checkpoint-0000000000000001');
+    directCheckpointRemoveMock.mockClear();
+    directCheckpointRemoveMock.mockImplementation(async () => true);
     dbSetAppSettingMock.mockImplementation(async (params: { key: string; valueJson: string }) => {
       dbAppSettings.set(params.key, params.valueJson);
       return {
@@ -730,6 +747,7 @@ describe('useTaskStore merge workflow review loading', () => {
     });
     workspaceDeleteManualFeatureDraftMock.mockClear();
     workspaceDeleteManualFeatureMock.mockClear();
+    workspaceArchiveManualFeatureMock.mockClear();
     workspaceRevertManualFeatureToDraftMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
@@ -875,6 +893,109 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
   });
 
+  it('deletes a direct-edit task through the durable cleanup journal without Git calls', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-direct',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      conversation_id: 'conv-direct',
+      assigned_branch: 'direct',
+      branch_name: 'direct',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'direct',
+        executionMode: 'direct',
+        checkpointId: 'task-checkpoint-0000000000000001',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::direct',
+        repoPath: '/repos/web',
+      }],
+    });
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: false,
+      gitSetupState: 'ready',
+    });
+    chatStoreConversations = [{ id: 'conv-direct', task_id: task.id }];
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: { 'project-1::direct': '/repos/web' },
+      refreshFromPlan: mock(async () => {
+        useTaskStore.setState({ tasks: [] });
+      }),
+      lastError: null,
+    });
+
+    await useTaskStore.getState().deleteTask(task.id);
+
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(directCheckpointRemoveMock).toHaveBeenCalledWith({
+      checkpointId: 'task-checkpoint-0000000000000001',
+    });
+    expect(directCheckpointResolveIdMock).not.toHaveBeenCalled();
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(
+      dbSetAppSettingMock.mock.calls.some(([params]) =>
+        params.valueJson.includes('"cleanupKind":"direct"')
+      )
+    ).toBe(true);
+  });
+
+  it('archives a direct-edit task without Git cleanup and preserves its checkpoint', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-direct-archive',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'direct',
+      branch_name: 'direct',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'direct',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::direct',
+        repoPath: '/repos/web',
+      }],
+    });
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: true,
+      gitSetupState: 'not_git',
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: { 'project-1::direct': '/repos/web' },
+      refreshFromPlan: mock(async () => undefined),
+      lastError: null,
+    });
+
+    await useTaskStore.getState().archiveTask(task.id);
+
+    expect(workspaceArchiveManualFeatureMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      reason: null,
+      mergedAt: null,
+    });
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(directCheckpointRemoveMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().branchWorktrees).toEqual({});
+  });
+
   it('blocks deletion while the linked conversation is still running', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-running-conversation',
@@ -1015,6 +1136,159 @@ describe('useTaskStore merge workflow review loading', () => {
 
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith('conv-restarted');
     expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('deletes a surviving direct task before removing its checkpoint during recovery', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-direct-recovery',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: 'conv-direct-recovery',
+      assigned_branch: 'direct',
+      branch_name: 'direct',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'direct',
+        worktreeKey: 'project-1::direct',
+        repoPath: '/project/that/may/move',
+      }],
+    });
+    dbAppSettings.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: task.id,
+        conversationId: task.conversation_id,
+        phase: 'task_deleting',
+        draft: false,
+        executionTargets: [{
+          worktreeKey: 'project-1::direct',
+          repoPath: '/project/that/may/move',
+          branchName: 'direct',
+          branchExisted: false,
+          worktreeRemoved: true,
+          branchRemoved: true,
+          cleanupKind: 'direct',
+          checkpointRemoved: false,
+          checkpointId: 'task-checkpoint-0000000000000001',
+        }],
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    const recoveryOrder: string[] = [];
+    workspaceDeleteManualFeatureMock.mockImplementation(async () => {
+      recoveryOrder.push('task');
+    });
+    directCheckpointRemoveMock.mockImplementation(async () => {
+      recoveryOrder.push('checkpoint');
+      return true;
+    });
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task],
+      plans: [],
+      hasStandaloneTasks: true,
+      source: 'mixed' as const,
+    }));
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(recoveryOrder).toEqual(['task', 'checkpoint']);
+    expect(directCheckpointRemoveMock).toHaveBeenCalledWith({
+      checkpointId: 'task-checkpoint-0000000000000001',
+    });
+    expect(directCheckpointResolveIdMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('finishes an interrupted direct return to draft before removing its checkpoint', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-direct-revert-recovery',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: 'conv-direct-revert-recovery',
+      assigned_branch: 'direct',
+      branch_name: 'direct',
+      execution_targets: [{
+        projectId: 'project-1',
+        branchName: 'direct',
+        executionMode: 'direct',
+        checkpointId: 'task-checkpoint-0000000000000001',
+        worktreeKey: 'project-1::direct',
+        repoPath: '/project/that/may/move',
+      }],
+    });
+    dbAppSettings.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: task.id,
+        conversationId: task.conversation_id,
+        phase: 'draft_reverting',
+        draft: false,
+        targetBranch: '@direct-draft-revert',
+        revertTitle: 'Draft title',
+        revertDescription: 'Draft description',
+        executionTargets: [{
+          worktreeKey: 'project-1::direct',
+          repoPath: '/project/that/may/move',
+          branchName: 'direct',
+          branchExisted: false,
+          worktreeRemoved: true,
+          branchRemoved: true,
+          cleanupKind: 'direct',
+          checkpointRemoved: false,
+          checkpointId: 'task-checkpoint-0000000000000001',
+        }],
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    const recoveryOrder: string[] = [];
+    workspaceRevertManualFeatureToDraftMock.mockImplementation(async () => {
+      recoveryOrder.push('task');
+      return {} as never;
+    });
+    directCheckpointRemoveMock.mockImplementation(async () => {
+      recoveryOrder.push('checkpoint');
+      return true;
+    });
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task],
+      plans: [],
+      hasStandaloneTasks: true,
+      source: 'mixed' as const,
+    }));
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(recoveryOrder).toEqual(['task', 'checkpoint']);
+    expect(workspaceRevertManualFeatureToDraftMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      conversationId: task.conversation_id,
+      title: 'Draft title',
+      description: 'Draft description',
+    });
+    expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
@@ -2075,6 +2349,84 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
     );
     expect(useTaskStore.getState().lastError).toBeNull();
   });
+
+  it('finishes a direct-edit task without entering the merge workflow', async () => {
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: true,
+      gitSetupState: 'not_git',
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => {
+      useTaskStore.setState({
+        tasks: [buildStandaloneTask({ status: 'Completed' })],
+      });
+    });
+    const runMergeWorkflowMock = mock(async () => undefined);
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        status: 'InReview',
+        execution_targets: [{
+          projectId: 'project-1',
+          branchName: 'direct',
+          worktreeKey: 'project-1::direct',
+          executionKind: 'worktree',
+          repoPath: '/repos/web',
+        }],
+      })],
+      refreshFromPlan: refreshFromPlanMock,
+      runMergeWorkflow: runMergeWorkflowMock,
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+    appStoreState.getProjectById = (_projectId: string) => null;
+
+    expect(workspaceUpdateStandaloneTaskStatusMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      status: 'Completed',
+    });
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('Completed');
+    expect(runMergeWorkflowMock).not.toHaveBeenCalled();
+    expect(refreshFromPlanMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects direct-edit completion when persistence refuses the transition', async () => {
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: true,
+      gitSetupState: 'not_git',
+    });
+    updateStandaloneTaskStatusImpl = async () => {
+      throw new Error('Persistence failed');
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const runMergeWorkflowMock = mock(async () => undefined);
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        status: 'InReview',
+        execution_targets: [{
+          projectId: 'project-1',
+          branchName: 'direct',
+          worktreeKey: 'project-1::direct',
+          executionKind: 'worktree',
+          repoPath: '/repos/web',
+        }],
+      })],
+      runMergeWorkflow: runMergeWorkflowMock,
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow('Persistence failed');
+
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InReview');
+    expect(runMergeWorkflowMock).not.toHaveBeenCalled();
+    appStoreState.getProjectById = (_projectId: string) => null;
+  });
 });
 
 describe('useTaskStore task status transition guards', () => {
@@ -2256,6 +2608,7 @@ describe('useTaskStore reopenTask and retryTask', () => {
 
 describe('useTaskStore revertManualFeatureToDraft', () => {
   beforeEach(() => {
+    gitStatusMock.mockClear();
     gitStatusMock.mockImplementation(async () => ({
       branch: 'feature/quick-export',
       is_clean: true,
@@ -2267,6 +2620,8 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
     gitWorktreeRemoveMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchDeleteMock.mockClear();
+    directCheckpointResolveIdMock.mockClear();
+    directCheckpointRemoveMock.mockClear();
     workspaceRevertManualFeatureToDraftMock.mockClear();
     syncTerminalDisplayMetadataMock.mockClear();
     syncManualFeatureMetadataFromTaskMock.mockClear();
@@ -2371,6 +2726,63 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
       branch_name: '',
       assigned_branch: '',
     });
+  });
+
+  it('keeps a task in direct mode when the project gains Git before it returns to draft', async () => {
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: false,
+      gitSetupState: 'ready',
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => {
+      useTaskStore.setState({
+        tasks: [buildStandaloneTask({
+          standalone_kind: 'manual_feature',
+          status: 'Pending',
+          draft: true,
+          assigned_branch: '',
+          branch_name: '',
+          execution_targets: [],
+        })],
+      });
+    });
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        standalone_kind: 'manual_feature',
+        status: 'InProgress',
+        draft: false,
+        assigned_branch: 'direct',
+        branch_name: 'direct',
+        execution_targets: [{
+          projectId: 'project-1',
+          branchName: 'direct',
+          executionMode: 'direct',
+          checkpointId: 'task-checkpoint-0000000000000001',
+          worktreeKey: 'project-1::direct',
+          repoPath: '/repos/web',
+        }],
+      })],
+      branchWorktrees: { 'project-1::direct': '/repos/web' },
+      activeBranchName: 'direct',
+      activeRepositoryPath: '/repos/web',
+      refreshFromPlan: refreshFromPlanMock,
+      lastError: null,
+    });
+
+    await useTaskStore.getState().revertManualFeatureToDraft({ taskId: 'task-1' });
+
+    expect(directCheckpointRemoveMock).toHaveBeenCalledWith({
+      checkpointId: 'task-checkpoint-0000000000000001',
+    });
+    expect(directCheckpointResolveIdMock).not.toHaveBeenCalled();
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().branchWorktrees).toEqual({});
   });
 });
 

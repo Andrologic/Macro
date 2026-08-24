@@ -77,6 +77,7 @@ export interface ServiceProvider {
     groupName?: string | null;
     path?: string;
     gitFlowSettings?: ProjectGitFlowSettings;
+    directEdit?: boolean;
     requestId?: string | null;
   }) => Promise<ProjectDto>;
   previewProjectGitSetup: (data: {
@@ -146,6 +147,7 @@ export interface ServiceProvider {
   updateProjectAccess: (data: {
     projectId: string;
     userReadOnly: boolean;
+    directEdit?: boolean;
     confirmedMigration?: boolean;
   }) => Promise<ProjectDto>;
   previewProjectAccessChange: (data: {

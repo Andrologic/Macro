@@ -19,6 +19,7 @@ const loadProjectOpenSettingsMock = mock(async () => ({
 const saveProjectOpenAppPreferenceMock = mock(
   async (_action?: string, _value?: string) => undefined
 );
+const notifyErrorMock = mock((_title?: string, _options?: unknown) => undefined);
 const setProjectSwitchPolicyMock = mock(
   async (_policy?: 'resume_per_project' | 'reset_on_switch') => undefined
 );
@@ -107,6 +108,10 @@ const loadGeneralView = async () => {
     ...actualPreferences,
     loadPreference: (key: string) => loadPreferenceMock(key),
     savePreference: (key: string, value: unknown) => savePreferenceMock(key, value),
+  }));
+
+  mock.module('../../ui/toastService', () => ({
+    notify: { error: notifyErrorMock },
   }));
 
   mock.module('../../ui/Select', () => ({
@@ -211,6 +216,7 @@ describe('GeneralView', () => {
     savePreferenceMock.mockClear();
     loadProjectOpenSettingsMock.mockClear();
     saveProjectOpenAppPreferenceMock.mockClear();
+    notifyErrorMock.mockClear();
     setProjectSwitchPolicyMock.mockClear();
     setMetadataAutoPushMock.mockClear();
     appState = {
@@ -293,6 +299,36 @@ describe('GeneralView', () => {
     });
 
     expect(savePreferenceMock).toHaveBeenCalledWith('toolRiskLevel', 'yolo');
+  });
+
+  it('restores the previous risk level when saving fails', async () => {
+    loadPreferenceMock.mockImplementation(async () => 'balanced');
+    savePreferenceMock.mockImplementationOnce(async () => {
+      throw new Error('write rejected');
+    });
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const strictButton = Array.from(container?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Strict')
+    );
+    await act(async () => {
+      strictButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(strictButton?.className).not.toContain('border-primary');
+    const balancedButton = Array.from(container?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Balanced')
+    );
+    expect(balancedButton?.className).toContain('border-primary');
+    expect(notifyErrorMock).toHaveBeenCalledTimes(1);
   });
 
   it('keeps max agent turns editable and saves the committed value on blur', async () => {
@@ -409,6 +445,72 @@ describe('GeneralView', () => {
 
     expect(input?.value).toBe('12');
     expect(savePreferenceMock).toHaveBeenCalledWith('chatMaxTurns', 12);
+  });
+
+  it('restores max agent turns when the JSON write fails', async () => {
+    loadPreferenceMock.mockImplementation(async (key?: string) =>
+      key === 'chatMaxTurns' ? 11 : 'balanced'
+    );
+    savePreferenceMock.mockImplementationOnce(async () => {
+      throw new Error('etag conflict');
+    });
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const input = container?.querySelector<HTMLInputElement>('#chat-max-turns');
+    await act(async () => {
+      if (!input) return;
+      setInputValue(input, '12');
+      blurInput(input);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('11');
+    expect(notifyErrorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores a project opener selection when saving fails', async () => {
+    loadProjectOpenSettingsMock.mockImplementationOnce(async () => ({
+      appsByAction: {
+        editor: [
+          { id: 'none', label: 'Do nothing', kind: 'none' as const },
+          { id: 'vscode', label: 'VS Code', kind: 'detected' as const },
+        ],
+        terminal: [{ id: 'none', label: 'Do nothing', kind: 'none' as const }],
+        files: [{ id: 'none', label: 'Do nothing', kind: 'none' as const }],
+      },
+      selectedAppIdsByAction: { editor: 'none', terminal: 'none', files: 'none' },
+    }));
+    saveProjectOpenAppPreferenceMock.mockImplementationOnce(async () => {
+      throw new Error('write rejected');
+    });
+    const { GeneralView } = await loadGeneralView();
+
+    await act(async () => {
+      root?.render(<GeneralView />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const editorSelect = Array.from(container?.querySelectorAll('select') ?? []).find(
+      (select) => Array.from(select.options).some((option) => option.value === 'vscode')
+    );
+    await act(async () => {
+      if (!editorSelect) return;
+      editorSelect.value = 'vscode';
+      editorSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(editorSelect?.value).toBe('none');
+    expect(notifyErrorMock).toHaveBeenCalledTimes(1);
   });
 
   it('clamps max agent turns on blur and restores empty drafts without saving', async () => {
