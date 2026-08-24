@@ -460,6 +460,10 @@
     "typeMessage": "Tapez un message, ou / pour ajouter du contexte...",
     "send": "Envoyer",
     "stop": "Arrêter",
+    "steerActiveTurn": "Orienter le tour actif",
+    "queueNextTurn": "Ajouter au prochain tour",
+    "secondaryAction": "Autre action",
+    "activeTurnSendFailed": "Message non envoyé",
     "saveRegenerate": "Enregistrer et régénérer",
     "mermaidDiagram": "Diagramme de sirène",
     "copyCode": "Copier le code",
@@ -2043,6 +2047,11 @@
     "recordingHint": "Appuyez sur votre raccourci maintenant... (Esc pour annuler)",
     "promptHistoryBehavior": "Comportement de l'historique des prompts",
     "promptHistoryBehaviorDesc": "Utilisez des raccourcis dédiés (Ctrl/Cmd + ArrowUp/ArrowDown) au lieu des ArrowUp/ArrowDown contextuels.",
+    "activeTurnSendBehavior": "Action par défaut pendant une réponse",
+    "activeTurnSendBehaviorSteer": "Entrée oriente le tour actif. Le raccourci secondaire met le message en file d’attente.",
+    "activeTurnSendBehaviorQueue": "Entrée met le message en file d’attente. Le raccourci secondaire oriente le tour actif.",
+    "queue": "File d’attente",
+    "steer": "Orienter",
     "disabledInContextualMode": "Désactivé lorsque le mode contextuel ArrowUp/ArrowDown est actif.",
     "conflictWith": "Conflit avec",
     "recordShortcut": "Raccourci d'enregistrement",
@@ -2110,6 +2119,10 @@
       "historyNext": {
         "label": "Prompt suivant",
         "description": "Naviguer vers le prompt suivant dans le chat input"
+      },
+      "secondarySend": {
+        "label": "Action secondaire du composer",
+        "description": "Utiliser l’autre action pendant qu’une réponse est en cours"
       }
     }
   },

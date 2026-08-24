@@ -394,6 +394,7 @@ export interface StreamingChatOptions {
     | StreamingFollowUpCompactionResult
     | StreamMessage[]
     | void;
+  consumePendingSteers?: () => StreamMessage[];
   fileToolContext?: Array<{
     title: string;
     source: string;
@@ -2962,6 +2963,12 @@ const streamChatViaNativeToolCallingProvider = async (
       }
 
       if (validToolCalls.length === 0) {
+        const pendingSteers = options.consumePendingSteers?.() ?? [];
+        if (pendingSteers.length > 0) {
+          currentMessages.push(...pendingSteers.map(cloneStreamMessage));
+          turnCount += 1;
+          continue;
+        }
         if (
           shouldRetryArchitectPostToolResponse({
             mode: options.mode,
@@ -4253,6 +4260,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
       // If no valid tool calls were made in this turn, we are done
       if (validToolCalls.length === 0) {
+        const pendingSteers = options.consumePendingSteers?.() ?? [];
+        if (pendingSteers.length > 0) {
+          currentMessages.push(...pendingSteers.map(cloneStreamMessage));
+          turnCount += 1;
+          continue;
+        }
         break;
       }
 

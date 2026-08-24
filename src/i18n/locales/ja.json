@@ -438,6 +438,10 @@
     "deletingConversations": "削除中...",
     "typeMessage": "メッセージを入力、または / でコンテキストを追加...",
     "send": "送信",
+    "steerActiveTurn": "進行中のターンを修正",
+    "queueNextTurn": "次のターンに追加",
+    "secondaryAction": "別の操作",
+    "activeTurnSendFailed": "メッセージを送信できませんでした",
     "stop": "停止",
     "saveRegenerate": "保存と再生成",
     "mermaidDiagram": "人魚の図",
@@ -2022,6 +2026,11 @@
     "recordingHint": "今すぐショートカットを押してください... (キャンセルするには Esc)",
     "promptHistoryBehavior": "Prompt 履歴の動作",
     "promptHistoryBehaviorDesc": "コンテキストに応じた ArrowUp/ArrowDown の代わりに、専用のショートカット (Ctrl/Cmd + ArrowUp/ArrowDown) を使用します。",
+    "activeTurnSendBehavior": "応答中の既定の操作",
+    "activeTurnSendBehaviorSteer": "Enter で進行中のターンを修正し、別のショートカットでキューに追加します。",
+    "activeTurnSendBehaviorQueue": "Enter でキューに追加し、別のショートカットで進行中のターンを修正します。",
+    "queue": "キュー",
+    "steer": "修正",
     "disabledInContextualMode": "コンテキスト ArrowUp/ArrowDown モードがアクティブな間は無効になります。",
     "conflictWith": "との衝突",
     "recordShortcut": "録音ショートカット",
@@ -2089,6 +2098,10 @@
       "historyNext": {
         "label": "次の prompt",
         "description": "チャット入力で次の prompt に移動"
+      },
+      "secondarySend": {
+        "label": "Composer の別操作",
+        "description": "応答中に別の操作を使用します"
       }
     }
   },

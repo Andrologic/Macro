@@ -439,6 +439,10 @@
     "deletingConversations": "Löschen...",
     "typeMessage": "Nachricht eingeben oder / für Kontext...",
     "send": "Senden",
+    "steerActiveTurn": "Aktive Antwort steuern",
+    "queueNextTurn": "Für die nächste Anfrage vormerken",
+    "secondaryAction": "Alternative Aktion",
+    "activeTurnSendFailed": "Nachricht nicht gesendet",
     "stop": "Stopp",
     "saveRegenerate": "Speichern und neu generieren",
     "mermaidDiagram": "Meerjungfrau-Diagramm",
@@ -2023,6 +2027,11 @@
     "recordingHint": "Drücken Sie jetzt Ihre Tastenkombination ... (Esc zum Abbrechen)",
     "promptHistoryBehavior": "Verhalten der Prompt-Historie",
     "promptHistoryBehaviorDesc": "Verwenden Sie dedizierte Tastenkombinationen (Strg/Befehl + Pfeil nach oben/nach unten) anstelle der kontextuellen Tasten nach oben/nach unten.",
+    "activeTurnSendBehavior": "Standardaktion während einer Antwort",
+    "activeTurnSendBehaviorSteer": "Eingabe steuert die aktive Antwort. Der sekundäre Kurzbefehl stellt die Nachricht in die Warteschlange.",
+    "activeTurnSendBehaviorQueue": "Eingabe stellt die Nachricht in die Warteschlange. Der sekundäre Kurzbefehl steuert die aktive Antwort.",
+    "queue": "Warteschlange",
+    "steer": "Steuern",
     "disabledInContextualMode": "Deaktiviert, während der kontextbezogene Pfeil-nach-oben-/Pfeil-nach-unten-Modus aktiv ist.",
     "conflictWith": "Konflikt mit",
     "recordShortcut": "Verknüpfung aufzeichnen",
@@ -2090,6 +2099,10 @@
       "historyNext": {
         "label": "Nächster Prompt",
         "description": "Zum nächsten Prompt im Chat-Input wechseln"
+      },
+      "secondarySend": {
+        "label": "Sekundäre Composer-Aktion",
+        "description": "Alternative Aktion während einer laufenden Antwort verwenden"
       }
     }
   },
