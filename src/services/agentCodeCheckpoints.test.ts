@@ -643,6 +643,112 @@ describe("agentCodeCheckpoints", () => {
     mock.restore();
   });
 
+  it("refuses a remote replay when the file changes after prevalidation", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    let snapshotReads = 0;
+    const originalFetch = globalThis.fetch;
+    const originalTransport = process.env.VITE_BACKEND_TRANSPORT;
+    const originalBaseUrl = process.env.VITE_REMOTE_API_BASE_URL;
+    process.env.VITE_BACKEND_TRANSPORT = "remote";
+    process.env.VITE_REMOTE_API_BASE_URL = "http://127.0.0.1:8787";
+    mock.module("./tauriIpc", () => ({
+      isTauriAvailable: () => false,
+    }));
+    globalThis.fetch = mock(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const requestUrl = String(url);
+        if (requestUrl.includes("/mode-policy")) {
+          return new Response(
+            JSON.stringify({
+              allowed_tool_ids: ["read", "write"],
+              enforce_macro_only_writes: false,
+              capabilities: [
+                "content_revisions_v1",
+                "recoverable_checkpoints_v1",
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (requestUrl.includes("/checkpoint-snapshot")) {
+          snapshotReads += 1;
+          const concurrent = snapshotReads > 1;
+          return new Response(
+            JSON.stringify({
+              snapshot: {
+                exists: true,
+                content: concurrent ? "external change" : "after",
+                revision: concurrent
+                  ? "external-revision"
+                  : "after-revision",
+                unixMode: 0o644,
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (requestUrl.includes("/tools/execute")) {
+          writes.push(
+            JSON.parse(String(init?.body)) as Record<string, unknown>,
+          );
+          return new Response(JSON.stringify({ result: "{}" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    ) as unknown as typeof fetch;
+
+    try {
+      const modulePath =
+        "./agentCodeCheckpoints.ts?remote-replay-concurrent-change-test";
+      const module = await import(/* @vite-ignore */ modulePath);
+      await expect(
+        module.restoreAgentCodeReplayPreview({
+          conversationId: "conv-1",
+          messageId: "user-1",
+          targetCheckpointId: null,
+          affectedFiles: [
+            {
+              path: "src/app.ts",
+              realPath: "src/app.ts",
+              action: "modify",
+              status: "modified",
+              projectId: "project-1",
+              workspacePath: "/srv/project-1",
+              target: {
+                exists: true,
+                content: "before",
+                revision: "before-revision",
+              },
+              expectedCurrent: {
+                exists: true,
+                content: "after",
+                revision: "after-revision",
+                unixMode: 0o644,
+              },
+            },
+          ],
+        }),
+      ).rejects.toThrow(/changed after its replay state was validated/);
+      expect(snapshotReads).toBe(2);
+      expect(writes).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalTransport === undefined)
+        delete process.env.VITE_BACKEND_TRANSPORT;
+      else process.env.VITE_BACKEND_TRANSPORT = originalTransport;
+      if (originalBaseUrl === undefined)
+        delete process.env.VITE_REMOTE_API_BASE_URL;
+      else process.env.VITE_REMOTE_API_BASE_URL = originalBaseUrl;
+      mock.restore();
+    }
+  });
+
   it("persists a durable compaction frontier across save and reload", async () => {
     const settings = new Map<string, string>();
     const storageKey = "agentCodeCheckpoints:conv-1";

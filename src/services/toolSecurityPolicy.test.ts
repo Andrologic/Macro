@@ -119,6 +119,49 @@ describe("toolSecurityPolicy", () => {
     expect(result.normalizedCall.rememberKey).toBe("tool:web_search");
   });
 
+  it("requires approval for web fetches and scopes grants to the domain", () => {
+    const initial = evaluateToolSecurity(
+      "web_fetch",
+      { url: "https://docs.example.com/guide" },
+      { mode: "Chat", riskLevel: "balanced" },
+    );
+    const granted = evaluateToolSecurity(
+      "web_fetch",
+      { url: "https://docs.example.com/reference" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        grants: [
+          {
+            toolId: "web_fetch",
+            rememberKey: initial.normalizedCall.rememberKey,
+            createdAt: "2026-08-24T00:00:00.000Z",
+          },
+        ],
+      },
+    );
+    const otherDomain = evaluateToolSecurity(
+      "web_fetch",
+      { url: "https://private.example.net/secret" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        grants: [
+          {
+            toolId: "web_fetch",
+            rememberKey: initial.normalizedCall.rememberKey,
+            createdAt: "2026-08-24T00:00:00.000Z",
+          },
+        ],
+      },
+    );
+
+    expect(initial.decision).toBe("ask");
+    expect(initial.normalizedCall.rememberKey).toBe("domain:docs.example.com");
+    expect(granted.decision).toBe("allow");
+    expect(otherDomain.decision).toBe("ask");
+  });
+
   it("allows skill activation and resource reads as observe tools", () => {
     const activate = evaluateToolSecurity(
       "skill_activate",
