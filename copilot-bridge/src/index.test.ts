@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -450,6 +450,126 @@ describe('copilot bridge bounded workspace tools', () => {
       })).rejects.toThrow('Invalid UTF-8 content');
     } finally {
       await rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it('shares one bounded scan budget across virtual workspace mounts', async () => {
+    const firstWorkspace = await mkdtemp(path.join(tmpdir(), 'macro-copilot-budget-a-'));
+    const secondWorkspace = await mkdtemp(path.join(tmpdir(), 'macro-copilot-budget-b-'));
+    try {
+      await writeFile(path.join(firstWorkspace, 'a.txt'), 'a');
+      await writeFile(path.join(firstWorkspace, 'b.txt'), 'b');
+      await writeFile(path.join(secondWorkspace, 'c.txt'), 'c');
+      await writeFile(path.join(secondWorkspace, 'd.txt'), 'd');
+      const { __testables } = await loadBridge();
+      const context = {
+        defaultWorkspacePath: firstWorkspace,
+        focusedProjectId: null,
+        virtualRootEnabled: true,
+        candidates: [
+          {
+            id: 'a',
+            mountName: 'a',
+            displayName: 'A',
+            workspacePath: firstWorkspace,
+          },
+          {
+            id: 'b',
+            mountName: 'b',
+            displayName: 'B',
+            workspacePath: secondWorkspace,
+          },
+        ],
+      };
+
+      expect(__testables.WORKSPACE_SCAN_CANDIDATE_LIMIT).toBe(20_000);
+      await expect(__testables.globWorkspace({
+        context,
+        pattern: '**/*.txt',
+        scanBudget: __testables.createWorkspaceScanBudget(3),
+      })).rejects.toThrow('cumulative safety limit of 3 entries across all project mounts');
+      await expect(__testables.grepWorkspace({
+        context,
+        query: 'missing',
+        scanBudget: __testables.createWorkspaceScanBudget(3),
+      })).rejects.toThrow('cumulative safety limit of 3 entries across all project mounts');
+    } finally {
+      await rm(firstWorkspace, { recursive: true, force: true });
+      await rm(secondWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  it('confines symbolic links to canonical workspace paths without following directory cycles', async () => {
+    if (process.platform === 'win32') return;
+
+    const workspacePath = await mkdtemp(path.join(tmpdir(), 'macro-copilot-links-'));
+    const outsidePath = await mkdtemp(path.join(tmpdir(), 'macro-copilot-outside-'));
+    try {
+      await mkdir(path.join(workspacePath, 'internal'));
+      await writeFile(path.join(workspacePath, 'internal', 'inside.txt'), 'inside needle');
+      await writeFile(path.join(outsidePath, 'secret.txt'), 'outside needle');
+      await symlink(path.join(workspacePath, 'internal', 'inside.txt'), path.join(workspacePath, 'inside-link.txt'));
+      await symlink('internal', path.join(workspacePath, 'internal-directory-link'));
+      await symlink(path.join(outsidePath, 'secret.txt'), path.join(workspacePath, 'outside-link.txt'));
+      await symlink('.', path.join(workspacePath, 'internal', 'cycle'));
+      await symlink(outsidePath, path.join(workspacePath, 'outside-directory'));
+
+      const { __testables } = await loadBridge();
+      const context = {
+        defaultWorkspacePath: workspacePath,
+        focusedProjectId: null,
+        virtualRootEnabled: false,
+        candidates: [],
+      };
+
+      const internalRead = await __testables.readWorkspaceFile({
+        context,
+        pathValue: 'inside-link.txt',
+      });
+      expect(internalRead).toContain('inside needle');
+      await expect(__testables.readWorkspaceFile({
+        context,
+        pathValue: 'outside-link.txt',
+      })).rejects.toThrow('resolves outside the workspace');
+      await expect(__testables.listWorkspace({
+        context,
+        pathValue: 'outside-directory',
+        recursive: true,
+      })).rejects.toThrow('resolves outside the workspace');
+      const linkedDirectory = JSON.parse(await __testables.listWorkspace({
+        context,
+        pathValue: 'internal-directory-link',
+        recursive: true,
+      }));
+      expect(linkedDirectory.entries).toContainEqual({
+        relative_path: 'internal-directory-link/inside.txt',
+        kind: 'file',
+      });
+
+      const grep = JSON.parse(await __testables.grepWorkspace({
+        context,
+        query: 'needle',
+        limit: 10,
+      }));
+      expect(grep.results.map((result: { path: string }) => result.path)).toEqual([
+        'inside-link.txt',
+        'internal/inside.txt',
+      ]);
+      expect(JSON.stringify(grep)).not.toContain('outside-link.txt');
+
+      const glob = JSON.parse(await __testables.globWorkspace({
+        context,
+        pattern: '**',
+        limit: 20,
+      }));
+      expect(glob.paths).toContain('inside-link.txt');
+      expect(glob.paths).toContain('internal/inside.txt');
+      expect(glob.paths).not.toContain('internal-directory-link/inside.txt');
+      expect(glob.paths).not.toContain('outside-link.txt');
+      expect(glob.paths).not.toContain('outside-directory/secret.txt');
+    } finally {
+      await rm(workspacePath, { recursive: true, force: true });
+      await rm(outsidePath, { recursive: true, force: true });
     }
   });
 });

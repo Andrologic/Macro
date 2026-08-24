@@ -10,7 +10,7 @@ import {
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
 import {
   filterCopilotSupportedToolIds,
@@ -30,6 +30,7 @@ import {
 const MIN_CLI_VERSION = '1.0.12';
 const CLI_NAME = 'copilot';
 const MAX_WORKSPACE_TEXT_FILE_BYTES = 10 * 1024 * 1024;
+const WORKSPACE_SCAN_CANDIDATE_LIMIT = 20_000;
 const DEFAULT_IGNORED_ENTRY_NAMES = new Set([
   '.git',
   'node_modules',
@@ -1487,6 +1488,28 @@ const ensureWithinWorkspace = (workspacePath: string, inputPath: string): string
   return resolved;
 };
 
+const isWithinCanonicalWorkspace = (canonicalWorkspacePath: string, canonicalPath: string): boolean => {
+  const relative = path.relative(canonicalWorkspacePath, canonicalPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
+
+const resolveCanonicalWorkspacePath = async (
+  workspacePath: string,
+  inputPath: string,
+  knownCanonicalWorkspacePath?: string
+): Promise<{ canonicalWorkspacePath: string; canonicalPath: string }> => {
+  const lexicalPath = ensureWithinWorkspace(workspacePath, inputPath);
+  const canonicalWorkspacePath = knownCanonicalWorkspacePath || await fs.realpath(workspacePath);
+  const canonicalPath = await fs.realpath(lexicalPath);
+  if (!isWithinCanonicalWorkspace(canonicalWorkspacePath, canonicalPath)) {
+    throw new BridgeError(
+      'path_outside_workspace',
+      `Path resolves outside the workspace, possibly through a symbolic link: ${inputPath}`
+    );
+  }
+  return { canonicalWorkspacePath, canonicalPath };
+};
+
 const isHiddenName = (name: string): boolean => name.startsWith('.');
 
 const pathExists = async (value: string): Promise<boolean> => {
@@ -1614,39 +1637,122 @@ const resolveWorkspaceTarget = async (params: {
   };
 };
 
+interface WorkspaceScanBudget {
+  readonly limit: number;
+  readonly charged: number;
+  charge: () => void;
+}
+
+const createWorkspaceScanBudget = (
+  limit = WORKSPACE_SCAN_CANDIDATE_LIMIT
+): WorkspaceScanBudget => {
+  let charged = 0;
+  return {
+    limit,
+    get charged() {
+      return charged;
+    },
+    charge: () => {
+      charged += 1;
+      if (charged > limit) {
+        throw new BridgeError(
+          'workspace_scan_limit_exceeded',
+          `Workspace scan stopped after ${charged} entries because it exceeded the cumulative safety limit of ${limit} entries across all project mounts. Narrow the request with an explicit path or project_id, reduce the recursion depth, or select fewer project mounts before retrying.`
+        );
+      }
+    },
+  };
+};
+
+interface WalkEntriesOptions {
+  recursive?: boolean;
+  includeHidden?: boolean;
+  maxDepth?: number;
+  scanBudget?: WorkspaceScanBudget;
+}
+
+interface WalkEntriesState {
+  canonicalWorkspacePath: string;
+  scanBudget: WorkspaceScanBudget;
+  visitedDirectories: Set<string>;
+}
+
+const isUnusableWorkspaceSymlink = (error: unknown): boolean =>
+  (error instanceof BridgeError && error.code === 'path_outside_workspace') ||
+  (error instanceof Error &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'ELOOP'));
+
 const walkEntries = async (
   rootPath: string,
   relativePath = '.',
-  options?: {
-    recursive?: boolean;
-    includeHidden?: boolean;
-    maxDepth?: number;
-  },
-  depth = 0
-): Promise<Array<{ relativePath: string; absolutePath: string; kind: 'file' | 'directory' }>> => {
-  const absolutePath = ensureWithinWorkspace(rootPath, relativePath);
-  const directoryEntries = await fs.readdir(absolutePath, { withFileTypes: true });
-  const result: Array<{ relativePath: string; absolutePath: string; kind: 'file' | 'directory' }> = [];
+  options?: WalkEntriesOptions,
+  depth = 0,
+  existingState?: WalkEntriesState
+): Promise<Array<{ relativePath: string; kind: 'file' | 'directory' }>> => {
+  const resolvedDirectory = await resolveCanonicalWorkspacePath(
+    rootPath,
+    relativePath,
+    existingState?.canonicalWorkspacePath
+  );
+  const state = existingState || {
+    canonicalWorkspacePath: resolvedDirectory.canonicalWorkspacePath,
+    scanBudget: options?.scanBudget || createWorkspaceScanBudget(),
+    visitedDirectories: new Set<string>(),
+  };
+  const absolutePath = resolvedDirectory.canonicalPath;
+  if (state.visitedDirectories.has(absolutePath)) {
+    return [];
+  }
+  state.visitedDirectories.add(absolutePath);
 
-  for (const entry of directoryEntries) {
+  const directoryEntries: Dirent[] = [];
+  const directory = await fs.opendir(absolutePath);
+  for await (const entry of directory) {
+    state.scanBudget.charge();
     if (DEFAULT_IGNORED_ENTRY_NAMES.has(entry.name)) {
       continue;
     }
     if (!options?.includeHidden && isHiddenName(entry.name)) {
       continue;
     }
+    directoryEntries.push(entry);
+  }
+  directoryEntries.sort((left, right) => compareToolPaths(left.name, right.name));
+  const result: Array<{ relativePath: string; kind: 'file' | 'directory' }> = [];
 
+  for (const entry of directoryEntries) {
     const nextRelative = relativePath === '.' ? entry.name : path.posix.join(relativePath, entry.name);
-    const nextAbsolute = path.join(absolutePath, entry.name);
-    const kind = entry.isDirectory() ? 'directory' : 'file';
-    result.push({ relativePath: nextRelative, absolutePath: nextAbsolute, kind });
+    let kind: 'file' | 'directory' = entry.isDirectory() ? 'directory' : 'file';
+    if (entry.isSymbolicLink()) {
+      try {
+        const resolvedEntry = await resolveCanonicalWorkspacePath(
+          rootPath,
+          nextRelative,
+          state.canonicalWorkspacePath
+        );
+        const metadata = await fs.stat(resolvedEntry.canonicalPath);
+        if (!metadata.isFile() && !metadata.isDirectory()) {
+          continue;
+        }
+        kind = metadata.isDirectory() ? 'directory' : 'file';
+      } catch (error) {
+        // Broken links and links outside the workspace are not scan candidates.
+        if (isUnusableWorkspaceSymlink(error)) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    result.push({ relativePath: nextRelative, kind });
 
     const canRecurse =
-      entry.isDirectory() &&
+      kind === 'directory' &&
+      !entry.isSymbolicLink() &&
       options?.recursive &&
       (options.maxDepth == null || depth < options.maxDepth - 1);
     if (canRecurse) {
-      result.push(...await walkEntries(rootPath, nextRelative, options, depth + 1));
+      result.push(...await walkEntries(rootPath, nextRelative, options, depth + 1, state));
     }
   }
 
@@ -1677,20 +1783,28 @@ const formatListResult = (
 };
 
 const readTextFileWithRevision = async (
-  absolutePath: string
+  workspacePath: string,
+  relativePath: string,
+  maxBytes = MAX_WORKSPACE_TEXT_FILE_BYTES,
+  knownCanonicalWorkspacePath?: string
 ): Promise<{ text: string; revision: string; size: number; isBinary: boolean }> => {
+  const { canonicalPath: absolutePath } = await resolveCanonicalWorkspacePath(
+    workspacePath,
+    relativePath,
+    knownCanonicalWorkspacePath
+  );
   const metadata = await fs.stat(absolutePath);
-  if (metadata.size > MAX_WORKSPACE_TEXT_FILE_BYTES) {
+  if (metadata.size > maxBytes) {
     throw new BridgeError(
       'file_too_large',
-      `File exceeds the ${MAX_WORKSPACE_TEXT_FILE_BYTES}-byte workspace read limit.`
+      `File exceeds the ${maxBytes}-byte workspace read limit.`
     );
   }
   const buffer = await fs.readFile(absolutePath);
-  if (buffer.byteLength > MAX_WORKSPACE_TEXT_FILE_BYTES) {
+  if (buffer.byteLength > maxBytes) {
     throw new BridgeError(
       'file_too_large',
-      `File exceeds the ${MAX_WORKSPACE_TEXT_FILE_BYTES}-byte workspace read limit.`
+      `File exceeds the ${maxBytes}-byte workspace read limit.`
     );
   }
   const isBinary = buffer.subarray(0, Math.min(buffer.byteLength, 8_192)).includes(0);
@@ -1739,8 +1853,7 @@ const readWorkspaceFile = async (params: {
     if (!workspacePath) {
       throw new BridgeError('missing_workspace', 'No workspace is configured for this Copilot request.');
     }
-    const absolutePath = ensureWithinWorkspace(workspacePath, target.relativePath);
-    const result = await readTextFileWithRevision(absolutePath);
+    const result = await readTextFileWithRevision(workspacePath, target.relativePath);
     const displayPath = sanitizeRelativePath(params.pathValue);
     if (result.isBinary) {
       return `FILE: ${displayPath}\nSOURCE: WORKSPACE_FILE\nBINARY: true\nSIZE: ${result.size}\nENCODING: binary\nREVISION: ${result.revision}\nCONTENT_OMITTED: binary`;
@@ -1756,8 +1869,10 @@ const readWorkspaceFile = async (params: {
     return `FILE: ${displayPath}\nSOURCE: WORKSPACE_FILE\nSIZE: ${result.size}\nREVISION: ${result.revision}\nLINES: ${page.startLine}-${page.endLine}\nTOTAL_LINES: ${page.totalLines}\nRETURNED_LINES: ${page.returnedLines}\nTRUNCATED: ${page.truncated}\nNEXT_CURSOR: ${page.nextCursor ?? 'none'}\nLIMITS: max_lines=${page.maxLines}, max_bytes=${page.maxBytes}, max_columns=${TOOL_OUTPUT_LIMITS.read.maxColumns}\nCOLUMN_TRUNCATED_LINES: ${page.columnTruncatedLines}\n\n---BEGIN FILE CONTENT---\n${formatWithLineNumbers(page.lines, page.startLine)}\n---END FILE CONTENT---`;
   }
 
-  const absolutePath = ensureWithinWorkspace(target.candidate.workspacePath, target.relativePath);
-  const result = await readTextFileWithRevision(absolutePath);
+  const result = await readTextFileWithRevision(
+    target.candidate.workspacePath,
+    target.relativePath
+  );
   const virtualPath =
     params.context.virtualRootEnabled
       ? `${target.candidate.mountName}/${target.relativePath === '.' ? '' : target.relativePath}`.replace(/\/$/, '')
@@ -1863,6 +1978,7 @@ const globWorkspace = async (params: {
   includeHidden?: boolean;
   limit?: number;
   cursor?: unknown;
+  scanBudget?: WorkspaceScanBudget;
 }): Promise<string> => {
   const explicitTarget = await resolveWorkspaceTarget({
     rawPath: '.',
@@ -1885,10 +2001,16 @@ const globWorkspace = async (params: {
           : [];
 
   const matches: string[] = [];
-  for (const candidate of candidates) {
+  const scanBudget = params.scanBudget || createWorkspaceScanBudget();
+  for (const candidate of [...candidates].sort((left, right) =>
+    compareToolPaths(left.mountName, right.mountName) ||
+    compareToolPaths(left.id, right.id) ||
+    compareToolPaths(left.workspacePath, right.workspacePath)
+  )) {
     const entries = await walkEntries(candidate.workspacePath, '.', {
       recursive: true,
       includeHidden: params.includeHidden,
+      scanBudget,
     });
 
     for (const entry of entries) {
@@ -1936,6 +2058,7 @@ const grepWorkspace = async (params: {
   maxResults?: number;
   limit?: number;
   cursor?: unknown;
+  scanBudget?: WorkspaceScanBudget;
 }): Promise<string> => {
   if (!params.query) {
     throw new BridgeError('missing_query', 'Missing query argument for grep tool.');
@@ -1986,13 +2109,18 @@ const grepWorkspace = async (params: {
   let skippedBinary = 0;
   let skippedTooLarge = 0;
   let columnTruncatedMatches = 0;
+  const scanBudget = params.scanBudget || createWorkspaceScanBudget();
 
   for (const candidate of [...candidates].sort((left, right) =>
-    compareToolPaths(left.mountName, right.mountName)
+    compareToolPaths(left.mountName, right.mountName) ||
+    compareToolPaths(left.id, right.id) ||
+    compareToolPaths(left.workspacePath, right.workspacePath)
   )) {
+    const canonicalWorkspacePath = await fs.realpath(candidate.workspacePath);
     const entries = await walkEntries(candidate.workspacePath, '.', {
       recursive: true,
       includeHidden: params.includeHidden,
+      scanBudget,
     });
 
     for (const entry of entries.sort((left, right) =>
@@ -2010,15 +2138,20 @@ const grepWorkspace = async (params: {
         continue;
       }
 
-      const metadata = await fs.stat(entry.absolutePath);
-      if (metadata.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
-        skippedTooLarge += 1;
-        continue;
-      }
-      const file = await readTextFileWithRevision(entry.absolutePath);
-      if (file.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
-        skippedTooLarge += 1;
-        continue;
+      let file: Awaited<ReturnType<typeof readTextFileWithRevision>>;
+      try {
+        file = await readTextFileWithRevision(
+          candidate.workspacePath,
+          entry.relativePath,
+          TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+          canonicalWorkspacePath
+        );
+      } catch (error) {
+        if (error instanceof BridgeError && error.code === 'file_too_large') {
+          skippedTooLarge += 1;
+          continue;
+        }
+        throw error;
       }
       if (file.isBinary) {
         skippedBinary += 1;
@@ -2518,6 +2651,7 @@ export const __testables = {
   buildMacroTools,
   closeCopilotThinkingBlock,
   createCopilotSessionEventState,
+  createWorkspaceScanBudget,
   globWorkspace,
   getCopilotReasoningSummary,
   frontendToolTimeoutMs,
@@ -2529,6 +2663,7 @@ export const __testables = {
   isFrontendRelayToolId,
   readWorkspaceFile,
   serializeConversationPrompt,
+  WORKSPACE_SCAN_CANDIDATE_LIMIT,
 };
 
 if (process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT !== '1') {
