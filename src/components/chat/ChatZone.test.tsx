@@ -871,6 +871,55 @@ describe('ChatZone', () => {
     return editor;
   };
 
+  const pasteComposerImage = async (): Promise<void> => {
+    const initialFileReader = globalThis.FileReader;
+    const initialImage = globalThis.Image;
+    class TestFileReader {
+      result: string | ArrayBuffer | null = null;
+      error: DOMException | null = null;
+      onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
+      onerror: ((event: ProgressEvent<FileReader>) => void) | null = null;
+
+      readAsDataURL(): void {
+        this.result = 'data:image/png;base64,ZHJhZnQtaW1hZ2U=';
+        this.onload?.(new Event('load') as unknown as ProgressEvent<FileReader>);
+      }
+    }
+    class TestImage {
+      width = 16;
+      height = 16;
+      onload: ((event: Event) => void) | null = null;
+      onerror: ((event: Event | string) => void) | null = null;
+
+      set src(_value: string) {
+        this.onload?.(new Event('load'));
+      }
+    }
+
+    globalThis.FileReader = TestFileReader as unknown as typeof FileReader;
+    globalThis.Image = TestImage as unknown as typeof Image;
+    const file = new File(['draft-image'], 'draft.png', { type: 'image/png' });
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: {
+        items: [{
+          type: 'image/png',
+          getAsFile: () => file,
+        }],
+      },
+    });
+
+    try {
+      await act(async () => {
+        getComposerEditor().dispatchEvent(pasteEvent);
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      });
+    } finally {
+      globalThis.FileReader = initialFileReader;
+      globalThis.Image = initialImage;
+    }
+  };
+
   const clickSendButton = async () => {
     const sendButton = requireContainer().querySelector(
       '[data-tour-id="chat-send-button"]'
@@ -1079,6 +1128,169 @@ describe('ChatZone', () => {
     expect(getComposerEditor().value).toBe(
       '/goal Finish the authentication migration',
     );
+  });
+
+  it('isolates and restores the existing draft after editing a Goal', async () => {
+    const draftRef = {
+      kind: 'skill',
+      id: 'global:draft-skill',
+      title: 'draft-skill',
+      data: {},
+    };
+    chatState = {
+      ...chatState,
+      composerContextRefs: [draftRef],
+      sendMessage: mock(async () => ({ status: 'sent' })),
+    };
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    await setComposerText('Unrelated draft');
+    await pasteComposerImage();
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+
+    const editGoalButton = requireContainer().querySelector(
+      'button[aria-label="Edit goal"]',
+    );
+    await act(async () => {
+      editGoalButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe(
+      '/goal Finish the authentication migration',
+    );
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    expect(chatState.composerContextRefs).toEqual([]);
+
+    await setComposerText('/goal Finish the authentication migration safely');
+    await clickSendButton();
+
+    expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'conv-1',
+      content: 'Finish the authentication migration safely',
+      images: [],
+    }));
+    expect(getComposerEditor().value).toBe('Unrelated draft');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([draftRef]);
+  });
+
+  it('restores the existing draft when Goal editing is cancelled', async () => {
+    const draftRef = {
+      kind: 'file',
+      id: 'file:/repo/draft.ts',
+      title: 'draft.ts',
+      data: {},
+    };
+    chatState = {
+      ...chatState,
+      composerContextRefs: [draftRef],
+    };
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Draft to restore');
+
+    const editGoalButton = requireContainer().querySelector(
+      'button[aria-label="Edit goal"]',
+    );
+    await act(async () => {
+      editGoalButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const removeGoalControl = requireContainer().querySelector(
+      '[data-chat-goal-command-control="true"]',
+    );
+    await act(async () => {
+      removeGoalControl?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(getComposerEditor().value).toBe('Draft to restore');
+    expect(chatState.composerContextRefs).toEqual([draftRef]);
+  });
+
+  it('restores the existing draft when the Goal command is removed manually', async () => {
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Draft to restore');
+
+    const editGoalButton = requireContainer().querySelector(
+      'button[aria-label="Edit goal"]',
+    );
+    await act(async () => {
+      editGoalButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await setComposerText('Plain text without the command');
+
+    expect(getComposerEditor().value).toBe('Draft to restore');
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps Goal editing active after a failed send and restores the prior draft on cancel', async () => {
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => {
+        throw new Error('Provider unavailable');
+      }),
+    };
+    useConversationGoalStore.getState().activateGoal({
+      conversationId: 'conv-1',
+      objective: 'Finish the authentication migration',
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Draft kept during retry');
+
+    const editGoalButton = requireContainer().querySelector(
+      'button[aria-label="Edit goal"]',
+    );
+    await act(async () => {
+      editGoalButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await setComposerText('/goal Finish the authentication migration safely');
+    await clickSendButton();
+
+    expect(getComposerEditor().value).toBe(
+      '/goal Finish the authentication migration safely',
+    );
+    const removeGoalControl = requireContainer().querySelector(
+      '[data-chat-goal-command-control="true"]',
+    );
+    expect(removeGoalControl).not.toBeNull();
+
+    await act(async () => {
+      removeGoalControl?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Draft kept during retry');
   });
 
   it('activates Goal mode from the Architect composer with the current provider selection', async () => {
