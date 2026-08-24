@@ -11,11 +11,25 @@ pub struct ToolValidationResult {
 pub struct ToolModePolicyResult {
     pub allowed_tool_ids: Vec<String>,
     pub enforce_macro_only_writes: bool,
+    pub capabilities: Vec<String>,
 }
+
+const TOOL_MODE_CAPABILITIES: &[&str] = &[
+    "content_revisions_v1",
+    "bounded_tool_output_v1",
+    "bounded_git_output_v1",
+    "structural_search_v1",
+    "recoverable_checkpoints_v1",
+    "idempotent_tool_execution_v1",
+];
 
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "config_list",
+        "config_get",
+        "config_validate",
+        "config_patch",
         "skill_activate",
         "skill_read_resource",
         "skill_run_script",
@@ -26,6 +40,7 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "read",
         "glob",
         "grep",
+        "ast_grep",
         "write",
         "edit",
         "delete",
@@ -66,6 +81,10 @@ fn normalize_architect_tool_id(tool_id: &str) -> &str {
 fn chat_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "config_list",
+        "config_get",
+        "config_validate",
+        "config_patch",
         "skill_activate",
         "skill_read_resource",
         "skill_run_script",
@@ -75,12 +94,20 @@ fn chat_allowed_tool_ids() -> &'static [&'static str] {
         "read_file",
         "web_search",
         "web_fetch",
+        "terminal_create_session",
+        "terminal_run",
+        "terminal_read",
+        "terminal_kill",
     ]
 }
 
 fn implement_allowed_tool_ids() -> &'static [&'static str] {
     &[
         "question",
+        "config_list",
+        "config_get",
+        "config_validate",
+        "config_patch",
         "skill_activate",
         "skill_read_resource",
         "skill_run_script",
@@ -91,6 +118,7 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
         "read",
         "glob",
         "grep",
+        "ast_grep",
         "write",
         "edit",
         "delete",
@@ -202,12 +230,20 @@ pub fn get_mode_policy(mode: &str) -> ToolModePolicyResult {
         return ToolModePolicyResult {
             allowed_tool_ids: vec![],
             enforce_macro_only_writes: false,
+            capabilities: TOOL_MODE_CAPABILITIES
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
         };
     };
 
     ToolModePolicyResult {
         allowed_tool_ids: allowed_tool_ids.iter().map(|id| id.to_string()).collect(),
         enforce_macro_only_writes,
+        capabilities: TOOL_MODE_CAPABILITIES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
     }
 }
 
@@ -283,12 +319,16 @@ mod tests {
     use super::{get_mode_policy, validate_tool_execution};
 
     #[test]
-    fn chat_policy_exposes_question_tool() {
+    fn chat_policy_exposes_question_and_terminal_tools() {
         let policy = get_mode_policy("Chat");
         assert_eq!(
             policy.allowed_tool_ids,
             vec![
                 "question".to_string(),
+                "config_list".to_string(),
+                "config_get".to_string(),
+                "config_validate".to_string(),
+                "config_patch".to_string(),
                 "skill_activate".to_string(),
                 "skill_read_resource".to_string(),
                 "skill_run_script".to_string(),
@@ -297,7 +337,11 @@ mod tests {
                 "edit_source_passage".to_string(),
                 "read_file".to_string(),
                 "web_search".to_string(),
-                "web_fetch".to_string()
+                "web_fetch".to_string(),
+                "terminal_create_session".to_string(),
+                "terminal_run".to_string(),
+                "terminal_read".to_string(),
+                "terminal_kill".to_string()
             ]
         );
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
@@ -321,7 +365,7 @@ mod tests {
             .contains(&"edit_source_passage".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"write".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"git_commit".to_string()));
-        assert!(!policy
+        assert!(policy
             .allowed_tool_ids
             .contains(&"terminal_run".to_string()));
         assert!(!policy.allowed_tool_ids.contains(&"plan_create".to_string()));
@@ -334,12 +378,17 @@ mod tests {
     fn architect_policy_exposes_question_tool() {
         let policy = get_mode_policy("Architect");
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy.allowed_tool_ids.contains(&"ast_grep".to_string()));
+        assert!(policy
+            .capabilities
+            .contains(&"structural_search_v1".to_string()));
     }
 
     #[test]
     fn implement_policy_exposes_question_tool() {
         let policy = get_mode_policy("Implement");
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy.allowed_tool_ids.contains(&"ast_grep".to_string()));
     }
 
     #[test]

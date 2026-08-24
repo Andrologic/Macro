@@ -5,6 +5,16 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { TaskCatalogDto } from "./contracts/dtos";
+import type {
+  ConfigDocument,
+  ConfigDocumentKind,
+  ConfigPatchRequest,
+  ConfigPatchResult,
+  ConfigScope,
+  ConfigSnapshot,
+  ConfigValidationResult,
+  PendingSensitiveConfigChange,
+} from "../types/generated/config";
 import {
   getWorkspaceBasePath,
   remoteRequest,
@@ -274,6 +284,23 @@ export interface GitWorktreeInspectionDto {
   isDirty: boolean | null;
 }
 
+export interface GitAvailableWorktreeDto {
+  name: string;
+  path: string;
+  branchName: string;
+  isDirty: boolean;
+}
+
+export interface GitAvailableTaskBranchDto {
+  name: string;
+  commit: string;
+}
+
+export interface GitTaskStartPointsDto {
+  worktrees: GitAvailableWorktreeDto[];
+  branches: GitAvailableTaskBranchDto[];
+}
+
 export interface GitWorktreeEnsureDto {
   taskId: string;
   worktreePath: string;
@@ -398,6 +425,10 @@ export interface GitReviewSnapshotDto {
   conflictedFiles: string[];
   mergeInProgress: boolean;
   isClean: boolean;
+}
+
+export interface DirectReviewSnapshotDto extends GitReviewSnapshotDto {
+  hasAcceptedChanges: boolean;
 }
 
 export interface GitReviewFileDto {
@@ -908,6 +939,8 @@ export interface FsFileContentDto {
   is_binary: boolean;
   size: number;
   encoding: string;
+  revision?: string;
+  unix_mode?: number;
 }
 
 export interface FsDirEntryDto {
@@ -964,6 +997,8 @@ export interface FsWriteResultDto {
   bytes_written: number;
   created: boolean;
   skipped: boolean;
+  revision?: string;
+  unix_mode?: number;
 }
 
 export interface WorkspaceBootstrapDto {
@@ -972,6 +1007,17 @@ export interface WorkspaceBootstrapDto {
   projectGroups: ProjectGroup[];
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
+}
+
+export interface ProjectIconDto {
+  dataUrl: string;
+  sourcePath: string;
+  revision: string;
+}
+
+export interface ProjectIconResolutionDto {
+  projectId: string;
+  icon: ProjectIconDto | null;
 }
 
 export interface WorkspaceArchitectPlanReplicaDto {
@@ -1164,6 +1210,7 @@ export interface ToolValidationResultDto {
 export interface ToolModePolicyDto {
   allowed_tool_ids: string[];
   enforce_macro_only_writes: boolean;
+  capabilities?: string[];
 }
 
 export interface MCPDiscoverToolsResponseDto {
@@ -1193,10 +1240,10 @@ export interface SkillResourceReadResponseDto {
 
 export interface TerminalSessionDto {
   id: string;
-  project_id: string;
-  project_name: string;
-  mount_name: string;
-  workspace_path: string;
+  project_id: string | null;
+  project_name: string | null;
+  mount_name: string | null;
+  workspace_path: string | null;
   cwd: string;
   status: string;
   last_command: string | null;
@@ -1703,6 +1750,8 @@ export async function fsWriteFile(params: {
   allowOutsideWorkspace?: boolean;
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
+  expectedRevision?: string | null;
+  unixMode?: number | null;
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>("fs_write_file", {
     path: params.path,
@@ -1711,6 +1760,8 @@ export async function fsWriteFile(params: {
     allowOutsideWorkspace: params.allowOutsideWorkspace ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+    expectedRevision: params.expectedRevision ?? null,
+    unixMode: params.unixMode ?? null,
   });
 }
 
@@ -1783,12 +1834,14 @@ export async function fsDelete(params: {
   recursive?: boolean;
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
+  expectedRevision?: string | null;
 }): Promise<void> {
   return invoke("fs_delete", {
     path: params.path,
     recursive: params.recursive ?? null,
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
+    expectedRevision: params.expectedRevision ?? null,
   });
 }
 
@@ -2114,11 +2167,32 @@ export async function gitStatus(repoPath: string): Promise<GitStatusDto> {
 export async function gitLog(params: {
   repoPath: string;
   limit?: number;
+  offset?: number;
   branch?: string;
 }): Promise<GitCommit[]> {
   return invoke<GitCommit[]>("git_log", {
     repoPath: params.repoPath,
     limit: params.limit ?? null,
+    offset: params.offset ?? null,
+    branch: params.branch ?? null,
+  });
+}
+
+export interface GitLogPageDto {
+  commits: GitCommit[];
+  revision: string;
+}
+
+export async function gitLogPage(params: {
+  repoPath: string;
+  limit?: number;
+  offset?: number;
+  branch?: string;
+}): Promise<GitLogPageDto> {
+  return invoke<GitLogPageDto>("git_log_page", {
+    repoPath: params.repoPath,
+    limit: params.limit ?? null,
+    offset: params.offset ?? null,
     branch: params.branch ?? null,
   });
 }
@@ -2321,6 +2395,9 @@ export async function gitDiff(params: {
   contextLines?: number;
   ignoreWhitespace?: boolean;
   paths?: string[];
+  mode?: "patch" | "stat" | "name_only";
+  maxBytes?: number;
+  requireComplete?: boolean;
 }): Promise<string> {
   return invoke<string>("git_diff", {
     repoPath: params.repoPath,
@@ -2329,6 +2406,9 @@ export async function gitDiff(params: {
     contextLines: params.contextLines ?? null,
     ignoreWhitespace: params.ignoreWhitespace ?? null,
     paths: params.paths ?? null,
+    mode: params.mode ?? null,
+    maxBytes: params.maxBytes ?? null,
+    requireComplete: params.requireComplete ?? null,
   });
 }
 
@@ -2344,6 +2424,80 @@ export async function gitReadFilePair(params: {
 
 export async function gitReviewSnapshot(repoPath: string): Promise<GitReviewSnapshotDto> {
   return invoke<GitReviewSnapshotDto>("git_review_snapshot", { repoPath });
+}
+
+export async function directCheckpointEnsure(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<string> {
+  return invoke<string>('direct_checkpoint_ensure', params);
+}
+
+export async function directCheckpointRemove(params: {
+  checkpointId: string;
+}): Promise<boolean> {
+  return invoke<boolean>('direct_checkpoint_remove', params);
+}
+
+export async function directCheckpointResolveId(params: {
+  taskId: string;
+  projectPath: string;
+}): Promise<string> {
+  return invoke<string>('direct_checkpoint_resolve_id', params);
+}
+
+export async function directReviewSnapshot(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<DirectReviewSnapshotDto> {
+  return invoke<DirectReviewSnapshotDto>('direct_review_snapshot', params);
+}
+
+export async function directReviewFile(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  path: string;
+  status: string;
+}): Promise<GitReviewFileDto> {
+  return invoke<GitReviewFileDto>('direct_review_file', params);
+}
+
+export async function directStagePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_stage_paths', params);
+}
+
+export async function directUnstagePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_unstage_paths', params);
+}
+
+export async function directRestoreWorktreePaths(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+  paths: string[];
+}): Promise<void> {
+  return invoke<void>('direct_restore_worktree_paths', params);
+}
+
+export async function directAcceptChanges(params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}): Promise<string> {
+  return invoke<string>('direct_accept_changes', params);
 }
 
 export async function gitReviewFile(params: {
@@ -2419,6 +2573,14 @@ export async function gitWorktreeInspect(params: {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName ?? null,
+  });
+}
+
+export async function gitTaskStartPoints(params: {
+  repoPath: string;
+}): Promise<GitTaskStartPointsDto> {
+  return invoke<GitTaskStartPointsDto>("git_task_start_points", {
+    repoPath: params.repoPath,
   });
 }
 
@@ -2588,6 +2750,10 @@ export async function macroBranchPull(params?: {
 
 export async function workspaceGetBootstrap(): Promise<WorkspaceBootstrapDto> {
   return invoke<WorkspaceBootstrapDto>("workspace_get_bootstrap");
+}
+
+export async function workspaceResolveProjectIcons(projectIds: string[]): Promise<ProjectIconResolutionDto[]> {
+  return invoke<ProjectIconResolutionDto[]>("workspace_resolve_project_icons", { projectIds });
 }
 
 export async function workspaceListProjects(): Promise<ProjectGroup[]> {
@@ -2785,6 +2951,7 @@ export async function workspaceCreateProject(params: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: ProjectGitFlowSettings | null;
+  directEdit?: boolean;
   requestId?: string | null;
 }): Promise<Project> {
   return invoke<Project>("workspace_create_project", {
@@ -2794,6 +2961,7 @@ export async function workspaceCreateProject(params: {
     groupName: params.groupName ?? null,
     path: params.path ?? null,
     gitFlowSettings: params.gitFlowSettings ?? null,
+    ...(params.directEdit !== undefined ? { directEdit: params.directEdit } : {}),
     requestId: params.requestId ?? null,
   });
 }
@@ -2891,11 +3059,13 @@ export async function workspaceUpdateProjectGitFlow(params: {
 export async function workspaceUpdateProjectAccess(params: {
   projectId: string;
   userReadOnly: boolean;
+  directEdit?: boolean;
   confirmedMigration?: boolean;
 }): Promise<Project> {
   return invoke<Project>("workspace_update_project_access", {
     projectId: params.projectId,
     userReadOnly: params.userReadOnly,
+    ...(params.directEdit !== undefined ? { directEdit: params.directEdit } : {}),
     confirmedMigration: params.confirmedMigration ?? false,
   });
 }
@@ -3030,6 +3200,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
   title?: string | null;
   description?: string | null;
   taskKind: 'feature' | 'bugfix' | 'hotfix';
+  existingBranchName?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_create_manual_feature_draft",
@@ -3043,6 +3214,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
       title: params.title ?? null,
       description: params.description ?? null,
       taskKind: params.taskKind,
+      existingBranchName: params.existingBranchName ?? null,
     },
   );
 }
@@ -3283,6 +3455,10 @@ export async function dbSetAppSetting(params: {
   });
 }
 
+export async function dbDeleteAppSetting(key: string): Promise<boolean> {
+  return invoke<boolean>("db_delete_app_setting", { key });
+}
+
 export async function dbCompareAndSwapAppSetting(params: {
   key: string;
   expectedValueJson: string | null;
@@ -3413,6 +3589,7 @@ export async function executeWorkspaceTool(params: {
   projectMounts?: ProjectMount[];
   virtualRootEnabled?: boolean;
   focusedProjectId?: string | null;
+  executionId?: string | null;
 }): Promise<string> {
   return invoke<string>("tool_execute_workspace", {
     mode: params.mode,
@@ -3429,7 +3606,12 @@ export async function executeWorkspaceTool(params: {
     })),
     virtualRootEnabled: params.virtualRootEnabled ?? null,
     focusedProjectId: params.focusedProjectId ?? null,
+    executionId: params.executionId ?? null,
   });
+}
+
+export async function cancelWorkspaceTool(executionId: string): Promise<boolean> {
+  return invoke<boolean>("tool_cancel_workspace", { executionId });
 }
 
 export async function mcpDiscoverTools(params: {
@@ -3509,6 +3691,7 @@ export async function skillsCreateTemplate(
     name: params.name,
     description: params.description,
     destinationKind: params.destinationKind,
+    destinationId: params.destinationId ?? null,
     projectId: params.projectId ?? null,
     projectRoots: params.projectRoots ?? [],
   });
@@ -3557,11 +3740,11 @@ export async function skillsRunScript(params: {
 }
 
 export async function terminalCreateSession(params: {
-  projectId: string;
+  projectId?: string | null;
   cwd?: string | null;
 }): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_create_session", {
-    projectId: params.projectId,
+    projectId: params.projectId ?? null,
     cwd: params.cwd ?? null,
   });
 }
@@ -3570,11 +3753,13 @@ export async function terminalRun(params: {
   sessionId: string;
   command: string;
   timeoutMs?: number | null;
+  executionId?: string | null;
 }): Promise<TerminalSessionDto> {
   return invoke<TerminalSessionDto>("terminal_run", {
     sessionId: params.sessionId,
     command: params.command,
     timeoutMs: params.timeoutMs ?? null,
+    executionId: params.executionId ?? null,
   });
 }
 
@@ -3586,8 +3771,12 @@ export async function terminalRead(
 
 export async function terminalKill(
   sessionId: string,
+  executionId?: string | null,
 ): Promise<TerminalSessionDto> {
-  return invoke<TerminalSessionDto>("terminal_kill", { sessionId });
+  return invoke<TerminalSessionDto>("terminal_kill", {
+    sessionId,
+    executionId: executionId ?? null,
+  });
 }
 
 export async function terminalListTabs(): Promise<TerminalTabDto[]> {
@@ -3698,6 +3887,233 @@ export async function terminalClearTab(tabId: string): Promise<TerminalTabDto> {
 
 export async function terminalCloseTab(tabId: string): Promise<void> {
   return invoke("terminal_close_tab", { tabId });
+}
+
+// ============ Configuration ============
+
+export async function configGetSnapshot(
+  projectIds: string[] = [],
+): Promise<ConfigSnapshot> {
+  return invoke<ConfigSnapshot>("config_get_snapshot", { projectIds });
+}
+
+export async function configGetDocument(
+  kind: ConfigDocumentKind,
+  scope: ConfigScope = { type: "user" },
+): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_get_document", { kind, scope });
+}
+
+export async function configGetSchema(
+  kind: ConfigDocumentKind,
+): Promise<unknown> {
+  return invoke<unknown>("config_get_schema", { kind });
+}
+
+export async function configValidateDocument(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+  document: unknown;
+}): Promise<ConfigValidationResult> {
+  return invoke<ConfigValidationResult>("config_validate_document", {
+    kind: input.kind,
+    scope: input.scope ?? { type: "user" },
+    document: input.document,
+  });
+}
+
+export async function configApplyPatch(
+  request: ConfigPatchRequest,
+): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>("config_apply_patch", { request });
+}
+
+export async function configApplyAgentPatch(
+  request: ConfigPatchRequest,
+): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>("config_patch", { request });
+}
+
+export async function configResetPath(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+  path: string;
+  expectedEtag: string;
+}): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>("config_reset_path", {
+    kind: input.kind,
+    scope: input.scope ?? { type: "user" },
+    path: input.path,
+    expectedEtag: input.expectedEtag,
+  });
+}
+
+export async function configReload(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+}): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_reload", {
+    kind: input.kind,
+    scope: input.scope ?? { type: "user" },
+  });
+}
+
+export async function configOpenDirectory(input: {
+  kind?: ConfigDocumentKind;
+  scope?: ConfigScope;
+} = {}): Promise<string> {
+  return invoke<string>("config_open_directory", {
+    kind: input.kind ?? null,
+    scope: input.scope ?? { type: "user" },
+  });
+}
+
+export async function configAcceptPendingChange(
+  id: string,
+): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_accept_pending_change", { id });
+}
+
+export async function configRejectPendingChange(input: {
+  id: string;
+  restoreApproved: boolean;
+}): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>("config_reject_pending_change", input);
+}
+
+export async function configListPendingChanges(): Promise<
+  PendingSensitiveConfigChange[]
+> {
+  return invoke<PendingSensitiveConfigChange[]>(
+    "config_list_pending_changes",
+  );
+}
+
+export interface OrphanSecretDto {
+  id: string;
+  namespace: string;
+  secretType: 'apiKey' | 'chatgptSession';
+  secretRef: string;
+}
+
+export async function configListOrphanSecrets(): Promise<OrphanSecretDto[]> {
+  return invoke<OrphanSecretDto[]>('config_list_orphan_secrets');
+}
+
+export async function configDeleteOrphanSecret(input: {
+  id: string;
+  secretType: OrphanSecretDto['secretType'];
+}): Promise<void> {
+  return invoke('config_delete_orphan_secret', { request: input });
+}
+
+export async function configAgentList(
+  projectIds: string[] = [],
+): Promise<ConfigSnapshot> {
+  return invoke<ConfigSnapshot>('config_list', { projectIds });
+}
+
+export async function configAgentGet(
+  kind: ConfigDocumentKind,
+  scope: ConfigScope = { type: 'user' },
+): Promise<ConfigDocument> {
+  return invoke<ConfigDocument>('config_get', { kind, scope });
+}
+
+export async function configAgentValidate(input: {
+  kind: ConfigDocumentKind;
+  scope?: ConfigScope;
+  document: unknown;
+}): Promise<ConfigValidationResult> {
+  return invoke<ConfigValidationResult>('config_validate', {
+    kind: input.kind,
+    scope: input.scope ?? { type: 'user' },
+    document: input.document,
+  });
+}
+
+export async function configAgentPatch(
+  request: Omit<ConfigPatchRequest, 'source'>,
+): Promise<ConfigPatchResult> {
+  return invoke<ConfigPatchResult>('config_patch', {
+    request: { ...request, source: 'agent' },
+  });
+}
+
+export interface WebSearchSecretStatus {
+  provider: 'tavily' | 'brave';
+  hasSecret: boolean;
+  secretRef: string;
+}
+
+export interface NativeWebSearchResult {
+  url: string;
+  title: string;
+  snippet: string;
+  score: number;
+}
+
+export interface NativeWebFetchResource {
+  url: string;
+  contentType: string | null;
+  bodyBase64: string;
+}
+
+export async function webSearchGetSecretStatus(
+  provider: 'tavily' | 'brave',
+): Promise<WebSearchSecretStatus> {
+  return invoke<WebSearchSecretStatus>('web_search_get_secret_status', { provider });
+}
+
+export async function webSearchSetSecret(input: {
+  provider: 'tavily' | 'brave';
+  value: string | null;
+}): Promise<WebSearchSecretStatus> {
+  return invoke<WebSearchSecretStatus>('web_search_set_secret', { input });
+}
+
+export async function webSearchExecute(input: {
+  query: string;
+  includeRawContent?: boolean;
+}): Promise<NativeWebSearchResult[]> {
+  return invoke<NativeWebSearchResult[]>('web_search_execute', {
+    query: input.query,
+    includeRawContent: input.includeRawContent ?? false,
+  });
+}
+
+export async function webFetchExecute(input: {
+  url: string;
+  resourceKind: "page" | "favicon";
+}): Promise<NativeWebFetchResource> {
+  return invoke<NativeWebFetchResource>("web_fetch_execute", {
+    url: input.url,
+    resourceKind: input.resourceKind,
+  });
+}
+
+export interface StateSnapshotDto {
+  schemaVersion: number;
+  values: Record<string, unknown>;
+}
+
+export async function stateGetSnapshot(): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_get_snapshot");
+}
+
+export async function stateSetValue(
+  key: string,
+  value: unknown,
+): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_set_value", { key, value });
+}
+
+export async function stateDeleteValue(key: string): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_delete_value", { key });
+}
+
+export async function stateClear(): Promise<StateSnapshotDto> {
+  return invoke<StateSnapshotDto>("state_clear");
 }
 
 // ============ Utility ============

@@ -2031,6 +2031,51 @@ mod tests {
     }
 
     #[test]
+    fn test_ensure_task_worktree_attaches_an_existing_free_branch() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let head = repo
+            .head()
+            .and_then(|reference| reference.peel_to_commit())
+            .expect("head commit");
+        let expected_commit = head.id();
+        repo.branch("feature-existing", &head, false)
+            .expect("existing branch");
+        drop(head);
+
+        let state = GitState::new();
+        let ensured = state
+            .ensure_task_worktree(
+                &repo,
+                "existing-branch-key",
+                "feature-existing",
+                None,
+                None,
+                &[],
+            )
+            .expect("worktree for existing branch");
+
+        assert_eq!(ensured.status, TaskWorktreeEnsureStatus::Created);
+        let worktree_repo = Repository::open(&ensured.worktree_path).expect("worktree repo");
+        assert_eq!(
+            worktree_repo
+                .head()
+                .expect("worktree head")
+                .shorthand()
+                .expect("worktree branch"),
+            "feature-existing"
+        );
+        assert_eq!(
+            worktree_repo
+                .head()
+                .and_then(|reference| reference.peel_to_commit())
+                .map(|commit| commit.id())
+                .expect("worktree commit"),
+            expected_commit
+        );
+    }
+
+    #[test]
     fn test_remove_task_worktree_cleans_branch_matched_legacy_worktree() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());

@@ -7,6 +7,15 @@ export const isProjectReadOnly = (project: Pick<Project, 'isReadOnly'> | null | 
 export const isProjectActionable = (project: Pick<Project, 'isReadOnly'> | null | undefined): boolean =>
   Boolean(project) && !project?.isReadOnly;
 
+export const isProjectGitActionable = (
+  project: Pick<Project, 'isReadOnly' | 'gitSetupState' | 'directEdit'> | null | undefined
+): boolean => {
+  if (!project || project.isReadOnly || project.directEdit) {
+    return false;
+  }
+  return !project.gitSetupState || project.gitSetupState === 'ready';
+};
+
 export const toGlobalProject = (group: ProjectGroup): GlobalProject => ({
   groupId: group.id,
   name: group.name,
@@ -179,3 +188,23 @@ export const getScopedReadOnlyProjectIds = (
     getAllProjects(groups)
       .some((project) => project.id === scopedProjectId && isProjectReadOnly(project))
   );
+
+export const getScopedGitActionableProjectIds = (
+  groups: ProjectGroup[] | ProjectRegistry,
+  groupId: string | null | undefined,
+  projectId: string | null | undefined
+): string[] =>
+  getScopedProjectIds(groups, groupId, projectId).filter((scopedProjectId) =>
+    getAllProjects(groups)
+      .some((project) => project.id === scopedProjectId && isProjectGitActionable(project))
+  );
+
+export const getScopedArchitectContextProjectIds = (
+  groups: ProjectGroup[] | ProjectRegistry,
+  groupId: string | null | undefined,
+  projectId: string | null | undefined
+): string[] => {
+  const gitActionableIds = new Set(getScopedGitActionableProjectIds(groups, groupId, projectId));
+  return getScopedProjectIds(groups, groupId, projectId)
+    .filter((scopedProjectId) => !gitActionableIds.has(scopedProjectId));
+};

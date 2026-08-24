@@ -87,6 +87,27 @@ Macro suppose que l'utilisateur agit comme un décideur technique, même lorsqu'
 
 ## 5. Modèle fonctionnel général
 
+### 5.0 Configuration éditable et sûre
+
+Macro expose ses réglages durables sous forme de fichiers JSON stricts,
+validables et modifiables depuis l’interface, un éditeur ou un agent. Les
+réglages utilisateur et les surcharges projet sont séparés. L’interface indique
+la provenance des valeurs effectives et permet de rétablir l’héritage sans
+dupliquer les valeurs par défaut.
+
+Une configuration invalide ne doit pas rendre l’application inutilisable. Le
+dernier snapshot valide reste actif et le diagnostic identifie le fichier, la
+propriété et la cause. Un agent ne peut pas augmenter seul ses permissions :
+les changements sensibles attendent toujours une décision utilisateur locale.
+
+Les secrets restent hors des fichiers exposés et des outils agents. Les racines
+de découverte, les destinations d’installation et les permissions de skills
+sont configurables, tandis que la confiance est invalidée dès que le contenu
+d’une skill change.
+
+Le contrat complet des fichiers, scopes et règles de sécurité est défini dans
+`docs/configuration.md`.
+
 ### 5.1 Modèle mental principal
 
 Macro organise le travail de la façon suivante :
@@ -287,6 +308,10 @@ Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
 Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord le projet, puis un type de tâche compatible avec son workflow Git. La fenêtre ne demande pas le contenu de la tâche : celui-ci est fourni ensuite dans la conversation. Le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Un projet mainline, sans branche de développement distincte de la branche principale, permet `Feature` et `Hotfix`, mais pas `Bugfix`. La disponibilité est recalculée lorsque le projet cible change et tout choix devenu incompatible est effacé. Le type `release` reste réservé aux plans Architect.
 
+Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche d'édition directe peut être active par projet. Ces tâches utilisent le type `feature` interne, présenté comme `Édition directe`, et les outils Git ne sont pas exposés à l'agent.
+
+L'édition directe ne remplace pas le workflow planifié : un projet sans Git reste un contexte de lecture dans Architect et ne peut pas porter de plan exécutable. L'utilisateur peut initialiser Git ultérieurement pour retrouver les branches, les worktrees, le parallélisme et les plans Architect.
+
 ### 7.3 Mode Chat
 
 Le mode Chat est un mode de support indépendant.
@@ -295,6 +320,7 @@ Son objectif est de permettre à l'utilisateur de :
 - poser des questions rapides d'ordre technique ou documentaire
 - attacher des fichiers à une conversation
 - utiliser certains outils web et MCP
+- activer un terminal généraliste pour exécuter des commandes approuvées sur l'ordinateur
 - conserver une continuité de travail dans l'application sans entrer dans tout le workflow Macro
 
 Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
@@ -302,7 +328,7 @@ Le mode Chat n'est pas rattaché par défaut à un contexte projet autonome.
 Il se distingue du mode Implement en ce que :
 - il n'est pas piloté par une stratégie de plan
 - il ne travaille pas par défaut sur un contexte d'exécution de projet
-- il ne parcourt pas un workspace complet en mode agent
+- il ne parcourt un workspace en mode agent que lorsque l'utilisateur l'attache à la conversation
 - il fonctionne conversation par conversation avec un contexte explicitement fourni
 
 Le mode Chat doit conserver un historique local des conversations.
@@ -478,6 +504,10 @@ L'import doit permettre au minimum de définir :
 - la branche cible
 - le groupe cible optionnel
 - un chemin local optionnel
+
+### 10.2.1 Import d'un dossier sans Git
+
+Lorsqu'un dossier importé ne contient pas de dépôt Git, Macro propose trois choix explicites : initialiser Git, activer l'édition directe ou conserver le projet en lecture seule. Le choix est enregistré dans le registre du projet et peut être modifié depuis ses réglages. L'édition directe ne crée jamais de dossier `.git` dans le projet.
 
 ### 10.3 Gestion du projet
 
@@ -687,6 +717,36 @@ Les résultats des tests et du build doivent être visibles pour l'utilisateur, 
 
 Les messages de commit doivent être générés automatiquement par l'IA après validation utilisateur.
 
+### 14.7 Sorties des outils de workspace
+
+Les outils `list`, `read`, `glob`, `grep`, `git_status`, `git_log` et `git_diff` doivent produire des sorties bornées. Lorsqu'une réponse paginable est incomplète, elle doit l'indiquer explicitement et fournir un curseur permettant de continuer la même requête sans répéter ni sauter volontairement des résultats.
+
+Les outils de lecture `list`, `read` et `glob` doivent expirer après 5 secondes, et `grep` comme `ast_grep` après 30 secondes. Une annulation de la génération en cours doit interrompre réellement leur exécution desktop ou distante et produire une erreur stable, distincte d'un dépassement de délai. Après une expiration, l'agent doit réduire le chemin, le motif ou la requête. Cette interruption ne s'applique pas aux mutations, qui ne doivent jamais être abandonnées à mi-écriture.
+
+Une lecture paginée doit rester liée à la révision du fichier qu'elle a commencé à lire. De même, la pagination de `git_status` doit être liée à l'ensemble exact des changements observés. Si la source change, Macro doit refuser le curseur devenu obsolète plutôt que de composer silencieusement une vue incohérente. Les recherches doivent signaler les fichiers binaires ou trop gros qu'elles n'ont pas inspectés, et les lignes exceptionnellement longues doivent être tronquées de façon visible.
+
+La pagination de `git_log` doit lier son curseur au commit de tête résolu et à la présence des pseudo-commits staged/unstaged. Un changement de cet instantané invalide le curseur afin d'éviter de répéter ou de sauter des commits réels lorsque les pseudo-commits apparaissent ou disparaissent.
+
+`git_diff` doit proposer des vues de synthèse `stat` et `name_only` en plus du patch. Un patch trop volumineux conserve un début et une fin identifiables, annonce explicitement les octets omis et peut échouer à la demande avec `require_complete` lorsque l'appelant interdit une réponse partielle.
+
+Le comportement doit rester équivalent dans le backend desktop, les workspaces virtuels multi-projets, le fallback frontend, le noyau distant et le pont Copilot. Un transport qui ne sait pas garantir ces bornes ne doit pas exécuter ces outils.
+
+Le pont Copilot doit relayer au frontend tous les outils du workspace ainsi que les mutations Git. Ce passage conserve la racine virtuelle multi-projets, le projet ciblé, les checkpoints, la politique de sécurité et les demandes d'approbation de Macro. Seules les inspections Git en lecture seule peuvent utiliser directement le tool host natif.
+
+Le pont Copilot doit aussi relayer `web_fetch` au frontend : son approbation technique par le SDK ne remplace jamais la décision de sécurité de Macro. Une récupération de page approuvée doit refuser les hôtes locaux, privés, réservés et link-local, y compris derrière une résolution DNS ou une redirection. Elle doit rester indisponible lorsqu'aucun transport capable de garantir ce confinement n'est présent.
+
+Un outil agent ne doit jamais sortir du projet sélectionné par un chemin absolu, un composant parent ou un lien symbolique. Cette règle vaut aussi pour les racines virtuelles multi-projets et WSL. Lorsqu'un appel sélectionne explicitement un projet, ce projet doit être transmis au backend même après le retrait de `project_id` ou du préfixe de montage dans les arguments routés.
+
+Une mutation qui repose sur une lecture préparatoire doit réutiliser la révision observée lorsque l'agent n'en fournit pas. La relecture de validation et l'enregistrement du checkpoint font partie de la même opération récupérable : leur échec restaure toutes les cibles encore restaurables sans écraser une modification externe concurrente. Les checkpoints multi-fichiers bornent à la fois le nombre de cibles et le volume cumulé des instantanés avant/après. Un noyau distant ne peut annoncer `recoverable_checkpoints_v1` ni accepter des mutations que s'il persiste et synchronise une intention avant l'effet, puis le résultat avant d'annoncer le succès. Le frontend conserve l'identifiant avant l'envoi, borne son attente et récupère un résultat perdu par la route d'état authentifiée. Après un arrêt dans l'intervalle indéterminé, l'intention `pending` interdit tout rejeu automatique et exige une vérification explicite du workspace. Le journal borne le nombre d'opérations simultanément indéterminées, la taille de chaque résultat et son volume total sans évincer une intention non résolue. Les instantanés restent des données internes de récupération et ne peuvent pas être demandés au moyen des arguments d'un outil agent. La restauration de code lors du replay d'un ancien message reste désactivée hors Tauri tant que son propre marqueur de reprise n'est pas durable sur le transport distant.
+
+Une limite de sécurité interne atteinte pendant l'énumération doit produire une erreur récupérable qui invite à réduire le périmètre. Macro ne doit jamais convertir une énumération interne incomplète en `total_count`, `scan_complete` ou `total_is_exact` affirmatif.
+
+Les commandes lancées par les outils terminal doivent borner leur durée, leur mémoire de sortie et le temps consacré au drainage final de stdout/stderr. Une sortie tronquée conserve un début et une fin identifiables, avec le volume omis. L'annulation de la génération doit terminer le groupe de processus et ses descendants, y compris lorsqu'elle arrive pendant le démarrage, sans interrompre les terminaux interactifs ouverts par l'utilisateur.
+
+Tout résultat textuel d'outil dépassant 50 Kio doit être remplacé dans le contexte par un aperçu borné conservant son début et sa fin. Le contenu complet ne peut être annoncé sous une adresse `tool-output://…` qu'après sa persistance durable comme pièce jointe de la conversation ; il peut alors être relu par pages avec `read_file`. Si cette persistance échoue, l'aperçu doit rester borné sans exposer d'adresse inutilisable. Les fichiers joints et ces sorties récupérables doivent exposer des pages numérotées et un curseur opaque ; le mode brut paginé doit permettre de récupérer sans perte les contenus constitués d'une seule ligne très longue.
+
+Macro doit proposer une recherche structurelle `ast_grep` distincte de la recherche textuelle. Elle accepte les motifs et métavariables ast-grep, infère le langage par fichier ou respecte un langage explicite, fonctionne dans un projet comme à la racine virtuelle, et retourne des positions, extraits et captures bornés. Ses pages, délais, fichiers ignorés et erreurs de syntaxe doivent rester explicites et récupérables sans transformer cette recherche en outil de mutation.
+
 ---
 
 ## 15. Modèle de review et d'intégration
@@ -752,26 +812,31 @@ Quand une même tâche affecte plusieurs projets :
 - les commits peuvent être créés séparément par projet
 - chaque message de commit doit refléter les changements effectifs du projet concerné
 
+### 16.4 Points de restauration pour l'édition directe
+
+Le point de restauration d'un projet sans Git appartient à Macro et n'est pas présenté comme l'historique Git du projet. Il couvre les fichiers de travail utiles à la revue, tout en excluant les dépendances générées, les sorties de build, les métadonnées Macro et les secrets usuels. Accepter les changements avance ce point de restauration privé ; terminer la tâche n'exécute aucun merge.
+
 ---
 
 ## 17. Règles du mode Chat
 
 ### 17.1 Objectif
 
-Le mode Chat existe pour des interactions légères et independantes des projets.
+Le mode Chat existe pour des interactions légères et indépendantes des projets.
 
 ### 17.2 Modèle de contexte
 
-Le mode Chat ne doit pas supposer un contexte agent autonome à l'échelle d'un workspace.
+Le mode Chat ne doit pas supposer un contexte agent autonome à l'échelle d'un workspace. Une conversation démarre sans workspace. L'utilisateur peut ensuite lui attacher un projet ou un groupe depuis la boîte à outils. Cette portée est enregistrée avec la conversation et ne suit pas les changements de sélection effectués dans les autres modes.
 
 Il doit fonctionner sur :
 - la conversation courante
 - les fichiers explicitement attachés
 - les outils externes explicitement autorisés
+- le workspace explicitement attaché, le cas échéant
 
 ### 17.3 Pièces jointes
 
-Les fichiers attachés en mode Chat sont scopes à la conversation.
+Les fichiers attachés en mode Chat sont limités à la conversation.
 
 Il n'y a pas d'exigence de bibliothèque de contexte réutilisable entre plusieurs conversations.
 
@@ -784,11 +849,15 @@ Une future synchronisation de cet historique peut exister plus tard, mais ne fai
 ### 17.5 Accès outils
 
 Le mode Chat peut accéder :
+
 - au web
 - à certains outils MCP
 - aux skills activées par l'utilisateur
+- au terminal agentique généraliste
 
-La disponibilité de ces outils doit être configurable.
+La disponibilité de ces outils doit être configurable. Le terminal apparaît comme un seul outil dans l'interface, même si son contrat technique distingue la création de session, l'exécution, la lecture et l'arrêt. L'outil terminal agentique n'a aucune identité de projet ou de workspace dans son contrat. Il peut démarrer dans n'importe quel répertoire existant, que la conversation possède ou non un workspace de contexte. Chaque commande exige une approbation explicite et distincte dans tous les modes où l'outil est disponible, y compris au niveau de risque YOLO. Une approbation terminal ne peut jamais être mémorisée pour la conversation.
+
+Le terminal manuel de l'application est une fonctionnalité distincte. Il peut rester rattaché à une tâche et à un projet pour les besoins de navigation de l'interface, mais ses sessions ne sont pas utilisables par l'outil terminal agentique.
 
 ---
 

@@ -31,6 +31,7 @@ const PLAN_EXPLORER_TOOL_IDS = new Set([
   "read",
   "glob",
   "grep",
+  "ast_grep",
   "git_status",
   "git_log",
   "git_branch_list",
@@ -50,6 +51,7 @@ const TASK_REVIEWER_TOOL_IDS = new Set([
   "read",
   "glob",
   "grep",
+  "ast_grep",
   "apply_patch",
   "delete",
   "git_status",
@@ -70,6 +72,7 @@ const REPO_AUDITOR_TOOL_IDS = new Set([
   "read",
   "glob",
   "grep",
+  "ast_grep",
   "git_status",
   "git_log",
   "git_branch_list",
@@ -117,7 +120,7 @@ export const filterToolIdsForInternalAgentProfile = (
 
   const allowlist = PROFILE_TOOL_ALLOWLISTS[profile];
   if (!allowlist) {
-    return Array.from(new Set(allowedToolIds));
+    return [];
   }
 
   return Array.from(

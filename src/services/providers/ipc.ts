@@ -21,6 +21,8 @@ import type {
   AIProvider,
   ChatMessage,
   Conversation,
+  MCPServer,
+  MCPTransportConfig,
   Project,
   ProjectGitFlowDetection,
   ProjectGitSetupCommitResult,
@@ -37,18 +39,15 @@ import { loadImplementTaskCatalog } from '../loadImplementTaskCatalog';
 import { parseToolTracesJson } from '../toolTraceState';
 import { parseDbContextRefs } from '../chatDbMappers';
 import {
-  buildMCPServerSettingsPayload,
   normalizeMCPServerSettingsInput,
-  readStoredMCPServers,
-  writeStoredMCPServers,
 } from './clientSettingsStorage';
 import {
-  collectMCPEnvSecretRefs,
   isMCPEnvSecretRef,
   isSensitiveMCPEnvKey,
 } from '../mcp';
+import { normalizeMCPServer } from '../mcp';
+import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../configDocuments';
 
-const TOOL_SETTINGS_STORAGE_KEY = 'macro_tool_settings';
 const LEGACY_TOOL_ID_MAP: Record<string, string> = {
   'web-search': 'web_search',
   'file-read': 'read_file',
@@ -62,15 +61,55 @@ const normalizeToolSettings = (settings: Record<string, boolean>): Record<string
   );
 };
 
-const loadLocalToolSettings = (): Record<string, boolean> => {
-  try {
-    const raw = localStorage.getItem(TOOL_SETTINGS_STORAGE_KEY);
-    if (!raw || raw === 'undefined') return {};
-    return normalizeToolSettings(JSON.parse(raw));
-  } catch {
-    return {};
-  }
+type PersistedMCPServer = {
+  name?: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  website?: string;
+  enabled?: boolean;
+  transport?: MCPTransportConfig;
 };
+
+type ToolsConfigDocument = {
+  builtIn?: Record<string, boolean>;
+  mcpServers?: Record<string, PersistedMCPServer>;
+};
+
+const toRuntimeMCPServers = (
+  servers: Record<string, PersistedMCPServer> = {},
+): Record<string, MCPServer> => Object.fromEntries(
+  Object.entries(servers).map(([id, server]) => {
+    const normalized = normalizeMCPServer({
+      id,
+      name: server.name ?? id,
+      description: server.description,
+      category: server.category as MCPServer['category'] | undefined,
+      icon: server.icon as MCPServer['icon'] | undefined,
+      website: server.website,
+      transport: server.transport,
+      config: { enabled: server.enabled === true },
+    });
+    return [normalized.id, normalized];
+  }),
+);
+
+const toPersistedMCPServers = (
+  servers: ReturnType<typeof normalizeMCPServerSettingsInput>,
+): Record<string, PersistedMCPServer> => Object.fromEntries(
+  Object.values(servers).map((server) => [
+    server.id,
+    {
+      name: server.name,
+      description: server.description,
+      category: server.category,
+      icon: server.icon,
+      website: server.website,
+      enabled: server.config?.enabled === true,
+      transport: server.transport,
+    },
+  ]),
+);
 
 const secureMCPServerEnv = async (
   servers: ReturnType<typeof normalizeMCPServerSettingsInput>
@@ -110,19 +149,6 @@ const secureMCPServerEnv = async (
   );
 
   return Object.fromEntries(securedEntries);
-};
-
-const deleteRemovedMCPEnvSecrets = async (
-  before: ReturnType<typeof normalizeMCPServerSettingsInput>,
-  after: ReturnType<typeof normalizeMCPServerSettingsInput>
-): Promise<void> => {
-  const beforeRefs = collectMCPEnvSecretRefs(before);
-  const afterRefs = collectMCPEnvSecretRefs(after);
-  await Promise.all(
-    Array.from(beforeRefs.entries())
-      .filter(([id]) => !afterRefs.has(id))
-      .map(([, ref]) => tauriIpc.mcpDeleteEnvSecret(ref))
-  );
 };
 
 const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation => ({
@@ -343,6 +369,7 @@ export const createProject = async (data: {
   groupName?: string | null;
   path?: string;
   gitFlowSettings?: Project['gitFlowSettings'];
+  directEdit?: boolean;
   requestId?: string | null;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceCreateProject({
@@ -352,6 +379,7 @@ export const createProject = async (data: {
     groupName: data.groupName,
     path: data.path,
     gitFlowSettings: data.gitFlowSettings,
+    directEdit: data.directEdit,
     requestId: data.requestId ?? null,
   });
 
@@ -506,11 +534,13 @@ export const updateProjectGitFlowWithSetup = async (data: {
 export const updateProjectAccess = async (data: {
   projectId: string;
   userReadOnly: boolean;
+  directEdit?: boolean;
   confirmedMigration?: boolean;
 }): Promise<ProjectDto> => {
   const project = await tauriIpc.workspaceUpdateProjectAccess({
     projectId: data.projectId,
     userReadOnly: data.userReadOnly,
+    directEdit: data.directEdit,
     confirmedMigration: data.confirmedMigration ?? false,
   });
 
@@ -589,7 +619,8 @@ export const closeProject = async (data: {
 
 // Tools & MCP Settings
 export const getToolSettings = async (): Promise<ToolSettingsDto> => {
-  const enabledMap = loadLocalToolSettings();
+  const config = await getEffectiveConfigDocument<ToolsConfigDocument>('tools');
+  const enabledMap = normalizeToolSettings(config.builtIn ?? {});
   const tools = Object.fromEntries(
     BUILT_IN_TOOLS.map((tool) => {
       const enabled = enabledMap[tool.id] ?? tool.config?.enabled !== false;
@@ -611,18 +642,21 @@ export const getToolSettings = async (): Promise<ToolSettingsDto> => {
 };
 
 export const updateToolSettings = async (settings: ToolSettingsDto): Promise<void> => {
-  localStorage.setItem(TOOL_SETTINGS_STORAGE_KEY, JSON.stringify(normalizeToolSettings(settings.tools || {})));
+  await patchUserConfigTopLevel(
+    'tools',
+    'builtIn',
+    normalizeToolSettings(settings.tools || {}),
+  );
 };
 
 export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
-  return buildMCPServerSettingsPayload();
+  const config = await getEffectiveConfigDocument<ToolsConfigDocument>('tools');
+  return { servers: toRuntimeMCPServers(config.mcpServers) };
 };
 
 export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
-  const previousServers = readStoredMCPServers();
   const securedServers = await secureMCPServerEnv(normalizeMCPServerSettingsInput(settings));
-  await deleteRemovedMCPEnvSecrets(previousServers, securedServers);
-  writeStoredMCPServers(securedServers);
+  await patchUserConfigTopLevel('tools', 'mcpServers', toPersistedMCPServers(securedServers));
 };
 
 export const mcpDiscoverTools: ServiceProvider['mcpDiscoverTools'] = async (server) => {

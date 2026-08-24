@@ -33,7 +33,10 @@ describe('useConversationGoalStore', () => {
 
   it('only reaches achieved through an auditor verdict', () => {
     const store = useConversationGoalStore.getState();
-    store.activateGoal({ conversationId: 'conversation-1', objective: 'Ship it' });
+    const goal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Ship it',
+    });
     store.setOperationalStatus('conversation-1', 'paused');
 
     expect(
@@ -42,7 +45,12 @@ describe('useConversationGoalStore', () => {
 
     useConversationGoalStore
       .getState()
-      .applyAuditorVerdict('conversation-1', achievedVerdict);
+      .applyAuditorVerdictIfCurrent(
+        'conversation-1',
+        goal.goalId,
+        goal.revision + 1,
+        achievedVerdict,
+      );
 
     expect(
       useConversationGoalStore.getState().goalsByConversationId['conversation-1']?.status,
@@ -51,8 +59,16 @@ describe('useConversationGoalStore', () => {
 
   it('does not let operational updates reopen an achieved goal', () => {
     const store = useConversationGoalStore.getState();
-    store.activateGoal({ conversationId: 'conversation-1', objective: 'Ship it' });
-    store.applyAuditorVerdict('conversation-1', achievedVerdict);
+    const goal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Ship it',
+    });
+    store.applyAuditorVerdictIfCurrent(
+      'conversation-1',
+      goal.goalId,
+      goal.revision,
+      achievedVerdict,
+    );
     useConversationGoalStore
       .getState()
       .setOperationalStatus('conversation-1', 'active_ready');
@@ -60,5 +76,43 @@ describe('useConversationGoalStore', () => {
     expect(
       useConversationGoalStore.getState().goalsByConversationId['conversation-1']?.status,
     ).toBe('achieved');
+  });
+
+  it('applies an auditor verdict only to the expected goal revision', () => {
+    const store = useConversationGoalStore.getState();
+    const goal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Ship it',
+    });
+
+    expect(
+      useConversationGoalStore.getState().applyAuditorVerdictIfCurrent(
+        'conversation-1',
+        goal.goalId,
+        goal.revision + 1,
+        achievedVerdict,
+      ),
+    ).toBe(false);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conversation-1'],
+    ).toMatchObject({ revision: goal.revision, status: 'active_ready', auditCount: 0 });
+
+    expect(
+      useConversationGoalStore.getState().applyAuditorVerdictIfCurrent(
+        'conversation-1',
+        goal.goalId,
+        goal.revision,
+        achievedVerdict,
+      ),
+    ).toBe(true);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conversation-1'],
+    ).toMatchObject({ revision: goal.revision + 1, status: 'achieved', auditCount: 1 });
+  });
+
+  it('does not expose a non-CAS auditor verdict action', () => {
+    expect(useConversationGoalStore.getState()).not.toHaveProperty(
+      'applyAuditorVerdict',
+    );
   });
 });

@@ -8,6 +8,10 @@ import {
 
 const CHAT_ALLOWED_TOOL_IDS = [
   "question",
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
@@ -17,10 +21,14 @@ const CHAT_ALLOWED_TOOL_IDS = [
   "read_file",
   "web_search",
   "web_fetch",
+  "terminal_create_session",
+  "terminal_run",
+  "terminal_read",
+  "terminal_kill",
 ];
 
 describe("toolModePolicy", () => {
-  it("disallows mutating and workspace tools in chat mode", () => {
+  it("disallows workspace mutations while retaining configuration and terminal tools in chat mode", () => {
     const policy = getToolModePolicy("Chat");
     expect(policy.allowedToolIds).toEqual(CHAT_ALLOWED_TOOL_IDS);
     expect(policy.allowedToolIds.includes("write")).toBe(false);
@@ -33,7 +41,10 @@ describe("toolModePolicy", () => {
     expect(policy.allowedToolIds.includes("grep")).toBe(false);
     expect(policy.allowedToolIds.includes("git_status")).toBe(false);
     expect(policy.allowedToolIds.includes("git_commit")).toBe(false);
-    expect(policy.allowedToolIds.includes("terminal_run")).toBe(false);
+    expect(policy.allowedToolIds.includes("terminal_create_session")).toBe(true);
+    expect(policy.allowedToolIds.includes("terminal_run")).toBe(true);
+    expect(policy.allowedToolIds.includes("terminal_read")).toBe(true);
+    expect(policy.allowedToolIds.includes("terminal_kill")).toBe(true);
     expect(policy.allowedToolIds.includes("plan_create")).toBe(false);
     expect(policy.allowedToolIds.includes("strategy_generate")).toBe(false);
     expect(policy.allowedToolIds.includes("skill_activate")).toBe(true);
@@ -109,6 +120,10 @@ describe("toolModePolicy", () => {
 
     expect(policy.allowedToolIds).toEqual([
       "question",
+      "config_list",
+      "config_get",
+      "config_validate",
+      "config_patch",
       "skill_activate",
       "skill_read_resource",
       "read_file",
@@ -118,6 +133,7 @@ describe("toolModePolicy", () => {
       "read",
       "glob",
       "grep",
+      "ast_grep",
       "git_status",
       "git_log",
       "git_branch_list",

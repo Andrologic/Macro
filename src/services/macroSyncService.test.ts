@@ -67,6 +67,37 @@ const metadataTargets = [
   { repoPath: '/repos/api', projectId: 'api' },
 ];
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+}
+
+const createDeferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((deferredResolve, deferredReject) => {
+    resolve = deferredResolve;
+    reject = deferredReject;
+  });
+  return { promise, resolve, reject };
+};
+
+const waitForMicrotasks = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+const createDeferredWorkspaceGates = (): {
+  gates: Map<string, Deferred<MacroBranchSyncDto>>;
+  implementation: (params?: { workspacePath?: string | null }) => Promise<MacroBranchSyncDto>;
+} => {
+  const gates = new Map<string, Deferred<MacroBranchSyncDto>>();
+  const implementation = async ({ workspacePath }: { workspacePath?: string | null } = {}) => {
+    const gate = createDeferred<MacroBranchSyncDto>();
+    gates.set(workspacePath || '', gate);
+    return gate.promise;
+  };
+  return { gates, implementation };
+};
+
 const createAppState = (overrides?: {
   metadataAutoPush?: boolean;
   metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
@@ -74,6 +105,7 @@ const createAppState = (overrides?: {
   activePlanContext?: { targetBranch: string } | null;
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
+  directEditProjectId?: string | null;
 }) => ({
   metadataAutoPush: overrides?.metadataAutoPush ?? false,
   metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy ?? 'ask',
@@ -92,6 +124,7 @@ const createAppState = (overrides?: {
           name: 'Web',
           mountName: 'web',
           path: '/repos/web',
+          directEdit: overrides?.directEditProjectId === 'web',
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -107,6 +140,7 @@ const createAppState = (overrides?: {
           name: 'API',
           mountName: 'api',
           path: '/repos/api',
+          directEdit: overrides?.directEditProjectId === 'api',
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -127,6 +161,7 @@ const createAppState = (overrides?: {
 const loadMacroSyncService = (overrides?: {
   metadataAutoPush?: boolean;
   metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
+  directEditProjectId?: string | null;
 }) => createMacroSyncService({
   tauriIpc: {
     isTauriAvailable: () => true,
@@ -139,6 +174,7 @@ const loadMacroSyncService = (overrides?: {
   getAppState: () => createAppState({
     metadataAutoPush: overrides?.metadataAutoPush,
     metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy,
+    directEditProjectId: overrides?.directEditProjectId,
   }),
   resolveTargets: async () => metadataTargets,
   toServiceError,
@@ -233,6 +269,16 @@ describe('macroSyncService', () => {
         },
       ],
     });
+  });
+
+  it('does not invoke Git metadata sync for direct-edit projects', async () => {
+    const service = loadMacroSyncService({ directEditProjectId: 'web' });
+
+    await service.refreshMacroSyncStatus();
+
+    expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+    ]);
   });
 
   it('skips WSL repositories when syncing @macro metadata', async () => {
@@ -682,6 +728,156 @@ describe('macroSyncService', () => {
     expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
       '/repos/api',
       '/repos/web',
+    ]);
+  });
+
+  it('runs distinct repositories concurrently within one sync action', async () => {
+    const { gates, implementation } = createDeferredWorkspaceGates();
+    macroBranchStatusMock.mockImplementation(implementation);
+
+    const service = loadMacroSyncService();
+    const pending = service.refreshMacroSyncStatus();
+    await waitForMicrotasks();
+
+    expect(Array.from(gates.keys())).toEqual(['/repos/web', '/repos/api']);
+    expect(setMetadataSyncStatusMock).not.toHaveBeenCalled();
+
+    gates.get('/repos/web')!.resolve(
+      createMacroResult({ behind: 2, reason: 'behind', next_action: 'pull' })
+    );
+    gates.get('/repos/api')!.resolve(createMacroResult());
+    await pending;
+
+    expect(macroBranchStatusMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps aggregated repositories in input order when syncs complete out of order', async () => {
+    const { gates, implementation } = createDeferredWorkspaceGates();
+    macroBranchPullMock.mockImplementation(implementation);
+
+    const service = loadMacroSyncService();
+    const pending = service.pullMacroMetadata();
+    await waitForMicrotasks();
+
+    gates.get('/repos/api')!.resolve(createMacroResult({ output: 'pull ok:/repos/api' }));
+    await waitForMicrotasks();
+
+    gates.get('/repos/web')!.resolve(
+      createMacroResult({
+        state: 'pending',
+        behind: 3,
+        reason: 'behind',
+        next_action: 'pull',
+        output: 'pull ok:/repos/web',
+      })
+    );
+    const result = await pending;
+
+    expect(result?.state).toBe('pending');
+    expect(result?.reason).toBe('behind');
+    expect(result?.output).toBe('/repos/web: pull ok:/repos/web\n/repos/api: pull ok:/repos/api');
+    const lastStatusCall = setMetadataSyncStatusMock.mock.calls.at(-1)?.[0] as {
+      repositories: Array<{
+        repoPath: string;
+        state: string;
+        reason: string | null;
+        nextAction: string | null;
+        error: string | null;
+      }>;
+    };
+    expect(lastStatusCall.repositories.map((repository) => repository.repoPath)).toEqual([
+      '/repos/web',
+      '/repos/api',
+    ]);
+    expect(lastStatusCall.repositories[0]).toMatchObject({
+      state: 'pending',
+      reason: 'behind',
+      nextAction: 'pull',
+      error: null,
+    });
+    expect(lastStatusCall.repositories[1]).toMatchObject({
+      state: 'clean',
+      reason: 'clean',
+      nextAction: null,
+      error: null,
+    });
+  });
+
+  it('isolates per-repository failures when syncs run in parallel', async () => {
+    const { gates, implementation } = createDeferredWorkspaceGates();
+    macroBranchPushMock.mockImplementation(implementation);
+
+    const service = loadMacroSyncService();
+    const pending = service.pushMacroMetadata();
+    await waitForMicrotasks();
+
+    gates.get('/repos/web')!.reject(new Error('fatal: Authentication failed'));
+    gates.get('/repos/api')!.resolve(createMacroResult({ output: 'push ok:/repos/api' }));
+    const result = await pending;
+
+    expect(result?.state).toBe('failed');
+    expect(result?.reason).toBe('auth_required');
+    expect(result?.next_action).toBe('configure_auth');
+    const lastStatusCall = setMetadataSyncStatusMock.mock.calls.at(-1)?.[0] as {
+      repositories: Array<{
+        repoPath: string;
+        state: string;
+        reason: string | null;
+        nextAction: string | null;
+        error: string | null;
+      }>;
+    };
+    expect(lastStatusCall.repositories.map((repository) => repository.repoPath)).toEqual([
+      '/repos/web',
+      '/repos/api',
+    ]);
+    expect(lastStatusCall.repositories[0]).toMatchObject({
+      state: 'failed',
+      reason: 'auth_required',
+      nextAction: 'configure_auth',
+    });
+    expect(lastStatusCall.repositories[1]).toMatchObject({
+      state: 'clean',
+      reason: 'clean',
+      error: null,
+    });
+  });
+
+  it('keeps separate top-level sync actions serialized while overlapping repositories within each action', async () => {
+    const callLog: string[] = [];
+    const firstEnsureGate = createDeferred<MacroBranchSyncDto>();
+    let ensureCallCount = 0;
+    macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) => {
+      ensureCallCount += 1;
+      callLog.push(`ensure:${workspacePath}`);
+      return ensureCallCount === 1
+        ? firstEnsureGate.promise
+        : createMacroResult({ output: `ensured:${workspacePath}` });
+    });
+    macroBranchPullMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) => {
+      callLog.push(`pull:${workspacePath}`);
+      return createMacroResult({ output: `pull ok:${workspacePath}` });
+    });
+
+    const service = loadMacroSyncService();
+    const firstAction = service.pullMacroMetadata();
+    const secondAction = service.pullMacroMetadata();
+    await waitForMicrotasks();
+
+    expect(callLog).toEqual(['ensure:/repos/web', 'ensure:/repos/api']);
+
+    firstEnsureGate.resolve(createMacroResult());
+    await Promise.all([firstAction, secondAction]);
+
+    expect(callLog).toEqual([
+      'ensure:/repos/web',
+      'ensure:/repos/api',
+      'pull:/repos/web',
+      'pull:/repos/api',
+      'ensure:/repos/web',
+      'ensure:/repos/api',
+      'pull:/repos/web',
+      'pull:/repos/api',
     ]);
   });
 });

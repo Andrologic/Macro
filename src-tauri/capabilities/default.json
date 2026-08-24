@@ -4,7 +4,9 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
+    "core:app:allow-version",
     "core:image:default",
+    "core:resources:allow-close",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-destroy",
@@ -15,6 +17,10 @@
     "dialog:default",
     "notification:default",
     "store:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart",
     {
       "identifier": "http:default",
       "allow": [

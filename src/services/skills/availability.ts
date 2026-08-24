@@ -1,5 +1,6 @@
 import type { SkillManifest, SkillPermissionSnapshot, SkillSettings } from '../../types';
 import { normalizeSkillLookupName } from './identity';
+import { isSkillTrustCurrent } from './settings';
 
 export const isSkillLoadable = (skill: SkillManifest): boolean => skill.isValid;
 
@@ -31,10 +32,14 @@ const isRunnableForSnapshotOrSettings = (
     return permission?.enabled === true &&
       permission.scriptsEnabled === true &&
       permission.hasScripts === true &&
+      Boolean(permission.contentHash) &&
+      permission.contentHash === permission.trustedContentHash &&
       skill.scripts.length > 0;
   }
   const settings = getSettings(skill.id);
-  return settings.scriptsEnabled && skill.scripts.length > 0;
+  return settings.scriptsEnabled &&
+    isSkillTrustCurrent(settings, skill.contentHash) &&
+    skill.scripts.length > 0;
 };
 
 export const getEnabledLoadableSkills = (

@@ -19,14 +19,6 @@ const loadPersistedMetadataModelConfig = async (): Promise<MetadataModelConfig |
     return persisted;
   }
 
-  const legacy = await loadPersistedPreference<MetadataModelConfig | null>(
-    PREF_KEYS.SMART_COMMIT_MODEL_CONFIG
-  );
-  if (legacy !== undefined) {
-    await savePreference(PREF_KEYS.METADATA_MODEL_CONFIG, legacy);
-    return legacy;
-  }
-
   return await loadPreference<MetadataModelConfig | null>(PREF_KEYS.METADATA_MODEL_CONFIG);
 };
 

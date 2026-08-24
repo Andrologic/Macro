@@ -3,7 +3,11 @@ import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
-import { getProjectGroupByProjectId, getScopedProjectIds } from './globalProjects';
+import {
+  getProjectGroupByProjectId,
+  getScopedProjectIds,
+  isProjectGitActionable,
+} from './globalProjects';
 import {
   flushMacroMetadata,
   recordMacroMetadataMutation,
@@ -49,7 +53,7 @@ interface MacroSyncAppState {
   selectedProjectId: string | null;
   standaloneProjects?: Project[];
   projectGroups: ProjectGroup[];
-  getProjectById: (projectId: string) => { path: string } | undefined;
+  getProjectById: (projectId: string) => Project | undefined;
   setMetadataSyncStatus: (params: {
     state: tauriIpc.MacroSyncState;
     error?: string | null;
@@ -166,6 +170,32 @@ const resolveProjectPath = (
       .find((project) => project.id === projectId)
       ?.path ?? null
   );
+};
+
+const resolveProject = (
+  appState: MacroSyncAppState,
+  projectId: string | null | undefined
+): Project | null => {
+  if (!projectId) return null;
+
+  return (
+    appState.getProjectById(projectId) ??
+    appState.standaloneProjects?.find((project) => project.id === projectId) ??
+    appState.projectGroups
+      .flatMap((group) => group.projects)
+      .find((project) => project.id === projectId) ??
+    null
+  );
+};
+
+const isGitActionableTarget = (
+  appState: MacroSyncAppState,
+  target: MetadataSyncTarget
+): boolean => {
+  if (!target.projectId) return true;
+
+  const project = resolveProject(appState, target.projectId);
+  return !project || isProjectGitActionable(project);
 };
 
 const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<MetadataSyncTarget[]> => {
@@ -624,7 +654,41 @@ export const createMacroSyncService = (
   const resolveTargets = async (): Promise<MetadataSyncTarget[]> => {
     const appState = dependencies.getAppState();
     const resolver = dependencies.resolveTargets || resolveMacroSyncTargets;
-    return dedupeTargets(await resolver(appState));
+    return dedupeTargets(await resolver(appState)).filter((target) =>
+      isGitActionableTarget(appState, target)
+    );
+  };
+
+  const runTargetOperations = async (
+    targets: MetadataSyncTarget[],
+    operation: (target: MetadataSyncTarget) => Promise<MacroSyncResult>
+  ): Promise<Array<{ target: MetadataSyncTarget; result: MacroSyncResult }>> => {
+    const entries = new Array<{ target: MetadataSyncTarget; result: MacroSyncResult }>(targets.length);
+    const repositoryQueues = new Map<string, Promise<unknown>>();
+
+    await Promise.all(
+      targets.map((target, index) => {
+        const repositoryKey = normalizeRepoPath(target.repoPath) || target.repoPath;
+        const previous = repositoryQueues.get(repositoryKey) ?? Promise.resolve();
+        const queued = previous.then(async () => {
+          try {
+            entries[index] = {
+              target,
+              result: await operation(target),
+            };
+          } catch (error) {
+            entries[index] = {
+              target,
+              result: toFailedMacroResult(dependencies.toServiceError(error).message),
+            };
+          }
+        });
+        repositoryQueues.set(repositoryKey, queued);
+        return queued;
+      })
+    );
+
+    return entries;
   };
 
   const runAcrossTargets = async (
@@ -632,32 +696,22 @@ export const createMacroSyncService = (
     operation: (target: MetadataSyncTarget) => Promise<MacroSyncResult>,
     preservedResults: ReadonlyMap<string, MacroSyncResult> = new Map()
   ): Promise<MacroSyncResult> => {
-    const entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
-    for (const target of targets) {
-      const preservedResult = preservedResults.get(target.repoPath);
-      if (preservedResult) {
-        entries.push({ target, result: preservedResult });
-        continue;
-      }
-
-      try {
-        entries.push({
-          target,
-          result: await operation(target),
-        });
-      } catch (error) {
-        entries.push({
-          target,
-          result: toFailedMacroResult(dependencies.toServiceError(error).message),
-        });
-      }
-    }
+    const entries = await runTargetOperations(targets, async (target) =>
+      preservedResults.get(target.repoPath) ?? operation(target)
+    );
 
     return applyMacroSyncResult(
       createAggregateMacroResult(entries),
       entries.map(({ target, result }) => toRepositoryStatus(target, result))
     );
   };
+
+  const ensureTargets = (targets: MetadataSyncTarget[]) =>
+    runTargetOperations(targets, (target) =>
+      dependencies.tauriIpc.macroBranchEnsure({
+        workspacePath: target.repoPath,
+      })
+    );
 
   const ensureTargetsForAction = async (
     targets: MetadataSyncTarget[],
@@ -666,49 +720,12 @@ export const createMacroSyncService = (
     blocked: boolean;
     entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }>;
   }> => {
-    const entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
-    for (const target of targets) {
-      try {
-        entries.push({
-          target,
-          result: await dependencies.tauriIpc.macroBranchEnsure({
-            workspacePath: target.repoPath,
-          }),
-        });
-      } catch (error) {
-        entries.push({
-          target,
-          result: toFailedMacroResult(dependencies.toServiceError(error).message),
-        });
-      }
-    }
+    const entries = await ensureTargets(targets);
 
     return {
       blocked: entries.some(({ result }) => shouldBlockMacroAction(result, action)),
       entries,
     };
-  };
-
-  const ensureTargets = async (
-    targets: MetadataSyncTarget[]
-  ): Promise<Array<{ target: MetadataSyncTarget; result: MacroSyncResult }>> => {
-    const entries: Array<{ target: MetadataSyncTarget; result: MacroSyncResult }> = [];
-    for (const target of targets) {
-      try {
-        entries.push({
-          target,
-          result: await dependencies.tauriIpc.macroBranchEnsure({
-            workspacePath: target.repoPath,
-          }),
-        });
-      } catch (error) {
-        entries.push({
-          target,
-          result: toFailedMacroResult(dependencies.toServiceError(error).message),
-        });
-      }
-    }
-    return entries;
   };
 
   const refreshMacroSyncStatus = async (options?: {

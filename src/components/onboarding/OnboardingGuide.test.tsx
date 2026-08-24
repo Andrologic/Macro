@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import {
+  clearPreferences,
+  loadPersistedPreference,
+  PREF_KEYS,
+  savePreference,
+} from '../../services/preferences';
 import type { AppMode } from '../../types';
 
 type AppStoreSnapshot = {
@@ -304,17 +310,15 @@ describe('OnboardingGuide positioning', () => {
   let root: Root | null = null;
   let container: HTMLDivElement | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetStore();
-    localStorage.setItem(
-      'macro_onboardingState',
-      JSON.stringify({
-        version: 1,
-        completedAt: '2026-01-01T00:00:00.000Z',
-        dismissedAt: null,
-        lastStepId: null,
-      })
-    );
+    await clearPreferences();
+    await savePreference(PREF_KEYS.ONBOARDING_STATE, {
+      version: 1,
+      completedAt: '2026-01-01T00:00:00.000Z',
+      dismissedAt: null,
+      lastStepId: null,
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     HTMLElement.prototype.scrollIntoView = () => undefined;
@@ -453,9 +457,12 @@ describe('OnboardingGuide positioning', () => {
       await Promise.resolve();
     });
 
-    const dismissed = JSON.parse(localStorage.getItem('macro_onboardingState') || '{}');
-    expect(dismissed.dismissedAt).toBeTruthy();
-    expect(dismissed.completedAt).toBeNull();
+    const dismissed = await loadPersistedPreference<{
+      dismissedAt: string | null;
+      completedAt: string | null;
+    }>(PREF_KEYS.ONBOARDING_STATE);
+    expect(dismissed?.dismissedAt).toBeTruthy();
+    expect(dismissed?.completedAt).toBeNull();
 
     act(() => {
       window.dispatchEvent(new Event('macro:start-onboarding'));
@@ -470,8 +477,11 @@ describe('OnboardingGuide positioning', () => {
       await Promise.resolve();
     });
 
-    const completed = JSON.parse(localStorage.getItem('macro_onboardingState') || '{}');
-    expect(completed.completedAt).toBeTruthy();
-    expect(completed.dismissedAt).toBeNull();
+    const completed = await loadPersistedPreference<{
+      dismissedAt: string | null;
+      completedAt: string | null;
+    }>(PREF_KEYS.ONBOARDING_STATE);
+    expect(completed?.completedAt).toBeTruthy();
+    expect(completed?.dismissedAt).toBeNull();
   });
 });

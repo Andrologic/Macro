@@ -4,9 +4,21 @@ import {
   filterCopilotSupportedToolIds,
   MACRO_TOOL_REGISTRY,
   requireMacroToolRegistryEntry,
+  type JsonSchema,
   toCopilotFunctionToolShape,
   toFunctionToolShape,
 } from './macroToolRegistry';
+
+const schemaType = (schema: JsonSchema | undefined): string | undefined =>
+  schema && 'type' in schema ? schema.type : undefined;
+
+const requireObjectParameters = (toolId: string) => {
+  const parameters = requireMacroToolRegistryEntry(toolId).parameters;
+  if (!('type' in parameters) || parameters.type !== 'object') {
+    throw new Error(`Expected ${toolId} to use an object schema`);
+  }
+  return parameters;
+};
 
 const extractRustPolicyToolIds = (
   source: string,
@@ -60,7 +72,7 @@ describe('macroToolRegistry', () => {
       expect(requireMacroToolRegistryEntry(toolId).copilot?.overridesBuiltInTool).toBe(true);
     }
 
-    for (const toolId of ['git_status', 'terminal_run', 'question']) {
+    for (const toolId of ['ast_grep', 'git_status', 'terminal_run', 'question']) {
       expect(requireMacroToolRegistryEntry(toolId).copilot?.overridesBuiltInTool).toBeUndefined();
     }
   });
@@ -86,6 +98,53 @@ describe('macroToolRegistry', () => {
     expect(() => requireMacroToolRegistryEntry('delete')).not.toThrow();
   });
 
+  it('publishes optimistic revision guards for every workspace mutation', () => {
+    for (const toolId of ['write', 'edit', 'delete']) {
+      const parameters = requireObjectParameters(toolId);
+      expect(schemaType(parameters.properties?.expected_revision)).toBe('string');
+    }
+
+    const patchParameters = requireObjectParameters('apply_patch');
+    const revisions = patchParameters.properties?.expected_revisions;
+    expect(schemaType(revisions)).toBe('object');
+    if (revisions && 'type' in revisions && revisions.type === 'object') {
+      expect(revisions.additionalProperties).toMatchObject({ type: 'string' });
+    }
+  });
+
+  it('publishes bounded, resumable arguments for workspace read tools', () => {
+    for (const toolId of ['list', 'glob', 'grep', 'ast_grep', 'git_status', 'git_log'] as const) {
+      const parameters = requireObjectParameters(toolId);
+      expect(schemaType(parameters.properties?.limit)).toBe('number');
+      expect(schemaType(parameters.properties?.cursor)).toBe('string');
+    }
+
+    const read = requireObjectParameters('read');
+    expect(schemaType(read.properties?.max_lines)).toBe('number');
+    expect(schemaType(read.properties?.cursor)).toBe('string');
+
+    const diff = requireObjectParameters('git_diff');
+    expect(diff.properties?.mode).toMatchObject({
+      type: 'string',
+      enum: ['patch', 'stat', 'name_only'],
+    });
+    expect(schemaType(diff.properties?.require_complete)).toBe('boolean');
+  });
+
+  it('keeps project identity out of the agent terminal contract', () => {
+    const terminal = requireMacroToolRegistryEntry('terminal_create_session');
+
+    const { parameters } = terminal;
+    expect('type' in parameters && parameters.type).toBe('object');
+    if (!('type' in parameters) || parameters.type !== 'object') {
+      throw new Error('Expected terminal_create_session to use an object schema');
+    }
+    expect(parameters.required).toEqual([]);
+    expect(parameters.properties).toHaveProperty('cwd');
+    expect(parameters.properties).not.toHaveProperty('project_id');
+    expect(terminal.description).toContain('independent');
+  });
+
   it('filters Copilot tools to the currently supported Macro runtime surface', () => {
     expect(
       filterCopilotSupportedToolIds([
@@ -93,6 +152,7 @@ describe('macroToolRegistry', () => {
         'web_search',
         'plan_get',
         'strategy_generate',
+        'ast_grep',
         'git_status',
         'terminal_run',
       ])
@@ -100,6 +160,7 @@ describe('macroToolRegistry', () => {
       'read_file',
       'plan_get',
       'strategy_generate',
+      'ast_grep',
       'git_status',
       'terminal_run',
     ]);

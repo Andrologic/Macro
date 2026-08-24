@@ -17,7 +17,9 @@ import {
 } from '../../../services/toolSecurityPolicy';
 import {
   getWebSearchSettings,
+  refreshWebSearchSettings,
   saveWebSearchSettings,
+  setWebSearchApiKey,
 } from '../../../services/webSearchSettings';
 import type { WebSearchSettings } from '../../../services/webSearchSettings';
 import { MCPServersPanel } from '../mcp/MCPServersPanel';
@@ -47,7 +49,8 @@ export const ToolsView: React.FC = () => {
       ...getToolModePolicy('Chat'),
       allowedToolIds: filterDeniedToolIdsForRiskLevel(
         getToolModePolicy('Chat').allowedToolIds,
-        toolRiskLevel
+        toolRiskLevel,
+        'Chat'
       ),
     }),
     [toolRiskLevel]
@@ -57,7 +60,8 @@ export const ToolsView: React.FC = () => {
       ...getToolModePolicy('Architect'),
       allowedToolIds: filterDeniedToolIdsForRiskLevel(
         getToolModePolicy('Architect').allowedToolIds,
-        toolRiskLevel
+        toolRiskLevel,
+        'Architect'
       ),
     }),
     [toolRiskLevel]
@@ -67,7 +71,8 @@ export const ToolsView: React.FC = () => {
       ...getToolModePolicy('Implement'),
       allowedToolIds: filterDeniedToolIdsForRiskLevel(
         getToolModePolicy('Implement').allowedToolIds,
-        toolRiskLevel
+        toolRiskLevel,
+        'Implement'
       ),
     }),
     [toolRiskLevel]
@@ -75,15 +80,17 @@ export const ToolsView: React.FC = () => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>(getWebSearchSettings);
+  const [webSearchSecretDraft, setWebSearchSecretDraft] = useState('');
   const hasSelectedWebSearchKey = useMemo(() => {
     if (webSearchSettings.provider === 'tavily') {
-      return webSearchSettings.tavilyApiKey.trim().length > 0;
+      return webSearchSettings.hasTavilySecret;
     }
-    return webSearchSettings.braveApiKey.trim().length > 0;
+    return webSearchSettings.hasBraveSecret;
   }, [webSearchSettings]);
 
   useEffect(() => {
     loadSettings();
+    void refreshWebSearchSettings().then(setWebSearchSettings);
   }, [loadSettings]);
 
   useEffect(() => {
@@ -100,10 +107,32 @@ export const ToolsView: React.FC = () => {
     };
   }, []);
 
-  const updateWebSearchSettings = (updates: Partial<WebSearchSettings>) => {
-    const nextSettings = { ...webSearchSettings, ...updates };
+  const updateWebSearchSettings = async (updates: Partial<WebSearchSettings>) => {
+    const provider = updates.provider ?? webSearchSettings.provider;
+    const providerHasSecret = provider === 'tavily'
+      ? webSearchSettings.hasTavilySecret
+      : webSearchSettings.hasBraveSecret;
+    const nextSettings = {
+      ...webSearchSettings,
+      ...updates,
+      secretRef: providerHasSecret ? `macro-secret://web-search/${provider}` : null,
+    };
     setWebSearchSettings(nextSettings);
-    saveWebSearchSettings(nextSettings);
+    setWebSearchSettings(await saveWebSearchSettings(nextSettings));
+  };
+
+  const commitWebSearchSecret = async () => {
+    const value = webSearchSecretDraft.trim();
+    if (!value) return;
+    const next = await setWebSearchApiKey(webSearchSettings.provider, value);
+    setWebSearchSettings(next);
+    setWebSearchSecretDraft('');
+  };
+
+  const deleteWebSearchSecret = async () => {
+    const next = await setWebSearchApiKey(webSearchSettings.provider, null);
+    setWebSearchSettings(next);
+    setWebSearchSecretDraft('');
   };
 
   const filteredTools = useMemo(() => {
@@ -194,7 +223,7 @@ export const ToolsView: React.FC = () => {
                 </label>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => updateWebSearchSettings({ provider: 'tavily' })}
+                    onClick={() => void updateWebSearchSettings({ provider: 'tavily' })}
                     className={cn(
                       'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
                       webSearchSettings.provider === 'tavily'
@@ -205,7 +234,7 @@ export const ToolsView: React.FC = () => {
                     {t('tools.webSearch.tavilyRecommended', 'Tavily (Recommended)')}
                   </button>
                   <button
-                    onClick={() => updateWebSearchSettings({ provider: 'brave' })}
+                    onClick={() => void updateWebSearchSettings({ provider: 'brave' })}
                     className={cn(
                       'flex-1 px-4 py-2 rounded-lg border text-sm font-medium transition-colors',
                       webSearchSettings.provider === 'brave'
@@ -226,10 +255,9 @@ export const ToolsView: React.FC = () => {
                   <Input
                     type="password"
                     placeholder="tvly-xxxxxxxxxxxxxxxx"
-                    value={webSearchSettings.tavilyApiKey}
-                    onChange={(event) =>
-                      updateWebSearchSettings({ tavilyApiKey: event.target.value })
-                    }
+                    value={webSearchSecretDraft}
+                    onChange={(event) => setWebSearchSecretDraft(event.target.value)}
+                    onBlur={() => void commitWebSearchSecret()}
                     className="font-mono"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -255,10 +283,9 @@ export const ToolsView: React.FC = () => {
                   <Input
                     type="password"
                     placeholder="BSAxxxxxxxxxxxxxxxx"
-                    value={webSearchSettings.braveApiKey}
-                    onChange={(event) =>
-                      updateWebSearchSettings({ braveApiKey: event.target.value })
-                    }
+                    value={webSearchSecretDraft}
+                    onChange={(event) => setWebSearchSecretDraft(event.target.value)}
+                    onBlur={() => void commitWebSearchSecret()}
                     className="font-mono"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -291,6 +318,15 @@ export const ToolsView: React.FC = () => {
                         'API key required to enable Web Search'
                       )}
                 </span>
+                {hasSelectedWebSearchKey && (
+                  <button
+                    type="button"
+                    className="ml-auto text-destructive hover:underline"
+                    onClick={() => void deleteWebSearchSecret()}
+                  >
+                    {t('common.delete', 'Delete')}
+                  </button>
+                )}
               </div>
             </div>
           </div>

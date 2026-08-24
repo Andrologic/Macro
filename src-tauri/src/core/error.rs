@@ -94,12 +94,15 @@ pub enum BackendError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("Revision conflict: {message}")]
+    RevisionConflict { message: String },
+
     #[error("Internal server error: {message}")]
     Internal { message: String },
 }
 
 impl BackendError {
-    fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             BackendError::Io { .. } => "Io",
             BackendError::Database { .. } => "Database",
@@ -128,11 +131,12 @@ impl BackendError {
             BackendError::NotFound(_) => "NotFound",
             BackendError::PermissionDenied(_) => "PermissionDenied",
             BackendError::Validation(_) => "Validation",
+            BackendError::RevisionConflict { .. } => "REVISION_CONFLICT",
             BackendError::Internal { .. } => "Internal",
         }
     }
 
-    fn message(&self) -> &str {
+    pub fn message(&self) -> &str {
         match self {
             BackendError::Io { message, .. }
             | BackendError::Database { message }
@@ -156,6 +160,7 @@ impl BackendError {
             | BackendError::FilesystemInvalidPath { message }
             | BackendError::FilesystemDiskFull { message }
             | BackendError::ResourcePressure { message }
+            | BackendError::RevisionConflict { message }
             | BackendError::AI { message }
             | BackendError::Config { message }
             | BackendError::Internal { message } => message,
@@ -320,6 +325,9 @@ mod tests {
         let _ = BackendError::NotFound("test".to_string());
         let _ = BackendError::PermissionDenied("test".to_string());
         let _ = BackendError::Validation("test".to_string());
+        let _ = BackendError::RevisionConflict {
+            message: "test".to_string(),
+        };
         let _ = BackendError::Internal {
             message: "test".to_string(),
         };

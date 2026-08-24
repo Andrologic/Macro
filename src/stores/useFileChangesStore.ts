@@ -113,6 +113,8 @@ export interface ReviewRepositoryState {
   worktreePath: string;
   branchName: string;
   planBranchName: string | null;
+  executionMode?: 'git' | 'direct';
+  checkpointId?: string;
   changes: FileChangeEntry[];
   stagedPaths: string[];
   selectedChangeId: string | null;
@@ -200,6 +202,8 @@ const EMPTY_STATS: ReviewRepositoryStats = {
 interface FileChangesProjectRef {
   path?: string | null;
   name?: string | null;
+  directEdit?: boolean;
+  gitSetupState?: Project['gitSetupState'];
 }
 
 interface FileChangesTaskLike {
@@ -228,6 +232,8 @@ type FileChangesTauriDeps = Pick<
   | 'gitDiff'
   | 'gitMergeCheck'
   | 'gitReadFilePair'
+  | 'fsExists'
+  | 'fsReadFileWithOptions'
   | 'fsWriteFile'
   | 'gitAdd'
   | 'gitCommit'
@@ -237,6 +243,13 @@ type FileChangesTauriDeps = Pick<
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
   gitReviewSnapshot?: typeof tauriIpc.gitReviewSnapshot;
   gitReviewFile?: typeof tauriIpc.gitReviewFile;
+  directReviewSnapshot?: typeof tauriIpc.directReviewSnapshot;
+  directCheckpointEnsure?: typeof tauriIpc.directCheckpointEnsure;
+  directReviewFile?: typeof tauriIpc.directReviewFile;
+  directStagePaths?: typeof tauriIpc.directStagePaths;
+  directUnstagePaths?: typeof tauriIpc.directUnstagePaths;
+  directRestoreWorktreePaths?: typeof tauriIpc.directRestoreWorktreePaths;
+  directAcceptChanges?: typeof tauriIpc.directAcceptChanges;
 };
 
 interface FileChangesAppState {
@@ -753,6 +766,7 @@ const resolveRepositoryWorktreePaths = async (
   unresolvedTargets: TaskExecutionTarget[];
   hydratedWorktrees: Record<string, string>;
 }> => {
+  const task = ensureReviewTask(deps);
   const hydratedWorktrees: Record<string, string> = {};
   const unresolvedTargets: TaskExecutionTarget[] = [];
 
@@ -774,6 +788,7 @@ const resolveRepositoryWorktreePaths = async (
     }
 
     const resolvedPath = await resolvePreparedTaskWorktreePath({
+      taskId: task.id,
       target,
       branchWorktrees,
       getProjectById: deps.getAppState().getProjectById,
@@ -976,9 +991,18 @@ const loadRepositoryState = async (params: {
 
   const repositoryId = buildFileChangesRepositoryId(target);
   const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
-  if (deps.tauri.gitReviewSnapshot) {
+  const executionMode = target.executionMode ?? (
+    project?.directEdit && project.gitSetupState === 'not_git' ? 'direct' : 'git'
+  );
+  if (executionMode === 'direct' || deps.tauri.gitReviewSnapshot) {
     try {
-      const snapshot = await deps.tauri.gitReviewSnapshot(worktreePath);
+      const snapshot = executionMode === 'direct'
+        ? await deps.tauri.directReviewSnapshot!({
+            taskId: task.id,
+            projectPath: worktreePath,
+            checkpointId: target.checkpointId,
+          })
+        : await deps.tauri.gitReviewSnapshot!(worktreePath);
       const changes = snapshot.changes.map((change) =>
         mapReviewChangeToEntry(
           repositoryId,
@@ -991,12 +1015,20 @@ const loadRepositoryState = async (params: {
         changes.some((change) => change.id === previousRepository.selectedChangeId)
         ? previousRepository.selectedChangeId
         : changes[0]?.id ?? null;
-      const normalizedBranchName = normalizeBranchName(target.branchName);
-      const planBranchName =
-        target.planBranchName ||
-        resolveReviewRepositoryIntegrationBranch(deps, task, { target });
+      const normalizedBranchName = executionMode === 'direct' ? 'direct' : normalizeBranchName(target.branchName);
+      const planBranchName = executionMode === 'direct'
+        ? null
+        : target.planBranchName || resolveReviewRepositoryIntegrationBranch(deps, task, { target });
       let hasCommittedSnapshot = Boolean(committedRecord || previousRepository?.commitState === 'committed');
       if (
+        executionMode === 'direct' &&
+        'hasAcceptedChanges' in snapshot &&
+        snapshot.hasAcceptedChanges
+      ) {
+        hasCommittedSnapshot = true;
+      }
+      if (
+        executionMode === 'git' &&
         !hasCommittedSnapshot &&
         changes.length === 0 &&
         stagedPaths.length === 0 &&
@@ -1027,8 +1059,10 @@ const loadRepositoryState = async (params: {
         projectId: target.projectId,
         repoPath,
         worktreePath,
-        branchName: normalizeBranchName(target.branchName),
+        branchName: normalizedBranchName,
         planBranchName,
+        executionMode,
+        checkpointId: target.checkpointId,
         changes,
         stagedPaths,
         selectedChangeId,
@@ -1041,7 +1075,7 @@ const loadRepositoryState = async (params: {
         lastCommitHash: previousRepository?.lastCommitHash ?? null,
       };
     } catch (error) {
-      if (!isUnsupportedGitReviewCommandError(error)) {
+      if (executionMode === 'direct' || !isUnsupportedGitReviewCommandError(error)) {
         throw error;
       }
       // Fall back to the legacy per-file IPC path when running against an older backend.
@@ -1124,6 +1158,8 @@ const loadRepositoryState = async (params: {
     worktreePath,
     branchName: normalizeBranchName(target.branchName),
     planBranchName,
+    executionMode: 'git',
+    checkpointId: target.checkpointId,
     changes,
     stagedPaths,
     selectedChangeId,
@@ -1169,10 +1205,12 @@ const buildCompletionRepositoryRecord = (
   repoPath: repository.repoPath,
   branchName: repository.branchName,
   planBranchName:
-    resolveReviewRepositoryIntegrationBranch(deps, task, {
-      repositoryId: repository.id,
-      existingPlanBranchName: repository.planBranchName,
-    }) || deps.getGitFlowBaseBranch(),
+    repository.executionMode === 'direct'
+      ? 'direct'
+      : resolveReviewRepositoryIntegrationBranch(deps, task, {
+          repositoryId: repository.id,
+          existingPlanBranchName: repository.planBranchName,
+        }) || deps.getGitFlowBaseBranch(),
   mergeOutput: existingRecord?.mergeOutput,
 });
 
@@ -1300,7 +1338,11 @@ interface FileChangesState {
   resetRightDraft: () => void;
   saveRightDraft: () => Promise<void>;
   goToAdjacentDiff: (direction: 'previous' | 'next') => void;
-  commitStagedChanges: (repositoryId: string, message?: string) => Promise<CommitTaskChangesResult>;
+  commitStagedChanges: (
+    repositoryId: string,
+    message?: string,
+    internalOptions?: { refreshChanges?: boolean }
+  ) => Promise<CommitTaskChangesResult>;
   commitAllReadyTaskRepositories: (options?: {
     modelConfig?: MetadataModelConfig | null;
     messagesByRepositoryId?: Record<string, string>;
@@ -1363,7 +1405,22 @@ export const createFileChangesStore = (
 
       try {
         let hydratedChange: FileChangeEntry;
-        if (deps.tauri.gitReviewFile) {
+        if (repository.executionMode === 'direct') {
+          const task = ensureReviewTask(deps);
+          const reviewFile = await deps.tauri.directReviewFile!({
+            taskId: task.id,
+            projectPath: repository.worktreePath,
+            checkpointId: repository.checkpointId,
+            path: change.path,
+            status: change.status,
+          });
+          hydratedChange = mapReviewFileToEntry(
+            repositoryId,
+            reviewFile,
+            change.hasPendingVisibleChange,
+            change
+          );
+        } else if (deps.tauri.gitReviewFile) {
           try {
             const reviewFile = await deps.tauri.gitReviewFile({
               repoPath: repository.worktreePath,
@@ -1796,10 +1853,18 @@ export const createFileChangesStore = (
     }));
 
     try {
-      await deps.tauri.gitAdd({
-        repoPath: repository.worktreePath,
-        paths: targetChanges.map((change) => change.path),
-      });
+      const paths = targetChanges.map((change) => change.path);
+      if (repository.executionMode === 'direct') {
+        const task = ensureReviewTask(deps);
+        await deps.tauri.directStagePaths!({
+          taskId: task.id,
+          projectPath: repository.worktreePath,
+          checkpointId: repository.checkpointId,
+          paths,
+        });
+      } else {
+        await deps.tauri.gitAdd({ repoPath: repository.worktreePath, paths });
+      }
 
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
 
@@ -1890,11 +1955,22 @@ export const createFileChangesStore = (
     }));
 
     try {
-      await deps.tauri.gitRestorePaths({
-        repoPath: repository.worktreePath,
-        paths: targetChanges.map((change) => change.path),
-        target: 'staged',
-      });
+      const paths = targetChanges.map((change) => change.path);
+      if (repository.executionMode === 'direct') {
+        const task = ensureReviewTask(deps);
+        await deps.tauri.directUnstagePaths!({
+          taskId: task.id,
+          projectPath: repository.worktreePath,
+          checkpointId: repository.checkpointId,
+          paths,
+        });
+      } else {
+        await deps.tauri.gitRestorePaths({
+          repoPath: repository.worktreePath,
+          paths,
+          target: 'staged',
+        });
+      }
 
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
     } catch (error) {
@@ -2029,11 +2105,22 @@ export const createFileChangesStore = (
     }));
 
     try {
-      await deps.tauri.gitRestorePaths({
-        repoPath: repository.worktreePath,
-        paths: targetChanges.map((change) => change.path),
-        target: 'worktree',
-      });
+      const paths = targetChanges.map((change) => change.path);
+      if (repository.executionMode === 'direct') {
+        const task = ensureReviewTask(deps);
+        await deps.tauri.directRestoreWorktreePaths!({
+          taskId: task.id,
+          projectPath: repository.worktreePath,
+          checkpointId: repository.checkpointId,
+          paths,
+        });
+      } else {
+        await deps.tauri.gitRestorePaths({
+          repoPath: repository.worktreePath,
+          paths,
+          target: 'worktree',
+        });
+      }
 
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
 
@@ -2144,11 +2231,33 @@ export const createFileChangesStore = (
     }));
 
     try {
+      const path = resolveChangeFilePath(repository.worktreePath, change.path);
+      const workspaceOptions = {
+        workspacePath: repository.worktreePath,
+      };
+      const exists = await deps.tauri.fsExists(path, workspaceOptions);
+      let expectedRevision = 'absent';
+      if (exists) {
+        const current = await deps.tauri.fsReadFileWithOptions({
+          path,
+          allowOutsideWorkspace: false,
+          ...workspaceOptions,
+        });
+        if (!current.revision) {
+          throw new Error(
+            `Cannot safely save ${change.path}: the current revision is unavailable. Reload the diff and retry.`,
+          );
+        }
+        expectedRevision = current.revision;
+      }
+
       await deps.tauri.fsWriteFile({
-        path: resolveChangeFilePath(repository.worktreePath, change.path),
+        path,
         content: nextContent,
         createDirs: true,
-        allowOutsideWorkspace: true,
+        allowOutsideWorkspace: false,
+        workspacePath: repository.worktreePath,
+        expectedRevision,
       });
 
       set((state) => ({
@@ -2210,7 +2319,7 @@ export const createFileChangesStore = (
     state.openDiffModal(repository.id, nextChange.id);
   },
 
-  commitStagedChanges: async (repositoryId, message) => {
+  commitStagedChanges: async (repositoryId, message, internalOptions = {}) => {
     const task = ensureReviewTask(deps);
     const repository = get().getRepository(repositoryId);
     const commitMessage = (
@@ -2236,11 +2345,12 @@ export const createFileChangesStore = (
       throw new Error(tChanges('implement.errors.commitNoChanges', 'No file changes available for this task.'));
     }
 
-    const integrationBranchName =
-      resolveReviewRepositoryIntegrationBranch(deps, task, {
-        repositoryId,
-        existingPlanBranchName: repository.planBranchName,
-      });
+    const integrationBranchName = repository.executionMode === 'direct'
+      ? 'direct'
+      : resolveReviewRepositoryIntegrationBranch(deps, task, {
+          repositoryId,
+          existingPlanBranchName: repository.planBranchName,
+        });
     if (!integrationBranchName) {
       throw new Error(
         tChanges(
@@ -2269,13 +2379,21 @@ export const createFileChangesStore = (
     }));
 
     try {
-      await ensureNoForeignStagedFiles(deps, repository.worktreePath, repository.stagedPaths);
-
-      const hash = await deps.tauri.gitCommit({
-        repoPath: repository.worktreePath,
-        message: commitMessage,
-        stageAll: false,
-      });
+      let hash: string;
+      if (repository.executionMode === 'direct') {
+        hash = await deps.tauri.directAcceptChanges!({
+          taskId: task.id,
+          projectPath: repository.worktreePath,
+          checkpointId: repository.checkpointId,
+        });
+      } else {
+        await ensureNoForeignStagedFiles(deps, repository.worktreePath, repository.stagedPaths);
+        hash = await deps.tauri.gitCommit({
+          repoPath: repository.worktreePath,
+          message: commitMessage,
+          stageAll: false,
+        });
+      }
 
       const executionRecord: TaskCompletionRepositoryRecord = {
         projectId: repository.projectId,
@@ -2296,13 +2414,23 @@ export const createFileChangesStore = (
         lastError: null,
       });
 
-      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      const refreshChanges = internalOptions.refreshChanges !== false;
+      if (refreshChanges) {
+        await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      }
 
       const refreshedState = get();
       const nextRepositories = refreshedState.repositories.map((currentRepository) => (
         currentRepository.id === repositoryId
           ? {
               ...currentRepository,
+              ...(refreshChanges
+                ? {}
+                : {
+                    changes: [],
+                    stagedPaths: [],
+                    commitState: 'committed' as const,
+                  }),
               commitMessageDraft: commitMessage,
               lastCommitHash: hash,
             }
@@ -2370,6 +2498,15 @@ export const createFileChangesStore = (
 
     let messagesByRepositoryId = options.messagesByRepositoryId ?? null;
 
+    if (!messagesByRepositoryId && targetRepositories.every((repository) => repository.executionMode === 'direct')) {
+      messagesByRepositoryId = Object.fromEntries(
+        targetRepositoryIds.map((repositoryId) => [
+          repositoryId,
+          'chore(checkpoint): accept direct workspace changes',
+        ])
+      );
+    }
+
     if (!messagesByRepositoryId) {
       set({ isGeneratingCommitMessages: true, lastError: null });
       let generatedMessages: GeneratedCommitMessages;
@@ -2409,6 +2546,8 @@ export const createFileChangesStore = (
     }
 
     const commits: CommitTaskChangesResult[] = [];
+    let batchError: unknown = null;
+    let attemptedCommit = false;
 
     for (const repositoryId of targetRepositoryIds) {
       const repository = get().getRepository(repositoryId);
@@ -2428,12 +2567,15 @@ export const createFileChangesStore = (
       }
 
       try {
-        const result = await get().commitStagedChanges(repositoryId, repositoryMessage);
+        attemptedCommit = true;
+        const result = await get().commitStagedChanges(repositoryId, repositoryMessage, {
+          refreshChanges: false,
+        });
         commits.push(result);
       } catch (error) {
         const messageText = toServiceError(error).message;
         const repositoryLabel = repository.projectId || repository.repoPath || repositoryId;
-        throw new Error(
+        batchError = new Error(
           tChanges(
             'implement.errors.repositoryCommitFailed',
             '{{repository}}: {{message}}',
@@ -2443,7 +2585,22 @@ export const createFileChangesStore = (
             }
           )
         );
+        break;
       }
+    }
+
+    if (attemptedCommit) {
+      try {
+        await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      } catch (refreshError) {
+        if (!batchError) {
+          throw refreshError;
+        }
+      }
+    }
+
+    if (batchError) {
+      throw batchError;
     }
 
     if (commits.length === 0) {

@@ -28,6 +28,7 @@ type ToolSecurityDefinition = {
   destructiveStrategy: DestructiveStrategy;
   summary: string;
   attachmentOnly?: boolean;
+  alwaysAsk?: boolean;
 };
 
 export const TOOL_RISK_LEVELS = [
@@ -40,6 +41,10 @@ export const DEFAULT_TOOL_RISK_LEVEL: ToolRiskLevel = "balanced";
 
 export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "question",
+  "config_list",
+  "config_get",
+  "config_validate",
+  "config_patch",
   "skill_activate",
   "skill_read_resource",
   "skill_run_script",
@@ -58,6 +63,30 @@ export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
 ]);
 
 const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
+  config_list: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "List Macro configuration",
+  },
+  config_get: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Read Macro configuration",
+  },
+  config_validate: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Validate Macro configuration",
+  },
+  config_patch: {
+    actionGroup: "change",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Edit Macro configuration",
+  },
   question: {
     actionGroup: "observe",
     rememberStrategy: "tool",
@@ -124,6 +153,12 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "tool",
     destructiveStrategy: "never",
     summary: "Search text in the workspace",
+  },
+  ast_grep: {
+    actionGroup: "observe",
+    rememberStrategy: "tool",
+    destructiveStrategy: "never",
+    summary: "Search code structurally in the workspace",
   },
   git_status: {
     actionGroup: "observe",
@@ -300,7 +335,7 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     summary: "Stash git changes",
   },
   terminal_create_session: {
-    actionGroup: "escape",
+    actionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Open a terminal session",
@@ -310,15 +345,16 @@ const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "always",
     summary: "Run a terminal command",
+    alwaysAsk: true,
   },
   terminal_read: {
-    actionGroup: "escape",
+    actionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Read terminal output",
   },
   terminal_kill: {
-    actionGroup: "escape",
+    actionGroup: "observe",
     rememberStrategy: "terminal_prefix",
     destructiveStrategy: "never",
     summary: "Stop a terminal session",
@@ -361,6 +397,7 @@ export interface EvaluateToolSecurityOptions {
   workspacePath?: string | null;
   defaultWorkspacePath?: string | null;
   projectMounts?: ProjectMount[];
+  approvalScope?: string | null;
   grants?: ConversationApprovalGrant[];
 }
 
@@ -372,6 +409,7 @@ export interface NormalizedToolSecurityCall {
   rememberKey: string;
   isDestructive: boolean;
   isExternalToWorkspace: boolean;
+  canApproveForConversation: boolean;
 }
 
 export interface ToolSecurityEvaluation {
@@ -544,7 +582,7 @@ const getPrimaryDetail = (
     return cleanString(args.command) ?? undefined;
   }
   if (toolId === "terminal_create_session") {
-    return cleanString(args.cwd) ?? cleanString(args.project_id) ?? undefined;
+    return cleanString(args.cwd) ?? undefined;
   }
   if (toolId === "terminal_read" || toolId === "terminal_kill") {
     return cleanString(args.session_id) ?? undefined;
@@ -581,6 +619,10 @@ const isCallExternalToWorkspace = (
   args: Record<string, unknown>,
   options: EvaluateToolSecurityOptions,
 ): boolean => {
+  if (toolId === "terminal_create_session") {
+    return false;
+  }
+
   const definition = TOOL_SECURITY_DEFINITIONS[toolId];
   if (definition?.attachmentOnly) {
     return false;
@@ -627,6 +669,7 @@ const isCallDestructive = (
 export const getRememberKey = (
   toolId: string,
   args: Record<string, unknown>,
+  approvalScope?: string | null,
 ): string => {
   const definition = TOOL_SECURITY_DEFINITIONS[toolId];
   if (!definition) {
@@ -641,35 +684,46 @@ export const getRememberKey = (
     normalizePathForComparison,
   );
 
+  let rememberKey: string;
   switch (definition.rememberStrategy) {
     case "tool":
-      return `tool:${toolId}`;
+      rememberKey = `tool:${toolId}`;
+      break;
     case "path":
       if (pathCandidates.length === 0) {
-        return `tool:${toolId}`;
+        rememberKey = `tool:${toolId}`;
+      } else if (pathCandidates.length === 1) {
+        rememberKey = `path:${pathCandidates[0]}`;
+      } else {
+        rememberKey = `paths:${[...pathCandidates].sort().join("|")}`;
       }
-      if (pathCandidates.length === 1) {
-        return `path:${pathCandidates[0]}`;
-      }
-      return `paths:${[...pathCandidates].sort().join("|")}`;
+      break;
     case "web_domain": {
       const domain = extractDomain(cleanString(args.url));
-      return domain ? `domain:${domain}` : `tool:${toolId}`;
+      rememberKey = domain ? `domain:${domain}` : `tool:${toolId}`;
+      break;
     }
     case "terminal_prefix": {
       const prefix = getTerminalRememberPrefix(cleanString(args.command));
-      return prefix ? `terminal:${prefix}` : `terminal:${toolId}`;
+      rememberKey = prefix ? `terminal:${prefix}` : `terminal:${toolId}`;
+      break;
     }
     case "apply_patch_targets": {
       if (pathCandidates.length === 0) {
-        return `tool:${toolId}`;
+        rememberKey = `tool:${toolId}`;
+      } else if (pathCandidates.length === 1) {
+        rememberKey = `path:${pathCandidates[0]}`;
+      } else {
+        rememberKey = `paths:${[...pathCandidates].sort().join("|")}`;
       }
-      if (pathCandidates.length === 1) {
-        return `path:${pathCandidates[0]}`;
-      }
-      return `paths:${[...pathCandidates].sort().join("|")}`;
+      break;
     }
   }
+
+  const normalizedApprovalScope = cleanString(approvalScope);
+  return normalizedApprovalScope
+    ? `scope:${normalizedApprovalScope}|${rememberKey}`
+    : rememberKey;
 };
 
 const normalizeToolSecurityCall = (
@@ -678,7 +732,7 @@ const normalizeToolSecurityCall = (
   options: EvaluateToolSecurityOptions,
 ): NormalizedToolSecurityCall => {
   const mcpToolIdentity = parseMCPToolId(toolId);
-  const definition =
+  const definition: ToolSecurityDefinition =
     TOOL_SECURITY_DEFINITIONS[toolId] ??
     (mcpToolIdentity
       ? {
@@ -695,15 +749,15 @@ const normalizeToolSecurityCall = (
         });
 
   const pathCandidates = getPathCandidates(toolId, args);
-
   return {
     toolId,
     actionGroup: definition.actionGroup,
     summary: definition.summary,
     detail: getPrimaryDetail(toolId, args, pathCandidates),
-    rememberKey: getRememberKey(toolId, args),
+    rememberKey: getRememberKey(toolId, args, options.approvalScope),
     isDestructive: isCallDestructive(toolId, args),
     isExternalToWorkspace: isCallExternalToWorkspace(toolId, args, options),
+    canApproveForConversation: !definition.alwaysAsk,
   };
 };
 
@@ -779,6 +833,9 @@ export const evaluateToolSecurity = (
   }
 
   const normalizedCall = normalizeToolSecurityCall(toolId, args, options);
+  if (!normalizedCall.canApproveForConversation) {
+    return { decision: "ask", normalizedCall };
+  }
   const evaluation = evaluateDecisionForRiskLevel(
     normalizedCall,
     options.riskLevel,
@@ -800,6 +857,7 @@ export const evaluateToolSecurity = (
 export const filterDeniedToolIdsForRiskLevel = (
   toolIds: string[],
   riskLevel: ToolRiskLevel,
+  _mode?: AppMode,
 ): string[] => {
   if (riskLevel !== "strict") {
     return [...new Set(toolIds)];
@@ -810,20 +868,28 @@ export const filterDeniedToolIdsForRiskLevel = (
       return false;
     }
     const definition = TOOL_SECURITY_DEFINITIONS[toolId];
+    if (definition?.alwaysAsk) {
+      return true;
+    }
     return !definition || definition.actionGroup !== "escape";
   });
 };
 
 export const buildToolRiskLevelSystemInstruction = (
   riskLevel: ToolRiskLevel,
+  mode?: AppMode,
 ): string => {
+  const terminalInstruction =
+    mode && getToolModePolicy(mode).allowedToolIds.includes("terminal_run")
+      ? " The workspace constraint does not apply to the agent terminal, which is independent from every workspace. Every terminal command requires explicit user approval, and approvals cannot be remembered."
+      : "";
   if (riskLevel === "strict") {
-    return "Tool risk level is STRICT. Stay inside the current workspace. Observe tools are allowed. Change tools require user approval. Escape tools, destructive actions, terminal actions, web access, and outside-workspace access are blocked.";
+    return `Tool risk level is STRICT. Stay inside the current workspace. Observe tools are allowed. Change tools require user approval. Escape tools, destructive actions, web access, and outside-workspace access are blocked.${terminalInstruction}`;
   }
 
   if (riskLevel === "yolo") {
-    return "Tool risk level is YOLO. Macro will not add extra approval prompts, but you must still respect tool-native safeguards and stay aligned with the user's request.";
+    return `Tool risk level is YOLO. Macro will not add extra approval prompts for other tools, but you must still respect tool-native safeguards and stay aligned with the user's request.${terminalInstruction}`;
   }
 
-  return "Tool risk level is BALANCED. Stay inside the current workspace. Observe tools are allowed. Most change tools are allowed automatically. Escape tools and destructive actions require user approval.";
+  return `Tool risk level is BALANCED. Stay inside the current workspace. Observe tools are allowed. Most change tools are allowed automatically. Escape tools and destructive actions require user approval.${terminalInstruction}`;
 };

@@ -40,6 +40,7 @@ describe("internalAgentProfile", () => {
       [
         "list",
         "read",
+        "ast_grep",
         "apply_patch",
         "write",
         "git_status",
@@ -53,6 +54,7 @@ describe("internalAgentProfile", () => {
     expect(filtered).toEqual([
       "list",
       "read",
+      "ast_grep",
       "git_status",
       "plan_get",
       "strategy_update",
@@ -120,6 +122,7 @@ describe("internalAgentProfile", () => {
       "read",
       "glob",
       "grep",
+      "ast_grep",
       "git_status",
       "git_diff",
       "terminal_create_session",
@@ -133,12 +136,29 @@ describe("internalAgentProfile", () => {
 
     expect(
       filterToolIdsForInternalAgentProfile(candidateToolIds, "goal_auditor")
-    ).toEqual(["list", "read", "glob", "grep", "git_status", "git_diff"]);
+    ).toEqual([
+      "list",
+      "read",
+      "glob",
+      "grep",
+      "ast_grep",
+      "git_status",
+      "git_diff",
+    ]);
     expect(
       filterToolIdsForInternalAgentProfile(candidateToolIds, "goal_auditor")
     ).toEqual(
       filterToolIdsForInternalAgentProfile(candidateToolIds, "repo_auditor")
     );
+  });
+
+  it("fails closed for an unknown internal profile", () => {
+    expect(
+      filterToolIdsForInternalAgentProfile(
+        ["read", "apply_patch", "git_commit"],
+        "unknown_profile" as never
+      )
+    ).toEqual([]);
   });
 
   it("provides distinct system guidance for specialized profiles", () => {

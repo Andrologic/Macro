@@ -15,6 +15,7 @@ import {
 import { normalizeSkillMentionName, parseMentionNames } from '../services/skills/mentions';
 import {
   DEFAULT_SKILL_SETTINGS,
+  isSkillTrustCurrent,
   migrateLegacySkillSettings,
   normalizeSkillSettings,
   readStoredSkillSettings,
@@ -81,13 +82,16 @@ const buildSkillPermissionSnapshot = (
   skills: Object.fromEntries(
     skills.map((skill) => {
       const settings = getSettings(skill.id);
+      const trustCurrent = isSkillTrustCurrent(settings, skill.contentHash);
       return [
         skill.id,
         {
           skillId: skill.id,
           enabled: settings.enabled,
-          scriptsEnabled: settings.scriptsEnabled,
+          scriptsEnabled: settings.scriptsEnabled && trustCurrent,
           hasScripts: skill.scripts.length > 0,
+          contentHash: skill.contentHash,
+          trustedContentHash: settings.trust?.contentHash,
         },
       ];
     }),
@@ -102,7 +106,9 @@ const canRunSkillScriptFromSnapshot = (
   const permission = snapshot.skills[skillId];
   return permission?.enabled === true &&
     permission.scriptsEnabled === true &&
-    permission.hasScripts === true;
+    permission.hasScripts === true &&
+    Boolean(permission.contentHash) &&
+    permission.contentHash === permission.trustedContentHash;
 };
 
 let settingsMutationVersion = 0;
@@ -125,8 +131,8 @@ interface SkillsStore {
     skillId: string,
     target: SkillLocationOpenRequest['target'],
   ) => Promise<boolean>;
-  setSkillEnabled: (skillId: string, enabled: boolean) => void;
-  setSkillScriptsEnabled: (skillId: string, scriptsEnabled: boolean) => void;
+  setSkillEnabled: (skillId: string, enabled: boolean) => Promise<void>;
+  setSkillScriptsEnabled: (skillId: string, scriptsEnabled: boolean) => Promise<void>;
   getSkillSettings: (skillId: string) => SkillSettings;
   getSkillById: (skillId: string) => SkillManifest | null;
   getEnabledSkills: () => SkillManifest[];
@@ -208,7 +214,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         ...get().settingsBySkillId,
         [installed.id]: { enabled: true, scriptsEnabled: false },
       };
-      writeStoredSkillSettings(nextSettings);
+      await writeStoredSkillSettings(nextSettings);
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
       set({
         skills: response.skills,
@@ -232,7 +238,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         ...get().settingsBySkillId,
         [created.skill.id]: { enabled: true, scriptsEnabled: false },
       };
-      writeStoredSkillSettings(createdSettings);
+      await writeStoredSkillSettings(createdSettings);
       set({
         skills: Array.from(
           new Map([...get().skills, created.skill].map((skill) => [skill.id, skill])).values(),
@@ -244,7 +250,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         ...migrateLegacySkillSettings(createdSettings, response.skills),
         [created.skill.id]: { enabled: true, scriptsEnabled: false },
       };
-      writeStoredSkillSettings(nextSettings);
+      await writeStoredSkillSettings(nextSettings);
       set({
         skills: response.skills,
         settingsBySkillId: nextSettings,
@@ -272,36 +278,56 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     }
   },
 
-  setSkillEnabled: (skillId, enabled) => {
+  setSkillEnabled: async (skillId, enabled) => {
     settingsMutationVersion += 1;
-    set((state) => {
-      const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
-      const settingsBySkillId = {
-        ...state.settingsBySkillId,
-        [skillId]: normalizeSkillSettings({
-          ...current,
-          enabled,
-        }),
-      };
-      writeStoredSkillSettings(settingsBySkillId);
-      return { settingsBySkillId };
-    });
+    const state = get();
+    const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
+    const settingsBySkillId = {
+      ...state.settingsBySkillId,
+      [skillId]: normalizeSkillSettings({
+        ...current,
+        enabled,
+      }),
+    };
+    set({ settingsBySkillId, lastError: null });
+    try {
+      await writeStoredSkillSettings(settingsBySkillId);
+    } catch (error) {
+      set({ lastError: toServiceError(error).message });
+    }
   },
 
-  setSkillScriptsEnabled: (skillId, scriptsEnabled) => {
+  setSkillScriptsEnabled: async (skillId, scriptsEnabled) => {
     settingsMutationVersion += 1;
-    set((state) => {
-      const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
-      const settingsBySkillId = {
-        ...state.settingsBySkillId,
-        [skillId]: normalizeSkillSettings({
-          ...current,
-          scriptsEnabled,
-        }),
-      };
-      writeStoredSkillSettings(settingsBySkillId);
-      return { settingsBySkillId };
-    });
+    const state = get();
+    const current = state.settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS;
+    const skill = state.skills.find((candidate) => candidate.id === skillId);
+    if (scriptsEnabled && !skill?.contentHash) {
+      set({ lastError: 'Cannot trust this skill because its content hash is unavailable.' });
+      return;
+    }
+    const settingsBySkillId = {
+      ...state.settingsBySkillId,
+      [skillId]: normalizeSkillSettings({
+        ...current,
+        scriptsEnabled,
+        ...(scriptsEnabled
+          ? {
+              trust: {
+                contentHash: skill!.contentHash,
+                grantedAt: new Date().toISOString(),
+                grantedBy: 'user',
+              },
+            }
+          : {}),
+      }),
+    };
+    set({ settingsBySkillId, lastError: null });
+    try {
+      await writeStoredSkillSettings(settingsBySkillId);
+    } catch (error) {
+      set({ lastError: toServiceError(error).message });
+    }
   },
 
   getSkillSettings: (skillId) => get().settingsBySkillId[skillId] ?? DEFAULT_SKILL_SETTINGS,
@@ -532,6 +558,9 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
       return 'Scripts are disabled for this skill. Enable Scripts for this skill in Settings.';
     }
     const skill = get().getSkillById(request.skillId);
+    if (!skill || !isSkillTrustCurrent(settings, skill.contentHash)) {
+      return 'This skill changed or has not been trusted. Approve its current content before running scripts.';
+    }
     if (skill && !skill.isValid) {
       return `Skill ${request.skillId} is invalid: ${skill.validationErrors.join(' ')}`;
     }

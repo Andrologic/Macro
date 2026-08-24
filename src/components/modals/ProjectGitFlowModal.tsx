@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { services } from '../../services';
 import { toServiceError } from '../../services/contracts/errors';
 import { Icon } from '../ui/Icon';
+import { ProjectIcon } from '../project/ProjectIcon';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import {
   getDefaultProjectGitFlowSettings,
@@ -212,8 +213,15 @@ export const ProjectGitFlowModal: React.FC = () => {
 
   const accessBadgeLabel = project.isReadOnly
     ? t('projects.accessReadOnly', 'Read-only')
-    : t('projects.accessEditable', 'Editable');
-  const accessReason = project.readOnlyReason === 'manual'
+    : project.directEdit
+      ? t('projects.accessDirect', 'Editable · No Git')
+      : t('projects.accessEditable', 'Editable');
+  const accessReason = project.directEdit
+    ? t(
+        'projects.accessDirectEdit',
+        'Macro edits this folder directly. Git branches, worktrees, commits, and parallel tasks are unavailable.'
+      )
+    : project.readOnlyReason === 'manual'
     ? t('projects.accessManualReadOnly', 'This project is manually forced to read-only.')
     : project.readOnlyReason === 'missing_git'
       ? t('projects.accessMissingGit', 'Git is not initialized yet. This project stays read-only until Git is initialized.')
@@ -239,7 +247,7 @@ export const ProjectGitFlowModal: React.FC = () => {
   };
 
   const handleToggleAccess = async () => {
-    if (!projectId || isAccessSaving || project.gitSetupState !== 'ready') {
+    if (!projectId || isAccessSaving || (project.gitSetupState !== 'ready' && !project.directEdit)) {
       return;
     }
 
@@ -276,7 +284,7 @@ export const ProjectGitFlowModal: React.FC = () => {
         }
       }
 
-      await updateProjectAccess(projectId, targetReadOnly, false);
+      await updateProjectAccess(projectId, targetReadOnly, false, targetReadOnly ? false : undefined);
       logProjectAccessEvent('toggle_applied', {
         targetReadOnly,
         confirmedMigration: false,
@@ -300,6 +308,27 @@ export const ProjectGitFlowModal: React.FC = () => {
       });
       const message = normalized.message || t('common.error', 'An error occurred');
       notify.error(message);
+    } finally {
+      setIsAccessSaving(false);
+    }
+  };
+
+  const handleEnableDirectEditing = async () => {
+    if (!projectId || isAccessSaving || project.gitSetupState !== 'not_git') {
+      return;
+    }
+
+    setIsAccessSaving(true);
+    try {
+      await updateProjectAccess(projectId, false, false, true);
+      notify.success(
+        t('projects.projectDirectEditEnabled', '{{projectName}} can now be edited without Git.', {
+          projectName: project.name,
+        })
+      );
+    } catch (error) {
+      const normalized = toServiceError(error);
+      notify.error(normalized.message || t('common.error', 'An error occurred'));
     } finally {
       setIsAccessSaving(false);
     }
@@ -334,7 +363,12 @@ export const ProjectGitFlowModal: React.FC = () => {
         blockingReasons: accessPreview.blockingReasons,
         migrationSummary: accessPreview.migrationSummary,
       });
-      await updateProjectAccess(projectId, accessPreview.targetReadOnly, true);
+      await updateProjectAccess(
+        projectId,
+        accessPreview.targetReadOnly,
+        true,
+        accessPreview.targetReadOnly ? false : undefined
+      );
       setAccessPreview(null);
       logProjectAccessEvent('confirmation_apply_succeeded', {
         targetReadOnly: true,
@@ -540,7 +574,10 @@ export const ProjectGitFlowModal: React.FC = () => {
                 'projects.projectSettingsSubtitle',
                 'Manage access mode and override the branch naming used by this project.'
               )}{' '}
-              <span className="text-foreground">{project.name}</span>
+              <span className="inline-flex items-center gap-1.5 text-foreground">
+                <ProjectIcon project={project} size={12} className="text-muted-foreground" />
+                {project.name}
+              </span>
             </p>
           </div>
           <button
@@ -589,7 +626,7 @@ export const ProjectGitFlowModal: React.FC = () => {
               </div>
 
               <div className="flex shrink-0 items-center gap-2">
-                {project.gitSetupState === 'ready' ? (
+                {project.gitSetupState === 'ready' || project.directEdit ? (
                   <button
                     type="button"
                     onClick={() => void handleToggleAccess()}
@@ -609,21 +646,36 @@ export const ProjectGitFlowModal: React.FC = () => {
                         : t('projects.makeReadOnly', 'Make read-only')}
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => void handlePrepareProjectGit()}
-                    disabled={isAccessSaving}
-                    className={cn(
-                      'rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90',
-                      isAccessSaving && 'cursor-not-allowed opacity-60'
+                  <>
+                    {project.gitSetupState === 'not_git' && !project.directEdit && (
+                      <button
+                        type="button"
+                        onClick={() => void handleEnableDirectEditing()}
+                        disabled={isAccessSaving}
+                        className={cn(
+                          'rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground transition-colors hover:bg-secondary/90',
+                          isAccessSaving && 'cursor-not-allowed opacity-60'
+                        )}
+                      >
+                        {t('projects.enableDirectEditingAction', 'Edit without Git')}
+                      </button>
                     )}
-                  >
-                    {isAccessSaving
-                      ? t('common.saving', 'Saving...')
-                      : project.gitSetupState === 'unborn'
-                        ? t('projects.createInitialCommitAction', 'Create initial commit')
-                        : t('projects.initializeGitAction', 'Initialize Git')}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => void handlePrepareProjectGit()}
+                      disabled={isAccessSaving}
+                      className={cn(
+                        'rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90',
+                        isAccessSaving && 'cursor-not-allowed opacity-60'
+                      )}
+                    >
+                      {isAccessSaving
+                        ? t('common.saving', 'Saving...')
+                        : project.gitSetupState === 'unborn'
+                          ? t('projects.createInitialCommitAction', 'Create initial commit')
+                          : t('projects.initializeGitAction', 'Initialize Git')}
+                    </button>
+                  </>
                 )}
               </div>
             </div>
