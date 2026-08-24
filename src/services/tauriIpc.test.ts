@@ -23,6 +23,43 @@ const loadTauriIpc = async () => {
   return import(`./tauriIpc.ts?test=${tauriIpcImportCounter}`);
 };
 
+describe("tauriIpc confined web fetch", () => {
+  beforeEach(() => {
+    invokeCalls.length = 0;
+    invokeMock.mockClear();
+  });
+
+  it("routes page and favicon downloads through the native command", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.webFetchExecute({
+      url: "https://example.com/page",
+      resourceKind: "page",
+    });
+    await tauriIpc.webFetchExecute({
+      url: "https://example.com/favicon.ico",
+      resourceKind: "favicon",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "web_fetch_execute",
+        payload: {
+          url: "https://example.com/page",
+          resourceKind: "page",
+        },
+      },
+      {
+        command: "web_fetch_execute",
+        payload: {
+          url: "https://example.com/favicon.ico",
+          resourceKind: "favicon",
+        },
+      },
+    ]);
+  });
+});
+
 describe("tauriIpc executeWorkspaceTool", () => {
   beforeEach(() => {
     invokeCalls.length = 0;

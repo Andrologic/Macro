@@ -108,6 +108,36 @@ describe('copilot bridge tool registration', () => {
     expect(gitStatusTool?.options.overridesBuiltInTool).toBeUndefined();
   });
 
+  it('never executes web_fetch without the frontend approval relay', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = mock(async () => {
+      throw new Error('network access must not occur');
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { __testables } = await loadBridge();
+      const tools = __testables.buildMacroTools({
+        request_id: 'req-web-fetch',
+        model_id: 'gpt-5',
+        messages: [],
+        allowed_tool_ids: ['web_fetch'],
+      }) as Array<{
+        name: string;
+        options: { handler: (args: Record<string, unknown>) => Promise<string> };
+      }>;
+
+      expect(__testables.isFrontendRelayToolId('web_fetch')).toBe(true);
+      await expect(
+        tools
+          .find((tool) => tool.name === 'web_fetch')
+          ?.options.handler({ url: 'http://127.0.0.1/secret' }),
+      ).resolves.toContain('Macro frontend relay is unavailable');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('classifies supported Chat terminal tools without being confused by MCP ids', async () => {
     const { __testables } = await loadBridge();
 
@@ -219,6 +249,7 @@ describe('copilot bridge tool registration', () => {
       interrupt: false,
     }));
     const relayedToolIds = [
+      'web_fetch',
       'list',
       'read',
       'glob',

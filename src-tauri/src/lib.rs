@@ -569,6 +569,7 @@ pub fn run() {
             commands::web_search::web_search_get_secret_status,
             commands::web_search::web_search_set_secret,
             commands::web_search::web_search_execute,
+            commands::web_search::web_fetch_execute,
             commands::skills::skills_list,
             commands::skills::skills_get,
             commands::skills::skills_install_from_local_path,

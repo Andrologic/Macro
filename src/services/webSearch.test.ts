@@ -1,13 +1,20 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let fetchMock: ReturnType<typeof mock>;
+let nativeWebFetchMock: ReturnType<typeof mock>;
 let importCounter = 0;
 
-const loadWebSearch = async () => {
+const loadWebSearch = async (options: { tauriAvailable?: boolean } = {}) => {
   mock.restore();
   fetchMock = mock();
+  nativeWebFetchMock = mock();
   mock.module('@tauri-apps/plugin-http', () => ({
     fetch: fetchMock,
+  }));
+  mock.module('./tauriIpc', () => ({
+    isTauriAvailable: () => options.tauriAvailable ?? false,
+    webFetchExecute: nativeWebFetchMock,
+    webSearchExecute: mock(),
   }));
   importCounter += 1;
   return import(`./webSearch.ts?web-search-test=${importCounter}`);
@@ -18,22 +25,6 @@ const jsonResponse = (payload: unknown, ok = true, status = 200) => ({
   status,
   json: mock(async () => payload),
   text: mock(async () => JSON.stringify(payload)),
-});
-
-const textResponse = (body: string, ok = true, status = 200) => ({
-  ok,
-  status,
-  headers: new Headers({ 'content-type': 'text/html' }),
-  text: mock(async () => body),
-});
-
-const binaryResponse = (bytes: Uint8Array, contentType: string, ok = true, status = 200) => ({
-  ok,
-  status,
-  headers: new Headers({ 'content-type': contentType }),
-  arrayBuffer: mock(async () =>
-    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-  ),
 });
 
 describe('webSearch provider contracts', () => {
@@ -134,9 +125,12 @@ describe('webSearch provider contracts', () => {
   });
 
   it('embeds fetched page favicons as data URLs', async () => {
-    const { fetchWebPage } = await loadWebSearch();
-    fetchMock
-      .mockResolvedValueOnce(textResponse(`
+    const { fetchWebPage } = await loadWebSearch({ tauriAvailable: true });
+    nativeWebFetchMock
+      .mockResolvedValueOnce({
+        url: 'https://example.com/article',
+        contentType: 'text/html',
+        bodyBase64: btoa(`
         <html>
           <head>
             <title>Macro source</title>
@@ -144,20 +138,22 @@ describe('webSearch provider contracts', () => {
           </head>
           <body><main>Useful page body for context.</main></body>
         </html>
-      `))
-      .mockResolvedValueOnce(binaryResponse(new Uint8Array([1, 2, 3, 4]), 'image/png'));
+      `),
+      })
+      .mockResolvedValueOnce({
+        url: 'https://example.com/assets/favicon.png',
+        contentType: 'image/png',
+        bodyBase64: 'AQIDBA==',
+      });
 
     const result = await fetchWebPage('https://example.com/article');
 
-    expect(fetchMock).toHaveBeenNthCalledWith(
+    expect(nativeWebFetchMock).toHaveBeenNthCalledWith(
       2,
-      'https://example.com/assets/favicon.png',
-      expect.objectContaining({
-        method: 'GET',
-        headers: expect.objectContaining({
-          Accept: expect.stringContaining('image/'),
-        }),
-      }),
+      {
+        url: 'https://example.com/assets/favicon.png',
+        resourceKind: 'favicon',
+      },
     );
     expect(result).toEqual(
       expect.objectContaining({
@@ -171,24 +167,40 @@ describe('webSearch provider contracts', () => {
   });
 
   it('keeps page fetches successful when favicon fetching fails', async () => {
-    const { fetchWebPage } = await loadWebSearch();
-    fetchMock
-      .mockResolvedValueOnce(textResponse(`
+    const { fetchWebPage } = await loadWebSearch({ tauriAvailable: true });
+    nativeWebFetchMock
+      .mockResolvedValueOnce({
+        url: 'https://example.com/no-icon',
+        contentType: 'text/html',
+        bodyBase64: btoa(`
         <html>
           <head><title>No icon</title></head>
           <body><main>Context still matters.</main></body>
         </html>
-      `))
-      .mockResolvedValueOnce({ ok: false, status: 404, headers: new Headers() });
+      `),
+      })
+      .mockRejectedValueOnce(new Error('favicon unavailable'));
 
     const result = await fetchWebPage('https://example.com/no-icon');
 
-    expect(fetchMock).toHaveBeenNthCalledWith(
+    expect(nativeWebFetchMock).toHaveBeenNthCalledWith(
       2,
-      'https://example.com/favicon.ico',
-      expect.objectContaining({ method: 'GET' }),
+      {
+        url: 'https://example.com/favicon.ico',
+        resourceKind: 'favicon',
+      },
     );
     expect(result.favicon).toBeUndefined();
     expect(result.content).toBe('Context still matters.');
+  });
+
+  it('fails closed when the SSRF-confined desktop transport is unavailable', async () => {
+    const { fetchWebPage } = await loadWebSearch();
+
+    await expect(fetchWebPage('https://example.com/page')).rejects.toThrow(
+      /transport desktop sécurisé/,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(nativeWebFetchMock).not.toHaveBeenCalled();
   });
 });

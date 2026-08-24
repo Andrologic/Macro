@@ -743,66 +743,6 @@ const validateToolViaHost = async (params: {
   }
 };
 
-const normalizeUrl = (input: string): string => {
-  const trimmed = input.trim();
-  if (!trimmed) return trimmed;
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-};
-
-const stripHtmlToText = (html: string): string =>
-  html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const extractPageTitle = (html: string): string => {
-  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
-  return match?.[1]?.replace(/\s+/g, ' ').trim() || '';
-};
-
-const fetchWebPageDirect = async (inputUrl: string): Promise<string> => {
-  const normalizedUrl = normalizeUrl(inputUrl);
-  if (!normalizedUrl) {
-    throw new BridgeError('invalid_url', 'URL is required for web_fetch.');
-  }
-
-  const parsed = new URL(normalizedUrl);
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new BridgeError('invalid_url', 'Only HTTP and HTTPS URLs are supported.');
-  }
-
-  const response = await fetch(normalizedUrl, {
-    method: 'GET',
-    headers: {
-      Accept: 'text/html,application/xhtml+xml',
-      'User-Agent': 'Macro/1.0 (+https://macro.app)',
-    },
-  });
-
-  if (!response.ok) {
-    throw new BridgeError('web_fetch_failed', `Failed to fetch URL (${response.status}).`);
-  }
-
-  const html = await response.text();
-  const title = extractPageTitle(html) || parsed.hostname.replace(/^www\./i, '');
-  const content = stripHtmlToText(html).slice(0, 12000);
-  const snippet = content.slice(0, 350);
-
-  return JSON.stringify(
-    {
-      url: normalizedUrl,
-      title,
-      snippet,
-      content,
-    },
-    null,
-    2
-  );
-};
-
 const parseToolContextBlocks = (text: string): Array<{ tool: string | null; body: string }> => {
   const blocks: Array<{ tool: string | null; body: string }> = [];
   const regex = /<tool_context\b([^>]*)>([\s\S]*?)<\/tool_context>/gi;
@@ -2280,6 +2220,7 @@ const TOOL_HOST_GIT_READ_IDS = new Set([
 const isFrontendRelayToolId = (toolId: string): boolean =>
   toolId === 'question' ||
   toolId === 'read_file' ||
+  toolId === 'web_fetch' ||
   FRONTEND_RELAY_WORKSPACE_TOOL_IDS.has(toolId) ||
   FRONTEND_RELAY_GIT_MUTATION_IDS.has(toolId) ||
   FRONTEND_RELAY_PAGED_GIT_READ_IDS.has(toolId) ||
@@ -2372,10 +2313,6 @@ const executeCopilotMacroTool = async (
 
   if (toolId === 'edit_source_passage') {
     return editSourcePassage(request.messages, args);
-  }
-
-  if (toolId === 'web_fetch') {
-    return fetchWebPageDirect(typeof args.url === 'string' ? args.url : '');
   }
 
   if (TOOL_HOST_GIT_READ_IDS.has(toolId)) {

@@ -4026,6 +4026,12 @@ export interface NativeWebSearchResult {
   score: number;
 }
 
+export interface NativeWebFetchResource {
+  url: string;
+  contentType: string | null;
+  bodyBase64: string;
+}
+
 export async function webSearchGetSecretStatus(
   provider: 'tavily' | 'brave',
 ): Promise<WebSearchSecretStatus> {
@@ -4046,6 +4052,16 @@ export async function webSearchExecute(input: {
   return invoke<NativeWebSearchResult[]>('web_search_execute', {
     query: input.query,
     includeRawContent: input.includeRawContent ?? false,
+  });
+}
+
+export async function webFetchExecute(input: {
+  url: string;
+  resourceKind: "page" | "favicon";
+}): Promise<NativeWebFetchResource> {
+  return invoke<NativeWebFetchResource>("web_fetch_execute", {
+    url: input.url,
+    resourceKind: input.resourceKind,
   });
 }
 

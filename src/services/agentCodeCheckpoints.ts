@@ -648,14 +648,29 @@ const restoreReplaySnapshot = async (
       workspaceScope:
         file.workspaceScope === "metadata" ? "metadata" : undefined,
     });
+    if (!expectedCurrent) {
+      throw new Error(
+        `Cannot safely restore ${file.path}: the prevalidated remote snapshot is missing.`,
+      );
+    }
+    if (!snapshotsEqual(current, expectedCurrent)) {
+      throw new Error(
+        `Cannot restore ${file.path}: the remote file changed after its replay state was validated.`,
+      );
+    }
+    if (expectedCurrent.exists && !expectedCurrent.revision) {
+      throw new Error(
+        `Cannot safely restore ${file.path}: the prevalidated remote revision is missing.`,
+      );
+    }
     if (!snapshot.exists) {
-      if (!current.exists) return null;
+      if (!expectedCurrent.exists) return null;
       await executeRemoteWorkspaceTool({
         mode,
         toolId: "delete",
         args: {
           path: file.realPath,
-          expected_revision: current.revision,
+          expected_revision: expectedCurrent.revision,
         },
         projectId: file.projectId,
         workspacePath: file.workspacePath,
@@ -677,7 +692,9 @@ const restoreReplaySnapshot = async (
         path: file.realPath,
         content: snapshot.content,
         create_dirs: true,
-        expected_revision: current.exists ? current.revision : "absent",
+        expected_revision: expectedCurrent.exists
+          ? expectedCurrent.revision
+          : "absent",
         unix_mode: snapshot.unixMode ?? undefined,
       },
       projectId: file.projectId,
