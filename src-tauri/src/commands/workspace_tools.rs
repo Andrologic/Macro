@@ -1,8 +1,8 @@
 use super::{
-    apply_patch_hunks_to_content, build_post_write_response, command_error,
-    commit_pending_file_changes_atomically, compute_line_change_stats, exact_edit_match_error,
-    format_with_line_numbers, fs, join_text_lines, json_arg_bool, json_arg_string,
-    json_arg_string_map, json_arg_u32, normalize_tool_map_path, parse_apply_patch,
+    apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
+    commit_and_validate_pending_file_changes_with_create_dirs, compute_line_change_stats,
+    exact_edit_match_error, format_with_line_numbers, fs, join_text_lines, json_arg_bool,
+    json_arg_string, json_arg_string_map, json_arg_u32, normalize_tool_map_path, parse_apply_patch,
     resolve_validated_tool_path, CommandError, CommandResult, ParsedPatchOperation,
     PendingFileChange,
 };
@@ -947,50 +947,65 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let create_dirs = json_arg_bool(args, "create_dirs");
             let expected_revision = json_arg_string(args, "expected_revision");
             let workspace = mount_workspace_path(mount)?;
+            let display_path = virtual_path_for_mount(mount, &relative_path);
             let absolute_path =
                 resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-            let write_result = fs::write_file_internal_with_revision(
-                &workspace,
-                relative_path.clone(),
-                content.clone(),
-                create_dirs,
-                Some(false),
-                expected_revision.as_deref(),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
-            let display_path = virtual_path_for_mount(mount, &relative_path);
+
+            if !create_dirs.unwrap_or(true) {
+                let parent = absolute_path.parent();
+                if !parent.is_some_and(Path::exists) {
+                    return Ok(Some(format!(
+                        "Parent directory does not exist for {}: {}",
+                        display_path,
+                        parent
+                            .map(|value| value.display().to_string())
+                            .unwrap_or_default()
+                    )));
+                }
+            }
+
+            let existed = fs::exists_internal(&workspace, relative_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before write: {}",
+                        display_path, error
+                    ))
+                })?;
+            let created = !existed;
+            let bytes_written = content.len() as u64;
             let change: PendingVirtualChange = PendingFileChange {
                 display_path: display_path.clone(),
                 effective_workspace: workspace,
                 effective_path: relative_path,
                 absolute_path,
-                status: if write_result.created {
+                status: if created {
                     "created".to_string()
                 } else {
                     "updated".to_string()
                 },
                 new_content: Some(content.clone()),
-                created: write_result.created,
-                bytes_written: write_result.bytes_written,
+                created,
+                bytes_written,
                 additions: content.lines().count(),
                 deletions: 0,
                 expected_revision,
             };
-            build_post_write_response(
-                &[change],
+            commit_and_validate_pending_file_changes_with_create_dirs(
+                vec![change],
                 serde_json::Map::from_iter([
                     ("path".to_string(), Value::String(display_path)),
                     (
                         "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                        Value::Number(serde_json::Number::from(bytes_written)),
                     ),
-                    ("created".to_string(), Value::Bool(write_result.created)),
+                    ("created".to_string(), Value::Bool(created)),
                     (
                         "project_id".to_string(),
                         Value::String(mount.project_id.clone()),
                     ),
                 ]),
+                create_dirs.unwrap_or(true),
             )
             .await
             .map(Some)
@@ -1046,36 +1061,23 @@ pub(crate) async fn execute_virtual_workspace_tool(
             };
             let absolute_path =
                 resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
-            let write_result = fs::write_file_internal_with_revision(
-                &workspace,
-                relative_path.clone(),
-                updated.clone(),
-                Some(true),
-                Some(false),
-                Some(&mutation_revision),
-            )
-            .await
-            .map_err(|error| command_error(error.to_string()))?;
             let (additions, deletions) = compute_line_change_stats(&current.content, &updated);
+            let bytes_written = updated.len() as u64;
             let change: PendingVirtualChange = PendingFileChange {
                 display_path: display_path.clone(),
                 effective_workspace: workspace,
                 effective_path: relative_path,
                 absolute_path,
-                status: if write_result.created {
-                    "created".to_string()
-                } else {
-                    "updated".to_string()
-                },
-                new_content: Some(updated),
-                created: write_result.created,
-                bytes_written: write_result.bytes_written,
+                status: "updated".to_string(),
+                new_content: Some(updated.clone()),
+                created: false,
+                bytes_written,
                 additions,
                 deletions,
                 expected_revision: Some(mutation_revision),
             };
-            build_post_write_response(
-                &[change],
+            commit_and_validate_pending_file_changes(
+                vec![change],
                 serde_json::Map::from_iter([
                     (
                         "replacements".to_string(),
@@ -1088,9 +1090,9 @@ pub(crate) async fn execute_virtual_workspace_tool(
                     ("path".to_string(), Value::String(display_path)),
                     (
                         "bytes_written".to_string(),
-                        Value::Number(serde_json::Number::from(write_result.bytes_written)),
+                        Value::Number(serde_json::Number::from(bytes_written)),
                     ),
-                    ("created".to_string(), Value::Bool(write_result.created)),
+                    ("created".to_string(), Value::Bool(false)),
                     (
                         "project_id".to_string(),
                         Value::String(mount.project_id.clone()),
@@ -1153,16 +1155,6 @@ pub(crate) async fn execute_virtual_workspace_tool(
             let mutation_revision = expected_revision
                 .clone()
                 .unwrap_or_else(|| current.revision.clone());
-            fs::delete_path_internal_with_revision(
-                &workspace,
-                relative_path.clone(),
-                Some(false),
-                Some(&mutation_revision),
-            )
-            .await
-            .map_err(|error| {
-                command_error(format!("Failed to delete {}: {}", display_path, error))
-            })?;
             let change: PendingVirtualChange = PendingFileChange {
                 display_path: display_path.clone(),
                 effective_workspace: workspace,
@@ -1176,8 +1168,8 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 deletions,
                 expected_revision: Some(mutation_revision),
             };
-            build_post_write_response(
-                &[change],
+            commit_and_validate_pending_file_changes(
+                vec![change],
                 serde_json::Map::from_iter([
                     ("path".to_string(), Value::String(display_path)),
                     (
@@ -1384,13 +1376,12 @@ pub(crate) async fn execute_virtual_workspace_tool(
                 }
             }
 
-            commit_pending_file_changes_atomically(&pending_changes).await?;
-
-            build_post_write_response(
-                &pending_changes,
+            let applied_operations = pending_changes.len() as u64;
+            commit_and_validate_pending_file_changes(
+                pending_changes,
                 serde_json::Map::from_iter([(
                     "applied_operations".to_string(),
-                    Value::Number(serde_json::Number::from(pending_changes.len() as u64)),
+                    Value::Number(serde_json::Number::from(applied_operations)),
                 )]),
             )
             .await
@@ -1407,8 +1398,12 @@ mod tests {
         validate_headless_project_mounts, validate_headless_workspace_path, ResolvedMountTarget,
         VirtualWorkspaceContext, WorkspaceProjectMount,
     };
-    use serde_json::json;
+    use crate::commands::{
+        commit_and_validate_pending_file_changes, commit_with_post_mutation_gate, PendingFileChange,
+    };
+    use serde_json::{json, Value};
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn mount(
@@ -1422,6 +1417,37 @@ mod tests {
             workspace_path: Some(format!("/tmp/{}", project_id)),
             display_name: display_name.map(str::to_string),
             is_read_only: false,
+        }
+    }
+
+    fn temp_mount(project_id: &str, mount_name: &str, workspace: &Path) -> WorkspaceProjectMount {
+        WorkspaceProjectMount {
+            project_id: project_id.to_string(),
+            mount_name: mount_name.to_string(),
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+            display_name: None,
+            is_read_only: false,
+        }
+    }
+
+    fn virtual_change(
+        workspace: &Path,
+        relative_path: &str,
+        status: &str,
+        new_content: Option<&str>,
+    ) -> PendingFileChange {
+        PendingFileChange {
+            display_path: format!("{}/{}", "web", relative_path),
+            effective_workspace: workspace.to_path_buf(),
+            effective_path: relative_path.to_string(),
+            absolute_path: workspace.join(relative_path),
+            status: status.to_string(),
+            new_content: new_content.map(str::to_string),
+            created: false,
+            bytes_written: new_content.map_or(0, str::len) as u64,
+            additions: 1,
+            deletions: 1,
+            expected_revision: None,
         }
     }
 
@@ -1695,6 +1721,116 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join("app.ts")).expect("read fixture"),
             "const value = 1;\nconst value = 1;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_write_commits_through_the_transactional_pipeline() {
+        let temp = TempDir::new().expect("temp dir");
+        let mounts = vec![temp_mount("web-project", "web", temp.path())];
+
+        let result = execute_virtual_workspace_tool(
+            "Implement",
+            "write",
+            &json!({ "path": "src/app.ts", "content": "export const value = 1;\n" }),
+            &mounts,
+            None,
+            None,
+        )
+        .await
+        .expect("write")
+        .expect("handled by virtual root");
+        let parsed: Value = serde_json::from_str(&result).expect("json response");
+
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["created"], true);
+        assert_eq!(parsed["path"], "web/src/app.ts");
+        assert_eq!(parsed["project_id"], "web-project");
+        assert_eq!(parsed["files"][0]["validation"]["readable"], true);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src/app.ts")).expect("read written file"),
+            "export const value = 1;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_mount_rolls_back_a_write_when_post_mutation_validation_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("app.ts"), "original\n").expect("seed mount file");
+
+        let error = commit_with_post_mutation_gate(
+            vec![virtual_change(
+                temp.path(),
+                "app.ts",
+                "updated",
+                Some("macro mutation\n"),
+            )],
+            Default::default(),
+            true,
+            |_| false,
+        )
+        .await
+        .expect_err("injected validation failure must fail the call");
+
+        assert!(error.message.contains("Post-mutation validation failed"));
+        assert!(error
+            .message
+            .contains("Injected post-mutation validation failure for web/app.ts"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("app.ts")).expect("restored mount file"),
+            "original\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_mount_delete_is_compensated_when_validation_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("removed.ts"), "keep me\n").expect("seed mount file");
+
+        let error = commit_with_post_mutation_gate(
+            vec![virtual_change(temp.path(), "removed.ts", "deleted", None)],
+            Default::default(),
+            true,
+            |_| false,
+        )
+        .await
+        .expect_err("injected validation failure must fail the call");
+
+        assert!(error.message.contains("Post-mutation validation failed"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("removed.ts"))
+                .expect("deleted mount file must be restored"),
+            "keep me\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn validated_commit_reports_the_standard_response_for_virtual_changes() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("app.ts"), "original\n").expect("seed mount file");
+
+        let response = commit_and_validate_pending_file_changes(
+            vec![virtual_change(
+                temp.path(),
+                "app.ts",
+                "updated",
+                Some("macro mutation\n"),
+            )],
+            Default::default(),
+        )
+        .await
+        .expect("validated virtual change must succeed");
+        let parsed: Value = serde_json::from_str(&response).expect("json response");
+
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["files"][0]["path"], "web/app.ts");
+        assert_eq!(
+            parsed["files"][0]["validation"]["revision"],
+            crate::commands::fs::content_revision(b"macro mutation\n")
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("app.ts")).expect("read mutated file"),
+            "macro mutation\n"
         );
     }
 }

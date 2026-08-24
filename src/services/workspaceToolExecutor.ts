@@ -289,6 +289,25 @@ const expectedRevisionConflict = (
   return null;
 };
 
+const mutationDivergenceConflict = (
+  displayPath: string,
+  toolName: string,
+  writtenRevision: string | null | undefined,
+  rereadRevision: string | null | undefined,
+): string | null => {
+  if (!writtenRevision || !rereadRevision) {
+    return `Cannot verify ${toolName} for "${displayPath}": the mutation or guarded re-read did not return a content revision. No code checkpoint was published; re-read the file and retry.`;
+  }
+  if (writtenRevision === rereadRevision) return null;
+  return `External modification detected for "${displayPath}" after ${toolName}: the mutation reported revision ${writtenRevision} but the guarded re-read found ${rereadRevision}. No code checkpoint was published; re-read the file and retry.`;
+};
+
+const deleteAbsenceDivergenceConflict = (
+  displayPath: string,
+  toolName: string,
+): string =>
+  `External modification detected for "${displayPath}" after ${toolName}: the deleted path exists again after the mutation. No code checkpoint was published; re-read the path and retry.`;
+
 type CheckpointCaptureOptions = {
   displayPath: string;
   realPath: string;
@@ -424,6 +443,12 @@ const restoreCheckpointSnapshot = async (
     );
   }
 
+  if (expectedCurrent?.exists && !expectedCurrent.revision) {
+    throw new Error(
+      `Cannot safely restore ${options.displayPath}: the applied mutation revision is unavailable.`,
+    );
+  }
+
   await tauriIpc.fsWriteFile({
     path: options.realPath,
     content: snapshot.content,
@@ -459,6 +484,9 @@ const executeCheckpointedFileMutation = async <T>(
       | AgentCodeCheckpointFileSnapshot
       | ((result: T) => AgentCodeCheckpointFileSnapshot);
     currentAfterMutation?: () => AgentCodeCheckpointFileSnapshot | undefined;
+    verifyMutationResult?: (
+      result: T,
+    ) => Promise<string | null> | string | null;
     mutation: () => Promise<T>;
   },
 ): Promise<T> => {
@@ -466,6 +494,7 @@ const executeCheckpointedFileMutation = async <T>(
     options.before ?? (await readCheckpointSnapshot(options.checkpointOptions));
   let result: T;
   let after: AgentCodeCheckpointFileSnapshot;
+  let divergenceConflict: string | null = null;
   try {
     result = await options.mutation();
     after =
@@ -473,6 +502,12 @@ const executeCheckpointedFileMutation = async <T>(
         ? options.after(result)
         : options.after ??
           (await readCheckpointSnapshot(options.checkpointOptions));
+    if (options.verifyMutationResult) {
+      divergenceConflict = await options.verifyMutationResult(result);
+      if (divergenceConflict !== null) {
+        throw new Error(divergenceConflict);
+      }
+    }
   } catch (error) {
     const currentAfterMutation = options.currentAfterMutation?.();
     if (!currentAfterMutation) {
@@ -2169,6 +2204,13 @@ export const executeWorkspaceTool = async (
           before,
           after: (result) => snapshotFromReadResult(result.readback),
           currentAfterMutation: () => currentAfterMutation,
+          verifyMutationResult: (result) =>
+            mutationDivergenceConflict(
+              resolved.virtualPath,
+              toolName,
+              result.writeResult.revision,
+              result.readback.revision,
+            ),
           mutation: async () => {
             const result = await tauriIpc.fsWriteFile({
               path: realPath,
@@ -2187,6 +2229,9 @@ export const executeWorkspaceTool = async (
               allowOutsideWorkspace: false,
               workspacePath,
             });
+            if (validation.content === content && validation.revision) {
+              currentAfterMutation = snapshotFromReadResult(validation);
+            }
             return { writeResult: result, readback: validation };
           },
         });
@@ -2304,6 +2349,13 @@ export const executeWorkspaceTool = async (
           before: snapshotFromReadResult(current),
           after: snapshotFromReadResult,
           currentAfterMutation: () => currentAfterMutation,
+          verifyMutationResult: (reread) =>
+            mutationDivergenceConflict(
+              resolved.virtualPath,
+              toolName,
+              currentAfterMutation?.revision,
+              reread.revision,
+            ),
           mutation: async () => {
             const result = await tauriIpc.fsWriteFile({
               path: realPath,
@@ -2317,11 +2369,15 @@ export const executeWorkspaceTool = async (
               updated,
               result.revision,
             );
-            return tauriIpc.fsReadFileWithOptions({
+            const validation = await tauriIpc.fsReadFileWithOptions({
               path: realPath,
               allowOutsideWorkspace: false,
               workspacePath,
             });
+            if (validation.content === updated && validation.revision) {
+              currentAfterMutation = snapshotFromReadResult(validation);
+            }
+            return validation;
           },
         });
         const stats = computeLineChangeStats(current.content, updated);
@@ -2428,6 +2484,15 @@ export const executeWorkspaceTool = async (
           },
           before: snapshotFromReadResult(current),
           after: missingCheckpointSnapshot(),
+          currentAfterMutation: () => missingCheckpointSnapshot(),
+          verifyMutationResult: async () => {
+            const stillExists = await tauriIpc.fsExists(realPath, {
+              workspacePath,
+            });
+            return stillExists
+              ? deleteAbsenceDivergenceConflict(resolved.virtualPath, toolName)
+              : null;
+          },
           mutation: async () => {
             await tauriIpc.fsDelete({
               path: realPath,
@@ -2634,13 +2699,34 @@ export const executeWorkspaceTool = async (
         const errors: string[] = [];
         const checkpointFiles: AgentCodeCheckpointFile[] = [];
 
-        for (const change of pendingChanges) {
+        for (const [changeIndex, change] of pendingChanges.entries()) {
+          const macroProducedRevision =
+            rollbackSnapshots[changeIndex]?.postMutationExpectedRevision ??
+            null;
           let validation: PatchValidationRecord;
           let afterCheckpoint: AgentCodeCheckpointFileSnapshot;
           if (change.newContent === null) {
+            let stillExists = false;
+            try {
+              stillExists = await tauriIpc.fsExists(
+                change.target.realPath,
+                {
+                  workspacePath: change.target.candidate.workspacePath,
+                },
+              );
+            } catch (error) {
+              errors.push(
+                `Validation failed for ${change.target.displayPath}: ${formatToolError(error)}`,
+              );
+            }
+            if (stillExists) {
+              errors.push(
+                deleteAbsenceDivergenceConflict(change.target.displayPath, toolName),
+              );
+            }
             validation = {
               path: change.target.displayPath,
-              exists: false,
+              exists: stillExists,
               readable: false,
               is_binary: false,
               size: 0,
@@ -2656,6 +2742,15 @@ export const executeWorkspaceTool = async (
                 allowOutsideWorkspace: false,
                 workspacePath: change.target.candidate.workspacePath,
               });
+              const divergence = mutationDivergenceConflict(
+                change.target.displayPath,
+                toolName,
+                macroProducedRevision,
+                readback.revision,
+              );
+              if (divergence) {
+                errors.push(divergence);
+              }
               validation = {
                 path: change.target.displayPath,
                 exists: true,
@@ -3256,6 +3351,13 @@ export const executeWorkspaceTool = async (
         before,
         after: (result) => snapshotFromReadResult(result.readback),
         currentAfterMutation: () => currentAfterMutation,
+        verifyMutationResult: (result) =>
+          mutationDivergenceConflict(
+            resolvedPath,
+            toolName,
+            result.writeResult.revision,
+            result.readback.revision,
+          ),
         mutation: async () => {
           const result = await tauriIpc.fsWriteFile({
             path,
@@ -3276,6 +3378,9 @@ export const executeWorkspaceTool = async (
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           });
+          if (validation.content === content && validation.revision) {
+            currentAfterMutation = snapshotFromReadResult(validation);
+          }
           return { writeResult: result, readback: validation };
         },
       });
@@ -3368,6 +3473,13 @@ export const executeWorkspaceTool = async (
         before: snapshotFromReadResult(current),
         after: (result) => snapshotFromReadResult(result.readback),
         currentAfterMutation: () => currentAfterMutation,
+        verifyMutationResult: (result) =>
+          mutationDivergenceConflict(
+            resolvedPath,
+            toolName,
+            currentAfterMutation?.revision,
+            result.readback.revision,
+          ),
         mutation: async () => {
           const result = await tauriIpc.fsWriteFile({
             path,
@@ -3388,6 +3500,9 @@ export const executeWorkspaceTool = async (
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           });
+          if (validation.content === updated && validation.revision) {
+            currentAfterMutation = snapshotFromReadResult(validation);
+          }
           return { writeResult: result, readback: validation };
         },
       });
@@ -3467,6 +3582,16 @@ export const executeWorkspaceTool = async (
         },
         before: snapshotFromReadResult(current),
         after: missingCheckpointSnapshot(),
+        currentAfterMutation: () => missingCheckpointSnapshot(),
+        verifyMutationResult: async () => {
+          const stillExists = await tauriIpc.fsExists(path, {
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: effectiveWorkspacePath,
+          });
+          return stillExists
+            ? deleteAbsenceDivergenceConflict(resolvedPath, toolName)
+            : null;
+        },
         mutation: async () => {
           await tauriIpc.fsDelete({
             path,
@@ -3654,13 +3779,31 @@ export const executeWorkspaceTool = async (
       const errors: string[] = [];
       const checkpointFiles: AgentCodeCheckpointFile[] = [];
 
-      for (const change of pendingChanges) {
+      for (const [changeIndex, change] of pendingChanges.entries()) {
+        const macroProducedRevision =
+          rollbackSnapshots[changeIndex]?.postMutationExpectedRevision ?? null;
         let validation: PatchValidationRecord;
         let afterCheckpoint: AgentCodeCheckpointFileSnapshot;
         if (change.newContent === null) {
+          let stillExists = false;
+          try {
+            stillExists = await tauriIpc.fsExists(change.realPath, {
+              workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+              workspacePath: effectiveWorkspacePath,
+            });
+          } catch (error) {
+            errors.push(
+              `Validation failed for ${change.path}: ${formatToolError(error)}`,
+            );
+          }
+          if (stillExists) {
+            errors.push(
+              deleteAbsenceDivergenceConflict(change.path, toolName),
+            );
+          }
           validation = {
             path: change.path,
-            exists: false,
+            exists: stillExists,
             readable: false,
             is_binary: false,
             size: 0,
@@ -3677,6 +3820,15 @@ export const executeWorkspaceTool = async (
               workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
               workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
             });
+            const divergence = mutationDivergenceConflict(
+              change.path,
+              toolName,
+              macroProducedRevision,
+              readback.revision,
+            );
+            if (divergence) {
+              errors.push(divergence);
+            }
             validation = {
               path: change.path,
               exists: true,

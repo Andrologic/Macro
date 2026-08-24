@@ -2944,18 +2944,31 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     const firstContent = firstPage.match(
       /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
     )?.[1];
-    const secondPage = String(
-      await onToolCall(
-        'read_file',
-        { file: artifactPath, raw: true, max_bytes: 256_000, cursor },
-        'read-large-output-2',
-      ),
-    );
-    const secondContent = secondPage.match(
-      /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
-    )?.[1];
-    expect(firstContent! + secondContent!).toBe(fullOutput);
-    expect(secondPage).toContain('TRUNCATED: false');
+    let recovered = firstContent ?? '';
+    let nextCursor = cursor;
+    let pageIndex = 2;
+    while (nextCursor) {
+      const page = String(
+        await onToolCall(
+          'read_file',
+          {
+            file: artifactPath,
+            raw: true,
+            max_bytes: 256_000,
+            cursor: nextCursor,
+          },
+          `read-large-output-${pageIndex}`,
+        ),
+      );
+      recovered += page.match(
+        /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
+      )?.[1] ?? '';
+      nextCursor = page.match(/^NEXT_CURSOR: (.+)$/m)?.[1];
+      if (nextCursor === 'none') nextCursor = undefined;
+      pageIndex += 1;
+    }
+    expect(recovered).toBe(fullOutput);
+    expect(pageIndex).toBeGreaterThan(3);
   });
 
   it('does not publish a tool-output URI when durable artifact persistence fails', async () => {
@@ -2976,6 +2989,25 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(preview).not.toContain('tool-output://');
     expect(citationRecords).toEqual([]);
     expect(new TextEncoder().encode(preview).byteLength).toBeLessThan(50 * 1024);
+  });
+
+  it('allocates distinct artifacts for oversized tool results without call ids', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte deux grosses sorties internes.',
+    );
+    const oversizedOutput = async () => `BEGIN-${'x'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock
+      .mockImplementationOnce(oversizedOutput as unknown as () => Promise<undefined>)
+      .mockImplementationOnce(oversizedOutput as unknown as () => Promise<undefined>);
+
+    await onToolCall('grep', { query: 'first' }, undefined);
+    await onToolCall('grep', { query: 'second' }, undefined);
+
+    const paths = citationRecords
+      .map((citation) => citation.path)
+      .filter((path): path is string => path?.startsWith('tool-output://') ?? false);
+    expect(paths).toHaveLength(2);
+    expect(new Set(paths).size).toBe(2);
   });
 
   registerConversationSelectionScenarios(useChatStoreScenarioContext);

@@ -23,10 +23,7 @@ const requiresContentRevisions = (params: {
   toolId: string;
   args: Record<string, unknown>;
 }): boolean => {
-  if (params.toolId === 'write') {
-    return typeof params.args.expected_revision === 'string' && params.args.expected_revision.trim().length > 0;
-  }
-  return ['edit', 'delete', 'apply_patch'].includes(params.toolId);
+  return ['write', 'edit', 'delete', 'apply_patch'].includes(params.toolId);
 };
 
 interface RemoteToolValidation {

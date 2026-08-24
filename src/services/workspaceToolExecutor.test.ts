@@ -74,9 +74,11 @@ const registerWorkspaceToolExecutorMocks = (
             return {
               ...result,
               revision:
-                typeof result.revision === "string"
+                result.revision === null
+                  ? null
+                  : typeof result.revision === "string"
                   ? result.revision
-                  : "mock-read-revision",
+                  : "mock-revision",
             };
           },
         }
@@ -88,9 +90,11 @@ const registerWorkspaceToolExecutorMocks = (
             return {
               ...result,
               revision:
-                typeof result.revision === "string"
+                result.revision === null
+                  ? null
+                  : typeof result.revision === "string"
                   ? result.revision
-                  : "mock-write-revision",
+                  : "mock-revision",
             };
           },
         }
@@ -1162,7 +1166,7 @@ describe("workspaceToolExecutor helpers", () => {
       "C:/dev/macro-web/src/App.tsx",
       "C:/dev/macro-web/notes.md",
     ]);
-    expect(writes[0].expectedRevision).toBe("mock-read-revision");
+    expect(writes[0].expectedRevision).toBe("mock-revision");
     expect(writes[1].expectedRevision).toBe("absent");
     expect(deletes).toEqual([]);
   });
@@ -1761,7 +1765,7 @@ describe("workspaceToolExecutor helpers", () => {
     expect(deletes).toEqual([
       {
         path: "C:/worktrees/web-task/src/obsolete.ts",
-        expectedRevision: "mock-read-revision",
+        expectedRevision: "mock-revision",
       },
     ]);
   });
@@ -2135,6 +2139,433 @@ describe("workspaceToolExecutor helpers", () => {
     expect(result).toContain("validation read failed");
     expect(content).toBe("before\n");
     expect(checkpoints).toEqual([]);
+  });
+
+  it("uses the guarded readback revision to compensate a write with a missing result revision", async () => {
+    let content = "before\n";
+    let reads = 0;
+    let writes = 0;
+    const checkpoints: unknown[] = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => {
+          reads += 1;
+          return {
+            content,
+            language: "text",
+            is_binary: false,
+            size: content.length,
+            encoding: "utf-8",
+            revision: reads === 1 ? "before-revision" : "guarded-readback-revision",
+          };
+        },
+        fsWriteFile: async (params: {
+          content: string;
+          expectedRevision?: string | null;
+        }) => {
+          writes += 1;
+          if (writes === 2) {
+            expect(params.expectedRevision).toBe("guarded-readback-revision");
+          }
+          content = params.content;
+          return {
+            path: "src/value.txt",
+            bytes_written: params.content.length,
+            created: false,
+            revision: writes === 1 ? null : "restored-revision",
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "src/value.txt", content: "after\n" },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async (checkpoint: unknown) =>
+          checkpoints.push(checkpoint),
+      },
+    );
+
+    expect(result).toContain("mutation was reverted");
+    expect(result).toContain("did not return a content revision");
+    expect(content).toBe("before\n");
+    expect(checkpoints).toEqual([]);
+  });
+
+  it("reports a conflict instead of publishing a checkpoint when a virtual-root write is overwritten externally", async () => {
+    let content = "export const value = 'base';\n";
+    let revision = "base-revision";
+    const checkpoints: unknown[] = [];
+    const writes: Array<Record<string, unknown>> = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => ({
+          content,
+          language: "typescript",
+          is_binary: false,
+          size: content.length,
+          encoding: "utf-8",
+          revision,
+        }),
+        fsWriteFile: async (params: {
+          path: string;
+          content: string;
+          expectedRevision?: string | null;
+        }) => {
+          writes.push(params);
+          if (
+            params.expectedRevision === "macro-revision-1" &&
+            revision === "external-revision"
+          ) {
+            throw new Error("revision conflict: external winner");
+          }
+          const macroRevision = "macro-revision-1";
+          content = params.content;
+          revision = macroRevision;
+          queueMicrotask(() => {
+            content = "export const value = 'external';\n";
+            revision = "external-revision";
+          });
+          return {
+            path: params.path,
+            bytes_written: params.content.length,
+            created: false,
+            revision: macroRevision,
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "write",
+      { path: "web/src/value.ts", content: "export const value = 'after';\n" },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+          },
+        ],
+        workspacePathsByProjectId: { web: "C:/dev/macro-web" },
+        onCodeCheckpoint: async (checkpoint: unknown) =>
+          checkpoints.push(checkpoint),
+      },
+    );
+
+    expect(result).toContain('External modification detected for "web/src/value.ts"');
+    expect(result).toContain("macro-revision-1");
+    expect(result).toContain("external-revision");
+    expect(result).toContain("No code checkpoint was published");
+    expect(checkpoints).toEqual([]);
+    expect(writes).toHaveLength(2);
+    expect(content).toBe("export const value = 'external';\n");
+    expect(revision).toBe("external-revision");
+  });
+
+  it("reports a conflict instead of publishing a checkpoint when an edit is overwritten externally", async () => {
+    let content = "export const value = 1;\n";
+    let revision = "read-revision";
+    const checkpoints: unknown[] = [];
+    const writes: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async () => true,
+        fsReadFileWithOptions: async () => ({
+          content,
+          language: "typescript",
+          is_binary: false,
+          size: content.length,
+          encoding: "utf-8",
+          revision,
+        }),
+        fsWriteFile: async ({
+          path,
+          content: nextContent,
+          expectedRevision,
+        }: {
+          path: string;
+          content: string;
+          expectedRevision?: string | null;
+        }) => {
+          writes.push(nextContent);
+          if (
+            expectedRevision === "edited-revision" &&
+            revision === "external-revision"
+          ) {
+            throw new Error("revision conflict: external winner");
+          }
+          const macroRevision = "edited-revision";
+          content = nextContent;
+          revision = macroRevision;
+          queueMicrotask(() => {
+            content = "export const value = EXTERNAL;\n";
+            revision = "external-revision";
+          });
+          return {
+            path,
+            bytes_written: nextContent.length,
+            created: false,
+            revision: macroRevision,
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "edit",
+      {
+        path: "src/value.ts",
+        old_text: "value = 1",
+        new_text: "value = 2",
+      },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async (checkpoint: unknown) =>
+          checkpoints.push(checkpoint),
+      },
+    );
+
+    expect(result).toContain('External modification detected for "src/value.ts"');
+    expect(result).toContain("edited-revision");
+    expect(result).toContain("external-revision");
+    expect(result).toContain("No code checkpoint was published");
+    expect(checkpoints).toEqual([]);
+    expect(writes).toEqual([
+      "export const value = 2;\n",
+      "export const value = 1;\n",
+    ]);
+    expect(content).toBe("export const value = EXTERNAL;\n");
+    expect(revision).toBe("external-revision");
+  });
+
+  it("reports a conflict instead of publishing a delete checkpoint when the target reappears externally", async () => {
+    let exists = true;
+    const checkpoints: unknown[] = [];
+    const writes: string[] = [];
+    const deletes: string[] = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsStat: async (path: string) => ({
+          path,
+          name: "obsolete.ts",
+          kind: "file",
+          size: 20,
+          modified: "2026-03-26T10:00:00.000Z",
+          permissions: "rw-r--r--",
+          language: "typescript",
+          is_readonly: false,
+          is_hidden: false,
+          is_symlink: false,
+        }),
+        fsExists: async () => exists,
+        fsReadFileWithOptions: async () => ({
+          content: "first line\nsecond line\n",
+          language: "typescript",
+          is_binary: false,
+          size: 23,
+          encoding: "utf-8",
+          revision: "current-revision",
+        }),
+        fsDelete: async ({ path }: { path: string }) => {
+          deletes.push(path);
+          exists = false;
+          queueMicrotask(() => {
+            exists = true;
+          });
+        },
+        fsWriteFile: async ({
+          content,
+          expectedRevision,
+        }: {
+          content: string;
+          expectedRevision?: string | null;
+        }) => {
+          writes.push(content);
+          if (expectedRevision === "absent" && exists) {
+            throw new Error("revision conflict: external file reappeared");
+          }
+          return {
+            path: "C:/dev/macro-web/src/obsolete.ts",
+            bytes_written: content.length,
+            created: false,
+            revision: "restored-revision",
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "delete",
+      { path: "src/obsolete.ts" },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async (checkpoint: unknown) =>
+          checkpoints.push(checkpoint),
+      },
+    );
+
+    expect(result).toContain(
+      'External modification detected for "src/obsolete.ts"',
+    );
+    expect(result).toContain("deleted path exists again");
+    expect(result).toContain("No code checkpoint was published");
+    expect(checkpoints).toEqual([]);
+    expect(deletes).toHaveLength(1);
+    expect(writes).toEqual(["first line\nsecond line\n"]);
+  });
+
+  it("reverts an apply_patch batch and keeps the external winner when one patched file diverges", async () => {
+    const files = new Map<string, { content: string; revision: string }>();
+    files.set("C:/dev/macro-web/src/a.ts", {
+      content: "export const a = 'before';\n",
+      revision: "before:a",
+    });
+    files.set("C:/dev/macro-web/src/b.ts", {
+      content: "export const b = 'before';\n",
+      revision: "before:b",
+    });
+    const checkpoints: unknown[] = [];
+    const writes: Array<{
+      path: string;
+      content: string;
+      expectedRevision?: string | null;
+    }> = [];
+
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsExists: async (path: string) => files.has(path),
+        fsReadFileWithOptions: async ({ path }: { path: string }) => {
+          const file = files.get(path);
+          if (!file) throw new Error(`unexpected read: ${path}`);
+          return {
+            content: file.content,
+            language: "typescript",
+            is_binary: false,
+            size: file.content.length,
+            encoding: "utf-8",
+            revision: file.revision,
+          };
+        },
+        fsWriteFile: async ({
+          path,
+          content,
+          expectedRevision,
+        }: {
+          path: string;
+          content: string;
+          expectedRevision?: string | null;
+        }) => {
+          writes.push({ path, content, expectedRevision });
+          const current = files.get(path);
+          if (
+            expectedRevision &&
+            expectedRevision !== "absent" &&
+            (!current || current.revision !== expectedRevision)
+          ) {
+            throw new Error(`stale write refused for ${path}`);
+          }
+          const created = !current;
+          const macroRevision = `applied:${writes.length}`;
+          files.set(path, { content, revision: macroRevision });
+          if (path.endsWith("b.ts")) {
+            queueMicrotask(() => {
+              files.set(path, {
+                content: "export const b = 'EXTERNAL';\n",
+                revision: "external:b",
+              });
+            });
+          }
+          return {
+            path,
+            bytes_written: content.length,
+            created,
+            revision: macroRevision,
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "apply_patch",
+      {
+        patch_text: [
+          "*** Begin Patch",
+          "*** Update File: web/src/a.ts",
+          "@@",
+          "-export const a = 'before';",
+          "+export const a = 'after';",
+          "*** Update File: web/src/b.ts",
+          "@@",
+          "-export const b = 'before';",
+          "+export const b = 'after';",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      "Implement",
+      {
+        groupId: "macro-suite",
+        focusedProjectId: "web",
+        virtualRootEnabled: true,
+        projectMounts: [
+          {
+            projectId: "web",
+            mountName: "web",
+            displayName: "Web App",
+            workspacePath: "C:/dev/macro-web",
+          },
+        ],
+        workspacePathsByProjectId: { web: "C:/dev/macro-web" },
+        onCodeCheckpoint: async (checkpoint: unknown) =>
+          checkpoints.push(checkpoint),
+      },
+    );
+
+    expect(result).toContain("External modification detected");
+    expect(result).toContain('"web/src/b.ts"');
+    expect(result).toContain("rollback failed");
+    expect(result).toContain("stale write refused");
+    expect(checkpoints).toEqual([]);
+    expect(files.get("C:/dev/macro-web/src/a.ts")?.content).toBe(
+      "export const a = 'before';\n",
+    );
+    expect(files.get("C:/dev/macro-web/src/b.ts")?.content).toBe(
+      "export const b = 'EXTERNAL';\n",
+    );
+    expect(files.get("C:/dev/macro-web/src/b.ts")?.revision).toBe("external:b");
+    expect(writes.map((entry) => entry.path)).toEqual([
+      "C:/dev/macro-web/src/a.ts",
+      "C:/dev/macro-web/src/b.ts",
+      "C:/dev/macro-web/src/b.ts",
+      "C:/dev/macro-web/src/a.ts",
+    ]);
+    expect(writes[3].expectedRevision).toMatch(/^applied:/);
   });
 
   it("refuses remote mutations when recoverable checkpoints are required", async () => {

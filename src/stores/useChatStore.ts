@@ -1416,6 +1416,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   >();
   const launchedAgentCodeReplayConversationIds = new Set<string>();
+  const activeAssistantStreamPromisesByConversationId = new Map<
+    string,
+    Promise<void>
+  >();
+  let anonymousToolResultSequence = 0;
 
   const clearPendingAgentCodeReplay = (conversationId: string): void => {
     pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
@@ -1431,6 +1436,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
     await rollback();
     clearPendingAgentCodeReplay(conversationId);
     replayRecoveryBlockedConversationIds.delete(conversationId);
+  };
+
+  const prepareConversationReplayForDeletion = async (
+    conversationId: string,
+  ): Promise<void> => {
+    stopConversationRuntimeLocally(conversationId);
+    const activeStream = activeAssistantStreamPromisesByConversationId.get(
+      conversationId,
+    );
+    if (activeStream) {
+      try {
+        await activeStream;
+      } catch (error) {
+        console.warn(
+          "Assistant stream failed while preparing conversation deletion:",
+          error,
+        );
+      }
+    }
+    await forceRollbackPendingAgentCodeReplay(conversationId);
+    clearPendingAgentCodeReplay(conversationId);
   };
 
   const markPendingAgentCodeReplayLaunched = async (
@@ -5645,8 +5671,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return resolution;
     }
 
+    const normalizedToolCallId = toolCallId?.trim();
+    if (!normalizedToolCallId) {
+      anonymousToolResultSequence += 1;
+    }
     const artifactKey = encodeURIComponent(
-      `${operation.assistantMessageId}-${toolCallId?.trim() || toolName}`,
+      `${operation.assistantMessageId}-${normalizedToolCallId || `${toolName}-anonymous-${anonymousToolResultSequence}`}`,
     );
     const artifactPath = `tool-output://${encodeURIComponent(operation.conversationId)}/${artifactKey}.txt`;
     const spilled = buildSpilledToolResultPreview({
@@ -7221,7 +7251,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationIds.forEach((conversationId) => {
       clearConversationSecurityState(conversationId);
       cancelLiveContextDiagnosticsRefreshSchedule(conversationId);
-      pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
     });
     set((state) => buildConversationRemovalState(state, conversationIds));
   };
@@ -10652,7 +10681,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
     });
 
-    void runAssistantStream({
+    const streamPromise = runAssistantStream({
       conversationId: params.conversationId,
       mode: params.modeAtSend,
       internalAgentProfile: params.internalAgentProfile,
@@ -10750,6 +10779,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       },
     });
+    activeAssistantStreamPromisesByConversationId.set(
+      params.conversationId,
+      streamPromise,
+    );
+    const releaseStreamPromise = () => {
+      if (
+        activeAssistantStreamPromisesByConversationId.get(
+          params.conversationId,
+        ) === streamPromise
+      ) {
+        activeAssistantStreamPromisesByConversationId.delete(
+          params.conversationId,
+        );
+      }
+    };
+    void streamPromise.then(releaseStreamPromise, releaseStreamPromise);
   };
 
   const persistAssistantPartialStreamResult = async (
@@ -13530,6 +13575,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
       try {
+        await prepareConversationReplayForDeletion(conversationId);
         await beginStandaloneConversationDeletionSaga(conversationId);
       } catch (error) {
         deletedConversationIds.delete(conversationId);
@@ -13616,6 +13662,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       try {
         for (const conversationId of uniqueIds) {
+          await prepareConversationReplayForDeletion(conversationId);
           await beginStandaloneConversationDeletionSaga(conversationId);
         }
       } catch (error) {
@@ -13707,7 +13754,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       deletedConversationIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
-      stopConversationRuntimeLocally(conversationId);
+      try {
+        await prepareConversationReplayForDeletion(conversationId);
+      } catch (error) {
+        deletedConversationIds.delete(conversationId);
+        const message = `La tâche a été supprimée, mais la restauration du code de sa conversation a échoué : ${toServiceError(error).message}`;
+        set({ lastError: message });
+        return false;
+      }
       conversationCompactionStateCache.delete(conversationId);
       clearAgentCodeCheckpoints(conversationId);
       clearConversationCitationsIfAvailable(conversationId);

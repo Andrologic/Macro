@@ -11,12 +11,11 @@ export interface SpilledToolResultPreview {
 }
 
 export const shouldSpillToolResult = (
-  toolName: string,
+  _toolName: string,
   result: string,
 ): boolean =>
-  toolName !== "read_file" &&
   new TextEncoder().encode(result).byteLength >
-    TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes;
+  TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes;
 
 export const buildSpilledToolResultPreview = (params: {
   toolName: string;

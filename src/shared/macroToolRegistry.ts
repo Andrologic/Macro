@@ -516,7 +516,7 @@ export const MACRO_TOOL_REGISTRY = [
         },
         max_bytes: {
           type: "number",
-          description: `Maximum UTF-8 bytes for raw=true (default ${TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes}, hard maximum ${TOOL_OUTPUT_LIMITS.read.maxBytes}).`,
+          description: `Maximum UTF-8 bytes for raw=true (default and hard maximum ${TOOL_OUTPUT_LIMITS.read.rawMaxBytes}) so the complete tool response stays below the shared spill threshold.`,
         },
       },
       required: ["file"],

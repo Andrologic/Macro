@@ -6,12 +6,12 @@ import {
 } from "./toolResultArtifacts";
 
 describe("toolResultArtifacts", () => {
-  it("spills only oversized non-read_file text", () => {
+  it("spills every oversized textual tool result", () => {
     const oversized = "x".repeat(
       TOOL_OUTPUT_LIMITS.toolResult.spillThresholdBytes + 1,
     );
     expect(shouldSpillToolResult("terminal_run", oversized)).toBe(true);
-    expect(shouldSpillToolResult("read_file", oversized)).toBe(false);
+    expect(shouldSpillToolResult("read_file", oversized)).toBe(true);
     expect(shouldSpillToolResult("terminal_run", "small")).toBe(false);
   });
 
