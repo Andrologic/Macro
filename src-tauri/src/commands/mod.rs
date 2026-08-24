@@ -5884,7 +5884,6 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::Path;
-    use std::process::Command;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -6449,27 +6448,20 @@ mod tests {
     #[tokio::test]
     async fn git_branch_cursor_is_invalidated_when_refs_change() {
         let workspace = TempDir::new().expect("workspace");
-        let run_git = |args: &[&str]| {
-            let output = Command::new("git")
-                .args(args)
-                .current_dir(workspace.path())
-                .output()
-                .expect("run git");
-            assert!(
-                output.status.success(),
-                "git {:?} failed: {}",
-                args,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
-        run_git(&["init", "-b", "main"]);
-        run_git(&["config", "user.email", "macro@example.test"]);
-        run_git(&["config", "user.name", "Macro Test"]);
+        let repo = git2::Repository::init(workspace.path()).expect("init repository");
         fs::write(workspace.path().join("seed.txt"), "seed\n").expect("seed file");
-        run_git(&["add", "seed.txt"]);
-        run_git(&["commit", "-m", "seed"]);
-        run_git(&["branch", "alpha"]);
-        run_git(&["branch", "beta"]);
+        let mut index = repo.index().expect("open index");
+        index.add_path(Path::new("seed.txt")).expect("add seed");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature =
+            git2::Signature::now("Macro Test", "macro@example.test").expect("test signature");
+        let commit_id = repo
+            .commit(Some("HEAD"), &signature, &signature, "seed", &tree, &[])
+            .expect("initial commit");
+        let commit = repo.find_commit(commit_id).expect("find commit");
+        repo.branch("alpha", &commit, false).expect("alpha branch");
+        repo.branch("beta", &commit, false).expect("beta branch");
 
         let first = execute_readonly_workspace_tool(
             workspace.path(),
@@ -6480,7 +6472,7 @@ mod tests {
         let first: Value = serde_json::from_str(&first).expect("branch page");
         let cursor = first["next_cursor"].as_str().expect("next cursor");
 
-        run_git(&["branch", "gamma"]);
+        repo.branch("gamma", &commit, false).expect("gamma branch");
         let error = execute_workspace_tool(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
