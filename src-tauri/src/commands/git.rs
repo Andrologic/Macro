@@ -143,6 +143,20 @@ pub struct GitAvailableWorktreeDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitAvailableTaskBranchDto {
+    pub name: String,
+    pub commit: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitTaskStartPointsDto {
+    pub worktrees: Vec<GitAvailableWorktreeDto>,
+    pub branches: Vec<GitAvailableTaskBranchDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitBranchWorktreeInspectionDto {
     pub worktree_key: String,
     pub worktree_path: String,
@@ -5774,15 +5788,91 @@ pub async fn git_worktree_inspect(
     .map_err(to_join_error)?
 }
 
+fn build_git_task_start_points(repo: &Repository) -> Result<GitTaskStartPointsDto> {
+    let names = repo.worktrees().map_err(|error| BackendError::Git {
+        message: format!("Failed to list registered worktrees: {error}"),
+    })?;
+    let mut worktrees = Vec::new();
+    let mut occupied_branches = std::collections::HashSet::new();
+    if let Ok(head) = repo.head() {
+        if head.is_branch() {
+            if let Ok(branch_name) = head.shorthand() {
+                occupied_branches.insert(branch_name.to_string());
+            }
+        }
+    }
+    let macro_worktree_root = repo
+        .workdir()
+        .map(|workdir| workdir.join(".macro").join("worktrees"));
+    for name in names.iter().flatten().flatten() {
+        let Ok(worktree) = repo.find_worktree(name) else {
+            continue;
+        };
+        let path = worktree.path().to_path_buf();
+        let Ok(worktree_repo) = git2::Repository::open(&path) else {
+            continue;
+        };
+        let Ok(head) = worktree_repo.head() else {
+            continue;
+        };
+        let Ok(branch_name) = head.shorthand().map(str::to_string) else {
+            continue;
+        };
+        if !head.is_branch() {
+            continue;
+        }
+        occupied_branches.insert(branch_name.clone());
+        if macro_worktree_root
+            .as_ref()
+            .is_some_and(|root| path.starts_with(root))
+        {
+            continue;
+        }
+        let is_dirty = worktree_repo
+            .statuses(None)
+            .map(|statuses| !statuses.is_empty())
+            .unwrap_or(false);
+        worktrees.push(GitAvailableWorktreeDto {
+            name: name.to_string(),
+            path: path.to_string_lossy().into_owned(),
+            branch_name,
+            is_dirty,
+        });
+    }
+    worktrees.sort_by(|left, right| left.branch_name.cmp(&right.branch_name));
+
+    let mut branches = Vec::new();
+    for branch in repo.branches(Some(git2::BranchType::Local))? {
+        let (branch, _) = branch?;
+        let Some(name) = branch.name()?.map(str::to_string) else {
+            continue;
+        };
+        if occupied_branches.contains(&name) {
+            continue;
+        }
+        let commit = branch
+            .get()
+            .peel_to_commit()
+            .map(|commit| short_hash(commit.id()))
+            .unwrap_or_default();
+        branches.push(GitAvailableTaskBranchDto { name, commit });
+    }
+    branches.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(GitTaskStartPointsDto {
+        worktrees,
+        branches,
+    })
+}
+
 #[tauri::command]
-/// List healthy registered worktrees that can be attached to a new task.
-pub async fn git_worktree_list_available(
+/// List external worktrees and local branches that can start a new task.
+pub async fn git_task_start_points(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
     repo_path: String,
-) -> Result<Vec<GitAvailableWorktreeDto>> {
+) -> Result<GitTaskStartPointsDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
-        return Err(unsupported_wsl_git_operation("git_worktree_list_available"));
+        return Err(unsupported_wsl_git_operation("git_task_start_points"));
     }
 
     let workspace = workspace_root.inner().read().await.clone();
@@ -5793,54 +5883,7 @@ pub async fn git_worktree_list_available(
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
-        let names = repo.worktrees().map_err(|error| BackendError::Git {
-            message: format!("Failed to list registered worktrees: {error}"),
-        })?;
-        let mut available = Vec::new();
-        for name in names.iter().flatten().flatten() {
-            if name.starts_with("task") || name.starts_with("macro-integration-") {
-                continue;
-            }
-            let Ok(worktree) = repo.find_worktree(name) else {
-                continue;
-            };
-            let path = worktree.path().to_path_buf();
-            if path
-                .components()
-                .collect::<Vec<_>>()
-                .windows(2)
-                .any(|components| {
-                    components[0].as_os_str() == ".macro"
-                        && components[1].as_os_str() == "worktrees"
-                })
-            {
-                continue;
-            }
-            let Ok(worktree_repo) = git2::Repository::open(&path) else {
-                continue;
-            };
-            let Ok(head) = worktree_repo.head() else {
-                continue;
-            };
-            let Ok(branch_name) = head.shorthand().map(str::to_string) else {
-                continue;
-            };
-            if !head.is_branch() {
-                continue;
-            }
-            let is_dirty = worktree_repo
-                .statuses(None)
-                .map(|statuses| !statuses.is_empty())
-                .unwrap_or(false);
-            available.push(GitAvailableWorktreeDto {
-                name: name.to_string(),
-                path: path.to_string_lossy().into_owned(),
-                branch_name,
-                is_dirty,
-            });
-        }
-        available.sort_by(|left, right| left.branch_name.cmp(&right.branch_name));
-        Ok(available)
+        build_git_task_start_points(&repo)
     })
     .await
     .map_err(to_join_error)?
@@ -6994,6 +7037,46 @@ mod tests {
         assert!(status.unstaged_files.is_empty());
         assert!(status.conflicted_files.is_empty());
         assert!(!status.merge_in_progress);
+    }
+
+    #[test]
+    fn test_task_start_points_separate_external_worktrees_and_free_branches() {
+        let (temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/external", &head, false).unwrap();
+        repo.branch("feature/internal", &head, false).unwrap();
+        repo.branch("feature/free", &head, false).unwrap();
+
+        let external_path = temp.path().join("external-worktree");
+        let external_ref = repo.find_reference("refs/heads/feature/external").unwrap();
+        let mut external_options = git2::WorktreeAddOptions::new();
+        external_options.reference(Some(&external_ref));
+        repo.worktree("external", &external_path, Some(&external_options))
+            .unwrap();
+
+        let internal_root = temp.path().join(".macro").join("worktrees");
+        fs::create_dir_all(&internal_root).unwrap();
+        let internal_ref = repo.find_reference("refs/heads/feature/internal").unwrap();
+        let mut internal_options = git2::WorktreeAddOptions::new();
+        internal_options.reference(Some(&internal_ref));
+        repo.worktree(
+            "internal",
+            &internal_root.join("task-internal"),
+            Some(&internal_options),
+        )
+        .unwrap();
+
+        let start_points = build_git_task_start_points(&repo).unwrap();
+        assert_eq!(start_points.worktrees.len(), 1);
+        assert_eq!(start_points.worktrees[0].branch_name, "feature/external");
+        assert_eq!(
+            start_points
+                .branches
+                .iter()
+                .map(|branch| branch.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["feature/free"]
+        );
     }
 
     #[test]

@@ -840,11 +840,14 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const handleCreateManualFeature = async ({
     projectId,
     taskKind,
-    existingWorktree,
+    startPoint,
   }: {
     projectId: string;
     taskKind: StandaloneTaskKind;
-    existingWorktree: import('../../services/tauriIpc').GitAvailableWorktreeDto | null;
+    startPoint:
+      | { kind: 'new' }
+      | { kind: 'worktree'; worktree: import('../../services/tauriIpc').GitAvailableWorktreeDto }
+      | { kind: 'branch'; branch: import('../../services/tauriIpc').GitAvailableTaskBranchDto };
   }) => {
     if (taskMutationDisabled || taskExecutionDisabled) {
       notify.error(taskExecutionDisabled ? taskExecutionDisabledTitle : taskMutationDisabledTitle);
@@ -912,7 +915,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         title: provisionalTitle,
         description: '',
         taskKind,
-        existingBranchName: existingWorktree?.branchName ?? null,
+        existingBranchName: startPoint.kind === 'worktree'
+          ? startPoint.worktree.branchName
+          : startPoint.kind === 'branch'
+            ? startPoint.branch.name
+            : null,
       });
       await activateTask(taskId);
       if (!(await selectConversation(conversation.id))) {
