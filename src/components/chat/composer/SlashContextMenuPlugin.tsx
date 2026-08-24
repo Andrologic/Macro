@@ -27,6 +27,7 @@ import type { ContextRefKind, Project, SkillManifest, WorkspaceFileReference } f
 import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../../ui/Icon';
 import { $createMentionNode } from './MentionNode';
+import { $createGoalCommandNode } from './GoalCommandNode';
 import {
   hasFileQueryIntent,
   rankSlashContextCandidates,
@@ -39,6 +40,7 @@ interface SlashTriggerState {
   endOffset: number;
   query: string;
   rect: DOMRect;
+  allowsCommand: boolean;
 }
 
 type SlashContextKind = 'skill' | 'file' | 'source';
@@ -71,7 +73,6 @@ interface SlashCommandMenuItem extends SlashContextRankCandidate {
   icon: IconName;
   iconClassName?: string;
   searchText: string;
-  commandText: string;
 }
 
 type SlashContextMenuItem = SlashReferenceMenuItem | SlashCommandMenuItem;
@@ -290,6 +291,10 @@ export const SlashContextMenuPlugin: React.FC = () => {
           endOffset,
           query: match[1] ?? '',
           rect,
+          allowsCommand:
+            !node.getPreviousSibling() &&
+            !node.getParent()?.getPreviousSibling() &&
+            textBeforeCaret.slice(0, slashIndex).trim().length === 0,
         });
       });
     });
@@ -470,18 +475,17 @@ export const SlashContextMenuPlugin: React.FC = () => {
       key: 'command:goal',
       kind: 'command',
       id: 'goal',
-      title: '/goal',
+      title: t('goal.shortLabel', 'Goal'),
       subtitle: t('goal.commandDescription', 'Keep working until an independent review accepts the objective'),
       tooltip: t('goal.commandHint', 'Start Goal mode and describe the objective'),
       icon: 'target',
       iconClassName: 'text-primary',
       searchText: 'goal objective autonomous review',
-      commandText: '/goal ',
     };
 
     return rankSlashContextCandidates(
       [
-        goalCommandItem,
+        ...(trigger?.allowsCommand ? [goalCommandItem] : []),
         ...sourceItems,
         ...skillItems,
         ...fileItems,
@@ -503,6 +507,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
     selectedConversationId,
     t,
     trigger?.query,
+    trigger?.allowsCommand,
   ]);
 
   useEffect(() => {
@@ -539,7 +544,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
         if (!$isTextNode(node)) return;
 
         const selection = node.select(trigger.startOffset, trigger.endOffset);
-        selection.insertNodes([$createTextNode(item.commandText)]);
+        selection.insertNodes([$createGoalCommandNode(), $createTextNode(' ')]);
         didInsertCommand = true;
       });
       if (!didInsertCommand) return;
@@ -698,7 +703,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
             const active = index === activeIndex;
             const referenceTitle = item.kind === 'command' ? null : item.referenceTitle;
             const itemLabel = item.kind === 'command' ? null : item.label;
-            const optionKey = `${item.kind}:${referenceTitle ?? item.title}`;
+            const optionKey = item.kind === 'command'
+              ? `command:/${item.id}`
+              : `${item.kind}:${referenceTitle ?? item.title}`;
             const tooltip = item.tooltip ?? item.subtitle ?? itemLabel ?? item.title;
 
             if (item.disabled) {
@@ -754,14 +761,28 @@ export const SlashContextMenuPlugin: React.FC = () => {
                 title={tooltip}
                 onClick={() => insertItem(item)}
                 className={cn(
-                  'grid w-full grid-cols-[1.75rem_minmax(0,1fr)_1.5rem] items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
-                  'min-h-10',
-                  active
-                    ? 'bg-accent text-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  'grid w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
+                  item.kind === 'command'
+                    ? 'grid-cols-[1.75rem_minmax(0,1fr)]'
+                    : 'grid-cols-[1.75rem_minmax(0,1fr)_1.5rem]',
+                  item.kind === 'command' ? 'my-0.5 min-h-[3.25rem] border' : 'min-h-10',
+                  item.kind === 'command'
+                    ? active
+                      ? 'border-primary/35 bg-primary/10 text-foreground shadow-[0_0_18px_rgb(var(--primary)/0.08)]'
+                      : 'border-primary/20 bg-primary/[0.045] text-foreground hover:border-primary/30 hover:bg-primary/[0.075]'
+                    : active
+                      ? 'bg-accent text-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                 )}
               >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted/70">
+                <span
+                  className={cn(
+                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-md',
+                    item.kind === 'command'
+                      ? 'text-primary'
+                      : 'bg-muted/70',
+                  )}
+                >
                   <Icon
                     name={item.icon}
                     size={14}
@@ -769,18 +790,32 @@ export const SlashContextMenuPlugin: React.FC = () => {
                   />
                 </span>
                 <span className="min-w-0">
-                  <span className="block truncate font-medium leading-5" title={item.title}>
+                  <span
+                    className={cn(
+                      'block truncate font-medium leading-5',
+                      item.kind === 'command' && 'font-semibold text-primary',
+                    )}
+                    title={item.title}
+                  >
                     {item.title}
                   </span>
                   {(item.subtitle || itemLabel) && (
-                    <span className="block truncate text-xs leading-4 text-muted-foreground" title={tooltip}>
+                    <span
+                      className={cn(
+                        'block truncate text-xs leading-4 text-muted-foreground',
+                        item.kind === 'command' && 'text-[11px]',
+                      )}
+                      title={tooltip}
+                    >
                       {item.subtitle ?? itemLabel}
                     </span>
                   )}
                 </span>
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center">
-                  {selected && <Icon name="check" size={14} className="shrink-0" />}
-                </span>
+                {item.kind !== 'command' && (
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center">
+                    {selected && <Icon name="check" size={14} className="shrink-0" />}
+                  </span>
+                )}
               </button>
             );
           })

@@ -2266,7 +2266,9 @@
   },
   "goal": {
     "bannerLabel": "Conversation goal",
-    "modeLabel": "Goal mode",
+    "shortLabel": "Goal",
+    "edit": "Edit goal",
+    "editHint": "Edit the current goal in the composer",
     "status": {
       "executorRunning": "Agent working",
       "executorRunningDescription": "The agent is working toward the objective.",
@@ -2303,7 +2305,8 @@
     "commandMissingObjectiveDescription": "Write /goal followed by the outcome you want the agent to reach.",
     "executionFailed": "The agent turn failed.",
     "commandDescription": "Keep working until an independent review accepts the objective",
-    "commandHint": "Start Goal mode and describe the objective"
+    "commandHint": "Start Goal mode and describe the objective",
+    "removeCommand": "Remove Goal command"
   },
   "composer": {
     "searchingFiles": "Searching files...",
