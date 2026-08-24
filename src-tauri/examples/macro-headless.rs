@@ -15,7 +15,7 @@ use macro_lib::commands::workspace_tools::{
     validate_headless_workspace_path,
 };
 use macro_lib::commands::{
-    execute_workspace_tool_controlled_with_options, git, tool_cancel_workspace,
+    execute_workspace_tool_controlled_with_options, fs, git, tool_cancel_workspace,
     validate_workspace_tool_execution, WorkspaceProjectMount, WorkspaceToolExecutionOptions,
 };
 use macro_lib::config::{
@@ -46,6 +46,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 #[derive(Clone)]
 struct RegisteredProject {
     canonical_path: PathBuf,
+    root_identity: fs::WorkspaceRootIdentity,
     is_read_only: bool,
 }
 
@@ -712,10 +713,12 @@ async fn collect_registered_projects(
         }
         match PathBuf::from(&project.path).canonicalize() {
             Ok(canonical_path) => {
+                let root_identity = fs::workspace_root_identity(&canonical_path)?;
                 registry.insert(
                     project.id,
                     RegisteredProject {
                         canonical_path,
+                        root_identity,
                         is_read_only: project.user_read_only || project.is_read_only,
                     },
                 );
@@ -1655,6 +1658,13 @@ async fn perform_tool_execution(
     payload: ToolExecuteRequest,
 ) -> StoredToolExecution {
     let checkpoint_required = payload.checkpoint_required;
+    let expected_workspace_roots = Arc::new(
+        state
+            .registered_projects
+            .values()
+            .map(|project| (project.canonical_path.clone(), project.root_identity))
+            .collect::<BTreeMap<_, _>>(),
+    );
     match execute_workspace_tool_controlled_with_options(
         state.workspace_path.clone(),
         state.workspace_path.clone(),
@@ -1671,6 +1681,7 @@ async fn perform_tool_execution(
         WorkspaceToolExecutionOptions {
             capture_checkpoint_snapshots: checkpoint_required,
             raw_checkpoint_snapshot: false,
+            expected_workspace_roots: Some(expected_workspace_roots),
         },
     )
     .await
@@ -2025,6 +2036,13 @@ async fn checkpoint_snapshot(
         WorkspaceToolExecutionOptions {
             capture_checkpoint_snapshots: false,
             raw_checkpoint_snapshot: true,
+            expected_workspace_roots: Some(Arc::new(
+                state
+                    .registered_projects
+                    .values()
+                    .map(|project| (project.canonical_path.clone(), project.root_identity))
+                    .collect::<BTreeMap<_, _>>(),
+            )),
         },
     )
     .await
@@ -2466,6 +2484,8 @@ mod tests {
                 name.to_string(),
                 RegisteredProject {
                     canonical_path: project_dir.canonicalize().expect("canonical project path"),
+                    root_identity: macro_lib::commands::fs::workspace_root_identity(&project_dir)
+                        .expect("project root identity"),
                     is_read_only: false,
                 },
             );

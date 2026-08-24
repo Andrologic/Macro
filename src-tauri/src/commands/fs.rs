@@ -19,6 +19,8 @@ use crate::WorkspaceRoot;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,6 +38,88 @@ use tokio::sync::Barrier;
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceRootIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+}
+
+#[cfg(unix)]
+fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
+    use std::os::unix::fs::MetadataExt;
+    WorkspaceRootIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(windows)]
+fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
+    WorkspaceRootIdentity {
+        volume: metadata.volume_serial_number(),
+        file_index: metadata.file_index(),
+    }
+}
+
+#[cfg(unix)]
+fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> WorkspaceRootIdentity {
+    use cap_std::fs::MetadataExt;
+    WorkspaceRootIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(windows)]
+fn workspace_root_identity_from_cap(metadata: &cap_std::fs::Metadata) -> WorkspaceRootIdentity {
+    use cap_std::fs::MetadataExt;
+    WorkspaceRootIdentity {
+        volume: metadata.volume_serial_number(),
+        file_index: metadata.file_index(),
+    }
+}
+
+pub fn workspace_root_identity(workspace: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    let metadata = std::fs::metadata(workspace)
+        .map_err(|error| io_error_to_backend_error(error, workspace))?;
+    Ok(workspace_root_identity_from_std(&metadata))
+}
+
+tokio::task_local! {
+    static EXPECTED_WORKSPACE_ROOTS: Arc<BTreeMap<PathBuf, WorkspaceRootIdentity>>;
+}
+
+pub async fn with_expected_workspace_roots<F, T>(
+    roots: Arc<BTreeMap<PathBuf, WorkspaceRootIdentity>>,
+    operation: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
+    EXPECTED_WORKSPACE_ROOTS.scope(roots, operation).await
+}
+
+pub fn has_expected_workspace_root(workspace: &Path) -> bool {
+    let workspace = normalize_path(workspace);
+    EXPECTED_WORKSPACE_ROOTS
+        .try_with(|roots| roots.contains_key(&workspace))
+        .unwrap_or(false)
+}
+
+fn expected_workspace_root_identity(workspace: &Path) -> Option<WorkspaceRootIdentity> {
+    let workspace = normalize_path(workspace);
+    EXPECTED_WORKSPACE_ROOTS
+        .try_with(|roots| roots.get(&workspace).copied())
+        .ok()
+        .flatten()
+}
 
 // Constants
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
@@ -99,6 +183,7 @@ fn capability_task_error(error: tokio::task::JoinError) -> BackendError {
 fn open_workspace_capability(
     workspace: &Path,
     validated_path: &Path,
+    expected_identity: Option<WorkspaceRootIdentity>,
 ) -> Result<(Arc<CapabilityDir>, PathBuf), BackendError> {
     let lexical_workspace = normalize_path(workspace);
     let canonical_workspace = workspace
@@ -129,6 +214,21 @@ fn open_workspace_capability(
     }
     let directory = CapabilityDir::open_ambient_dir(&canonical_workspace, ambient_authority())
         .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?;
+    if let Some(expected_identity) = expected_identity {
+        let actual_identity = workspace_root_identity_from_cap(
+            &directory
+                .dir_metadata()
+                .map_err(|error| io_error_to_backend_error(error, &canonical_workspace))?,
+        );
+        if actual_identity != expected_identity {
+            return Err(BackendError::FilesystemInvalidPath {
+                message: format!(
+                    "Workspace root '{}' changed after server validation",
+                    workspace.display()
+                ),
+            });
+        }
+    }
     Ok((Arc::new(directory), relative_path))
 }
 
@@ -145,8 +245,10 @@ pub(crate) async fn open_workspace_capability_target_internal(
 ) -> Result<WorkspaceCapabilityTarget, BackendError> {
     let validated_path = validate_path_for_write(&PathBuf::from(&path), workspace)?;
     let workspace = workspace.to_path_buf();
+    let expected_identity = expected_workspace_root_identity(&workspace);
     tokio::task::spawn_blocking(move || {
-        let (directory, relative_path) = open_workspace_capability(&workspace, &validated_path)?;
+        let (directory, relative_path) =
+            open_workspace_capability(&workspace, &validated_path, expected_identity)?;
         Ok(WorkspaceCapabilityTarget {
             directory,
             relative_path,
@@ -1344,10 +1446,11 @@ async fn write_file_with_workspace_capability(
 ) -> Result<WriteResultDto, BackendError> {
     let workspace = workspace.to_path_buf();
     let validated_path = validated_path.to_path_buf();
+    let expected_identity = expected_workspace_root_identity(&workspace);
     let (directory, relative_path) = tokio::task::spawn_blocking({
         let workspace = workspace.clone();
         let validated_path = validated_path.clone();
-        move || open_workspace_capability(&workspace, &validated_path)
+        move || open_workspace_capability(&workspace, &validated_path, expected_identity)
     })
     .await
     .map_err(capability_task_error)??;
@@ -2574,9 +2677,10 @@ pub(crate) async fn delete_path_internal_unlocked(
 
     let workspace_path = workspace.to_path_buf();
     let capability_target = validated_path.clone();
+    let expected_identity = expected_workspace_root_identity(&workspace_path);
     let is_directory = tokio::task::spawn_blocking(move || -> Result<bool, BackendError> {
         let (directory, relative_path) =
-            open_workspace_capability(&workspace_path, &capability_target)?;
+            open_workspace_capability(&workspace_path, &capability_target, expected_identity)?;
         let metadata = directory
             .metadata(&relative_path)
             .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
