@@ -383,7 +383,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       title={t('implement.createTaskDialogTitle', 'Create a task')}
       onClose={onClose}
       panelClassName={cn(
-        'flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-[max-width] duration-150',
+        'flex h-[min(46rem,calc(100vh-2rem))] w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-[max-width] duration-150',
         workspaceChoice === 'existing' && !isDirectEditProject && selectedProject
           ? 'max-w-5xl'
           : 'max-w-2xl'
@@ -412,8 +412,8 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-        <div className="space-y-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-hidden px-5 py-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
           <div>
             <div className="text-xs font-medium text-foreground">
               {t('implement.targetProject', 'Target project')}
@@ -431,7 +431,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
               className="h-9 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
-          <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-border p-1.5">
+          <div
+            aria-label={t('implement.targetProject', 'Target project')}
+            className="min-h-36 flex-1 space-y-1 overflow-y-auto rounded-lg border border-border p-1.5"
+          >
             {filteredProjects.map((project) => (
               <button
                 key={project.id}
