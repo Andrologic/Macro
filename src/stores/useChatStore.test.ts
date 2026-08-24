@@ -1725,6 +1725,9 @@ const registerUseChatStoreMocks = async () => {
 
   mock.module('../services/workspaceToolExecutor', () => ({
     executeWorkspaceTool: executeWorkspaceToolMock,
+    resolveMutatingToolApprovalScope: mock((_toolName: string, args: Record<string, unknown>) =>
+      typeof args.project_id === 'string' ? `project:${args.project_id}` : 'project:project-1'
+    ),
     resolveExplicitMutatingToolProjectTargets: mock((_toolName: string, args: Record<string, unknown>) => {
       if (typeof args.project_id === 'string') {
         return [args.project_id];
@@ -3008,6 +3011,45 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       .filter((path): path is string => path?.startsWith('tool-output://') ?? false);
     expect(paths).toHaveLength(2);
     expect(new Set(paths).size).toBe(2);
+  });
+
+  it('allocates a fresh artifact when the same tool call id is retried', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Réessaie une grosse sortie avec le même identifiant.',
+    );
+    const firstOutput = `FIRST-${'a'.repeat(60_000)}-END`;
+    const secondOutput = `SECOND-${'b'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock
+      .mockImplementationOnce((async () => firstOutput) as unknown as () => Promise<undefined>)
+      .mockImplementationOnce((async () => secondOutput) as unknown as () => Promise<undefined>);
+
+    const firstPreview = String(
+      await onToolCall('grep', { query: 'first' }, 'retried-tool-call'),
+    );
+    const secondPreview = String(
+      await onToolCall('grep', { query: 'second' }, 'retried-tool-call'),
+    );
+    const firstPath = firstPreview.match(/^Full output: (tool-output:\/\/\S+)$/m)?.[1];
+    const secondPath = secondPreview.match(/^Full output: (tool-output:\/\/\S+)$/m)?.[1];
+
+    expect(firstPath).toBeTruthy();
+    expect(secondPath).toBeTruthy();
+    expect(secondPath).not.toBe(firstPath);
+    expect(citationRecords.find((citation) => citation.path === firstPath)?.content).toBe(
+      firstOutput,
+    );
+    expect(citationRecords.find((citation) => citation.path === secondPath)?.content).toBe(
+      secondOutput,
+    );
+    const recoveredSecond = String(
+      await onToolCall(
+        'read_file',
+        { file: secondPath, raw: true, max_bytes: 256_000 },
+        'read-retried-tool-call',
+      ),
+    );
+    expect(recoveredSecond).toContain('SECOND-');
+    expect(recoveredSecond).not.toContain('FIRST-');
   });
 
   it('persists oversized tool execution errors behind a recoverable bounded artifact', async () => {

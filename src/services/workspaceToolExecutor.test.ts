@@ -539,6 +539,147 @@ describe("workspaceToolExecutor helpers", () => {
     expect(routing.args).toEqual({});
   });
 
+  it("rejects a path prefix shared by one project name and another mount", async () => {
+    const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor();
+    const options = {
+      projectMounts: [
+        {
+          projectId: "api-project",
+          mountName: "api",
+          displayName: "web",
+          workspacePath: "C:/worktrees/api-task",
+          isReadOnly: false,
+        },
+        {
+          projectId: "web-project",
+          mountName: "web",
+          displayName: "Web App",
+          workspacePath: "C:/worktrees/web-task",
+          isReadOnly: false,
+        },
+      ],
+    };
+
+    expect(() =>
+      resolveToolWorkspaceRouting("read", { path: "web/src/index.ts" }, options),
+    ).toThrow('Ambiguous project path prefix "web"');
+  });
+
+  it("uses an exact project_id to disambiguate a shared path prefix", async () => {
+    const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor();
+    const options = {
+      projectMounts: [
+        {
+          projectId: "api-project",
+          mountName: "api",
+          displayName: "web",
+          workspacePath: "C:/worktrees/api-task",
+          isReadOnly: false,
+        },
+        {
+          projectId: "web-project",
+          mountName: "web",
+          displayName: "Web App",
+          workspacePath: "C:/worktrees/web-task",
+          isReadOnly: false,
+        },
+      ],
+    };
+
+    const apiRouting = resolveToolWorkspaceRouting(
+      "read",
+      { project_id: "api-project", path: "web/src/index.ts" },
+      options,
+    );
+    const webRouting = resolveToolWorkspaceRouting(
+      "read",
+      { project_id: "web-project", path: "web/src/index.ts" },
+      options,
+    );
+
+    expect(apiRouting).toEqual({
+      projectId: "api-project",
+      workspacePath: "C:/worktrees/api-task",
+      args: { path: "src/index.ts" },
+    });
+    expect(webRouting).toEqual({
+      projectId: "web-project",
+      workspacePath: "C:/worktrees/web-task",
+      args: { path: "src/index.ts" },
+    });
+  });
+
+  it("binds mutating approval scopes to the canonical target project", async () => {
+    const { resolveMutatingToolApprovalScope } = await loadWorkspaceToolExecutor();
+    const projectMounts = [
+      {
+        projectId: "api-project",
+        mountName: "api",
+        displayName: "API",
+        workspacePath: "C:/worktrees/api-task",
+        isReadOnly: false,
+      },
+      {
+        projectId: "web-project",
+        mountName: "web",
+        displayName: "Web App",
+        workspacePath: "C:/worktrees/web-task",
+        isReadOnly: false,
+      },
+    ];
+
+    expect(
+      resolveMutatingToolApprovalScope(
+        "delete",
+        { path: "src/obsolete.ts" },
+        { focusedProjectId: "api-project", projectMounts },
+      ),
+    ).toBe("project:api-project");
+    expect(
+      resolveMutatingToolApprovalScope(
+        "delete",
+        { path: "src/obsolete.ts" },
+        { focusedProjectId: "web-project", projectMounts },
+      ),
+    ).toBe("project:web-project");
+    expect(
+      resolveMutatingToolApprovalScope(
+        "git_commit",
+        { project_id: "web-project", repo_path: "." },
+        { focusedProjectId: "api-project", projectMounts },
+      ),
+    ).toBe("project:web-project");
+    expect(
+      resolveMutatingToolApprovalScope(
+        "delete",
+        { path: "src/obsolete.ts" },
+        {
+          projectId: "api-project",
+          focusedProjectId: "web-project",
+          projectMounts,
+        },
+      ),
+    ).toBe("project:api-project");
+    expect(
+      resolveMutatingToolApprovalScope(
+        "delete",
+        { path: "src/obsolete.ts" },
+        {
+          focusedProjectId: "web-project",
+          defaultWorkspacePath: "C:/worktrees/api-task",
+          projectMounts,
+        },
+      ),
+    ).toBe("project:api-project");
+    expect(
+      resolveMutatingToolApprovalScope(
+        "apply_patch",
+        { patch_text: "not a valid patch" },
+        { focusedProjectId: "api-project", projectMounts },
+      ),
+    ).toBe("project:api-project");
+  });
+
   it("falls back to the focused project inside the selected group", async () => {
     const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor({
       selectedGroupId: "macro-suite",

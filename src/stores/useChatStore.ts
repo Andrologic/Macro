@@ -1421,7 +1421,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     string,
     Promise<void>
   >();
-  let anonymousToolResultSequence = 0;
+  let toolResultArtifactSequence = 0;
 
   const clearPendingAgentCodeReplay = (conversationId: string): void => {
     pendingAgentCodeReplayRollbacksByConversationId.delete(conversationId);
@@ -5087,12 +5087,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!isCurrentOperation()) {
       return TOOL_EXECUTION_ABORTED_RESULT;
     }
+    let approvalScope: string | null = null;
+    if (
+      normalizedToolName === "write" ||
+      normalizedToolName === "edit" ||
+      normalizedToolName === "delete" ||
+      normalizedToolName === "apply_patch" ||
+      normalizedToolName === "git_add" ||
+      normalizedToolName === "git_commit" ||
+      normalizedToolName === "git_checkout" ||
+      normalizedToolName === "git_merge" ||
+      normalizedToolName === "git_reset" ||
+      normalizedToolName === "git_stash"
+    ) {
+      const workspaceToolExecutor = await import(
+        "../services/workspaceToolExecutor"
+      );
+      approvalScope = workspaceToolExecutor.resolveMutatingToolApprovalScope(
+        normalizedToolName,
+        args,
+        {
+          workspacePath: executionContext.workspacePath,
+          defaultWorkspacePath: executionContext.defaultWorkspacePath,
+          projectId: executionContext.projectId,
+          focusedProjectId: executionContext.focusedProjectId,
+          groupId: executionContext.groupId,
+          projectMounts: executionContext.projectMounts,
+          virtualRootEnabled: executionContext.virtualRootEnabled,
+          workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
+        },
+      );
+    }
     const securityEvaluation = evaluateToolSecurity(normalizedToolName, args, {
       mode: modeAtSend,
       riskLevel,
       workspacePath: executionContext.workspacePath,
       defaultWorkspacePath: executionContext.defaultWorkspacePath,
       projectMounts: executionContext.projectMounts,
+      approvalScope,
       grants:
         get().conversationApprovalGrantsByConversationId[conversationId] ?? [],
     });
@@ -5666,11 +5698,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     result: string,
   ): Promise<string> => {
     const normalizedToolCallId = toolCallId?.trim();
-    if (!normalizedToolCallId) {
-      anonymousToolResultSequence += 1;
-    }
+    toolResultArtifactSequence += 1;
+    const attemptId =
+      typeof globalThis.crypto?.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${toolResultArtifactSequence}`;
     const artifactKey = encodeURIComponent(
-      `${operation.assistantMessageId}-${normalizedToolCallId || `${toolName}-anonymous-${anonymousToolResultSequence}`}`,
+      `${operation.assistantMessageId}-${normalizedToolCallId || `${toolName}-anonymous`}-attempt-${attemptId}`,
     );
     const artifactPath = `tool-output://${encodeURIComponent(operation.conversationId)}/${artifactKey}.txt`;
     const spilled = buildSpilledToolResultPreview({

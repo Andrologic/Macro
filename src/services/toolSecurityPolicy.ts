@@ -397,6 +397,7 @@ export interface EvaluateToolSecurityOptions {
   workspacePath?: string | null;
   defaultWorkspacePath?: string | null;
   projectMounts?: ProjectMount[];
+  approvalScope?: string | null;
   grants?: ConversationApprovalGrant[];
 }
 
@@ -668,6 +669,7 @@ const isCallDestructive = (
 export const getRememberKey = (
   toolId: string,
   args: Record<string, unknown>,
+  approvalScope?: string | null,
 ): string => {
   const definition = TOOL_SECURITY_DEFINITIONS[toolId];
   if (!definition) {
@@ -682,35 +684,46 @@ export const getRememberKey = (
     normalizePathForComparison,
   );
 
+  let rememberKey: string;
   switch (definition.rememberStrategy) {
     case "tool":
-      return `tool:${toolId}`;
+      rememberKey = `tool:${toolId}`;
+      break;
     case "path":
       if (pathCandidates.length === 0) {
-        return `tool:${toolId}`;
+        rememberKey = `tool:${toolId}`;
+      } else if (pathCandidates.length === 1) {
+        rememberKey = `path:${pathCandidates[0]}`;
+      } else {
+        rememberKey = `paths:${[...pathCandidates].sort().join("|")}`;
       }
-      if (pathCandidates.length === 1) {
-        return `path:${pathCandidates[0]}`;
-      }
-      return `paths:${[...pathCandidates].sort().join("|")}`;
+      break;
     case "web_domain": {
       const domain = extractDomain(cleanString(args.url));
-      return domain ? `domain:${domain}` : `tool:${toolId}`;
+      rememberKey = domain ? `domain:${domain}` : `tool:${toolId}`;
+      break;
     }
     case "terminal_prefix": {
       const prefix = getTerminalRememberPrefix(cleanString(args.command));
-      return prefix ? `terminal:${prefix}` : `terminal:${toolId}`;
+      rememberKey = prefix ? `terminal:${prefix}` : `terminal:${toolId}`;
+      break;
     }
     case "apply_patch_targets": {
       if (pathCandidates.length === 0) {
-        return `tool:${toolId}`;
+        rememberKey = `tool:${toolId}`;
+      } else if (pathCandidates.length === 1) {
+        rememberKey = `path:${pathCandidates[0]}`;
+      } else {
+        rememberKey = `paths:${[...pathCandidates].sort().join("|")}`;
       }
-      if (pathCandidates.length === 1) {
-        return `path:${pathCandidates[0]}`;
-      }
-      return `paths:${[...pathCandidates].sort().join("|")}`;
+      break;
     }
   }
+
+  const normalizedApprovalScope = cleanString(approvalScope);
+  return normalizedApprovalScope
+    ? `scope:${normalizedApprovalScope}|${rememberKey}`
+    : rememberKey;
 };
 
 const normalizeToolSecurityCall = (
@@ -741,7 +754,7 @@ const normalizeToolSecurityCall = (
     actionGroup: definition.actionGroup,
     summary: definition.summary,
     detail: getPrimaryDetail(toolId, args, pathCandidates),
-    rememberKey: getRememberKey(toolId, args),
+    rememberKey: getRememberKey(toolId, args, options.approvalScope),
     isDestructive: isCallDestructive(toolId, args),
     isExternalToWorkspace: isCallExternalToWorkspace(toolId, args, options),
     canApproveForConversation: !definition.alwaysAsk,

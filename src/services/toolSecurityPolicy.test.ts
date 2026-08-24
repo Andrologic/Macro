@@ -29,6 +29,51 @@ describe("toolSecurityPolicy", () => {
     expect(result.normalizedCall.rememberKey).toBe("path:src/app.ts");
   });
 
+  it("does not reuse a mutation approval across canonical projects", () => {
+    const args = { path: "src/obsolete.ts" };
+    const projectA = evaluateToolSecurity("delete", args, {
+      mode: "Implement",
+      riskLevel: "balanced",
+      workspacePath: "/repos/a",
+      approvalScope: "project:a",
+    });
+    const projectB = evaluateToolSecurity("delete", args, {
+      mode: "Implement",
+      riskLevel: "balanced",
+      workspacePath: "/repos/b",
+      approvalScope: "project:b",
+      grants: [
+        {
+          toolId: "delete",
+          rememberKey: projectA.normalizedCall.rememberKey,
+          createdAt: "2026-08-24T00:00:00.000Z",
+        },
+      ],
+    });
+    const projectARepeat = evaluateToolSecurity("delete", args, {
+      mode: "Implement",
+      riskLevel: "balanced",
+      workspacePath: "/repos/a",
+      approvalScope: "project:a",
+      grants: [
+        {
+          toolId: "delete",
+          rememberKey: projectA.normalizedCall.rememberKey,
+          createdAt: "2026-08-24T00:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(projectA.normalizedCall.rememberKey).toBe(
+      "scope:project:a|path:src/obsolete.ts",
+    );
+    expect(projectB.normalizedCall.rememberKey).toBe(
+      "scope:project:b|path:src/obsolete.ts",
+    );
+    expect(projectB.decision).toBe("ask");
+    expect(projectARepeat.decision).toBe("allow");
+  });
+
   it("denies apply_patch calls that target paths outside the workspace", () => {
     const result = evaluateToolSecurity(
       "apply_patch",
