@@ -34,7 +34,9 @@ use crate::fs::{
     validate_path_for_write as validate_fs_path_for_write,
 };
 use crate::git::GitState;
-use crate::project_path::{join_wsl_path, parse_wsl_unc_path, WslProjectPath};
+use crate::project_path::{
+    join_wsl_path, parse_wsl_unc_path, run_wsl_shell, run_wsl_shell_with_stdin, WslProjectPath,
+};
 use crate::secrets;
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 use glob::Pattern;
@@ -1186,8 +1188,175 @@ async fn acquire_content_mutation_locks(
     Ok(guards)
 }
 
+async fn read_wsl_mutation_backup(
+    workspace: &Path,
+    path: &str,
+) -> CommandResult<(Vec<u8>, Option<u32>)> {
+    let target = resolve_wsl_path_for_workspace(workspace, path)?
+        .ok_or_else(|| command_error(format!("Invalid WSL path: {}", path)))?;
+    let wsl_workspace = parse_wsl_unc_path(&workspace.to_string_lossy())
+        .ok_or_else(|| command_error("Invalid WSL workspace path"))?;
+    let target = fs::canonical_wsl_path_within_workspace(&wsl_workspace, &target, Some(false))
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+    let output = run_wsl_shell(
+        &target,
+        wsl_mutation_backup_read_script(),
+        &[
+            target.linux_path.clone(),
+            fs::MAX_WRITE_SIZE_BYTES.saturating_add(1).to_string(),
+        ],
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|error| command_error(error.to_string()))?;
+    let Some(separator) = output.stdout.iter().position(|byte| *byte == 0) else {
+        return Err(command_error(format!(
+            "Failed to read WSL backup metadata for {}",
+            path
+        )));
+    };
+    let mode = std::str::from_utf8(&output.stdout[..separator])
+        .ok()
+        .and_then(|value| u32::from_str_radix(value.trim(), 8).ok());
+    let bytes = output.stdout[separator.saturating_add(1)..].to_vec();
+    if bytes.len() as u64 > fs::MAX_WRITE_SIZE_BYTES {
+        return Err(command_error(format!(
+            "Backup for {} exceeds maximum write size of {} bytes",
+            path,
+            fs::MAX_WRITE_SIZE_BYTES
+        )));
+    }
+    Ok((bytes, mode))
+}
+
+fn wsl_mutation_backup_read_script() -> &'static str {
+    r#"
+mode=$(stat -c '%a' -- "$1") || exit 4
+printf '%s\0' "$mode"
+head -c "$2" -- "$1"
+"#
+}
+
+async fn read_native_mutation_backup(
+    path: &Path,
+    display_path: &str,
+) -> CommandResult<(Vec<u8>, Option<u32>)> {
+    let metadata = tokio::fs::metadata(path).await.map_err(|error| {
+        command_error(format!(
+            "Failed to inspect backup size for {}: {}",
+            display_path, error
+        ))
+    })?;
+    if metadata.len() > fs::MAX_WRITE_SIZE_BYTES {
+        return Err(command_error(format!(
+            "Backup for {} exceeds maximum write size of {} bytes",
+            display_path,
+            fs::MAX_WRITE_SIZE_BYTES
+        )));
+    }
+    let mode = {
+        #[cfg(unix)]
+        {
+            Some(metadata.permissions().mode() & 0o7777)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    };
+    let bytes = tokio::fs::read(path).await.map_err(|error| {
+        command_error(format!(
+            "Failed to prepare backup for {}: {}",
+            display_path, error
+        ))
+    })?;
+    if bytes.len() as u64 > fs::MAX_WRITE_SIZE_BYTES {
+        return Err(command_error(format!(
+            "Backup for {} exceeds maximum write size of {} bytes",
+            display_path,
+            fs::MAX_WRITE_SIZE_BYTES
+        )));
+    }
+    Ok((bytes, mode))
+}
+
+async fn write_wsl_backup_bytes(
+    workspace: &Path,
+    path: &str,
+    bytes: &[u8],
+    expected_revision: Option<&str>,
+    unix_mode: Option<u32>,
+) -> CommandResult<()> {
+    let target = resolve_wsl_path_for_workspace(workspace, path)?
+        .ok_or_else(|| command_error(format!("Invalid WSL path: {}", path)))?;
+    let wsl_workspace = parse_wsl_unc_path(&workspace.to_string_lossy())
+        .ok_or_else(|| command_error("Invalid WSL workspace path"))?;
+    let target = fs::canonical_wsl_path_within_workspace(&wsl_workspace, &target, Some(false))
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+    let output = run_wsl_shell_with_stdin(
+        &target,
+        wsl_mutation_backup_write_script(),
+        &[
+            target.linux_path.clone(),
+            expected_revision.unwrap_or_default().to_string(),
+            unix_mode
+                .map(|mode| format!("{:o}", mode))
+                .unwrap_or_default(),
+        ],
+        bytes.to_vec(),
+        Duration::from_secs(15),
+    )
+    .await
+    .map_err(|error| command_error(error.to_string()))?;
+    if let Some(actual) = output
+        .stdout_text()
+        .lines()
+        .find_map(|line| line.strip_prefix("revision_conflict actual="))
+    {
+        let actual_revision = if actual == fs::EXPECTED_REVISION_ABSENT || actual == "unavailable" {
+            None
+        } else {
+            Some(actual)
+        };
+        fs::validate_expected_revision(path, expected_revision, actual_revision)
+            .map_err(|error| command_error(error.to_string()))?;
+        return Err(command_error(format!(
+            "Revision conflict while restoring {}",
+            path
+        )));
+    }
+    Ok(())
+}
+
+fn wsl_mutation_backup_write_script() -> &'static str {
+    r#"
+p=$1
+expected=$2
+mode=$3
+dir=$(dirname -- "$p") || exit 4
+mkdir -p -- "$dir" || exit 4
+actual=absent
+if [ -f "$p" ]; then
+  line=$(sha256sum -- "$p") || exit 5
+  actual=${line%% *}
+elif [ -e "$p" ] || [ -L "$p" ]; then
+  actual=unavailable
+fi
+if [ -n "$expected" ] && [ "$actual" != "$expected" ]; then
+  printf 'revision_conflict actual=%s\n' "$actual"
+  exit 0
+fi
+tmp=$(mktemp "$dir/.macro-rollback.XXXXXX") || exit 6
+cat >"$tmp" || { rm -f -- "$tmp"; exit 7; }
+if [ -n "$mode" ]; then chmod "$mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }; fi
+mv -f -- "$tmp" "$p" || { rm -f -- "$tmp"; exit 9; }
+"#
+}
+
 async fn rollback_pending_file_changes_via_fs(
-    backups: &[(PathBuf, String, String, Option<String>, Option<u32>)],
+    backups: &[(PathBuf, String, String, Option<Vec<u8>>, Option<u32>)],
     applied_changes: &[PendingFileChange],
 ) -> Vec<String> {
     debug_assert_eq!(backups.len(), applied_changes.len());
@@ -1201,24 +1370,27 @@ async fn rollback_pending_file_changes_via_fs(
             .map(|content| fs::content_revision(content.as_bytes()));
         match backup {
             Some(content) => {
-                if let Err(error) = fs::write_file_internal_with_revision_and_mode_unlocked(
-                    workspace,
-                    path.clone(),
-                    content.clone(),
-                    Some(true),
-                    Some(false),
-                    Some(
-                        expected_applied_revision
-                            .as_deref()
-                            .unwrap_or(fs::EXPECTED_REVISION_ABSENT),
-                    ),
-                    *unix_mode,
-                )
-                .await
-                {
+                let expected = Some(
+                    expected_applied_revision
+                        .as_deref()
+                        .unwrap_or(fs::EXPECTED_REVISION_ABSENT),
+                );
+                let result = if change_targets_wsl(change) {
+                    write_wsl_backup_bytes(workspace, path, content, expected, *unix_mode).await
+                } else {
+                    write_bytes_atomically_with_parent_creation(
+                        &change.absolute_path,
+                        content,
+                        true,
+                        expected,
+                        *unix_mode,
+                    )
+                    .await
+                };
+                if let Err(error) = result {
                     errors.push(format!(
                         "Failed to restore {} during rollback: {}",
-                        display_path, error
+                        display_path, error.message
                     ));
                 }
             }
@@ -1247,11 +1419,12 @@ async fn rollback_pending_file_changes_via_fs(
 /// Snapshots retained until post-mutation validation has finished so any
 /// later failure can still be compensated.
 ///
-/// Native targets keep raw bytes; WSL/virtual-fs targets keep the text
-/// content routed through the workspace fs primitives.
+/// Native and WSL targets retain raw bytes so rollback also works for binary
+/// files. Non-WSL virtual-fs targets still route UTF-8 content through the
+/// workspace fs primitives.
 enum MutationBackups {
     Native(Vec<(PathBuf, Option<Vec<u8>>, Option<u32>)>),
-    ViaFs(Vec<(PathBuf, String, String, Option<String>, Option<u32>)>),
+    ViaFs(Vec<(PathBuf, String, String, Option<Vec<u8>>, Option<u32>)>),
 }
 
 fn normalize_pending_change_metadata(
@@ -1280,7 +1453,7 @@ fn normalize_pending_change_metadata(
                 .map(|(_, _, _, backup, _)| {
                     (
                         backup.is_some(),
-                        backup.as_deref() == Some(new_content.as_str()),
+                        backup.as_deref() == Some(new_content.as_bytes()),
                     )
                 })
                 .unwrap_or((false, false)),
@@ -1346,31 +1519,29 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                         ))
                     })?
                 {
-                    let current = fs::read_file_internal(
-                        &change.effective_workspace,
-                        change.effective_path.clone(),
-                        Some(false),
-                    )
-                    .await
-                    .map_err(|error| {
-                        command_error(format!(
-                            "Failed to prepare backup for {}: {}",
-                            change.display_path, error
-                        ))
-                    })?;
-                    if current.is_binary {
-                        return Err(command_error(format!(
-                            "Cannot apply a batched patch to binary file {} in WSL.",
-                            change.display_path
-                        )));
-                    }
+                    let (current, unix_mode) = if change_targets_wsl(change) {
+                        read_wsl_mutation_backup(
+                            &change.effective_workspace,
+                            &change.effective_path,
+                        )
+                        .await
+                        .map_err(|error| {
+                            command_error(format!(
+                                "Failed to prepare backup for {}: {}",
+                                change.display_path, error.message
+                            ))
+                        })?
+                    } else {
+                        read_native_mutation_backup(&change.absolute_path, &change.display_path)
+                            .await?
+                    };
                     fs::validate_expected_revision(
                         &change.display_path,
                         change.expected_revision.as_deref(),
-                        Some(&current.revision),
+                        Some(&fs::content_revision(&current)),
                     )
                     .map_err(|error| command_error(error.to_string()))?;
-                    Some((current.content, current.unix_mode))
+                    Some((current, unix_mode))
                 } else {
                     fs::validate_expected_revision(
                         &change.display_path,
@@ -1396,33 +1567,17 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
 
     let mut backups = Vec::with_capacity(changes.len());
     for change in changes {
-        let (backup, unix_mode) = match tokio::fs::read(&change.absolute_path).await {
-            Ok(bytes) => {
+        let (backup, unix_mode) = match tokio::fs::metadata(&change.absolute_path).await {
+            Ok(_) => {
+                let (bytes, mode) =
+                    read_native_mutation_backup(&change.absolute_path, &change.display_path)
+                        .await?;
                 fs::validate_expected_revision(
                     &change.display_path,
                     change.expected_revision.as_deref(),
                     Some(&fs::content_revision(&bytes)),
                 )
                 .map_err(|error| command_error(error.to_string()))?;
-                let mode = match tokio::fs::metadata(&change.absolute_path).await {
-                    Ok(metadata) => {
-                        #[cfg(unix)]
-                        {
-                            Some(metadata.permissions().mode() & 0o7777)
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            let _ = metadata;
-                            None
-                        }
-                    }
-                    Err(error) => {
-                        return Err(command_error(format!(
-                            "Failed to inspect permissions for {}: {}",
-                            change.display_path, error
-                        )))
-                    }
-                };
                 (Some(bytes), mode)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -3240,20 +3395,25 @@ async fn execute_workspace_tool_inner(
         "git_get_tree" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let branch = json_arg_string(&args, "branch");
-            let cursor_scope = format!(
+            let cursor_scope_base = format!(
                 "git_get_tree\0{}\0{}",
                 repo_path,
                 branch.as_deref().unwrap_or("HEAD")
             );
-            let page = tool_output::resolve_tool_page(
-                &args,
-                &cursor_scope,
-                tool_output::GIT_TREE_DEFAULT_LIMIT,
-                tool_output::GIT_TREE_MAX_LIMIT,
-            )?;
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let expected_revision =
+                    git::wsl_git_tree_revision(&wsl_repo_path, branch.as_deref())
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
+                let cursor_scope = format!("{}\0{}", cursor_scope_base, expected_revision);
+                let page = tool_output::resolve_tool_page(
+                    &args,
+                    &cursor_scope,
+                    tool_output::GIT_TREE_DEFAULT_LIMIT,
+                    tool_output::GIT_TREE_MAX_LIMIT,
+                )?;
                 let tree = git::build_wsl_git_tree_tool_page(
                     &wsl_repo_path,
                     branch.as_deref(),
@@ -3262,6 +3422,11 @@ async fn execute_workspace_tool_inner(
                 )
                 .await
                 .map_err(|error| command_error(error.to_string()))?;
+                if tree.revision != expected_revision {
+                    return Err(command_error(
+                        "Git tree changed while the page was being read. Retry from the first page.",
+                    ));
+                }
                 let returned = tree.structure.len();
                 return serde_json::to_string_pretty(&serde_json::json!({
                     "repo_path": repo_path,
@@ -3278,8 +3443,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let args_for_task = args.clone();
+            let cursor_scope_base_for_task = cursor_scope_base.clone();
 
-            let tree = tokio::task::spawn_blocking(move || {
+            let (tree, page, cursor_scope) = tokio::task::spawn_blocking(move || {
                 let validated =
                     validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
                 let repo = git_state_for_task
@@ -3288,9 +3455,29 @@ async fn execute_workspace_tool_inner(
                 let repo = repo
                     .lock()
                     .map_err(|_| command_error("Failed to lock repository"))?;
-
-                git::build_git_tree_tool_page(&repo, branch.as_deref(), page.offset, page.limit)
-                    .map_err(|error| command_error(error.to_string()))
+                let expected_revision = git::git_tree_revision(&repo, branch.as_deref())
+                    .map_err(|error| command_error(error.to_string()))?;
+                let cursor_scope =
+                    format!("{}\0{}", cursor_scope_base_for_task, expected_revision);
+                let page = tool_output::resolve_tool_page(
+                    &args_for_task,
+                    &cursor_scope,
+                    tool_output::GIT_TREE_DEFAULT_LIMIT,
+                    tool_output::GIT_TREE_MAX_LIMIT,
+                )?;
+                let tree = git::build_git_tree_tool_page(
+                    &repo,
+                    branch.as_deref(),
+                    page.offset,
+                    page.limit,
+                )
+                .map_err(|error| command_error(error.to_string()))?;
+                if tree.revision != expected_revision {
+                    return Err(command_error(
+                        "Git tree changed while the page was being read. Retry from the first page.",
+                    ));
+                }
+                Ok::<_, CommandError>((tree, page, cursor_scope))
             })
             .await
             .map_err(|error| command_error(git::to_join_error(error).to_string()))??;
@@ -3503,11 +3690,24 @@ async fn execute_workspace_tool_inner(
                 .ok_or_else(|| command_error("Missing branch_name argument for git_merge tool."))?;
             let into_branch = json_arg_string(&args, "into_branch")
                 .ok_or_else(|| command_error("Missing into_branch argument for git_merge tool."))?;
-            if resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path)
-                .await?
-                .is_some()
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
-                return Err(unsupported_wsl_workspace_tool("git_merge"));
+                let output = git::wsl_git_merge(&wsl_repo_path, &branch_name, &into_branch)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let status = git::build_wsl_git_status(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "repo_path": repo_path,
+                    "branch": status.branch,
+                    "merged_branch": branch_name,
+                    "into_branch": into_branch,
+                    "output": output
+                }))
+                .map_err(|error| command_error(error.to_string()));
             }
 
             let repo_path_for_task = repo_path.clone();
@@ -3642,11 +3842,22 @@ async fn execute_workspace_tool_inner(
         "git_stash" => {
             let repo_path = json_arg_string(&args, "repo_path").unwrap_or_else(|| ".".to_string());
             let message = json_arg_string(&args, "message");
-            if resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path)
-                .await?
-                .is_some()
+            if let Some(wsl_repo_path) =
+                resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
-                return Err(unsupported_wsl_workspace_tool("git_stash"));
+                let stash = git::wsl_git_stash(&wsl_repo_path, message)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                let status = git::build_wsl_git_status(&wsl_repo_path)
+                    .await
+                    .map_err(|error| command_error(error.to_string()))?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": true,
+                    "repo_path": repo_path,
+                    "branch": status.branch,
+                    "stash": stash
+                }))
+                .map_err(|error| command_error(error.to_string()));
             }
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
@@ -5391,11 +5602,13 @@ mod tests {
         apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
         commit_and_validate_pending_file_changes_with_create_dirs, commit_with_post_mutation_gate,
         exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
-        parse_apply_patch, provider_definition_patch_operations, register_tool_execution,
-        resolve_confined_wsl_repo_path_for_workspace, resolve_requested_workspace,
-        resolve_workspace_for_tool_path, restore_deleted_provider_secrets,
-        rollback_pending_file_changes, tool_cancel_workspace, tool_execution_timeout,
-        validate_agent_git_repo_path, DbPool, ParsedPatchOperation, PendingFileChange,
+        parse_apply_patch, provider_definition_patch_operations, read_native_mutation_backup,
+        register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
+        resolve_requested_workspace, resolve_workspace_for_tool_path,
+        restore_deleted_provider_secrets, rollback_pending_file_changes,
+        rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
+        validate_agent_git_repo_path, wsl_mutation_backup_read_script,
+        wsl_mutation_backup_write_script, DbPool, ParsedPatchOperation, PendingFileChange,
     };
     use crate::commands::fs::{
         content_revision, install_write_before_revalidation_hook, EXPECTED_REVISION_ABSENT,
@@ -5621,6 +5834,23 @@ mod tests {
         )
         .expect_err("changed status must invalidate the cursor");
         assert!(stale.message.contains("does not belong"));
+    }
+
+    #[test]
+    fn git_tree_cursor_scope_rejects_a_changed_tree_revision() {
+        let first_scope = "git_get_tree\0.\0HEAD\0commit-a:status-a";
+        let cursor = super::tool_output::create_tool_cursor(first_scope, 2);
+        let changed_scope = "git_get_tree\0.\0HEAD\0commit-a:status-b";
+
+        let error = super::tool_output::resolve_tool_page(
+            &json!({ "cursor": cursor, "limit": 2 }),
+            changed_scope,
+            super::tool_output::GIT_TREE_DEFAULT_LIMIT,
+            super::tool_output::GIT_TREE_MAX_LIMIT,
+        )
+        .expect_err("changed tree status must invalidate the cursor");
+
+        assert!(error.message.contains("does not belong"));
     }
 
     #[test]
@@ -6433,6 +6663,67 @@ mod tests {
             fs::read_to_string(path).expect("read preserved external edit"),
             "external edit\n"
         );
+    }
+
+    #[tokio::test]
+    async fn via_fs_rollback_restores_native_binary_bytes_in_a_mixed_batch() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("image.bin");
+        let original = vec![0, 159, 146, 150, 255];
+        fs::write(&path, b"macro mutation").expect("write Macro mutation");
+        let change = PendingFileChange {
+            display_path: "image.bin".to_string(),
+            effective_workspace: workspace.path().to_path_buf(),
+            effective_path: "image.bin".to_string(),
+            absolute_path: path.clone(),
+            status: "updated".to_string(),
+            new_content: Some("macro mutation".to_string()),
+            created: false,
+            bytes_written: 14,
+            additions: 1,
+            deletions: 1,
+            expected_revision: None,
+        };
+        let backups = vec![(
+            workspace.path().to_path_buf(),
+            "image.bin".to_string(),
+            "image.bin".to_string(),
+            Some(original.clone()),
+            None,
+        )];
+
+        let errors = rollback_pending_file_changes_via_fs(&backups, &[change]).await;
+
+        assert!(errors.is_empty(), "rollback errors: {errors:?}");
+        assert_eq!(fs::read(path).expect("read restored binary"), original);
+    }
+
+    #[tokio::test]
+    async fn native_mutation_backup_rejects_oversized_existing_file_before_reading() {
+        let workspace = TempDir::new().expect("workspace");
+        let path = workspace.path().join("oversized.bin");
+        let file = fs::File::create(&path).expect("create sparse file");
+        file.set_len(crate::commands::fs::MAX_WRITE_SIZE_BYTES + 1)
+            .expect("size sparse file");
+
+        let error = read_native_mutation_backup(&path, "oversized.bin")
+            .await
+            .expect_err("oversized backup must be rejected");
+
+        assert!(error.message.contains("exceeds maximum write size"));
+    }
+
+    #[test]
+    fn wsl_binary_backup_scripts_are_bounded_atomic_and_revision_guarded() {
+        let read = wsl_mutation_backup_read_script();
+        assert!(read.contains("head -c \"$2\""));
+        assert!(read.contains("stat -c '%a'"));
+
+        let write = wsl_mutation_backup_write_script();
+        assert!(write.contains("sha256sum -- \"$p\""));
+        assert!(write.contains("revision_conflict actual="));
+        assert!(write.contains("mktemp \"$dir/.macro-rollback.XXXXXX\""));
+        assert!(write.contains("mv -f -- \"$tmp\" \"$p\""));
     }
 
     fn pending_update_change(workspace: &Path, name: &str, new_content: &str) -> PendingFileChange {

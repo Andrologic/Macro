@@ -16,6 +16,7 @@ use git2::{
     StashFlags, Status, StatusEntry, TreeWalkMode, TreeWalkResult,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
 use crate::core::error::{BackendError, Result};
@@ -118,6 +119,7 @@ pub(crate) struct GitTreeToolPage {
     pub structure: Vec<GitNode>,
     pub modified_files_count: u32,
     pub has_more: bool,
+    pub revision: String,
 }
 
 #[derive(Serialize)]
@@ -1337,6 +1339,175 @@ pub(crate) async fn wsl_git_checkout(
     Ok(())
 }
 
+async fn wsl_current_branch(repo_path: &WslProjectPath) -> Result<Option<String>> {
+    let output = run_wsl_git_checked(
+        repo_path,
+        &["branch".to_string(), "--show-current".to_string()],
+        WSL_GIT_TIMEOUT,
+        "Cannot determine current WSL branch",
+    )
+    .await?;
+    let branch = output.stdout_text();
+    Ok((!branch.is_empty()).then_some(branch))
+}
+
+async fn wsl_ensure_clean(repo_path: &WslProjectPath) -> Result<()> {
+    if !build_wsl_git_status(repo_path).await?.is_clean {
+        return Err(BackendError::GitRepositoryNotClean {
+            message: "Please commit or stash your changes first".to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) async fn wsl_git_merge(
+    repo_path: &WslProjectPath,
+    branch_name: &str,
+    into_branch: &str,
+) -> Result<String> {
+    validate_branch_name(branch_name)?;
+    validate_branch_name(into_branch)?;
+    wsl_ensure_clean(repo_path).await?;
+    let branch_oid = wsl_resolve_commit_oid(repo_path, branch_name, "merge branch").await?;
+    let into_oid = wsl_resolve_commit_oid(repo_path, into_branch, "merge target").await?;
+    let ancestor = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "merge-base".to_string(),
+            "--is-ancestor".to_string(),
+            branch_oid,
+            into_oid,
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    match ancestor.status.code() {
+        Some(0) => {
+            return Ok(format!(
+                "Branch {} is already integrated into {}",
+                branch_name, into_branch
+            ))
+        }
+        Some(1) => {}
+        _ => return Err(wsl_git_failure(&ancestor, "git merge preflight WSL failed")),
+    }
+
+    let original_branch = wsl_current_branch(repo_path).await?;
+    if original_branch.as_deref() != Some(into_branch) {
+        wsl_git_checkout(repo_path, into_branch, false).await?;
+    }
+    let output = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "merge".to_string(),
+            "--no-ff".to_string(),
+            "--no-edit".to_string(),
+            branch_name.to_string(),
+        ],
+        WSL_GIT_MUTATION_TIMEOUT,
+    )
+    .await?;
+    if !output.status.success() {
+        let merge_head = run_wsl_git_allow_failure(
+            repo_path,
+            &[
+                "rev-parse".to_string(),
+                "--verify".to_string(),
+                "-q".to_string(),
+                "MERGE_HEAD".to_string(),
+            ],
+            WSL_GIT_TIMEOUT,
+        )
+        .await?;
+        let had_merge_head = merge_head.status.success();
+        if had_merge_head {
+            let abort = run_wsl_git_allow_failure(
+                repo_path,
+                &["merge".to_string(), "--abort".to_string()],
+                WSL_GIT_MUTATION_TIMEOUT,
+            )
+            .await?;
+            if !abort.status.success() {
+                return Err(wsl_git_failure(
+                    &abort,
+                    "git merge WSL failed and merge --abort also failed",
+                ));
+            }
+        } else if !matches!(merge_head.status.code(), Some(1)) {
+            return Err(wsl_git_failure(
+                &merge_head,
+                "git merge WSL failed and merge state could not be inspected",
+            ));
+        }
+        if let Some(original_branch) = original_branch.as_deref() {
+            if original_branch != into_branch {
+                wsl_git_checkout(repo_path, original_branch, false).await?;
+            }
+        }
+        if !had_merge_head {
+            return Err(wsl_git_failure(&output, "git merge WSL failed"));
+        }
+        let details = output.stderr_text();
+        return Err(BackendError::GitMergeConflict {
+            message: if details.is_empty() {
+                format!("Cannot merge {} into {}", branch_name, into_branch)
+            } else {
+                details
+            },
+        });
+    }
+    if let Some(original_branch) = original_branch.as_deref() {
+        if original_branch != into_branch {
+            wsl_git_checkout(repo_path, original_branch, false).await?;
+        }
+    }
+    let details = output.stdout_text();
+    Ok(if details.is_empty() {
+        format!("Merged {} into {}", branch_name, into_branch)
+    } else {
+        details
+    })
+}
+
+pub(crate) async fn wsl_git_stash(
+    repo_path: &WslProjectPath,
+    message: Option<String>,
+) -> Result<String> {
+    let status = build_wsl_git_status(repo_path).await?;
+    if status.is_clean {
+        return Err(BackendError::Git {
+            message: "No changes to stash".to_string(),
+        });
+    }
+    let mut args = vec![
+        "stash".to_string(),
+        "push".to_string(),
+        "--include-untracked".to_string(),
+    ];
+    args.push("--message".to_string());
+    args.push(message.unwrap_or_else(|| "WIP".to_string()));
+    run_wsl_git_checked(
+        repo_path,
+        &args,
+        WSL_GIT_MUTATION_TIMEOUT,
+        "git stash WSL failed",
+    )
+    .await?;
+    let output = run_wsl_git_checked(
+        repo_path,
+        &[
+            "rev-parse".to_string(),
+            "--short".to_string(),
+            "--verify".to_string(),
+            "refs/stash".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git stash revision WSL failed",
+    )
+    .await?;
+    Ok(output.stdout_text())
+}
+
 async fn wsl_git_branch_create(
     repo_path: &WslProjectPath,
     branch_name: &str,
@@ -1381,6 +1552,7 @@ pub(crate) async fn wsl_git_diff(
     head: Option<&str>,
     options: DiffRequestOptions,
 ) -> Result<String> {
+    let path_filters = options.paths.clone().unwrap_or_default();
     let mut args = vec!["diff".to_string()];
     if options.mode == GitDiffMode::Stat {
         args.push("--stat".to_string());
@@ -1412,6 +1584,19 @@ pub(crate) async fn wsl_git_diff(
             args.extend(paths);
         }
     }
+    if resolved_head.is_none() {
+        return wsl_git_diff_with_untracked(
+            repo_path,
+            &args,
+            &path_filters,
+            options.mode,
+            options.context_lines,
+            options.ignore_whitespace,
+            options.max_bytes,
+            options.require_complete,
+        )
+        .await;
+    }
     let Some(max_bytes) = options.max_bytes else {
         let output =
             run_wsl_git_checked(repo_path, &args, WSL_GIT_TIMEOUT, "git diff WSL failed").await?;
@@ -1440,6 +1625,157 @@ pub(crate) async fn wsl_git_diff(
     Ok(output.stdout.text("GIT DIFF"))
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn wsl_git_diff_with_untracked(
+    repo_path: &WslProjectPath,
+    diff_args: &[String],
+    path_filters: &[String],
+    mode: GitDiffMode,
+    context_lines: Option<u32>,
+    ignore_whitespace: bool,
+    max_bytes: Option<usize>,
+    require_complete: bool,
+) -> Result<String> {
+    let script = wsl_git_diff_with_untracked_script();
+    let mut args = vec![
+        "-c".to_string(),
+        script.to_string(),
+        "macro-git-diff".to_string(),
+        repo_path.linux_path.clone(),
+        max_bytes.map(|value| value.max(2)).unwrap_or(0).to_string(),
+        mode.as_str().to_string(),
+        context_lines
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        if ignore_whitespace { "1" } else { "0" }.to_string(),
+        diff_args.len().to_string(),
+        path_filters.len().to_string(),
+    ];
+    args.extend(diff_args.iter().cloned());
+    args.extend(path_filters.iter().cloned());
+    let output = run_wsl_command_allow_failure(repo_path, "bash", &args, WSL_GIT_TIMEOUT).await?;
+    if !output.status.success() {
+        return Err(wsl_git_failure(&output, "git diff WSL failed"));
+    }
+    let Some(separator) = output.stdout.iter().position(|byte| *byte == 0) else {
+        return Err(BackendError::Git {
+            message: "git diff WSL returned an invalid bounded-output header".to_string(),
+        });
+    };
+    let header = String::from_utf8_lossy(&output.stdout[..separator]);
+    let mut header = header.split('\t');
+    if header.next() != Some("macro-diff") {
+        return Err(BackendError::Git {
+            message: "git diff WSL returned an invalid output header".to_string(),
+        });
+    }
+    let parse_size = |value: Option<&str>| {
+        value
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| BackendError::Git {
+                message: "git diff WSL returned an invalid output size".to_string(),
+            })
+    };
+    let total_bytes = parse_size(header.next())?;
+    let head_bytes = parse_size(header.next())?;
+    let tail_bytes = parse_size(header.next())?;
+    let retained = &output.stdout[separator.saturating_add(1)..];
+    if retained.len() != head_bytes.saturating_add(tail_bytes) {
+        return Err(BackendError::Git {
+            message: "git diff WSL returned an incomplete bounded payload".to_string(),
+        });
+    }
+    let truncated = total_bytes > retained.len();
+    if truncated && require_complete {
+        return Err(BackendError::Git {
+            message: format!(
+                "Git diff output requires {} bytes and exceeds the inline limit of {} retained bytes. Narrow paths, use mode=stat or mode=name_only, or retry without require_complete.",
+                total_bytes,
+                retained.len()
+            ),
+        });
+    }
+    let mut text = String::from_utf8_lossy(&retained[..head_bytes]).into_owned();
+    if truncated {
+        text.push_str(&format!(
+            "\n\n[... GIT DIFF TRUNCATED: omitted {} bytes; retained the first {} and last {} bytes ...]\n\n",
+            total_bytes.saturating_sub(retained.len()),
+            head_bytes,
+            tail_bytes
+        ));
+    }
+    if tail_bytes > 0 {
+        text.push_str(&String::from_utf8_lossy(&retained[head_bytes..]));
+    }
+    Ok(text)
+}
+
+fn wsl_git_diff_with_untracked_script() -> &'static str {
+    r#"
+set -u
+repo=$1
+max_bytes=$2
+mode=$3
+context=$4
+ignore_whitespace=$5
+diff_count=$6
+path_count=$7
+shift 7
+diff_args=("${@:1:diff_count}")
+shift "$diff_count"
+paths=("${@:1:path_count}")
+tmpdir=$(mktemp -d) || exit 70
+trap 'rm -rf -- "$tmpdir"' EXIT
+combined=$tmpdir/combined
+untracked=$tmpdir/untracked
+
+git -C "$repo" "${diff_args[@]}" >"$combined" || exit $?
+ls_args=(ls-files --others --exclude-standard -z)
+if (( path_count > 0 )); then ls_args+=(-- "${paths[@]}"); fi
+git -C "$repo" "${ls_args[@]}" >"$untracked" || exit $?
+
+if [[ "$mode" != name_only ]]; then
+  untracked_count=0
+  while IFS= read -r -d '' _path; do
+    untracked_count=$((untracked_count + 1))
+    if (( untracked_count > 2000 )); then
+      printf 'git diff WSL found more than 2000 untracked files; narrow paths or use mode=name_only\n' >&2
+      exit 74
+    fi
+  done <"$untracked"
+fi
+
+while IFS= read -r -d '' path; do
+  if [[ "$mode" == name_only ]]; then
+    printf '%s\n' "$path" >>"$combined" || exit $?
+    continue
+  fi
+  extra=(diff --no-index)
+  [[ "$mode" == stat ]] && extra+=(--stat)
+  [[ "$mode" == patch && -n "$context" ]] && extra+=("--unified=$context")
+  [[ "$ignore_whitespace" == 1 ]] && extra+=(--ignore-all-space)
+  set +e
+  git -C "$repo" "${extra[@]}" -- /dev/null "$path" >>"$combined"
+  code=$?
+  set -e
+  [[ $code -eq 0 || $code -eq 1 ]] || exit "$code"
+done <"$untracked"
+
+total=$(wc -c <"$combined") || exit $?
+total=${total//[[:space:]]/}
+if [[ "$max_bytes" == 0 || "$total" -le "$max_bytes" ]]; then
+  printf 'macro-diff\t%s\t%s\t0\0' "$total" "$total"
+  cat -- "$combined"
+else
+  tail_bytes=$((max_bytes / 4))
+  head_bytes=$((max_bytes - tail_bytes))
+  printf 'macro-diff\t%s\t%s\t%s\0' "$total" "$head_bytes" "$tail_bytes"
+  head -c "$head_bytes" -- "$combined"
+  tail -c "$tail_bytes" -- "$combined"
+fi
+"#
+}
+
 fn wsl_diff_range(base: Option<&str>, head: Option<&str>) -> Option<String> {
     match (base, head) {
         (Some(base), Some(head)) => Some(format!("{}..{}", base, head)),
@@ -1457,7 +1793,9 @@ pub(crate) async fn build_wsl_git_tree(
         validate_refspec(branch)?;
         branch.to_string()
     } else {
-        build_wsl_git_status(repo_path).await?.branch
+        wsl_current_branch(repo_path)
+            .await?
+            .unwrap_or_else(|| "DETACHED".to_string())
     };
     let tree_ref = if branch_name == "DETACHED" {
         wsl_resolve_commit_oid(repo_path, "HEAD", "tree reference").await?
@@ -1470,7 +1808,7 @@ pub(crate) async fn build_wsl_git_tree(
             "ls-tree".to_string(),
             "-r".to_string(),
             "--name-only".to_string(),
-            tree_ref,
+            tree_ref.clone(),
         ],
         WSL_GIT_TIMEOUT,
     )
@@ -1516,27 +1854,25 @@ pub(crate) async fn build_wsl_git_tree_tool_page(
         validate_refspec(branch)?;
         branch.to_string()
     } else {
-        build_wsl_git_status(repo_path).await?.branch
+        wsl_current_branch(repo_path)
+            .await?
+            .unwrap_or_else(|| "DETACHED".to_string())
     };
     let tree_ref = if branch_name == "DETACHED" {
         wsl_resolve_commit_oid(repo_path, "HEAD", "tree reference").await?
     } else {
         wsl_resolve_commit_oid(repo_path, &branch_name, "tree reference").await?
     };
-    let script = concat!(
-        "git -C \"$1\" ls-tree -r -z ",
-        "--format='%(objectname)%x09%(objecttype)%x09%(path)' \"$2\" ",
-        "| tail -z -n +\"$3\" | head -z -n \"$4\"",
-    );
+    let script = wsl_git_tree_page_script();
     let output = run_wsl_command_allow_failure(
         repo_path,
-        "sh",
+        "bash",
         &[
             "-c".to_string(),
             script.to_string(),
             "macro-git-tree".to_string(),
             repo_path.linux_path.clone(),
-            tree_ref,
+            tree_ref.clone(),
             offset.saturating_add(1).to_string(),
             limit.saturating_add(1).to_string(),
         ],
@@ -1546,11 +1882,32 @@ pub(crate) async fn build_wsl_git_tree_tool_page(
     if !output.status.success() {
         return Err(wsl_git_failure(&output, "git tree WSL failed"));
     }
-    let records = output
+    let mut records = output
         .stdout
         .split(|byte| *byte == 0)
         .filter(|record| !record.is_empty())
         .collect::<Vec<_>>();
+    let header = records.first().copied().unwrap_or_default();
+    let header = String::from_utf8_lossy(header);
+    let mut header_fields = header.splitn(3, '\t');
+    if header_fields.next() != Some("macro-tree") {
+        return Err(BackendError::Git {
+            message: "git tree WSL returned an invalid page header".to_string(),
+        });
+    }
+    let modified_files_count = header_fields
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(|| BackendError::Git {
+            message: "git tree WSL returned an invalid status count".to_string(),
+        })?;
+    let status_digest = header_fields
+        .next()
+        .filter(|value| value.len() == 64)
+        .ok_or_else(|| BackendError::Git {
+            message: "git tree WSL returned an invalid status revision".to_string(),
+        })?;
+    records.remove(0);
     let has_more = records.len() > limit;
     let mut structure = Vec::with_capacity(limit.min(records.len()));
     for record in records.into_iter().take(limit) {
@@ -1565,25 +1922,191 @@ pub(crate) async fn build_wsl_git_tree_tool_page(
         structure.push(GitNode {
             name,
             path,
-            node_type: if kind == "tree" { "directory" } else { "file" }.to_string(),
+            node_type: if matches!(kind.as_str(), "tree" | "commit") {
+                "directory"
+            } else {
+                "file"
+            }
+            .to_string(),
             status: None,
             children: None,
-            hash: Some(hash),
+            hash: (!hash.is_empty()).then_some(hash),
         });
     }
-    let status = build_wsl_git_status(repo_path).await?;
-    let modified_files_count = status
-        .staged_files
-        .len()
-        .saturating_add(status.unstaged_files.len())
-        .saturating_add(status.untracked_files.len())
-        .saturating_add(status.conflicted_files.len()) as u32;
+    apply_wsl_tree_page_statuses(repo_path, &mut structure).await?;
     Ok(GitTreeToolPage {
         branch: branch_name,
         structure,
         modified_files_count,
         has_more,
+        revision: format!("{}:{}", tree_ref, status_digest),
     })
+}
+
+fn wsl_git_tree_page_script() -> &'static str {
+    r#"
+set -u
+export LC_ALL=C
+repo=$1
+tree_ref=$2
+start=$3
+count=$4
+tmpdir=$(mktemp -d) || exit 70
+trap 'rm -rf -- "$tmpdir"' EXIT
+
+tracked=$tmpdir/tracked
+tracked_paths=$tmpdir/tracked-paths
+status=$tmpdir/status
+status_only=$tmpdir/status-only
+status_only_sorted=$tmpdir/status-only-sorted
+tracked_paths_sorted=$tmpdir/tracked-paths-sorted
+new_paths=$tmpdir/new-paths
+combined=$tmpdir/combined
+
+# Finish and check each Git producer before paginating its output. This avoids
+# losing an ls-tree/status failure behind a successful tail/head consumer.
+git -C "$repo" ls-tree -r -z \
+  --format='%(objectname)%x09%(objecttype)%x09%(path)' "$tree_ref" >"$tracked" || exit $?
+git -C "$repo" status --porcelain=v1 -z --untracked-files=all >"$status" || exit $?
+
+: >"$tracked_paths"
+while IFS= read -r -d '' record; do
+  rest=${record#*$'\t'}
+  path=${rest#*$'\t'}
+  printf '%s\0' "$path" >>"$tracked_paths" || exit $?
+done <"$tracked"
+
+: >"$status_only"
+modified=0
+exec 3<"$status"
+while IFS= read -r -d '' record <&3; do
+  modified=$((modified + 1))
+  x=${record:0:1}
+  y=${record:1:1}
+  path=${record:3}
+  if [[ "$x" == R || "$x" == C || "$y" == R || "$y" == C ]]; then
+    IFS= read -r -d '' _old_path <&3 || exit 71
+  fi
+  if [[ "$x$y" == '??' || "$x" == A || "$x" == R || "$x" == C || "$y" == R || "$y" == C ]]; then
+    printf '%s\0' "$path" >>"$status_only" || exit $?
+  fi
+done
+
+sort -z -u "$tracked_paths" >"$tracked_paths_sorted" || exit $?
+sort -z -u "$status_only" >"$status_only_sorted" || exit $?
+comm -z -23 "$status_only_sorted" "$tracked_paths_sorted" >"$new_paths" || exit $?
+cp -- "$tracked" "$combined" || exit $?
+while IFS= read -r -d '' path; do
+  printf '\tblob\t%s\0' "$path" >>"$combined" || exit $?
+done <"$new_paths"
+
+status_digest=$(sha256sum -- "$status") || exit $?
+status_digest=${status_digest%% *}
+printf 'macro-tree\t%s\t%s\0' "$modified" "$status_digest"
+tail -z -n +"$start" -- "$combined" | head -z -n "$count"
+pipe_status=("${PIPESTATUS[@]}")
+[[ (${pipe_status[0]} -eq 0 || ${pipe_status[0]} -eq 141) && ${pipe_status[1]} -eq 0 ]] || exit 72
+"#
+}
+
+async fn apply_wsl_tree_page_statuses(
+    repo_path: &WslProjectPath,
+    structure: &mut [GitNode],
+) -> Result<()> {
+    const STATUS_PATH_CHUNK_BYTES: usize = 96 * 1024;
+    let mut labels = HashMap::with_capacity(structure.len());
+    let mut start = 0usize;
+    while start < structure.len() {
+        let mut end = start;
+        let mut bytes = 0usize;
+        while end < structure.len() {
+            let next = structure[end].path.len().saturating_add(1);
+            if end > start && bytes.saturating_add(next) > STATUS_PATH_CHUNK_BYTES {
+                break;
+            }
+            bytes = bytes.saturating_add(next);
+            end += 1;
+        }
+        let mut args = vec![
+            "--literal-pathspecs".to_string(),
+            "status".to_string(),
+            "--porcelain=v1".to_string(),
+            "-z".to_string(),
+            "--untracked-files=all".to_string(),
+            "--".to_string(),
+        ];
+        args.extend(structure[start..end].iter().map(|node| node.path.clone()));
+        let output = run_wsl_git_checked(
+            repo_path,
+            &args,
+            WSL_GIT_TIMEOUT,
+            "git tree status WSL failed",
+        )
+        .await?;
+        let parsed = parse_wsl_porcelain_v1_z(&output.stdout);
+        for file in parsed.untracked_files {
+            labels
+                .entry(file.path)
+                .or_insert_with(|| "added".to_string());
+        }
+        for file in parsed.unstaged_files {
+            labels.insert(file.path, file.status);
+        }
+        for file in parsed.staged_files {
+            labels.insert(file.path, file.status);
+        }
+        for path in parsed.conflicted_files {
+            labels.insert(path, "conflicted".to_string());
+        }
+        start = end;
+    }
+    for node in structure {
+        node.status = labels.remove(&node.path);
+    }
+    Ok(())
+}
+
+pub(crate) async fn wsl_git_tree_revision(
+    repo_path: &WslProjectPath,
+    branch: Option<&str>,
+) -> Result<String> {
+    let tree_ref = match branch {
+        Some(branch) => {
+            validate_refspec(branch)?;
+            wsl_resolve_commit_oid(repo_path, branch, "tree reference").await?
+        }
+        None => wsl_resolve_commit_oid(repo_path, "HEAD", "tree reference").await?,
+    };
+    let script = r#"
+set -o pipefail
+git -C "$1" status --porcelain=v1 -z --untracked-files=all | sha256sum
+statuses=("${PIPESTATUS[@]}")
+[[ ${statuses[0]} -eq 0 && ${statuses[1]} -eq 0 ]] || exit 73
+"#;
+    let output = run_wsl_command_allow_failure(
+        repo_path,
+        "bash",
+        &[
+            "-c".to_string(),
+            script.to_string(),
+            "macro-git-tree-revision".to_string(),
+            repo_path.linux_path.clone(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    if !output.status.success() {
+        return Err(wsl_git_failure(&output, "git tree revision WSL failed"));
+    }
+    let stdout = output.stdout_text();
+    let digest = stdout
+        .split_whitespace()
+        .next()
+        .filter(|value| value.len() == 64)
+        .ok_or_else(|| BackendError::Git {
+            message: "git tree revision WSL returned an invalid digest".to_string(),
+        })?;
+    Ok(format!("{}:{}", tree_ref, digest))
 }
 
 async fn wsl_resolve_target_branch(
@@ -4335,7 +4858,10 @@ pub(crate) fn diff_repo(
     };
 
     let mut opts = git2::DiffOptions::new();
-    opts.include_unmodified(false);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
+        .include_unmodified(false);
 
     if let Some(lines) = options.context_lines {
         opts.context_lines(lines);
@@ -4723,10 +5249,6 @@ pub(crate) fn build_git_tree_tool_page(
         })
     })?;
     let tree = commit.tree()?;
-    let mut status_map = build_status_map(repo)?;
-    for (path, status) in build_submodule_status_map(repo)? {
-        status_map.insert(path, status);
-    }
     let mut position = 0usize;
     let mut structure = Vec::with_capacity(limit.saturating_add(1));
     tree.walk(TreeWalkMode::PreOrder, |root, entry| {
@@ -4748,7 +5270,7 @@ pub(crate) fn build_git_tree_tool_page(
         let path = format!("{}{}", root, name);
         structure.push(GitNode {
             name: name.to_string(),
-            status: status_map.get(&path).cloned(),
+            status: None,
             path,
             node_type: node_type.to_string(),
             children: None,
@@ -4757,14 +5279,140 @@ pub(crate) fn build_git_tree_tool_page(
         position += 1;
         TreeWalkResult::Ok
     })?;
+    let mut status_options = get_status_options();
+    status_options.sort_case_sensitively(true);
+    let statuses = repo.statuses(Some(&mut status_options))?;
+    let submodule_statuses = build_submodule_status_map(repo)?;
+    let revision = git_tree_revision_from_statuses(commit.id(), &statuses, &submodule_statuses);
+    let mut modified_files_count = 0u32;
+    let page_paths = structure
+        .iter()
+        .map(|node| node.path.clone())
+        .collect::<HashSet<_>>();
+    let mut page_statuses = HashMap::with_capacity(page_paths.len());
+    for entry in statuses.iter() {
+        let status = entry.status();
+        let Some(label) = tree_status_label(status) else {
+            continue;
+        };
+        let (_, path) = status_entry_paths(&entry);
+        let Some(path) = path else {
+            continue;
+        };
+        modified_files_count = modified_files_count.saturating_add(1);
+        if page_paths.contains(&path) {
+            page_statuses.insert(path, label.to_string());
+            continue;
+        }
+        if tree.get_path(Path::new(&path)).is_ok() {
+            continue;
+        }
+        if position >= offset && structure.len() <= limit {
+            let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
+            structure.push(GitNode {
+                name,
+                path,
+                node_type: "file".to_string(),
+                status: Some(label.to_string()),
+                children: None,
+                hash: None,
+            });
+        }
+        position = position.saturating_add(1);
+    }
+    for (path, label) in &submodule_statuses {
+        let already_counted = statuses
+            .iter()
+            .any(|entry| entry.path_bytes() == path.as_bytes());
+        if !already_counted {
+            modified_files_count = modified_files_count.saturating_add(1);
+        }
+        if page_paths.contains(path) {
+            page_statuses
+                .entry(path.clone())
+                .or_insert_with(|| label.clone());
+        }
+    }
+    for node in &mut structure {
+        if node.status.is_none() {
+            node.status = page_statuses.remove(&node.path);
+        }
+    }
     let has_more = structure.len() > limit;
     structure.truncate(limit);
     Ok(GitTreeToolPage {
         branch: branch_name,
         structure,
-        modified_files_count: status_map.len() as u32,
+        modified_files_count,
         has_more,
+        revision,
     })
+}
+
+fn tree_status_label(status: Status) -> Option<&'static str> {
+    if status.is_conflicted() {
+        Some("conflicted")
+    } else if status.is_wt_new() || status.is_index_new() {
+        Some("added")
+    } else if status.is_wt_deleted() || status.is_index_deleted() {
+        Some("deleted")
+    } else if status.is_wt_renamed() || status.is_index_renamed() {
+        Some("renamed")
+    } else if status.is_wt_modified()
+        || status.is_index_modified()
+        || status.is_wt_typechange()
+        || status.is_index_typechange()
+    {
+        Some("modified")
+    } else {
+        None
+    }
+}
+
+fn git_tree_revision_from_statuses(
+    commit_id: Oid,
+    statuses: &git2::Statuses<'_>,
+    submodule_statuses: &HashMap<String, String>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(commit_id.as_bytes());
+    for entry in statuses.iter() {
+        hasher.update(entry.status().bits().to_le_bytes());
+        hasher.update(entry.path_bytes());
+        hasher.update([0]);
+    }
+    let mut submodules = submodule_statuses.iter().collect::<Vec<_>>();
+    submodules.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    for (path, status) in submodules {
+        hasher.update(path.as_bytes());
+        hasher.update([0]);
+        hasher.update(status.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{}:{:x}", commit_id, hasher.finalize())
+}
+
+pub(crate) fn git_tree_revision(repo: &Repository, branch: Option<&str>) -> Result<String> {
+    let branch_name = if let Some(branch) = branch {
+        validate_refspec(branch)?;
+        branch.to_string()
+    } else {
+        get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string())
+    };
+    let commit = resolve_commit(repo, &branch_name).or_else(|_| {
+        get_head_commit(repo)?.ok_or_else(|| BackendError::GitInvalidCommit {
+            message: "No commits found".to_string(),
+        })
+    })?;
+    let mut status_options = get_status_options();
+    status_options.sort_case_sensitively(true);
+    let statuses = repo.statuses(Some(&mut status_options))?;
+    let submodule_statuses = build_submodule_status_map(repo)?;
+    Ok(git_tree_revision_from_statuses(
+        commit.id(),
+        &statuses,
+        &submodule_statuses,
+    ))
 }
 
 #[tauri::command]
@@ -5106,8 +5754,8 @@ pub async fn git_merge(
     branch_name: String,
     into_branch: String,
 ) -> Result<String> {
-    if parse_wsl_repo_path(&repo_path).is_some() {
-        return Err(unsupported_wsl_git_operation("git_merge"));
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_merge(&wsl_repo_path, &branch_name, &into_branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
@@ -5416,8 +6064,8 @@ pub async fn git_stash(
     repo_path: String,
     message: Option<String>,
 ) -> Result<String> {
-    if parse_wsl_repo_path(&repo_path).is_some() {
-        return Err(unsupported_wsl_git_operation("git_stash"));
+    if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        return wsl_git_stash(&wsl_repo_path, message).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
@@ -7366,6 +8014,28 @@ mod tests {
     }
 
     #[test]
+    fn test_wsl_git_tree_script_checks_git_producers_before_pagination() {
+        let script = wsl_git_tree_page_script();
+        let ls_tree = script.find("ls-tree -r -z").expect("ls-tree producer");
+        let checked_redirect = script[ls_tree..]
+            .find(">\"$tracked\" || exit $?")
+            .expect("ls-tree checked redirect");
+        let pagination = script.find("tail -z").expect("pagination");
+        assert!(ls_tree + checked_redirect < pagination);
+        assert!(script.contains("\"$x\" == R"));
+    }
+
+    #[test]
+    fn test_wsl_untracked_diff_script_is_bounded_and_keeps_head_and_tail() {
+        let script = wsl_git_diff_with_untracked_script();
+        assert!(script.contains("untracked_count > 2000"));
+        assert!(script.contains("tail_bytes=$((max_bytes / 4))"));
+        assert!(script.contains("head -c \"$head_bytes\""));
+        assert!(script.contains("tail -c \"$tail_bytes\""));
+        assert!(script.contains("git -C \"$repo\" \"${diff_args[@]}\" >\"$combined\" || exit $?"));
+    }
+
+    #[test]
     fn test_parse_wsl_porcelain_v1_z_preserves_special_paths_and_renames() {
         let payload = concat!(
             "## feature/unicode...origin/feature/unicode\0",
@@ -8295,6 +8965,35 @@ mod tests {
     }
 
     #[test]
+    fn test_git_diff_patch_includes_untracked_content() {
+        let (temp, repo) = init_repo();
+        fs::write(
+            temp.path().join("new-untracked.txt"),
+            "first untracked line\nsecond untracked line\n",
+        )
+        .unwrap();
+
+        let patch = diff_repo(
+            &repo,
+            None,
+            None,
+            DiffRequestOptions {
+                context_lines: Some(3),
+                ignore_whitespace: false,
+                paths: None,
+                mode: GitDiffMode::Patch,
+                max_bytes: Some(16 * 1024),
+                require_complete: true,
+            },
+        )
+        .unwrap();
+
+        assert!(patch.contains("diff --git a/new-untracked.txt b/new-untracked.txt"));
+        assert!(patch.contains("+first untracked line"));
+        assert!(patch.contains("+second untracked line"));
+    }
+
+    #[test]
     fn test_git_get_tree_basic() {
         let (_temp, repo) = init_repo();
         let tree = build_git_tree(&repo, None).unwrap();
@@ -8309,6 +9008,89 @@ mod tests {
         assert_eq!(page.structure[0].path, "README.md");
         assert!(page.structure[0].children.is_none());
         assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_git_tree_tool_page_paginates_status_only_paths() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("z-untracked.txt"), "z").unwrap();
+        fs::write(temp.path().join("a-untracked.txt"), "a").unwrap();
+
+        let first = build_git_tree_tool_page(&repo, None, 0, 2).unwrap();
+        assert_eq!(
+            first
+                .structure
+                .iter()
+                .map(|node| node.path.as_str())
+                .collect::<Vec<_>>(),
+            ["README.md", "a-untracked.txt"]
+        );
+        assert_eq!(first.structure[1].status.as_deref(), Some("added"));
+        assert!(first.structure[1].hash.is_none());
+        assert!(first.has_more);
+        assert_eq!(first.modified_files_count, 2);
+
+        let second = build_git_tree_tool_page(&repo, None, 2, 2).unwrap();
+        assert_eq!(second.structure.len(), 1);
+        assert_eq!(second.structure[0].path, "z-untracked.txt");
+        assert_eq!(second.structure[0].status.as_deref(), Some("added"));
+        assert!(!second.has_more);
+    }
+
+    #[test]
+    fn test_git_tree_tool_revision_changes_with_worktree_status() {
+        let (temp, repo) = init_repo();
+        let clean = git_tree_revision(&repo, None).unwrap();
+        fs::write(temp.path().join("new.txt"), "new").unwrap();
+        let dirty = git_tree_revision(&repo, None).unwrap();
+        assert_ne!(clean, dirty);
+    }
+
+    #[test]
+    fn test_git_tree_tool_page_includes_staged_rename_target() {
+        let (temp, repo) = init_repo();
+        fs::rename(
+            temp.path().join("README.md"),
+            temp.path().join("renamed.md"),
+        )
+        .unwrap();
+        let mut index = repo.index().unwrap();
+        index.remove_path(Path::new("README.md")).unwrap();
+        index.add_path(Path::new("renamed.md")).unwrap();
+        index.write().unwrap();
+
+        let page = build_git_tree_tool_page(&repo, None, 0, 10).unwrap();
+        let renamed = page
+            .structure
+            .iter()
+            .find(|node| node.path == "renamed.md")
+            .expect("renamed status-only target");
+        assert_eq!(renamed.status.as_deref(), Some("renamed"));
+        assert!(renamed.hash.is_none());
+        assert_eq!(page.modified_files_count, 1);
+    }
+
+    #[test]
+    fn test_git_tree_tool_page_marks_conflicted_path() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature\n").unwrap();
+        commit_repo(&repo, "feat: feature conflict", true).unwrap();
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base\n").unwrap();
+        commit_repo(&repo, "feat: base conflict", true).unwrap();
+        start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+
+        let page = build_git_tree_tool_page(&repo, None, 0, 10).unwrap();
+        let readme = page
+            .structure
+            .iter()
+            .find(|node| node.path == "README.md")
+            .expect("conflicted tracked path");
+        assert_eq!(readme.status.as_deref(), Some("conflicted"));
+        assert_eq!(page.modified_files_count, 1);
+        abort_merge(&repo).unwrap();
     }
 
     #[test]
