@@ -1,4 +1,4 @@
-use super::env_secrets::resolve_env_secrets;
+use super::env_secrets::{resolve_env_secrets, sanitized_process_environment};
 use super::ids::{build_mcp_tool_id, is_canonical_mcp_server_id, normalize_identifier};
 use super::protocol::{initialize, read_response, write_message};
 use super::result_format::format_tool_call_result;
@@ -95,7 +95,8 @@ where
     let mut child_command = background_tokio_command(command);
     child_command
         .args(args)
-        .envs(env)
+        .env_clear()
+        .envs(sanitized_process_environment(&env))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -272,7 +273,7 @@ mod tests {
     use super::*;
     use crate::core::process::background_command;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn python3() -> Option<String> {
         background_command("python3")
@@ -281,6 +282,23 @@ mod tests {
             .ok()
             .filter(|output| output.status.success())
             .map(|_| "python3".to_string())
+    }
+
+    fn bun_binary() -> Option<String> {
+        background_command("bun")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|_| "bun".to_string())
+    }
+
+    fn workspace_root() -> PathBuf {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or(manifest_dir)
     }
 
     #[test]
@@ -422,6 +440,79 @@ time.sleep(5)
             .await
             .expect("call tool");
         assert_eq!(result.content, "echo:ok");
+    }
+
+    #[tokio::test]
+    async fn discovers_and_calls_official_sdk_fixture_via_bun() {
+        // Lot A fixture (docs/mcp-dual-era-implementation-plan.md): an official
+        // @modelcontextprotocol/sdk server must communicate with this harness.
+        // Missing prerequisites are diagnosed explicitly; never skip silently.
+        let Some(bun) = bun_binary() else {
+            eprintln!(
+                "SKIPPED discovers_and_calls_official_sdk_fixture_via_bun: the 'bun' binary is unavailable on PATH."
+            );
+            return;
+        };
+        let sdk_dir = workspace_root()
+            .join("node_modules")
+            .join("@modelcontextprotocol")
+            .join("sdk");
+        if !sdk_dir.is_dir() {
+            eprintln!(
+                "SKIPPED discovers_and_calls_official_sdk_fixture_via_bun: @modelcontextprotocol/sdk is missing at {} (run 'bun install').",
+                sdk_dir.display()
+            );
+            return;
+        }
+        let fixture_path = workspace_root()
+            .join("dev")
+            .join("mcp-fixtures")
+            .join("official-sdk-server.mjs");
+        let server = McpServerDto {
+            id: "official_sdk_fixture".to_string(),
+            name: "Official SDK Fixture".to_string(),
+            transport: Some(McpTransportDto::Stdio {
+                command: bun,
+                args: vec![fixture_path.to_string_lossy().to_string()],
+                env: HashMap::new(),
+            }),
+            config: Some(json!({ "enabled": true })),
+        };
+
+        let tools = discover_stdio_tools(&server, Some(20_000))
+            .await
+            .expect("official SDK fixture must expose its tools");
+        let mut names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["sdk-echo", "sdk-reverse"]);
+        let echo_tool = tools
+            .iter()
+            .find(|tool| tool.name == "sdk-echo")
+            .expect("sdk-echo entry");
+        assert_eq!(echo_tool.id, "mcp__official_sdk_fixture__sdk-echo");
+        assert_eq!(echo_tool.server_id, "official_sdk_fixture");
+        assert_eq!(
+            echo_tool.input_schema["properties"]["value"]["type"],
+            json!("string"),
+            "the SDK-generated input schema must survive discovery"
+        );
+
+        let echo = call_stdio_tool(&server, "sdk-echo", json!({ "value": "ok" }), Some(20_000))
+            .await
+            .expect("official SDK fixture must serve tools/call");
+        assert!(!echo.is_error);
+        assert_eq!(echo.content, "echo:ok");
+
+        let reversed = call_stdio_tool(
+            &server,
+            "sdk-reverse",
+            json!({ "value": "abc" }),
+            Some(20_000),
+        )
+        .await
+        .expect("official SDK fixture must serve the second tool");
+        assert!(!reversed.is_error);
+        assert_eq!(reversed.content, "cba");
     }
 
     #[tokio::test]

@@ -38,10 +38,8 @@ import type {
 } from '../../types';
 
 // ============ Persistent MCP runtime contracts ============
-// Additive contracts for the planned persistent MCP runtime
+// Contracts for the persistent MCP runtime
 // (docs/mcp-dual-era-implementation-plan.md, sections 4.2, 7 and 8).
-// Backend commands are not wired yet; no production caller should invoke
-// these methods until the Rust runtime lands.
 
 export type { MCPProtocolMode } from '../../types';
 export type MCPProtocolEra = 'legacy' | 'modern';
@@ -62,7 +60,15 @@ export interface MCPRuntimeKey {
   serverId: string;
   /** `null`/`undefined` targets the global scope; otherwise a project scope. */
   projectId?: string | null;
+  /** Sorted effective multi-project scope. Mutually exclusive with projectId. */
+  projectIds?: string[];
   configGeneration: number;
+}
+
+export interface MCPRuntimeSelector {
+  serverId: string;
+  /** Sorted effective project scope. An empty array targets global configuration. */
+  projectIds: string[];
 }
 
 export interface MCPRuntimeServerSnapshot {
@@ -71,6 +77,7 @@ export interface MCPRuntimeServerSnapshot {
   requestedProtocolMode?: MCPProtocolMode | null;
   negotiatedEra?: MCPProtocolEra | null;
   negotiatedProtocolVersion?: string | null;
+  protocolDecisionReason?: string | null;
   lastError?: string | null;
   updatedAt: string;
 }
@@ -252,9 +259,15 @@ export interface ServiceProvider {
   // Persistent MCP runtime (compatibility adapters mcpDiscoverTools/mcpCallTool
   // above stay unchanged until stores migrate to these methods).
   mcpRuntimeGetSnapshot: () => Promise<MCPRuntimeSnapshotDto>;
-  mcpRuntimeConnect: (key: MCPRuntimeKey) => Promise<MCPRuntimeServerSnapshot>;
+  mcpRuntimeConnect: (selector: MCPRuntimeSelector) => Promise<MCPRuntimeServerSnapshot>;
   mcpRuntimeDisconnect: (key: MCPRuntimeKey) => Promise<void>;
   mcpRuntimeRefreshCatalog: (key: MCPRuntimeKey) => Promise<MCPCatalogDto>;
+  mcpRuntimeCallTool: (data: {
+    key: MCPRuntimeKey;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    operationId: string;
+  }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
   mcpRuntimeCancelOperation: (operationId: string) => Promise<boolean>;
   listSkills: (data?: { projectRoots?: SkillProjectRoot[] }) => Promise<SkillListDto>;
   getSkill: (data: {

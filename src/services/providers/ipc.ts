@@ -626,8 +626,8 @@ export const mcpCallTool: ServiceProvider['mcpCallTool'] = async (data) => {
 export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = async () =>
   tauriIpc.mcpRuntimeGetSnapshot();
 
-export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async (key) =>
-  tauriIpc.mcpRuntimeConnect(key);
+export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async (selector) =>
+  tauriIpc.mcpRuntimeConnect(selector);
 
 export const mcpRuntimeDisconnect: ServiceProvider['mcpRuntimeDisconnect'] = async (key) => {
   await tauriIpc.mcpRuntimeDisconnect(key);
@@ -635,6 +635,9 @@ export const mcpRuntimeDisconnect: ServiceProvider['mcpRuntimeDisconnect'] = asy
 
 export const mcpRuntimeRefreshCatalog: ServiceProvider['mcpRuntimeRefreshCatalog'] = async (key) =>
   tauriIpc.mcpRuntimeRefreshCatalog(key);
+
+export const mcpRuntimeCallTool: ServiceProvider['mcpRuntimeCallTool'] = async (data) =>
+  tauriIpc.mcpRuntimeCallTool(data);
 
 export const mcpRuntimeCancelOperation: ServiceProvider['mcpRuntimeCancelOperation'] = async (
   operationId,
@@ -704,6 +707,7 @@ export const provider: ServiceProvider = {
   mcpRuntimeConnect,
   mcpRuntimeDisconnect,
   mcpRuntimeRefreshCatalog,
+  mcpRuntimeCallTool,
   mcpRuntimeCancelOperation,
   listSkills,
   getSkill,

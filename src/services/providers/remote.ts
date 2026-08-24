@@ -325,6 +325,9 @@ export const mcpRuntimeDisconnect: ServiceProvider['mcpRuntimeDisconnect'] = asy
 export const mcpRuntimeRefreshCatalog: ServiceProvider['mcpRuntimeRefreshCatalog'] = async () =>
   remoteUnsupported('mcpRuntimeRefreshCatalog');
 
+export const mcpRuntimeCallTool: ServiceProvider['mcpRuntimeCallTool'] = async () =>
+  remoteUnsupported('mcpRuntimeCallTool');
+
 export const mcpRuntimeCancelOperation: ServiceProvider['mcpRuntimeCancelOperation'] = async () =>
   remoteUnsupported('mcpRuntimeCancelOperation');
 
@@ -465,6 +468,7 @@ export const provider: ServiceProvider = {
   mcpRuntimeConnect,
   mcpRuntimeDisconnect,
   mcpRuntimeRefreshCatalog,
+  mcpRuntimeCallTool,
   mcpRuntimeCancelOperation,
   listSkills,
   getSkill,

@@ -162,6 +162,8 @@ export const services = {
     callProviderMethod('mcpRuntimeDisconnect', key),
   mcpRuntimeRefreshCatalog: (key: Parameters<ServiceProvider['mcpRuntimeRefreshCatalog']>[0]) =>
     callProviderMethod('mcpRuntimeRefreshCatalog', key),
+  mcpRuntimeCallTool: (data: Parameters<ServiceProvider['mcpRuntimeCallTool']>[0]) =>
+    callProviderMethod('mcpRuntimeCallTool', data),
   mcpRuntimeCancelOperation: (operationId: string) =>
     callProviderMethod('mcpRuntimeCancelOperation', operationId),
   listSkills: (data?: Parameters<ServiceProvider['listSkills']>[0]) =>

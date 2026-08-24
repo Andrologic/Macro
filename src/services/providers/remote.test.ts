@@ -9,6 +9,7 @@ import {
   listSkills,
   listTasks,
   mcpRuntimeCancelOperation,
+  mcpRuntimeCallTool,
   mcpRuntimeConnect,
   mcpRuntimeDisconnect,
   mcpRuntimeGetSnapshot,
@@ -402,7 +403,9 @@ describe('remote provider', () => {
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeGetSnapshot' },
     });
-    await expect(mcpRuntimeConnect(key)).rejects.toMatchObject({
+    await expect(
+      mcpRuntimeConnect({ serverId: 'test', projectIds: ['project-1'] }),
+    ).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeConnect' },
     });
@@ -413,6 +416,12 @@ describe('remote provider', () => {
     await expect(mcpRuntimeRefreshCatalog(key)).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeRefreshCatalog' },
+    });
+    await expect(
+      mcpRuntimeCallTool({ key, toolName: 'echo', arguments: {}, operationId: 'call-1' }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeCallTool' },
     });
     await expect(mcpRuntimeCancelOperation('operation-1')).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
