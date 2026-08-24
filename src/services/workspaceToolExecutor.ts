@@ -1128,27 +1128,45 @@ const getProjectAliases = (candidate: ProjectWorkspaceCandidate): string[] => {
 const stripProjectAliasPrefix = (
   inputPath: string,
   candidates: ProjectWorkspaceCandidate[],
+  preferredProjectId?: string | null,
 ): { projectId: string; path: string } | null => {
   const normalizedInput = inputPath.replace(/\\/g, "/").replace(/^\.\//, "");
   if (!normalizedInput || normalizedInput === ".") {
     return null;
   }
 
+  const matches = new Map<string, { projectId: string; path: string }>();
   for (const candidate of candidates) {
     for (const alias of getProjectAliases(candidate)) {
       if (normalizedInput === alias) {
-        return { projectId: candidate.id, path: "." };
-      }
-      if (normalizedInput.startsWith(`${alias}/`)) {
-        return {
+        matches.set(candidate.id, { projectId: candidate.id, path: "." });
+        break;
+      } else if (normalizedInput.startsWith(`${alias}/`)) {
+        matches.set(candidate.id, {
           projectId: candidate.id,
           path: normalizedInput.slice(alias.length + 1) || ".",
-        };
+        });
+        break;
       }
     }
   }
 
-  return null;
+  if (matches.size === 0) {
+    return null;
+  }
+
+  if (preferredProjectId && matches.has(preferredProjectId)) {
+    return matches.get(preferredProjectId) ?? null;
+  }
+
+  if (matches.size > 1) {
+    const prefix = normalizedInput.split("/")[0] || normalizedInput;
+    throw new Error(
+      `Ambiguous project path prefix "${prefix}". It matches multiple projects; pass project_id to select one explicitly.`,
+    );
+  }
+
+  return matches.values().next().value ?? null;
 };
 
 const findProjectByAbsolutePath = (
@@ -1217,11 +1235,13 @@ const getExplicitToolProjectId = (
     toString(args.project_id) || toString(args.projectId),
   );
   if (!explicit) return null;
+  const exactIdMatch = candidates.find((candidate) => candidate.id === explicit);
+  if (exactIdMatch) {
+    return exactIdMatch.id;
+  }
   const normalizedExplicit = explicit.toLowerCase();
   const matches = candidates.filter(
-    (candidate) =>
-      candidate.id === explicit ||
-      getProjectAliases(candidate).includes(normalizedExplicit),
+    (candidate) => getProjectAliases(candidate).includes(normalizedExplicit),
   );
   if (matches.length === 0) {
     throw new Error(
@@ -1314,11 +1334,27 @@ const resolveExplicitProjectTargetId = (
 ): string | null => {
   const explicitProjectId = getExplicitToolProjectId(args, candidates);
   if (explicitProjectId) {
+    if (rawPath && !isAbsolutePath(rawPath)) {
+      const prefixedMatch = stripProjectAliasPrefix(
+        rawPath,
+        candidates,
+        explicitProjectId,
+      );
+      if (prefixedMatch && prefixedMatch.projectId !== explicitProjectId) {
+        throw new Error(
+          `Conflicting project targets: project_id selects "${explicitProjectId}" but the path selects "${prefixedMatch.projectId}".`,
+        );
+      }
+    }
     return explicitProjectId;
   }
 
   if (rawPath && !isAbsolutePath(rawPath)) {
-    const prefixedMatch = stripProjectAliasPrefix(rawPath, candidates);
+    const prefixedMatch = stripProjectAliasPrefix(
+      rawPath,
+      candidates,
+      explicitProjectId,
+    );
     if (prefixedMatch) {
       return prefixedMatch.projectId;
     }
@@ -1354,16 +1390,18 @@ export const resolveExplicitMutatingToolProjectTargets = (
       return [];
     }
 
-    const projectIds = new Set<string>();
+    let operations: ReturnType<typeof parseApplyPatch>;
     try {
-      for (const operation of parseApplyPatch(patchText)) {
-        addProjectId(
-          projectIds,
-          resolveExplicitProjectTargetId(operation.path, args, candidates),
-        );
-      }
+      operations = parseApplyPatch(patchText);
     } catch {
       return [];
+    }
+    const projectIds = new Set<string>();
+    for (const operation of operations) {
+      addProjectId(
+        projectIds,
+        resolveExplicitProjectTargetId(operation.path, args, candidates),
+      );
     }
     return Array.from(projectIds);
   }
@@ -1373,6 +1411,97 @@ export const resolveExplicitMutatingToolProjectTargets = (
   );
   const projectId = resolveExplicitProjectTargetId(rawPath, args, candidates);
   return projectId ? [projectId] : [];
+};
+
+const getCanonicalApprovalFallbackScope = (
+  options: ExecuteWorkspaceToolOptions,
+  candidates: ProjectWorkspaceCandidate[],
+): string | null => {
+  const configuredWorkspacePath =
+    normalizeWorkspacePath(options.defaultWorkspacePath) ||
+    normalizeWorkspacePath(options.workspacePath);
+  const candidate =
+    getProjectWorkspaceCandidate(options.projectId, candidates) ||
+    (configuredWorkspacePath
+      ? candidates.find(
+          (item) =>
+            normalizeWorkspacePath(item.workspacePath) ===
+            configuredWorkspacePath,
+        )
+      : null) ||
+    getProjectWorkspaceCandidate(options.focusedProjectId, candidates) ||
+    (candidates.length === 1 ? candidates[0] : null);
+  if (candidate) {
+    return `project:${candidate.id}`;
+  }
+
+  return configuredWorkspacePath
+    ? `workspace:${configuredWorkspacePath}`
+    : null;
+};
+
+export const resolveMutatingToolApprovalScope = (
+  toolName: string,
+  args: ToolArgs,
+  options: ExecuteWorkspaceToolOptions,
+): string | null => {
+  if (!isMutatingWorkspaceTool(toolName)) {
+    return null;
+  }
+
+  const candidates = getProjectWorkspaceCandidates(options);
+  const fallbackScope = getCanonicalApprovalFallbackScope(options, candidates);
+  const scopes: string[] = [];
+
+  if (toolName === "apply_patch") {
+    const patchText = toString(args.patch_text);
+    if (patchText) {
+      try {
+        for (const operation of parseApplyPatch(patchText)) {
+          const targetProjectId = resolveExplicitProjectTargetId(
+            operation.path,
+            args,
+            candidates,
+          );
+          if (targetProjectId) {
+            scopes.push(`project:${targetProjectId}`);
+          } else if (fallbackScope) {
+            scopes.push(fallbackScope);
+          }
+        }
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.startsWith("Ambiguous project") ||
+            error.message.startsWith("Conflicting project") ||
+            error.message.startsWith("Unknown project"))
+        ) {
+          throw error;
+        }
+      }
+    }
+    if (scopes.length === 0 && fallbackScope) {
+      scopes.push(fallbackScope);
+    }
+  } else {
+    const projectIds = resolveExplicitMutatingToolProjectTargets(
+      toolName,
+      args,
+      options,
+    );
+    scopes.push(...projectIds.map((projectId) => `project:${projectId}`));
+    if (scopes.length === 0 && fallbackScope) {
+      scopes.push(fallbackScope);
+    }
+  }
+
+  const uniqueScopes = Array.from(new Set(scopes)).sort();
+  if (uniqueScopes.length === 0) {
+    return null;
+  }
+  return uniqueScopes.length === 1
+    ? uniqueScopes[0]
+    : `projects:${uniqueScopes.map((scope) => scope.replace(/^project:/, "")).join(",")}`;
 };
 
 const buildReadOnlyToolError = (
@@ -1446,7 +1575,11 @@ export const resolveToolWorkspaceRouting = (
 
   if (rawPath) {
     if (!isAbsolutePath(rawPath)) {
-      const prefixedMatch = stripProjectAliasPrefix(rawPath, candidates);
+      const prefixedMatch = stripProjectAliasPrefix(
+        rawPath,
+        candidates,
+        projectId,
+      );
       if (prefixedMatch && projectId && projectId !== prefixedMatch.projectId) {
         throw new Error(
           `Conflicting project targets: project_id selects "${projectId}" but the path selects "${prefixedMatch.projectId}".`,
@@ -1612,7 +1745,11 @@ const resolveVirtualToolTarget = async (params: {
   );
   const prefixedMatch =
     params.rawPath && !isAbsolutePath(params.rawPath)
-      ? stripProjectAliasPrefix(params.rawPath, params.candidates)
+      ? stripProjectAliasPrefix(
+          params.rawPath,
+          params.candidates,
+          explicitProjectId,
+        )
       : null;
 
   if (
@@ -2030,7 +2167,7 @@ export const executeWorkspaceTool = async (
       }
       const prefixedFsPath =
         rawFsPath && !isAbsolutePath(rawFsPath)
-          ? stripProjectAliasPrefix(rawFsPath, candidates)
+          ? stripProjectAliasPrefix(rawFsPath, candidates, explicitProjectId)
           : null;
 
       if (toolName === "list") {
