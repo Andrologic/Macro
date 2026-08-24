@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,25 +44,42 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 #[derive(Clone)]
+struct RegisteredProject {
+    canonical_path: PathBuf,
+    is_read_only: bool,
+}
+
+#[derive(Clone)]
 struct HeadlessState {
     bearer_token: Option<BearerTokenDigest>,
     approval_token: Option<BearerTokenDigest>,
     allowed_roots: Vec<PathBuf>,
-    registry_project_paths: BTreeMap<String, PathBuf>,
+    registered_projects: BTreeMap<String, RegisteredProject>,
     workspace_path: PathBuf,
     git_state: GitState,
     config_manager: ConfigManager,
     execution_journal_root: PathBuf,
+    execution_journal_lock: Arc<AsyncMutex<()>>,
     execution_registry: Arc<AsyncMutex<BTreeMap<String, Arc<ExecutionSlot>>>>,
 }
 
 const MAX_TRACKED_TOOL_EXECUTIONS: usize = 1_024;
+const MAX_PENDING_TOOL_EXECUTIONS: usize = 4;
+const MAX_TOOL_EXECUTION_RECORD_BYTES: u64 = 80 * 1024 * 1024;
+const MAX_TOOL_EXECUTION_JOURNAL_BYTES: u64 = 512 * 1024 * 1024;
+const TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION: u8 = 1;
 
 struct ExecutionSlot {
     fingerprint: String,
     created_at: Instant,
     result: std::sync::Mutex<Option<StoredToolExecution>>,
     notify: Notify,
+}
+
+enum ToolExecutionClaimError {
+    Conflict(String),
+    Pending(String),
+    Storage(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,9 +90,17 @@ struct StoredToolExecution {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedToolExecution {
+    schema_version: u8,
     execution_id: String,
     fingerprint: String,
-    response: StoredToolExecution,
+    state: PersistedToolExecutionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum PersistedToolExecutionState {
+    Pending,
+    Completed { response: StoredToolExecution },
 }
 
 #[derive(Debug, Serialize)]
@@ -659,9 +685,9 @@ async fn register_headless_project_config_roots(state: &HeadlessState) -> Result
 /// where a project lives: this map is the source of truth used to reject
 /// inconsistent workspace_path/project_mount payloads before any policy or
 /// tool execution happens.
-async fn collect_registered_project_paths(
+async fn collect_registered_projects(
     state: &HeadlessState,
-) -> Result<BTreeMap<String, PathBuf>, BackendError> {
+) -> Result<BTreeMap<String, RegisteredProject>, BackendError> {
     let metadata_root = resolve_metadata_root_for_workspace(state)?;
     let bootstrap = workspace::get_bootstrap(&state.workspace_path, &metadata_root).await?;
     let projects = bootstrap
@@ -686,7 +712,13 @@ async fn collect_registered_project_paths(
         }
         match PathBuf::from(&project.path).canonicalize() {
             Ok(canonical_path) => {
-                registry.insert(project.id, canonical_path);
+                registry.insert(
+                    project.id,
+                    RegisteredProject {
+                        canonical_path,
+                        is_read_only: project.user_read_only || project.is_read_only,
+                    },
+                );
             }
             Err(error) => {
                 tracing::warn!(
@@ -816,8 +848,14 @@ fn configured_mode_policy(mode: &str, tools: &Value) -> Result<ToolModePolicyRes
 
     let mut policy = get_mode_policy(mode);
     policy.allowed_tool_ids.retain(|tool_id| {
-        tool_id != "web_fetch"
-            && built_in.get(tool_id).and_then(Value::as_bool) != Some(false)
+        !matches!(
+            tool_id.as_str(),
+            "web_fetch"
+                | "terminal_create_session"
+                | "terminal_run"
+                | "terminal_read"
+                | "terminal_kill"
+        ) && built_in.get(tool_id).and_then(Value::as_bool) != Some(false)
             && mode_overrides
                 .and_then(|overrides| overrides.get(tool_id))
                 .and_then(Value::as_bool)
@@ -945,13 +983,13 @@ async fn load_project_tools_policies(
 /// policy evaluation so a request can no longer borrow project A's scoped
 /// policy while aiming tool execution at project B's files.
 fn validate_headless_workspace_consistency(
-    registry: &BTreeMap<String, PathBuf>,
+    registry: &BTreeMap<String, RegisteredProject>,
     focused_project_id: &str,
     workspace_path: Option<&str>,
     mounts: &[WorkspaceProjectMount],
 ) -> Result<(), String> {
     let focused_project_id = focused_project_id.trim();
-    let Some(focused_canonical_path) = registry.get(focused_project_id) else {
+    let Some(focused_project) = registry.get(focused_project_id) else {
         return Err(format!(
             "focused_project_id '{focused_project_id}' is not registered in the headless project registry; register the workspace projects before executing tools"
         ));
@@ -967,11 +1005,11 @@ fn validate_headless_workspace_consistency(
                 .map_err(|error| {
                     format!("workspace_path '{raw_workspace_path}' is not accessible: {error}")
                 })?;
-        if canonical_workspace_path != *focused_canonical_path {
+        if canonical_workspace_path != focused_project.canonical_path {
             return Err(format!(
                 "workspace_path '{}' does not match the canonical path '{}' registered for focused_project_id '{}'; refusing to evaluate a foreign project path against this project's policy",
                 raw_workspace_path,
-                focused_canonical_path.display(),
+                focused_project.canonical_path.display(),
                 focused_project_id
             ));
         }
@@ -979,7 +1017,7 @@ fn validate_headless_workspace_consistency(
 
     for mount in mounts {
         let project_id = mount.project_id.trim();
-        let Some(registered_canonical_path) = registry.get(project_id) else {
+        let Some(registered_project) = registry.get(project_id) else {
             return Err(format!(
                 "project_mount '{}' claims unregistered project_id '{project_id}'; derive mounts from the workspace project registry",
                 mount.mount_name
@@ -1002,12 +1040,18 @@ fn validate_headless_workspace_consistency(
                 mount.mount_name
             )
         })?;
-        if canonical_mount_path != *registered_canonical_path {
+        if canonical_mount_path != registered_project.canonical_path {
             return Err(format!(
                 "project_mount '{}' claims project_id '{project_id}' but points at '{}' instead of the registered canonical path '{}'",
                 mount.mount_name,
                 raw_mount_path,
-                registered_canonical_path.display()
+                registered_project.canonical_path.display()
+            ));
+        }
+        if mount.is_read_only != registered_project.is_read_only {
+            return Err(format!(
+                "project_mount '{}' must use the server-authoritative read-only state for project '{project_id}'",
+                mount.mount_name
             ));
         }
     }
@@ -1095,134 +1139,430 @@ fn is_idempotent_remote_mutation(tool_id: &str) -> bool {
     )
 }
 
+fn validate_headless_mutation_projects(
+    registry: &BTreeMap<String, RegisteredProject>,
+    affected_project_ids: &BTreeSet<String>,
+    tool_id: &str,
+) -> Result<(), String> {
+    if !is_idempotent_remote_mutation(tool_id) {
+        return Ok(());
+    }
+    for affected_project_id in affected_project_ids {
+        let Some(project) = registry.get(affected_project_id) else {
+            return Err(format!(
+                "Project '{affected_project_id}' is not registered in the headless project registry",
+            ));
+        };
+        if project.is_read_only {
+            return Err(format!(
+                "Project '{affected_project_id}' is read-only and cannot accept '{tool_id}'",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn tool_execution_fingerprint(payload: &ToolExecuteRequest) -> Result<String, String> {
     let encoded = serde_json::to_vec(payload)
         .map_err(|error| format!("Failed to fingerprint tool execution request: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
-fn tool_execution_journal_path(root: &std::path::Path, execution_id: &str) -> PathBuf {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolExecutionJournalKind {
+    Pending,
+    Completed,
+}
+
+impl ToolExecutionJournalKind {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+fn tool_execution_journal_path(
+    root: &std::path::Path,
+    execution_id: &str,
+    kind: ToolExecutionJournalKind,
+) -> PathBuf {
     let digest = Sha256::digest(execution_id.as_bytes());
-    root.join(format!("{:x}.json", digest))
+    root.join(format!("{:x}.{}.json", digest, kind.suffix()))
 }
 
 async fn load_persisted_tool_execution(
     root: &std::path::Path,
     execution_id: &str,
 ) -> Result<Option<PersistedToolExecution>, String> {
-    let path = tool_execution_journal_path(root, execution_id);
-    let raw = match tokio::fs::read(&path).await {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
+    for kind in [
+        ToolExecutionJournalKind::Completed,
+        ToolExecutionJournalKind::Pending,
+    ] {
+        let path = tool_execution_journal_path(root, execution_id, kind);
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect the tool execution journal {}: {error}",
+                    path.display()
+                ))
+            }
+        };
+        if metadata.len() > MAX_TOOL_EXECUTION_RECORD_BYTES {
             return Err(format!(
+                "The tool execution journal {} exceeds the per-record size limit",
+                path.display()
+            ));
+        }
+        let raw = tokio::fs::read(&path).await.map_err(|error| {
+            format!(
                 "Failed to read the tool execution journal {}: {error}",
                 path.display()
-            ))
+            )
+        })?;
+        let record = serde_json::from_slice::<PersistedToolExecution>(&raw).map_err(|error| {
+            format!(
+                "The tool execution journal {} is invalid: {error}",
+                path.display()
+            )
+        })?;
+        if record.schema_version != TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION {
+            return Err(format!(
+                "The tool execution journal {} uses unsupported schema version {}",
+                path.display(),
+                record.schema_version
+            ));
         }
-    };
-    let record = serde_json::from_slice::<PersistedToolExecution>(&raw).map_err(|error| {
-        format!(
-            "The tool execution journal {} is invalid: {error}",
-            path.display()
-        )
-    })?;
-    if record.execution_id != execution_id {
-        return Err("The tool execution journal identity does not match the request".to_string());
+        if record.execution_id != execution_id {
+            return Err(
+                "The tool execution journal identity does not match the request".to_string(),
+            );
+        }
+        let state_matches_path = matches!(
+            (kind, &record.state),
+            (
+                ToolExecutionJournalKind::Pending,
+                PersistedToolExecutionState::Pending
+            ) | (
+                ToolExecutionJournalKind::Completed,
+                PersistedToolExecutionState::Completed { .. }
+            )
+        );
+        if !state_matches_path {
+            return Err(format!(
+                "The tool execution journal state does not match {}",
+                path.display()
+            ));
+        }
+        return Ok(Some(record));
     }
-    Ok(Some(record))
+    Ok(None)
 }
 
-async fn persist_tool_execution(
+#[derive(Clone)]
+struct ToolExecutionJournalEntry {
+    path: PathBuf,
+    modified: std::time::SystemTime,
+    bytes: u64,
+    kind: ToolExecutionJournalKind,
+}
+
+fn sync_tool_execution_journal_directory(root: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                format!("Failed to synchronize the tool execution journal: {error}")
+            })?;
+    }
+    Ok(())
+}
+
+fn read_tool_execution_journal_entries(
     root: &std::path::Path,
-    record: &PersistedToolExecution,
+) -> Result<Vec<ToolExecutionJournalEntry>, String> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| format!("Failed to inspect the tool execution journal: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Failed to inspect a tool execution record: {error}"))?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        let kind = if file_name.ends_with(".pending.json") {
+            ToolExecutionJournalKind::Pending
+        } else if file_name.ends_with(".completed.json") {
+            ToolExecutionJournalKind::Completed
+        } else {
+            continue;
+        };
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("Failed to inspect a tool execution record: {error}"))?;
+        entries.push(ToolExecutionJournalEntry {
+            path: entry.path(),
+            modified: metadata
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            bytes: metadata.len(),
+            kind,
+        });
+    }
+    Ok(entries)
+}
+
+fn remove_abandoned_tool_execution_temporaries(root: &std::path::Path) -> Result<(), String> {
+    let mut removed = false;
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| format!("Failed to inspect the tool execution journal: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Failed to inspect a tool execution record: {error}"))?;
+        let file_name = entry.file_name();
+        if !file_name.to_string_lossy().ends_with(".tmp") {
+            continue;
+        }
+        std::fs::remove_file(entry.path()).map_err(|error| {
+            format!(
+                "Failed to remove abandoned tool execution temporary {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        removed = true;
+    }
+    if removed {
+        sync_tool_execution_journal_directory(root)?;
+    }
+    Ok(())
+}
+
+fn remove_completed_journal_entries_to_fit(
+    root: &std::path::Path,
+    entries: &mut Vec<ToolExecutionJournalEntry>,
+    required_total_bytes: u64,
+    required_entry_count: usize,
 ) -> Result<(), String> {
-    tokio::fs::create_dir_all(root)
-        .await
-        .map_err(|error| format!("Failed to create the tool execution journal: {error}"))?;
+    let mut total_bytes = entries.iter().try_fold(0u64, |total, entry| {
+        total
+            .checked_add(entry.bytes)
+            .ok_or_else(|| "The tool execution journal size overflowed".to_string())
+    })?;
+    let mut entry_count = entries.len();
+    let mut completed = entries
+        .iter()
+        .filter(|entry| entry.kind == ToolExecutionJournalKind::Completed)
+        .cloned()
+        .collect::<Vec<_>>();
+    completed.sort_by_key(|entry| entry.modified);
+
+    for stale in completed {
+        let total_with_required = total_bytes
+            .checked_add(required_total_bytes)
+            .ok_or_else(|| "The tool execution journal size overflowed".to_string())?;
+        if total_with_required <= MAX_TOOL_EXECUTION_JOURNAL_BYTES
+            && entry_count.saturating_add(required_entry_count) <= MAX_TRACKED_TOOL_EXECUTIONS
+        {
+            break;
+        }
+        std::fs::remove_file(&stale.path).map_err(|error| {
+            format!(
+                "Failed to evict completed tool execution record {}: {error}",
+                stale.path.display()
+            )
+        })?;
+        total_bytes = total_bytes.saturating_sub(stale.bytes);
+        entry_count = entry_count.saturating_sub(1);
+        entries.retain(|entry| entry.path != stale.path);
+    }
+
+    let total_with_required = total_bytes
+        .checked_add(required_total_bytes)
+        .ok_or_else(|| "The tool execution journal size overflowed".to_string())?;
+    if total_with_required > MAX_TOOL_EXECUTION_JOURNAL_BYTES
+        || entry_count.saturating_add(required_entry_count) > MAX_TRACKED_TOOL_EXECUTIONS
+    {
+        return Err(
+            "The durable remote mutation journal is full; unresolved mutations were preserved"
+                .to_string(),
+        );
+    }
+    sync_tool_execution_journal_directory(root)
+}
+
+fn write_tool_execution_record_atomically(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    encoded: &[u8],
+) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "The tool execution journal path is invalid".to_string())?;
+    let temporary = root.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let mut file = std::fs::File::create(&temporary)
+        .map_err(|error| format!("Failed to create the tool execution record: {error}"))?;
     #[cfg(unix)]
-    tokio::fs::set_permissions(root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-        .await
-        .map_err(|error| format!("Failed to secure the tool execution journal: {error}"))?;
-    let path = tool_execution_journal_path(root, &record.execution_id);
-    let temporary = path.with_extension("json.tmp");
-    let encoded = serde_json::to_vec(record)
-        .map_err(|error| format!("Failed to encode the tool execution journal: {error}"))?;
-    tokio::fs::write(&temporary, encoded)
-        .await
-        .map_err(|error| format!("Failed to write the tool execution journal: {error}"))?;
-    #[cfg(unix)]
-    tokio::fs::set_permissions(
+    std::fs::set_permissions(
         &temporary,
         std::os::unix::fs::PermissionsExt::from_mode(0o600),
     )
-    .await
     .map_err(|error| format!("Failed to secure the tool execution record: {error}"))?;
-    tokio::fs::rename(&temporary, &path)
-        .await
+    file.write_all(encoded)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("Failed to synchronize the tool execution record: {error}"))?;
+    drop(file);
+    std::fs::rename(&temporary, path)
         .map_err(|error| format!("Failed to commit the tool execution journal: {error}"))?;
+    sync_tool_execution_journal_directory(root)
+}
 
-    let mut entries = Vec::new();
-    let mut directory = tokio::fs::read_dir(root)
-        .await
-        .map_err(|error| format!("Failed to inspect the tool execution journal: {error}"))?;
-    while let Some(entry) = directory
-        .next_entry()
-        .await
-        .map_err(|error| format!("Failed to inspect a tool execution record: {error}"))?
-    {
-        if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
+async fn persist_pending_tool_execution(
+    root: &std::path::Path,
+    record: &PersistedToolExecution,
+) -> Result<(), String> {
+    let root = root.to_path_buf();
+    let record = record.clone();
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&root)
+            .map_err(|error| format!("Failed to create the tool execution journal: {error}"))?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .map_err(|error| format!("Failed to secure the tool execution journal: {error}"))?;
+        remove_abandoned_tool_execution_temporaries(&root)?;
+        let encoded = serde_json::to_vec(&record)
+            .map_err(|error| format!("Failed to encode the tool execution journal: {error}"))?;
+        if encoded.len() as u64 > MAX_TOOL_EXECUTION_RECORD_BYTES {
+            return Err("The pending tool execution record exceeds its size limit".to_string());
         }
-        let modified = entry
-            .metadata()
-            .await
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        entries.push((modified, entry.path()));
-    }
-    if entries.len() > MAX_TRACKED_TOOL_EXECUTIONS {
-        entries.sort_by_key(|(modified, _)| *modified);
-        let remove_count = entries.len() - MAX_TRACKED_TOOL_EXECUTIONS;
-        for (_, stale_path) in entries.into_iter().take(remove_count) {
-            if stale_path != path {
-                let _ = tokio::fs::remove_file(stale_path).await;
-            }
+        let mut entries = read_tool_execution_journal_entries(&root)?;
+        let pending_count = entries
+            .iter()
+            .filter(|entry| entry.kind == ToolExecutionJournalKind::Pending)
+            .count();
+        if pending_count >= MAX_PENDING_TOOL_EXECUTIONS {
+            return Err(
+                "The durable remote mutation journal has too many unresolved mutations".to_string(),
+            );
         }
-    }
-    Ok(())
+        let reserved_for_pending = (pending_count as u64 + 1)
+            .checked_mul(MAX_TOOL_EXECUTION_RECORD_BYTES)
+            .ok_or_else(|| "The tool execution journal reservation overflowed".to_string())?;
+        let existing_pending_bytes = entries
+            .iter()
+            .filter(|entry| entry.kind == ToolExecutionJournalKind::Pending)
+            .try_fold(0u64, |total, entry| {
+                total
+                    .checked_add(entry.bytes)
+                    .ok_or_else(|| "The tool execution journal size overflowed".to_string())
+            })?;
+        let additional_reservation = reserved_for_pending.saturating_sub(existing_pending_bytes);
+        remove_completed_journal_entries_to_fit(&root, &mut entries, additional_reservation, 1)?;
+        let path = tool_execution_journal_path(
+            &root,
+            &record.execution_id,
+            ToolExecutionJournalKind::Pending,
+        );
+        write_tool_execution_record_atomically(&root, &path, &encoded)
+    })
+    .await
+    .map_err(|error| format!("Tool execution journal task failed: {error}"))?
+}
+
+async fn persist_completed_tool_execution(
+    root: &std::path::Path,
+    record: &PersistedToolExecution,
+) -> Result<(), String> {
+    let root = root.to_path_buf();
+    let record = record.clone();
+    tokio::task::spawn_blocking(move || {
+        remove_abandoned_tool_execution_temporaries(&root)?;
+        let encoded = serde_json::to_vec(&record)
+            .map_err(|error| format!("Failed to encode the tool execution journal: {error}"))?;
+        if encoded.len() as u64 > MAX_TOOL_EXECUTION_RECORD_BYTES {
+            return Err("The completed tool execution record exceeds its size limit".to_string());
+        }
+        let pending_path = tool_execution_journal_path(
+            &root,
+            &record.execution_id,
+            ToolExecutionJournalKind::Pending,
+        );
+        let pending_bytes = std::fs::metadata(&pending_path)
+            .map_err(|error| {
+                format!(
+                    "The durable pending tool execution record is unavailable before completion: {error}"
+                )
+            })?
+            .len();
+        let mut entries = read_tool_execution_journal_entries(&root)?;
+        remove_completed_journal_entries_to_fit(
+            &root,
+            &mut entries,
+            (encoded.len() as u64).saturating_sub(pending_bytes),
+            0,
+        )?;
+        let completed_path = tool_execution_journal_path(
+            &root,
+            &record.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        write_tool_execution_record_atomically(&root, &completed_path, &encoded)?;
+        std::fs::remove_file(&pending_path).map_err(|error| {
+            format!(
+                "Failed to retire pending tool execution record {}: {error}",
+                pending_path.display()
+            )
+        })?;
+        sync_tool_execution_journal_directory(&root)
+    })
+    .await
+    .map_err(|error| format!("Tool execution journal task failed: {error}"))?
 }
 
 async fn get_or_create_execution_slot(
     state: &HeadlessState,
     execution_id: &str,
     fingerprint: &str,
-) -> Result<(Arc<ExecutionSlot>, bool), String> {
-    let persisted =
-        load_persisted_tool_execution(&state.execution_journal_root, execution_id).await?;
+) -> Result<(Arc<ExecutionSlot>, bool), ToolExecutionClaimError> {
+    let persisted = load_persisted_tool_execution(&state.execution_journal_root, execution_id)
+        .await
+        .map_err(ToolExecutionClaimError::Storage)?;
     let mut registry = state.execution_registry.lock().await;
     if let Some(existing) = registry.get(execution_id) {
         if existing.fingerprint != fingerprint {
-            return Err(
+            return Err(ToolExecutionClaimError::Conflict(
                 "The execution_id is already bound to a different tool request".to_string(),
-            );
+            ));
         }
         return Ok((existing.clone(), false));
     }
     if let Some(record) = persisted {
         if record.fingerprint != fingerprint {
-            return Err(
+            return Err(ToolExecutionClaimError::Conflict(
                 "The execution_id is already bound to a different durable tool request".to_string(),
-            );
+            ));
         }
-        let slot = Arc::new(ExecutionSlot {
-            fingerprint: fingerprint.to_string(),
-            created_at: Instant::now(),
-            result: std::sync::Mutex::new(Some(record.response)),
-            notify: Notify::new(),
-        });
-        registry.insert(execution_id.to_string(), slot.clone());
-        return Ok((slot, false));
+        match record.state {
+            PersistedToolExecutionState::Completed { response } => {
+                let slot = Arc::new(ExecutionSlot {
+                    fingerprint: fingerprint.to_string(),
+                    created_at: Instant::now(),
+                    result: std::sync::Mutex::new(Some(response)),
+                    notify: Notify::new(),
+                });
+                registry.insert(execution_id.to_string(), slot.clone());
+                return Ok((slot, false));
+            }
+            PersistedToolExecutionState::Pending => {
+                return Err(ToolExecutionClaimError::Pending(
+                    "The mutation has a durable pending intent but no durable result. It will not be executed again automatically; inspect the workspace and resolve this execution explicitly."
+                        .to_string(),
+                ));
+            }
+        }
     }
 
     if registry.len() >= MAX_TRACKED_TOOL_EXECUTIONS {
@@ -1241,8 +1581,20 @@ async fn get_or_create_execution_slot(
         }
     }
     if registry.len() >= MAX_TRACKED_TOOL_EXECUTIONS {
-        return Err("The remote tool execution registry is temporarily full".to_string());
+        return Err(ToolExecutionClaimError::Storage(
+            "The remote tool execution registry is temporarily full".to_string(),
+        ));
     }
+    let pending_record = PersistedToolExecution {
+        schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+        execution_id: execution_id.to_string(),
+        fingerprint: fingerprint.to_string(),
+        state: PersistedToolExecutionState::Pending,
+    };
+    let _journal_guard = state.execution_journal_lock.lock().await;
+    persist_pending_tool_execution(&state.execution_journal_root, &pending_record)
+        .await
+        .map_err(ToolExecutionClaimError::Storage)?;
     let slot = Arc::new(ExecutionSlot {
         fingerprint: fingerprint.to_string(),
         created_at: Instant::now(),
@@ -1251,6 +1603,35 @@ async fn get_or_create_execution_slot(
     });
     registry.insert(execution_id.to_string(), slot.clone());
     Ok((slot, true))
+}
+
+fn tool_execution_claim_error_response(error: ToolExecutionClaimError) -> Response {
+    match error {
+        ToolExecutionClaimError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "REMOTE_EXECUTION_ID_CONFLICT",
+                "message": message,
+            })),
+        )
+            .into_response(),
+        ToolExecutionClaimError::Pending(message) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "REMOTE_MUTATION_PENDING",
+                "message": message,
+            })),
+        )
+            .into_response(),
+        ToolExecutionClaimError::Storage(message) => (
+            StatusCode::INSUFFICIENT_STORAGE,
+            Json(json!({
+                "code": "REMOTE_MUTATION_JOURNAL_UNAVAILABLE",
+                "message": message,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn wait_for_tool_execution(slot: &ExecutionSlot) -> StoredToolExecution {
@@ -1377,7 +1758,7 @@ async fn tool_execute(
         None => None,
     };
     if let Err(error) = validate_headless_workspace_consistency(
-        &state.registry_project_paths,
+        &state.registered_projects,
         project_id,
         payload.workspace_path.as_deref(),
         payload.project_mounts.as_deref().unwrap_or_default(),
@@ -1398,6 +1779,13 @@ async fn tool_execute(
     } else {
         BTreeSet::from([project_id.to_string()])
     };
+    if let Err(error) = validate_headless_mutation_projects(
+        &state.registered_projects,
+        &affected_project_ids,
+        &payload.tool_id,
+    ) {
+        return policy_denied_response(error);
+    }
     let policies = match load_project_tools_policies(&state, &affected_project_ids).await {
         Ok(policies) => policies,
         Err(error) => return policy_denied_response(error),
@@ -1464,9 +1852,7 @@ async fn tool_execute(
     let (slot, created) =
         match get_or_create_execution_slot(&state, &execution_id, &fingerprint).await {
             Ok(slot) => slot,
-            Err(error) => {
-                return (StatusCode::CONFLICT, Json(ApiError { message: error })).into_response()
-            }
+            Err(error) => return tool_execution_claim_error_response(error),
         };
     if created {
         let task_state = state.clone();
@@ -1476,21 +1862,86 @@ async fn tool_execute(
         tokio::spawn(async move {
             let response = perform_tool_execution(task_state.clone(), payload).await;
             let record = PersistedToolExecution {
+                schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
                 execution_id: task_execution_id,
                 fingerprint: task_fingerprint,
-                response: response.clone(),
+                state: PersistedToolExecutionState::Completed {
+                    response: response.clone(),
+                },
             };
-            if let Err(error) =
-                persist_tool_execution(&task_state.execution_journal_root, &record).await
-            {
-                tracing::error!(%error, "Failed to persist an idempotent tool execution result");
-            }
-            *task_slot.result.lock().expect("execution result lock") = Some(response);
+            let journal_guard = task_state.execution_journal_lock.lock().await;
+            let persistence =
+                persist_completed_tool_execution(&task_state.execution_journal_root, &record).await;
+            drop(journal_guard);
+            let published_response = match persistence {
+                Ok(()) => response,
+                Err(error) => {
+                    tracing::error!(%error, "Failed to persist an idempotent tool execution result");
+                    StoredToolExecution {
+                        status_code: StatusCode::INSUFFICIENT_STORAGE.as_u16(),
+                        body: json!({
+                            "code": "REMOTE_MUTATION_OUTCOME_INDETERMINATE",
+                            "message": format!(
+                                "The mutation finished, but its result could not be made durable: {error}. The pending intent was preserved and this execution will not be replayed automatically."
+                            ),
+                        }),
+                    }
+                }
+            };
+            *task_slot.result.lock().expect("execution result lock") = Some(published_response);
             task_slot.notify.notify_waiters();
         });
     }
 
     stored_tool_execution_response(wait_for_tool_execution(&slot).await)
+}
+
+async fn tool_execution_status(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Path(execution_id): Path<String>,
+) -> impl IntoResponse {
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    let execution_id = execution_id.trim();
+    if execution_id.is_empty() {
+        return policy_denied_response("A non-empty execution_id is required");
+    }
+    match load_persisted_tool_execution(&state.execution_journal_root, execution_id).await {
+        Ok(Some(PersistedToolExecution {
+            state: PersistedToolExecutionState::Pending,
+            ..
+        })) => (StatusCode::OK, Json(json!({ "state": "pending" }))).into_response(),
+        Ok(Some(PersistedToolExecution {
+            state: PersistedToolExecutionState::Completed { response },
+            ..
+        })) => (
+            StatusCode::OK,
+            Json(json!({
+                "state": "completed",
+                "status_code": response.status_code,
+                "body": response.body,
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "code": "REMOTE_EXECUTION_NOT_FOUND",
+                "message": "No durable tool execution exists for this execution_id",
+            })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "code": "REMOTE_MUTATION_JOURNAL_UNAVAILABLE",
+                "message": error,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn tool_cancel(
@@ -1534,7 +1985,7 @@ async fn checkpoint_snapshot(
         Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
     };
     if let Err(error) = validate_headless_workspace_consistency(
-        &state.registry_project_paths,
+        &state.registered_projects,
         &project_id,
         payload.workspace_path.as_deref(),
         &[],
@@ -1890,17 +2341,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
         approval_token: approval_token.as_deref().map(BearerTokenDigest::new),
         allowed_roots,
-        registry_project_paths: BTreeMap::new(),
+        registered_projects: BTreeMap::new(),
         workspace_path,
         git_state: GitState::new(),
         config_manager,
         execution_journal_root,
+        execution_journal_lock: Arc::new(AsyncMutex::new(())),
         execution_registry: Arc::new(AsyncMutex::new(BTreeMap::new())),
     };
     register_headless_project_config_roots(&state).await?;
-    let registry_project_paths = collect_registered_project_paths(&state).await?;
+    let registered_projects = collect_registered_projects(&state).await?;
     let state = Arc::new(HeadlessState {
-        registry_project_paths,
+        registered_projects,
         ..state
     });
 
@@ -1909,11 +2361,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/tools/mode-policy", get(tool_mode_policy))
         .route("/v1/tools/validate", post(tool_validate))
         .route("/v1/tools/execute", post(tool_execute))
+        .route(
+            "/v1/tools/executions/{execution_id}",
+            get(tool_execution_status),
+        )
         .route("/v1/tools/checkpoint-snapshot", post(checkpoint_snapshot))
         .route("/v1/tools/cancel", post(tool_cancel))
         .route("/api/v1/tools/mode-policy", get(tool_mode_policy))
         .route("/api/v1/tools/validate", post(tool_validate))
         .route("/api/v1/tools/execute", post(tool_execute))
+        .route(
+            "/api/v1/tools/executions/{execution_id}",
+            get(tool_execution_status),
+        )
         .route(
             "/api/v1/tools/checkpoint-snapshot",
             post(checkpoint_snapshot),
@@ -1994,14 +2454,20 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn registry_with_projects(root: &TempDir, names: &[&str]) -> BTreeMap<String, PathBuf> {
+    fn registry_with_projects(
+        root: &TempDir,
+        names: &[&str],
+    ) -> BTreeMap<String, RegisteredProject> {
         let mut registry = BTreeMap::new();
         for name in names {
             let project_dir = root.path().join(name);
             fs::create_dir(&project_dir).expect("project directory");
             registry.insert(
                 name.to_string(),
-                project_dir.canonicalize().expect("canonical project path"),
+                RegisteredProject {
+                    canonical_path: project_dir.canonicalize().expect("canonical project path"),
+                    is_read_only: false,
+                },
             );
         }
         registry
@@ -2121,35 +2587,53 @@ mod tests {
     }
 
     #[test]
-    fn headless_policy_omits_web_fetch_until_a_confined_remote_route_exists() {
+    fn headless_policy_omits_tools_without_a_remote_executor() {
         let tools = json!({
             "riskLevel": "balanced",
             "builtIn": {},
             "modes": {}
         });
         let policy = configured_mode_policy("Chat", &tools).expect("chat policy");
-        assert!(!policy
-            .allowed_tool_ids
-            .iter()
-            .any(|tool| tool == "web_fetch"));
+        for unavailable in [
+            "web_fetch",
+            "terminal_create_session",
+            "terminal_run",
+            "terminal_read",
+            "terminal_kill",
+        ] {
+            assert!(!policy
+                .allowed_tool_ids
+                .iter()
+                .any(|tool| tool == unavailable));
+        }
     }
 
     #[tokio::test]
     async fn tool_execution_journal_reloads_the_exact_completed_response() {
         let root = TempDir::new().expect("journal root");
-        let record = PersistedToolExecution {
+        let pending = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
             execution_id: "execution-1".to_string(),
             fingerprint: "fingerprint-1".to_string(),
-            response: StoredToolExecution {
-                status_code: 200,
-                body: json!({
-                    "result": "written",
-                    "checkpoint": { "files": [{ "path": "src/App.tsx" }] }
-                }),
+            state: PersistedToolExecutionState::Pending,
+        };
+        persist_pending_tool_execution(root.path(), &pending)
+            .await
+            .expect("persist pending execution");
+        let record = PersistedToolExecution {
+            state: PersistedToolExecutionState::Completed {
+                response: StoredToolExecution {
+                    status_code: 200,
+                    body: json!({
+                        "result": "written",
+                        "checkpoint": { "files": [{ "path": "src/App.tsx" }] }
+                    }),
+                },
             },
+            ..pending.clone()
         };
 
-        persist_tool_execution(root.path(), &record)
+        persist_completed_tool_execution(root.path(), &record)
             .await
             .expect("persist execution");
         let reloaded = load_persisted_tool_execution(root.path(), "execution-1")
@@ -2157,13 +2641,87 @@ mod tests {
             .expect("load execution")
             .expect("stored execution");
         assert_eq!(reloaded.fingerprint, "fingerprint-1");
-        assert_eq!(reloaded.response.body, record.response.body);
+        let PersistedToolExecutionState::Completed { response } = reloaded.state else {
+            panic!("completed response expected");
+        };
+        let PersistedToolExecutionState::Completed {
+            response: expected_response,
+        } = record.state
+        else {
+            panic!("completed fixture expected");
+        };
+        assert_eq!(response.body, expected_response.body);
+        assert!(!tool_execution_journal_path(
+            root.path(),
+            "execution-1",
+            ToolExecutionJournalKind::Pending,
+        )
+        .exists());
         assert!(
             load_persisted_tool_execution(root.path(), "another-execution")
                 .await
                 .expect("missing lookup")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn tool_execution_journal_preserves_unresolved_pending_intents() {
+        let root = TempDir::new().expect("journal root");
+        let pending = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "pending-1".to_string(),
+            fingerprint: "fingerprint-1".to_string(),
+            state: PersistedToolExecutionState::Pending,
+        };
+        persist_pending_tool_execution(root.path(), &pending)
+            .await
+            .expect("persist pending execution");
+
+        let reloaded = load_persisted_tool_execution(root.path(), "pending-1")
+            .await
+            .expect("load pending execution")
+            .expect("stored pending execution");
+        assert!(matches!(
+            reloaded.state,
+            PersistedToolExecutionState::Pending
+        ));
+    }
+
+    #[tokio::test]
+    async fn tool_execution_journal_never_evicts_unresolved_intents() {
+        let root = TempDir::new().expect("journal root");
+        for index in 0..MAX_PENDING_TOOL_EXECUTIONS {
+            let pending = PersistedToolExecution {
+                schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+                execution_id: format!("pending-{index}"),
+                fingerprint: format!("fingerprint-{index}"),
+                state: PersistedToolExecutionState::Pending,
+            };
+            persist_pending_tool_execution(root.path(), &pending)
+                .await
+                .expect("persist pending execution");
+        }
+        let overflow = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "pending-overflow".to_string(),
+            fingerprint: "fingerprint-overflow".to_string(),
+            state: PersistedToolExecutionState::Pending,
+        };
+        let error = persist_pending_tool_execution(root.path(), &overflow)
+            .await
+            .expect_err("the pending limit must fail closed");
+        assert!(error.contains("too many unresolved mutations"));
+        for index in 0..MAX_PENDING_TOOL_EXECUTIONS {
+            assert!(matches!(
+                load_persisted_tool_execution(root.path(), &format!("pending-{index}"))
+                    .await
+                    .expect("load pending execution")
+                    .expect("pending execution retained")
+                    .state,
+                PersistedToolExecutionState::Pending
+            ));
+        }
     }
 
     #[test]
@@ -2193,7 +2751,12 @@ mod tests {
         let error = validate_headless_workspace_consistency(
             &registry,
             "project-a",
-            Some(project_b.to_str().expect("utf-8 project path")),
+            Some(
+                project_b
+                    .canonical_path
+                    .to_str()
+                    .expect("utf-8 project path"),
+            ),
             &[],
         )
         .expect_err("a foreign workspace path must be rejected before policies run");
@@ -2208,6 +2771,7 @@ mod tests {
                 registry
                     .get("project-a")
                     .expect("project-a")
+                    .canonical_path
                     .to_str()
                     .expect("utf-8"),
             ),
@@ -2229,7 +2793,7 @@ mod tests {
             None,
             &[headless_mount(
                 "project-a",
-                project_b.to_str().expect("utf-8"),
+                project_b.canonical_path.to_str().expect("utf-8"),
             )],
         )
         .expect_err("a mount claiming project-a must not resolve into project-b");
@@ -2242,10 +2806,54 @@ mod tests {
             None,
             &[headless_mount(
                 "project-a",
-                project_a.to_str().expect("utf-8"),
+                project_a.canonical_path.to_str().expect("utf-8"),
             )],
         );
         assert!(consistent.is_ok());
+    }
+
+    #[test]
+    fn headless_consistency_enforces_server_read_only_mount_state() {
+        let root = TempDir::new().expect("registry root");
+        let mut registry = registry_with_projects(&root, &["project-a"]);
+        let project = registry.get_mut("project-a").expect("project-a");
+        project.is_read_only = true;
+        let workspace_path = project.canonical_path.to_str().expect("utf-8").to_string();
+
+        let error = validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            None,
+            &[headless_mount("project-a", &workspace_path)],
+        )
+        .expect_err("a client cannot make a read-only mount writable");
+        assert!(error.contains("server-authoritative read-only state"));
+
+        let mut authoritative_mount = headless_mount("project-a", &workspace_path);
+        authoritative_mount.is_read_only = true;
+        assert!(validate_headless_workspace_consistency(
+            &registry,
+            "project-a",
+            None,
+            &[authoritative_mount],
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn headless_mutations_obey_server_read_only_state_without_mounts() {
+        let root = TempDir::new().expect("registry root");
+        let mut registry = registry_with_projects(&root, &["project-a"]);
+        registry
+            .get_mut("project-a")
+            .expect("project-a")
+            .is_read_only = true;
+        let affected = BTreeSet::from(["project-a".to_string()]);
+
+        assert!(validate_headless_mutation_projects(&registry, &affected, "read").is_ok());
+        let error = validate_headless_mutation_projects(&registry, &affected, "write")
+            .expect_err("a standalone read-only project must reject mutations");
+        assert!(error.contains("read-only"));
     }
 
     #[test]

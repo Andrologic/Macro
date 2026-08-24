@@ -14923,6 +14923,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     restoreAgentCodeForReplay: async (preview) => {
+      if (canUseRemoteKernel() && !tauriIpc.isTauriAvailable()) {
+        throw new Error(
+          "La restauration du code distant reste désactivée tant que le noyau headless ne peut pas garantir une reprise durable.",
+        );
+      }
       if (preview.affectedFiles.length === 0) {
         return;
       }

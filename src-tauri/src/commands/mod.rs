@@ -1460,6 +1460,8 @@ enum MutationBackups {
 }
 
 const INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD: &str = "__macro_checkpoint_snapshots";
+const MAX_CHECKPOINT_FILES_PER_MUTATION: usize = 64;
+const MAX_CHECKPOINT_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) fn mutation_response_fields(
     include_checkpoint_snapshots: bool,
@@ -1633,7 +1635,63 @@ async fn rollback_mutation_backups(
     }
 }
 
+fn validate_checkpoint_size_values(
+    file_count: usize,
+    backup_bytes: usize,
+    next_bytes: usize,
+) -> CommandResult<()> {
+    if file_count > MAX_CHECKPOINT_FILES_PER_MUTATION {
+        return Err(command_error(format!(
+            "A recoverable mutation may affect at most {MAX_CHECKPOINT_FILES_PER_MUTATION} files"
+        )));
+    }
+    let total_bytes = backup_bytes.checked_add(next_bytes).ok_or_else(|| {
+        command_error("Recoverable mutation checkpoint size overflowed its safety limit")
+    })?;
+    if total_bytes > MAX_CHECKPOINT_TOTAL_BYTES {
+        return Err(command_error(format!(
+            "Recoverable mutation snapshots total {total_bytes} bytes, exceeding the {MAX_CHECKPOINT_TOTAL_BYTES}-byte limit"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_batch_size(
+    changes: &[PendingFileChange],
+    backups: &MutationBackups,
+) -> CommandResult<()> {
+    let backup_bytes = match backups {
+        MutationBackups::Native(values) => {
+            values.iter().try_fold(0usize, |total, (_, backup, _)| {
+                total.checked_add(backup.as_ref().map_or(0, Vec::len))
+            })
+        }
+        MutationBackups::ViaFs(values) => values
+            .iter()
+            .try_fold(0usize, |total, (_, _, _, backup, _)| {
+                total.checked_add(backup.as_ref().map_or(0, Vec::len))
+            }),
+    }
+    .ok_or_else(|| {
+        command_error("Recoverable mutation checkpoint size overflowed its safety limit")
+    })?;
+    let next_bytes = changes
+        .iter()
+        .try_fold(0usize, |total, change| {
+            total.checked_add(change.new_content.as_ref().map_or(0, String::len))
+        })
+        .ok_or_else(|| {
+            command_error("Recoverable mutation checkpoint size overflowed its safety limit")
+        })?;
+    validate_checkpoint_size_values(changes.len(), backup_bytes, next_bytes)
+}
+
 async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResult<MutationBackups> {
+    if changes.len() > MAX_CHECKPOINT_FILES_PER_MUTATION {
+        return Err(command_error(format!(
+            "A recoverable mutation may affect at most {MAX_CHECKPOINT_FILES_PER_MUTATION} files"
+        )));
+    }
     for change in changes {
         if change
             .new_content
@@ -1703,7 +1761,9 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
                 unix_mode,
             ));
         }
-        return Ok(MutationBackups::ViaFs(backups));
+        let backups = MutationBackups::ViaFs(backups);
+        validate_checkpoint_batch_size(changes, &backups)?;
+        return Ok(backups);
     }
 
     let mut backups = Vec::with_capacity(changes.len());
@@ -1739,7 +1799,9 @@ async fn prepare_mutation_backups(changes: &[PendingFileChange]) -> CommandResul
         };
         backups.push((change.absolute_path.clone(), backup, unix_mode));
     }
-    Ok(MutationBackups::Native(backups))
+    let backups = MutationBackups::Native(backups);
+    validate_checkpoint_batch_size(changes, &backups)?;
+    Ok(backups)
 }
 
 async fn apply_mutation_backups(
@@ -5897,9 +5959,10 @@ mod tests {
         resolve_requested_workspace, resolve_workspace_for_tool_path,
         restore_deleted_provider_secrets, rollback_pending_file_changes,
         rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
-        validate_agent_git_repo_path, wsl_mutation_backup_read_script,
-        wsl_mutation_backup_write_script, DbPool, ParsedPatchOperation, PendingFileChange,
-        INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
+        validate_agent_git_repo_path, validate_checkpoint_size_values,
+        wsl_mutation_backup_read_script, wsl_mutation_backup_write_script, DbPool,
+        ParsedPatchOperation, PendingFileChange, INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
+        MAX_CHECKPOINT_FILES_PER_MUTATION, MAX_CHECKPOINT_TOTAL_BYTES,
     };
     use crate::commands::fs::{
         content_revision, install_write_before_revalidation_hook, EXPECTED_REVISION_ABSENT,
@@ -7092,6 +7155,28 @@ mod tests {
             expected_revision: None,
             requested_unix_mode: None,
         }
+    }
+
+    #[test]
+    fn recoverable_mutations_bound_file_count_and_cumulative_snapshot_bytes() {
+        assert!(validate_checkpoint_size_values(
+            MAX_CHECKPOINT_FILES_PER_MUTATION,
+            MAX_CHECKPOINT_TOTAL_BYTES / 2,
+            MAX_CHECKPOINT_TOTAL_BYTES / 2,
+        )
+        .is_ok());
+        assert!(
+            validate_checkpoint_size_values(MAX_CHECKPOINT_FILES_PER_MUTATION + 1, 0, 0,)
+                .expect_err("too many files must fail closed")
+                .message
+                .contains("at most")
+        );
+        assert!(
+            validate_checkpoint_size_values(1, MAX_CHECKPOINT_TOTAL_BYTES, 1,)
+                .expect_err("oversized aggregate snapshots must fail closed")
+                .message
+                .contains("exceeding")
+        );
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
+  __remoteKernelApiTestables,
   canUseRemoteKernel,
   executeRemoteWorkspaceTool,
   executeRemoteWorkspaceToolDetailed,
@@ -44,6 +45,7 @@ const jsonResponse = (payload: unknown, status = 200): Response => {
 describe('remoteKernelApi', () => {
   beforeEach(() => {
     fetchCalls = [];
+    __remoteKernelApiTestables.resetDurableMutationIntents();
     ENV_KEYS.forEach((key) => {
       originalEnv[key] = process.env[key];
       delete process.env[key];
@@ -202,6 +204,15 @@ describe('remoteKernelApi', () => {
           ],
         });
       }
+      if (String(url).includes('/tools/executions/')) {
+        return jsonResponse(
+          {
+            code: 'REMOTE_EXECUTION_NOT_FOUND',
+            message: 'missing',
+          },
+          404,
+        );
+      }
       executeAttempts += 1;
       if (executeAttempts === 1) {
         throw new TypeError('connection closed after request upload');
@@ -224,6 +235,83 @@ describe('remoteKernelApi', () => {
     const firstPayload = JSON.parse(String(executeCalls[0].init?.body));
     const secondPayload = JSON.parse(String(executeCalls[1].init?.body));
     expect(secondPayload.execution_id).toBe(firstPayload.execution_id);
+  });
+
+  it('recovers a durable completed mutation without resubmitting it', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    let executeAttempts = 0;
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
+        });
+      }
+      if (String(url).includes('/tools/executions/')) {
+        return jsonResponse({
+          state: 'completed',
+          status_code: 200,
+          body: { result: 'durably written' },
+        });
+      }
+      executeAttempts += 1;
+      throw new TypeError('response lost after execution');
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'write',
+        args: { path: 'src/durable.ts', content: 'next' },
+        focusedProjectId: 'project-1',
+      }),
+    ).resolves.toBe('durably written');
+
+    expect(executeAttempts).toBe(1);
+    expect(fetchCalls.filter((call) => call.url.includes('/tools/executions/'))).toHaveLength(1);
+  });
+
+  it('reuses a persisted mutation identity after a prolonged transport outage', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    let online = false;
+    const executionBodies: string[] = [];
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
+        });
+      }
+      if (String(url).includes('/tools/execute')) {
+        executionBodies.push(String(init?.body));
+        if (online) return jsonResponse({ result: 'written after reconnect' });
+      }
+      throw new TypeError('network unavailable');
+    }) as unknown as typeof fetch;
+
+    const request = {
+      mode: 'Implement' as const,
+      toolId: 'write',
+      args: { path: 'src/reconnect.ts', content: 'next' },
+      focusedProjectId: 'project-1',
+    };
+    await expect(executeRemoteWorkspaceTool(request)).rejects.toMatchObject({
+      code: 'REMOTE_REQUEST_ERROR',
+    });
+    online = true;
+    await expect(executeRemoteWorkspaceTool(request)).resolves.toBe('written after reconnect');
+
+    const executionIds = executionBodies.map(
+      (body) => JSON.parse(body) as { execution_id: string },
+    );
+    expect(executionIds.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(executionIds.map((payload) => payload.execution_id)).size).toBe(1);
   });
 
   it('uses the routed project when checking execution capabilities', async () => {

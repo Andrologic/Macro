@@ -2074,6 +2074,61 @@ describe("workspaceToolExecutor helpers", () => {
     ]);
   });
 
+  it("does not roll back a delete rejected before any mutation", async () => {
+    let rollbackWrites = 0;
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        fsStat: async (path: string) => ({
+          path,
+          name: "obsolete.ts",
+          kind: "file",
+          size: 20,
+          modified: "2026-03-26T10:00:00.000Z",
+          permissions: "rw-r--r--",
+          language: "typescript",
+          is_readonly: false,
+          is_hidden: false,
+          is_symlink: false,
+        }),
+        fsReadFileWithOptions: async () => ({
+          content: "first line\nsecond line\n",
+          language: "typescript",
+          is_binary: false,
+          size: 23,
+          encoding: "utf-8",
+          revision: "read-revision",
+        }),
+        fsDelete: async () => {
+          throw new Error("revision conflict before delete");
+        },
+        fsWriteFile: async () => {
+          rollbackWrites += 1;
+          return {
+            path: "C:/dev/macro-web/src/obsolete.ts",
+            bytes_written: 23,
+            created: false,
+          };
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      "delete",
+      { path: "src/obsolete.ts" },
+      "Implement",
+      {
+        workspacePath: "C:/dev/macro-web",
+        onCodeCheckpoint: async () => undefined,
+      },
+    );
+
+    expect(result).toContain("revision conflict before delete");
+    expect(result).not.toContain("rollback");
+    expect(rollbackWrites).toBe(0);
+  });
+
   it("rejects delete on an explicitly targeted read-only project", async () => {
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
       tauriModule: {
