@@ -285,6 +285,32 @@ describe('ModelsSettings metadata model config', () => {
     });
   });
 
+  it('greys out reasoning selection when the dedicated model has no supported efforts', async () => {
+    window.localStorage.setItem(
+      'macro_metadataModelConfig',
+      JSON.stringify({
+        mode: 'dedicated',
+        providerId: 'provider-a',
+        modelId: 'model-a',
+        reasoningEffort: null,
+      })
+    );
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    const reasoningSelect = container!.querySelector<HTMLSelectElement>(
+      'select[aria-label="Reasoning"]'
+    );
+    expect(reasoningSelect?.disabled).toBe(true);
+    expect(reasoningSelect?.className).toContain('disabled:cursor-not-allowed');
+    expect(container!.textContent).toContain('Not supported by this model');
+  });
+
   it('shows compact context window metadata for models', async () => {
     modelsByProvider = {
       'provider-a': [

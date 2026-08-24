@@ -214,6 +214,7 @@ export const ModelsSettings: React.FC = () => {
       getAvailableReasoningEfforts,
     }
   );
+  const isMetadataReasoningUnavailable = dedicatedCommitReasoningEfforts.length === 0;
   const isEditingManualModel =
     manualModelEditor !== null && manualModelEditor.originalModelId !== null;
   const getContextWindowSourceLabel = (source?: AIModel['contextWindowSource']): string => {
@@ -471,12 +472,16 @@ export const ModelsSettings: React.FC = () => {
                   ))}
                 </select>
               </label>
-              <label className="space-y-1.5">
+              <label className={cn(
+                'space-y-1.5',
+                isMetadataReasoningUnavailable && 'text-muted-foreground opacity-60'
+              )}>
                 <span className="text-xs font-medium text-muted-foreground">
                   {t('models.reasoningEffort', 'Reasoning')}
                 </span>
                 <select
-                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                  aria-label={t('models.reasoningEffort', 'Reasoning')}
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
                   value={activeMetadataModelConfig.reasoningEffort ?? ''}
                   onChange={(event) => {
                     if (!dedicatedCommitProviderId || !dedicatedCommitModelId) return;
@@ -487,7 +492,7 @@ export const ModelsSettings: React.FC = () => {
                       reasoningEffort: event.target.value ? event.target.value as ReasoningEffort : null,
                     });
                   }}
-                  disabled={dedicatedCommitReasoningEfforts.length === 0}
+                  disabled={isMetadataReasoningUnavailable}
                 >
                   <option value="">{t('models.defaultReasoning', 'Default')}</option>
                   {dedicatedCommitReasoningEfforts.map((effort) => (
@@ -496,6 +501,11 @@ export const ModelsSettings: React.FC = () => {
                     </option>
                   ))}
                 </select>
+                {isMetadataReasoningUnavailable && (
+                  <span className="block text-xs text-muted-foreground">
+                    {t('models.reasoningUnavailable', 'Not supported by this model')}
+                  </span>
+                )}
               </label>
             </div>
           )}

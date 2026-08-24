@@ -1980,6 +1980,7 @@
     "commitPromptDescription": "이 프롬프트는 스마트 커밋 생성을 안내합니다. Macro는 최종 메시지를 계속 검증하고 커밋 전에 scope를 제거합니다.",
     "reasoningEffort": "추론",
     "defaultReasoning": "기본값",
+    "reasoningUnavailable": "이 모델에서는 지원되지 않음",
     "contextWindowLabel": "컨텍스트",
     "contextWindowUnknown": "추정",
     "contextWindowSet": "설정",

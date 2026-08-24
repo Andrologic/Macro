@@ -2047,6 +2047,7 @@
     "commitPromptDescription": "This prompt guides smart commit generation. Macro still validates the final message and removes scopes before committing.",
     "reasoningEffort": "Reasoning",
     "defaultReasoning": "Default",
+    "reasoningUnavailable": "Not supported by this model",
     "contextWindowLabel": "Context",
     "contextWindowUnknown": "Estimated",
     "contextWindowSet": "Set",

@@ -1980,6 +1980,7 @@
     "commitPromptDescription": "このプロンプトはスマートコミット生成を制御します。Macro は最終メッセージを引き続き検証し、コミット前にスコープを削除します。",
     "reasoningEffort": "推論",
     "defaultReasoning": "デフォルト",
+    "reasoningUnavailable": "このモデルではサポートされていません",
     "contextWindowLabel": "コンテキスト",
     "contextWindowUnknown": "推定",
     "contextWindowSet": "設定",
