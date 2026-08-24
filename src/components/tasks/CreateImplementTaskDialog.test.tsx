@@ -15,7 +15,9 @@ mock.module('react-i18next', () => ({
 }));
 
 mock.module('../ui/Dialog', () => ({
-  Dialog: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Dialog: ({ children, panelClassName }: { children: React.ReactNode; panelClassName?: string }) => (
+    <div data-panel-class={panelClassName}>{children}</div>
+  ),
 }));
 
 mock.module('../../services/tauriIpc', () => ({
@@ -264,7 +266,11 @@ describe('CreateImplementTaskDialog task type help', () => {
     const findButton = (text: string) => Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.includes(text),
     ) as HTMLButtonElement;
+    expect(container.querySelector('aside')).toBeNull();
     await act(async () => findButton('Resume work').click());
+    const resumePanel = container.querySelector('aside[aria-label="Resume work"]');
+    expect(resumePanel).not.toBeNull();
+    expect(container.firstElementChild?.getAttribute('data-panel-class')).toContain('max-w-5xl');
     expect(container.textContent).toContain('Existing worktrees');
     expect(container.textContent).toContain('Branches without a worktree');
     expect(container.textContent).toContain('feature/in-editor');

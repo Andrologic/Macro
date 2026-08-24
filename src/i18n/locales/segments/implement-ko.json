@@ -280,6 +280,7 @@
   "taskWorkspaceLabel": "시작 지점",
   "taskWorkspaceNew": "새 작업",
   "taskWorkspaceExisting": "작업 재개",
+  "taskWorkspaceExistingPanelHelp": "기존 worktree 또는 로컬 브랜치를 선택하세요.",
   "taskWorkspaceLoading": "브랜치와 worktree 불러오는 중...",
   "taskWorkspaceNewHelp": "브랜치와 worktree를 만듭니다.",
   "taskWorkspaceSearch": "브랜치와 worktree 검색...",

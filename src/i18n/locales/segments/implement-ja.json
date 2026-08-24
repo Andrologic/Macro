@@ -280,6 +280,7 @@
   "taskWorkspaceLabel": "開始地点",
   "taskWorkspaceNew": "新しい作業",
   "taskWorkspaceExisting": "作業を再開",
+  "taskWorkspaceExistingPanelHelp": "既存の worktree またはローカルブランチを選択します。",
   "taskWorkspaceLoading": "ブランチと worktree を読み込み中...",
   "taskWorkspaceNewHelp": "ブランチと worktree を作成します。",
   "taskWorkspaceSearch": "ブランチと worktree を検索...",

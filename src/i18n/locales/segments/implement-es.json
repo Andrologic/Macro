@@ -280,6 +280,7 @@
   "taskWorkspaceLabel": "Punto de partida",
   "taskWorkspaceNew": "Trabajo nuevo",
   "taskWorkspaceExisting": "Retomar trabajo",
+  "taskWorkspaceExistingPanelHelp": "Elige un worktree existente o una rama local.",
   "taskWorkspaceLoading": "Cargando ramas y worktrees...",
   "taskWorkspaceNewHelp": "Crear una rama y un worktree.",
   "taskWorkspaceSearch": "Buscar ramas y worktrees...",

@@ -192,6 +192,142 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     ? resolveTooltipPosition(tooltipAnchor, tooltipSize)
     : null;
 
+  const startPointPicker = (
+    <aside
+      aria-label={t('implement.taskWorkspaceExisting', 'Resume work')}
+      className="flex min-h-0 w-[26rem] max-w-[44vw] shrink-0 flex-col border-l border-border bg-muted/10"
+    >
+      <div className="shrink-0 border-b border-border px-4 py-4">
+        <div className="flex items-center gap-2">
+          <Icon name="folder-git-2" size={14} className="text-primary" />
+          <h3 className="text-sm font-semibold text-foreground">
+            {t('implement.taskWorkspaceExisting', 'Resume work')}
+          </h3>
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          {t(
+            'implement.taskWorkspaceExistingPanelHelp',
+            'Choose an existing worktree or a local branch.'
+          )}
+        </p>
+      </div>
+      <div className="shrink-0 p-3 pb-2">
+        <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5">
+          <Icon name="search" size={12} className="text-muted-foreground" />
+          <input
+            value={startPointQuery}
+            onChange={(event) => setStartPointQuery(event.target.value)}
+            placeholder={t('implement.taskWorkspaceSearch', 'Search branches and worktrees...')}
+            className="h-8 min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
+          />
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-3">
+        {filteredWorktrees.length > 0 && (
+          <div className="space-y-1">
+            <div className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('implement.taskWorkspaceWorktreesSection', 'Existing worktrees')}
+            </div>
+            {filteredWorktrees.map((worktree) => (
+              <button
+                key={worktree.path}
+                type="button"
+                aria-pressed={selectedStartPointKey === `worktree:${worktree.path}`}
+                onClick={() => setSelectedStartPointKey(`worktree:${worktree.path}`)}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left',
+                  selectedStartPointKey === `worktree:${worktree.path}`
+                    ? 'border-primary/30 bg-primary/10'
+                    : 'border-border bg-background hover:bg-accent/60'
+                )}
+              >
+                <Icon name="folder-git-2" size={14} className="text-muted-foreground" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-foreground">{worktree.branchName}</span>
+                  <span className="block truncate text-[11px] text-muted-foreground">{worktree.path}</span>
+                </span>
+                <span className={cn('text-[10px]', worktree.isDirty ? 'text-amber-500' : 'text-muted-foreground')}>
+                  {worktree.isDirty
+                    ? t('implement.taskWorkspaceModified', 'Modified')
+                    : t('implement.taskWorkspaceClean', 'Clean')}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {filteredBranches.length > 0 && (
+          <div className="space-y-1">
+            <div className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('implement.taskWorkspaceBranchesSection', 'Branches without a worktree')}
+            </div>
+            {filteredBranches.map((branch) => {
+              const isBaseBranch = [
+                selectedProject?.gitFlowSettings?.baseBranch,
+                selectedProject?.gitFlowSettings?.mainBranch,
+              ].some((candidate) => candidate?.trim() === branch.name);
+              return (
+                <button
+                  key={branch.name}
+                  type="button"
+                  aria-pressed={selectedStartPointKey === `branch:${branch.name}`}
+                  onClick={() => setSelectedStartPointKey(`branch:${branch.name}`)}
+                  className={cn(
+                    'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left',
+                    selectedStartPointKey === `branch:${branch.name}`
+                      ? 'border-primary/30 bg-primary/10'
+                      : 'border-border bg-background hover:bg-accent/60'
+                  )}
+                >
+                  <Icon name="git-branch" size={14} className="text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-foreground">{branch.name}</span>
+                    <span className="block text-[11px] text-muted-foreground">
+                      {t('implement.taskWorkspaceBranchHelp', 'A worktree will be created for this branch.')}
+                    </span>
+                  </span>
+                  {isBaseBranch && (
+                    <span className="text-[10px] text-amber-500">
+                      {t('implement.taskWorkspaceBaseBranch', 'Base branch')}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {!isLoadingWorktrees && !startPointLoadFailed && filteredWorktrees.length === 0 && filteredBranches.length === 0 && (
+          <p className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+            {normalizedStartPointQuery
+              ? t('implement.taskWorkspaceNoMatch', 'No branch or worktree matches this search.')
+              : t('implement.taskWorkspaceNone', 'No external worktree or free local branch is available.')}
+          </p>
+        )}
+        {isLoadingWorktrees && (
+          <p className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+            {t('implement.taskWorkspaceLoading', 'Loading branches and worktrees...')}
+          </p>
+        )}
+        {startPointLoadFailed && (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+            <span className="text-[11px] text-destructive">
+              {t('implement.taskWorkspaceLoadFailed', 'Branches and worktrees could not be loaded.')}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setStartPointLoadRequest((request) => request + 1)}
+            >
+              {t('common.retry', 'Retry')}
+            </Button>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+
   useLayoutEffect(() => {
     const tooltip = tooltipRef.current;
     if (!tooltipAnchor || !tooltip) return;
@@ -246,7 +382,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     <Dialog
       title={t('implement.createTaskDialogTitle', 'Create a task')}
       onClose={onClose}
-      panelClassName="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+      panelClassName={cn(
+        'flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-[max-width] duration-150',
+        workspaceChoice === 'existing' && !isDirectEditProject && selectedProject
+          ? 'max-w-5xl'
+          : 'max-w-2xl'
+      )}
     >
       <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-5 py-4">
         <div>
@@ -270,7 +411,8 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+      <div className="flex min-h-0 flex-1">
+        <div className="min-w-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
         <div className="space-y-2">
           <div>
             <div className="text-xs font-medium text-foreground">
@@ -450,124 +592,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                 </span>
               </button>
             </div>
-            {workspaceChoice === 'existing' && (
-              <div className="ml-8 space-y-2 rounded-lg border border-border bg-muted/20 p-2 shadow-inner">
-                <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5">
-                  <Icon name="search" size={12} className="text-muted-foreground" />
-                  <input
-                    value={startPointQuery}
-                    onChange={(event) => setStartPointQuery(event.target.value)}
-                    placeholder={t('implement.taskWorkspaceSearch', 'Search branches and worktrees...')}
-                    className="h-8 min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
-                  />
-                </div>
-                <div className="max-h-52 space-y-3 overflow-y-auto pr-0.5">
-                  {filteredWorktrees.length > 0 && (
-                    <div className="space-y-1">
-                      <div className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        {t('implement.taskWorkspaceWorktreesSection', 'Existing worktrees')}
-                      </div>
-                      {filteredWorktrees.map((worktree) => (
-                        <button
-                          key={worktree.path}
-                          type="button"
-                          aria-pressed={selectedStartPointKey === `worktree:${worktree.path}`}
-                          onClick={() => setSelectedStartPointKey(`worktree:${worktree.path}`)}
-                          className={cn(
-                            'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left',
-                            selectedStartPointKey === `worktree:${worktree.path}`
-                              ? 'border-primary/30 bg-primary/10'
-                              : 'border-border bg-background hover:bg-accent/60'
-                          )}
-                        >
-                          <Icon name="folder-git-2" size={14} className="text-muted-foreground" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-medium text-foreground">{worktree.branchName}</span>
-                            <span className="block truncate text-[11px] text-muted-foreground">{worktree.path}</span>
-                          </span>
-                          <span className={cn('text-[10px]', worktree.isDirty ? 'text-amber-500' : 'text-muted-foreground')}>
-                            {worktree.isDirty
-                              ? t('implement.taskWorkspaceModified', 'Modified')
-                              : t('implement.taskWorkspaceClean', 'Clean')}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  {filteredBranches.length > 0 && (
-                    <div className="space-y-1">
-                      <div className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        {t('implement.taskWorkspaceBranchesSection', 'Branches without a worktree')}
-                      </div>
-                      {filteredBranches.map((branch) => {
-                        const isBaseBranch = [
-                          selectedProject.gitFlowSettings?.baseBranch,
-                          selectedProject.gitFlowSettings?.mainBranch,
-                        ].some((candidate) => candidate?.trim() === branch.name);
-                        return (
-                          <button
-                            key={branch.name}
-                            type="button"
-                            aria-pressed={selectedStartPointKey === `branch:${branch.name}`}
-                            onClick={() => setSelectedStartPointKey(`branch:${branch.name}`)}
-                            className={cn(
-                              'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left',
-                              selectedStartPointKey === `branch:${branch.name}`
-                                ? 'border-primary/30 bg-primary/10'
-                                : 'border-border bg-background hover:bg-accent/60'
-                            )}
-                          >
-                            <Icon name="git-branch" size={14} className="text-muted-foreground" />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm font-medium text-foreground">{branch.name}</span>
-                              <span className="block text-[11px] text-muted-foreground">
-                                {t('implement.taskWorkspaceBranchHelp', 'A worktree will be created for this branch.')}
-                              </span>
-                            </span>
-                            {isBaseBranch && (
-                              <span className="text-[10px] text-amber-500">
-                                {t('implement.taskWorkspaceBaseBranch', 'Base branch')}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {!isLoadingWorktrees && !startPointLoadFailed && filteredWorktrees.length === 0 && filteredBranches.length === 0 && (
-                    <p className="px-2 py-4 text-center text-[11px] text-muted-foreground">
-                      {normalizedStartPointQuery
-                        ? t('implement.taskWorkspaceNoMatch', 'No branch or worktree matches this search.')
-                        : t('implement.taskWorkspaceNone', 'No external worktree or free local branch is available.')}
-                    </p>
-                  )}
-                  {isLoadingWorktrees && (
-                    <p className="px-2 py-4 text-center text-[11px] text-muted-foreground">
-                      {t('implement.taskWorkspaceLoading', 'Loading branches and worktrees...')}
-                    </p>
-                  )}
-                  {startPointLoadFailed && (
-                    <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
-                      <span className="text-[11px] text-destructive">
-                        {t('implement.taskWorkspaceLoadFailed', 'Branches and worktrees could not be loaded.')}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setStartPointLoadRequest((request) => request + 1)}
-                      >
-                        {t('common.retry', 'Retry')}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </fieldset>
         )}
+        </div>
+        {workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && startPointPicker}
       </div>
 
       {tooltipAnchor && tooltipPosition && createPortal(
