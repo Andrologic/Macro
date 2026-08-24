@@ -28,5 +28,5 @@ export const providerHasUsableCredentials = (
   const hasApiKey =
     !isLinkedProviderType(provider.providerType) &&
     (!!provider.hasStoredApiKey || !!provider.apiKey?.trim());
-  return !!provider.isEnabled && (!!provider.isLocal || hasApiKey || providerHasAuthSession(provider));
+  return (provider.isLocal && provider.isEnabled) || hasApiKey || providerHasAuthSession(provider);
 };

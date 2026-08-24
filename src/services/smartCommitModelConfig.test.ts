@@ -140,7 +140,11 @@ describe('metadataModelConfig', () => {
   });
 
   it('falls back to conversation when no dedicated provider/model is usable', () => {
-    expect(providerCanGenerateMetadata(provider('disabled', { isEnabled: false }))).toBe(false);
+    const unavailableProvider = provider('disabled', {
+      isEnabled: false,
+      hasStoredApiKey: false,
+    });
+    expect(providerCanGenerateMetadata(unavailableProvider)).toBe(false);
     expect(
       normalizeMetadataModelConfig(
         {
@@ -150,7 +154,7 @@ describe('metadataModelConfig', () => {
           reasoningEffort: null,
         },
         {
-          providerConfigs: [provider('disabled', { isEnabled: false })],
+          providerConfigs: [unavailableProvider],
           modelsByProvider: {
             disabled: [model('disabled', 'model-disabled')],
           },

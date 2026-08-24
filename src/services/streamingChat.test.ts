@@ -2828,4 +2828,46 @@ describe('streamingChat tool rendering helpers', () => {
     expect(__testables.getActiveStreamingSessionIds()).toEqual([]);
   });
 
+  it('sends Anthropic compatibility headers with streamed chat requests', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = mock(
+      async (_url: string, init?: { headers?: Record<string, string> }): Promise<unknown> => {
+        expect(init?.headers).toMatchObject({
+          Authorization: 'Bearer anthropic-key',
+          'x-api-key': 'anthropic-key',
+          'anthropic-version': '2023-06-01',
+        });
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode('data: {"choices":[{"delta":{"content":"Bonjour"}}]}\n\n')
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+    );
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'anthropic',
+      providerType: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'anthropic-key',
+      modelId: 'claude-sonnet',
+      messages: [{ role: 'user', content: 'Bonjour' }],
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+  });
+
 });

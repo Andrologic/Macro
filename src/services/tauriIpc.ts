@@ -1923,7 +1923,6 @@ export async function createProviderConfig(params: {
   baseUrl: string;
   apiKey?: string;
   isLocal: boolean;
-  isEnabled: boolean;
 }): Promise<DbProviderConfig> {
   return invoke<DbProviderConfig>("db_create_provider_config", {
     name: params.name,
@@ -1931,7 +1930,6 @@ export async function createProviderConfig(params: {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey ?? null,
     isLocal: params.isLocal,
-    isEnabled: params.isEnabled,
   });
 }
 
@@ -3333,10 +3331,12 @@ export async function listProviderModels(
 export async function upsertProviderModels(params: {
   providerId: string;
   models: DbProviderModelInput[];
+  replaceDiscovered?: boolean;
 }): Promise<DbAiModel[]> {
   return invoke<DbAiModel[]>("db_upsert_provider_models", {
     providerId: params.providerId,
     models: params.models,
+    replaceDiscovered: params.replaceDiscovered ?? false,
   });
 }
 

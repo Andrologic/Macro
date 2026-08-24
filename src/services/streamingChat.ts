@@ -3439,6 +3439,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
+    if (providerType === 'anthropic') {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    }
   }
 
   // OpenRouter specific headers
@@ -4364,6 +4368,10 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
+    if (providerType === 'anthropic') {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    }
   }
 
   if (providerType === 'openrouter') {

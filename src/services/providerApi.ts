@@ -13,6 +13,7 @@ import { resolveProviderCapabilities } from './providerCapabilities';
 export interface ProviderModel {
   id: string;
   name?: string;
+  display_name?: string;
   created?: number;
   owned_by?: string;
   description?: string;
@@ -164,6 +165,7 @@ const isLocalProvider = (providerId: string, providerType?: string): boolean =>
 const buildProviderHeaders = (params: {
   apiKey?: string;
   providerId: string;
+  providerType?: string;
 }): Record<string, string> => {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -171,6 +173,13 @@ const buildProviderHeaders = (params: {
 
   if (params.apiKey) {
     headers['Authorization'] = `Bearer ${params.apiKey}`;
+    if (
+      normalizeProviderKind(params.providerId) === 'anthropic' ||
+      normalizeProviderKind(params.providerType) === 'anthropic'
+    ) {
+      headers['x-api-key'] = params.apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    }
   }
 
   if (params.providerId === 'openrouter') {
@@ -222,7 +231,7 @@ const normalizeProviderModels = (data: unknown): ProviderModel[] => {
         : undefined;
     return {
       id: entry.id,
-      name: entry.name || entry.id,
+      name: entry.name || entry.display_name || entry.id,
       created: entry.created,
       owned_by: entry.owned_by,
       description: entry.description,
@@ -609,7 +618,7 @@ export async function probeModelsEndpoint(
   }
 
   const effectiveTimeout = getEffectiveTimeout(providerId, timeout, providerType);
-  const headers = buildProviderHeaders({ apiKey, providerId });
+  const headers = buildProviderHeaders({ apiKey, providerId, providerType });
 
   // Log connection attempt for debugging
   if (isLocalProvider(providerId, providerType)) {
@@ -742,7 +751,7 @@ export async function probeChatCompletionsEndpoint(
   }
 
   const effectiveTimeout = getEffectiveTimeout(providerId, timeout, providerType);
-  const headers = buildProviderHeaders({ apiKey, providerId });
+  const headers = buildProviderHeaders({ apiKey, providerId, providerType });
 
   if (resolveProviderCapabilities({ providerId, baseUrl }).providerId === 'opencode-go') {
     devLogger.log('[opencode_http_probe] Probing OpenCode chat completions over HTTP');
