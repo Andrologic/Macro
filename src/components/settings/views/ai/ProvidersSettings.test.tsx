@@ -3,7 +3,9 @@ import { act } from 'react';
 import type React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-const updateProviderConfigMock = mock(async () => undefined);
+const updateProviderConfigMock = mock(
+  async (_providerId: string, _updates: Record<string, unknown>) => undefined
+);
 const updateProviderSettingsMock = mock(async () => undefined);
 const testConnectionMock = mock(async () => ({ success: true, message: 'ok' }));
 
@@ -243,6 +245,42 @@ describe('ProvidersSettings Copilot timeout', () => {
     });
 
     expect(container!.textContent).not.toContain('Copilot response timeout');
+  });
+
+  it('saves an API key without rendering a provider enabled switch', async () => {
+    providerType = 'openai';
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+
+    await act(async () => {
+      click(
+        Array.from(container!.querySelectorAll('button')).find(
+          (button) => button.textContent === 'Edit'
+        )!
+      );
+    });
+
+    expect(container!.querySelector('input[type="checkbox"]')).toBeNull();
+    const apiKeyInput = container!.querySelector('input[type="password"]') as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(apiKeyInput, 'new-api-key');
+      click(
+        Array.from(container!.querySelectorAll('button')).find(
+          (button) => button.textContent === 'Save Provider'
+        )!
+      );
+    });
+
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      'openai',
+      expect.objectContaining({ apiKey: 'new-api-key' })
+    );
+    expect(updateProviderConfigMock.mock.calls[0]?.[1]).not.toHaveProperty('isEnabled');
   });
 
   it('uses an icon-only refresh action on Copilot provider cards', async () => {

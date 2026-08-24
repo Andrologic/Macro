@@ -4901,6 +4901,24 @@ pub async fn db_delete_architect_plan_conversation_sync(
 
 // ============ PROVIDER CONFIGS ============
 
+fn provider_is_enabled(
+    configured_enabled: bool,
+    provider_type: &str,
+    has_api_key: bool,
+    auth_status: Option<&str>,
+) -> bool {
+    configured_enabled
+        || has_api_key
+        || match provider_type {
+            "chatgpt" => matches!(
+                auth_status,
+                Some("authenticated" | "refreshing" | "expired")
+            ),
+            "copilot" => auth_status == Some("connected"),
+            _ => false,
+        }
+}
+
 async fn configured_provider_configs(
     manager: &ConfigManager,
     pool: &SqlitePool,
@@ -4932,6 +4950,20 @@ async fn configured_provider_configs(
         let has_stored_api_key = secrets::get_api_key(id)
             .map_err(|error| command_error(format!("Failed to inspect provider secret: {error}")))?
             .is_some();
+        let is_local = definition
+            .get("isLocal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let auth_status = status.and_then(|value| value.auth_status.clone());
+        let is_enabled = provider_is_enabled(
+            definition
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            &provider_type,
+            has_stored_api_key,
+            auth_status.as_deref(),
+        );
         providers.push(ProviderConfig {
             id: id.clone(),
             name: definition
@@ -4947,15 +4979,9 @@ async fn configured_provider_configs(
                 .to_string(),
             api_key: None,
             has_stored_api_key,
-            is_enabled: definition
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            is_local: definition
-                .get("isLocal")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            auth_status: status.and_then(|value| value.auth_status.clone()),
+            is_enabled,
+            is_local,
+            auth_status,
             auth_source: status.and_then(|value| value.auth_source.clone()),
             plan_type: status.and_then(|value| value.plan_type.clone()),
             account_label: status.and_then(|value| value.account_label.clone()),
@@ -5353,12 +5379,27 @@ pub async fn db_update_provider_config(
         .map_err(|error| command_error(format!("Failed to update provider secret: {error}")))?;
     }
 
+    let provider_type = params
+        .provider_type
+        .unwrap_or(previous_config.provider_type);
+    let is_local = params.is_local.unwrap_or(previous_config.is_local);
+    let has_api_key = params
+        .api_key
+        .as_deref()
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(previous_config.has_stored_api_key);
+    let is_enabled = if provider_type == "chatgpt" || provider_type == "copilot" {
+        params.is_enabled.unwrap_or(previous_config.is_enabled)
+    } else {
+        is_local || has_api_key
+    };
+
     let definition = serde_json::json!({
-        "providerType": params.provider_type.unwrap_or(previous_config.provider_type),
+        "providerType": provider_type,
         "name": params.name.unwrap_or(previous_config.name),
-        "enabled": params.is_enabled.unwrap_or(previous_config.is_enabled),
+        "enabled": is_enabled,
         "baseUrl": params.base_url.unwrap_or(previous_config.base_url),
-        "isLocal": params.is_local.unwrap_or(previous_config.is_local),
+        "isLocal": is_local,
     });
     if let Err(error) =
         patch_provider_definition(config_manager.inner(), &provider_id, Some(definition)).await
@@ -5384,14 +5425,14 @@ pub async fn db_create_provider_config(
     base_url: String,
     api_key: Option<String>,
     is_local: bool,
-    is_enabled: bool,
 ) -> CommandResult<ProviderConfig> {
     let pool = get_pool(&pool).await?;
     let id = format!("provider-{}", uuid::Uuid::new_v4().simple());
+    let has_api_key = api_key.as_deref().is_some_and(|key| !key.trim().is_empty());
     let definition = serde_json::json!({
         "providerType": provider_type,
         "name": name,
-        "enabled": is_enabled,
+        "enabled": is_local || has_api_key,
         "baseUrl": base_url,
         "isLocal": is_local,
     });
@@ -5960,7 +6001,7 @@ mod tests {
         exact_edit_match_error, execute_workspace_tool,
         execute_workspace_tool_controlled_with_options, format_bounded_git_status,
         parse_apply_patch, prepare_mutation_backups, provider_definition_patch_operations,
-        register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
+        provider_is_enabled, register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
         resolve_requested_workspace, resolve_workspace_for_tool_path,
         restore_deleted_provider_secrets, rollback_pending_file_changes,
         rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
@@ -6413,6 +6454,19 @@ mod tests {
                 .and_then(Value::as_str),
             Some("openai")
         );
+    }
+
+    #[test]
+    fn provider_activation_follows_credentials_without_a_manual_switch() {
+        assert!(provider_is_enabled(false, "openai", true, None));
+        assert!(provider_is_enabled(true, "ollama", false, None));
+        assert!(provider_is_enabled(
+            false,
+            "chatgpt",
+            false,
+            Some("authenticated")
+        ));
+        assert!(!provider_is_enabled(false, "openai", false, None));
     }
 
     #[test]
