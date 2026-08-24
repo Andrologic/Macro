@@ -609,6 +609,31 @@ const readPath = (value: unknown, path: readonly string[]): unknown => {
 const jsonEqual = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
+const serializeConfigPreference = (key: PrefKey, value: unknown): unknown => {
+  if (key !== PREF_KEYS.METADATA_MODEL_CONFIG || !isRecord(value)) return value;
+  if (value.mode === 'conversation') return null;
+  if (value.mode !== 'dedicated') return value;
+
+  return {
+    providerId: value.providerId,
+    modelId: value.modelId,
+    reasoningEffort: value.reasoningEffort ?? null,
+  };
+};
+
+const deserializeConfigPreference = (key: PrefKey, value: unknown): unknown => {
+  if (key !== PREF_KEYS.METADATA_MODEL_CONFIG || !isRecord(value)) return value;
+  if (value.mode === 'conversation' || value.mode === 'dedicated') return value;
+  if (typeof value.providerId !== 'string' || typeof value.modelId !== 'string') return value;
+
+  return {
+    mode: 'dedicated',
+    providerId: value.providerId,
+    modelId: value.modelId,
+    reasoningEffort: value.reasoningEffort ?? null,
+  };
+};
+
 const escapeJsonPointer = (segment: string): string =>
   segment.replace(/~/g, '~0').replace(/\//g, '~1');
 
@@ -678,7 +703,8 @@ const persistConfigPreference = async <T>(
   const sparse = isRecord(document.value) ? document.value : {};
   const topLevelKey = target.path[0];
   const defaultValue = PREF_DEFAULTS[key];
-  const shouldInherit = jsonEqual(value, defaultValue);
+  const persistedValue = serializeConfigPreference(key, value);
+  const shouldInherit = jsonEqual(persistedValue, defaultValue);
   const existingTopLevel = sparse[topLevelKey];
   let operation: 'add' | 'remove' | null = null;
   let operationValue: unknown;
@@ -686,9 +712,9 @@ const persistConfigPreference = async <T>(
   if (target.path.length === 1) {
     if (shouldInherit) {
       operation = topLevelKey in sparse ? 'remove' : null;
-    } else if (!jsonEqual(existingTopLevel, value)) {
+    } else if (!jsonEqual(existingTopLevel, persistedValue)) {
       operation = 'add';
-      operationValue = value;
+      operationValue = persistedValue;
     }
   } else {
     const nextTopLevel = isRecord(existingTopLevel) ? { ...existingTopLevel } : {};
@@ -696,7 +722,7 @@ const persistConfigPreference = async <T>(
     if (shouldInherit) {
       deleteNestedValue(nextTopLevel, nestedPath);
     } else {
-      writeNestedValue(nextTopLevel, nestedPath, value);
+      writeNestedValue(nextTopLevel, nestedPath, persistedValue);
     }
     if (Object.keys(nextTopLevel).length === 0) {
       operation = topLevelKey in sparse ? 'remove' : null;
@@ -807,7 +833,8 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
         configTarget.path,
         defaultValue,
       );
-      return isValidPreferenceValue(key, value) ? value : defaultValue;
+      const preferenceValue = deserializeConfigPreference(key, value);
+      return isValidPreferenceValue(key, preferenceValue) ? preferenceValue as T : defaultValue;
     }
     if (isStateManagerAvailable()) {
       const state = await getStateSnapshot();
@@ -845,7 +872,10 @@ export async function loadPersistedPreference<T>(
         .getState()
         .getDocument(configTarget.document);
       if (!document) return memoryPreferenceValues.get(key) as T | undefined;
-      return readPath(document.value, configTarget.path) as T | undefined;
+      return deserializeConfigPreference(
+        key,
+        readPath(document.value, configTarget.path),
+      ) as T | undefined;
     }
     const state = await getStateSnapshot();
     return (state.values[key] ?? memoryPreferenceValues.get(key)) as T | undefined;
