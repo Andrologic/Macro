@@ -284,6 +284,23 @@ export interface GitWorktreeInspectionDto {
   isDirty: boolean | null;
 }
 
+export interface GitAvailableWorktreeDto {
+  name: string;
+  path: string;
+  branchName: string;
+  isDirty: boolean;
+}
+
+export interface GitAvailableTaskBranchDto {
+  name: string;
+  commit: string;
+}
+
+export interface GitTaskStartPointsDto {
+  worktrees: GitAvailableWorktreeDto[];
+  branches: GitAvailableTaskBranchDto[];
+}
+
 export interface GitWorktreeEnsureDto {
   taskId: string;
   worktreePath: string;
@@ -2559,6 +2576,14 @@ export async function gitWorktreeInspect(params: {
   });
 }
 
+export async function gitTaskStartPoints(params: {
+  repoPath: string;
+}): Promise<GitTaskStartPointsDto> {
+  return invoke<GitTaskStartPointsDto>("git_task_start_points", {
+    repoPath: params.repoPath,
+  });
+}
+
 export async function gitWorktreeCreate(params: {
   repoPath: string;
   taskId: string;
@@ -3175,6 +3200,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
   title?: string | null;
   description?: string | null;
   taskKind: 'feature' | 'bugfix' | 'hotfix';
+  existingBranchName?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_create_manual_feature_draft",
@@ -3188,6 +3214,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
       title: params.title ?? null,
       description: params.description ?? null,
       taskKind: params.taskKind,
+      existingBranchName: params.existingBranchName ?? null,
     },
   );
 }

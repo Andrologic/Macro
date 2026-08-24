@@ -1983,6 +1983,7 @@ pub async fn create_manual_feature_draft(
     title: Option<&str>,
     description: Option<&str>,
     task_kind: &str,
+    existing_branch_name: Option<&str>,
 ) -> Result<ManualFeatureDto> {
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
@@ -2058,6 +2059,28 @@ pub async fn create_manual_feature_draft(
         )));
     }
 
+    let existing_branch_name = existing_branch_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let execution_targets = existing_branch_name
+        .and_then(|branch_name| {
+            let project_id = normalized_project_ids.first()?;
+            let project = state
+                .standalone_projects
+                .iter()
+                .find(|project| project.id == *project_id)
+                .or_else(|| find_project_by_id(&state.project_groups, project_id));
+            Some(vec![WorkspaceTaskExecutionTargetDto {
+                project_id: project_id.clone(),
+                branch_name: branch_name.to_string(),
+                target_branch_name: Some(normalize_base_branch(base_branch)),
+                execution_mode: Some("git".to_string()),
+                checkpoint_id: None,
+                worktree_key: to_branch_worktree_key(project_id, branch_name),
+                repo_path: project.map(|project| project.path.clone()),
+            }])
+        })
+        .unwrap_or_default();
     let now = Utc::now().to_rfc3339();
     let feature = ManualFeatureDto {
         id: normalized_task_id.to_string(),
@@ -2076,14 +2099,14 @@ pub async fn create_manual_feature_draft(
         status: "Pending".to_string(),
         feature_slug: None,
         task_kind: Some(normalized_task_kind.to_string()),
-        branch_name: None,
+        branch_name: existing_branch_name.map(str::to_string),
         archived_at: None,
         archive_reason: None,
         merged_at: None,
         base_branch: normalize_base_branch(base_branch),
         project_ids: normalized_project_ids,
         context_project_ids: normalized_context_project_ids,
-        execution_targets: Vec::new(),
+        execution_targets,
         merge_workflow: None,
         created_at: now.clone(),
         updated_at: now,
@@ -2199,15 +2222,20 @@ pub async fn finalize_manual_feature(
         feature.conversation_id = next_conversation_id.to_string();
     }
 
-    let execution_targets = build_manual_feature_execution_targets(
-        workspace_path,
-        task_id,
-        &feature.project_ids,
-        &normalized_feature_slug,
-        normalized_task_kind,
-        &standalone_projects,
-        &project_groups,
-    );
+    let execution_targets =
+        if feature.branch_name.is_some() && !feature.execution_targets.is_empty() {
+            feature.execution_targets.clone()
+        } else {
+            build_manual_feature_execution_targets(
+                workspace_path,
+                task_id,
+                &feature.project_ids,
+                &normalized_feature_slug,
+                normalized_task_kind,
+                &standalone_projects,
+                &project_groups,
+            )
+        };
     let branch_name = execution_targets
         .first()
         .map(|target| target.branch_name.clone())
@@ -10012,10 +10040,19 @@ mod tests {
             None,
             None,
             "feature",
+            Some("feature/external-editor"),
         )
         .await
         .expect("create draft");
         assert_eq!(draft.task_kind.as_deref(), Some("feature"));
+        assert_eq!(
+            draft.branch_name.as_deref(),
+            Some("feature/external-editor")
+        );
+        assert_eq!(
+            draft.execution_targets[0].branch_name,
+            "feature/external-editor"
+        );
 
         let finalized = finalize_manual_feature(
             temp.path(),
@@ -10030,6 +10067,10 @@ mod tests {
         .await
         .expect("finalize draft");
         assert_eq!(finalized.task_kind.as_deref(), Some("feature"));
+        assert_eq!(
+            finalized.branch_name.as_deref(),
+            Some("feature/external-editor")
+        );
 
         let reverted = revert_manual_feature_to_draft(
             temp.path(),
@@ -10090,6 +10131,7 @@ mod tests {
             Some("First direct task"),
             None,
             "feature",
+            None,
         )
         .await
         .expect("create first direct task");
@@ -10143,6 +10185,7 @@ mod tests {
             Some("Second direct task"),
             None,
             "feature",
+            None,
         )
         .await
         .expect_err("second direct task should be rejected");

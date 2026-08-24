@@ -1756,6 +1756,7 @@ interface TaskStore {
     title?: string | null;
     description?: string | null;
     taskKind: import('../types').StandaloneTaskKind;
+    existingBranchName?: string | null;
   }) => Promise<void>;
   finalizeManualFeatureDraft: (params: {
     taskId: string;
@@ -2878,7 +2879,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(executionTask);
     const branchName = primaryTarget?.branchName || executionTask.assigned_branch;
     const knownWorktree = primaryTarget
-      ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
+      ? task.draft && task.branch_name
+        ? await ensureTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
+        : await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
     if (requestId !== taskActivationRequestId) return;
     if (knownWorktree) {
@@ -2940,6 +2943,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         title: params.title ?? null,
         description: params.description ?? null,
         taskKind: params.taskKind,
+        existingBranchName: params.existingBranchName ?? null,
       });
       draftCreated = true;
 
