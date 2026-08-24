@@ -44,6 +44,9 @@ interface CitationsState {
     filter?: (citation: Citation) => boolean,
   ) => Promise<Citation[]>;
   addCitation: (citation: Omit<Citation, 'id' | 'timestamp'>) => string;
+  addCitationAndPersist: (
+    citation: Omit<Citation, 'id' | 'timestamp'>,
+  ) => Promise<string>;
   addSourcePassage: (payload: {
     conversationId: string;
     messageId: string;
@@ -139,11 +142,31 @@ const toDbCitationInput = (citation: Citation): tauriIpc.DbUpsertConversationCit
   timestamp: citation.timestamp,
 });
 
-const persistCitationAsync = (citation: Citation): void => {
+const persistCitation = async (citation: Citation): Promise<void> => {
   if (!tauriIpc.isTauriAvailable()) return;
-  void tauriIpc.upsertConversationCitation(toDbCitationInput(citation)).catch((error) => {
+  await tauriIpc.upsertConversationCitation(toDbCitationInput(citation));
+};
+
+const citationPersistencePromisesById = new Map<string, Promise<void>>();
+
+const persistCitationAsync = (citation: Citation): void => {
+  const persistence = persistCitation(citation);
+  citationPersistencePromisesById.set(citation.id, persistence);
+  void persistence.catch((error) => {
     console.warn('[citations] Failed to persist citation:', error);
   });
+  void persistence.then(
+    () => {
+      if (citationPersistencePromisesById.get(citation.id) === persistence) {
+        citationPersistencePromisesById.delete(citation.id);
+      }
+    },
+    () => {
+      if (citationPersistencePromisesById.get(citation.id) === persistence) {
+        citationPersistencePromisesById.delete(citation.id);
+      }
+    },
+  );
 };
 
 const deletePersistedCitationAsync = (id: string): void => {
@@ -281,6 +304,32 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     persistCitationAsync(citation);
     
     return id;
+  },
+
+  addCitationAndPersist: async (citationData) => {
+    if (!tauriIpc.isTauriAvailable()) {
+      throw new Error('Durable citation persistence requires the Tauri runtime.');
+    }
+    const citationsBeforeAdd = get().citations;
+    const id = get().addCitation(citationData);
+    const citation = get().citations.find((candidate) => candidate.id === id);
+    if (!citation) {
+      throw new Error(`Citation ${id} disappeared before persistence.`);
+    }
+    try {
+      await (citationPersistencePromisesById.get(id) ?? persistCitation(citation));
+      return id;
+    } catch (error) {
+      const previousCitation = citationsBeforeAdd.find((candidate) => candidate.id === id);
+      set((state) => ({
+        citations: previousCitation
+          ? state.citations.map((candidate) =>
+              candidate.id === id ? previousCitation : candidate
+            )
+          : state.citations.filter((candidate) => candidate.id !== id),
+      }));
+      throw error;
+    }
   },
 
   addSourcePassage: ({ conversationId, messageId, title, passage, source, url, kind = 'used', reason }) => {

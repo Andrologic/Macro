@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type {
   AgentType,
   AppMode,
@@ -372,12 +372,15 @@ type TestCitation = {
   timestamp: string;
   url?: string;
   path?: string;
+  language?: string;
+  sizeBytes?: number;
   kind?: 'interesting' | 'used';
   reason?: string;
 };
 
 let citationCounter = 0;
 let citationRecords: TestCitation[] = [];
+let citationPersistenceError: Error | null = null;
 
 const createCitationId = () => `cite-test-${++citationCounter}`;
 
@@ -885,6 +888,14 @@ const fsReadFileWithOptionsMock = mock(async (_params: {
   size: 30,
   encoding: 'utf-8',
 }));
+const fsExistsMock = mock(async () => true);
+const fsWriteFileMock = mock(async (params: { path: string; content: string }) => ({
+  path: params.path,
+  bytes_written: new TextEncoder().encode(params.content).length,
+  created: false,
+  revision: 'written-revision',
+}));
+const fsDeleteMock = mock(async () => undefined);
 let streamingWebSearchConfig = {
   enableWebSearch: false,
   enableWebFetch: false,
@@ -1043,6 +1054,9 @@ const dbSetAppSettingMock = mock(async ({ key, valueJson }: {
 }) => {
   appSettingValues.set(key, valueJson);
 });
+const dbDeleteAppSettingMock = mock(async (key: string) =>
+  appSettingValues.delete(key)
+);
 const listMessagesMock = mock(async (conversationId: string) =>
   chatSnapshotMessages.filter((message) => message.conversation_id === conversationId)
 );
@@ -1320,13 +1334,15 @@ const terminalReadSessionFromChatMock = mock(async (sessionId: string) => {
   terminalSessionsFromChat.set(sessionId, session);
   return session;
 });
-const terminalKillSessionFromChatMock = mock(async (sessionId: string) => {
-  const session = terminalSessionsFromChat.get(sessionId);
-  if (!session) {
-    throw new Error(`Unknown terminal session ${sessionId}`);
+const terminalKillSessionFromChatMock = mock(
+  async (sessionId: string, _executionId?: string | null) => {
+    const session = terminalSessionsFromChat.get(sessionId);
+    if (!session) {
+      throw new Error(`Unknown terminal session ${sessionId}`);
+    }
+    return { ...session, status: 'killed' };
   }
-  return { ...session, status: 'killed' };
-});
+);
 const terminalRunCommandFromChatMock = mock(
   async ({
     sessionId,
@@ -1336,6 +1352,7 @@ const terminalRunCommandFromChatMock = mock(
     sessionId: string;
     command: string;
     timeoutMs?: number | null;
+    executionId?: string | null;
   }) => ({
     id: sessionId,
     command,
@@ -1484,6 +1501,18 @@ const registerUseChatStoreMocks = async () => {
               (!filter || filter(citation)),
           ),
         addCitation: (citation: Omit<TestCitation, 'id' | 'timestamp'>) => {
+          const id = createCitationId();
+          citationRecords.push({
+            ...citation,
+            id,
+            timestamp: new Date().toISOString(),
+          });
+          return id;
+        },
+        addCitationAndPersist: async (
+          citation: Omit<TestCitation, 'id' | 'timestamp'>,
+        ) => {
+          if (citationPersistenceError) throw citationPersistenceError;
           const id = createCitationId();
           citationRecords.push({
             ...citation,
@@ -1696,6 +1725,9 @@ const registerUseChatStoreMocks = async () => {
 
   mock.module('../services/workspaceToolExecutor', () => ({
     executeWorkspaceTool: executeWorkspaceToolMock,
+    resolveMutatingToolApprovalScope: mock((_toolName: string, args: Record<string, unknown>) =>
+      typeof args.project_id === 'string' ? `project:${args.project_id}` : 'project:project-1'
+    ),
     resolveExplicitMutatingToolProjectTargets: mock((_toolName: string, args: Record<string, unknown>) => {
       if (typeof args.project_id === 'string') {
         return [args.project_id];
@@ -1774,6 +1806,7 @@ const registerUseChatStoreMocks = async () => {
     deleteConversations: deleteConversationsMock,
     dbGetAppSetting: dbGetAppSettingMock,
     dbSetAppSetting: dbSetAppSettingMock,
+    dbDeleteAppSetting: dbDeleteAppSettingMock,
     gitBranchList: gitBranchListMock,
     getChatBootstrapSnapshot: getChatBootstrapSnapshotMock,
     getChatSnapshot: getChatSnapshotMock,
@@ -1807,8 +1840,11 @@ const registerUseChatStoreMocks = async () => {
 	      exitCode: 0,
 	      timedOut: false,
 	      truncated: false,
-	    }),
+    }),
+    fsExists: fsExistsMock,
     fsReadFileWithOptions: fsReadFileWithOptionsMock,
+	    fsWriteFile: fsWriteFileMock,
+	    fsDelete: fsDeleteMock,
 	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
     dbTrimConversationReplay: dbTrimConversationReplayMock,
@@ -2463,6 +2499,9 @@ const useChatStoreScenarioContext = {
   fetchWebPageMock,
   flushAsyncWork,
   fsReadFileWithOptionsMock,
+  fsExistsMock,
+  fsWriteFileMock,
+  fsDeleteMock,
   expectArchitectSelection,
   getArchitectPlanActivationPayloadMock,
   getArchitectPlanMock,
@@ -2658,6 +2697,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     taskStoreState.deleteManualFeatureDraft.mockClear();
     citationCounter = 0;
     citationRecords = [];
+    citationPersistenceError = null;
     ensureCitationContentLoadedMock.mockClear();
     ensureCitationContentLoadedMock.mockImplementation(async (id: string) =>
       citationRecords.find((citation) => citation.id === id) ?? null
@@ -2671,6 +2711,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appSettingValues.clear();
     dbGetAppSettingMock.mockClear();
     dbSetAppSettingMock.mockClear();
+    dbDeleteAppSettingMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();
     getArchitectPlanChatTranscriptMock.mockClear();
@@ -2684,6 +2725,24 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     webSearchMock.mockClear();
     fetchWebPageMock.mockClear();
     fsReadFileWithOptionsMock.mockClear();
+    fsReadFileWithOptionsMock.mockImplementation(async () => ({
+      content: 'Workspace file body from disk.',
+      language: 'typescript',
+      is_binary: false,
+      size: 30,
+      encoding: 'utf-8',
+    }));
+    fsExistsMock.mockClear();
+    fsExistsMock.mockImplementation(async () => true);
+    fsWriteFileMock.mockClear();
+    fsWriteFileMock.mockImplementation(async (params) => ({
+      path: params.path,
+      bytes_written: new TextEncoder().encode(params.content).length,
+      created: false,
+      revision: 'written-revision',
+    }));
+    fsDeleteMock.mockClear();
+    fsDeleteMock.mockImplementation(async () => undefined);
     streamingWebSearchConfig = {
       enableWebSearch: false,
       enableWebFetch: false,
@@ -2788,6 +2847,327 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('kills an active terminal_run when its conversation generation is stopped', async () => {
+    const { useChatStore, onToolCall } = await startImplementToolConversation(
+      'Lance les tests dans le terminal.',
+    );
+    terminalSessionsFromChat.set(
+      'session-1',
+      createTerminalSessionFromChatDto({
+        sessionId: 'session-1',
+        projectId: null,
+      }),
+    );
+    const commandFinished = createDeferred<{
+      id: string;
+      command: string;
+      timeout_ms: number | null;
+      status: string;
+      output: string;
+      exit_code: null;
+      timed_out: boolean;
+      updated_at: string;
+    }>();
+    terminalRunCommandFromChatMock.mockImplementationOnce(
+      async () => commandFinished.promise,
+    );
+    terminalKillSessionFromChatMock.mockImplementationOnce(async () => {
+      const commandResult = {
+        id: 'session-1',
+        command: 'bun test',
+        timeout_ms: null,
+        status: 'killed',
+        output: '',
+        exit_code: null,
+        timed_out: false,
+        updated_at: '2026-03-26T10:00:00.000Z',
+      };
+      commandFinished.resolve(commandResult);
+      return {
+        ...terminalSessionsFromChat.get('session-1')!,
+        status: 'killed',
+      };
+    });
+
+    const toolCall = onToolCall(
+      'terminal_run',
+      { session_id: 'session-1', command: 'bun test' },
+      'terminal-run-cancelled',
+    );
+    await flushAsyncWork();
+    useChatStore
+      .getState()
+      .approvePendingToolApprovalForConversation('implement-conv');
+    await flushAsyncWork();
+
+    useChatStore.getState().stopConversationStream('implement-conv');
+    await toolCall;
+
+    expect(terminalKillSessionFromChatMock).toHaveBeenCalledWith(
+      'session-1',
+      expect.any(String),
+    );
+    expect(terminalRunCommandFromChatMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: expect.any(String) }),
+    );
+  });
+
+  it('spills oversized tool output to a recoverable conversation artifact', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une très grosse sortie.',
+    );
+    const fullOutput = `BEGIN-${'x'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => fullOutput) as unknown as () => Promise<undefined>,
+    );
+
+    const preview = String(
+      await onToolCall('grep', { query: 'needle' }, 'large-output-call'),
+    );
+    const artifactPath = preview.match(/^Full output: (tool-output:\/\/\S+)$/m)?.[1];
+    const artifact = citationRecords.find(
+      (citation) => citation.path === artifactPath,
+    );
+
+    expect(artifactPath).toBeTruthy();
+    expect(artifact?.content).toBe(fullOutput);
+    expect(artifact?.sizeBytes).toBe(new TextEncoder().encode(fullOutput).byteLength);
+    expect(new TextEncoder().encode(preview).byteLength).toBeLessThan(50 * 1024);
+
+    const firstPage = String(
+      await onToolCall(
+        'read_file',
+        { file: artifactPath, raw: true, max_bytes: 10_000 },
+        'read-large-output-1',
+      ),
+    );
+    const cursor = firstPage.match(/^NEXT_CURSOR: (.+)$/m)?.[1];
+    const firstContent = firstPage.match(
+      /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
+    )?.[1];
+    let recovered = firstContent ?? '';
+    let nextCursor = cursor;
+    let pageIndex = 2;
+    while (nextCursor) {
+      const page = String(
+        await onToolCall(
+          'read_file',
+          {
+            file: artifactPath,
+            raw: true,
+            max_bytes: 256_000,
+            cursor: nextCursor,
+          },
+          `read-large-output-${pageIndex}`,
+        ),
+      );
+      recovered += page.match(
+        /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
+      )?.[1] ?? '';
+      nextCursor = page.match(/^NEXT_CURSOR: (.+)$/m)?.[1];
+      if (nextCursor === 'none') nextCursor = undefined;
+      pageIndex += 1;
+    }
+    expect(recovered).toBe(fullOutput);
+    expect(pageIndex).toBeGreaterThan(3);
+  });
+
+  it('does not publish a tool-output URI when durable artifact persistence fails', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une sortie dont la persistance échoue.',
+    );
+    const fullOutput = `BEGIN-${'x'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => fullOutput) as unknown as () => Promise<undefined>,
+    );
+    citationPersistenceError = new Error('injected citation persistence failure');
+
+    const preview = String(
+      await onToolCall('grep', { query: 'needle' }, 'failed-large-output'),
+    );
+
+    expect(preview).toContain('Full output unavailable');
+    expect(preview).not.toContain('tool-output://');
+    expect(citationRecords).toEqual([]);
+    expect(new TextEncoder().encode(preview).byteLength).toBeLessThan(50 * 1024);
+  });
+
+  it('allocates distinct artifacts for oversized tool results without call ids', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte deux grosses sorties internes.',
+    );
+    const oversizedOutput = async () => `BEGIN-${'x'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock
+      .mockImplementationOnce(oversizedOutput as unknown as () => Promise<undefined>)
+      .mockImplementationOnce(oversizedOutput as unknown as () => Promise<undefined>);
+
+    await onToolCall('grep', { query: 'first' }, undefined);
+    await onToolCall('grep', { query: 'second' }, undefined);
+
+    const paths = citationRecords
+      .map((citation) => citation.path)
+      .filter((path): path is string => path?.startsWith('tool-output://') ?? false);
+    expect(paths).toHaveLength(2);
+    expect(new Set(paths).size).toBe(2);
+  });
+
+  it('allocates a fresh artifact when the same tool call id is retried', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Réessaie une grosse sortie avec le même identifiant.',
+    );
+    const firstOutput = `FIRST-${'a'.repeat(60_000)}-END`;
+    const secondOutput = `SECOND-${'b'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock
+      .mockImplementationOnce((async () => firstOutput) as unknown as () => Promise<undefined>)
+      .mockImplementationOnce((async () => secondOutput) as unknown as () => Promise<undefined>);
+
+    const firstPreview = String(
+      await onToolCall('grep', { query: 'first' }, 'retried-tool-call'),
+    );
+    const secondPreview = String(
+      await onToolCall('grep', { query: 'second' }, 'retried-tool-call'),
+    );
+    const firstPath = firstPreview.match(/^Full output: (tool-output:\/\/\S+)$/m)?.[1];
+    const secondPath = secondPreview.match(/^Full output: (tool-output:\/\/\S+)$/m)?.[1];
+
+    expect(firstPath).toBeTruthy();
+    expect(secondPath).toBeTruthy();
+    expect(secondPath).not.toBe(firstPath);
+    expect(citationRecords.find((citation) => citation.path === firstPath)?.content).toBe(
+      firstOutput,
+    );
+    expect(citationRecords.find((citation) => citation.path === secondPath)?.content).toBe(
+      secondOutput,
+    );
+    const recoveredSecond = String(
+      await onToolCall(
+        'read_file',
+        { file: secondPath, raw: true, max_bytes: 256_000 },
+        'read-retried-tool-call',
+      ),
+    );
+    expect(recoveredSecond).toContain('SECOND-');
+    expect(recoveredSecond).not.toContain('FIRST-');
+  });
+
+  it('persists oversized tool execution errors behind a recoverable bounded artifact', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une très grosse erreur.',
+    );
+    const fullErrorText = `BEGIN-${'y'.repeat(60_000)}-END`;
+    const oversizedError = new Error(fullErrorText);
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => {
+        throw oversizedError;
+      }) as unknown as () => Promise<undefined>,
+    );
+
+    let caught: unknown;
+    try {
+      await onToolCall('grep', { query: 'needle' }, 'large-error-call');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(oversizedError);
+    const boundedMessage = caught instanceof Error ? caught.message : '';
+    expect(boundedMessage.startsWith('Error executing tool')).toBe(false);
+    expect(boundedMessage).toContain('BEGIN-');
+    expect(boundedMessage.trim().endsWith('-END')).toBe(true);
+    expect(new TextEncoder().encode(boundedMessage).byteLength).toBeLessThan(
+      50 * 1024,
+    );
+
+    const artifactPath = boundedMessage.match(
+      /^Full output: (tool-output:\/\/\S+)$/m,
+    )?.[1];
+    expect(artifactPath).toBeTruthy();
+    const artifact = citationRecords.find(
+      (citation) => citation.path === artifactPath,
+    );
+    expect(artifact?.content).toBe(fullErrorText);
+    expect(artifact?.sizeBytes).toBe(
+      new TextEncoder().encode(fullErrorText).byteLength,
+    );
+
+    let recovered = '';
+    let nextCursor: string | undefined;
+    let pageIndex = 1;
+    while (pageIndex === 1 || nextCursor) {
+      const page = String(
+        await onToolCall(
+          'read_file',
+          {
+            file: artifactPath,
+            raw: true,
+            max_bytes: pageIndex === 1 ? 10_000 : 256_000,
+            cursor: pageIndex === 1 ? undefined : nextCursor,
+          },
+          `read-large-error-${pageIndex}`,
+        ),
+      );
+      recovered += page.match(
+        /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
+      )?.[1] ?? '';
+      nextCursor = page.match(/^NEXT_CURSOR: (.+)$/m)?.[1];
+      if (nextCursor === 'none') nextCursor = undefined;
+      pageIndex += 1;
+    }
+    expect(recovered).toBe(fullErrorText);
+  });
+
+  it('does not announce an artifact URI when persisting an oversized tool error fails', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une grosse erreur dont la persistance échoue.',
+    );
+    const fullErrorText = `BEGIN-${'y'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => {
+        throw new Error(fullErrorText);
+      }) as unknown as () => Promise<undefined>,
+    );
+    citationPersistenceError = new Error('injected citation persistence failure');
+
+    let caught: unknown;
+    try {
+      await onToolCall('grep', { query: 'needle' }, 'failed-large-error');
+    } catch (error) {
+      caught = error;
+    }
+    const boundedMessage = caught instanceof Error ? caught.message : '';
+    expect(boundedMessage).toContain('Full output unavailable');
+    expect(boundedMessage).not.toContain('tool-output://');
+    expect(citationRecords).toEqual([]);
+    expect(new TextEncoder().encode(boundedMessage).byteLength).toBeLessThan(
+      50 * 1024,
+    );
+  });
+
+  it('leaves small tool execution errors untouched', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une petite erreur.',
+    );
+    const smallError = new Error('tiny tool failure');
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => {
+        throw smallError;
+      }) as unknown as () => Promise<undefined>,
+    );
+
+    let caught: unknown;
+    try {
+      await onToolCall('grep', { query: 'needle' }, 'small-error-call');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(smallError);
+    expect(
+      citationRecords.some((citation) =>
+        citation.path?.startsWith('tool-output://') ?? false,
+      ),
+    ).toBe(false);
   });
 
   registerConversationSelectionScenarios(useChatStoreScenarioContext);

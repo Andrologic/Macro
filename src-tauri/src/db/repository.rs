@@ -453,10 +453,16 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     // can replay them. They have no foreign key, therefore delete them in the
     // same transaction as their owning conversations.
     for id in ids {
-        sqlx::query("DELETE FROM app_settings WHERE key = ?")
-            .bind(format!("agentCodeCheckpoints:{}", id))
-            .execute(&mut *tx)
-            .await?;
+        for key in [
+            format!("agentCodeCheckpoints:{}", id),
+            format!("agentCodeReplayRecovery:{}", id),
+            replay_recovery_key(id),
+        ] {
+            sqlx::query("DELETE FROM app_settings WHERE key = ?")
+                .bind(key)
+                .execute(&mut *tx)
+                .await?;
+        }
     }
     // The only generated fragments are bind placeholders; all values remain bound.
     let mut statement = sqlx::query(sqlx::AssertSqlSafe(query));
@@ -467,6 +473,14 @@ pub async fn delete_conversations(pool: &SqlitePool, ids: &[String]) -> DbResult
     tx.commit().await?;
 
     Ok(())
+}
+
+pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> {
+    let result = sqlx::query("DELETE FROM app_settings WHERE key = ?")
+        .bind(key)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn toggle_pin_conversation(pool: &SqlitePool, id: &str) -> DbResult<bool> {

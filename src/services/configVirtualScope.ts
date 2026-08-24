@@ -9,7 +9,6 @@ import {
 } from './configurationClient';
 import { loadValidProjectRegistrySnapshot } from './validProjectRegistry';
 import type { ParsedPatchOperation } from './workspaceToolExecutor';
-import * as workspaceToolExecutor from './workspaceToolExecutor';
 
 const USER_DOCUMENTS = new Set<ConfigDocumentKind>([
   'runtime',
@@ -144,7 +143,8 @@ const applyConfigTextPatch = async (operation: ParsedPatchOperation): Promise<st
     throw new Error(`${target.path} already exists. Use an update section or config_patch.`);
   }
   const current = await configurationGetDocument(target.kind, target.scope);
-  const updatedContent = workspaceToolExecutor.applyPatchHunksToContent(
+  const { applyPatchHunksToContent } = await import('./workspaceToolExecutor');
+  const updatedContent = applyPatchHunksToContent(
     target.path,
     formatDocument(current),
     operation.hunks,
@@ -159,7 +159,8 @@ export const handleConfigVirtualScopeToolCall = async (
   if (toolName === 'apply_patch') {
     const patchText = typeof args.patch_text === 'string' ? args.patch_text : '';
     if (!patchText.includes('@config/')) return undefined;
-    const operations = workspaceToolExecutor.parseApplyPatch(patchText);
+    const { parseApplyPatch } = await import('./workspaceToolExecutor');
+    const operations = parseApplyPatch(patchText);
     if (operations.some((operation) => !isConfigVirtualPath(operation.path))) {
       throw new Error('A single apply_patch call cannot mix @config and workspace files.');
     }

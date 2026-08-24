@@ -11,7 +11,17 @@ pub struct ToolValidationResult {
 pub struct ToolModePolicyResult {
     pub allowed_tool_ids: Vec<String>,
     pub enforce_macro_only_writes: bool,
+    pub capabilities: Vec<String>,
 }
+
+const TOOL_MODE_CAPABILITIES: &[&str] = &[
+    "content_revisions_v1",
+    "bounded_tool_output_v1",
+    "bounded_git_output_v1",
+    "structural_search_v1",
+    "recoverable_checkpoints_v1",
+    "idempotent_tool_execution_v1",
+];
 
 fn architect_allowed_tool_ids() -> &'static [&'static str] {
     &[
@@ -30,6 +40,7 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "read",
         "glob",
         "grep",
+        "ast_grep",
         "write",
         "edit",
         "delete",
@@ -107,6 +118,7 @@ fn implement_allowed_tool_ids() -> &'static [&'static str] {
         "read",
         "glob",
         "grep",
+        "ast_grep",
         "write",
         "edit",
         "delete",
@@ -218,12 +230,20 @@ pub fn get_mode_policy(mode: &str) -> ToolModePolicyResult {
         return ToolModePolicyResult {
             allowed_tool_ids: vec![],
             enforce_macro_only_writes: false,
+            capabilities: TOOL_MODE_CAPABILITIES
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
         };
     };
 
     ToolModePolicyResult {
         allowed_tool_ids: allowed_tool_ids.iter().map(|id| id.to_string()).collect(),
         enforce_macro_only_writes,
+        capabilities: TOOL_MODE_CAPABILITIES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
     }
 }
 
@@ -358,12 +378,17 @@ mod tests {
     fn architect_policy_exposes_question_tool() {
         let policy = get_mode_policy("Architect");
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy.allowed_tool_ids.contains(&"ast_grep".to_string()));
+        assert!(policy
+            .capabilities
+            .contains(&"structural_search_v1".to_string()));
     }
 
     #[test]
     fn implement_policy_exposes_question_tool() {
         let policy = get_mode_policy("Implement");
         assert!(policy.allowed_tool_ids.contains(&"question".to_string()));
+        assert!(policy.allowed_tool_ids.contains(&"ast_grep".to_string()));
     }
 
     #[test]

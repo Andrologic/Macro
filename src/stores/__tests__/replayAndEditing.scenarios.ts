@@ -18,12 +18,168 @@ export const registerReplayAndEditingScenarios = (
     dbRestoreConversationReplayMock,
     deleteMessagesAfterMock,
     flushAsyncWork,
+    fsExistsMock,
+    fsReadFileWithOptionsMock,
+    fsWriteFileMock,
     loadChatStore,
     streamChatMock,
     updateMessageMock,
   } = context;
 
   describe('useChatStore replay and editing', () => {
+    it('durably rolls back a confirmed code rewind before a replay launches', async () => {
+      context.tauriAvailable = true;
+      let diskContent = 'original';
+      let diskRevision = 'original-revision';
+      fsExistsMock.mockImplementation(async () => true);
+      fsReadFileWithOptionsMock.mockImplementation(async () => ({
+        content: diskContent,
+        revision: diskRevision,
+        language: 'typescript',
+        is_binary: false,
+        size: diskContent.length,
+        encoding: 'utf-8',
+      }));
+      fsWriteFileMock.mockImplementation(async (params) => {
+        diskContent = params.content;
+        diskRevision = params.content === 'original'
+          ? 'original-revision'
+          : 'rewound-revision';
+        return {
+          path: params.path,
+          bytes_written: params.content.length,
+          created: false,
+          revision: diskRevision,
+        };
+      });
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().restoreAgentCodeForReplay({
+        conversationId: 'chat-conv',
+        messageId: 'user-1',
+        targetCheckpointId: null,
+        affectedFiles: [
+          {
+            path: 'src/file.ts',
+            realPath: '/repos/web/src/file.ts',
+            action: 'modify',
+            status: 'modified',
+            workspacePath: '/repos/web',
+            target: {
+              exists: true,
+              content: 'rewound',
+              revision: 'rewound-revision',
+            },
+            current: {
+              exists: true,
+              content: 'original',
+              revision: 'original-revision',
+            },
+          },
+        ],
+      });
+
+      expect(diskContent).toBe('rewound');
+      expect(JSON.parse(
+        context.appSettingValues.get('agentCodeReplayRecovery:chat-conv') ?? '{}',
+      )).toMatchObject({ phase: 'pending', conversationId: 'chat-conv' });
+
+      await useChatStore.getState().rollbackPendingAgentCodeReplay('chat-conv');
+
+      expect(diskContent).toBe('original');
+      expect(
+        context.appSettingValues.has('agentCodeReplayRecovery:chat-conv'),
+      ).toBe(false);
+    });
+
+    it('waits for a launched replay and restores its code before deleting the conversation', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      let diskContent = 'original';
+      let diskRevision = 'original-revision';
+      fsExistsMock.mockImplementation(async () => true);
+      fsReadFileWithOptionsMock.mockImplementation(async () => ({
+        content: diskContent,
+        revision: diskRevision,
+        language: 'typescript',
+        is_binary: false,
+        size: diskContent.length,
+        encoding: 'utf-8',
+      }));
+      fsWriteFileMock.mockImplementation(async (params) => {
+        diskContent = params.content;
+        diskRevision = params.content === 'original'
+          ? 'original-revision'
+          : 'rewound-revision';
+        return {
+          path: params.path,
+          bytes_written: params.content.length,
+          created: false,
+          revision: diskRevision,
+        };
+      });
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as { signal?: AbortSignal };
+        await new Promise<void>((resolve) => {
+          if (options.signal?.aborted) {
+            resolve();
+            return;
+          }
+          options.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return { usage: null };
+      }) as unknown as typeof streamChatMock);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{ ...createConversation('chat-conv', ''), scope_mode: 'Chat' }],
+        messages: [
+          { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+          { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+        ],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      }));
+      await useChatStore.getState().restoreAgentCodeForReplay({
+        conversationId: 'chat-conv',
+        messageId: 'replay-user',
+        targetCheckpointId: null,
+        affectedFiles: [
+          {
+            path: 'src/file.ts',
+            realPath: '/repos/web/src/file.ts',
+            action: 'modify',
+            status: 'modified',
+            workspacePath: '/repos/web',
+            target: {
+              exists: true,
+              content: 'rewound',
+              revision: 'rewound-revision',
+            },
+            current: {
+              exists: true,
+              content: 'original',
+              revision: 'original-revision',
+            },
+          },
+        ],
+      });
+
+      await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+        skipAgentCodeReplayCheck: true,
+      });
+      expect(dbMarkConversationReplayLaunchedMock).toHaveBeenCalledTimes(1);
+      expect(diskContent).toBe('rewound');
+
+      await useChatStore.getState().deleteConversation('chat-conv');
+
+      expect(diskContent).toBe('original');
+      expect(
+        context.appSettingValues.has('agentCodeReplayRecovery:chat-conv'),
+      ).toBe(false);
+      expect(useChatStore.getState().conversations).toEqual([]);
+    });
+
     it('replaces an edited questionnaire response, trims later messages, and restarts the chat from the updated answer', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';
@@ -356,6 +512,58 @@ export const registerReplayAndEditingScenarios = (
           id: 'other-compaction',
         }),
       ]);
+    });
+
+    it('preserves the durable checkpoint compaction frontier in an atomic replay trim', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const checkpoint: AgentCodeCheckpoint = {
+        id: 'checkpoint-2',
+        conversationId: 'chat-conv',
+        assistantMessageId: 'replay-assistant',
+        toolCallId: 'call-2',
+        toolName: 'write',
+        sequence: 2,
+        createdAt: '2026-04-14T10:01:00.000Z',
+        files: [],
+      };
+      context.appSettingValues.set(
+        'agentCodeCheckpoints:chat-conv',
+        JSON.stringify({
+          version: 2,
+          checkpoints: [checkpoint],
+          oldestCompleteSequence: 2,
+        }),
+      );
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-conv', '')],
+        messages: [
+          { id: 'replay-user', task_id: '', conversation_id: 'chat-conv', role: 'user', content: 'Original request', timestamp: '2026-04-14T10:00:00.000Z' },
+          { id: 'replay-assistant', task_id: '', conversation_id: 'chat-conv', role: 'assistant', content: 'Existing answer', timestamp: '2026-04-14T10:01:00.000Z' },
+        ],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        agentCodeCheckpointsByConversationId: { 'chat-conv': [checkpoint] },
+      }));
+
+      await useChatStore.getState().editMessage('replay-user', 'Updated request', {
+        skipAgentCodeReplayCheck: true,
+      });
+
+      const prepareCalls = (dbPrepareConversationReplayMock as unknown as {
+        mock: { calls: Array<Array<unknown>> };
+      }).mock.calls;
+      const call = prepareCalls.at(-1)?.[0] as
+        | { codeCheckpointsJson?: string | null }
+        | undefined;
+      const persisted = JSON.parse(call?.codeCheckpointsJson ?? 'null');
+      expect(persisted).toEqual({
+        version: 2,
+        checkpoints: [],
+        oldestCompleteSequence: 2,
+      });
     });
 
     it('keeps the transcript tail in state when the atomic replay trim fails', async () => {

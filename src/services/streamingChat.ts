@@ -38,6 +38,7 @@ import type {
 } from '../types';
 import { devLogger } from '../utils/devLogger';
 import { useProviderStore } from '../stores/useProviderStore';
+import { formatConversationFilePage } from './conversationFileTool';
 
 interface ActiveStreamResources {
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
@@ -3149,6 +3150,8 @@ const streamChatViaNativeToolCallingProvider = async (
                 path: requestedRaw,
                 start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
                 end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
+                max_lines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
+                cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
               });
 
               if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
@@ -3198,17 +3201,21 @@ const streamChatViaNativeToolCallingProvider = async (
                 } else {
                   const label = contextMatch.path || contextMatch.title || contextMatch.source;
                   const content = (contextMatch.content || contextMatch.snippet || '').trim();
-                  const base = content
-                    ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
-                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
-
                   const isDocx = /\.docx$/i.test(label || '');
                   const extractNotice =
                     extractText && isDocx
-                      ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                      ? 'Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
                       : '';
 
-                  toolResult = `${base}${extractNotice}`;
+                  toolResult = content
+                    ? formatConversationFilePage({
+                        label,
+                        source: 'CONTEXT_SNIPPET',
+                        content,
+                        args,
+                        notice: extractNotice,
+                      })
+                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ''}`;
                 }
               }
             }
@@ -4033,6 +4040,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                   path: requestedRaw,
                   start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
                   end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
+                  max_lines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
+                  cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
                 });
 
                 if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
@@ -4083,17 +4092,21 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 } else {
                   const label = match.path || match.title || match.source;
                   const content = (match.content || match.snippet || '').trim();
-                  const base = content
-                    ? `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\n${content}`
-                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.`;
-
                   const isDocx = /\.docx$/i.test(label || '');
                   const extractNotice =
                     extractText && isDocx
-                      ? '\n\nNote: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
+                      ? 'Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
                       : '';
 
-                  toolResult = `${base}${extractNotice}`;
+                  toolResult = content
+                    ? formatConversationFilePage({
+                        label,
+                        source: 'CONTEXT_SNIPPET',
+                        content,
+                        args,
+                        notice: extractNotice,
+                      })
+                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ''}`;
                 }
               }
             }

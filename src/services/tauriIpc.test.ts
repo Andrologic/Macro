@@ -23,6 +23,43 @@ const loadTauriIpc = async () => {
   return import(`./tauriIpc.ts?test=${tauriIpcImportCounter}`);
 };
 
+describe("tauriIpc confined web fetch", () => {
+  beforeEach(() => {
+    invokeCalls.length = 0;
+    invokeMock.mockClear();
+  });
+
+  it("routes page and favicon downloads through the native command", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.webFetchExecute({
+      url: "https://example.com/page",
+      resourceKind: "page",
+    });
+    await tauriIpc.webFetchExecute({
+      url: "https://example.com/favicon.ico",
+      resourceKind: "favicon",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "web_fetch_execute",
+        payload: {
+          url: "https://example.com/page",
+          resourceKind: "page",
+        },
+      },
+      {
+        command: "web_fetch_execute",
+        payload: {
+          url: "https://example.com/favicon.ico",
+          resourceKind: "favicon",
+        },
+      },
+    ]);
+  });
+});
+
 describe("tauriIpc executeWorkspaceTool", () => {
   beforeEach(() => {
     invokeCalls.length = 0;
@@ -51,6 +88,53 @@ describe("tauriIpc executeWorkspaceTool", () => {
           projectMounts: [],
           virtualRootEnabled: null,
           focusedProjectId: null,
+          executionId: null,
+        },
+      },
+    ]);
+  });
+
+  it("passes the execution id to workspace execution and cancellation commands", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.executeWorkspaceTool({
+      mode: "Implement",
+      toolId: "grep",
+      args: { query: "needle" },
+      executionId: "execution-123",
+    });
+    await tauriIpc.cancelWorkspaceTool("execution-123");
+
+    expect(invokeCalls).toEqual([
+      expect.objectContaining({
+        command: "tool_execute_workspace",
+        payload: expect.objectContaining({ executionId: "execution-123" }),
+      }),
+      {
+        command: "tool_cancel_workspace",
+        payload: { executionId: "execution-123" },
+      },
+    ]);
+  });
+
+  it("requests a Git log page and its atomic snapshot revision", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.gitLogPage({
+      repoPath: "C:/dev/Macro",
+      limit: 21,
+      offset: 20,
+      branch: "feature/tool-suite",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "git_log_page",
+        payload: {
+          repoPath: "C:/dev/Macro",
+          limit: 21,
+          offset: 20,
+          branch: "feature/tool-suite",
         },
       },
     ]);
@@ -786,6 +870,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
       sessionId: "terminal-1",
       command: "git status",
       timeoutMs: 5000,
+      executionId: "execution-1",
     });
     await tauriIpc.terminalRead("terminal-1");
     await tauriIpc.terminalKill("terminal-1");
@@ -811,6 +896,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
           sessionId: "terminal-1",
           command: "git status",
           timeoutMs: 5000,
+          executionId: "execution-1",
         },
       },
       {
@@ -823,6 +909,7 @@ describe("tauriIpc executeWorkspaceTool", () => {
         command: "terminal_kill",
         payload: {
           sessionId: "terminal-1",
+          executionId: null,
         },
       },
     ]);

@@ -9,6 +9,8 @@ import { isMacroScopedPath, isMetadataRelativePath } from "./toolModePolicy";
 import {
   canUseRemoteKernel,
   executeRemoteWorkspaceTool,
+  executeRemoteWorkspaceToolDetailed,
+  type RemoteCheckpointSnapshotFile,
   validateRemoteToolExecution,
 } from "./remoteKernelApi";
 import { useAppStore } from "../stores/useAppStore";
@@ -17,6 +19,16 @@ import {
   getAllProjects,
   getSubProjectsForGroup,
 } from "./globalProjects";
+import {
+  compareToolPaths,
+  createToolCursor,
+  paginateReadContent,
+  paginateToolItems,
+  resolveToolPage,
+  TOOL_OUTPUT_LIMITS,
+  truncateGrepLine,
+} from "../shared/toolOutputLimits";
+import { createCombinedAbortSignal } from "../utils/abortSignals";
 
 type ToolArgs = Record<string, unknown>;
 const isGitTool = (toolName: string): boolean => toolName.startsWith("git_");
@@ -36,6 +48,22 @@ const gitMutatingToolIds = new Set([
   "git_stash",
 ]);
 const gitBackendToolIds = new Set([...gitReadToolIds, ...gitMutatingToolIds]);
+const interruptibleWorkspaceToolIds = new Set([
+  "list",
+  "read",
+  "glob",
+  "grep",
+  "ast_grep",
+]);
+let workspaceToolExecutionCounter = 0;
+
+const createWorkspaceToolExecutionId = (): string => {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  workspaceToolExecutionCounter += 1;
+  return `workspace-tool-${Date.now()}-${workspaceToolExecutionCounter}`;
+};
 
 export interface ExecuteWorkspaceToolOptions {
   /** Best-effort cancellation fence for callers that own a generation. */
@@ -48,6 +76,7 @@ export interface ExecuteWorkspaceToolOptions {
   groupId?: string | null;
   projectMounts?: ProjectMount[];
   virtualRootEnabled?: boolean;
+  invocationId?: string;
   onCodeCheckpoint?: (checkpoint: {
     toolName: string;
     files: AgentCodeCheckpointFile[];
@@ -81,7 +110,8 @@ const extractCandidatePath = (
     toolName === "edit" ||
     toolName === "delete" ||
     toolName === "read" ||
-    toolName === "list"
+    toolName === "list" ||
+    toolName === "ast_grep"
   ) {
     const rawPath = sanitizePathInput(toString(args.path) || ".");
     return rawPath || undefined;
@@ -126,6 +156,7 @@ type PatchValidationRecord = {
   size: number;
   encoding: string | null;
   language: string | null;
+  revision?: string | null;
 };
 
 type PatchChangeRecord = {
@@ -160,6 +191,7 @@ type PatchWriteCommitChange = {
   displayPath: string;
   realPath: string;
   newContent: string | null;
+  expectedRevision?: string | null;
   existsOptions?: {
     workspaceScope?: tauriIpc.WorkspaceScope;
     workspacePath?: string | null;
@@ -184,6 +216,66 @@ type PatchWriteRollbackSnapshot = {
   change: PatchWriteCommitChange;
   existed: boolean;
   content: string | null;
+  unixMode?: number | null;
+  postMutationExpectedRevision?: string;
+};
+
+const rollbackSnapshotsFromBackendPatch = (
+  changes: PatchWriteCommitChange[],
+  beforeSnapshots: AgentCodeCheckpointFileSnapshot[],
+  backendResult: string,
+): PatchWriteRollbackSnapshot[] => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(backendResult);
+  } catch {
+    throw new Error(
+      "The transactional apply_patch backend returned an invalid response; no checkpoint can be recorded safely.",
+    );
+  }
+
+  const files =
+    parsed &&
+    typeof parsed === "object" &&
+    Array.isArray((parsed as { files?: unknown }).files)
+      ? (parsed as { files: unknown[] }).files
+      : null;
+  if (!files || files.length !== changes.length) {
+    throw new Error(
+      "The transactional apply_patch backend returned incomplete file validation; no checkpoint can be recorded safely.",
+    );
+  }
+
+  return changes.map((change, index) => {
+    const file = files[index];
+    const validation =
+      file && typeof file === "object"
+        ? (file as { validation?: unknown }).validation
+        : null;
+    const revision =
+      validation && typeof validation === "object"
+        ? (validation as { revision?: unknown }).revision
+        : null;
+    let postMutationExpectedRevision: string;
+    if (change.newContent === null) {
+      postMutationExpectedRevision = EXPECTED_REVISION_ABSENT;
+    } else if (typeof revision === "string") {
+      postMutationExpectedRevision = revision;
+    } else {
+      throw new Error(
+        `The transactional apply_patch backend did not return the applied revision for ${change.displayPath}; no checkpoint can be recorded safely.`,
+      );
+    }
+
+    const before = beforeSnapshots[index];
+    return {
+      change,
+      existed: before.exists,
+      content: before.content,
+      unixMode: before.unixMode ?? null,
+      postMutationExpectedRevision,
+    };
+  });
 };
 
 const formatToolError = (error: unknown): string => {
@@ -206,6 +298,80 @@ const formatToolError = (error: unknown): string => {
   return String(error);
 };
 
+const normalizeExpectedRevision = (value: unknown): string | null =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+
+const EXPECTED_REVISION_ABSENT = "absent";
+
+const normalizeExpectedRevisionMap = (
+  value: unknown,
+): Record<string, string> => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(
+        ([path, revision]) =>
+          [
+            path
+              .trim()
+              .replace(/\\/g, "/")
+              .replace(/^(?:\.\/)+/, "")
+              .replace(/^\/+|\/+$/g, ""),
+            normalizeExpectedRevision(revision),
+          ] as const,
+      )
+      .filter((entry): entry is readonly [string, string] => entry[1] !== null),
+  );
+};
+
+const normalizeExpectedRevisionPath = (value: string): string =>
+  value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^(?:\.\/)+/, "")
+    .replace(/^\/+|\/+$/g, "");
+
+const expectedRevisionConflict = (
+  path: string,
+  expectedRevision: string | null,
+  actualRevision: string | null | undefined,
+): string | null => {
+  if (!expectedRevision) return null;
+  if (expectedRevision.toLowerCase() === EXPECTED_REVISION_ABSENT) {
+    return actualRevision
+      ? `Stale content for "${path}": expected the file to be absent but found revision ${actualRevision}. Re-read the path and retry.`
+      : null;
+  }
+  if (!actualRevision) {
+    return `Cannot safely mutate "${path}": expected revision ${expectedRevision} but the current revision is unavailable. Re-read the file and retry.`;
+  }
+  if (actualRevision !== expectedRevision) {
+    return `Stale content for "${path}": expected revision ${expectedRevision} but found ${actualRevision}. Re-read the file and retry.`;
+  }
+  return null;
+};
+
+const mutationDivergenceConflict = (
+  displayPath: string,
+  toolName: string,
+  writtenRevision: string | null | undefined,
+  rereadRevision: string | null | undefined,
+): string | null => {
+  if (!writtenRevision || !rereadRevision) {
+    return `Cannot verify ${toolName} for "${displayPath}": the mutation or guarded re-read did not return a content revision. No code checkpoint was published; re-read the file and retry.`;
+  }
+  if (writtenRevision === rereadRevision) return null;
+  return `External modification detected for "${displayPath}" after ${toolName}: the mutation reported revision ${writtenRevision} but the guarded re-read found ${rereadRevision}. No code checkpoint was published; re-read the file and retry.`;
+};
+
+const deleteAbsenceDivergenceConflict = (
+  displayPath: string,
+  toolName: string,
+): string =>
+  `External modification detected for "${displayPath}" after ${toolName}: the deleted path exists again after the mutation. No code checkpoint was published; re-read the path and retry.`;
+
 type CheckpointCaptureOptions = {
   displayPath: string;
   realPath: string;
@@ -227,10 +393,12 @@ const readCheckpointSnapshot = async (
     return {
       exists: false,
       content: null,
+      revision: null,
       isBinary: false,
       size: 0,
       encoding: null,
       language: null,
+      unixMode: null,
     };
   }
 
@@ -248,20 +416,24 @@ const readCheckpointSnapshot = async (
   return {
     exists: true,
     content: content.content,
+    revision: content.revision ?? null,
     isBinary: false,
     size: content.size,
     encoding: content.encoding,
     language: content.language,
+    unixMode: content.unix_mode ?? null,
   };
 };
 
 const missingCheckpointSnapshot = (): AgentCodeCheckpointFileSnapshot => ({
   exists: false,
   content: null,
+  revision: null,
   isBinary: false,
   size: 0,
   encoding: null,
   language: null,
+  unixMode: null,
 });
 
 const snapshotFromReadResult = (
@@ -269,10 +441,27 @@ const snapshotFromReadResult = (
 ): AgentCodeCheckpointFileSnapshot => ({
   exists: true,
   content: result.content,
+  revision: result.revision ?? null,
   isBinary: false,
   size: result.size,
   encoding: result.encoding,
   language: result.language,
+  unixMode: result.unix_mode ?? null,
+});
+
+const snapshotFromAppliedText = (
+  content: string,
+  revision: string | null | undefined,
+  unixMode?: number | null,
+): AgentCodeCheckpointFileSnapshot => ({
+  exists: true,
+  content,
+  revision: revision ?? null,
+  isBinary: false,
+  size: new TextEncoder().encode(content).byteLength,
+  encoding: "utf-8",
+  language: null,
+  unixMode: unixMode ?? null,
 });
 
 const buildCheckpointFile = (
@@ -300,6 +489,7 @@ const buildCheckpointFile = (
 const restoreCheckpointSnapshot = async (
   options: CheckpointCaptureOptions,
   snapshot: AgentCodeCheckpointFileSnapshot,
+  expectedCurrent?: AgentCodeCheckpointFileSnapshot,
 ): Promise<void> => {
   const commonOptions = {
     workspaceScope: options.workspaceScope,
@@ -310,6 +500,7 @@ const restoreCheckpointSnapshot = async (
     if (await tauriIpc.fsExists(options.realPath, commonOptions)) {
       await tauriIpc.fsDelete({
         path: options.realPath,
+        expectedRevision: expectedCurrent?.revision ?? undefined,
         ...commonOptions,
       });
     }
@@ -322,11 +513,23 @@ const restoreCheckpointSnapshot = async (
     );
   }
 
+  if (expectedCurrent?.exists && !expectedCurrent.revision) {
+    throw new Error(
+      `Cannot safely restore ${options.displayPath}: the applied mutation revision is unavailable.`,
+    );
+  }
+
   await tauriIpc.fsWriteFile({
     path: options.realPath,
     content: snapshot.content,
     createDirs: true,
     allowOutsideWorkspace: options.allowOutsideWorkspace,
+    expectedRevision: expectedCurrent
+      ? expectedCurrent.exists
+        ? (expectedCurrent.revision ?? undefined)
+        : EXPECTED_REVISION_ABSENT
+      : undefined,
+    unixMode: snapshot.unixMode ?? undefined,
     ...commonOptions,
   });
 };
@@ -342,25 +545,56 @@ const publishCodeCheckpoint = async (
   await options.onCodeCheckpoint({ toolName, files });
 };
 
-const executeCheckpointedFileMutation = async <T>(
-  options: {
-    executeOptions: ExecuteWorkspaceToolOptions;
-    toolName: string;
-    checkpointOptions: CheckpointCaptureOptions;
-    before?: AgentCodeCheckpointFileSnapshot;
-    after?:
-      | AgentCodeCheckpointFileSnapshot
-      | ((result: T) => AgentCodeCheckpointFileSnapshot);
-    mutation: () => Promise<T>;
-  },
-): Promise<T> => {
+const executeCheckpointedFileMutation = async <T>(options: {
+  executeOptions: ExecuteWorkspaceToolOptions;
+  toolName: string;
+  checkpointOptions: CheckpointCaptureOptions;
+  before?: AgentCodeCheckpointFileSnapshot;
+  after?:
+    | AgentCodeCheckpointFileSnapshot
+    | ((result: T) => AgentCodeCheckpointFileSnapshot);
+  currentAfterMutation?: () => AgentCodeCheckpointFileSnapshot | undefined;
+  verifyMutationResult?: (result: T) => Promise<string | null> | string | null;
+  mutation: () => Promise<T>;
+}): Promise<T> => {
   const before =
     options.before ?? (await readCheckpointSnapshot(options.checkpointOptions));
-  const result = await options.mutation();
-  const after =
-    typeof options.after === "function"
-      ? options.after(result)
-      : options.after ?? (await readCheckpointSnapshot(options.checkpointOptions));
+  let result: T;
+  let after: AgentCodeCheckpointFileSnapshot;
+  let divergenceConflict: string | null = null;
+  try {
+    result = await options.mutation();
+    after =
+      typeof options.after === "function"
+        ? options.after(result)
+        : (options.after ??
+          (await readCheckpointSnapshot(options.checkpointOptions)));
+    if (options.verifyMutationResult) {
+      divergenceConflict = await options.verifyMutationResult(result);
+      if (divergenceConflict !== null) {
+        throw new Error(divergenceConflict);
+      }
+    }
+  } catch (error) {
+    const currentAfterMutation = options.currentAfterMutation?.();
+    if (!currentAfterMutation) {
+      throw error;
+    }
+    try {
+      await restoreCheckpointSnapshot(
+        options.checkpointOptions,
+        before,
+        currentAfterMutation,
+      );
+    } catch (rollbackError) {
+      throw new Error(
+        `Mutation failed after changing ${options.checkpointOptions.displayPath}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
+      );
+    }
+    throw new Error(
+      `Mutation failed after changing ${options.checkpointOptions.displayPath}; mutation was reverted: ${formatToolError(error)}`,
+    );
+  }
 
   const checkpointFile = buildCheckpointFile({
     ...options.checkpointOptions,
@@ -374,7 +608,7 @@ const executeCheckpointedFileMutation = async <T>(
     ]);
   } catch (error) {
     try {
-      await restoreCheckpointSnapshot(options.checkpointOptions, before);
+      await restoreCheckpointSnapshot(options.checkpointOptions, before, after);
     } catch (rollbackError) {
       throw new Error(
         `Failed to record code checkpoint for ${options.checkpointOptions.displayPath}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -390,6 +624,7 @@ const executeCheckpointedFileMutation = async <T>(
 const rollbackPatchWriteChanges = async (
   snapshots: PatchWriteRollbackSnapshot[],
 ): Promise<void> => {
+  const errors: string[] = [];
   for (const snapshot of [...snapshots].reverse()) {
     if (!snapshot.existed) {
       try {
@@ -401,11 +636,12 @@ const rollbackPatchWriteChanges = async (
         ) {
           await tauriIpc.fsDelete({
             path: snapshot.change.realPath,
+            expectedRevision: snapshot.postMutationExpectedRevision,
             ...snapshot.change.deleteOptions,
           });
         }
       } catch (error) {
-        throw new Error(
+        errors.push(
           `Rollback failed for ${snapshot.change.displayPath}: ${formatToolError(error)}`,
         );
       }
@@ -421,13 +657,18 @@ const rollbackPatchWriteChanges = async (
         path: snapshot.change.realPath,
         content: snapshot.content,
         createDirs: true,
+        expectedRevision: snapshot.postMutationExpectedRevision,
+        unixMode: snapshot.unixMode ?? undefined,
         ...snapshot.change.writeOptions,
       });
     } catch (error) {
-      throw new Error(
+      errors.push(
         `Rollback failed for ${snapshot.change.displayPath}: ${formatToolError(error)}`,
       );
     }
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join("; "));
   }
 };
 
@@ -435,43 +676,57 @@ const commitPatchWriteChangesWithRollback = async (
   changes: PatchWriteCommitChange[],
 ): Promise<PatchWriteRollbackSnapshot[]> => {
   const snapshots: PatchWriteRollbackSnapshot[] = [];
+  for (const change of changes) {
+    const existed = await tauriIpc.fsExists(
+      change.realPath,
+      change.existsOptions,
+    );
+    const current = existed
+      ? await tauriIpc.fsReadFileWithOptions({
+          path: change.realPath,
+          ...change.readOptions,
+        })
+      : null;
+    const conflict = expectedRevisionConflict(
+      change.displayPath,
+      change.expectedRevision ?? null,
+      current?.revision,
+    );
+    if (conflict) throw new Error(conflict);
+    snapshots.push({
+      change,
+      existed,
+      content: current?.content ?? null,
+      unixMode: current?.unix_mode ?? null,
+    });
+  }
 
+  const applied: PatchWriteRollbackSnapshot[] = [];
   try {
-    for (const change of changes) {
-      const existed = await tauriIpc.fsExists(
-        change.realPath,
-        change.existsOptions,
-      );
-      const content = existed
-        ? (
-            await tauriIpc.fsReadFileWithOptions({
-              path: change.realPath,
-              ...change.readOptions,
-            })
-          ).content
-        : null;
-      snapshots.push({ change, existed, content });
-    }
-
-    for (const change of changes) {
+    for (const [index, change] of changes.entries()) {
+      const snapshot = snapshots[index];
       if (change.newContent === null) {
         await tauriIpc.fsDelete({
           path: change.realPath,
+          expectedRevision: change.expectedRevision,
           ...change.deleteOptions,
         });
-        continue;
+        snapshot.postMutationExpectedRevision = EXPECTED_REVISION_ABSENT;
+      } else {
+        const result = await tauriIpc.fsWriteFile({
+          path: change.realPath,
+          content: change.newContent,
+          createDirs: true,
+          expectedRevision: change.expectedRevision,
+          ...change.writeOptions,
+        });
+        snapshot.postMutationExpectedRevision = result.revision ?? undefined;
       }
-
-      await tauriIpc.fsWriteFile({
-        path: change.realPath,
-        content: change.newContent,
-        createDirs: true,
-        ...change.writeOptions,
-      });
+      applied.push(snapshot);
     }
   } catch (error) {
     try {
-      await rollbackPatchWriteChanges(snapshots);
+      await rollbackPatchWriteChanges(applied);
     } catch (rollbackError) {
       throw new Error(
         `${formatToolError(error)}; ${formatToolError(rollbackError)}`,
@@ -479,7 +734,6 @@ const commitPatchWriteChangesWithRollback = async (
     }
     throw error;
   }
-
   return snapshots;
 };
 
@@ -711,6 +965,9 @@ const buildStructuredWriteResponse = (
         : {}),
       bytes_written: input.bytesWritten,
       created: input.created,
+      ...(input.validation.revision
+        ? { revision: input.validation.revision }
+        : {}),
       files: [
         {
           path: input.path,
@@ -864,10 +1121,13 @@ const getProjectAliases = (candidate: ProjectWorkspaceCandidate): string[] => {
         candidate.mountName,
         candidate.id,
         candidate.name,
-        slugifyProjectAlias(candidate.name),
+        typeof candidate.name === "string"
+          ? slugifyProjectAlias(candidate.name)
+          : "",
         workspaceTail,
         slugifyProjectAlias(workspaceTail),
       ]
+        .filter((value): value is string => typeof value === "string")
         .map((value) => value.trim().toLowerCase())
         .filter(Boolean),
     ),
@@ -877,27 +1137,45 @@ const getProjectAliases = (candidate: ProjectWorkspaceCandidate): string[] => {
 const stripProjectAliasPrefix = (
   inputPath: string,
   candidates: ProjectWorkspaceCandidate[],
+  preferredProjectId?: string | null,
 ): { projectId: string; path: string } | null => {
   const normalizedInput = inputPath.replace(/\\/g, "/").replace(/^\.\//, "");
   if (!normalizedInput || normalizedInput === ".") {
     return null;
   }
 
+  const matches = new Map<string, { projectId: string; path: string }>();
   for (const candidate of candidates) {
     for (const alias of getProjectAliases(candidate)) {
       if (normalizedInput === alias) {
-        return { projectId: candidate.id, path: "." };
-      }
-      if (normalizedInput.startsWith(`${alias}/`)) {
-        return {
+        matches.set(candidate.id, { projectId: candidate.id, path: "." });
+        break;
+      } else if (normalizedInput.startsWith(`${alias}/`)) {
+        matches.set(candidate.id, {
           projectId: candidate.id,
           path: normalizedInput.slice(alias.length + 1) || ".",
-        };
+        });
+        break;
       }
     }
   }
 
-  return null;
+  if (matches.size === 0) {
+    return null;
+  }
+
+  if (preferredProjectId && matches.has(preferredProjectId)) {
+    return matches.get(preferredProjectId) ?? null;
+  }
+
+  if (matches.size > 1) {
+    const prefix = normalizedInput.split("/")[0] || normalizedInput;
+    throw new Error(
+      `Ambiguous project path prefix "${prefix}". It matches multiple projects; pass project_id to select one explicitly.`,
+    );
+  }
+
+  return matches.values().next().value ?? null;
 };
 
 const findProjectByAbsolutePath = (
@@ -966,13 +1244,27 @@ const getExplicitToolProjectId = (
     toString(args.project_id) || toString(args.projectId),
   );
   if (!explicit) return null;
-  const normalizedExplicit = explicit.toLowerCase();
-  const match = candidates.find(
-    (candidate) =>
-      candidate.id === explicit ||
-      getProjectAliases(candidate).includes(normalizedExplicit),
+  const exactIdMatch = candidates.find(
+    (candidate) => candidate.id === explicit,
   );
-  return match?.id ?? null;
+  if (exactIdMatch) {
+    return exactIdMatch.id;
+  }
+  const normalizedExplicit = explicit.toLowerCase();
+  const matches = candidates.filter((candidate) =>
+    getProjectAliases(candidate).includes(normalizedExplicit),
+  );
+  if (matches.length === 0) {
+    throw new Error(
+      `Unknown project selector "${explicit}". Use a valid project_id or mount name.`,
+    );
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `Ambiguous project selector "${explicit}". Use the exact project_id.`,
+    );
+  }
+  return matches[0].id;
 };
 
 const isRootPathInput = (value: string): boolean => {
@@ -1046,42 +1338,6 @@ const isMutatingWorkspaceTool = (toolName: string): boolean =>
   toolName === "apply_patch" ||
   gitMutatingToolIds.has(toolName);
 
-const getFirstActionableCandidate = (
-  candidates: ProjectWorkspaceCandidate[],
-  preferredIds: Array<string | null | undefined>,
-): ProjectWorkspaceCandidate | null => {
-  for (const preferredId of preferredIds) {
-    const preferred = getProjectWorkspaceCandidate(preferredId, candidates);
-    if (preferred && !preferred.isReadOnly) {
-      return preferred;
-    }
-  }
-  return candidates.find((candidate) => !candidate.isReadOnly) || null;
-};
-
-const hasExplicitProjectTarget = (
-  toolName: string,
-  args: ToolArgs,
-  candidates: ProjectWorkspaceCandidate[],
-): boolean => {
-  if (getExplicitToolProjectId(args, candidates)) {
-    return true;
-  }
-
-  const rawPath = sanitizePathInput(
-    isGitTool(toolName) ? toString(args.repo_path) : toString(args.path),
-  );
-  if (!rawPath) {
-    return false;
-  }
-
-  if (!isAbsolutePath(rawPath)) {
-    return Boolean(stripProjectAliasPrefix(rawPath, candidates));
-  }
-
-  return Boolean(findProjectByAbsolutePath(rawPath, candidates));
-};
-
 const resolveExplicitProjectTargetId = (
   rawPath: string,
   args: ToolArgs,
@@ -1089,11 +1345,27 @@ const resolveExplicitProjectTargetId = (
 ): string | null => {
   const explicitProjectId = getExplicitToolProjectId(args, candidates);
   if (explicitProjectId) {
+    if (rawPath && !isAbsolutePath(rawPath)) {
+      const prefixedMatch = stripProjectAliasPrefix(
+        rawPath,
+        candidates,
+        explicitProjectId,
+      );
+      if (prefixedMatch && prefixedMatch.projectId !== explicitProjectId) {
+        throw new Error(
+          `Conflicting project targets: project_id selects "${explicitProjectId}" but the path selects "${prefixedMatch.projectId}".`,
+        );
+      }
+    }
     return explicitProjectId;
   }
 
   if (rawPath && !isAbsolutePath(rawPath)) {
-    const prefixedMatch = stripProjectAliasPrefix(rawPath, candidates);
+    const prefixedMatch = stripProjectAliasPrefix(
+      rawPath,
+      candidates,
+      explicitProjectId,
+    );
     if (prefixedMatch) {
       return prefixedMatch.projectId;
     }
@@ -1129,16 +1401,18 @@ export const resolveExplicitMutatingToolProjectTargets = (
       return [];
     }
 
-    const projectIds = new Set<string>();
+    let operations: ReturnType<typeof parseApplyPatch>;
     try {
-      for (const operation of parseApplyPatch(patchText)) {
-        addProjectId(
-          projectIds,
-          resolveExplicitProjectTargetId(operation.path, args, candidates),
-        );
-      }
+      operations = parseApplyPatch(patchText);
     } catch {
       return [];
+    }
+    const projectIds = new Set<string>();
+    for (const operation of operations) {
+      addProjectId(
+        projectIds,
+        resolveExplicitProjectTargetId(operation.path, args, candidates),
+      );
     }
     return Array.from(projectIds);
   }
@@ -1148,6 +1422,97 @@ export const resolveExplicitMutatingToolProjectTargets = (
   );
   const projectId = resolveExplicitProjectTargetId(rawPath, args, candidates);
   return projectId ? [projectId] : [];
+};
+
+const getCanonicalApprovalFallbackScope = (
+  options: ExecuteWorkspaceToolOptions,
+  candidates: ProjectWorkspaceCandidate[],
+): string | null => {
+  const configuredWorkspacePath =
+    normalizeWorkspacePath(options.defaultWorkspacePath) ||
+    normalizeWorkspacePath(options.workspacePath);
+  const candidate =
+    getProjectWorkspaceCandidate(options.projectId, candidates) ||
+    (configuredWorkspacePath
+      ? candidates.find(
+          (item) =>
+            normalizeWorkspacePath(item.workspacePath) ===
+            configuredWorkspacePath,
+        )
+      : null) ||
+    getProjectWorkspaceCandidate(options.focusedProjectId, candidates) ||
+    (candidates.length === 1 ? candidates[0] : null);
+  if (candidate) {
+    return `project:${candidate.id}`;
+  }
+
+  return configuredWorkspacePath
+    ? `workspace:${configuredWorkspacePath}`
+    : null;
+};
+
+export const resolveMutatingToolApprovalScope = (
+  toolName: string,
+  args: ToolArgs,
+  options: ExecuteWorkspaceToolOptions,
+): string | null => {
+  if (!isMutatingWorkspaceTool(toolName)) {
+    return null;
+  }
+
+  const candidates = getProjectWorkspaceCandidates(options);
+  const fallbackScope = getCanonicalApprovalFallbackScope(options, candidates);
+  const scopes: string[] = [];
+
+  if (toolName === "apply_patch") {
+    const patchText = toString(args.patch_text);
+    if (patchText) {
+      try {
+        for (const operation of parseApplyPatch(patchText)) {
+          const targetProjectId = resolveExplicitProjectTargetId(
+            operation.path,
+            args,
+            candidates,
+          );
+          if (targetProjectId) {
+            scopes.push(`project:${targetProjectId}`);
+          } else if (fallbackScope) {
+            scopes.push(fallbackScope);
+          }
+        }
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.startsWith("Ambiguous project") ||
+            error.message.startsWith("Conflicting project") ||
+            error.message.startsWith("Unknown project"))
+        ) {
+          throw error;
+        }
+      }
+    }
+    if (scopes.length === 0 && fallbackScope) {
+      scopes.push(fallbackScope);
+    }
+  } else {
+    const projectIds = resolveExplicitMutatingToolProjectTargets(
+      toolName,
+      args,
+      options,
+    );
+    scopes.push(...projectIds.map((projectId) => `project:${projectId}`));
+    if (scopes.length === 0 && fallbackScope) {
+      scopes.push(fallbackScope);
+    }
+  }
+
+  const uniqueScopes = Array.from(new Set(scopes)).sort();
+  if (uniqueScopes.length === 0) {
+    return null;
+  }
+  return uniqueScopes.length === 1
+    ? uniqueScopes[0]
+    : `projects:${uniqueScopes.map((scope) => scope.replace(/^project:/, "")).join(",")}`;
 };
 
 const buildReadOnlyToolError = (
@@ -1188,39 +1553,9 @@ const resolveMutatingVirtualTarget = async (params: {
     return { target, error: null };
   }
 
-  if (target.explicitTarget) {
-    return {
-      target,
-      error: buildReadOnlyToolError(params.toolName, target.candidate),
-    };
-  }
-
-  const fallbackCandidate = getFirstActionableCandidate(params.candidates, [
-    params.focusedProjectId,
-    params.defaultProjectId,
-  ]);
-  if (!fallbackCandidate) {
-    return {
-      target,
-      error: buildReadOnlyToolError(params.toolName, target.candidate),
-    };
-  }
-
   return {
-    target: {
-      candidate: fallbackCandidate,
-      relativePath:
-        params.toolName === "write" ||
-        params.toolName === "edit" ||
-        params.toolName === "delete" ||
-        params.toolName === "apply_patch"
-          ? params.rawPath || "."
-          : ".",
-      explicitTarget: false,
-      usedFocusedProject: false,
-      matchCount: 1,
-    },
-    error: null,
+    target,
+    error: buildReadOnlyToolError(params.toolName, target.candidate),
   };
 };
 
@@ -1251,7 +1586,16 @@ export const resolveToolWorkspaceRouting = (
 
   if (rawPath) {
     if (!isAbsolutePath(rawPath)) {
-      const prefixedMatch = stripProjectAliasPrefix(rawPath, candidates);
+      const prefixedMatch = stripProjectAliasPrefix(
+        rawPath,
+        candidates,
+        projectId,
+      );
+      if (prefixedMatch && projectId && projectId !== prefixedMatch.projectId) {
+        throw new Error(
+          `Conflicting project targets: project_id selects "${projectId}" but the path selects "${prefixedMatch.projectId}".`,
+        );
+      }
       if (
         prefixedMatch &&
         (!projectId || projectId === prefixedMatch.projectId)
@@ -1355,73 +1699,18 @@ const readAllCandidateFiles = async (
   includeHidden = false,
   mode: AppMode,
   workspacePath?: string | null,
+  assertActive?: () => void,
 ) => {
+  assertActive?.();
   const entries = await tauriIpc.fsListDir({
     path: resolveDirectPath(".", mode, workspacePath),
     recursive: true,
     includeHidden,
-    allowOutsideWorkspace: Boolean(normalizeWorkspacePath(workspacePath)),
+    allowOutsideWorkspace: false,
+    workspacePath,
   });
+  assertActive?.();
   return entries.filter((entry) => entry.kind === "file");
-};
-
-const resolveGitRepoPath = (
-  args: ToolArgs,
-  mode: AppMode,
-  workspacePath?: string | null,
-): string => {
-  const explicitRepoPath = sanitizePathInput(toString(args.repo_path));
-  const normalizedWorkspacePath = normalizeWorkspacePath(workspacePath);
-  if (explicitRepoPath) {
-    return normalizedWorkspacePath
-      ? joinPathWithinWorkspace(normalizedWorkspacePath, explicitRepoPath)
-      : resolvePathForMode(explicitRepoPath, mode);
-  }
-
-  return normalizedWorkspacePath || resolvePathForMode(".", mode);
-};
-
-const shouldFallbackRepoPath = (error: unknown): boolean => {
-  if (!error || typeof error !== "object") return false;
-  const maybe = error as Record<string, unknown>;
-  const code = typeof maybe.code === "string" ? maybe.code : "";
-  const message =
-    typeof maybe.message === "string" ? maybe.message.toLowerCase() : "";
-  return (
-    code === "FilesystemNotFound" ||
-    code === "GitRepositoryNotFound" ||
-    code === "InvalidPath" ||
-    code === "FilesystemPathOutsideWorkspace" ||
-    message.includes("outside the workspace")
-  );
-};
-
-const runGitWithRepoFallback = async <T>(
-  primaryRepoPath: string,
-  execute: (repoPath: string) => Promise<T>,
-  allowFallbackToDot: boolean,
-): Promise<{ value: T; repoPath: string }> => {
-  const candidates = allowFallbackToDot
-    ? Array.from(new Set([primaryRepoPath, "."].filter(Boolean)))
-    : [primaryRepoPath];
-  let lastError: unknown;
-
-  for (const candidate of candidates) {
-    try {
-      const value = await execute(candidate);
-      return { value, repoPath: candidate };
-    } catch (error) {
-      lastError = error;
-      if (
-        !shouldFallbackRepoPath(error) ||
-        candidate === candidates[candidates.length - 1]
-      ) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
 };
 
 const canCheckWorkspaceEntries = (): boolean => tauriIpc.isTauriAvailable();
@@ -1466,8 +1755,22 @@ const resolveVirtualToolTarget = async (params: {
   );
   const prefixedMatch =
     params.rawPath && !isAbsolutePath(params.rawPath)
-      ? stripProjectAliasPrefix(params.rawPath, params.candidates)
+      ? stripProjectAliasPrefix(
+          params.rawPath,
+          params.candidates,
+          explicitProjectId,
+        )
       : null;
+
+  if (
+    explicitProjectId &&
+    prefixedMatch &&
+    prefixedMatch.projectId !== explicitProjectId
+  ) {
+    throw new Error(
+      `Conflicting project targets: project_id selects "${explicitProjectId}" but the path selects "${prefixedMatch.projectId}".`,
+    );
+  }
 
   if (explicitProjectId) {
     return {
@@ -1597,6 +1900,29 @@ export const executeWorkspaceTool = async (
   if (options.signal?.aborted) {
     return "Tool execution aborted";
   }
+  const timeoutMs =
+    toolName === "list"
+      ? TOOL_OUTPUT_LIMITS.list.timeoutMs
+      : toolName === "read"
+        ? TOOL_OUTPUT_LIMITS.read.timeoutMs
+        : toolName === "glob"
+          ? TOOL_OUTPUT_LIMITS.glob.timeoutMs
+          : toolName === "grep"
+            ? TOOL_OUTPUT_LIMITS.grep.timeoutMs
+            : toolName === "ast_grep"
+              ? TOOL_OUTPUT_LIMITS.ast.timeoutMs
+              : null;
+  const executionStartedAt = Date.now();
+  const assertToolExecutionActive = (): void => {
+    if (options.signal?.aborted) {
+      throw new Error("Tool execution aborted");
+    }
+    if (timeoutMs !== null && Date.now() - executionStartedAt >= timeoutMs) {
+      throw new Error(
+        `Tool execution timed out after ${Math.floor(timeoutMs / 1_000)} seconds: ${toolName}. Narrow the path, pattern, or query before retrying.`,
+      );
+    }
+  };
   const useTauri = tauriIpc.isTauriAvailable();
   const useRemoteKernel = !useTauri && canUseRemoteKernel();
   const candidates = getProjectWorkspaceCandidates(options);
@@ -1607,40 +1933,29 @@ export const executeWorkspaceTool = async (
   const routing = resolveToolWorkspaceRouting(toolName, args, options);
   args = routing.args;
   let effectiveProjectId = routing.projectId;
+  const backendFocusedProjectId = effectiveProjectId || focusedProjectId;
   let effectiveWorkspacePath =
     normalizeWorkspacePath(routing.workspacePath) ||
     normalizeWorkspacePath(options.defaultWorkspacePath) ||
     normalizeWorkspacePath(options.workspacePath) ||
     normalizeWorkspacePath(getSelectedProjectRoot());
-  const explicitProjectTarget = hasExplicitProjectTarget(
-    toolName,
-    rawArgs,
-    candidates,
-  );
-
   if (!virtualRootCandidate && isMutatingWorkspaceTool(toolName)) {
-    const routedCandidate = getProjectWorkspaceCandidate(
-      effectiveProjectId,
-      candidates,
-    );
+    const explicitlyScopedWorkspacePath =
+      normalizeWorkspacePath(options.defaultWorkspacePath) ||
+      normalizeWorkspacePath(options.workspacePath);
+    const routedCandidate =
+      getProjectWorkspaceCandidate(effectiveProjectId, candidates) ||
+      candidates.find(
+        (candidate) =>
+          candidate.workspacePath !== null &&
+          candidate.workspacePath === explicitlyScopedWorkspacePath,
+      ) ||
+      null;
+    if (!routedCandidate && candidates.length > 1) {
+      return `Error executing ${toolName}: select a project with project_id or a mount-prefixed path before mutating the workspace.`;
+    }
     if (routedCandidate?.isReadOnly) {
-      if (explicitProjectTarget) {
-        return buildReadOnlyToolError(toolName, routedCandidate);
-      }
-
-      const fallbackCandidate = getFirstActionableCandidate(candidates, [
-        focusedProjectId,
-        options.projectId,
-        routing.projectId,
-      ]);
-      if (!fallbackCandidate) {
-        return buildReadOnlyToolError(toolName, routedCandidate);
-      }
-
-      effectiveProjectId = fallbackCandidate.id;
-      effectiveWorkspacePath =
-        normalizeWorkspacePath(fallbackCandidate.workspacePath) ||
-        effectiveWorkspacePath;
+      return buildReadOnlyToolError(toolName, routedCandidate);
     }
   }
 
@@ -1661,28 +1976,194 @@ export const executeWorkspaceTool = async (
     backendArgs: ToolArgs,
   ): Promise<string> => {
     if (useTauri) {
-      return tauriIpc.executeWorkspaceTool({
+      const executionId = interruptibleWorkspaceToolIds.has(backendToolName)
+        ? createWorkspaceToolExecutionId()
+        : undefined;
+      const abortListener =
+        executionId && options.signal
+          ? () => {
+              void tauriIpc.cancelWorkspaceTool(executionId).catch(() => false);
+            }
+          : undefined;
+      const executionPromise = tauriIpc.executeWorkspaceTool({
         mode,
         toolId: backendToolName,
         args: backendArgs,
         workspacePath: effectiveWorkspacePath,
-        workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        workspaceScope: useMetadataWorkspace
+          ? ("metadata" as const)
+          : undefined,
         projectMounts: options.projectMounts,
         virtualRootEnabled,
-        focusedProjectId,
+        focusedProjectId: backendFocusedProjectId,
+        executionId,
       });
+      if (abortListener) {
+        options.signal?.addEventListener("abort", abortListener, {
+          once: true,
+        });
+        if (options.signal?.aborted) abortListener();
+      }
+      try {
+        return await executionPromise;
+      } finally {
+        if (abortListener) {
+          options.signal?.removeEventListener("abort", abortListener);
+        }
+      }
     }
 
-    return executeRemoteWorkspaceTool({
-      mode,
-      toolId: backendToolName,
-      args: backendArgs,
-      workspacePath: effectiveWorkspacePath,
-      workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-      projectMounts: options.projectMounts,
-      virtualRootEnabled,
-      focusedProjectId,
-    });
+    const deadlineController =
+      timeoutMs === null ? null : new AbortController();
+    const deadlineId =
+      deadlineController && timeoutMs !== null
+        ? setTimeout(() => deadlineController.abort(), timeoutMs)
+        : null;
+    const combinedSignal = createCombinedAbortSignal([
+      options.signal,
+      deadlineController?.signal,
+    ]);
+    try {
+      const remoteParams = {
+        mode,
+        toolId: backendToolName,
+        args: backendArgs,
+        projectId: effectiveProjectId,
+        workspacePath: effectiveWorkspacePath,
+        workspaceScope: useMetadataWorkspace
+          ? ("metadata" as const)
+          : undefined,
+        projectMounts: options.projectMounts,
+        virtualRootEnabled,
+        focusedProjectId: backendFocusedProjectId,
+        signal: combinedSignal.signal,
+        invocationId: options.invocationId,
+      };
+      const checkpointRequired =
+        isWriteTool(backendToolName) && Boolean(options.onCodeCheckpoint);
+      if (!checkpointRequired) {
+        return await executeRemoteWorkspaceTool(remoteParams);
+      }
+
+      const execution = await executeRemoteWorkspaceToolDetailed({
+        ...remoteParams,
+        checkpointRequired: true,
+      });
+      const checkpointFiles = execution.checkpoint?.files ?? [];
+      if (checkpointFiles.length === 0) {
+        throw new Error(
+          "The remote Macro kernel returned no files for the required recoverable checkpoint.",
+        );
+      }
+
+      const resolveCheckpointTarget = (
+        snapshot: RemoteCheckpointSnapshotFile,
+      ): AgentCodeCheckpointFile => {
+        const normalizedPath = sanitizePathInput(snapshot.path);
+        const firstSegment = normalizedPath.split("/")[0] || "";
+        const matchedCandidates = virtualRootEnabled
+          ? candidates.filter(
+              (candidate) =>
+                candidate.mountName.toLowerCase() ===
+                firstSegment.toLowerCase(),
+            )
+          : [];
+        const candidate =
+          matchedCandidates.length === 1
+            ? matchedCandidates[0]
+            : getProjectWorkspaceCandidate(effectiveProjectId, candidates);
+        const relativePath =
+          candidate && matchedCandidates.length === 1
+            ? normalizedPath.split("/").slice(1).join("/") || "."
+            : normalizedPath;
+        const workspacePath =
+          candidate?.workspacePath ?? effectiveWorkspacePath ?? null;
+        return {
+          path: normalizedPath,
+          realPath: relativePath,
+          projectId: candidate?.id ?? effectiveProjectId ?? null,
+          mountName: candidate?.mountName ?? null,
+          workspacePath,
+          workspaceScope: useMetadataWorkspace ? "metadata" : null,
+          allowOutsideWorkspace: false,
+          status: !snapshot.before.exists
+            ? "created"
+            : !snapshot.after.exists
+              ? "deleted"
+              : "modified",
+          before: snapshot.before,
+          after: snapshot.after,
+        };
+      };
+      const files = checkpointFiles.map(resolveCheckpointTarget);
+
+      try {
+        await publishCodeCheckpoint(options, backendToolName, files);
+      } catch (checkpointError) {
+        const rollbackErrors: string[] = [];
+        for (const file of files.slice().reverse()) {
+          try {
+            const rollbackTool = file.before.exists ? "write" : "delete";
+            if (file.before.exists && file.before.content === null) {
+              throw new Error(
+                `Cannot restore ${file.path}: checkpoint content is missing.`,
+              );
+            }
+            await executeRemoteWorkspaceTool({
+              mode,
+              toolId: rollbackTool,
+              args: file.before.exists
+                ? {
+                    path: file.realPath,
+                    content: file.before.content,
+                    create_dirs: true,
+                    expected_revision: file.after.exists
+                      ? file.after.revision
+                      : EXPECTED_REVISION_ABSENT,
+                    unix_mode: file.before.unixMode ?? undefined,
+                  }
+                : {
+                    path: file.realPath,
+                    expected_revision: file.after.revision,
+                  },
+              projectId: file.projectId,
+              workspacePath: file.workspacePath,
+              workspaceScope:
+                file.workspaceScope === "metadata" ? "metadata" : undefined,
+              projectMounts: [],
+              virtualRootEnabled: false,
+              focusedProjectId: file.projectId,
+              invocationId: options.invocationId
+                ? `${options.invocationId}:checkpoint-rollback:${file.path}`
+                : undefined,
+            });
+          } catch (rollbackError) {
+            rollbackErrors.push(
+              `${file.path}: ${formatToolError(rollbackError)}`,
+            );
+          }
+        }
+        if (rollbackErrors.length > 0) {
+          throw new Error(
+            `Failed to record the remote code checkpoint, and rollback was incomplete: ${formatToolError(checkpointError)}; ${rollbackErrors.join("; ")}`,
+          );
+        }
+        throw new Error(
+          `Failed to record the remote code checkpoint; the mutation was reverted: ${formatToolError(checkpointError)}`,
+        );
+      }
+      return execution.result;
+    } catch (error) {
+      if (deadlineController?.signal.aborted && !options.signal?.aborted) {
+        throw new Error(
+          `Tool execution timed out after ${Math.floor((timeoutMs ?? 0) / 1_000)} seconds: ${toolName}. Narrow the path, pattern, or query before retrying.`,
+        );
+      }
+      throw error;
+    } finally {
+      if (deadlineId !== null) clearTimeout(deadlineId);
+      combinedSignal.dispose();
+    }
   };
 
   const validateBackendTool = async (
@@ -1701,7 +2182,8 @@ export const executeWorkspaceTool = async (
       mode,
       toolId: backendToolName,
       path,
-      projectId: focusedProjectId ?? '',
+      projectId: backendFocusedProjectId ?? "",
+      args,
     });
   };
 
@@ -1715,6 +2197,7 @@ export const executeWorkspaceTool = async (
       "apply_patch",
       "glob",
       "grep",
+      "ast_grep",
     ]);
     const shouldUseBackendWorkspaceTool =
       workspaceToolIds.has(toolName) &&
@@ -1763,6 +2246,8 @@ export const executeWorkspaceTool = async (
           }
         }
       }
+
+      return `Error executing ${toolName}: the confined Git tool host is unavailable; refusing an unscoped Git fallback.`;
     }
 
     const candidatePathInput = extractCandidatePath(toolName, args);
@@ -1808,9 +2293,12 @@ export const executeWorkspaceTool = async (
       const explicitProjectId = getExplicitToolProjectId(rawArgs, candidates);
       const rawFsPath = sanitizePathInput(toString(rawArgs.path) || ".");
       const rawGitPath = sanitizePathInput(toString(rawArgs.repo_path) || ".");
+      if (/^[\\/]+$/.test(rawFsPath)) {
+        return `Error executing ${toolName}: absolute filesystem roots are outside the virtual workspace. Use "." for the project mount list or a mount-prefixed path.`;
+      }
       const prefixedFsPath =
         rawFsPath && !isAbsolutePath(rawFsPath)
-          ? stripProjectAliasPrefix(rawFsPath, candidates)
+          ? stripProjectAliasPrefix(rawFsPath, candidates, explicitProjectId)
           : null;
 
       if (toolName === "list") {
@@ -1819,9 +2307,31 @@ export const executeWorkspaceTool = async (
           !explicitProjectId &&
           !prefixedFsPath
         ) {
-          const entries = getVirtualRootEntries(candidates);
+          const entries = getVirtualRootEntries(candidates).sort(
+            (left, right) =>
+              compareToolPaths(left.relative_path, right.relative_path),
+          );
+          const cursorScope = `list\0virtual-root\0${JSON.stringify(
+            candidates.map((candidate) => [candidate.id, candidate.mountName]),
+          )}`;
+          const page = paginateToolItems(
+            entries,
+            rawArgs,
+            cursorScope,
+            TOOL_OUTPUT_LIMITS.list,
+          );
           return JSON.stringify(
-            { path: ".", virtual_root: true, count: entries.length, entries },
+            {
+              path: ".",
+              virtual_root: true,
+              count: page.items.length,
+              total_count: entries.length,
+              entries: page.items,
+              limit: page.limit,
+              offset: page.offset,
+              truncated: page.truncated,
+              next_cursor: page.nextCursor,
+            },
             null,
             2,
           );
@@ -1843,7 +2353,7 @@ export const executeWorkspaceTool = async (
           return `Error executing list: unable to resolve "${rawFsPath}" to a project.`;
         }
 
-        const recursive = rawArgs.recursive !== false;
+        const recursive = rawArgs.recursive === true;
         const includeHidden = rawArgs.include_hidden === true;
         const maxDepth =
           typeof rawArgs.max_depth === "number"
@@ -1862,11 +2372,23 @@ export const executeWorkspaceTool = async (
           recursive,
           includeHidden,
           maxDepth,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath: target.candidate.workspacePath,
         });
-        const normalizedEntries = entries.map((entry) =>
-          normalizeDirEntryForVirtualRoot(entry, target.candidate!, mode),
+        assertToolExecutionActive();
+        const normalizedEntries = entries
+          .map((entry) =>
+            normalizeDirEntryForVirtualRoot(entry, target.candidate!, mode),
+          )
+          .sort((left, right) =>
+            compareToolPaths(left.relative_path, right.relative_path),
+          );
+        const cursorScope = `list\0${target.candidate.workspacePath}\0${target.relativePath}\0${recursive}\0${includeHidden}\0${maxDepth ?? ""}`;
+        const page = paginateToolItems(
+          normalizedEntries,
+          rawArgs,
+          cursorScope,
+          TOOL_OUTPUT_LIMITS.list,
         );
         return JSON.stringify(
           {
@@ -1874,8 +2396,13 @@ export const executeWorkspaceTool = async (
             project_id: target.candidate.id,
             mount_name: target.candidate.mountName,
             ...(resolved.realPath ? { real_path: resolved.realPath } : {}),
-            count: normalizedEntries.length,
-            entries: normalizedEntries,
+            count: page.items.length,
+            total_count: normalizedEntries.length,
+            entries: page.items,
+            limit: page.limit,
+            offset: page.offset,
+            truncated: page.truncated,
+            next_cursor: page.nextCursor,
           },
           null,
           2,
@@ -1912,30 +2439,25 @@ export const executeWorkspaceTool = async (
         );
         const result = await tauriIpc.fsReadFileWithOptions({
           path,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath: target.candidate.workspacePath,
         });
+        assertToolExecutionActive();
 
         if (result.is_binary) {
-          return `File ${resolved.virtualPath} is binary (${result.size} bytes, encoding=${result.encoding}).`;
+          return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: ${target.candidate.id}\nMOUNT: ${target.candidate.mountName}\nBINARY: true\nSIZE: ${result.size}\nENCODING: ${result.encoding}\nREVISION: ${result.revision ?? "unavailable"}\nCONTENT_OMITTED: binary`;
         }
 
-        const startLine =
-          typeof rawArgs.start_line === "number"
-            ? Math.max(1, Math.floor(rawArgs.start_line))
-            : 1;
-        const endLine =
+        const endLineScope =
           typeof rawArgs.end_line === "number"
-            ? Math.max(startLine, Math.floor(rawArgs.end_line))
-            : undefined;
-
-        const lines = result.content.split("\n");
-        const selected = lines.slice(
-          startLine - 1,
-          endLine ? endLine : undefined,
+            ? String(Math.floor(rawArgs.end_line))
+            : "";
+        const cursorScope = `read\0${target.candidate.workspacePath}\0${target.relativePath}\0${result.revision ?? "unavailable"}\0${endLineScope}`;
+        const page = paginateReadContent(result.content, rawArgs, cursorScope);
+        const numberedContent = formatWithLineNumbers(
+          page.lines,
+          page.startLine,
         );
-        const effectiveEndLine = endLine ?? startLine + selected.length - 1;
-        const numberedContent = formatWithLineNumbers(selected, startLine);
         const notices: string[] = [
           `PROJECT_ID: ${target.candidate.id}`,
           `MOUNT: ${target.candidate.mountName}`,
@@ -1947,12 +2469,15 @@ export const executeWorkspaceTool = async (
           notices.push(`REAL_PATH: ${resolved.realPath}`);
         }
 
-        return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\n${notices.join("\n")}\nLANGUAGE: ${result.language}\nSIZE: ${result.size}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
+        return `FILE: ${resolved.virtualPath}\nSOURCE: WORKSPACE_FILE\n${notices.join("\n")}\nLANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${page.startLine}-${page.endLine}\nTOTAL_LINES: ${page.totalLines}\nRETURNED_LINES: ${page.returnedLines}\nTRUNCATED: ${page.truncated}\nNEXT_CURSOR: ${page.nextCursor ?? "none"}\nLIMITS: max_lines=${page.maxLines}, max_bytes=${page.maxBytes}, max_columns=${TOOL_OUTPUT_LIMITS.read.maxColumns}\nCOLUMN_TRUNCATED_LINES: ${page.columnTruncatedLines}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
       }
 
       if (toolName === "write") {
         const inputPath = sanitizePathInput(toString(rawArgs.path));
         const content = toString(rawArgs.content);
+        const expectedRevision = normalizeExpectedRevision(
+          rawArgs.expected_revision,
+        );
         if (!inputPath) return "Missing path argument for write tool.";
 
         const { target, error } = await resolveMutatingVirtualTarget({
@@ -1989,29 +2514,63 @@ export const executeWorkspaceTool = async (
           projectId: candidate.id,
           mountName: candidate.mountName,
           workspacePath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
         };
-        const { writeResult, readback } = await executeCheckpointedFileMutation({
-          executeOptions: options,
-          toolName,
-          checkpointOptions,
-          after: (result) => snapshotFromReadResult(result.readback),
-          mutation: async () => {
-            const result = await tauriIpc.fsWriteFile({
-              path: realPath,
-              content,
-              createDirs: rawArgs.create_dirs !== false,
-              allowOutsideWorkspace: true,
-              workspacePath,
-            });
-            const validation = await tauriIpc.fsReadFileWithOptions({
-              path: realPath,
-              allowOutsideWorkspace: true,
-              workspacePath,
-            });
-            return { writeResult: result, readback: validation };
+        const before = await readCheckpointSnapshot(checkpointOptions);
+        const revisionConflict = expectedRevisionConflict(
+          resolved.virtualPath,
+          expectedRevision,
+          before.exists ? before.revision : null,
+        );
+        if (revisionConflict) return revisionConflict;
+        const mutationRevision =
+          expectedRevision ??
+          (before.exists ? before.revision : EXPECTED_REVISION_ABSENT);
+        if (!mutationRevision) {
+          return `Cannot safely write ${resolved.virtualPath}: the current revision is unavailable. Re-read the file and retry.`;
+        }
+        let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
+        const { writeResult, readback } = await executeCheckpointedFileMutation(
+          {
+            executeOptions: options,
+            toolName,
+            checkpointOptions,
+            before,
+            after: (result) => snapshotFromReadResult(result.readback),
+            currentAfterMutation: () => currentAfterMutation,
+            verifyMutationResult: (result) =>
+              mutationDivergenceConflict(
+                resolved.virtualPath,
+                toolName,
+                result.writeResult.revision,
+                result.readback.revision,
+              ),
+            mutation: async () => {
+              const result = await tauriIpc.fsWriteFile({
+                path: realPath,
+                content,
+                createDirs: rawArgs.create_dirs !== false,
+                allowOutsideWorkspace: false,
+                workspacePath,
+                expectedRevision: mutationRevision,
+              });
+              currentAfterMutation = snapshotFromAppliedText(
+                content,
+                result.revision,
+                result.unix_mode,
+              );
+              const validation = await tauriIpc.fsReadFileWithOptions({
+                path: realPath,
+                allowOutsideWorkspace: false,
+                workspacePath,
+              });
+              if (validation.content === content && validation.revision) {
+                currentAfterMutation = snapshotFromReadResult(validation);
+              }
+              return { writeResult: result, readback: validation };
+            },
           },
-        });
+        );
         return buildStructuredWriteResponse({
           path: resolved.virtualPath,
           status: writeResult.created ? "created" : "updated",
@@ -2027,6 +2586,7 @@ export const executeWorkspaceTool = async (
             size: readback.size,
             encoding: readback.encoding,
             language: readback.language,
+            revision: readback.revision ?? null,
           },
           projectId: candidate.id,
           mountName: candidate.mountName,
@@ -2040,6 +2600,9 @@ export const executeWorkspaceTool = async (
         const oldText = toString(rawArgs.old_text);
         const newText = toString(rawArgs.new_text);
         const replaceAll = rawArgs.replace_all === true;
+        const expectedRevision = normalizeExpectedRevision(
+          rawArgs.expected_revision,
+        );
 
         if (!inputPath) return "Missing path argument for edit tool.";
         if (!oldText) return "Missing old_text argument for edit tool.";
@@ -2078,15 +2641,25 @@ export const executeWorkspaceTool = async (
           projectId: candidate.id,
           mountName: candidate.mountName,
           workspacePath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
         };
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath,
         });
         if (current.is_binary) {
           return `Cannot edit binary file: ${resolved.virtualPath}`;
+        }
+        const revisionConflict = expectedRevisionConflict(
+          resolved.virtualPath,
+          expectedRevision,
+          current.revision,
+        );
+        if (revisionConflict) return revisionConflict;
+        const mutationRevision = expectedRevision ?? current.revision ?? null;
+        if (!mutationRevision) {
+          return `Cannot safely edit ${resolved.virtualPath}: the current revision is unavailable. Re-read the file and retry.`;
         }
 
         const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2096,30 +2669,52 @@ export const executeWorkspaceTool = async (
         if (occurrences === 0) {
           return `No match found for old_text in ${resolved.virtualPath}.`;
         }
+        if (!replaceAll && occurrences > 1) {
+          return `Cannot edit ${resolved.virtualPath}: old_text matched ${occurrences} locations. Provide more context so it matches exactly once, or set replace_all to true.`;
+        }
 
         const updated = replaceAll
           ? current.content.split(oldText).join(newText)
           : current.content.replace(oldText, newText);
 
+        let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
         const readback = await executeCheckpointedFileMutation({
           executeOptions: options,
           toolName,
           checkpointOptions,
           before: snapshotFromReadResult(current),
           after: snapshotFromReadResult,
+          currentAfterMutation: () => currentAfterMutation,
+          verifyMutationResult: (reread) =>
+            mutationDivergenceConflict(
+              resolved.virtualPath,
+              toolName,
+              currentAfterMutation?.revision,
+              reread.revision,
+            ),
           mutation: async () => {
-            await tauriIpc.fsWriteFile({
+            const result = await tauriIpc.fsWriteFile({
               path: realPath,
               content: updated,
               createDirs: true,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath,
+              expectedRevision: mutationRevision,
             });
-            return tauriIpc.fsReadFileWithOptions({
+            currentAfterMutation = snapshotFromAppliedText(
+              updated,
+              result.revision,
+              result.unix_mode,
+            );
+            const validation = await tauriIpc.fsReadFileWithOptions({
               path: realPath,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath,
             });
+            if (validation.content === updated && validation.revision) {
+              currentAfterMutation = snapshotFromReadResult(validation);
+            }
+            return validation;
           },
         });
         const stats = computeLineChangeStats(current.content, updated);
@@ -2138,6 +2733,7 @@ export const executeWorkspaceTool = async (
             size: readback.size,
             encoding: readback.encoding,
             language: readback.language,
+            revision: readback.revision ?? null,
           },
           replacements: replaceAll ? occurrences : 1,
           projectId: candidate.id,
@@ -2149,6 +2745,9 @@ export const executeWorkspaceTool = async (
 
       if (toolName === "delete") {
         const inputPath = sanitizePathInput(toString(rawArgs.path));
+        const expectedRevision = normalizeExpectedRevision(
+          rawArgs.expected_revision,
+        );
 
         if (!inputPath) return "Missing path argument for delete tool.";
 
@@ -2189,15 +2788,26 @@ export const executeWorkspaceTool = async (
 
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
           workspacePath,
         });
         if (current.is_binary) {
           return `Cannot delete binary file with checkpointing: ${resolved.virtualPath}`;
         }
+        const revisionConflict = expectedRevisionConflict(
+          resolved.virtualPath,
+          expectedRevision,
+          current.revision,
+        );
+        if (revisionConflict) return revisionConflict;
+        const mutationRevision = expectedRevision ?? current.revision ?? null;
+        if (!mutationRevision) {
+          return `Cannot safely delete ${resolved.virtualPath}: the current revision is unavailable. Re-read the file and retry.`;
+        }
         const deletions = current.is_binary
           ? 0
           : countLogicalLines(current.content);
+        let deletionApplied = false;
 
         await executeCheckpointedFileMutation({
           executeOptions: options,
@@ -2208,15 +2818,27 @@ export const executeWorkspaceTool = async (
             projectId: candidate.id,
             mountName: candidate.mountName,
             workspacePath,
-            allowOutsideWorkspace: true,
+            allowOutsideWorkspace: false,
           },
           before: snapshotFromReadResult(current),
           after: missingCheckpointSnapshot(),
+          currentAfterMutation: () =>
+            deletionApplied ? missingCheckpointSnapshot() : undefined,
+          verifyMutationResult: async () => {
+            const stillExists = await tauriIpc.fsExists(realPath, {
+              workspacePath,
+            });
+            return stillExists
+              ? deleteAbsenceDivergenceConflict(resolved.virtualPath, toolName)
+              : null;
+          },
           mutation: async () => {
             await tauriIpc.fsDelete({
               path: realPath,
               workspacePath,
+              expectedRevision: mutationRevision,
             });
+            deletionApplied = true;
           },
         });
 
@@ -2235,6 +2857,7 @@ export const executeWorkspaceTool = async (
             size: 0,
             encoding: null,
             language: null,
+            revision: null,
           },
           projectId: candidate.id,
           mountName: candidate.mountName,
@@ -2254,6 +2877,9 @@ export const executeWorkspaceTool = async (
         } catch (error) {
           return formatToolError(error);
         }
+        const expectedRevisions = normalizeExpectedRevisionMap(
+          rawArgs.expected_revisions,
+        );
 
         const pendingChanges: Array<{
           target: PatchTarget;
@@ -2264,6 +2890,7 @@ export const executeWorkspaceTool = async (
           bytesWritten: number;
           additions: number;
           deletions: number;
+          expectedRevision: string | null;
         }> = [];
 
         for (const operation of operations) {
@@ -2297,6 +2924,12 @@ export const executeWorkspaceTool = async (
               target.relativePath,
             ),
           };
+          let expectedRevision =
+            expectedRevisions[normalizeExpectedRevisionPath(operation.path)] ??
+            expectedRevisions[
+              normalizeExpectedRevisionPath(patchTarget.displayPath)
+            ] ??
+            (operation.kind === "add" ? EXPECTED_REVISION_ABSENT : null);
 
           if (operation.kind === "add") {
             const newContent = joinTextLines(operation.lines, true);
@@ -2318,15 +2951,20 @@ export const executeWorkspaceTool = async (
               bytesWritten: newContent.length,
               additions: countLogicalLines(newContent),
               deletions: 0,
+              expectedRevision,
             });
             continue;
           }
 
           const current = await tauriIpc.fsReadFileWithOptions({
             path: patchTarget.realPath,
-            allowOutsideWorkspace: true,
+            allowOutsideWorkspace: false,
             workspacePath: patchTarget.candidate.workspacePath,
           });
+          expectedRevision = expectedRevision ?? current.revision ?? null;
+          if (!expectedRevision) {
+            return `Cannot safely patch ${patchTarget.displayPath}: the current revision is unavailable. Re-read the file and retry.`;
+          }
 
           if (operation.kind === "delete") {
             if (current.is_binary) {
@@ -2341,6 +2979,7 @@ export const executeWorkspaceTool = async (
               bytesWritten: 0,
               additions: 0,
               deletions: countLogicalLines(current.content),
+              expectedRevision,
             });
             continue;
           }
@@ -2370,57 +3009,105 @@ export const executeWorkspaceTool = async (
             bytesWritten: newContent.length,
             additions: stats.additions,
             deletions: stats.deletions,
+            expectedRevision,
           });
         }
 
-        const rollbackSnapshots = await commitPatchWriteChangesWithRollback(
-          pendingChanges.map((change) => ({
+        const backendChanges: PatchWriteCommitChange[] = pendingChanges.map(
+          (change) => ({
             displayPath: change.target.displayPath,
             realPath: change.target.realPath,
             newContent: change.newContent,
+            expectedRevision: change.expectedRevision,
             existsOptions: {
               workspacePath: change.target.candidate.workspacePath,
             },
             readOptions: {
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath: change.target.candidate.workspacePath,
             },
             writeOptions: {
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath: change.target.candidate.workspacePath,
             },
             deleteOptions: {
               workspacePath: change.target.candidate.workspacePath,
             },
-          })),
+          }),
         );
+        const rollbackSnapshots = options.onCodeCheckpoint
+          ? rollbackSnapshotsFromBackendPatch(
+              backendChanges,
+              pendingChanges.map((change) => change.before),
+              await executeBackendTool("apply_patch", {
+                ...rawArgs,
+                expected_revisions: Object.fromEntries(
+                  operations.map((operation, index) => [
+                    operation.path,
+                    pendingChanges[index].expectedRevision,
+                  ]),
+                ),
+              }),
+            )
+          : await commitPatchWriteChangesWithRollback(backendChanges);
 
         const files: PatchChangeRecord[] = [];
         const validationFiles: PatchValidationRecord[] = [];
         const errors: string[] = [];
         const checkpointFiles: AgentCodeCheckpointFile[] = [];
 
-        for (const change of pendingChanges) {
+        for (const [changeIndex, change] of pendingChanges.entries()) {
+          const macroProducedRevision =
+            rollbackSnapshots[changeIndex]?.postMutationExpectedRevision ??
+            null;
           let validation: PatchValidationRecord;
           let afterCheckpoint: AgentCodeCheckpointFileSnapshot;
           if (change.newContent === null) {
+            let stillExists = false;
+            try {
+              stillExists = await tauriIpc.fsExists(change.target.realPath, {
+                workspacePath: change.target.candidate.workspacePath,
+              });
+            } catch (error) {
+              errors.push(
+                `Validation failed for ${change.target.displayPath}: ${formatToolError(error)}`,
+              );
+            }
+            if (stillExists) {
+              errors.push(
+                deleteAbsenceDivergenceConflict(
+                  change.target.displayPath,
+                  toolName,
+                ),
+              );
+            }
             validation = {
               path: change.target.displayPath,
-              exists: false,
+              exists: stillExists,
               readable: false,
               is_binary: false,
               size: 0,
               encoding: null,
               language: null,
+              revision: null,
             };
             afterCheckpoint = missingCheckpointSnapshot();
           } else {
             try {
               const readback = await tauriIpc.fsReadFileWithOptions({
                 path: change.target.realPath,
-                allowOutsideWorkspace: true,
+                allowOutsideWorkspace: false,
                 workspacePath: change.target.candidate.workspacePath,
               });
+              const divergence = mutationDivergenceConflict(
+                change.target.displayPath,
+                toolName,
+                macroProducedRevision,
+                readback.revision,
+              );
+              if (divergence) {
+                errors.push(divergence);
+              }
               validation = {
                 path: change.target.displayPath,
                 exists: true,
@@ -2429,6 +3116,7 @@ export const executeWorkspaceTool = async (
                 size: readback.size,
                 encoding: readback.encoding,
                 language: readback.language,
+                revision: readback.revision ?? null,
               };
               afterCheckpoint = snapshotFromReadResult(readback);
             } catch (error) {
@@ -2443,6 +3131,7 @@ export const executeWorkspaceTool = async (
                 size: 0,
                 encoding: null,
                 language: null,
+                revision: null,
               };
               afterCheckpoint = {
                 exists: true,
@@ -2474,28 +3163,39 @@ export const executeWorkspaceTool = async (
               projectId: change.target.candidate.id,
               mountName: change.target.candidate.mountName,
               workspacePath: change.target.candidate.workspacePath,
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               before: change.before,
               after: afterCheckpoint,
             }),
           );
         }
 
-        if (errors.length === 0) {
+        if (errors.length > 0) {
           try {
-            await publishCodeCheckpoint(options, toolName, checkpointFiles);
-          } catch (error) {
-            try {
-              await rollbackPatchWriteChanges(rollbackSnapshots);
-            } catch (rollbackError) {
-              throw new Error(
-                `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
-              );
-            }
+            await rollbackPatchWriteChanges(rollbackSnapshots);
+          } catch (rollbackError) {
             throw new Error(
-              `Failed to record code checkpoint for ${toolName}; mutations were reverted: ${formatToolError(error)}`,
+              `Validation failed after ${toolName}, and rollback failed: ${errors.join("; ")}; ${formatToolError(rollbackError)}`,
             );
           }
+          throw new Error(
+            `Validation failed after ${toolName}; mutations were reverted: ${errors.join("; ")}`,
+          );
+        }
+
+        try {
+          await publishCodeCheckpoint(options, toolName, checkpointFiles);
+        } catch (error) {
+          try {
+            await rollbackPatchWriteChanges(rollbackSnapshots);
+          } catch (rollbackError) {
+            throw new Error(
+              `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
+            );
+          }
+          throw new Error(
+            `Failed to record code checkpoint for ${toolName}; mutations were reverted: ${formatToolError(error)}`,
+          );
         }
 
         return JSON.stringify(
@@ -2522,13 +3222,16 @@ export const executeWorkspaceTool = async (
         const matches = new Set<string>();
 
         for (const candidate of candidates) {
+          assertToolExecutionActive();
           if (!candidate.workspacePath) continue;
           const files = await readAllCandidateFiles(
             includeHidden,
             mode,
             candidate.workspacePath,
+            assertToolExecutionActive,
           );
-          files.forEach((entry) => {
+          for (const entry of files) {
+            assertToolExecutionActive();
             const virtualPath = toVirtualPath(candidate, entry.relative_path);
             if (
               pathMatchesGlob(virtualPath, pattern) ||
@@ -2536,15 +3239,35 @@ export const executeWorkspaceTool = async (
             ) {
               matches.add(virtualPath);
             }
-          });
+          }
         }
+
+        const sortedMatches = Array.from(matches).sort(compareToolPaths);
+        const cursorScope = `glob\0${JSON.stringify(
+          candidates.map((candidate) => [
+            candidate.id,
+            candidate.mountName,
+            candidate.workspacePath ?? "",
+          ]),
+        )}\0${pattern}\0${includeHidden}`;
+        const page = paginateToolItems(
+          sortedMatches,
+          rawArgs,
+          cursorScope,
+          TOOL_OUTPUT_LIMITS.glob,
+        );
 
         return JSON.stringify(
           {
             pattern,
             virtual_root: true,
-            count: matches.size,
-            paths: Array.from(matches),
+            count: page.items.length,
+            total_count: sortedMatches.length,
+            paths: page.items,
+            limit: page.limit,
+            offset: page.offset,
+            truncated: page.truncated,
+            next_cursor: page.nextCursor,
           },
           null,
           2,
@@ -2558,37 +3281,52 @@ export const executeWorkspaceTool = async (
         const includeHidden = rawArgs.include_hidden === true;
         const isRegexp = rawArgs.is_regexp === true;
         const includePattern = toString(rawArgs.include_pattern);
-        const maxResults =
-          typeof rawArgs.max_results === "number"
-            ? Math.max(1, Math.floor(rawArgs.max_results))
-            : 50;
-
-        let matcher: RegExp | null = null;
         if (isRegexp) {
-          try {
-            matcher = new RegExp(query, "i");
-          } catch {
-            return `Invalid regex pattern for grep: ${query}`;
-          }
+          return "Regular-expression grep requires the cancellable native or remote search backend; the JavaScript fallback refuses regex patterns to avoid uninterruptible backtracking.";
         }
 
         const results: Array<{
           path: string;
           line: number;
           text: string;
+          text_truncated: boolean;
           project_id: string;
           mount_name: string;
         }> = [];
+        const cursorScope = `grep\0${JSON.stringify(
+          candidates.map((candidate) => [
+            candidate.id,
+            candidate.mountName,
+            candidate.workspacePath ?? "",
+          ]),
+        )}\0${query}\0${isRegexp}\0${includePattern}\0${includeHidden}`;
+        const page = resolveToolPage(
+          rawArgs,
+          cursorScope,
+          TOOL_OUTPUT_LIMITS.grep,
+        );
+        let seenMatches = 0;
+        let filesScanned = 0;
+        let skippedBinary = 0;
+        let skippedTooLarge = 0;
+        let columnTruncatedMatches = 0;
 
-        for (const candidate of candidates) {
+        for (const candidate of [...candidates].sort((left, right) =>
+          compareToolPaths(left.mountName, right.mountName),
+        )) {
+          assertToolExecutionActive();
           if (!candidate.workspacePath) continue;
           const files = await readAllCandidateFiles(
             includeHidden,
             mode,
             candidate.workspacePath,
+            assertToolExecutionActive,
           );
 
-          for (const file of files) {
+          for (const file of files.sort((left, right) =>
+            compareToolPaths(left.relative_path, right.relative_path),
+          )) {
+            assertToolExecutionActive();
             const virtualPath = toVirtualPath(candidate, file.relative_path);
             if (
               includePattern &&
@@ -2598,33 +3336,81 @@ export const executeWorkspaceTool = async (
               continue;
             }
 
+            if ((file.size ?? 0) > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+              skippedTooLarge += 1;
+              continue;
+            }
+
             const content = await tauriIpc.fsReadFileWithOptions({
               path: joinPathWithinWorkspace(
                 candidate.workspacePath,
                 file.relative_path,
               ),
-              allowOutsideWorkspace: true,
+              allowOutsideWorkspace: false,
               workspacePath: candidate.workspacePath,
             });
-            if (content.is_binary) continue;
+            assertToolExecutionActive();
+            if (content.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+              skippedTooLarge += 1;
+              continue;
+            }
+            if (content.is_binary) {
+              skippedBinary += 1;
+              continue;
+            }
+            filesScanned += 1;
 
             const lines = content.content.split("\n");
             for (let index = 0; index < lines.length; index += 1) {
+              if (index % 256 === 0) assertToolExecutionActive();
               const line = lines[index];
-              const match = matcher
-                ? matcher.test(line)
-                : line.toLowerCase().includes(query.toLowerCase());
+              const match = line.toLowerCase().includes(query.toLowerCase());
               if (match) {
+                if (seenMatches < page.offset) {
+                  seenMatches += 1;
+                  continue;
+                }
+                seenMatches += 1;
+                const capped = truncateGrepLine(line.trim());
                 results.push({
                   path: virtualPath,
                   line: index + 1,
-                  text: line.trim(),
+                  text: capped.text,
+                  text_truncated: capped.truncated,
                   project_id: candidate.id,
                   mount_name: candidate.mountName,
                 });
-                if (results.length >= maxResults) {
+                if (capped.truncated && results.length <= page.limit) {
+                  columnTruncatedMatches += 1;
+                }
+                if (results.length > page.limit) {
+                  results.length = page.limit;
                   return JSON.stringify(
-                    { query, total: results.length, results },
+                    {
+                      query,
+                      total: results.length,
+                      count: results.length,
+                      total_count: null,
+                      total_is_exact: false,
+                      results,
+                      limit: page.limit,
+                      offset: page.offset,
+                      truncated: true,
+                      next_cursor: createToolCursor(
+                        cursorScope,
+                        page.offset + results.length,
+                      ),
+                      files_scanned: filesScanned,
+                      scan_complete: false,
+                      skipped_files: {
+                        binary: skippedBinary,
+                        too_large: skippedTooLarge,
+                        max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+                        is_exact: false,
+                      },
+                      column_truncated_matches: columnTruncatedMatches,
+                      max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+                    },
                     null,
                     2,
                   );
@@ -2635,7 +3421,28 @@ export const executeWorkspaceTool = async (
         }
 
         return JSON.stringify(
-          { query, total: results.length, results },
+          {
+            query,
+            total: results.length,
+            count: results.length,
+            total_count: page.offset + results.length,
+            total_is_exact: true,
+            results,
+            limit: page.limit,
+            offset: page.offset,
+            truncated: false,
+            next_cursor: null,
+            files_scanned: filesScanned,
+            scan_complete: true,
+            skipped_files: {
+              binary: skippedBinary,
+              too_large: skippedTooLarge,
+              max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+              is_exact: true,
+            },
+            column_truncated_matches: columnTruncatedMatches,
+            max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+          },
           null,
           2,
         );
@@ -2663,83 +3470,28 @@ export const executeWorkspaceTool = async (
           target.relativePath,
           mode,
         );
-        const repoPath = joinPathWithinWorkspace(
-          target.candidate.workspacePath,
-          target.relativePath,
-        );
-        const allowRepoFallback = false;
-        let effectiveRepoPath = repoPath;
+        const backendResult = await tauriIpc.executeWorkspaceTool({
+          mode,
+          toolId: toolName,
+          args: {
+            ...rawArgs,
+            repo_path: target.relativePath,
+          },
+          workspacePath: target.candidate.workspacePath,
+          virtualRootEnabled: false,
+          focusedProjectId: target.candidate.id,
+        });
+        if (!backendResult || backendResult === "UNSUPPORTED_WORKSPACE_TOOL") {
+          return `Error executing ${toolName}: the confined Git tool host is unavailable; refusing an unscoped Git fallback.`;
+        }
+
         const repoMeta = {
           project_id: target.candidate.id,
           mount_name: target.candidate.mountName,
           repo_path: resolved.virtualPath,
           ...(resolved.realPath ? { real_repo_path: resolved.realPath } : {}),
         };
-
-        if (toolName === "git_status") {
-          const { value: status } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify({ ...repoMeta, ...status }, null, 2);
-        }
-
-        if (toolName === "git_log") {
-          const limit =
-            typeof rawArgs.limit === "number"
-              ? Math.max(1, Math.floor(rawArgs.limit))
-              : undefined;
-          const branch = toString(rawArgs.branch) || undefined;
-          const { value: commits } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) =>
-              tauriIpc.gitLog({ repoPath: candidate, limit, branch }),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            { ...repoMeta, count: commits.length, commits },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_branch_list") {
-          const { value: branches } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitBranchList(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify({ ...repoMeta, ...branches }, null, 2);
-        }
-
         if (toolName === "git_diff") {
-          const base = toString(rawArgs.base) || undefined;
-          const head = toString(rawArgs.head) || undefined;
-          const contextLines =
-            typeof rawArgs.context_lines === "number"
-              ? Math.max(0, Math.floor(rawArgs.context_lines))
-              : undefined;
-          const ignoreWhitespace = rawArgs.ignore_whitespace === true;
-          const paths = Array.isArray(rawArgs.paths)
-            ? rawArgs.paths.filter(
-                (value): value is string =>
-                  typeof value === "string" && value.trim().length > 0,
-              )
-            : undefined;
-          const { value: patch } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) =>
-              tauriIpc.gitDiff({
-                repoPath: candidate,
-                base,
-                head,
-                contextLines,
-                ignoreWhitespace,
-                paths,
-              }),
-            allowRepoFallback,
-          );
           const header = [
             `REPO: ${repoMeta.repo_path}`,
             `PROJECT_ID: ${repoMeta.project_id}`,
@@ -2748,560 +3500,22 @@ export const executeWorkspaceTool = async (
               ? [`REAL_REPO_PATH: ${repoMeta.real_repo_path}`]
               : []),
           ].join("\n");
-          return `${header}\n\n${patch || ""}`;
+          return `${header}\n${backendResult}`;
         }
 
-        if (toolName === "git_get_tree") {
-          const branch = toString(rawArgs.branch) || undefined;
-          const { value: tree } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitGetTree({ repoPath: candidate, branch }),
-            allowRepoFallback,
-          );
-          return JSON.stringify({ ...repoMeta, ...tree }, null, 2);
+        try {
+          const parsed = JSON.parse(backendResult) as Record<string, unknown>;
+          return JSON.stringify({ ...parsed, ...repoMeta }, null, 2);
+        } catch {
+          return backendResult;
         }
-
-        if (toolName === "git_add") {
-          const paths = Array.isArray(rawArgs.paths)
-            ? rawArgs.paths.filter(
-                (value): value is string =>
-                  typeof value === "string" && value.trim().length > 0,
-              )
-            : ["."];
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitAdd({ repoPath: candidate, paths });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              staged_paths: paths,
-              staged_count: status.staged_files.length,
-              branch: status.branch,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_commit") {
-          const message = toString(rawArgs.message);
-          if (!message) return "Missing message argument for git_commit tool.";
-
-          const { value: before } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitLog({ repoPath: candidate, limit: 1 });
-            },
-            allowRepoFallback,
-          );
-          const headBefore = before[0]?.id ?? null;
-
-          const { value: hash } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitCommit({
-                repoPath: candidate,
-                message,
-                stageAll: rawArgs.stage_all !== false,
-              });
-            },
-            allowRepoFallback,
-          );
-
-          const { value: after } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitLog({ repoPath: candidate, limit: 1 }),
-            allowRepoFallback,
-          );
-          const headAfter = after[0]?.id ?? null;
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              branch: status.branch,
-              hash,
-              head_before: headBefore,
-              head_after: headAfter,
-              head_changed: headBefore !== headAfter,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_checkout") {
-          const branchOrCommit =
-            toString(rawArgs.branch_or_commit) || toString(rawArgs.branch);
-          if (!branchOrCommit)
-            return "Missing branch_or_commit argument for git_checkout tool.";
-
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitCheckout({
-                repoPath: candidate,
-                branchOrCommit,
-                create: rawArgs.create === true,
-              });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              branch: status.branch,
-              target: branchOrCommit,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_merge") {
-          const branchName =
-            toString(rawArgs.branch_name) || toString(rawArgs.branch);
-          const intoBranch = toString(rawArgs.into_branch);
-          if (!branchName || !intoBranch) {
-            return "Missing branch_name or into_branch argument for git_merge tool.";
-          }
-
-          const { value: output } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitMerge({
-                repoPath: candidate,
-                branchName,
-                intoBranch,
-              });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            {
-              ok: true,
-              ...repoMeta,
-              branch: status.branch,
-              merged_branch: branchName,
-              into_branch: intoBranch,
-              output,
-            },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_reset") {
-          const modeArg = toString(rawArgs.mode);
-          if (modeArg !== "soft" && modeArg !== "mixed" && modeArg !== "hard") {
-            return "Missing or invalid mode for git_reset. Use one of: soft, mixed, hard.";
-          }
-
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitReset({
-                repoPath: candidate,
-                mode: modeArg,
-                commit: toString(rawArgs.commit) || undefined,
-                confirm: rawArgs.confirm === true ? true : undefined,
-              });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            { ok: true, ...repoMeta, branch: status.branch },
-            null,
-            2,
-          );
-        }
-
-        if (toolName === "git_stash") {
-          const message = toString(rawArgs.message) || undefined;
-          const { value: stashId } = await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => {
-              effectiveRepoPath = candidate;
-              return tauriIpc.gitStash({ repoPath: candidate, message });
-            },
-            allowRepoFallback,
-          );
-          const { value: status } = await runGitWithRepoFallback(
-            effectiveRepoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-          return JSON.stringify(
-            { ok: true, ...repoMeta, branch: status.branch, stash: stashId },
-            null,
-            2,
-          );
-        }
-
-        return `Unknown Git tool: ${toolName}`;
       }
-    }
-
-    if (isGitTool(toolName)) {
-      const allowRepoFallback = false;
-      const repoPath = resolveGitRepoPath(args, mode, effectiveWorkspacePath);
-      let effectiveRepoPath = repoPath;
-
-      if (toolName === "git_status") {
-        const { value: status, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitStatus(candidate),
-            allowRepoFallback,
-          );
-        return JSON.stringify(
-          { repo_path: resolvedRepoPath, ...status },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_log") {
-        const limit =
-          typeof args.limit === "number"
-            ? Math.max(1, Math.floor(args.limit))
-            : undefined;
-        const branch = toString(args.branch) || undefined;
-        const { value: commits, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) =>
-              tauriIpc.gitLog({ repoPath: candidate, limit, branch }),
-            allowRepoFallback,
-          );
-        return JSON.stringify(
-          { repo_path: resolvedRepoPath, count: commits.length, commits },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_branch_list") {
-        const { value: branches, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitBranchList(candidate),
-            allowRepoFallback,
-          );
-        return JSON.stringify(
-          { repo_path: resolvedRepoPath, ...branches },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_diff") {
-        const base = toString(args.base) || undefined;
-        const head = toString(args.head) || undefined;
-        const contextLines =
-          typeof args.context_lines === "number"
-            ? Math.max(0, Math.floor(args.context_lines))
-            : undefined;
-        const ignoreWhitespace = args.ignore_whitespace === true;
-        const paths = Array.isArray(args.paths)
-          ? args.paths.filter(
-              (value): value is string =>
-                typeof value === "string" && value.trim().length > 0,
-            )
-          : undefined;
-        const { value: patch } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) =>
-            tauriIpc.gitDiff({
-              repoPath: candidate,
-              base,
-              head,
-              contextLines,
-              ignoreWhitespace,
-              paths,
-            }),
-          allowRepoFallback,
-        );
-        return patch || "";
-      }
-
-      if (toolName === "git_get_tree") {
-        const branch = toString(args.branch) || undefined;
-        const { value: tree, repoPath: resolvedRepoPath } =
-          await runGitWithRepoFallback(
-            repoPath,
-            (candidate) => tauriIpc.gitGetTree({ repoPath: candidate, branch }),
-            allowRepoFallback,
-          );
-        return JSON.stringify(
-          { repo_path: resolvedRepoPath, ...tree },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_add") {
-        const paths = Array.isArray(args.paths)
-          ? args.paths.filter(
-              (value): value is string =>
-                typeof value === "string" && value.trim().length > 0,
-            )
-          : ["."];
-        await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitAdd({ repoPath: candidate, paths });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            staged_paths: paths,
-            staged_count: status.staged_files.length,
-            branch: status.branch,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_commit") {
-        const message = toString(args.message);
-        if (!message) return "Missing message argument for git_commit tool.";
-
-        const { value: before } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitLog({ repoPath: candidate, limit: 1 });
-          },
-          allowRepoFallback,
-        );
-        const headBefore = before[0]?.id ?? null;
-
-        const { value: hash } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitCommit({
-              repoPath: candidate,
-              message,
-              stageAll: args.stage_all !== false,
-            });
-          },
-          allowRepoFallback,
-        );
-
-        const { value: after } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitLog({ repoPath: candidate, limit: 1 }),
-          allowRepoFallback,
-        );
-        const headAfter = after[0]?.id ?? null;
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            hash,
-            head_before: headBefore,
-            head_after: headAfter,
-            head_changed: headBefore !== headAfter,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_checkout") {
-        const branchOrCommit =
-          toString(args.branch_or_commit) || toString(args.branch);
-        if (!branchOrCommit)
-          return "Missing branch_or_commit argument for git_checkout tool.";
-
-        await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitCheckout({
-              repoPath: candidate,
-              branchOrCommit,
-              create: args.create === true,
-            });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            target: branchOrCommit,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_merge") {
-        const branchName = toString(args.branch_name) || toString(args.branch);
-        const intoBranch = toString(args.into_branch);
-        if (!branchName || !intoBranch) {
-          return "Missing branch_name or into_branch argument for git_merge tool.";
-        }
-
-        const { value: output } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitMerge({
-              repoPath: candidate,
-              branchName,
-              intoBranch,
-            });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            merged_branch: branchName,
-            into_branch: intoBranch,
-            output,
-          },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_reset") {
-        const modeArg = toString(args.mode);
-        if (modeArg !== "soft" && modeArg !== "mixed" && modeArg !== "hard") {
-          return "Missing or invalid mode for git_reset. Use one of: soft, mixed, hard.";
-        }
-
-        await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitReset({
-              repoPath: candidate,
-              mode: modeArg,
-              commit: toString(args.commit) || undefined,
-              confirm: args.confirm === true ? true : undefined,
-            });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          { ok: true, repo_path: effectiveRepoPath, branch: status.branch },
-          null,
-          2,
-        );
-      }
-
-      if (toolName === "git_stash") {
-        const message = toString(args.message) || undefined;
-        const { value: stashId } = await runGitWithRepoFallback(
-          repoPath,
-          (candidate) => {
-            effectiveRepoPath = candidate;
-            return tauriIpc.gitStash({ repoPath: candidate, message });
-          },
-          allowRepoFallback,
-        );
-        const { value: status } = await runGitWithRepoFallback(
-          effectiveRepoPath,
-          (candidate) => tauriIpc.gitStatus(candidate),
-          allowRepoFallback,
-        );
-        return JSON.stringify(
-          {
-            ok: true,
-            repo_path: effectiveRepoPath,
-            branch: status.branch,
-            stash: stashId,
-          },
-          null,
-          2,
-        );
-      }
-
-      return `Unknown Git tool: ${toolName}`;
     }
 
     if (toolName === "list") {
       const inputPath = sanitizePathInput(toString(args.path) || ".");
       const path = resolveDirectPath(inputPath, mode, effectiveWorkspacePath);
-      const recursive = args.recursive !== false;
+      const recursive = args.recursive === true;
       const includeHidden = args.include_hidden === true;
       const maxDepth =
         typeof args.max_depth === "number"
@@ -3312,9 +3526,34 @@ export const executeWorkspaceTool = async (
         recursive,
         includeHidden,
         maxDepth,
-        allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
+        workspacePath: effectiveWorkspacePath,
       });
-      return JSON.stringify({ path, count: entries.length, entries }, null, 2);
+      assertToolExecutionActive();
+      const sortedEntries = entries.sort((left, right) =>
+        compareToolPaths(left.relative_path, right.relative_path),
+      );
+      const cursorScope = `list\0${effectiveWorkspacePath ?? ""}\0${path}\0${recursive}\0${includeHidden}\0${maxDepth ?? ""}`;
+      const page = paginateToolItems(
+        sortedEntries,
+        args,
+        cursorScope,
+        TOOL_OUTPUT_LIMITS.list,
+      );
+      return JSON.stringify(
+        {
+          path,
+          count: page.items.length,
+          total_count: sortedEntries.length,
+          entries: page.items,
+          limit: page.limit,
+          offset: page.offset,
+          truncated: page.truncated,
+          next_cursor: page.nextCursor,
+        },
+        null,
+        2,
+      );
     }
 
     if (toolName === "read") {
@@ -3327,8 +3566,10 @@ export const executeWorkspaceTool = async (
       try {
         result = await tauriIpc.fsReadFileWithOptions({
           path,
-          allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
+          workspacePath: effectiveWorkspacePath,
         });
+        assertToolExecutionActive();
       } catch (readError) {
         if (!effectiveWorkspacePath || isAbsolutePath(inputPath)) {
           throw readError;
@@ -3342,7 +3583,8 @@ export const executeWorkspaceTool = async (
           path: root,
           recursive: true,
           includeHidden: false,
-          allowOutsideWorkspace: true,
+          allowOutsideWorkspace: false,
+          workspacePath: effectiveWorkspacePath,
         });
 
         const candidates = entries
@@ -3389,7 +3631,8 @@ export const executeWorkspaceTool = async (
           resolvedPath = fallbackCandidates[0].path;
           result = await tauriIpc.fsReadFileWithOptions({
             path: resolvedPath,
-            allowOutsideWorkspace: true,
+            allowOutsideWorkspace: false,
+            workspacePath: effectiveWorkspacePath,
           });
         } else if (fallbackCandidates.length > 1) {
           const suggestion = fallbackCandidates
@@ -3403,35 +3646,29 @@ export const executeWorkspaceTool = async (
       }
 
       if (result.is_binary) {
-        return `File ${resolvedPath} is binary (${result.size} bytes, encoding=${result.encoding}).`;
+        return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\nBINARY: true\nSIZE: ${result.size}\nENCODING: ${result.encoding}\nREVISION: ${result.revision ?? "unavailable"}\nCONTENT_OMITTED: binary`;
       }
 
-      const startLine =
-        typeof args.start_line === "number"
-          ? Math.max(1, Math.floor(args.start_line))
-          : 1;
-      const endLine =
+      const endLineScope =
         typeof args.end_line === "number"
-          ? Math.max(startLine, Math.floor(args.end_line))
-          : undefined;
-
-      const lines = result.content.split("\n");
-      const selected = lines.slice(
-        startLine - 1,
-        endLine ? endLine : undefined,
-      );
-      const effectiveEndLine = endLine ?? startLine + selected.length - 1;
-      const numberedContent = formatWithLineNumbers(selected, startLine);
+          ? String(Math.floor(args.end_line))
+          : "";
+      const cursorScope = `read\0${effectiveWorkspacePath ?? ""}\0${resolvedPath}\0${result.revision ?? "unavailable"}\0${endLineScope}`;
+      const page = paginateReadContent(result.content, args, cursorScope);
+      const numberedContent = formatWithLineNumbers(page.lines, page.startLine);
       const resolvedNotice =
         resolvedPath !== path
           ? `RESOLVED_PATH: ${resolvedPath} (from requested: ${inputPath})\n`
           : "";
-      return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\nLINES: ${startLine}-${effectiveEndLine}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
+      return `FILE: ${resolvedPath}\nSOURCE: WORKSPACE_FILE\n${resolvedNotice}LANGUAGE: ${result.language}\nSIZE: ${result.size}\nREVISION: ${result.revision ?? "unavailable"}\nLINES: ${page.startLine}-${page.endLine}\nTOTAL_LINES: ${page.totalLines}\nRETURNED_LINES: ${page.returnedLines}\nTRUNCATED: ${page.truncated}\nNEXT_CURSOR: ${page.nextCursor ?? "none"}\nLIMITS: max_lines=${page.maxLines}, max_bytes=${page.maxBytes}, max_columns=${TOOL_OUTPUT_LIMITS.read.maxColumns}\nCOLUMN_TRUNCATED_LINES: ${page.columnTruncatedLines}\n\n---BEGIN FILE CONTENT---\n${numberedContent}\n---END FILE CONTENT---`;
     }
 
     if (toolName === "write") {
       const inputPath = sanitizePathInput(toString(args.path));
       const content = toString(args.content);
+      const expectedRevision = normalizeExpectedRevision(
+        args.expected_revision,
+      );
       if (!inputPath) return "Missing path argument for write tool.";
       const resolvedPath = useMetadataWorkspace
         ? inputPath
@@ -3446,29 +3683,60 @@ export const executeWorkspaceTool = async (
         realPath: path,
         workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
       };
+      const before = await readCheckpointSnapshot(checkpointOptions);
+      const revisionConflict = expectedRevisionConflict(
+        resolvedPath,
+        expectedRevision,
+        before.exists ? before.revision : null,
+      );
+      if (revisionConflict) return revisionConflict;
+      const mutationRevision =
+        expectedRevision ??
+        (before.exists ? before.revision : EXPECTED_REVISION_ABSENT);
+      if (!mutationRevision) {
+        return `Cannot safely write ${resolvedPath}: the current revision is unavailable. Re-read the file and retry.`;
+      }
+      let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
       const { writeResult, readback } = await executeCheckpointedFileMutation({
         executeOptions: options,
         toolName,
         checkpointOptions,
+        before,
         after: (result) => snapshotFromReadResult(result.readback),
+        currentAfterMutation: () => currentAfterMutation,
+        verifyMutationResult: (result) =>
+          mutationDivergenceConflict(
+            resolvedPath,
+            toolName,
+            result.writeResult.revision,
+            result.readback.revision,
+          ),
         mutation: async () => {
           const result = await tauriIpc.fsWriteFile({
             path,
             content,
             createDirs,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
+            expectedRevision: mutationRevision,
           });
+          currentAfterMutation = snapshotFromAppliedText(
+            content,
+            result.revision,
+            result.unix_mode,
+          );
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           });
+          if (validation.content === content && validation.revision) {
+            currentAfterMutation = snapshotFromReadResult(validation);
+          }
           return { writeResult: result, readback: validation };
         },
       });
@@ -3487,6 +3755,7 @@ export const executeWorkspaceTool = async (
           size: readback.size,
           encoding: readback.encoding,
           language: readback.language,
+          revision: readback.revision ?? null,
         },
         rawPath: writeResult.path,
       });
@@ -3497,6 +3766,9 @@ export const executeWorkspaceTool = async (
       const oldText = toString(args.old_text);
       const newText = toString(args.new_text);
       const replaceAll = args.replace_all === true;
+      const expectedRevision = normalizeExpectedRevision(
+        args.expected_revision,
+      );
 
       if (!inputPath) return "Missing path argument for edit tool.";
       if (!oldText) return "Missing old_text argument for edit tool.";
@@ -3511,12 +3783,22 @@ export const executeWorkspaceTool = async (
 
       const current = await tauriIpc.fsReadFileWithOptions({
         path,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
       });
       if (current.is_binary) {
         return `Cannot edit binary file: ${path}`;
+      }
+      const revisionConflict = expectedRevisionConflict(
+        resolvedPath,
+        expectedRevision,
+        current.revision,
+      );
+      if (revisionConflict) return revisionConflict;
+      const mutationRevision = expectedRevision ?? current.revision ?? null;
+      if (!mutationRevision) {
+        return `Cannot safely edit ${resolvedPath}: the current revision is unavailable. Re-read the file and retry.`;
       }
 
       const escapedOld = oldText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -3526,12 +3808,16 @@ export const executeWorkspaceTool = async (
       if (occurrences === 0) {
         return `No match found for old_text in ${path}.`;
       }
+      if (!replaceAll && occurrences > 1) {
+        return `Cannot edit ${path}: old_text matched ${occurrences} locations. Provide more context so it matches exactly once, or set replace_all to true.`;
+      }
 
       const updated = replaceAll
         ? current.content.split(oldText).join(newText)
         : current.content.replace(oldText, newText);
 
       const stats = computeLineChangeStats(current.content, updated);
+      let currentAfterMutation: AgentCodeCheckpointFileSnapshot | undefined;
       const { writeResult, readback } = await executeCheckpointedFileMutation({
         executeOptions: options,
         toolName,
@@ -3540,26 +3826,42 @@ export const executeWorkspaceTool = async (
           realPath: path,
           workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-          allowOutsideWorkspace:
-            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
         },
         before: snapshotFromReadResult(current),
         after: (result) => snapshotFromReadResult(result.readback),
+        currentAfterMutation: () => currentAfterMutation,
+        verifyMutationResult: (result) =>
+          mutationDivergenceConflict(
+            resolvedPath,
+            toolName,
+            currentAfterMutation?.revision,
+            result.readback.revision,
+          ),
         mutation: async () => {
           const result = await tauriIpc.fsWriteFile({
             path,
             content: updated,
             createDirs: true,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
+            expectedRevision: mutationRevision,
           });
+          currentAfterMutation = snapshotFromAppliedText(
+            updated,
+            result.revision,
+            result.unix_mode,
+          );
           const validation = await tauriIpc.fsReadFileWithOptions({
             path,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           });
+          if (validation.content === updated && validation.revision) {
+            currentAfterMutation = snapshotFromReadResult(validation);
+          }
           return { writeResult: result, readback: validation };
         },
       });
@@ -3578,6 +3880,7 @@ export const executeWorkspaceTool = async (
           size: readback.size,
           encoding: readback.encoding,
           language: readback.language,
+          revision: readback.revision ?? null,
         },
         replacements: replaceAll ? occurrences : 1,
         rawPath: writeResult.path,
@@ -3586,6 +3889,9 @@ export const executeWorkspaceTool = async (
 
     if (toolName === "delete") {
       const inputPath = sanitizePathInput(toString(args.path));
+      const expectedRevision = normalizeExpectedRevision(
+        args.expected_revision,
+      );
       if (!inputPath) return "Missing path argument for delete tool.";
 
       const resolvedPath = useMetadataWorkspace
@@ -3606,14 +3912,27 @@ export const executeWorkspaceTool = async (
 
       const current = await tauriIpc.fsReadFileWithOptions({
         path,
-        allowOutsideWorkspace:
-          !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+        allowOutsideWorkspace: false,
         workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+        workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
       });
       if (current.is_binary) {
         return `Cannot delete binary file with checkpointing: ${resolvedPath}`;
       }
-      const deletions = current.is_binary ? 0 : countLogicalLines(current.content);
+      const revisionConflict = expectedRevisionConflict(
+        resolvedPath,
+        expectedRevision,
+        current.revision,
+      );
+      if (revisionConflict) return revisionConflict;
+      const mutationRevision = expectedRevision ?? current.revision ?? null;
+      if (!mutationRevision) {
+        return `Cannot safely delete ${resolvedPath}: the current revision is unavailable. Re-read the file and retry.`;
+      }
+      const deletions = current.is_binary
+        ? 0
+        : countLogicalLines(current.content);
+      let deletionApplied = false;
 
       await executeCheckpointedFileMutation({
         executeOptions: options,
@@ -3623,17 +3942,29 @@ export const executeWorkspaceTool = async (
           realPath: path,
           workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-          allowOutsideWorkspace:
-            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
         },
         before: snapshotFromReadResult(current),
         after: missingCheckpointSnapshot(),
+        currentAfterMutation: () =>
+          deletionApplied ? missingCheckpointSnapshot() : undefined,
+        verifyMutationResult: async () => {
+          const stillExists = await tauriIpc.fsExists(path, {
+            workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+            workspacePath: effectiveWorkspacePath,
+          });
+          return stillExists
+            ? deleteAbsenceDivergenceConflict(resolvedPath, toolName)
+            : null;
+        },
         mutation: async () => {
           await tauriIpc.fsDelete({
             path,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
+            expectedRevision: mutationRevision,
           });
+          deletionApplied = true;
         },
       });
 
@@ -3652,6 +3983,7 @@ export const executeWorkspaceTool = async (
           size: 0,
           encoding: null,
           language: null,
+          revision: null,
         },
         rawPath: path,
       });
@@ -3668,6 +4000,9 @@ export const executeWorkspaceTool = async (
       } catch (error) {
         return formatToolError(error);
       }
+      const expectedRevisions = normalizeExpectedRevisionMap(
+        args.expected_revisions,
+      );
 
       const pendingChanges: Array<{
         path: string;
@@ -3679,6 +4014,7 @@ export const executeWorkspaceTool = async (
         deletions: number;
         created: boolean;
         bytesWritten: number;
+        expectedRevision: string | null;
       }> = [];
 
       for (const operation of operations) {
@@ -3689,6 +4025,10 @@ export const executeWorkspaceTool = async (
           ? operation.path
           : resolveDirectPath(operation.path, mode, effectiveWorkspacePath);
         assertPathAllowed(mode, resolvedPath);
+        let expectedRevision =
+          expectedRevisions[normalizeExpectedRevisionPath(operation.path)] ??
+          expectedRevisions[normalizeExpectedRevisionPath(resolvedPath)] ??
+          (operation.kind === "add" ? EXPECTED_REVISION_ABSENT : null);
 
         if (operation.kind === "add") {
           const newContent = joinTextLines(operation.lines, true);
@@ -3709,16 +4049,21 @@ export const executeWorkspaceTool = async (
             deletions: 0,
             created: true,
             bytesWritten: newContent.length,
+            expectedRevision,
           });
           continue;
         }
 
         const current = await tauriIpc.fsReadFileWithOptions({
           path: realPath,
-          allowOutsideWorkspace:
-            !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
           workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+          workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
         });
+        expectedRevision = expectedRevision ?? current.revision ?? null;
+        if (!expectedRevision) {
+          return `Cannot safely patch ${resolvedPath}: the current revision is unavailable. Re-read the file and retry.`;
+        }
 
         if (operation.kind === "delete") {
           if (current.is_binary) {
@@ -3734,6 +4079,7 @@ export const executeWorkspaceTool = async (
             deletions: countLogicalLines(current.content),
             created: false,
             bytesWritten: 0,
+            expectedRevision,
           });
           continue;
         }
@@ -3763,27 +4109,27 @@ export const executeWorkspaceTool = async (
           deletions: stats.deletions,
           created: false,
           bytesWritten: newContent.length,
+          expectedRevision,
         });
       }
 
-      const rollbackSnapshots = await commitPatchWriteChangesWithRollback(
-        pendingChanges.map((change) => ({
+      const backendChanges: PatchWriteCommitChange[] = pendingChanges.map(
+        (change) => ({
           displayPath: change.path,
           realPath: change.realPath,
           newContent: change.newContent,
+          expectedRevision: change.expectedRevision,
           existsOptions: {
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
           },
           readOptions: {
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
           },
           writeOptions: {
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
           },
@@ -3791,36 +4137,79 @@ export const executeWorkspaceTool = async (
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
             workspacePath: effectiveWorkspacePath,
           },
-        })),
+        }),
       );
+      const rollbackSnapshots = options.onCodeCheckpoint
+        ? rollbackSnapshotsFromBackendPatch(
+            backendChanges,
+            pendingChanges.map((change) => change.before),
+            await executeBackendTool("apply_patch", {
+              ...args,
+              expected_revisions: Object.fromEntries(
+                operations.map((operation, index) => [
+                  operation.path,
+                  pendingChanges[index].expectedRevision,
+                ]),
+              ),
+            }),
+          )
+        : await commitPatchWriteChangesWithRollback(backendChanges);
 
       const files: PatchChangeRecord[] = [];
       const validationFiles: PatchValidationRecord[] = [];
       const errors: string[] = [];
       const checkpointFiles: AgentCodeCheckpointFile[] = [];
 
-      for (const change of pendingChanges) {
+      for (const [changeIndex, change] of pendingChanges.entries()) {
+        const macroProducedRevision =
+          rollbackSnapshots[changeIndex]?.postMutationExpectedRevision ?? null;
         let validation: PatchValidationRecord;
         let afterCheckpoint: AgentCodeCheckpointFileSnapshot;
         if (change.newContent === null) {
+          let stillExists = false;
+          try {
+            stillExists = await tauriIpc.fsExists(change.realPath, {
+              workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+              workspacePath: effectiveWorkspacePath,
+            });
+          } catch (error) {
+            errors.push(
+              `Validation failed for ${change.path}: ${formatToolError(error)}`,
+            );
+          }
+          if (stillExists) {
+            errors.push(deleteAbsenceDivergenceConflict(change.path, toolName));
+          }
           validation = {
             path: change.path,
-            exists: false,
+            exists: stillExists,
             readable: false,
             is_binary: false,
             size: 0,
             encoding: null,
             language: null,
+            revision: null,
           };
           afterCheckpoint = missingCheckpointSnapshot();
         } else {
           try {
             const readback = await tauriIpc.fsReadFileWithOptions({
               path: change.realPath,
-              allowOutsideWorkspace:
-                !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+              allowOutsideWorkspace: false,
               workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
+              workspacePath: useMetadataWorkspace
+                ? null
+                : effectiveWorkspacePath,
             });
+            const divergence = mutationDivergenceConflict(
+              change.path,
+              toolName,
+              macroProducedRevision,
+              readback.revision,
+            );
+            if (divergence) {
+              errors.push(divergence);
+            }
             validation = {
               path: change.path,
               exists: true,
@@ -3829,6 +4218,7 @@ export const executeWorkspaceTool = async (
               size: readback.size,
               encoding: readback.encoding,
               language: readback.language,
+              revision: readback.revision ?? null,
             };
             afterCheckpoint = snapshotFromReadResult(readback);
           } catch (error) {
@@ -3843,6 +4233,7 @@ export const executeWorkspaceTool = async (
               size: 0,
               encoding: null,
               language: null,
+              revision: null,
             };
             afterCheckpoint = {
               exists: true,
@@ -3871,29 +4262,39 @@ export const executeWorkspaceTool = async (
             realPath: change.realPath,
             workspacePath: useMetadataWorkspace ? null : effectiveWorkspacePath,
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
-            allowOutsideWorkspace:
-              !useMetadataWorkspace && Boolean(effectiveWorkspacePath),
+            allowOutsideWorkspace: false,
             before: change.before,
             after: afterCheckpoint,
           }),
         );
       }
 
-      if (errors.length === 0) {
+      if (errors.length > 0) {
         try {
-          await publishCodeCheckpoint(options, toolName, checkpointFiles);
-        } catch (error) {
-          try {
-            await rollbackPatchWriteChanges(rollbackSnapshots);
-          } catch (rollbackError) {
-            throw new Error(
-              `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
-            );
-          }
+          await rollbackPatchWriteChanges(rollbackSnapshots);
+        } catch (rollbackError) {
           throw new Error(
-            `Failed to record code checkpoint for ${toolName}; mutations were reverted: ${formatToolError(error)}`,
+            `Validation failed after ${toolName}, and rollback failed: ${errors.join("; ")}; ${formatToolError(rollbackError)}`,
           );
         }
+        throw new Error(
+          `Validation failed after ${toolName}; mutations were reverted: ${errors.join("; ")}`,
+        );
+      }
+
+      try {
+        await publishCodeCheckpoint(options, toolName, checkpointFiles);
+      } catch (error) {
+        try {
+          await rollbackPatchWriteChanges(rollbackSnapshots);
+        } catch (rollbackError) {
+          throw new Error(
+            `Failed to record code checkpoint for ${toolName}, and rollback failed: ${formatToolError(error)}; ${formatToolError(rollbackError)}`,
+          );
+        }
+        throw new Error(
+          `Failed to record code checkpoint for ${toolName}; mutations were reverted: ${formatToolError(error)}`,
+        );
       }
 
       return JSON.stringify(
@@ -3921,12 +4322,34 @@ export const executeWorkspaceTool = async (
         includeHidden,
         mode,
         effectiveWorkspacePath,
+        assertToolExecutionActive,
       );
-      const matches = files
-        .map((entry) => entry.relative_path)
-        .filter((relativePath) => pathMatchesGlob(relativePath, pattern));
+      const matches: string[] = [];
+      for (const entry of files) {
+        assertToolExecutionActive();
+        if (pathMatchesGlob(entry.relative_path, pattern)) {
+          matches.push(entry.relative_path);
+        }
+      }
+      matches.sort(compareToolPaths);
+      const cursorScope = `glob\0${effectiveWorkspacePath ?? ""}\0${pattern}\0${includeHidden}`;
+      const page = paginateToolItems(
+        matches,
+        args,
+        cursorScope,
+        TOOL_OUTPUT_LIMITS.glob,
+      );
       return JSON.stringify(
-        { pattern, count: matches.length, paths: matches },
+        {
+          pattern,
+          count: page.items.length,
+          total_count: matches.length,
+          paths: page.items,
+          limit: page.limit,
+          offset: page.offset,
+          truncated: page.truncated,
+          next_cursor: page.nextCursor,
+        },
         null,
         2,
       );
@@ -3939,31 +4362,44 @@ export const executeWorkspaceTool = async (
       const includeHidden = args.include_hidden === true;
       const isRegexp = args.is_regexp === true;
       const includePattern = toString(args.include_pattern);
-      const maxResults =
-        typeof args.max_results === "number"
-          ? Math.max(1, Math.floor(args.max_results))
-          : 50;
-
-      const files = await readAllCandidateFiles(
-        includeHidden,
-        mode,
-        effectiveWorkspacePath,
-      );
-      let matcher: RegExp | null = null;
       if (isRegexp) {
-        try {
-          matcher = new RegExp(query, "i");
-        } catch {
-          return `Invalid regex pattern for grep: ${query}`;
-        }
+        return "Regular-expression grep requires the cancellable native or remote search backend; the JavaScript fallback refuses regex patterns to avoid uninterruptible backtracking.";
       }
-      const results: Array<{ path: string; line: number; text: string }> = [];
+      const files = (
+        await readAllCandidateFiles(
+          includeHidden,
+          mode,
+          effectiveWorkspacePath,
+          assertToolExecutionActive,
+        )
+      ).sort((left, right) =>
+        compareToolPaths(left.relative_path, right.relative_path),
+      );
+      const results: Array<{
+        path: string;
+        line: number;
+        text: string;
+        text_truncated: boolean;
+      }> = [];
+      const cursorScope = `grep\0${effectiveWorkspacePath ?? ""}\0${query}\0${isRegexp}\0${includePattern}\0${includeHidden}`;
+      const page = resolveToolPage(args, cursorScope, TOOL_OUTPUT_LIMITS.grep);
+      let seenMatches = 0;
+      let filesScanned = 0;
+      let skippedBinary = 0;
+      let skippedTooLarge = 0;
+      let columnTruncatedMatches = 0;
 
       for (const file of files) {
+        assertToolExecutionActive();
         if (
           includePattern &&
           !pathMatchesGlob(file.relative_path, includePattern)
         ) {
+          continue;
+        }
+
+        if ((file.size ?? 0) > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+          skippedTooLarge += 1;
           continue;
         }
 
@@ -3973,25 +4409,69 @@ export const executeWorkspaceTool = async (
             mode,
             effectiveWorkspacePath,
           ),
-          allowOutsideWorkspace: Boolean(effectiveWorkspacePath),
+          allowOutsideWorkspace: false,
+          workspacePath: effectiveWorkspacePath,
         });
-        if (content.is_binary) continue;
+        assertToolExecutionActive();
+        if (content.size > TOOL_OUTPUT_LIMITS.grep.maxFileBytes) {
+          skippedTooLarge += 1;
+          continue;
+        }
+        if (content.is_binary) {
+          skippedBinary += 1;
+          continue;
+        }
+        filesScanned += 1;
 
         const lines = content.content.split("\n");
         for (let index = 0; index < lines.length; index += 1) {
+          if (index % 256 === 0) assertToolExecutionActive();
           const line = lines[index];
-          const match = matcher
-            ? matcher.test(line)
-            : line.toLowerCase().includes(query.toLowerCase());
+          const match = line.toLowerCase().includes(query.toLowerCase());
           if (match) {
+            if (seenMatches < page.offset) {
+              seenMatches += 1;
+              continue;
+            }
+            seenMatches += 1;
+            const capped = truncateGrepLine(line.trim());
             results.push({
               path: file.relative_path,
               line: index + 1,
-              text: line.trim(),
+              text: capped.text,
+              text_truncated: capped.truncated,
             });
-            if (results.length >= maxResults) {
+            if (capped.truncated && results.length <= page.limit) {
+              columnTruncatedMatches += 1;
+            }
+            if (results.length > page.limit) {
+              results.length = page.limit;
               return JSON.stringify(
-                { query, total: results.length, results },
+                {
+                  query,
+                  total: results.length,
+                  count: results.length,
+                  total_count: null,
+                  total_is_exact: false,
+                  results,
+                  limit: page.limit,
+                  offset: page.offset,
+                  truncated: true,
+                  next_cursor: createToolCursor(
+                    cursorScope,
+                    page.offset + results.length,
+                  ),
+                  files_scanned: filesScanned,
+                  scan_complete: false,
+                  skipped_files: {
+                    binary: skippedBinary,
+                    too_large: skippedTooLarge,
+                    max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+                    is_exact: false,
+                  },
+                  column_truncated_matches: columnTruncatedMatches,
+                  max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+                },
                 null,
                 2,
               );
@@ -4000,7 +4480,32 @@ export const executeWorkspaceTool = async (
         }
       }
 
-      return JSON.stringify({ query, total: results.length, results }, null, 2);
+      return JSON.stringify(
+        {
+          query,
+          total: results.length,
+          count: results.length,
+          total_count: page.offset + results.length,
+          total_is_exact: true,
+          results,
+          limit: page.limit,
+          offset: page.offset,
+          truncated: false,
+          next_cursor: null,
+          files_scanned: filesScanned,
+          scan_complete: true,
+          skipped_files: {
+            binary: skippedBinary,
+            too_large: skippedTooLarge,
+            max_file_bytes: TOOL_OUTPUT_LIMITS.grep.maxFileBytes,
+            is_exact: true,
+          },
+          column_truncated_matches: columnTruncatedMatches,
+          max_columns: TOOL_OUTPUT_LIMITS.grep.maxColumns,
+        },
+        null,
+        2,
+      );
     }
 
     return undefined;

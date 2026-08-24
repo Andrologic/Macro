@@ -83,9 +83,13 @@ interface TerminalStore extends TerminalVisibilityState {
     sessionId: string;
     command: string;
     timeoutMs?: number | null;
+    executionId?: string | null;
   }) => Promise<tauriIpc.TerminalSessionDto>;
   readSession: (sessionId: string) => Promise<tauriIpc.TerminalSessionDto>;
-  killSession: (sessionId: string) => Promise<tauriIpc.TerminalSessionDto>;
+  killSession: (
+    sessionId: string,
+    executionId?: string | null
+  ) => Promise<tauriIpc.TerminalSessionDto>;
   initialize: () => Promise<void>;
   togglePanel: () => Promise<void>;
   setPanelOpen: (open: boolean) => void;
@@ -996,11 +1000,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return get().upsertSession(session);
     },
 
-    runCommand: async ({ sessionId, command, timeoutMs }) => {
+    runCommand: async ({ sessionId, command, timeoutMs, executionId }) => {
       const session = await tauriIpc.terminalRun({
         sessionId,
         command,
         timeoutMs: timeoutMs ?? null,
+        executionId: executionId ?? null,
       });
       return get().upsertSession(session);
     },
@@ -1010,8 +1015,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return get().upsertSession(session);
     },
 
-    killSession: async (sessionId) => {
-      const session = await tauriIpc.terminalKill(sessionId);
+    killSession: async (sessionId, executionId) => {
+      const session = await tauriIpc.terminalKill(sessionId, executionId);
       return get().upsertSession(session);
     },
 

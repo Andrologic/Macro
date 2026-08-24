@@ -29,6 +29,51 @@ describe("toolSecurityPolicy", () => {
     expect(result.normalizedCall.rememberKey).toBe("path:src/app.ts");
   });
 
+  it("does not reuse a mutation approval across canonical projects", () => {
+    const args = { path: "src/obsolete.ts" };
+    const projectA = evaluateToolSecurity("delete", args, {
+      mode: "Implement",
+      riskLevel: "balanced",
+      workspacePath: "/repos/a",
+      approvalScope: "project:a",
+    });
+    const projectB = evaluateToolSecurity("delete", args, {
+      mode: "Implement",
+      riskLevel: "balanced",
+      workspacePath: "/repos/b",
+      approvalScope: "project:b",
+      grants: [
+        {
+          toolId: "delete",
+          rememberKey: projectA.normalizedCall.rememberKey,
+          createdAt: "2026-08-24T00:00:00.000Z",
+        },
+      ],
+    });
+    const projectARepeat = evaluateToolSecurity("delete", args, {
+      mode: "Implement",
+      riskLevel: "balanced",
+      workspacePath: "/repos/a",
+      approvalScope: "project:a",
+      grants: [
+        {
+          toolId: "delete",
+          rememberKey: projectA.normalizedCall.rememberKey,
+          createdAt: "2026-08-24T00:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(projectA.normalizedCall.rememberKey).toBe(
+      "scope:project:a|path:src/obsolete.ts",
+    );
+    expect(projectB.normalizedCall.rememberKey).toBe(
+      "scope:project:b|path:src/obsolete.ts",
+    );
+    expect(projectB.decision).toBe("ask");
+    expect(projectARepeat.decision).toBe("allow");
+  });
+
   it("denies apply_patch calls that target paths outside the workspace", () => {
     const result = evaluateToolSecurity(
       "apply_patch",
@@ -72,6 +117,49 @@ describe("toolSecurityPolicy", () => {
 
     expect(result.decision).toBe("allow");
     expect(result.normalizedCall.rememberKey).toBe("tool:web_search");
+  });
+
+  it("requires approval for web fetches and scopes grants to the domain", () => {
+    const initial = evaluateToolSecurity(
+      "web_fetch",
+      { url: "https://docs.example.com/guide" },
+      { mode: "Chat", riskLevel: "balanced" },
+    );
+    const granted = evaluateToolSecurity(
+      "web_fetch",
+      { url: "https://docs.example.com/reference" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        grants: [
+          {
+            toolId: "web_fetch",
+            rememberKey: initial.normalizedCall.rememberKey,
+            createdAt: "2026-08-24T00:00:00.000Z",
+          },
+        ],
+      },
+    );
+    const otherDomain = evaluateToolSecurity(
+      "web_fetch",
+      { url: "https://private.example.net/secret" },
+      {
+        mode: "Chat",
+        riskLevel: "balanced",
+        grants: [
+          {
+            toolId: "web_fetch",
+            rememberKey: initial.normalizedCall.rememberKey,
+            createdAt: "2026-08-24T00:00:00.000Z",
+          },
+        ],
+      },
+    );
+
+    expect(initial.decision).toBe("ask");
+    expect(initial.normalizedCall.rememberKey).toBe("domain:docs.example.com");
+    expect(granted.decision).toBe("allow");
+    expect(otherDomain.decision).toBe("ask");
   });
 
   it("allows skill activation and resource reads as observe tools", () => {

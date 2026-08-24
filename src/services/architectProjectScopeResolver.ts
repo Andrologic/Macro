@@ -211,7 +211,7 @@ const inspectProjectRepository = async (
         recursive: true,
         includeHidden: false,
         maxDepth: 2,
-        allowOutsideWorkspace: true,
+        allowOutsideWorkspace: false,
         workspacePath: project.path,
       });
       const relativePaths = entries.map((entry) => `/${entry.relative_path || entry.name}`.replace(/\\/g, '/'));
@@ -226,7 +226,7 @@ const inspectProjectRepository = async (
             (
               await tauri.fsReadFileWithOptions({
                 path: `${project.path.replace(/[\\/]+$/, '')}/package.json`,
-                allowOutsideWorkspace: true,
+                allowOutsideWorkspace: false,
                 workspacePath: project.path,
               })
             ).content
