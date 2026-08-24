@@ -65,6 +65,36 @@ describe('providerApi fetchModelsFromProvider', () => {
     });
   });
 
+  it('uses Anthropic API key and version headers when scanning models', async () => {
+    tauriFetchMock.mockImplementation(async (_input: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({
+        Authorization: 'Bearer anthropic-key',
+        'x-api-key': 'anthropic-key',
+        'anthropic-version': '2023-06-01',
+      });
+      return new Response(
+        JSON.stringify({ data: [{ id: 'claude-sonnet', display_name: 'Claude Sonnet' }] }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { probeModelsEndpoint } = await loadProviderApi();
+    const result = await probeModelsEndpoint({
+      baseUrl: 'https://api.anthropic.com/v1',
+      providerId: 'anthropic',
+      providerType: 'anthropic',
+      apiKey: 'anthropic-key',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models).toEqual([
+      expect.objectContaining({ id: 'claude-sonnet', name: 'Claude Sonnet' }),
+    ]);
+  });
+
   it('keeps the active vLLM model length from OpenAI-compatible metadata', async () => {
     tauriFetchMock.mockImplementation(async () => new Response(
       JSON.stringify({
