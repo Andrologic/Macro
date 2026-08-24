@@ -395,12 +395,20 @@ interface ChatMessageRowProps {
 
 const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
 
-interface ComposerEditSession {
-  messageId: string;
-  originalContent: string;
+interface SavedComposerDraft {
   savedDraftText: string;
   savedDraftImages: MessageImageAttachment[];
   savedDraftContextRefs: ContextReference[];
+}
+
+interface ComposerEditSession extends SavedComposerDraft {
+  messageId: string;
+  originalContent: string;
+}
+
+interface GoalComposerEditSession extends SavedComposerDraft {
+  conversationId: string;
+  goalId: string;
 }
 
 interface ComposerDraftSnapshot {
@@ -1143,6 +1151,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [inputValue, setInputValue] = useState('');
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
+  const [goalComposerEditSession, setGoalComposerEditSession] =
+    useState<GoalComposerEditSession | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
@@ -1566,6 +1576,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             images: composerEditSession.savedDraftImages,
             contextRefs: composerEditSession.savedDraftContextRefs,
           }
+        : goalComposerEditSession
+          ? {
+              text: goalComposerEditSession.savedDraftText,
+              images: goalComposerEditSession.savedDraftImages,
+              contextRefs: goalComposerEditSession.savedDraftContextRefs,
+            }
         : latestComposerDraftRef.current;
       saveComposerDraftForContext(previousContextKey, draftToSave);
     }
@@ -1581,6 +1597,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       contextRefs: [],
     };
     setComposerEditSession(null);
+    setGoalComposerEditSession(null);
     setInputValue(nextDraft.text);
     setComposerImages([...nextDraft.images]);
     // Conversation toolbox refs hydrate asynchronously after a selection.
@@ -1612,6 +1629,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [
     composerDraftContextKey,
     composerEditSession,
+    goalComposerEditSession,
     getComposerDraftForContext,
     replaceComposerContextRefs,
     resetPromptHistoryNavigation,
@@ -2442,8 +2460,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setPreviewImage(image);
   };
 
-  const restoreComposerDraft = useCallback((session: ComposerEditSession) => {
-    setComposerEditSession(null);
+  const applySavedComposerDraft = useCallback((session: SavedComposerDraft) => {
     setComposerImages(session.savedDraftImages);
     setInputValue(session.savedDraftText);
     clearComposerContextRefs();
@@ -2455,6 +2472,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       addComposerContextRef(ref);
     });
   }, [addComposerContextRef, clearComposerContextRefs]);
+
+  const restoreComposerDraft = useCallback((session: ComposerEditSession) => {
+    setComposerEditSession(null);
+    applySavedComposerDraft(session);
+  }, [applySavedComposerDraft]);
+
+  const restoreGoalComposerDraft = useCallback((session: GoalComposerEditSession) => {
+    setGoalComposerEditSession(null);
+    applySavedComposerDraft(session);
+  }, [applySavedComposerDraft]);
 
   const sendComposerMessage = async (textOverride?: string) => {
     if (isComposerDisabled || activeQuestionnaire) return;
@@ -2497,11 +2524,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
-    saveComposerDraftForContext(composerDraftContextKey, {
-      text,
-      images: [...composerImages],
-      contextRefs: cloneContextRefs(composerContextRefs),
-    });
+    if (!goalComposerEditSession) {
+      saveComposerDraftForContext(composerDraftContextKey, {
+        text,
+        images: [...composerImages],
+        contextRefs: cloneContextRefs(composerContextRefs),
+      });
+    }
     const conversationId = await ensureConversation();
     if (!conversationId) return;
     const conversationDraftKey = `conversation:${conversationId}`;
@@ -2549,12 +2578,25 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(conversationId);
         }
-        clearComposerDraftForContext(composerDraftContextKey);
-        clearComposerDraftForContext(conversationDraftKey);
-        composerEditorRef.current?.clear();
-        clearComposerContextRefs();
-        setComposerImages([]);
-        setInputValue('');
+        if (goalComposerEditSession) {
+          const targetDraftKey = `conversation:${goalComposerEditSession.conversationId}`;
+          const restoredDraft = {
+            text: goalComposerEditSession.savedDraftText,
+            images: [...goalComposerEditSession.savedDraftImages],
+            contextRefs: cloneContextRefs(goalComposerEditSession.savedDraftContextRefs),
+          };
+          saveComposerDraftForContext(targetDraftKey, restoredDraft);
+          if (activeComposerDraftContextKeyRef.current === targetDraftKey) {
+            restoreGoalComposerDraft(goalComposerEditSession);
+          }
+        } else {
+          clearComposerDraftForContext(composerDraftContextKey);
+          clearComposerDraftForContext(conversationDraftKey);
+          composerEditorRef.current?.clear();
+          clearComposerContextRefs();
+          setComposerImages([]);
+          setInputValue('');
+        }
         resetPromptHistoryNavigation();
       } else if (tracksGoalTurn) {
         setConversationGoalStatus(conversationId, 'paused');
@@ -2583,12 +2625,53 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [selectedConversationId, setConversationGoalStatus]);
 
   const handleEditGoal = useCallback(() => {
-    if (!activeConversationGoal) return;
+    if (
+      !activeConversationGoal ||
+      !selectedConversationId ||
+      goalComposerEditSession ||
+      composerEditSession ||
+      activeQuestionnaire ||
+      activePendingToolApproval ||
+      isBusySending
+    ) {
+      return;
+    }
+    const savedDraft: GoalComposerEditSession = {
+      conversationId: selectedConversationId,
+      goalId: activeConversationGoal.goalId,
+      savedDraftText: composerEditorRef.current?.getTextContent() ?? inputValue,
+      savedDraftImages: [...composerImages],
+      savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+    };
     const goalDraft = `/goal ${activeConversationGoal.objective}`;
+    saveComposerDraftForContext(composerDraftContextKey, {
+      text: savedDraft.savedDraftText,
+      images: savedDraft.savedDraftImages,
+      contextRefs: savedDraft.savedDraftContextRefs,
+    });
+    setGoalComposerEditSession(savedDraft);
+    clearComposerContextRefs();
+    setComposerImages([]);
     setInputValue(goalDraft);
-    composerEditorRef.current?.setText(goalDraft);
+    composerEditorRef.current?.setText(goalDraft, []);
+    resetPromptHistoryNavigation();
     window.requestAnimationFrame(() => composerEditorRef.current?.focus());
-  }, [activeConversationGoal]);
+  }, [
+    activeConversationGoal,
+    activeQuestionnaire,
+    activePendingToolApproval,
+    clearComposerContextRefs,
+    composerDraftContextKey,
+    composerEditSession,
+    composerContextRefs,
+    composerImages,
+    goalComposerEditSession,
+    inputValue,
+    isBusySending,
+    resetPromptHistoryNavigation,
+    saveComposerDraftForContext,
+    selectedConversationId,
+  ]);
 
   const handleStopGoal = useCallback(() => {
     if (!selectedConversationId) return;
@@ -2751,7 +2834,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleEditStart = (message: ChatMessage) => {
-    if (composerEditSession || isBusySending || activePendingToolApproval) {
+    if (
+      composerEditSession ||
+      goalComposerEditSession ||
+      isBusySending ||
+      activePendingToolApproval
+    ) {
       return;
     }
 
@@ -2841,7 +2929,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     !activeQuestionnaire &&
     !isConversationPending &&
     (
-      composerEditSession
+      goalComposerEditSession
+        ? parseConversationGoalCommand(inputValue)?.kind === 'activate'
+        : composerEditSession
         ? Boolean(inputValue.trim())
         : isImplementComposerInKickoffMode
         ? Boolean(inputValue.trim())
@@ -2852,6 +2942,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     [composerEditSession, inputValue],
   );
   const handleRemoveGoalComposerCommand = useCallback(() => {
+    if (goalComposerEditSession) {
+      restoreGoalComposerDraft(goalComposerEditSession);
+      window.requestAnimationFrame(() => composerEditorRef.current?.focus());
+      return;
+    }
     const currentText = composerEditorRef.current?.getTextContent() ?? inputValue;
     const goalCommand = parseConversationGoalCommand(currentText);
     if (!goalCommand) return;
@@ -2860,7 +2955,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setInputValue(nextText);
     composerEditorRef.current?.setText(nextText);
     window.requestAnimationFrame(() => composerEditorRef.current?.focus());
-  }, [inputValue]);
+  }, [goalComposerEditSession, inputValue, restoreGoalComposerDraft]);
+
+  useEffect(() => {
+    if (
+      !goalComposerEditSession ||
+      parseConversationGoalCommand(inputValue) !== null
+    ) {
+      return;
+    }
+    restoreGoalComposerDraft(goalComposerEditSession);
+  }, [goalComposerEditSession, inputValue, restoreGoalComposerDraft]);
   const hasComposerSkillReference = useMemo(
     () => composerContextRefs.some((ref) => ref.kind === 'skill'),
     [composerContextRefs]
@@ -2873,6 +2978,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     !nativeToolsSupported && (hasComposerSkillReference || hasComposerSkillMention);
 
   const navigatePromptHistory = useCallback((direction: 'up' | 'down') => {
+    if (goalComposerEditSession) return;
     if (promptHistory.length === 0) return;
 
     if (direction === 'up') {
@@ -2918,6 +3024,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     draftBeforeHistory,
     findPromptHistoryIndexByText,
     getComposerDraftSnapshot,
+    goalComposerEditSession,
     inputValue,
     promptHistory,
     promptHistoryIndex,
@@ -3533,6 +3640,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         onSend={handleSend}
                         onPromptHistory={
                           !composerEditSession &&
+                          !goalComposerEditSession &&
                           promptHistoryNavigationMode === 'contextual_arrows'
                             ? navigatePromptHistory
                             : undefined
