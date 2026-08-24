@@ -1581,6 +1581,8 @@ describe('useFileChangesStore', () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
     await store.stageAllTaskChanges();
+    const loadCurrentChangesMock = mock(store.loadCurrentChanges);
+    useFileChangesStore.setState({ loadCurrentChanges: loadCurrentChangesMock });
 
     const result = await store.commitAllReadyTaskRepositories();
 
@@ -1601,6 +1603,7 @@ describe('useFileChangesStore', () => {
       stageAll: false,
     });
     expect(generateCommitMessagesMock).toHaveBeenCalledTimes(1);
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
     const [input] = generateCommitMessagesMock.mock.calls[0] as unknown as [{
       repositories: Array<{ projectId: string; projectName?: string | null; scopeCandidates?: string[]; recommendedScope?: string | null }>;
     }];
@@ -1617,6 +1620,8 @@ describe('useFileChangesStore', () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
     await store.stageAllTaskChanges();
+    const loadCurrentChangesMock = mock(store.loadCurrentChanges);
+    useFileChangesStore.setState({ loadCurrentChanges: loadCurrentChangesMock });
 
     gitCommitMock.mockImplementationOnce(async ({ repoPath }: { repoPath: string }) => {
       stagedFiles[repoPath] = {};
@@ -1634,6 +1639,7 @@ describe('useFileChangesStore', () => {
     expect(nextState.executionRecords[repositoryIdA]?.projectId).toBe('project-a');
     expect(nextState.executionRecords[repositoryIdB]).toBeUndefined();
     expect(nextState.getRepository(repositoryIdB)?.lastError).toBe('Commit rejected');
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
   });
 
   it('retries generated commit messages before creating commits', async () => {
@@ -1783,6 +1789,8 @@ describe('useFileChangesStore', () => {
 
     await store.loadCurrentChanges();
     await store.stageChanges(repositoryIdA, [changeIdA]);
+    const loadCurrentChangesMock = mock(store.loadCurrentChanges);
+    useFileChangesStore.setState({ loadCurrentChanges: loadCurrentChangesMock });
 
     const result = await store.commitStagedChanges(
       repositoryIdA,
@@ -1791,6 +1799,7 @@ describe('useFileChangesStore', () => {
 
     expect(result.taskStatus).toBe('InProgress');
     expect(setTaskStatusMock).not.toHaveBeenCalled();
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
   });
 
   it('shows new unstaged changes again after a file was already validated', async () => {
