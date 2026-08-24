@@ -944,7 +944,7 @@ describe('TaskQueue', () => {
     const confirmButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
     ).find((button) => button.textContent?.includes('Create task'));
-    expect(dialog?.textContent).toContain('A project is required');
+    expect(dialog?.textContent ?? '').toContain('Target project');
     expect(dialog?.querySelector('textarea')).toBeNull();
     expect(confirmButton?.disabled).toBe(true);
     expect(dialog?.querySelector('[aria-pressed="true"]')).toBeNull();
@@ -990,7 +990,90 @@ describe('TaskQueue', () => {
       title: 'New bugfix',
       description: '',
       taskKind: 'bugfix',
+      existingBranchName: null,
     });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('creates and activates a task on the branch of a selected existing worktree', async () => {
+    const gitTaskStartPoints = {
+      worktrees: [{
+        name: 'editor-worktree',
+        path: '/tmp/editor-worktree',
+        branchName: 'feature/from-editor',
+        isDirty: true,
+      }],
+      branches: [],
+    };
+    installTauriRuntimeMock(mock(async (command) =>
+      command === 'git_task_start_points' ? gitTaskStartPoints : undefined
+    ));
+    seedTasks([makeTask('task-1', 'Pending')]);
+    useAppStore.setState({ selectedProjectId: 'project-1' });
+
+    const createConversation = mock(async () => ({ id: 'conversation-created' }));
+    const selectConversation = mock(async () => true);
+    const createManualFeatureDraft = mock(async () => undefined);
+    const activateTask = mock(async () => undefined);
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      createConversation: createConversation as never,
+      selectConversation: selectConversation as never,
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      createManualFeatureDraft: createManualFeatureDraft as never,
+      activateTask: activateTask as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    const createButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-create-task"]'
+    );
+    await act(async () => {
+      createButton?.click();
+      await flushRender();
+    });
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const findDialogButton = (text: string) => Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []
+    ).find((button) => button.textContent?.includes(text));
+    await act(async () => {
+      findDialogButton('Project One')?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      findDialogButton('Resume work')?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      findDialogButton('feature/from-editor')?.click();
+      findDialogButton('Feature')?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      findDialogButton('Create task')?.click();
+      await flushRender();
+    });
+
+    expect(createManualFeatureDraft).toHaveBeenCalledWith({
+      taskId: expect.stringContaining('manual-feature-'),
+      conversationId: 'conversation-created',
+      groupId: 'group-1',
+      projectIds: ['project-1'],
+      contextProjectIds: [],
+      baseBranch: 'main',
+      title: 'New feature',
+      description: '',
+      taskKind: 'feature',
+      existingBranchName: 'feature/from-editor',
+    });
+    expect(activateTask).toHaveBeenCalledWith(expect.stringContaining('manual-feature-'));
+    expect(selectConversation).toHaveBeenCalledWith('conversation-created');
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
