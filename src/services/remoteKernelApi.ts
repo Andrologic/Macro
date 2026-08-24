@@ -36,6 +36,138 @@ const BOUNDED_GIT_OUTPUT_TOOL_IDS = new Set([
   'git_diff',
   'git_get_tree',
 ]);
+const REMOTE_MUTATION_RESPONSE_TIMEOUT_MS = 30_000;
+const REMOTE_MUTATION_STATUS_POLL_INTERVAL_MS = 500;
+const REMOTE_MUTATION_STATUS_POLL_ATTEMPTS = 20;
+const REMOTE_MUTATION_INTENT_STORAGE_PREFIX = 'macro.remoteMutationIntent.v1.';
+
+interface DurableRemoteMutationIntent {
+  fingerprint: string;
+  executionId: string;
+  createdAt: string;
+}
+
+interface RemoteToolExecutionStatus {
+  state: 'pending' | 'completed';
+  status_code?: number;
+  body?: unknown;
+}
+
+const inMemoryRemoteMutationIntents = new Map<string, string>();
+
+const remoteMutationIntentStorage = (): Storage | null => {
+  try {
+    if (typeof globalThis.localStorage !== 'undefined') {
+      return globalThis.localStorage;
+    }
+  } catch {
+    // Access can be denied for hardened or opaque webview origins.
+  }
+  return null;
+};
+
+const remoteMutationFingerprint = async (value: string): Promise<string> => {
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(value),
+    );
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  if (typeof window !== 'undefined') {
+    throw new Error(
+      'Remote mutations require Web Crypto to persist a collision-resistant execution identity.',
+    );
+  }
+  // Unit-test runtimes without a DOM use an isolated in-memory store. Production
+  // browser/webview runtimes must take the Web Crypto branch above.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `test-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+};
+
+const remoteMutationIntentKey = (fingerprint: string): string =>
+  `${REMOTE_MUTATION_INTENT_STORAGE_PREFIX}${fingerprint}`;
+
+const loadDurableRemoteMutationIntent = (
+  fingerprint: string,
+): DurableRemoteMutationIntent | null => {
+  const key = remoteMutationIntentKey(fingerprint);
+  const storage = remoteMutationIntentStorage();
+  const raw = storage?.getItem(key) ?? inMemoryRemoteMutationIntents.get(key) ?? null;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<DurableRemoteMutationIntent>;
+    if (
+      parsed.fingerprint !== fingerprint ||
+      typeof parsed.executionId !== 'string' ||
+      parsed.executionId.trim().length === 0 ||
+      typeof parsed.createdAt !== 'string'
+    ) {
+      throw new Error('invalid durable mutation intent');
+    }
+    return parsed as DurableRemoteMutationIntent;
+  } catch (error) {
+    throw new Error(
+      `The durable remote mutation intent is invalid and must be resolved before retrying: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+};
+
+const persistDurableRemoteMutationIntent = (intent: DurableRemoteMutationIntent): void => {
+  const key = remoteMutationIntentKey(intent.fingerprint);
+  const encoded = JSON.stringify(intent);
+  const storage = remoteMutationIntentStorage();
+  if (storage) {
+    try {
+      storage.setItem(key, encoded);
+      return;
+    } catch (error) {
+      throw new Error(
+        `The remote mutation was not sent because its execution identity could not be persisted: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  if (typeof window !== 'undefined') {
+    throw new Error(
+      'The remote mutation was not sent because durable browser storage is unavailable.',
+    );
+  }
+  inMemoryRemoteMutationIntents.set(key, encoded);
+};
+
+const clearDurableRemoteMutationIntent = (fingerprint: string): void => {
+  const key = remoteMutationIntentKey(fingerprint);
+  const storage = remoteMutationIntentStorage();
+  if (storage) {
+    try {
+      storage.removeItem(key);
+    } catch {
+      // A stale completed identity is safe: the server will replay the same
+      // durable result instead of executing the mutation twice.
+    }
+  }
+  inMemoryRemoteMutationIntents.delete(key);
+};
+
+export const __remoteKernelApiTestables = {
+  resetDurableMutationIntents: (): void => {
+    inMemoryRemoteMutationIntents.clear();
+    const storage = remoteMutationIntentStorage();
+    if (!storage) return;
+    const matchingKeys: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(REMOTE_MUTATION_INTENT_STORAGE_PREFIX)) {
+        matchingKeys.push(key);
+      }
+    }
+    matchingKeys.forEach((key) => storage.removeItem(key));
+  },
+};
 
 const requiresContentRevisions = (params: {
   toolId: string;
@@ -63,7 +195,7 @@ const remoteToolTimeoutMs = (toolId: string): number | null | undefined => {
   if (toolId === 'read') return TOOL_OUTPUT_LIMITS.read.timeoutMs + 1_000;
   if (toolId === 'list') return TOOL_OUTPUT_LIMITS.list.timeoutMs + 1_000;
   if (toolId === 'glob') return TOOL_OUTPUT_LIMITS.glob.timeoutMs + 1_000;
-  if (MUTATING_REMOTE_TOOL_IDS.has(toolId)) return null;
+  if (MUTATING_REMOTE_TOOL_IDS.has(toolId)) return REMOTE_MUTATION_RESPONSE_TIMEOUT_MS;
   return undefined;
 };
 
@@ -83,6 +215,85 @@ export const cancelRemoteWorkspaceTool = async (executionId: string): Promise<bo
     body: JSON.stringify({ execution_id: executionId }),
   });
   return Boolean(result?.cancelled);
+};
+
+const remoteErrorCode = (error: unknown): string | null => {
+  if (!error || typeof error !== 'object' || !('code' in error)) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : null;
+};
+
+const remoteErrorStatus = (error: unknown): number | null => {
+  if (!error || typeof error !== 'object' || !('details' in error)) return null;
+  const details = (error as { details?: unknown }).details;
+  if (!details || typeof details !== 'object' || !('status' in details)) return null;
+  const status = (details as { status?: unknown }).status;
+  return typeof status === 'number' ? status : null;
+};
+
+const readRemoteToolExecutionStatus = async (
+  executionId: string,
+): Promise<RemoteToolExecutionStatus | null> => {
+  try {
+    return await remoteKernelRequest<RemoteToolExecutionStatus>(
+      `/tools/executions/${encodeURIComponent(executionId)}`,
+      { method: 'GET', timeoutMs: REMOTE_MUTATION_RESPONSE_TIMEOUT_MS },
+    );
+  } catch (error) {
+    if (remoteErrorStatus(error) === 404) return null;
+    throw error;
+  }
+};
+
+const delayRemoteMutationPoll = async (): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, REMOTE_MUTATION_STATUS_POLL_INTERVAL_MS);
+  });
+};
+
+const completedRemoteToolExecution = (
+  status: RemoteToolExecutionStatus,
+): RemoteWorkspaceToolExecution | null => {
+  if (status.state !== 'completed') return null;
+  const statusCode = status.status_code;
+  if (!Number.isInteger(statusCode)) {
+    throw new Error('The remote kernel returned a completed execution without a status code.');
+  }
+  if (Number(statusCode) < 200 || Number(statusCode) >= 300) {
+    const body = status.body;
+    const message =
+      body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
+        ? body.message
+        : `Remote mutation failed (${statusCode})`;
+    throw {
+      code: 'REMOTE_EXECUTION_COMPLETED_ERROR',
+      message,
+      details: { status: statusCode, body },
+    };
+  }
+  if (!status.body || typeof status.body !== 'object') {
+    throw new Error('The remote kernel returned an invalid completed mutation result.');
+  }
+  return status.body as RemoteWorkspaceToolExecution;
+};
+
+const pollRemoteMutationResult = async (
+  executionId: string,
+): Promise<RemoteWorkspaceToolExecution | null> => {
+  for (let attempt = 0; attempt < REMOTE_MUTATION_STATUS_POLL_ATTEMPTS; attempt += 1) {
+    const status = await readRemoteToolExecutionStatus(executionId);
+    if (status === null) return null;
+    const completed = completedRemoteToolExecution(status);
+    if (completed) return completed;
+    if (attempt + 1 < REMOTE_MUTATION_STATUS_POLL_ATTEMPTS) {
+      await delayRemoteMutationPoll();
+    }
+  }
+  throw {
+    code: 'REMOTE_MUTATION_PENDING',
+    message:
+      'The remote mutation is still pending. Its durable execution identity was preserved and it will not be submitted under a new identity.',
+  };
 };
 
 export const canUseRemoteKernel = (): boolean => {
@@ -211,7 +422,52 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
       ? params.signal.reason
       : new DOMException('Aborted', 'AbortError');
   }
-  const executionId = createRemoteToolExecutionId();
+  const requestPayload = {
+    mode: params.mode,
+    tool_id: params.toolId,
+    args: params.args,
+    workspace_path: params.workspacePath ?? null,
+    workspace_scope: params.workspaceScope ?? null,
+    project_mounts: (params.projectMounts ?? []).map((mount) => ({
+      project_id: mount.projectId,
+      mount_name: mount.mountName,
+      workspace_path: mount.workspacePath ?? null,
+      display_name: mount.displayName,
+      is_read_only: Boolean(mount.isReadOnly),
+    })),
+    virtual_root_enabled: params.virtualRootEnabled ?? null,
+    focused_project_id: params.focusedProjectId ?? null,
+    checkpoint_required: params.checkpointRequired ?? false,
+  };
+  let mutationFingerprint: string | null = null;
+  let executionId: string;
+  if (needsIdempotentMutation) {
+    const config = resolveRemoteConfig();
+    if (!config) {
+      throw new Error('The remote Macro kernel is not configured.');
+    }
+    mutationFingerprint = await remoteMutationFingerprint(
+      JSON.stringify({
+        endpoint: {
+          baseUrl: config.baseUrl,
+          apiPrefix: config.apiPrefix,
+          workspaceId: config.workspaceId ?? null,
+        },
+        request: requestPayload,
+      }),
+    );
+    const existingIntent = loadDurableRemoteMutationIntent(mutationFingerprint);
+    executionId = existingIntent?.executionId ?? createRemoteToolExecutionId();
+    if (!existingIntent) {
+      persistDurableRemoteMutationIntent({
+        fingerprint: mutationFingerprint,
+        executionId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  } else {
+    executionId = createRemoteToolExecutionId();
+  }
   const signal = params.signal;
   const interruptible = INTERRUPTIBLE_REMOTE_TOOL_IDS.has(params.toolId);
   const sendCancellation = (): void => {
@@ -231,22 +487,8 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
 
   try {
     const requestBody = JSON.stringify({
-      mode: params.mode,
-      tool_id: params.toolId,
+      ...requestPayload,
       execution_id: executionId,
-      args: params.args,
-      workspace_path: params.workspacePath ?? null,
-      workspace_scope: params.workspaceScope ?? null,
-      project_mounts: (params.projectMounts ?? []).map((mount) => ({
-        project_id: mount.projectId,
-        mount_name: mount.mountName,
-        workspace_path: mount.workspacePath ?? null,
-        display_name: mount.displayName,
-        is_read_only: Boolean(mount.isReadOnly),
-      })),
-      virtual_root_enabled: params.virtualRootEnabled ?? null,
-      focused_project_id: params.focusedProjectId ?? null,
-      checkpoint_required: params.checkpointRequired ?? false,
     });
     const requestExecution = (): Promise<RemoteWorkspaceToolExecution> =>
       remoteKernelRequest<RemoteWorkspaceToolExecution>('/tools/execute', {
@@ -259,14 +501,43 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
     try {
       payload = await requestExecution();
     } catch (error) {
-      const isTransportFailure =
+      const code = remoteErrorCode(error);
+      const canRecover =
         needsIdempotentMutation &&
-        error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: unknown }).code === 'REMOTE_REQUEST_ERROR';
-      if (!isTransportFailure) throw error;
-      payload = await requestExecution();
+        ['REMOTE_REQUEST_ERROR', 'REMOTE_TIMEOUT', 'REMOTE_MUTATION_PENDING'].includes(code ?? '');
+      if (!canRecover) throw error;
+
+      let recoveredBeforeRetry: RemoteWorkspaceToolExecution | null = null;
+      try {
+        recoveredBeforeRetry = await pollRemoteMutationResult(executionId);
+      } catch (recoveryError) {
+        if (remoteErrorCode(recoveryError) === 'REMOTE_MUTATION_PENDING') throw recoveryError;
+        // A status lookup can fail with the same transient transport outage.
+        // The single resend below still uses the durable execution identity.
+      }
+      if (recoveredBeforeRetry) {
+        payload = recoveredBeforeRetry;
+      } else {
+        try {
+          payload = await requestExecution();
+        } catch (retryError) {
+          const retryCode = remoteErrorCode(retryError);
+          if (
+            ['REMOTE_REQUEST_ERROR', 'REMOTE_TIMEOUT', 'REMOTE_MUTATION_PENDING'].includes(
+              retryCode ?? '',
+            )
+          ) {
+            const recovered = await pollRemoteMutationResult(executionId);
+            if (recovered) {
+              payload = recovered;
+            } else {
+              throw retryError;
+            }
+          } else {
+            throw retryError;
+          }
+        }
+      }
     }
 
     if (params.checkpointRequired) {
@@ -288,6 +559,9 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
         );
       }
     }
+    if (mutationFingerprint) {
+      clearDurableRemoteMutationIntent(mutationFingerprint);
+    }
     return payload;
   } catch (error) {
     if (
@@ -298,6 +572,21 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
       (error as { code?: unknown }).code === 'REMOTE_TIMEOUT'
     ) {
       sendCancellation();
+    }
+    if (mutationFingerprint) {
+      const code = remoteErrorCode(error);
+      const outcomeMayBeUnknown =
+        code === null ||
+        [
+          'REMOTE_REQUEST_ERROR',
+          'REMOTE_TIMEOUT',
+          'REMOTE_MUTATION_PENDING',
+          'REMOTE_MUTATION_OUTCOME_INDETERMINATE',
+          'REMOTE_MUTATION_JOURNAL_UNAVAILABLE',
+        ].includes(code);
+      if (!outcomeMayBeUnknown) {
+        clearDurableRemoteMutationIntent(mutationFingerprint);
+      }
     }
     throw error;
   } finally {

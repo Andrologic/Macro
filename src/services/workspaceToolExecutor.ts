@@ -2802,6 +2802,7 @@ export const executeWorkspaceTool = async (
         const deletions = current.is_binary
           ? 0
           : countLogicalLines(current.content);
+        let deletionApplied = false;
 
         await executeCheckpointedFileMutation({
           executeOptions: options,
@@ -2816,7 +2817,8 @@ export const executeWorkspaceTool = async (
           },
           before: snapshotFromReadResult(current),
           after: missingCheckpointSnapshot(),
-          currentAfterMutation: () => missingCheckpointSnapshot(),
+          currentAfterMutation: () =>
+            deletionApplied ? missingCheckpointSnapshot() : undefined,
           verifyMutationResult: async () => {
             const stillExists = await tauriIpc.fsExists(realPath, {
               workspacePath,
@@ -2831,6 +2833,7 @@ export const executeWorkspaceTool = async (
               workspacePath,
               expectedRevision: mutationRevision,
             });
+            deletionApplied = true;
           },
         });
 
@@ -3924,6 +3927,7 @@ export const executeWorkspaceTool = async (
       const deletions = current.is_binary
         ? 0
         : countLogicalLines(current.content);
+      let deletionApplied = false;
 
       await executeCheckpointedFileMutation({
         executeOptions: options,
@@ -3937,7 +3941,8 @@ export const executeWorkspaceTool = async (
         },
         before: snapshotFromReadResult(current),
         after: missingCheckpointSnapshot(),
-        currentAfterMutation: () => missingCheckpointSnapshot(),
+        currentAfterMutation: () =>
+          deletionApplied ? missingCheckpointSnapshot() : undefined,
         verifyMutationResult: async () => {
           const stillExists = await tauriIpc.fsExists(path, {
             workspaceScope: useMetadataWorkspace ? "metadata" : undefined,
@@ -3954,6 +3959,7 @@ export const executeWorkspaceTool = async (
             workspacePath: effectiveWorkspacePath,
             expectedRevision: mutationRevision,
           });
+          deletionApplied = true;
         },
       });
 
