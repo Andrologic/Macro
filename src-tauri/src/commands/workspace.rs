@@ -1076,6 +1076,7 @@ pub async fn workspace_create_manual_feature_draft(
     title: Option<String>,
     description: Option<String>,
     task_kind: String,
+    existing_branch_name: Option<String>,
 ) -> Result<ManualFeatureDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
@@ -1092,6 +1093,7 @@ pub async fn workspace_create_manual_feature_draft(
         title.as_deref(),
         description.as_deref(),
         &task_kind,
+        existing_branch_name.as_deref(),
     )
     .await
 }
