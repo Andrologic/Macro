@@ -203,6 +203,7 @@ describe("agentCodeCheckpoints", () => {
             exists: true,
             content: "before",
             revision: "before-revision",
+            unixMode: 0o755,
           },
           expectedCurrent: {
             exists: true,
@@ -226,6 +227,7 @@ describe("agentCodeCheckpoints", () => {
         allowOutsideWorkspace: false,
         workspacePath: "/repo",
         expectedRevision: "after-revision",
+        unixMode: 0o755,
       }),
     ]);
     mock.restore();

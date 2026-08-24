@@ -1063,6 +1063,81 @@ pub(crate) async fn build_wsl_git_branches(repo_path: &WslProjectPath) -> Result
     })
 }
 
+/// Paginate the concatenated local-then-remote branch listing without masking
+/// failures: each source list was produced by its own checked command and is
+/// already clamped to `offset + limit + 1` entries, so a full clamped list
+/// proves at least one entry remains beyond the requested window.
+fn paginate_wsl_branch_refs(
+    local: Vec<GitBranch>,
+    remote: Vec<GitBranch>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<GitBranch>, Vec<GitBranch>, bool) {
+    let window_end = offset.saturating_add(limit);
+    let fetch_bound = window_end.saturating_add(1);
+    let has_more = if local.len() >= fetch_bound || remote.len() >= fetch_bound {
+        true
+    } else {
+        local.len() + remote.len() > window_end
+    };
+
+    let mut local_page = Vec::new();
+    let mut remote_page = Vec::new();
+    for (position, (branch, is_local)) in local
+        .into_iter()
+        .map(|branch| (branch, true))
+        .chain(remote.into_iter().map(|branch| (branch, false)))
+        .enumerate()
+    {
+        if position >= window_end {
+            break;
+        }
+        if position >= offset {
+            if is_local {
+                local_page.push(branch);
+            } else {
+                remote_page.push(branch);
+            }
+        }
+    }
+    (local_page, remote_page, has_more)
+}
+
+fn parse_wsl_branch_ref_lines(stdout: String) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (name, commit) = line.split_once('\t')?;
+            (!name.is_empty()).then(|| (name.to_string(), commit.to_string()))
+        })
+        .collect()
+}
+
+pub(crate) async fn run_wsl_branch_ref_list(
+    repo_path: &WslProjectPath,
+    pattern: &str,
+    fetch_bound: usize,
+) -> Result<WslCommandOutput> {
+    // Each for-each-ref runs as an independently checked command so a failure
+    // on either side propagates instead of being swallowed by a shell
+    // tail/head pipeline. --count bounds every listing to the pagination
+    // window plus one sentinel entry used for has_more detection.
+    let args = vec![
+        "for-each-ref".to_string(),
+        "--sort=refname".to_string(),
+        format!("--count={fetch_bound}"),
+        "--format=%(refname:short)\t%(objectname:short)".to_string(),
+        pattern.to_string(),
+    ];
+    run_wsl_git_checked(
+        repo_path,
+        &args,
+        WSL_GIT_TIMEOUT,
+        "git branch list WSL failed",
+    )
+    .await
+}
+
 pub(crate) async fn build_wsl_git_branches_tool_page(
     repo_path: &WslProjectPath,
     offset: usize,
@@ -1079,58 +1154,34 @@ pub(crate) async fn build_wsl_git_branches_tool_page(
         .success()
         .then(|| current_output.stdout_text())
         .filter(|value| !value.is_empty());
-    let script = concat!(
-        "{ git -C \"$1\" for-each-ref --sort=refname ",
-        "--format='local%09%(refname:short)%09%(objectname:short)' refs/heads; ",
-        "git -C \"$1\" for-each-ref --sort=refname ",
-        "--format='remote%09%(refname:short)%09%(objectname:short)' refs/remotes; } ",
-        "| tail -n +\"$2\" | head -n \"$3\"",
-    );
-    let output = run_wsl_command_allow_failure(
-        repo_path,
-        "sh",
-        &[
-            "-c".to_string(),
-            script.to_string(),
-            "macro-git-branches".to_string(),
-            repo_path.linux_path.clone(),
-            offset.saturating_add(1).to_string(),
-            limit.saturating_add(1).to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    if !output.status.success() {
-        return Err(wsl_git_failure(&output, "git branch list WSL failed"));
-    }
 
-    let mut local = Vec::new();
-    let mut remote = Vec::new();
-    let mut count = 0usize;
-    for line in output.stdout_text().lines() {
-        if count >= limit {
-            break;
-        }
-        let mut parts = line.splitn(3, '\t');
-        let kind = parts.next().unwrap_or_default();
-        let name = parts.next().unwrap_or_default().to_string();
-        let commit = parts.next().unwrap_or_default().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        let branch = GitBranch {
-            is_head: kind == "local" && current.as_deref() == Some(name.as_str()),
+    // Each for-each-ref side is fetched independently and clamped to the
+    // pagination window plus one sentinel entry used for has_more detection;
+    // any git failure propagates from its checked command.
+    let fetch_bound = offset.saturating_add(limit).saturating_add(1);
+    let local_output = run_wsl_branch_ref_list(repo_path, "refs/heads", fetch_bound).await?;
+    let remote_output = run_wsl_branch_ref_list(repo_path, "refs/remotes", fetch_bound).await?;
+
+    let local = parse_wsl_branch_ref_lines(local_output.stdout_text())
+        .into_iter()
+        .take(fetch_bound)
+        .map(|(name, commit)| GitBranch {
+            is_head: current.as_deref() == Some(name.as_str()),
             name,
             commit,
-        };
-        if kind == "local" {
-            local.push(branch);
-        } else {
-            remote.push(branch);
-        }
-        count += 1;
-    }
-    let has_more = output.stdout_text().lines().count() > limit;
+        })
+        .collect::<Vec<_>>();
+    let remote = parse_wsl_branch_ref_lines(remote_output.stdout_text())
+        .into_iter()
+        .take(fetch_bound)
+        .map(|(name, commit)| GitBranch {
+            is_head: false,
+            name,
+            commit,
+        })
+        .collect::<Vec<_>>();
+
+    let (local, remote, has_more) = paginate_wsl_branch_refs(local, remote, offset, limit);
     Ok(GitBranchesToolPage {
         local,
         remote,
@@ -7331,6 +7382,102 @@ mod tests {
         assert_eq!(
             parsed.staged_files[0].old_path.as_deref(),
             Some("old\tname.txt")
+        );
+    }
+
+    fn wsl_test_branch(name: &str) -> GitBranch {
+        GitBranch {
+            name: name.to_string(),
+            is_head: false,
+            commit: "abc1234".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_paginate_wsl_branch_refs_spans_local_remote_boundary() {
+        let local = vec![
+            wsl_test_branch("main"),
+            wsl_test_branch("feature"),
+            wsl_test_branch("fix"),
+        ];
+        let remote = vec![
+            wsl_test_branch("origin/main"),
+            wsl_test_branch("origin/dev"),
+        ];
+
+        let (local_page, remote_page, has_more) = paginate_wsl_branch_refs(local, remote, 2, 2);
+
+        assert_eq!(
+            local_page
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>(),
+            ["fix"]
+        );
+        assert_eq!(
+            remote_page
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>(),
+            ["origin/main"]
+        );
+        assert!(has_more);
+    }
+
+    #[test]
+    fn test_paginate_wsl_branch_refs_reports_exact_exhaustion() {
+        let local = vec![wsl_test_branch("main")];
+        let remote = vec![wsl_test_branch("origin/main")];
+
+        let (local_page, remote_page, has_more) = paginate_wsl_branch_refs(local, remote, 0, 2);
+
+        assert_eq!(local_page.len(), 1);
+        assert_eq!(remote_page.len(), 1);
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn test_paginate_wsl_branch_refs_uses_clamped_listing_as_has_more_sentinel() {
+        // A local listing clamped at offset+limit+1 entries proves another
+        // page exists even though the whole window was consumed locally.
+        let local = vec![
+            wsl_test_branch("a"),
+            wsl_test_branch("b"),
+            wsl_test_branch("c"),
+        ];
+
+        let (local_page, remote_page, has_more) = paginate_wsl_branch_refs(local, Vec::new(), 1, 1);
+
+        assert_eq!(local_page.len(), 1);
+        assert_eq!(local_page[0].name, "b");
+        assert!(remote_page.is_empty());
+        assert!(has_more);
+    }
+
+    #[test]
+    fn test_paginate_wsl_branch_refs_beyond_last_entry_is_empty() {
+        let local = vec![wsl_test_branch("main")];
+        let remote = vec![wsl_test_branch("origin/main")];
+
+        let (local_page, remote_page, has_more) = paginate_wsl_branch_refs(local, remote, 5, 2);
+
+        assert!(local_page.is_empty());
+        assert!(remote_page.is_empty());
+        assert!(!has_more);
+    }
+
+    #[test]
+    fn test_parse_wsl_branch_ref_lines_skips_blank_names() {
+        let parsed = parse_wsl_branch_ref_lines(
+            "main\tabc1234\n\n\tdead000\nfeature\tdef5678\n".to_string(),
+        );
+
+        assert_eq!(
+            parsed,
+            vec![
+                ("main".to_string(), "abc1234".to_string()),
+                ("feature".to_string(), "def5678".to_string()),
+            ]
         );
     }
 

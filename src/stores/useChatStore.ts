@@ -5659,6 +5659,50 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const spillToolResultWithArtifact = async (
+    operation: Pick<FrozenToolCallContext, "conversationId" | "assistantMessageId">,
+    toolName: string,
+    toolCallId: string | undefined,
+    result: string,
+  ): Promise<string> => {
+    const normalizedToolCallId = toolCallId?.trim();
+    if (!normalizedToolCallId) {
+      anonymousToolResultSequence += 1;
+    }
+    const artifactKey = encodeURIComponent(
+      `${operation.assistantMessageId}-${normalizedToolCallId || `${toolName}-anonymous-${anonymousToolResultSequence}`}`,
+    );
+    const artifactPath = `tool-output://${encodeURIComponent(operation.conversationId)}/${artifactKey}.txt`;
+    const spilled = buildSpilledToolResultPreview({
+      toolName,
+      result,
+      artifactPath,
+    });
+    try {
+      await useCitationsStore.getState().addCitationAndPersist({
+        type: "file",
+        scope: "context",
+        source: artifactPath,
+        title: `Tool output: ${toolName}`,
+        snippet: spilled.preview.slice(0, 500),
+        content: result,
+        path: artifactPath,
+        language: "text",
+        sizeBytes: spilled.totalBytes,
+        messageId: operation.assistantMessageId,
+        conversationId: operation.conversationId,
+      });
+      return spilled.preview;
+    } catch (error) {
+      console.warn('[tool-output] Failed to persist recoverable output:', error);
+      return buildSpilledToolResultPreview({
+        toolName,
+        result,
+        artifactPath: null,
+      }).preview;
+    }
+  };
+
   const preserveLargeToolResult = async (
     operation: Pick<FrozenToolCallContext, "conversationId" | "assistantMessageId">,
     toolName: string,
@@ -5671,43 +5715,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
     ) {
       return resolution;
     }
-
-    const normalizedToolCallId = toolCallId?.trim();
-    if (!normalizedToolCallId) {
-      anonymousToolResultSequence += 1;
-    }
-    const artifactKey = encodeURIComponent(
-      `${operation.assistantMessageId}-${normalizedToolCallId || `${toolName}-anonymous-${anonymousToolResultSequence}`}`,
-    );
-    const artifactPath = `tool-output://${encodeURIComponent(operation.conversationId)}/${artifactKey}.txt`;
-    const spilled = buildSpilledToolResultPreview({
+    return spillToolResultWithArtifact(
+      operation,
       toolName,
-      result: resolution,
-      artifactPath,
-    });
-    try {
-      await useCitationsStore.getState().addCitationAndPersist({
-        type: "file",
-        scope: "context",
-        source: artifactPath,
-        title: `Tool output: ${toolName}`,
-        snippet: spilled.preview.slice(0, 500),
-        content: resolution,
-        path: artifactPath,
-        language: "text",
-        sizeBytes: spilled.totalBytes,
-        messageId: operation.assistantMessageId,
-        conversationId: operation.conversationId,
-      });
-      return spilled.preview;
-    } catch (error) {
-      console.warn('[tool-output] Failed to persist recoverable output:', error);
-      return buildSpilledToolResultPreview({
-        toolName,
-        result: resolution,
-        artifactPath: null,
-      }).preview;
+      toolCallId,
+      resolution,
+    );
+  };
+
+  const getThrownToolErrorMessage = (error: unknown): string => {
+    if (error instanceof Error) return error.message;
+    if (typeof error === "string") return error;
+    if (error && typeof error === "object") {
+      const maybeMessage = (error as { message?: unknown }).message;
+      if (typeof maybeMessage === "string" && maybeMessage.trim()) {
+        return maybeMessage;
+      }
+      const maybeError = (error as { error?: unknown }).error;
+      if (typeof maybeError === "string" && maybeError.trim()) {
+        return maybeError;
+      }
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return Object.prototype.toString.call(error);
+      }
     }
+    return String(error);
+  };
+
+  const buildBoundedToolCallError = async (
+    operation: Pick<FrozenToolCallContext, "conversationId" | "assistantMessageId">,
+    toolName: string,
+    toolCallId: string | undefined,
+    error: unknown,
+  ): Promise<unknown> => {
+    const rawMessage = getThrownToolErrorMessage(error);
+    if (!shouldSpillToolResult(toolName, rawMessage)) {
+      return error;
+    }
+    const preview = await spillToolResultWithArtifact(
+      operation,
+      toolName,
+      toolCallId,
+      rawMessage,
+    );
+    return new Error(preview);
   };
 
   const getOrderedConversationMessages = (conversationId: string) => {
@@ -10766,12 +10819,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
           riskLevel: params.riskLevel,
           signal: abortController.signal,
         };
-        const resolution = await handleToolCall(
-          operation,
-          toolName,
-          args,
-          toolCallId,
-        );
+        let resolution: ToolCallResolution | string | void;
+        try {
+          resolution = await handleToolCall(
+            operation,
+            toolName,
+            args,
+            toolCallId,
+          );
+        } catch (error) {
+          throw await buildBoundedToolCallError(
+            operation,
+            normalizeArchitectToolId(toolName),
+            toolCallId,
+            error,
+          );
+        }
         return preserveLargeToolResult(
           operation,
           normalizeArchitectToolId(toolName),

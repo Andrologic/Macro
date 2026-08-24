@@ -1,6 +1,7 @@
 import type { AppMode, ProjectMount } from '../types';
 import { isRemoteServiceRuntime } from './serviceRuntime';
 import { remoteRequest, resolveRemoteConfig } from './providers/remoteHttp';
+import { TOOL_OUTPUT_LIMITS } from '../shared/toolOutputLimits';
 
 interface RemoteToolModePolicy {
   allowed_tool_ids: string[];
@@ -12,6 +13,25 @@ const CONTENT_REVISIONS_CAPABILITY = 'content_revisions_v1';
 const BOUNDED_TOOL_OUTPUT_CAPABILITY = 'bounded_tool_output_v1';
 const BOUNDED_GIT_OUTPUT_CAPABILITY = 'bounded_git_output_v1';
 const STRUCTURAL_SEARCH_CAPABILITY = 'structural_search_v1';
+const INTERRUPTIBLE_REMOTE_TOOL_IDS = new Set([
+  'list',
+  'read',
+  'glob',
+  'grep',
+  'ast_grep',
+]);
+const MUTATING_REMOTE_TOOL_IDS = new Set([
+  'write',
+  'edit',
+  'delete',
+  'apply_patch',
+  'git_add',
+  'git_commit',
+  'git_checkout',
+  'git_merge',
+  'git_reset',
+  'git_stash',
+]);
 const BOUNDED_OUTPUT_TOOL_IDS = new Set(['list', 'read', 'glob', 'grep', 'ast_grep']);
 const BOUNDED_GIT_OUTPUT_TOOL_IDS = new Set([
   'git_status',
@@ -32,8 +52,23 @@ interface RemoteToolValidation {
   enforce_macro_only_writes: boolean;
 }
 
-const remoteKernelRequest = async <T>(path: string, options: RequestInit = {}): Promise<T> =>
+type RemoteKernelRequestOptions = RequestInit & { timeoutMs?: number | null };
+
+const remoteKernelRequest = async <T>(
+  path: string,
+  options: RemoteKernelRequestOptions = {},
+): Promise<T> =>
   remoteRequest<T>(path, options);
+
+const remoteToolTimeoutMs = (toolId: string): number | null | undefined => {
+  if (toolId === 'grep') return TOOL_OUTPUT_LIMITS.grep.timeoutMs + 1_000;
+  if (toolId === 'ast_grep') return TOOL_OUTPUT_LIMITS.ast.timeoutMs + 1_000;
+  if (toolId === 'read') return TOOL_OUTPUT_LIMITS.read.timeoutMs + 1_000;
+  if (toolId === 'list') return TOOL_OUTPUT_LIMITS.list.timeoutMs + 1_000;
+  if (toolId === 'glob') return TOOL_OUTPUT_LIMITS.glob.timeoutMs + 1_000;
+  if (MUTATING_REMOTE_TOOL_IDS.has(toolId)) return null;
+  return undefined;
+};
 
 let remoteToolExecutionCounter = 0;
 
@@ -112,7 +147,7 @@ export const executeRemoteWorkspaceTool = async (params: {
   if (needsContentRevisions || needsBoundedOutput || needsBoundedGitOutput || needsStructuralSearch) {
     const policy = await getRemoteToolModePolicy(
       params.mode,
-      params.projectId ?? undefined,
+      params.projectId ?? params.focusedProjectId ?? undefined,
       params.signal,
     );
     if (
@@ -148,18 +183,24 @@ export const executeRemoteWorkspaceTool = async (params: {
       );
     }
   }
+  if (MUTATING_REMOTE_TOOL_IDS.has(params.toolId) && params.signal?.aborted) {
+    throw params.signal.reason instanceof Error
+      ? params.signal.reason
+      : new DOMException('Aborted', 'AbortError');
+  }
   const executionId = createRemoteToolExecutionId();
   const signal = params.signal;
+  const interruptible = INTERRUPTIBLE_REMOTE_TOOL_IDS.has(params.toolId);
   const sendCancellation = (): void => {
     void cancelRemoteWorkspaceTool(executionId).catch(() => false);
   };
   const abortListener =
-    signal && !signal.aborted
+    interruptible && signal && !signal.aborted
       ? (): void => {
           sendCancellation();
         }
       : undefined;
-  if (signal?.aborted) {
+  if (interruptible && signal?.aborted) {
     sendCancellation();
   } else if (abortListener && signal) {
     signal.addEventListener('abort', abortListener, { once: true });
@@ -168,7 +209,8 @@ export const executeRemoteWorkspaceTool = async (params: {
   try {
     const payload = await remoteKernelRequest<{ result: string }>('/tools/execute', {
       method: 'POST',
-      signal,
+      signal: interruptible ? signal : undefined,
+      timeoutMs: remoteToolTimeoutMs(params.toolId),
       body: JSON.stringify({
         mode: params.mode,
         tool_id: params.toolId,
@@ -189,6 +231,17 @@ export const executeRemoteWorkspaceTool = async (params: {
     });
 
     return payload.result;
+  } catch (error) {
+    if (
+      interruptible &&
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'REMOTE_TIMEOUT'
+    ) {
+      sendCancellation();
+    }
+    throw error;
   } finally {
     if (abortListener && signal) {
       signal.removeEventListener('abort', abortListener);

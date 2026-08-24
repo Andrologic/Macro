@@ -202,6 +202,62 @@ describe('remoteKernelApi', () => {
     expect(fetchCalls[1].url).toBe('http://127.0.0.1:8787/api/v1/tools/execute');
   });
 
+  it('falls back to the focused project for capability preflight', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['read'],
+          enforce_macro_only_writes: false,
+          capabilities: ['bounded_tool_output_v1'],
+        });
+      }
+      return jsonResponse({ result: 'ok' });
+    }) as unknown as typeof fetch;
+
+    await executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'read',
+      args: { path: 'src/App.tsx' },
+      focusedProjectId: 'project-focused',
+    });
+
+    expect(fetchCalls[0].url).toContain('projectId=project-focused');
+  });
+
+  it('does not let the global 15ms transport timeout preempt grep execution', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_TIMEOUT_MS', '15');
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['grep'],
+          enforce_macro_only_writes: false,
+          capabilities: ['bounded_tool_output_v1'],
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      if ((init?.signal as AbortSignal | undefined)?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      return jsonResponse({ result: 'ok' });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'grep',
+        args: { query: 'needle' },
+        focusedProjectId: 'project-1',
+      }),
+    ).resolves.toBe('ok');
+    expect(fetchCalls.some((call) => call.url.includes('/tools/cancel'))).toBe(false);
+  });
+
   it('rejects guarded mutations before contacting a revision-unaware remote kernel', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
@@ -485,6 +541,46 @@ describe('remoteKernelApi', () => {
       signal: controller.signal,
     });
 
+    expect(fetchCalls.some((call) => call.url.includes('/tools/cancel'))).toBe(false);
+  });
+
+  it('does not abort or cancel a mutation when the caller generation stops', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    setEnv('VITE_REMOTE_TIMEOUT_MS', '5');
+    let resolveMutation: (() => void) | undefined;
+    const mutationMayFinish = new Promise<void>((resolve) => {
+      resolveMutation = resolve;
+    });
+    let executeSignal: AbortSignal | undefined;
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1'],
+        });
+      }
+      executeSignal = init?.signal as AbortSignal | undefined;
+      await mutationMayFinish;
+      return jsonResponse({ result: 'written' });
+    }) as unknown as typeof fetch;
+
+    const controller = new AbortController();
+    const execution = executeRemoteWorkspaceTool({
+      mode: 'Implement',
+      toolId: 'write',
+      args: { path: 'src/App.tsx', content: 'next' },
+      focusedProjectId: 'project-1',
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    controller.abort();
+    expect(executeSignal?.aborted ?? false).toBe(false);
+    resolveMutation?.();
+
+    await expect(execution).resolves.toBe('written');
     expect(fetchCalls.some((call) => call.url.includes('/tools/cancel'))).toBe(false);
   });
 

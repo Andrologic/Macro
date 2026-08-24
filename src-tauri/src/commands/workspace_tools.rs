@@ -413,14 +413,45 @@ impl EmptyStringExt for str {
     }
 }
 
-async fn execute_virtual_workspace_search_tool(
-    tool_id: &str,
-    args: &Value,
+/// Cumulative cap on files a single virtual glob/grep/ast_grep scan may
+/// consider across every project mount, so a pathological tree fails fast
+/// with guidance instead of enumerating without bound.
+pub(crate) const VIRTUAL_SCAN_CANDIDATE_LIMIT: usize = 20_000;
+
+struct CandidateScanBudget {
+    charged: usize,
+    limit: usize,
+}
+
+impl CandidateScanBudget {
+    fn new(limit: usize) -> Self {
+        Self { charged: 0, limit }
+    }
+
+    fn charge(&mut self, additional: usize) -> CommandResult<()> {
+        self.charged = self.charged.saturating_add(additional);
+        if self.charged > self.limit {
+            return Err(command_error(format!(
+                "Virtual workspace scan stopped after {} candidate files because it exceeded the cumulative limit of {} candidates across all project mounts (glob/grep/ast_grep). Narrow the request with an explicit path or project_id scope, or add an include_pattern, before retrying.",
+                self.charged, self.limit
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// One candidate file for a virtual glob/grep/ast_grep scan. The project
+/// mount is referenced by index so no mount data is cloned per candidate.
+type VirtualScanCandidate = (usize, String, Option<u64>);
+
+async fn collect_virtual_scan_candidates(
     mounts: &[WorkspaceProjectMount],
-) -> CommandResult<String> {
-    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
-    let mut all_files = Vec::new();
-    for mount in mounts {
+    include_hidden: bool,
+    candidate_limit: usize,
+) -> CommandResult<Vec<VirtualScanCandidate>> {
+    let mut budget = CandidateScanBudget::new(candidate_limit);
+    let mut candidates = Vec::new();
+    for (mount_index, mount) in mounts.iter().enumerate() {
         let Ok(workspace) = mount_workspace_path(mount) else {
             continue;
         };
@@ -434,17 +465,39 @@ async fn execute_virtual_workspace_search_tool(
         )
         .await
         .map_err(|error| command_error(error.to_string()))?;
-        for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
-            all_files.push((
-                mount.clone(),
-                workspace.clone(),
+        let file_entries = entries
+            .into_iter()
+            .filter(|entry| entry.kind == "file")
+            .collect::<Vec<_>>();
+        budget.charge(file_entries.len())?;
+        candidates.extend(file_entries.into_iter().map(|entry| {
+            (
+                mount_index,
                 entry.relative_path.replace('\\', "/"),
                 entry.size,
-            ));
-        }
+            )
+        }));
     }
+    Ok(candidates)
+}
+
+async fn execute_virtual_workspace_search_tool(
+    tool_id: &str,
+    args: &Value,
+    mounts: &[WorkspaceProjectMount],
+) -> CommandResult<String> {
+    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
+    let mut all_files =
+        collect_virtual_scan_candidates(mounts, include_hidden, VIRTUAL_SCAN_CANDIDATE_LIMIT)
+            .await?;
+    let workspace_roots = mounts
+        .iter()
+        .map(|mount| mount_workspace_path(mount).ok())
+        .collect::<Vec<_>>();
     all_files.sort_by(|left, right| {
-        virtual_path_for_mount(&left.0, &left.2).cmp(&virtual_path_for_mount(&right.0, &right.2))
+        let left_virtual = virtual_path_for_mount(&mounts[left.0], &left.1);
+        let right_virtual = virtual_path_for_mount(&mounts[right.0], &right.1);
+        left_virtual.cmp(&right_virtual)
     });
     let mount_scope = serde_json::json!(mounts
         .iter()
@@ -462,8 +515,8 @@ async fn execute_virtual_workspace_search_tool(
             .map_err(|error| command_error(format!("Invalid glob pattern: {}", error)))?;
         let mut paths = all_files
             .into_iter()
-            .filter_map(|(mount, _, relative, _)| {
-                let virtual_path = virtual_path_for_mount(&mount, &relative);
+            .filter_map(|(mount_index, relative, _)| {
+                let virtual_path = virtual_path_for_mount(&mounts[mount_index], &relative);
                 (compiled.matches(&relative) || compiled.matches(&virtual_path))
                     .then_some(virtual_path)
             })
@@ -532,8 +585,12 @@ async fn execute_virtual_workspace_search_tool(
     let mut skipped_binary = 0usize;
     let mut skipped_too_large = 0usize;
     let mut column_truncated_matches = 0usize;
-    for (mount, workspace, relative, size) in all_files {
-        let virtual_path = virtual_path_for_mount(&mount, &relative);
+    for (mount_index, relative, size) in all_files {
+        let mount = &mounts[mount_index];
+        let Some(workspace) = workspace_roots[mount_index].as_ref() else {
+            continue;
+        };
+        let virtual_path = virtual_path_for_mount(mount, &relative);
         if let Some(pattern) = include_glob.as_ref() {
             if !pattern.matches(&relative) && !pattern.matches(&virtual_path) {
                 continue;
@@ -543,7 +600,7 @@ async fn execute_virtual_workspace_search_tool(
             skipped_too_large += 1;
             continue;
         }
-        let content = fs::read_file_internal(&workspace, relative, Some(false))
+        let content = fs::read_file_internal(workspace, relative, Some(false))
             .await
             .map_err(|error| command_error(error.to_string()))?;
         if content.size > super::tool_output::GREP_MAX_FILE_BYTES {
@@ -573,8 +630,8 @@ async fn execute_virtual_workspace_search_tool(
                     "line": index + 1,
                     "text": text,
                     "text_truncated": was_truncated,
-                    "project_id": mount.project_id,
-                    "mount_name": mount.mount_name,
+                    "project_id": mount.project_id.clone(),
+                    "mount_name": mount.mount_name.clone(),
                 }));
                 if was_truncated && results.len() <= page.limit {
                     column_truncated_matches += 1;
@@ -620,52 +677,34 @@ async fn execute_virtual_workspace_search_tool(
     .map_err(|error| command_error(error.to_string()))
 }
 
-async fn execute_virtual_ast_search(
-    args: &Value,
-    context: VirtualWorkspaceContext<'_>,
-    cancellation: Option<Arc<super::ToolCancellation>>,
-) -> CommandResult<String> {
-    let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
-    let explicit_project_id = json_arg_string(args, "project_id");
-    let normalized_path = validate_virtual_relative_path(&raw_path)?;
-    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
-    let mut targets = Vec::<(&WorkspaceProjectMount, String)>::new();
-
-    if explicit_project_id.is_none() && (normalized_path.is_empty() || normalized_path == ".") {
-        targets.extend(
-            context
-                .mounts
-                .iter()
-                .filter(|mount| mount_has_workspace(mount))
-                .map(|mount| (mount, ".".to_string())),
-        );
-    } else {
-        let resolved =
-            resolve_virtual_mount_target(context, &raw_path, explicit_project_id.as_deref())?;
-        targets.push((resolved.mount, resolved.relative_path));
-    }
-
-    let mut candidates = Vec::new();
-    for (mount, base_path) in targets {
+/// Collect ast_grep candidates across the requested virtual targets under a
+/// cumulative budget. Candidates stay lightweight (mount index + paths) until
+/// the whole set passed the bound, so an over-limit request never materializes
+/// a full candidate list.
+async fn collect_virtual_ast_candidates(
+    mounts: &[WorkspaceProjectMount],
+    targets: Vec<(usize, String)>,
+    requested_path: &str,
+    include_hidden: bool,
+    candidate_limit: usize,
+) -> CommandResult<Vec<super::ast_search::AstSearchCandidate>> {
+    let mut budget = CandidateScanBudget::new(candidate_limit);
+    let mut raw_candidates = Vec::<(usize, String, Option<u64>)>::new();
+    for (mount_index, base_path) in targets {
+        let mount = &mounts[mount_index];
         let workspace = mount_workspace_path(mount)?;
         let stats = fs::stat_internal(&workspace, base_path.clone())
             .await
             .map_err(|error| command_error(error.to_string()))?;
         if stats.kind == "file" {
-            candidates.push(super::ast_search::AstSearchCandidate {
-                workspace,
-                read_path: base_path.clone(),
-                display_path: virtual_path_for_mount(mount, &base_path),
-                size: Some(stats.size),
-                project_id: Some(mount.project_id.clone()),
-                mount_name: Some(mount.mount_name.clone()),
-            });
+            budget.charge(1)?;
+            raw_candidates.push((mount_index, base_path, Some(stats.size)));
             continue;
         }
         if stats.kind != "directory" {
             return Err(command_error(format!(
                 "ast_grep path must be a file or directory: {}",
-                raw_path
+                requested_path
             )));
         }
         let entries = fs::list_dir_internal(
@@ -678,7 +717,12 @@ async fn execute_virtual_ast_search(
         )
         .await
         .map_err(|error| command_error(error.to_string()))?;
-        for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
+        let file_entries = entries
+            .into_iter()
+            .filter(|entry| entry.kind == "file")
+            .collect::<Vec<_>>();
+        budget.charge(file_entries.len())?;
+        for entry in file_entries {
             let relative = entry.relative_path.replace('\\', "/");
             let read_path = if base_path.is_empty() || base_path == "." {
                 relative
@@ -689,16 +733,65 @@ async fn execute_virtual_ast_search(
                     relative.trim_start_matches(['/', '\\'])
                 )
             };
-            candidates.push(super::ast_search::AstSearchCandidate {
-                workspace: workspace.clone(),
-                display_path: virtual_path_for_mount(mount, &read_path),
-                read_path,
-                size: entry.size,
-                project_id: Some(mount.project_id.clone()),
-                mount_name: Some(mount.mount_name.clone()),
-            });
+            raw_candidates.push((mount_index, read_path, entry.size));
         }
     }
+
+    raw_candidates
+        .into_iter()
+        .map(|(mount_index, read_path, size)| {
+            let mount = &mounts[mount_index];
+            Ok(super::ast_search::AstSearchCandidate {
+                workspace: mount_workspace_path(mount)?,
+                display_path: virtual_path_for_mount(mount, &read_path),
+                read_path,
+                size,
+                project_id: Some(mount.project_id.clone()),
+                mount_name: Some(mount.mount_name.clone()),
+            })
+        })
+        .collect()
+}
+
+async fn execute_virtual_ast_search(
+    args: &Value,
+    context: VirtualWorkspaceContext<'_>,
+    cancellation: Option<Arc<super::ToolCancellation>>,
+) -> CommandResult<String> {
+    let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+    let explicit_project_id = json_arg_string(args, "project_id");
+    let normalized_path = validate_virtual_relative_path(&raw_path)?;
+    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
+    let mut targets = Vec::<(usize, String)>::new();
+
+    if explicit_project_id.is_none() && (normalized_path.is_empty() || normalized_path == ".") {
+        targets.extend(
+            context
+                .mounts
+                .iter()
+                .enumerate()
+                .filter(|(_, mount)| mount_has_workspace(mount))
+                .map(|(mount_index, _)| (mount_index, ".".to_string())),
+        );
+    } else {
+        let resolved =
+            resolve_virtual_mount_target(context, &raw_path, explicit_project_id.as_deref())?;
+        let mount_index = context
+            .mounts
+            .iter()
+            .position(|mount| std::ptr::eq(mount, resolved.mount))
+            .expect("resolved mount belongs to the virtual context");
+        targets.push((mount_index, resolved.relative_path));
+    }
+
+    let candidates = collect_virtual_ast_candidates(
+        context.mounts,
+        targets,
+        &raw_path,
+        include_hidden,
+        VIRTUAL_SCAN_CANDIDATE_LIMIT,
+    )
+    .await?;
 
     let mount_scope = serde_json::json!(context
         .mounts
@@ -1394,9 +1487,10 @@ pub(crate) async fn execute_virtual_workspace_tool(
 #[cfg(test)]
 mod tests {
     use super::{
+        collect_virtual_ast_candidates, collect_virtual_scan_candidates,
         execute_virtual_workspace_tool, resolve_virtual_mount_target,
-        validate_headless_project_mounts, validate_headless_workspace_path, ResolvedMountTarget,
-        VirtualWorkspaceContext, WorkspaceProjectMount,
+        validate_headless_project_mounts, validate_headless_workspace_path, CandidateScanBudget,
+        ResolvedMountTarget, VirtualWorkspaceContext, WorkspaceProjectMount,
     };
     use crate::commands::{
         commit_and_validate_pending_file_changes, commit_with_post_mutation_gate, PendingFileChange,
@@ -1591,6 +1685,78 @@ mod tests {
                 .expect("canonical project path")
                 .to_string_lossy()
         );
+    }
+
+    #[test]
+    fn candidate_scan_budget_fails_closed_with_guidance_once_exhausted() {
+        let mut budget = CandidateScanBudget::new(3);
+
+        budget.charge(3).expect("charge within the limit");
+        let error = budget.charge(1).expect_err("over-limit charge must fail");
+
+        assert!(error.message.contains("cumulative limit of 3 candidates"));
+        assert!(error.message.contains("include_pattern"));
+    }
+
+    #[tokio::test]
+    async fn virtual_scan_candidates_are_capped_cumulatively_across_mounts() {
+        let first = TempDir::new().expect("first mount");
+        let second = TempDir::new().expect("second mount");
+        for directory in [first.path(), second.path()] {
+            for name in ["a.rs", "b.rs", "c.rs"] {
+                fs::write(directory.join(name), "").expect("seed scan fixture");
+            }
+        }
+        let mounts = vec![
+            temp_mount("one", "one", first.path()),
+            temp_mount("two", "two", second.path()),
+        ];
+
+        let error = collect_virtual_scan_candidates(&mounts, false, 5)
+            .await
+            .expect_err("six cumulative candidates must exceed a limit of five");
+        assert!(error.message.contains("cumulative limit of 5 candidates"));
+
+        let candidates = collect_virtual_scan_candidates(&mounts, false, 6)
+            .await
+            .expect("six candidates fit a limit of six");
+        assert_eq!(candidates.len(), 6);
+        assert!(candidates
+            .iter()
+            .all(|(mount_index, _, _)| *mount_index < 2));
+    }
+
+    #[tokio::test]
+    async fn virtual_ast_grep_candidates_respect_the_cumulative_bound() {
+        let api = TempDir::new().expect("api workspace");
+        let web = TempDir::new().expect("web workspace");
+        for (index, directory) in [api.path(), web.path()].iter().enumerate() {
+            for name in ["app.ts", "util.ts"] {
+                fs::write(directory.join(name), format!("const v{index} = 1;\n"))
+                    .expect("seed ast fixture");
+            }
+        }
+        let mounts = vec![
+            temp_mount("web-project", "web", web.path()),
+            temp_mount("api-project", "api", api.path()),
+        ];
+        let targets = vec![(0usize, ".".to_string()), (1usize, ".".to_string())];
+
+        let error = collect_virtual_ast_candidates(&mounts, targets.clone(), ".", false, 3)
+            .await
+            .expect_err("four candidates must exceed a limit of three");
+        assert!(error.message.contains("cumulative limit of 3 candidates"));
+
+        let candidates = collect_virtual_ast_candidates(&mounts, targets, ".", false, 4)
+            .await
+            .expect("four candidates fit a limit of four");
+        assert_eq!(candidates.len(), 4);
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.project_id.as_deref() == Some("web-project")));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.project_id.as_deref() == Some("api-project")));
     }
 
     #[tokio::test]

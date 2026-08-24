@@ -923,6 +923,7 @@ export interface FsFileContentDto {
   size: number;
   encoding: string;
   revision?: string;
+  unix_mode?: number;
 }
 
 export interface FsDirEntryDto {
@@ -980,6 +981,7 @@ export interface FsWriteResultDto {
   created: boolean;
   skipped: boolean;
   revision?: string;
+  unix_mode?: number;
 }
 
 export interface WorkspaceBootstrapDto {
@@ -1732,6 +1734,7 @@ export async function fsWriteFile(params: {
   workspaceScope?: WorkspaceScope;
   workspacePath?: string | null;
   expectedRevision?: string | null;
+  unixMode?: number | null;
 }): Promise<FsWriteResultDto> {
   return invoke<FsWriteResultDto>("fs_write_file", {
     path: params.path,
@@ -1741,6 +1744,7 @@ export async function fsWriteFile(params: {
     workspaceScope: params.workspaceScope ?? null,
     workspacePath: params.workspacePath ?? null,
     expectedRevision: params.expectedRevision ?? null,
+    unixMode: params.unixMode ?? null,
   });
 }
 

@@ -3010,6 +3010,124 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     expect(new Set(paths).size).toBe(2);
   });
 
+  it('persists oversized tool execution errors behind a recoverable bounded artifact', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une très grosse erreur.',
+    );
+    const fullErrorText = `BEGIN-${'y'.repeat(60_000)}-END`;
+    const oversizedError = new Error(fullErrorText);
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => {
+        throw oversizedError;
+      }) as unknown as () => Promise<undefined>,
+    );
+
+    let caught: unknown;
+    try {
+      await onToolCall('grep', { query: 'needle' }, 'large-error-call');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(oversizedError);
+    const boundedMessage = caught instanceof Error ? caught.message : '';
+    expect(boundedMessage.startsWith('Error executing tool')).toBe(false);
+    expect(boundedMessage).toContain('BEGIN-');
+    expect(boundedMessage.trim().endsWith('-END')).toBe(true);
+    expect(new TextEncoder().encode(boundedMessage).byteLength).toBeLessThan(
+      50 * 1024,
+    );
+
+    const artifactPath = boundedMessage.match(
+      /^Full output: (tool-output:\/\/\S+)$/m,
+    )?.[1];
+    expect(artifactPath).toBeTruthy();
+    const artifact = citationRecords.find(
+      (citation) => citation.path === artifactPath,
+    );
+    expect(artifact?.content).toBe(fullErrorText);
+    expect(artifact?.sizeBytes).toBe(
+      new TextEncoder().encode(fullErrorText).byteLength,
+    );
+
+    let recovered = '';
+    let nextCursor: string | undefined;
+    let pageIndex = 1;
+    while (pageIndex === 1 || nextCursor) {
+      const page = String(
+        await onToolCall(
+          'read_file',
+          {
+            file: artifactPath,
+            raw: true,
+            max_bytes: pageIndex === 1 ? 10_000 : 256_000,
+            cursor: pageIndex === 1 ? undefined : nextCursor,
+          },
+          `read-large-error-${pageIndex}`,
+        ),
+      );
+      recovered += page.match(
+        /---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/,
+      )?.[1] ?? '';
+      nextCursor = page.match(/^NEXT_CURSOR: (.+)$/m)?.[1];
+      if (nextCursor === 'none') nextCursor = undefined;
+      pageIndex += 1;
+    }
+    expect(recovered).toBe(fullErrorText);
+  });
+
+  it('does not announce an artifact URI when persisting an oversized tool error fails', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une grosse erreur dont la persistance échoue.',
+    );
+    const fullErrorText = `BEGIN-${'y'.repeat(60_000)}-END`;
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => {
+        throw new Error(fullErrorText);
+      }) as unknown as () => Promise<undefined>,
+    );
+    citationPersistenceError = new Error('injected citation persistence failure');
+
+    let caught: unknown;
+    try {
+      await onToolCall('grep', { query: 'needle' }, 'failed-large-error');
+    } catch (error) {
+      caught = error;
+    }
+    const boundedMessage = caught instanceof Error ? caught.message : '';
+    expect(boundedMessage).toContain('Full output unavailable');
+    expect(boundedMessage).not.toContain('tool-output://');
+    expect(citationRecords).toEqual([]);
+    expect(new TextEncoder().encode(boundedMessage).byteLength).toBeLessThan(
+      50 * 1024,
+    );
+  });
+
+  it('leaves small tool execution errors untouched', async () => {
+    const { onToolCall } = await startImplementToolConversation(
+      'Inspecte une petite erreur.',
+    );
+    const smallError = new Error('tiny tool failure');
+    executeWorkspaceToolMock.mockImplementationOnce(
+      (async () => {
+        throw smallError;
+      }) as unknown as () => Promise<undefined>,
+    );
+
+    let caught: unknown;
+    try {
+      await onToolCall('grep', { query: 'needle' }, 'small-error-call');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(smallError);
+    expect(
+      citationRecords.some((citation) =>
+        citation.path?.startsWith('tool-output://') ?? false,
+      ),
+    ).toBe(false);
+  });
+
   registerConversationSelectionScenarios(useChatStoreScenarioContext);
   registerArchitectLifecycleScenarios(useChatStoreScenarioContext);
   registerArchitectStrategyScenarios(useChatStoreScenarioContext);

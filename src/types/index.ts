@@ -698,6 +698,7 @@ export interface AgentCodeCheckpointFileSnapshot {
   size?: number;
   encoding?: string | null;
   language?: string | null;
+  unixMode?: number | null;
 }
 
 export type AgentCodeCheckpointFileStatus = 'created' | 'modified' | 'deleted';
