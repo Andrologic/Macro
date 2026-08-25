@@ -1020,11 +1020,6 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
                         )}
                       </span>
                       <span className={cn('min-w-0 flex-1 truncate text-xs font-medium', isSelected ? 'text-foreground' : 'text-foreground/90')}>{scope.label}</span>
-                      {scopeEntries.length > 0 && (
-                        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded bg-muted/60 px-1 text-[9px] tabular-nums text-muted-foreground">
-                          {scopeEntries.length}
-                        </span>
-                      )}
                     </button>
                     <button
                       ref={(element) => {
