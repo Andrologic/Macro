@@ -80,9 +80,9 @@ All actions are pinned to immutable commits, checkouts do not persist credential
 
 ## Release workflow
 
-The `Release` workflow is tag-only. A stable tag named exactly `v<package version>` must point to a commit contained in `origin/main`. Cheap metadata, lockfile, frontend, bundle, sidecar, and Rust checks complete before the signed build matrix starts.
+The `Release` workflow is tag-only. A stable tag named exactly `v<package version>` must point to a commit contained in `origin/main`. Cheap metadata, lockfile, frontend, bundle, sidecar, and Rust checks complete before the release build matrix starts.
 
-The build matrix creates a universal macOS DMG, a Windows x64 NSIS installer, and Linux x64 AppImage, DEB, and RPM packages. It verifies platform signatures or package contents, refuses missing artifacts, and uploads short-lived build artifacts. The final job calculates SHA-256 sums and creates a draft GitHub release only. Publishing the draft is always a manual owner action.
+The build matrix creates a signed and notarized universal macOS DMG, an intentionally Authenticode-unsigned Windows x64 NSIS installer, and Linux x64 AppImage, DEB, and RPM packages. Tauri signs every supported automatic-update artifact independently of platform code signing. The workflow verifies the documented signing state or package contents, refuses missing artifacts, and uploads short-lived build artifacts. The final job calculates SHA-256 sums and creates a draft GitHub release only. Publishing the draft is always a manual owner action.
 
 Before a release tag is created or pushed, `bun run release:preflight` requires
 a clean checkout whose HEAD exactly matches `origin/main`, verifies the stable
@@ -129,7 +129,6 @@ Create an environment named `release` and configure:
 - deployment restricted to protected `v*` tags;
 - macOS signing and notarization secrets only in this environment;
 - the authorized Apple Team ID as `APPLE_TEAM_ID`, used to verify the signed bundle identity;
-- Windows certificate and password secrets only in this environment;
 - no access from pull request jobs.
 
 The build matrix declares this environment, so it waits for approval before consuming costly platform minutes or receiving signing secrets. Do not authorize a release until the validation job and tag provenance have been reviewed.

@@ -243,40 +243,7 @@ jobs:
           chmod 600 "$KEY_PATH"
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
-      - name: Configure Windows code signing
-        if: matrix.key == 'windows'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw 'Missing required Windows code-signing secret.'
-          }
-
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'macro-codesign.pfx'
-          [System.IO.File]::WriteAllBytes($certificatePath, [System.Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64))
-          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
-          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
-          Remove-Item -Force $certificatePath
-
-          if (-not $certificate.Thumbprint) {
-            throw 'Unable to read the imported Windows certificate thumbprint.'
-          }
-
-          "WINDOWS_SIGNING_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          @{
-            bundle = @{
-              windows = @{
-                certificateThumbprint = $certificate.Thumbprint
-                digestAlgorithm = 'sha256'
-                timestampUrl = 'http://timestamp.digicert.com'
-              }
-            }
-          } | ConvertTo-Json -Depth 4 | Set-Content -Path src-tauri/tauri.windows.conf.json -Encoding utf8
-
-      - name: Build signed desktop bundles
+      - name: Build desktop bundles
         uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -313,19 +280,17 @@ jobs:
           xcrun stapler validate "$APP_PATH"
           xcrun stapler validate "$DMG_PATH"
 
-      - name: Verify Windows installer signature
+      - name: Verify unsigned Windows installer
         if: matrix.key == 'windows'
         shell: pwsh
         run: |
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
           if (-not $installer) { throw 'Windows NSIS installer is missing.' }
           $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
-          if ($signature.Status -ne 'Valid') {
-            throw "Windows installer signature is not valid: $($signature.Status)"
+          if ($signature.Status -ne 'NotSigned') {
+            throw "Windows installer was expected to be unsigned for this release channel, but its Authenticode status is $($signature.Status)."
           }
-          if ($signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_SIGNING_THUMBPRINT) {
-            throw 'Windows installer signer does not match the certificate imported for this release.'
-          }
+          Write-Host 'Windows installer is intentionally not Authenticode-signed. Its Tauri updater artifact remains cryptographically signed.'
 
       - name: Inspect Linux packages
         if: matrix.key == 'linux'
@@ -414,7 +379,7 @@ jobs:
             echo "## Downloads"
             echo
             echo "- macOS Apple Silicon + Intel: \`Macro_${VERSION}_macOS_universal.dmg\`"
-            echo "- Windows x64: \`Macro_${VERSION}_Windows_x64_setup.exe\`"
+            echo "- Windows x64 (not Authenticode-signed): \`Macro_${VERSION}_Windows_x64_setup.exe\`. Windows may display an \`Unknown publisher\` warning during the initial installation."
             echo "- Linux x64: \`Macro_${VERSION}_Linux_x64.AppImage\`, \`Macro_${VERSION}_Linux_x64.deb\`, or \`Macro_${VERSION}_Linux_x64.rpm\`"
             echo "- Automatic updates: \`latest.json\` and the signed updater archives are attached for installed Macro clients."
             echo "- Source code: GitHub automatically attaches source archives to this release."
