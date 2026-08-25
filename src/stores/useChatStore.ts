@@ -951,6 +951,17 @@ export interface LiveStreamContextEstimate {
   updatedAt: string;
 }
 
+export type ActiveTurnSubmissionBehavior = "steer" | "queue";
+
+export interface ComposerSubmissionPayload {
+  conversationId: string;
+  content: string;
+  taskId?: string | null;
+  images?: MessageImageAttachment[];
+  internalAgentProfile?: InternalAgentProfile | null;
+  contextRefs?: ChatMessage["context_refs"];
+}
+
 interface ChatStore {
   messages: ChatMessage[];
   messagesByConversationId: Record<string, ChatMessage[]>;
@@ -1119,7 +1130,12 @@ interface ChatStore {
     internalAgentProfile?: InternalAgentProfile | null;
     hiddenContext?: string;
     providerInputItems?: unknown[];
+    contextRefs?: ChatMessage["context_refs"];
   }) => Promise<ChatSendResult | ChatSendCancelledResult>;
+  submitDuringActiveTurn: (
+    payload: ComposerSubmissionPayload,
+    behavior: ActiveTurnSubmissionBehavior,
+  ) => Promise<"steered" | "queued">;
   stopConversationStream: (conversationId: string) => void;
   clearConversationRuntimeError: (conversationId: string) => void;
   stopStreaming: () => void;
@@ -1378,6 +1394,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
   const latestConversationSessionIdByConversationId = new Map<string, string>();
+  const pendingSteersByConversationId = new Map<string, StreamMessage[]>();
+  const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
+  const drainingQueuedConversationIds = new Set<string>();
   const completionPersistenceOwnersByConversationId = new Map<
     string,
     { sessionId: string; turnId: string | null; assistantMessageId: string }
@@ -8334,6 +8353,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
+    if (drainingQueuedConversationIds.has(conversationId)) return;
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
+    if (isConversationRuntimeActive(runtime)) return;
+    const queue = queuedSubmissionsByConversationId.get(conversationId);
+    const next = queue?.shift();
+    if (!next) {
+      queuedSubmissionsByConversationId.delete(conversationId);
+      return;
+    }
+    if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
+    drainingQueuedConversationIds.add(conversationId);
+    let shouldContinue = true;
+    try {
+      await get().sendMessage(next);
+    } catch {
+      shouldContinue = false;
+    } finally {
+      drainingQueuedConversationIds.delete(conversationId);
+      if (shouldContinue) {
+        queueMicrotask(() => void drainQueuedSubmissions(conversationId));
+      }
+    }
+  };
+
   const buildUserMessageForSend = async (params: {
     conversationId: string;
     turnId: string;
@@ -10828,7 +10875,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
           tool_traces: toolTraces,
         });
       },
-      onBeforeFollowUpRequest: compactFollowUpMessagesBeforeProviderRequest,
+      onBeforeFollowUpRequest: async (request) => {
+        const compacted = await compactFollowUpMessagesBeforeProviderRequest(request);
+        const compactedMessages = Array.isArray(compacted)
+          ? compacted
+          : compacted?.messages ?? request.messages;
+        const pendingSteers = pendingSteersByConversationId.get(params.conversationId) ?? [];
+        if (pendingSteers.length === 0) {
+          return compactedMessages;
+        }
+        pendingSteersByConversationId.delete(params.conversationId);
+        return [...compactedMessages, ...pendingSteers];
+      },
+      consumePendingSteers: () => {
+        const pending = pendingSteersByConversationId.get(params.conversationId) ?? [];
+        pendingSteersByConversationId.delete(params.conversationId);
+        return pending;
+      },
       onLiveContextUpdate: (snapshot) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
@@ -10895,6 +10958,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       streamPromise,
     );
     const releaseStreamPromise = () => {
+      pendingSteersByConversationId.delete(params.conversationId);
       if (
         activeAssistantStreamPromisesByConversationId.get(
           params.conversationId,
@@ -10904,6 +10968,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.conversationId,
         );
       }
+      queueMicrotask(() => {
+        void drainQueuedSubmissions(params.conversationId);
+      });
     };
     void streamPromise.then(releaseStreamPromise, releaseStreamPromise);
   };
@@ -14358,6 +14425,69 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return result;
     },
 
+    submitDuringActiveTurn: async (payload, behavior) => {
+      const runtime = getConversationRuntimeSnapshot(
+        get().conversationRuntimeById,
+        payload.conversationId,
+      );
+      if (!isConversationRuntimeActive(runtime)) {
+        throw buildSendError("The conversation is no longer running.");
+      }
+      if (behavior === "queue") {
+        const queue = queuedSubmissionsByConversationId.get(payload.conversationId) ?? [];
+        queue.push({
+          ...payload,
+          images: payload.images ? [...payload.images] : undefined,
+          contextRefs: persistableContextRefs(get().composerContextRefs),
+        });
+        queuedSubmissionsByConversationId.set(payload.conversationId, queue);
+        return "queued";
+      }
+
+      const content = payload.content.trim();
+      if (!content) throw buildSendError("Write a direction before sending it.");
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === payload.conversationId,
+      );
+      const contextRefs = persistableContextRefs(get().composerContextRefs);
+      const revision = composerContextRefsRevision;
+      const steerMessage: StreamMessage = {
+        role: "user",
+        content: payload.images?.length
+          ? [
+              { type: "text", text: content },
+              ...payload.images.map((image) => ({
+                type: "image_url" as const,
+                image_url: { url: image.dataUrl },
+              })),
+            ]
+          : content,
+      };
+      const pending = pendingSteersByConversationId.get(payload.conversationId) ?? [];
+      pending.push(steerMessage);
+      pendingSteersByConversationId.set(payload.conversationId, pending);
+      let userMessage: ChatMessage;
+      try {
+        userMessage = await buildUserMessageForSend({
+          conversationId: payload.conversationId,
+          turnId: runtime.turnId ?? createConversationTurnId(),
+          taskId: payload.taskId ?? conversation?.task_id ?? "",
+          content,
+          contextRefs,
+        });
+      } catch (error) {
+        const remaining = (pendingSteersByConversationId.get(payload.conversationId) ?? [])
+          .filter((message) => message !== steerMessage);
+        if (remaining.length > 0) pendingSteersByConversationId.set(payload.conversationId, remaining);
+        else pendingSteersByConversationId.delete(payload.conversationId);
+        throw error;
+      }
+      get().addMessage(userMessage);
+      if (payload.images?.length) get().setMessageImages(userMessage.id, payload.images);
+      clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
+      return "steered";
+    },
+
     sendMessage: async (payload) => {
       let {
         conversationId,
@@ -14367,8 +14497,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         internalAgentProfile,
         hiddenContext,
         providerInputItems,
+        contextRefs: contextRefsOverride,
       } = payload;
-      const contextRefsForMessage = persistableContextRefs(get().composerContextRefs);
+      const contextRefsForMessage = contextRefsOverride ?? persistableContextRefs(get().composerContextRefs);
+      const shouldClearComposerContextRefs = contextRefsOverride === undefined;
       const composerContextRefsRevisionAtSend = composerContextRefsRevision;
       let activeSessionId: string | null = null;
       let activeTurnId: string | null = null;
@@ -14664,18 +14796,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         if (!isCurrentPreparation()) {
           publishUserMessage();
-          clearComposerContextRefsIfRevisionMatches(
-            conversationId,
-            composerContextRefsRevisionAtSend,
-          );
+          if (shouldClearComposerContextRefs) {
+            clearComposerContextRefsIfRevisionMatches(
+              conversationId,
+              composerContextRefsRevisionAtSend,
+            );
+          }
           return sentWithoutAssistantResult();
         }
 
         publishUserMessage();
-        clearComposerContextRefsIfRevisionMatches(
-          conversationId,
-          composerContextRefsRevisionAtSend,
-        );
+        if (shouldClearComposerContextRefs) {
+          clearComposerContextRefsIfRevisionMatches(
+            conversationId,
+            composerContextRefsRevisionAtSend,
+          );
+        }
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
           let skipMetadataGeneration = false;

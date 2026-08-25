@@ -28,6 +28,7 @@ import {
 import { useChatStore } from '../../../stores/useChatStore';
 import type { ContextRefKind, ContextReference } from '../../../types';
 import { cn } from '../../../utils/cn';
+import { isPrimaryComposerSubmitKey } from './composerSubmitKey';
 import { MentionNode, $createMentionNode, type MentionSurface } from './MentionNode';
 import { MentionPlugin } from './MentionPlugin';
 import { GoalCommandNode } from './GoalCommandNode';
@@ -353,7 +354,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
       return editor.registerCommand(
         KEY_ENTER_COMMAND,
         (event: KeyboardEvent | null) => {
-          if (event?.shiftKey) return false;
+          if (event && !isPrimaryComposerSubmitKey(event)) return false;
           event?.preventDefault();
           onSend();
           return true;

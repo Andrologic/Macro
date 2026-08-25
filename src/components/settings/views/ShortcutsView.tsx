@@ -76,6 +76,10 @@ const shortcutTranslationKeys: Record<
     label: 'shortcuts.items.historyNext.label',
     description: 'shortcuts.items.historyNext.description',
   },
+  'chat.secondarySend': {
+    label: 'shortcuts.items.secondarySend.label',
+    description: 'shortcuts.items.secondarySend.description',
+  },
 };
 
 export const ShortcutsView: React.FC = () => {
@@ -83,7 +87,9 @@ export const ShortcutsView: React.FC = () => {
   const {
     bindings,
     promptHistoryNavigationMode,
+    activeTurnSendBehavior,
     setPromptHistoryNavigationMode,
+    setActiveTurnSendBehavior,
     setBinding,
     resetBinding,
     resetAll,
@@ -241,6 +247,30 @@ export const ShortcutsView: React.FC = () => {
         >
           {t('shortcuts.resetAll', 'Reset all')}
         </button>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card/50 p-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              {t('shortcuts.activeTurnSendBehavior', 'Default action during a response')}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {activeTurnSendBehavior === 'steer'
+                ? t('shortcuts.activeTurnSendBehaviorSteer', 'Enter steers the active turn. The secondary shortcut queues the message.')
+                : t('shortcuts.activeTurnSendBehaviorQueue', 'Enter queues the message. The secondary shortcut steers the active turn.')}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+            <span>{t('shortcuts.queue', 'Queue')}</span>
+            <Switch
+              checked={activeTurnSendBehavior === 'steer'}
+              aria-label={t('shortcuts.activeTurnSendBehavior', 'Default action during a response')}
+              onCheckedChange={(checked) => setActiveTurnSendBehavior(checked ? 'steer' : 'queue')}
+            />
+            <span>{t('shortcuts.steer', 'Steer')}</span>
+          </div>
+        </div>
       </div>
 
       {recordingId && (
