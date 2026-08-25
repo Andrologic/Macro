@@ -21,11 +21,14 @@ const MCP_SYSTEM_ENV_ALLOWLIST: &[&str] = &[
     "XDG_DATA_HOME",
     "XDG_RUNTIME_DIR",
     "SystemRoot",
+    "SystemDrive",
     "WINDIR",
     "ComSpec",
     "PATHEXT",
     "APPDATA",
     "LOCALAPPDATA",
+    "ProgramData",
+    "ALLUSERSPROFILE",
 ];
 
 pub(crate) fn sanitized_process_environment(
@@ -89,8 +92,29 @@ pub(crate) fn resolve_env_secrets(
 mod tests {
     use super::super::stdio::resolve_stdio_transport;
     use super::super::types::{McpServerDto, McpTransportDto};
+    #[cfg(windows)]
+    use super::sanitized_process_environment;
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[cfg(windows)]
+    #[test]
+    fn preserves_windows_system_path_environment() {
+        let environment = sanitized_process_environment(&HashMap::new());
+
+        for key in ["SystemDrive", "ProgramData", "ALLUSERSPROFILE"] {
+            let expected = std::env::var(key).expect("Windows system path environment variable");
+            assert_eq!(environment.get(key), Some(&expected), "{key}");
+        }
+        assert!(!environment.contains_key("USERPROFILE"));
+
+        let declared = HashMap::from([("SystemDrive".to_string(), "X:".to_string())]);
+        let environment = sanitized_process_environment(&declared);
+        assert_eq!(
+            environment.get("SystemDrive").map(String::as_str),
+            Some("X:")
+        );
+    }
 
     #[test]
     fn resolves_env_secret_refs_from_secret_store() {

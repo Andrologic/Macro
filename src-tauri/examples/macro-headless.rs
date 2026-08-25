@@ -1274,6 +1274,9 @@ struct ToolExecutionJournalEntry {
 }
 
 fn sync_tool_execution_journal_directory(root: &std::path::Path) -> Result<(), String> {
+    #[cfg(not(unix))]
+    let _ = root;
+
     #[cfg(unix)]
     {
         std::fs::File::open(root)

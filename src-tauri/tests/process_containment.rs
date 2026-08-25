@@ -279,7 +279,7 @@ mod windows_tests {
             poll_until(|| image_running("ping.exe"), Duration::from_secs(10)).await,
             "detached ping.exe never appeared",
         );
-        let leader_status = contained.wait().await.expect("wait for cmd leader");
+        let leader_status = contained.wait().await.expect("wait for PowerShell leader");
         assert!(leader_status.success());
 
         contained.terminate_bounded().await.expect("terminate job");
