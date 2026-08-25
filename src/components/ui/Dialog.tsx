@@ -54,6 +54,7 @@ export interface DialogProps {
   backdropClassName?: string;
   panelClassName?: string;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
+  closeOnBackdropClick?: boolean;
 }
 
 /** A portal dialog with keyboard focus management and an inert application background. */
@@ -64,6 +65,7 @@ export const Dialog: React.FC<DialogProps> = ({
   backdropClassName = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4',
   panelClassName = 'flex w-full justify-center',
   initialFocusRef,
+  closeOnBackdropClick = false,
 }) => {
   const titleId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -131,7 +133,14 @@ export const Dialog: React.FC<DialogProps> = ({
   }, [initialFocusRef]);
 
   return createPortal(
-    <div ref={rootRef} data-macro-dialog-root className={backdropClassName}>
+    <div
+      ref={rootRef}
+      data-macro-dialog-root
+      className={backdropClassName}
+      onClick={(event) => {
+        if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
+      }}
+    >
       <div
         ref={panelRef}
         role="dialog"
