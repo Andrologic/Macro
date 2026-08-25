@@ -603,7 +603,56 @@ pub struct McpServerDefinition {
     pub website: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<McpProtocolSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<McpAuthorization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1000, max = 300000))]
+    pub startup_timeout_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1000, max = 600000))]
+    pub operation_timeout_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 16))]
+    pub max_concurrent_operations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_tools: Option<Vec<String>>,
     pub transport: McpTransport,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum McpProtocolMode {
+    Auto,
+    Legacy,
+    Modern,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpProtocolSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<McpProtocolMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 500, max = 15000))]
+    pub probe_timeout_ms: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpAuthorization {
+    #[serde(rename = "oauth")]
+    OAuth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_secret_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_metadata_url: Option<String>,
+        #[serde(default)]
+        scopes: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]

@@ -333,6 +333,39 @@ export interface MCPHttpTransportConfig {
 
 export type MCPTransportConfig = MCPStdioTransportConfig | MCPHttpTransportConfig;
 
+export type MCPProtocolMode = 'auto' | 'legacy' | 'modern';
+
+export interface MCPProtocolSettings {
+  mode?: MCPProtocolMode;
+  probeTimeoutMs?: number;
+}
+
+export interface MCPOAuthAuthorization {
+  type: 'oauth';
+  clientId?: string;
+  clientSecretRef?: string;
+  clientMetadataUrl?: string;
+  scopes?: string[];
+}
+
+export type MCPAuthorization = MCPOAuthAuthorization;
+
+export interface MCPServerDefinition {
+  name?: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  website?: string;
+  enabled?: boolean;
+  transport: MCPTransportConfig;
+  protocol?: MCPProtocolSettings;
+  authorization?: MCPAuthorization;
+  startupTimeoutMs?: number;
+  operationTimeoutMs?: number;
+  maxConcurrentOperations?: number;
+  disabledTools?: string[];
+}
+
 export interface MCPTool {
   id: string;
   serverId: string;
@@ -352,6 +385,12 @@ export interface MCPServer {
   icon: IconName;
   website?: string;
   transport?: MCPTransportConfig;
+  protocol?: MCPProtocolSettings;
+  authorization?: MCPAuthorization;
+  startupTimeoutMs?: number;
+  operationTimeoutMs?: number;
+  maxConcurrentOperations?: number;
+  disabledTools?: string[];
   tools?: MCPTool[];
   lastError?: string | null;
   discoveredAt?: string | null;

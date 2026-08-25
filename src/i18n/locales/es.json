@@ -1834,7 +1834,32 @@
       "identifierCollision": "Ya existe un servidor MCP con este identificador.",
       "saveFailed": "No se pudo guardar el servidor MCP.",
       "deleteFailed": "No se pudo eliminar el servidor MCP.",
-      "toggleFailed": "No se pudo actualizar el servidor MCP."
+      "toggleFailed": "No se pudo actualizar el servidor MCP.",
+      "transportHint": "Usa stdio para servidores locales o Streamable HTTP para servidores remotos heredados y sin estado.",
+      "transport": { "stdio": "Stdio local", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://ejemplo.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=valor",
+      "protocol": { "auto": "Detección automática", "legacy": "Sesión heredada", "modern": "Moderno sin estado" },
+      "oauth": {
+        "enable": "Usar OAuth",
+        "scopes": "Ámbitos separados por espacios",
+        "clientId": "ID de cliente preregistrado opcional",
+        "clientSecretStored": "Secreto de cliente guardado; déjalo en blanco para conservarlo",
+        "clientSecret": "Secreto de cliente opcional",
+        "clientMetadataUrl": "URL HTTPS opcional de metadatos del cliente",
+        "registrationHint": "Usa un ID de cliente o una URL de metadatos del cliente. Deja ambos vacíos solo si el servidor admite el registro dinámico de clientes.",
+        "authorizeHint": "Autorizar este servidor MCP",
+        "authorize": "Conectar",
+        "logout": "Eliminar la autorización OAuth",
+        "clientIdentityConflict": "Usa un ID de cliente OAuth o una URL de metadatos del cliente, pero no ambos.",
+        "clientSecretNeedsId": "Un secreto de cliente OAuth requiere un ID de cliente preregistrado.",
+        "clientSecretSaveFailed": "No se pudo guardar el secreto OAuth.",
+        "clientSecretCleanupFailed": "No se pudo eliminar el secreto de cliente OAuth obsoleto.",
+        "authorized": "Servidor MCP autorizado y conectado.",
+        "failed": "Falló la autorización MCP.",
+        "loggedOut": "Autorización MCP eliminada.",
+        "logoutFailed": "No se pudo eliminar la autorización MCP."
+      }
     }
   },
   "account": {

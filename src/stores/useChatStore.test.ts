@@ -3,6 +3,7 @@ import type {
   AgentType,
   AppMode,
   Conversation,
+  MCPServer,
   ProjectGroup,
   SkillManifest,
 } from '../types';
@@ -3168,6 +3169,104 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
         citation.path?.startsWith('tool-output://') ?? false,
       ),
     ).toBe(false);
+  });
+
+  const createScopedMcpTurnConfiguration = (): ScopedTurnConfiguration => ({
+    projectIds: ['project-1'],
+    focusProjectId: 'project-1',
+    riskLevel: 'balanced',
+    maxTurns: 6,
+    models: {},
+    builtInTools: {},
+    modeTools: {},
+    allowedMcpServerIds: ['project_docs'],
+    mcpServers: {
+      project_docs: {
+        enabled: true,
+        name: 'Project docs',
+        transport: { type: 'stdio', command: 'project-docs' },
+      },
+    },
+  });
+
+  it('injects project-scoped MCP tools absent from the global catalog and drops global selections', async () => {
+    const { services } = await import('../services');
+    const originalConnect = services.mcpRuntimeConnect;
+    const originalRefreshCatalog = services.mcpRuntimeRefreshCatalog;
+    services.mcpRuntimeConnect = mock(async (selector) => ({
+      key: {
+        serverId: selector.serverId,
+        projectId: null,
+        projectIds: selector.projectIds,
+        configGeneration: 1,
+      },
+      status: 'ready' as const,
+      updatedAt: '2026-08-24T00:00:00Z',
+    }));
+    services.mcpRuntimeRefreshCatalog = mock(async (key) => ({
+      key,
+      tools: [{
+        id: 'mcp__project_docs__search',
+        serverId: 'project_docs',
+        name: 'search',
+        enabled: true,
+      }],
+    }));
+    providerState.selectedSupportsNativeToolCalling = () => true;
+    appState.mode = 'Chat';
+    appState.selectedGroupId = null;
+    appState.selectedProjectId = null;
+    toolsStoreState.getEnabledMCPToolIds = () => ['mcp__github__list_issues'];
+    toolsStoreState.getEnabledMCPTools = () => [
+      {
+        id: 'mcp__github__list_issues',
+        serverId: 'github',
+        name: 'list_issues',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ];
+    const scopedToolsStoreState = toolsStoreState as typeof toolsStoreState & {
+      mcpServers?: MCPServer[];
+    };
+    scopedToolsStoreState.mcpServers = [];
+    scopedTurnConfigurationForTest = createScopedMcpTurnConfiguration();
+
+    try {
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [createConversation('chat-conv')],
+        messages: [],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Cherche dans la documentation du projet.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{
+        allowedToolIds: string[];
+        mcpTools?: Array<{ id: string }>;
+      }>();
+      expect(streamOptions.allowedToolIds).toContain('mcp__project_docs__search');
+      expect(streamOptions.allowedToolIds).not.toContain(
+        'mcp__github__list_issues',
+      );
+      expect(streamOptions.mcpTools?.map((tool) => tool.id)).toEqual([
+        'mcp__project_docs__search',
+      ]);
+    } finally {
+      services.mcpRuntimeConnect = originalConnect;
+      services.mcpRuntimeRefreshCatalog = originalRefreshCatalog;
+      delete scopedToolsStoreState.mcpServers;
+    }
   });
 
   registerConversationSelectionScenarios(useChatStoreScenarioContext);

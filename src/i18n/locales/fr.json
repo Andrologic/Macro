@@ -1850,7 +1850,32 @@
       "identifierCollision": "Un serveur MCP avec cet identifiant existe déjà.",
       "saveFailed": "Impossible d’enregistrer le serveur MCP.",
       "deleteFailed": "Impossible de supprimer le serveur MCP.",
-      "toggleFailed": "Impossible de mettre à jour le serveur MCP."
+      "toggleFailed": "Impossible de mettre à jour le serveur MCP.",
+      "transportHint": "Utilisez stdio pour les serveurs locaux ou Streamable HTTP pour les serveurs distants historiques et sans état.",
+      "transport": { "stdio": "Stdio local", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://exemple.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer jeton\nX-API-Key=valeur",
+      "protocol": { "auto": "Détection automatique", "legacy": "Session historique", "modern": "Moderne sans état" },
+      "oauth": {
+        "enable": "Utiliser OAuth",
+        "scopes": "Portées séparées par des espaces",
+        "clientId": "Identifiant client préenregistré facultatif",
+        "clientSecretStored": "Secret client enregistré — laissez ce champ vide pour le conserver",
+        "clientSecret": "Secret client facultatif",
+        "clientMetadataUrl": "URL HTTPS facultative des métadonnées du client",
+        "registrationHint": "Utilisez un identifiant client ou une URL de métadonnées du client. Ne renseignez aucun des deux uniquement si le serveur prend en charge l’enregistrement dynamique des clients.",
+        "authorizeHint": "Autoriser ce serveur MCP",
+        "authorize": "Connecter",
+        "logout": "Supprimer l’autorisation OAuth",
+        "clientIdentityConflict": "Utilisez un identifiant client OAuth ou une URL de métadonnées du client, mais pas les deux.",
+        "clientSecretNeedsId": "Un secret client OAuth nécessite un identifiant client préenregistré.",
+        "clientSecretSaveFailed": "Impossible d’enregistrer le secret OAuth.",
+        "clientSecretCleanupFailed": "Impossible de supprimer l’ancien secret client OAuth.",
+        "authorized": "Serveur MCP autorisé et connecté.",
+        "failed": "Échec de l’autorisation MCP.",
+        "loggedOut": "Autorisation MCP supprimée.",
+        "logoutFailed": "Impossible de supprimer l’autorisation MCP."
+      }
     }
   },
   "account": {

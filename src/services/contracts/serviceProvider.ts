@@ -21,6 +21,7 @@ import type {
 import type {
   MCPServer,
   MCPTool,
+  MCPProtocolMode,
   ProjectAccessChangePreview,
   ProjectGitFlowDetection,
   ProjectGitFlowSettings,
@@ -35,6 +36,77 @@ import type {
   SkillTemplateCreateRequest,
   SkillTemplateCreateResult,
 } from '../../types';
+
+// ============ Persistent MCP runtime contracts ============
+// Contracts for the persistent MCP runtime
+// (docs/mcp-dual-era-implementation-plan.md, sections 4.2, 7 and 8).
+
+export type { MCPProtocolMode } from '../../types';
+export type MCPProtocolEra = 'legacy' | 'modern';
+export type MCPRuntimeStatus =
+  | 'disconnected'
+  | 'probing'
+  | 'connecting'
+  | 'ready'
+  | 'reconnecting'
+  | 'failed';
+
+/**
+ * Runtime identity used by frontend calls. The backend owns the resolved
+ * server definition per config generation, so callers never transmit a full
+ * server definition.
+ */
+export interface MCPRuntimeKey {
+  serverId: string;
+  /** `null`/`undefined` targets the global scope; otherwise a project scope. */
+  projectId?: string | null;
+  /** Sorted effective multi-project scope. Mutually exclusive with projectId. */
+  projectIds?: string[];
+  configGeneration: number;
+}
+
+export interface MCPRuntimeSelector {
+  serverId: string;
+  /** Sorted effective project scope. An empty array targets global configuration. */
+  projectIds: string[];
+}
+
+export interface MCPRuntimeServerSnapshot {
+  key: MCPRuntimeKey;
+  status: MCPRuntimeStatus;
+  requestedProtocolMode?: MCPProtocolMode | null;
+  negotiatedEra?: MCPProtocolEra | null;
+  negotiatedProtocolVersion?: string | null;
+  protocolDecisionReason?: string | null;
+  lastError?: string | null;
+  updatedAt: string;
+}
+
+export interface MCPRuntimeSnapshotDto {
+  generatedAt: string;
+  servers: MCPRuntimeServerSnapshot[];
+}
+
+export interface MCPCatalogDto {
+  key: MCPRuntimeKey;
+  tools: MCPTool[];
+  refreshedAt?: string | null;
+}
+
+export type MCPRuntimeEvent =
+  | {
+      kind: 'status';
+      key: MCPRuntimeKey;
+      status: MCPRuntimeStatus;
+      detail?: string | null;
+      occurredAt: string;
+    }
+  | {
+      kind: 'catalog';
+      key: MCPRuntimeKey;
+      catalog: MCPCatalogDto;
+      occurredAt: string;
+    };
 
 export interface ServiceProvider {
   getAppBootstrap: () => Promise<AppBootstrapDto>;
@@ -184,6 +256,23 @@ export interface ServiceProvider {
     arguments: Record<string, unknown>;
     timeoutMs?: number | null;
   }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
+  // Persistent MCP runtime (compatibility adapters mcpDiscoverTools/mcpCallTool
+  // above stay unchanged until stores migrate to these methods).
+  mcpRuntimeGetSnapshot: () => Promise<MCPRuntimeSnapshotDto>;
+  mcpRuntimeConnect: (selector: MCPRuntimeSelector) => Promise<MCPRuntimeServerSnapshot>;
+  mcpStoreOAuthClientSecret: (data: { serverId: string; value: string }) => Promise<string>;
+  mcpDeleteOAuthClientSecret: (serverId: string) => Promise<void>;
+  mcpOAuthAuthorize: (selector: MCPRuntimeSelector) => Promise<void>;
+  mcpOAuthLogout: (selector: MCPRuntimeSelector) => Promise<void>;
+  mcpRuntimeDisconnect: (key: MCPRuntimeKey) => Promise<void>;
+  mcpRuntimeRefreshCatalog: (key: MCPRuntimeKey) => Promise<MCPCatalogDto>;
+  mcpRuntimeCallTool: (data: {
+    key: MCPRuntimeKey;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    operationId: string;
+  }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
+  mcpRuntimeCancelOperation: (operationId: string) => Promise<boolean>;
   listSkills: (data?: { projectRoots?: SkillProjectRoot[] }) => Promise<SkillListDto>;
   getSkill: (data: {
     skillId: string;

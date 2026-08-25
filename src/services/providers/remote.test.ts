@@ -8,6 +8,14 @@ import {
   listCommits,
   listSkills,
   listTasks,
+  mcpRuntimeCancelOperation,
+  mcpRuntimeCallTool,
+  mcpRuntimeConnect,
+  mcpStoreOAuthClientSecret,
+  mcpDeleteOAuthClientSecret,
+  mcpRuntimeDisconnect,
+  mcpRuntimeGetSnapshot,
+  mcpRuntimeRefreshCatalog,
   readSkillResource,
   runSkillScript,
   resolveRemoteConfig,
@@ -388,5 +396,49 @@ describe('remote provider', () => {
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       message: 'The current remote runtime does not support Macro skills (listSkills).',
     });
+  });
+
+  it('rejects persistent MCP runtime operations as unsupported', async () => {
+    const key = { serverId: 'github', projectId: null, configGeneration: 2 };
+
+    await expect(mcpRuntimeGetSnapshot()).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeGetSnapshot' },
+    });
+    await expect(
+      mcpRuntimeConnect({ serverId: 'test', projectIds: ['project-1'] }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeConnect' },
+    });
+    await expect(
+      mcpStoreOAuthClientSecret({ serverId: 'test', value: 'secret' }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpStoreOAuthClientSecret' },
+    });
+    await expect(mcpDeleteOAuthClientSecret('test')).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpDeleteOAuthClientSecret' },
+    });
+    await expect(mcpRuntimeDisconnect(key)).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeDisconnect' },
+    });
+    await expect(mcpRuntimeRefreshCatalog(key)).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeRefreshCatalog' },
+    });
+    await expect(
+      mcpRuntimeCallTool({ key, toolName: 'echo', arguments: {}, operationId: 'call-1' }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeCallTool' },
+    });
+    await expect(mcpRuntimeCancelOperation('operation-1')).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpRuntimeCancelOperation' },
+    });
+    expect(fetchCalls).toHaveLength(0);
   });
 });

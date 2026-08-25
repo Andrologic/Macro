@@ -1157,4 +1157,95 @@ describe("tauriIpc provider models", () => {
       },
     ]);
   });
+
+  afterAll(() => {
+    mock.restore();
+  });
+});
+
+describe("tauriIpc persistent MCP runtime", () => {
+  beforeEach(() => {
+    invokeCalls.length = 0;
+    invokeMock.mockClear();
+  });
+
+  it("routes persistent MCP runtime operations through planned mcp_runtime_* commands", async () => {
+    const tauriIpc = await loadTauriIpc();
+    const key = { serverId: "github", projectId: null, configGeneration: 3 };
+
+    await tauriIpc.mcpRuntimeGetSnapshot();
+    const selector = { serverId: "test", projectIds: ["project-1"] };
+    await tauriIpc.mcpRuntimeConnect(selector);
+    await tauriIpc.mcpOAuthAuthorize(selector);
+    await tauriIpc.mcpOAuthLogout(selector);
+    await tauriIpc.mcpStoreOAuthClientSecret({ serverId: "test", value: "secret" });
+    await tauriIpc.mcpDeleteOAuthClientSecret("test");
+    await tauriIpc.mcpRuntimeDisconnect(key);
+    await tauriIpc.mcpRuntimeRefreshCatalog(key);
+    await tauriIpc.mcpRuntimeCallTool({
+      key,
+      toolName: "echo",
+      arguments: { value: "ok" },
+      operationId: "operation-1",
+    });
+    await tauriIpc.mcpRuntimeCancelOperation("operation-1");
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "mcp_runtime_get_snapshot",
+        payload: undefined,
+      },
+      {
+        command: "mcp_runtime_connect",
+        payload: { selector },
+      },
+      {
+        command: "mcp_oauth_authorize",
+        payload: { selector },
+      },
+      {
+        command: "mcp_oauth_logout",
+        payload: { selector },
+      },
+      {
+        command: "mcp_store_oauth_client_secret",
+        payload: { serverId: "test", value: "secret" },
+      },
+      {
+        command: "mcp_delete_oauth_client_secret",
+        payload: { serverId: "test" },
+      },
+      {
+        command: "mcp_runtime_disconnect",
+        payload: { key },
+      },
+      {
+        command: "mcp_runtime_refresh_catalog",
+        payload: { key },
+      },
+      {
+        command: "mcp_runtime_call_tool",
+        payload: {
+          key,
+          toolName: "echo",
+          arguments: { value: "ok" },
+          operationId: "operation-1",
+        },
+      },
+      {
+        command: "mcp_runtime_cancel_operation",
+        payload: { operationId: "operation-1" },
+      },
+    ]);
+  });
+
+  it("exposes the planned runtime event channel name", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    expect(tauriIpc.MCP_RUNTIME_EVENT_NAME).toBe("mcp:runtime");
+  });
+
+  afterAll(() => {
+    mock.restore();
+  });
 });
