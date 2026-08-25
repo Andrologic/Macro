@@ -28,6 +28,7 @@ import { InformationalNotificationTemplate } from '../../ui/notifications/Inform
 import { Select } from '../../ui/Select';
 import { Switch } from '../../ui/Switch';
 import { Textarea } from '../../ui/Textarea';
+import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import {
   DEFAULT_ACTIONABLE_NOTIFICATION_BLUEPRINT_DRAFT,
   DEFAULT_INFORMATIONAL_NOTIFICATION_BLUEPRINT_DRAFT,
@@ -332,9 +333,7 @@ export const NotificationsView: React.FC = () => {
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
       <section className="space-y-4">
-        <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-          {t('settings.notificationsDelivery', 'Delivery')}
-        </h4>
+        <SettingsSectionHeader title={t('settings.notificationsDelivery', 'Delivery')} />
 
         <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
           <div className="flex items-center justify-between gap-4">
@@ -429,9 +428,7 @@ export const NotificationsView: React.FC = () => {
 
       {isDevelopmentBuild && (
         <section className="space-y-4" data-testid="notifications-debug-section">
-          <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-            {t('settings.notificationsDebug.sectionTitle', 'Debug')}
-          </h4>
+          <SettingsSectionHeader title={t('settings.notificationsDebug.sectionTitle', 'Debug')} />
 
           <div className={DEBUG_PANEL_CLASS_NAME}>
             <div className="flex flex-col gap-4 px-4 py-4 sm:px-5 lg:flex-row lg:items-start lg:justify-between">

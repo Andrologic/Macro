@@ -8,10 +8,15 @@ import {
 } from '../../../shortcuts/runtime';
 import { eventToBinding, formatBindingForDisplay, normalizeBinding } from '../../../shortcuts/utils';
 import { useShortcutsStore } from '../../../stores/useShortcutsStore';
-import { Input } from '../../ui/Input';
 import { Icon } from '../../ui/Icon';
 import { Switch } from '../../ui/Switch';
 import { cn } from '../../../utils/cn';
+import { SettingsSectionHeader } from '../SettingsSectionHeader';
+import {
+  SettingsCollectionHeader,
+  SettingsSearchEmpty,
+  useSettingsSearch,
+} from '../search/SettingsSearch';
 
 const shortcutTranslationKeys: Record<
   ShortcutId,
@@ -94,7 +99,7 @@ export const ShortcutsView: React.FC = () => {
     resetBinding,
     resetAll,
   } = useShortcutsStore();
-  const [search, setSearch] = useState('');
+  const { matches } = useSettingsSearch();
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
   const [pendingBinding, setPendingBinding] = useState<string | null>(null);
   const [bindingError, setBindingError] = useState<string | null>(null);
@@ -208,16 +213,16 @@ export const ShortcutsView: React.FC = () => {
     return map;
   }, [bindings]);
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return localizedShortcutDefinitions;
-    return localizedShortcutDefinitions.filter((shortcut) =>
-      [shortcut.label, shortcut.description, categoryLabels[shortcut.category]]
-        .join(' ')
-        .toLowerCase()
-        .includes(query)
-    );
-  }, [categoryLabels, localizedShortcutDefinitions, search]);
+  const filtered = useMemo(
+    () => localizedShortcutDefinitions.filter((shortcut) => matches(
+      shortcut.label,
+      shortcut.description,
+      categoryLabels[shortcut.category],
+      bindings[shortcut.id],
+      formatBindingForDisplay(bindings[shortcut.id])
+    )),
+    [bindings, categoryLabels, localizedShortcutDefinitions, matches]
+  );
 
   const grouped = useMemo(() => {
     return filtered.reduce<Record<ShortcutCategory, typeof shortcutDefinitions>>((acc, shortcut) => {
@@ -234,21 +239,6 @@ export const ShortcutsView: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-      <div className="flex flex-wrap items-center gap-3">
-        <Input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder={t('shortcuts.searchPlaceholder', 'Search shortcuts...')}
-          className="max-w-sm"
-        />
-        <button
-          onClick={() => setConfirmResetOpen(true)}
-          className="h-9 px-3 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-        >
-          {t('shortcuts.resetAll', 'Reset all')}
-        </button>
-      </div>
-
       <div className="rounded-lg border border-border bg-card/50 p-3">
         <div className="flex items-center justify-between gap-4">
           <div>
@@ -285,14 +275,30 @@ export const ShortcutsView: React.FC = () => {
         </div>
       )}
 
+      <SettingsCollectionHeader
+        title={t('shortcuts.collectionTitle', 'Shortcuts')}
+        description={t(
+          'shortcuts.collectionDescription',
+          'Find and customize keyboard shortcuts'
+        )}
+        searchPlaceholder={t('shortcuts.searchPlaceholder', 'Search shortcuts...')}
+        action={(
+          <button
+            onClick={() => setConfirmResetOpen(true)}
+            className="h-9 shrink-0 rounded-lg border border-border px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {t('shortcuts.resetAll', 'Reset all')}
+          </button>
+        )}
+      />
+
       <div className="space-y-6">
+        {filtered.length === 0 && <SettingsSearchEmpty />}
         {(Object.keys(grouped) as ShortcutCategory[]).map((category) => {
           if (grouped[category].length === 0) return null;
           return (
             <section key={category} className="space-y-3">
-              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                {categoryLabels[category]}
-              </h4>
+              <SettingsSectionHeader title={categoryLabels[category]} />
 
               <div className="space-y-2">
                 {grouped[category].map((shortcut) => {

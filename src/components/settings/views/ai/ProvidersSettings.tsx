@@ -15,6 +15,12 @@ import type { ProviderConfig } from '../../../../types';
 import { isMacroAiProvider } from '../../../../config/macroAi';
 import { AndrologicProviderIcon } from '../../../ai/AndrologicProviderIcon';
 import { providerHasUsableCredentials } from '../../../../services/providerCredentials';
+import { SettingsSectionHeader } from '../../SettingsSectionHeader';
+import {
+  SettingsCollectionHeader,
+  SettingsSearchEmpty,
+  useSettingsSearch,
+} from '../../search/SettingsSearch';
 
 interface EditingProvider {
   id: string;
@@ -109,7 +115,7 @@ export const ProvidersSettings: React.FC = () => {
     resolveProviderApiKey,
   } = useProviderStore();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const { matches } = useSettingsSearch();
   const [editingProvider, setEditingProvider] = useState<EditingProvider | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -125,14 +131,10 @@ export const ProvidersSettings: React.FC = () => {
   const apiKeyInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const filteredProviders = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    return providerConfigs.filter(
-      (provider) =>
-        provider.name.toLowerCase().includes(query) ||
-        provider.providerType.toLowerCase().includes(query) ||
-        provider.baseUrl.toLowerCase().includes(query)
+    return providerConfigs.filter((provider) =>
+      matches(provider.name, provider.id, provider.providerType, provider.baseUrl)
     );
-  }, [providerConfigs, searchQuery]);
+  }, [matches, providerConfigs]);
 
   const providerListItems = useMemo(
     () =>
@@ -156,7 +158,6 @@ export const ProvidersSettings: React.FC = () => {
             kind: 'heading' as const,
             id: group.id,
             title: group.title,
-            count: group.providers.length,
           },
           ...group.providers.map((provider) => ({ kind: 'provider' as const, provider })),
         ]),
@@ -898,43 +899,41 @@ export const ProvidersSettings: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="flex items-center gap-3">
-        <div className="relative min-w-0 flex-1">
-          <Icon
-            name="search"
-            size={17}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+      {providerConfigs.length > 0 ? (
+        <>
+          <SettingsCollectionHeader
+            title={t('providers.collectionTitle', 'Providers')}
+            description={t(
+              'providers.collectionDescription',
+              'Manage configured connections'
+            )}
+            searchPlaceholder={t('providers.searchPlaceholder', 'Search providers...')}
+            action={(
+              <Button
+                onClick={handleCreate}
+                className="h-9 w-9 shrink-0 p-0"
+                aria-label={t('providers.add', 'Add Provider')}
+                title={t('providers.add', 'Add Provider')}
+              >
+                <Icon name="plus" size={16} />
+              </Button>
+            )}
           />
-          <Input
-            className="h-10 rounded-lg pl-10 pr-4"
-            placeholder={t('providers.searchPlaceholder', 'Search providers...')}
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            aria-label={t('providers.searchPlaceholder', 'Search providers...')}
-          />
-        </div>
 
-        <Button onClick={handleCreate} className="h-10 shrink-0 px-4">
-          <Icon name="plus" size={16} />
-          {t('providers.add', 'Add Provider')}
-        </Button>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3">
-        {providerListItems.map((item) => {
-          if (item.kind === 'heading') {
-            return (
-              <div key={item.id} className="mt-3 flex items-center gap-2 px-1 first:mt-0">
-                <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                  {item.title}
-                </h3>
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground">
-                  {item.count}
-                </span>
-                <div className="h-px flex-1 bg-border/70" />
-              </div>
-            );
-          }
+          {providerListItems.length === 0 ? (
+            <SettingsSearchEmpty />
+          ) : (
+        <div className="grid grid-cols-1 gap-3">
+          {providerListItems.map((item) => {
+            if (item.kind === 'heading') {
+              return (
+                <SettingsSectionHeader
+                  key={item.id}
+                  title={item.title}
+                  className="mt-3 px-1 first:mt-0"
+                />
+              );
+            }
 
           const provider = item.provider;
           const status = getProviderStatus(provider);
@@ -1406,15 +1405,28 @@ export const ProvidersSettings: React.FC = () => {
               </div>
             </div>
           );
-        })}
-
-        {filteredProviders.length === 0 && (
-          <div className="py-12 text-center text-muted-foreground">
-            <Icon name="search" size={32} className="mx-auto mb-3 opacity-50" />
-            <p>{t('providers.noProvidersFound', 'No providers found matching your search.')}</p>
-          </div>
-        )}
-      </div>
+          })}
+        </div>
+          )}
+        </>
+      ) : (
+        <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center">
+          <Icon name="server" size={28} className="mx-auto mb-3 text-muted-foreground/60" />
+          <p className="text-sm font-medium text-foreground">
+            {t('chat.noProvidersConfigured', 'No providers configured')}
+          </p>
+          <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+            {t(
+              'providers.emptyDescription',
+              'Add a provider to connect Macro to an AI service.'
+            )}
+          </p>
+          <Button onClick={handleCreate} className="mt-4 h-9 px-3" size="sm">
+            <Icon name="plus" size={15} />
+            {t('providers.add', 'Add Provider')}
+          </Button>
+        </div>
+      )}
     </div>
   );
 };

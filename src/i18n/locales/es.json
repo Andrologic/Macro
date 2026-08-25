@@ -30,7 +30,8 @@
       "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
       "maxDuration": "Duración máxima de grabación", "enhancementTitle": "Limpieza inteligente de la transcripción", "enhancementDescription": "Usa el modelo activo de la conversación para corregir de forma breve y prudente errores de reconocimiento, vacilaciones y repeticiones.",
       "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
-      "andrologicPrivacy": "Andrologic: el audio se procesa mediante el gateway autenticado de Macro y nunca se conserva. El texto transcrito se incluye en los registros operativos.",
+      "andrologicPrivacy": "Andrologic procesa el audio mediante la pasarela autenticada de Macro y no lo conserva. Las transcripciones se registran en los registros operativos.",
+      "durationUnit": "segundos",
       "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
       "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",
       "keyStored": "Clave API guardada localmente", "managedAuth": "Autenticación gestionada por Macro", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
@@ -580,11 +581,6 @@
       "previewUnavailable": "Vista previa no disponible",
       "removeFromContext": "Quitar del contexto",
       "toolsUnavailableWarning": "Las herramientas no están disponibles para el proveedor o modelo seleccionado actualmente. Seleccione un modelo con soporte de llamadas de herramientas nativas para habilitarlas.",
-      "agentWorkspace": "Espacio de trabajo del agente",
-      "noAgentWorkspace": "Sin espacio de trabajo",
-      "agentWorkspaceDescription": "Este espacio de trabajo aporta contexto del proyecto. No limita el terminal general.",
-      "noAgentWorkspaceDescription": "No hay ningún espacio de trabajo de proyecto adjunto. El terminal general sigue disponible cuando está activado.",
-      "workspaceUpdateFailed": "No se pudo cambiar el espacio de trabajo del agente",
       "builtInTools": "Herramientas integradas",
       "noToolsEnabled": "No hay herramientas habilitadas",
       "mcpServers": "Servidores MCP",
@@ -760,6 +756,9 @@
     }
   },
   "skills": {
+    "collectionTitle": "Skills",
+    "collectionDescription": "Gestiona los skills detectados",
+    "empty": "No se detectaron skills",
     "importDialogTitle": "Seleccionar una carpeta de skill",
     "importFailed": "No se pudo importar la skill",
     "imported": "Skill importada",
@@ -847,6 +846,7 @@
     "moreDiagnostics": "+{{count}} diagnósticos más"
   },
   "settings": {
+    "searchNoResults": "No hay ajustes coincidentes",
     "title": "Configuración",
     "general": "generales",
     "appearance": "Apariencia",
@@ -857,6 +857,8 @@
     "architect": "Workflow Git",
     "shortcuts": "Atajos",
     "desc": {
+      "skills": "Gestiona los skills reutilizables y sus fuentes",
+      "prompts": "Personaliza los prompts del sistema utilizados por Macro",
       "general": "Configurar las preferencias de idioma, aplicación y aprobación",
       "appearance": "Personaliza la apariencia de la aplicación.",
       "ai": "Gestione modelos de IA, proveedores y claves API",
@@ -1630,6 +1632,9 @@
     "totalChanges": "cambios totales"
   },
   "providers": {
+    "collectionTitle": "Proveedores",
+    "collectionDescription": "Gestiona las conexiones configuradas",
+    "emptyDescription": "Añade un proveedor para conectar Macro con un servicio de IA.",
     "macroAi": {
       "included": "IA incluida con la beta de Macro",
       "dropdownNotice": "IA incluida con la beta"
@@ -1738,6 +1743,10 @@
     }
   },
   "tools": {
+    "builtInToolsDescription": "Controla qué herramientas pueden usar los modelos",
+    "mcpServersDescription": "Gestiona las conexiones de herramientas externas",
+    "searchBuiltInTools": "Buscar herramientas...",
+    "searchMcpServers": "Buscar servidores MCP...",
     "title": "Configuración de herramientas",
     "subtitle": "Administrar capacidades disponibles y servidores MCP",
     "addServer": "Agregar servidor",
@@ -1972,6 +1981,9 @@
     }
   },
   "models": {
+    "collectionTitle": "Modelos",
+    "collectionDescription": "Gestiona los modelos por proveedor",
+    "searchPlaceholder": "Buscar modelos...",
     "noProviders": "Todavía no hay providers configurados. Añade primero un provider.",
     "total": "total",
     "enabled": "habilitado",
@@ -2059,6 +2071,8 @@
     "learnedContextLimitResetFailed": "No se pudo restablecer el límite de contexto aprendido"
   },
   "shortcuts": {
+    "collectionTitle": "Atajos",
+    "collectionDescription": "Busca y personaliza los atajos de teclado",
     "categories": {
       "app": "Solicitud",
       "mode": "Modos",

@@ -33,6 +33,11 @@ import {
   normalizeReasoningEfforts,
   normalizeReasoningEffortValue,
 } from '../../../../services/reasoningCatalog';
+import {
+  SettingsCollectionHeader,
+  SettingsSearchEmpty,
+  useSettingsSearch,
+} from '../../search/SettingsSearch';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -106,6 +111,7 @@ const parseContextWindowInput = (value: string): number | null => {
 
 export const ModelsSettings: React.FC = () => {
   const { t } = useTranslation();
+  const { matches, query } = useSettingsSearch();
   const {
     providerConfigs,
     modelsByProvider,
@@ -155,6 +161,7 @@ export const ModelsSettings: React.FC = () => {
   const [isSavingManualModel, setIsSavingManualModel] = useState(false);
   const [isDeletingManualModel, setIsDeletingManualModel] = useState(false);
   const [isSavingContextWindow, setIsSavingContextWindow] = useState(false);
+  const [openProviderIds, setOpenProviderIds] = useState<string[]>([]);
   const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null>(null);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -208,6 +215,29 @@ export const ModelsSettings: React.FC = () => {
   };
 
   const providers = providerConfigs;
+  const filteredProviderModels = providers.flatMap((provider) => {
+    const allModels = modelsByProvider[provider.id] || [];
+    const showFreeOnly =
+      provider.providerType === 'openrouter' && providerSettingsById[provider.id]?.filterFreeModels;
+    const models = showFreeOnly ? allModels.filter((model) => model.isFree) : allModels;
+    const providerMatches = matches(provider.name, provider.id, provider.providerType);
+    const matchingModels = providerMatches
+      ? models
+      : models.filter((model) =>
+          matches(
+            model.name,
+            model.id,
+            model.provider_id,
+            model.description,
+            model.owned_by,
+            ...(model.capabilities ?? [])
+          )
+        );
+    return providerMatches || matchingModels.length > 0
+      ? [{ provider, models: matchingModels }]
+      : [];
+  });
+  const hasSearchResults = filteredProviderModels.length > 0;
   const enabledCommitProviders = providers.filter((provider) => providerHasCredentials(provider));
   const normalizedMetadataModelConfig = normalizeMetadataModelConfig(metadataModelConfig, {
     providerConfigs: enabledCommitProviders,
@@ -432,10 +462,10 @@ export const ModelsSettings: React.FC = () => {
   return (
     <div className="space-y-4 animate-in fade-in duration-300">
       <section
-        id="metadata-generation-model-settings"
-        data-settings-section="metadata-generation"
-        className="rounded-xl border border-border bg-card px-4 py-4"
-      >
+          id="metadata-generation-model-settings"
+          data-settings-section="metadata-generation"
+          className="rounded-xl border border-border bg-card px-4 py-4"
+        >
         <div className="flex flex-col gap-4">
           <div>
             <h3 className="text-sm font-semibold text-foreground">
@@ -581,12 +611,27 @@ export const ModelsSettings: React.FC = () => {
         </div>
       </section>
 
-      <Accordion type="multiple" className="space-y-3">
-        {providers.map((provider) => {
-          const models = modelsByProvider[provider.id] || [];
+      <SettingsCollectionHeader
+        title={t('models.collectionTitle', 'Models')}
+        description={t('models.collectionDescription', 'Manage models by provider')}
+        searchPlaceholder={t('models.searchPlaceholder', 'Search models...')}
+        className="pt-2"
+      />
+
+      {!hasSearchResults && <SettingsSearchEmpty />}
+
+      {filteredProviderModels.length > 0 && (
+        <Accordion
+          type="multiple"
+          value={query.trim() ? filteredProviderModels.map(({ provider }) => provider.id) : openProviderIds}
+          onValueChange={setOpenProviderIds}
+          className="space-y-3"
+        >
+          {filteredProviderModels.map(({ provider, models }) => {
           const settings = providerSettingsById[provider.id];
           const showFreeOnly = provider.providerType === 'openrouter' && settings?.filterFreeModels;
-          const filteredModels = showFreeOnly ? models.filter((model) => model.isFree) : models;
+          const filteredModels = models;
+          const allProviderModels = modelsByProvider[provider.id] || [];
           const hasKey = providerHasCredentials(provider);
 
           return (
@@ -619,8 +664,8 @@ export const ModelsSettings: React.FC = () => {
                       </div>
                       <div className="text-xs text-muted-foreground">
                         {t('models.providerSummary', '{{total}} total • {{enabled}} enabled', {
-                          total: models.length,
-                          enabled: models.filter((model) => model.isEnabled !== false).length,
+                          total: allProviderModels.length,
+                          enabled: allProviderModels.filter((model) => model.isEnabled !== false).length,
                         })}
                       </div>
                     </div>
@@ -873,8 +918,9 @@ export const ModelsSettings: React.FC = () => {
               </AccordionContent>
             </AccordionItem>
           );
-        })}
-      </Accordion>
+          })}
+        </Accordion>
+      )}
 
       {activeManualModelActions &&
         typeof document !== 'undefined' &&

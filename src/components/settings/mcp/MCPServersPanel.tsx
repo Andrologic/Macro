@@ -16,6 +16,11 @@ import { Icon } from '../../ui/Icon';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { notify } from '../../ui/toastService';
+import {
+  matchesSettingsSearch,
+  SettingsCollectionHeader,
+  SettingsSearchEmpty,
+} from '../search/SettingsSearch';
 
 interface MCPServersPanelProps {
   servers: MCPServer[];
@@ -400,16 +405,18 @@ const MCPServerRow: React.FC<{
 
 const MCPServerList: React.FC<{
   servers: MCPServer[];
+  searching: boolean;
   onEdit: (server: MCPServer) => void;
   onDelete: (serverId: string) => void;
   onRefresh: (serverId: string) => void;
   onToggle: (serverId: string) => void;
   onAuthorize: (serverId: string) => void;
   onLogout: (serverId: string) => void;
-}> = ({ servers, onEdit, onDelete, onRefresh, onToggle, onAuthorize, onLogout }) => {
+}> = ({ servers, searching, onEdit, onDelete, onRefresh, onToggle, onAuthorize, onLogout }) => {
   const { t } = useTranslation();
 
   if (servers.length === 0) {
+    if (searching) return <SettingsSearchEmpty />;
     return (
       <div className="py-8 text-center">
         <p className="text-muted-foreground">
@@ -454,11 +461,15 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
   const [draft, setDraft] = useState<MCPServerDraft>(emptyDraft);
 
   const filteredServers = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return servers.filter(
-      (server) =>
-        server.name.toLowerCase().includes(query) ||
-        (server.website && server.website.toLowerCase().includes(query))
+    return servers.filter((server) =>
+      matchesSettingsSearch(
+        searchQuery,
+        server.name,
+        server.description,
+        server.website,
+        server.category,
+        server.transport?.type
+      )
     );
   }, [servers, searchQuery]);
 
@@ -733,8 +744,20 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
         onChange={setDraft}
         onSave={() => void saveDraft()}
       />
+      {servers.length > 0 && (
+        <SettingsCollectionHeader
+          title={t('tools.mcpServers', 'MCP servers')}
+          description={t(
+            'tools.mcpServersDescription',
+            'Manage external tool connections'
+          )}
+          searchPlaceholder={t('tools.searchMcpServers', 'Search MCP servers...')}
+          className="pt-2"
+        />
+      )}
       <MCPServerList
         servers={filteredServers}
+        searching={Boolean(searchQuery.trim())}
         onEdit={beginEditServer}
         onDelete={(serverId) => void deleteServer(serverId)}
         onRefresh={(serverId) => void refreshServer(serverId)}

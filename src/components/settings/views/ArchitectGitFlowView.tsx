@@ -9,6 +9,7 @@ import {
   validateArchitectGitNamingSettings,
 } from '../../../services/architectGitNaming';
 import { cn } from '../../../utils/cn';
+import { SettingsSectionHeader } from '../SettingsSectionHeader';
 
 const defaultSettings: ArchitectGitNamingSettings = {
   mainBranch: 'main',
@@ -178,15 +179,13 @@ export const ArchitectGitFlowView: React.FC = () => {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
       <section className="space-y-4">
-        <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-          {t('settings.architectGitFlow.title', 'Git workflow')}
-        </h4>
-        <p className="text-xs text-muted-foreground">
-          {t(
+        <SettingsSectionHeader
+          title={t('settings.architectGitFlow.title', 'Git workflow')}
+          description={t(
             'settings.architectGitFlow.subtitle',
             'Configure the default Git workflow applied to new projects, including the development target and feature branch templates. Existing projects can override these values individually.'
           )}
-        </p>
+        />
       </section>
 
       <section className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
