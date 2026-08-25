@@ -25,7 +25,8 @@
       "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
       "maxDuration": "最大録音時間", "enhancementTitle": "文字起こしのスマート補正", "enhancementDescription": "会話で使用中のモデルにより、認識ミス、ためらい、繰り返しだけを短く慎重に補正します。",
       "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
-      "andrologicPrivacy": "Andrologic：音声は認証済みの Macro ゲートウェイで処理され、保存されません。文字起こしされたテキストは運用ログに記録されます。",
+      "andrologicPrivacy": "Andrologic は認証済みの Macro ゲートウェイ経由で音声を処理し、保存しません。文字起こしは運用ログに記録されます。",
+      "durationUnit": "秒",
       "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",
       "compatibility": "OpenAI互換およびDeepgramの文字起こしエンドポイントに対応します。", "addProvider": "プロバイダーを追加",
       "keyStored": "APIキーはローカルに保存済み", "managedAuth": "認証は Macro が管理", "noKeyRequired": "APIキー不要", "keyMissing": "APIキーが必要",
@@ -575,11 +576,6 @@
       "previewUnavailable": "プレビューを利用できません",
       "removeFromContext": "コンテキストから削除",
       "toolsUnavailableWarning": "現在選択されているプロバイダーまたはモデルではツールを使用できません。ネイティブ ツール呼び出しサポートを有効にするには、サポートを備えたモデルを選択します。",
-      "agentWorkspace": "エージェントのワークスペース",
-      "noAgentWorkspace": "ワークスペースなし",
-      "agentWorkspaceDescription": "このワークスペースはプロジェクトのコンテキストを提供します。汎用ターミナルの範囲は制限しません。",
-      "noAgentWorkspaceDescription": "プロジェクトワークスペースは関連付けられていません。汎用ターミナルは有効にすると利用できます。",
-      "workspaceUpdateFailed": "エージェントのワークスペースを変更できませんでした",
       "builtInTools": "内蔵ツール",
       "noToolsEnabled": "有効なツールはありません",
       "mcpServers": "MCPサーバー",
@@ -755,6 +751,9 @@
     }
   },
   "skills": {
+    "collectionTitle": "スキル",
+    "collectionDescription": "検出されたスキルを管理します",
+    "empty": "スキルが見つかりません",
     "importDialogTitle": "Skill フォルダーを選択",
     "importFailed": "Skill をインポートできませんでした",
     "imported": "Skill をインポートしました",
@@ -842,6 +841,7 @@
     "moreDiagnostics": "+{{count}} 件の追加診断"
   },
   "settings": {
+    "searchNoResults": "一致する設定はありません",
     "title": "設定",
     "general": "一般的な",
     "appearance": "外観",
@@ -852,6 +852,8 @@
     "architect": "Git ワークフロー",
     "shortcuts": "ショートカット",
     "desc": {
+      "skills": "再利用可能なエージェントスキルとそのソースを管理します",
+      "prompts": "Macro が使用するシステムプロンプトをカスタマイズします",
       "general": "言語、アプリケーション、承認の設定を構成する",
       "appearance": "アプリケーションの外観と操作性をカスタマイズする",
       "ai": "AI モデル、プロバイダー、API キーを管理する",
@@ -1625,6 +1627,9 @@
     "totalChanges": "合計の変更"
   },
   "providers": {
+    "collectionTitle": "プロバイダー",
+    "collectionDescription": "設定済みの接続を管理します",
+    "emptyDescription": "プロバイダーを追加して Macro を AI サービスに接続します。",
     "macroAi": {
       "included": "Macro ベータに AI が含まれます",
       "dropdownNotice": "ベータ版に AI が含まれます"
@@ -1733,6 +1738,10 @@
     }
   },
   "tools": {
+    "builtInToolsDescription": "モデルが使用できるツールを管理します",
+    "mcpServersDescription": "外部ツールへの接続を管理します",
+    "searchBuiltInTools": "ツールを検索...",
+    "searchMcpServers": "MCP サーバーを検索...",
     "title": "ツールの構成",
     "subtitle": "利用可能な機能と MCP サーバーを管理する",
     "addServer": "サーバーの追加",
@@ -1967,6 +1976,9 @@
     }
   },
   "models": {
+    "collectionTitle": "モデル",
+    "collectionDescription": "プロバイダーごとにモデルを管理します",
+    "searchPlaceholder": "モデルを検索...",
     "noProviders": "まだプロバイダーが設定されていません。先にプロバイダーを追加してください。",
     "total": "合計",
     "enabled": "有効",
@@ -2054,6 +2066,8 @@
     "learnedContextLimitResetFailed": "学習済みコンテキスト制限をリセットできませんでした"
   },
   "shortcuts": {
+    "collectionTitle": "ショートカット",
+    "collectionDescription": "キーボードショートカットを検索してカスタマイズします",
     "categories": {
       "app": "応用",
       "mode": "モード",

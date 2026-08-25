@@ -23,6 +23,7 @@ let nativeToolsSupported = true;
 let runtimeSkillsSupported = true;
 let runtimeSkillCreationSupported = true;
 let toolRiskLevel: 'strict' | 'balanced' | 'yolo' = 'balanced';
+let settingsSearchQuery = '';
 
 const defaultSettings: SkillSettings = {
   enabled: false,
@@ -60,6 +61,17 @@ const buildSkill = (
 
 const loadSkillsView = async () => {
   mock.restore();
+
+  mock.module('../search/SettingsSearch', () => ({
+    useSettingsSearch: () => ({
+      query: settingsSearchQuery,
+      setQuery: () => undefined,
+      matches: (...values: Array<string | false | null | undefined>) =>
+        values.filter(Boolean).join(' ').toLowerCase().includes(settingsSearchQuery.toLowerCase()),
+    }),
+    SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
+    SettingsSearchEmpty: () => <div>No matching settings</div>,
+  }));
 
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
@@ -269,6 +281,7 @@ describe('SkillsView', () => {
     runtimeSkillsSupported = true;
     runtimeSkillCreationSupported = true;
     toolRiskLevel = 'balanced';
+    settingsSearchQuery = '';
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -404,23 +417,10 @@ describe('SkillsView', () => {
       buildSkill('project:project-1:docs', { name: 'docs' }),
       buildSkill('global:lint', { name: 'lint', description: 'Linting conventions' }),
     ];
+    settingsSearchQuery = 'lint';
     const { SkillsView } = await loadSkillsView();
     await act(async () => {
       root?.render(<SkillsView />);
-      await Promise.resolve();
-    });
-
-    const searchInput = container?.querySelector(
-      'input[placeholder="Search skills..."]',
-    ) as HTMLInputElement | null;
-    expect(searchInput).toBeTruthy();
-
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
-        searchInput,
-        'lint',
-      );
-      searchInput!.dispatchEvent(new Event('input', { bubbles: true }));
       await Promise.resolve();
     });
 
@@ -472,9 +472,7 @@ describe('SkillsView', () => {
 
     expect(setSkillScriptsEnabledMock).toHaveBeenCalledWith(skill.id, true);
 
-    const importButton = Array.from(container?.querySelectorAll('button') ?? []).find((button) =>
-      button.textContent?.includes('Import')
-    );
+    const importButton = container?.querySelector<HTMLButtonElement>('button[aria-label="Import"]');
     expect(importButton).toBeTruthy();
     await act(async () => {
       importButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -539,7 +537,7 @@ describe('SkillsView', () => {
     expect(refreshSkillsMock).toHaveBeenCalled();
 
     await act(async () => {
-      buttons.find((button) => button.textContent?.includes('New skill'))
+      buttons.find((button) => button.getAttribute('aria-label') === 'New skill')
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });

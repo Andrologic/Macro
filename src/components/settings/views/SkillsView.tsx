@@ -8,7 +8,6 @@ import { useConfigStore } from '../../../stores/useConfigStore';
 import { getServiceRuntimeCapabilities } from '../../../services';
 import { loadPreference, PREF_KEYS } from '../../../services/preferences';
 import { DEFAULT_TOOL_RISK_LEVEL } from '../../../services/toolSecurityPolicy';
-import { normalizeSkillLookupName } from '../../../services/skills/identity';
 import { isSkillTrustCurrent } from '../../../services/skills/settings';
 import type { Project, SkillManifest, SkillSettings, ToolRiskLevel } from '../../../types';
 import { SkillCard } from './SkillCard';
@@ -18,6 +17,11 @@ import { Input } from '../../ui/Input';
 import { Textarea } from '../../ui/Textarea';
 import { notify } from '../../ui/toastService';
 import { cn } from '../../../utils/cn';
+import {
+  SettingsCollectionHeader,
+  SettingsSearchEmpty,
+  useSettingsSearch,
+} from '../search/SettingsSearch';
 
 type SkillCreateLocation = {
   id: string;
@@ -60,7 +64,7 @@ export const SkillsView: React.FC = () => {
     state.selectedSupportsNativeToolCalling()
   );
   const runtimeCapabilities = useMemo(() => getServiceRuntimeCapabilities(), []);
-  const [searchQuery, setSearchQuery] = useState('');
+  const { matches, query } = useSettingsSearch();
   const [expandedSkillIds, setExpandedSkillIds] = useState<Set<string>>(() => new Set());
   const [toolRiskLevel, setToolRiskLevel] =
     useState<ToolRiskLevel>(DEFAULT_TOOL_RISK_LEVEL);
@@ -128,10 +132,8 @@ export const SkillsView: React.FC = () => {
   }, []);
 
   const filteredSkills = useMemo(() => {
-    const query = normalizeSkillLookupName(searchQuery);
-    if (!query) return skills;
     return skills.filter((skill) =>
-      normalizeSkillLookupName([
+      matches(
         skill.name,
         skill.description,
         skill.id,
@@ -144,12 +146,10 @@ export const SkillsView: React.FC = () => {
         skill.allowedTools ?? '',
         skill.location?.uri ?? '',
         skill.shadowedBySkillId ?? '',
-        ...(skill.diagnostics ?? []).map((diagnostic) => `${diagnostic.code} ${diagnostic.message}`),
-      ]
-        .join(' '))
-        .includes(query)
+        ...(skill.diagnostics ?? []).map((diagnostic) => `${diagnostic.code} ${diagnostic.message}`)
+      )
     );
-  }, [skills, searchQuery]);
+  }, [matches, skills]);
 
   const getNamespaceLabel = (skill: SkillManifest): string => {
     switch (skill.source.namespace) {
@@ -334,45 +334,50 @@ export const SkillsView: React.FC = () => {
 
       <SkillSourcesPanel projects={projectsWithPaths} onChanged={refreshSkills} />
 
-      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <Input
-          placeholder={t('skills.searchPlaceholder', 'Search skills...')}
-          value={searchQuery}
-          onChange={(event) => setSearchQuery(event.target.value)}
-          className="sm:max-w-md"
-        />
-        <div className="flex items-center gap-2">
+      <SettingsCollectionHeader
+        title={t('skills.collectionTitle', 'Skills')}
+        description={t('skills.collectionDescription', 'Manage discovered skills')}
+        searchPlaceholder={skills.length > 0
+          ? t('skills.searchPlaceholder', 'Search skills...')
+          : undefined}
+        className="mb-4"
+        action={(
+          <div className="flex items-center gap-2">
           <button
             onClick={() => void refreshSkills()}
-            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             disabled={isLoading}
+            aria-label={t('common.refresh', 'Refresh')}
+            title={t('common.refresh', 'Refresh')}
           >
             <Icon name={isLoading ? 'loader' : 'refresh-cw'} size={14} className={cn(isLoading && 'animate-spin')} />
-            {t('common.refresh', 'Refresh')}
           </button>
           <button
             onClick={() => setCreateDialogOpen(true)}
-            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
             disabled={saving || !skillCreationSupported}
+            aria-label={t('skills.newSkill', 'New skill')}
             title={
               skillCreationSupported
-                ? undefined
+                ? t('skills.newSkill', 'New skill')
                 : t('skills.createUnavailable', 'Local skill creation is only available in desktop mode.')
             }
           >
             <Icon name="plus" size={14} />
-            {t('skills.newSkill', 'New skill')}
           </button>
           <button
             onClick={() => void handleImport()}
-            className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
             disabled={saving}
+            aria-label={t('skills.import', 'Import')}
+            title={t('skills.import', 'Import')}
           >
             <Icon name={saving ? 'loader' : 'upload'} size={14} className={cn(saving && 'animate-spin')} />
             {t('skills.import', 'Import')}
           </button>
-        </div>
-      </div>
+          </div>
+        )}
+      />
 
       {lastError && (
         <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -407,15 +412,15 @@ export const SkillsView: React.FC = () => {
           );
         })}
 
-        {filteredSkills.length === 0 && (
-          <div className="rounded-lg border border-dashed border-border py-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              {isLoading
-                ? t('skills.loading', 'Loading skills...')
-                : t('skills.noneFound', 'No skills found.')}
-            </p>
-          </div>
-        )}
+        {filteredSkills.length === 0 && (isLoading
+          ? <p className="py-8 text-center text-sm text-muted-foreground">{t('skills.loading', 'Loading skills...')}</p>
+          : query.trim()
+            ? <SettingsSearchEmpty />
+            : (
+              <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
+                {t('skills.empty', 'No skills discovered')}
+              </div>
+            ))}
       </div>
 
       {createDialogOpen && (

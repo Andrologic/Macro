@@ -61,6 +61,13 @@ const mcpServers: Array<{
 const loadToolsView = async () => {
   mock.restore();
 
+  mock.module('../search/SettingsSearch', () => ({
+    useSettingsSearch: () => ({ query: '', setQuery: () => undefined, matches: () => true }),
+    SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
+    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    matchesSettingsSearch: () => true,
+  }));
+
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
       t: (

@@ -41,6 +41,7 @@ const makeProvider = (
 let providerType: ProviderType = 'copilot';
 let copilotTimeoutMs: number | null = 2_700_000;
 let providerConfigsOverride: ReturnType<typeof makeProvider>[] | null = null;
+let settingsSearchQuery = '';
 let importCounter = 0;
 
 const click = (element: Element) => {
@@ -77,6 +78,8 @@ const loadProvidersSettings = async () => {
 
   mock.module('../../../../stores/useProviderStore', () => ({
     isLinkedProviderType: (value: string) => value === 'copilot' || value === 'chatgpt',
+    providerHasCredentials: (provider: { isEnabled: boolean; isLocal: boolean; apiKey?: string; hasStoredApiKey: boolean }) =>
+      provider.isEnabled && (provider.isLocal || !!provider.apiKey || provider.hasStoredApiKey),
     providerHasAuthSession: (provider: { authStatus?: string }) =>
       provider.authStatus === 'connected',
     useProviderStore: () => ({
@@ -178,6 +181,19 @@ const loadProvidersSettings = async () => {
       values.filter(Boolean).join(' '),
   }));
 
+  mock.module('../../search/SettingsSearch', () => ({
+    useSettingsSearch: () => ({
+      query: settingsSearchQuery,
+      setQuery: () => undefined,
+      matches: (...values: Array<string | false | null | undefined>) => {
+        const query = settingsSearchQuery.toLowerCase();
+        return !query || values.filter(Boolean).join(' ').toLowerCase().includes(query);
+      },
+    }),
+    SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
+    SettingsSearchEmpty: () => <div>No matching settings</div>,
+  }));
+
   importCounter += 1;
   return import(`./ProvidersSettings.tsx?test=${importCounter}`);
 };
@@ -193,6 +209,7 @@ describe('ProvidersSettings Copilot timeout', () => {
     providerType = 'copilot';
     copilotTimeoutMs = 2_700_000;
     providerConfigsOverride = null;
+    settingsSearchQuery = '';
     container = document.createElement('div');
     document.body.appendChild(container);
   });
@@ -263,7 +280,7 @@ describe('ProvidersSettings Copilot timeout', () => {
     expect(container!.textContent).not.toContain('Copilot response timeout');
   });
 
-  it('shows configured providers first and gives search and add matching visual weight', async () => {
+  it('shows configured providers first and keeps the add action', async () => {
     providerConfigsOverride = [
       makeProvider('openai', {
         id: 'needs-key',
@@ -290,18 +307,25 @@ describe('ProvidersSettings Copilot timeout', () => {
     );
     expect(text.indexOf('Ready provider')).toBeLessThan(text.indexOf('Needs a key'));
 
-    const search = container!.querySelector(
-      'input[aria-label="Search providers..."]'
-    ) as HTMLInputElement;
-    const addButton = Array.from(container!.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Add Provider'
-    );
-    expect(search.className).toContain('h-10');
-    expect(addButton?.className).toContain('h-10');
+    const addButton = container!.querySelector<HTMLButtonElement>('button[aria-label="Add Provider"]');
+    expect(addButton?.className).toContain('h-9');
+    expect(addButton?.className).toContain('w-9');
+    expect(container!.querySelector('input[aria-label="Search providers..."]')).toBeNull();
+  });
+
+  it('filters providers with the shared page search', async () => {
+    providerConfigsOverride = [
+      makeProvider('openai', { id: 'needs-key', name: 'Needs a key' }),
+      makeProvider('openai', { id: 'ready', name: 'Ready provider', hasStoredApiKey: true }),
+    ];
+    settingsSearchQuery = 'needs';
+    const { ProvidersSettings } = await loadProvidersSettings();
 
     await act(async () => {
-      setInputValue(search, 'Needs');
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
     });
+
     expect(container!.textContent).not.toContain('Configured providers');
     expect(container!.textContent).toContain('Providers to configure');
     expect(container!.textContent).not.toContain('Ready provider');

@@ -11,6 +11,7 @@ import {
 } from '../../../services/preferences';
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
+import { SettingsSectionHeader } from '../SettingsSectionHeader';
 
 type CommitPromptKey = typeof PREF_KEYS.SMART_COMMIT_PROMPT;
 type PromptEditorKey = PromptPreferenceKey | CommitPromptKey;
@@ -85,7 +86,6 @@ export const PromptsView: React.FC = () => {
       PROMPT_EDITOR_KEYS.some((key) => prompts[key] !== getDefaultPromptValue(key)),
     [prompts]
   );
-
   const handlePromptChange = (key: PromptEditorKey, value: string) => {
     promptsTouchedRef.current = true;
     setPrompts((current) => ({
@@ -161,53 +161,48 @@ export const PromptsView: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 pb-10">
-      <div className="flex items-center justify-between gap-4 mb-4">
-        <div>
-          <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-            System Prompts
-          </h4>
-          <p className="text-xs text-muted-foreground mt-1">
-            Customize the base mode prompts and the internal profile prompts used
-            during plan, review, and repo-audit flows.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleRestoreAll}
-            disabled={!hasAnyModifiedPrompt}
-            className={cn(
-              'px-3 py-1.5 text-xs font-medium transition-colors rounded-md',
-              hasAnyModifiedPrompt
-                ? 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                : 'text-muted-foreground/60 cursor-not-allowed'
-            )}
-          >
-            Restore All
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={isSaving}
-            className={cn(
-              'px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-2',
-              saveSuccess
-                ? 'bg-emerald-500/20 text-emerald-500'
-                : 'bg-primary text-primary-foreground hover:bg-primary/90'
-            )}
-          >
-            {isSaving ? (
-              <Icon name="loader" size={14} className="animate-spin" />
-            ) : saveSuccess ? (
-              <Icon name="check" size={14} />
-            ) : (
-              <Icon name="edit" size={14} />
-            )}
-            {saveSuccess ? 'Saved' : 'Save Changes'}
-          </button>
-        </div>
-      </div>
+      <SettingsSectionHeader
+        className="mb-4"
+        title="System Prompts"
+        description="Customize the base mode prompts and the internal profile prompts used during plan, review, and repo-audit flows."
+        action={
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRestoreAll}
+              disabled={!hasAnyModifiedPrompt}
+              className={cn(
+                'px-3 py-1.5 text-xs font-medium transition-colors rounded-md',
+                hasAnyModifiedPrompt
+                  ? 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                  : 'text-muted-foreground/60 cursor-not-allowed'
+              )}
+            >
+              Restore All
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSaving}
+              className={cn(
+                'px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-2',
+                saveSuccess
+                  ? 'bg-emerald-500/20 text-emerald-500'
+                  : 'bg-primary text-primary-foreground hover:bg-primary/90'
+              )}
+            >
+              {isSaving ? (
+                <Icon name="loader" size={14} className="animate-spin" />
+              ) : saveSuccess ? (
+                <Icon name="check" size={14} />
+              ) : (
+                <Icon name="edit" size={14} />
+              )}
+              {saveSuccess ? 'Saved' : 'Save Changes'}
+            </button>
+          </div>
+        }
+      />
 
       <div className="space-y-6 bg-card/40 p-5 rounded-xl border border-border/50">
         {PROMPT_EDITOR_DEFINITIONS.map((definition, index) => (

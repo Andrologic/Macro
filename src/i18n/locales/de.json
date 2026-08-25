@@ -26,7 +26,8 @@
       "activeProvider": "Aktiver Anbieter", "noProvider": "Kein Anbieter", "language": "Sprache", "autoLanguage": "Automatisch",
       "maxDuration": "Maximale Aufnahmedauer", "enhancementTitle": "Intelligente Transkriptbereinigung", "enhancementDescription": "Verwenden Sie das aktive Unterhaltungsmodell für eine kurze, vorsichtige Korrektur von Erkennungsfehlern, Zögern und Wiederholungen.",
       "noProviderPrivacy": "Wählen Sie einen Anbieter aus, um zu sehen, wohin die Aufnahme gesendet wird.", "localPrivacy": "Lokaler oder schlüsselloser Anbieter: Audio wird ohne erforderlichen API-Schlüssel an den konfigurierten Endpunkt gesendet.",
-      "andrologicPrivacy": "Andrologic: Audio wird vom authentifizierten Macro-Gateway verarbeitet und niemals gespeichert. Der transkribierte Text wird in Betriebsprotokollen erfasst.",
+      "andrologicPrivacy": "Andrologic verarbeitet Audio über das authentifizierte Macro-Gateway und speichert es nicht. Transkripte werden in Betriebsprotokollen erfasst.",
+      "durationUnit": "Sekunden",
       "remotePrivacy": "Remote-Anbieter: Die Aufnahme wird an den konfigurierten Endpunkt gesendet.", "providers": "Sprachanbieter",
       "compatibility": "Unterstützt OpenAI-kompatible und Deepgram-Transkriptionsendpunkte.", "addProvider": "Anbieter hinzufügen",
       "keyStored": "API-Schlüssel lokal gespeichert", "managedAuth": "Authentifizierung wird von Macro verwaltet", "noKeyRequired": "Kein API-Schlüssel erforderlich", "keyMissing": "API-Schlüssel erforderlich",
@@ -576,11 +577,6 @@
       "previewUnavailable": "Vorschau nicht verfügbar",
       "removeFromContext": "Aus dem Kontext entfernen",
       "toolsUnavailableWarning": "Für den aktuell ausgewählten Anbieter oder das aktuell ausgewählte Modell sind keine Tools verfügbar. Wählen Sie ein Modell mit nativer Tool-Call-Unterstützung aus, um diese zu aktivieren.",
-      "agentWorkspace": "Agent-Arbeitsbereich",
-      "noAgentWorkspace": "Kein Arbeitsbereich",
-      "agentWorkspaceDescription": "Dieser Arbeitsbereich liefert Projektkontext. Er schränkt das allgemeine Terminal nicht ein.",
-      "noAgentWorkspaceDescription": "Kein Projektarbeitsbereich ist verknüpft. Das allgemeine Terminal bleibt verfügbar, wenn es aktiviert ist.",
-      "workspaceUpdateFailed": "Der Arbeitsbereich des Agenten konnte nicht geändert werden",
       "builtInTools": "Integrierte Tools",
       "noToolsEnabled": "Keine Tools aktiviert",
       "mcpServers": "MCP-Server",
@@ -756,6 +752,9 @@
     }
   },
   "skills": {
+    "collectionTitle": "Skills",
+    "collectionDescription": "Gefundene Skills verwalten",
+    "empty": "Keine Skills gefunden",
     "importDialogTitle": "Skill-Ordner auswählen",
     "importFailed": "Skill konnte nicht importiert werden",
     "imported": "Skill importiert",
@@ -843,6 +842,7 @@
     "moreDiagnostics": "+{{count}} weitere Diagnosen"
   },
   "settings": {
+    "searchNoResults": "Keine passenden Einstellungen",
     "title": "Einstellungen",
     "general": "Allgemein",
     "appearance": "Aussehen",
@@ -853,6 +853,8 @@
     "architect": "Git-Workflow",
     "shortcuts": "Verknüpfungen",
     "desc": {
+      "skills": "Wiederverwendbare Agent-Skills und ihre Quellen verwalten",
+      "prompts": "Von Macro verwendete System-Prompts anpassen",
       "general": "Konfigurieren Sie Sprach-, Anwendungs- und Freigabeeinstellungen",
       "appearance": "Passen Sie das Erscheinungsbild der Anwendung an",
       "ai": "Verwalten Sie KI-Modelle, Anbieter und API-Schlüssel",
@@ -1626,6 +1628,9 @@
     "totalChanges": "totale Veränderungen"
   },
   "providers": {
+    "collectionTitle": "Anbieter",
+    "collectionDescription": "Konfigurierte Verbindungen verwalten",
+    "emptyDescription": "Fügen Sie einen Anbieter hinzu, um Macro mit einem KI-Dienst zu verbinden.",
     "macroAi": {
       "included": "KI in der Macro-Beta enthalten",
       "dropdownNotice": "KI in der Beta enthalten"
@@ -1734,6 +1739,10 @@
     }
   },
   "tools": {
+    "builtInToolsDescription": "Steuern, welche Tools Modelle verwenden können",
+    "mcpServersDescription": "Externe Tool-Verbindungen verwalten",
+    "searchBuiltInTools": "Tools suchen...",
+    "searchMcpServers": "MCP-Server suchen...",
     "title": "Tools-Konfiguration",
     "subtitle": "Verwalten Sie verfügbare Funktionen und MCP-Server",
     "addServer": "Server hinzufügen",
@@ -1968,6 +1977,9 @@
     }
   },
   "models": {
+    "collectionTitle": "Modelle",
+    "collectionDescription": "Modelle nach Anbieter verwalten",
+    "searchPlaceholder": "Modelle suchen...",
     "noProviders": "Es sind noch keine Provider konfiguriert. Füge zuerst einen Provider hinzu.",
     "total": "insgesamt",
     "enabled": "aktiviert",
@@ -2055,6 +2067,8 @@
     "learnedContextLimitResetFailed": "Gelernter Kontextgrenzwert konnte nicht zurückgesetzt werden"
   },
   "shortcuts": {
+    "collectionTitle": "Tastenkürzel",
+    "collectionDescription": "Tastenkürzel finden und anpassen",
     "categories": {
       "app": "Bewerbung",
       "mode": "Modi",

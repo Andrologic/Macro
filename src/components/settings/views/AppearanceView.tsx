@@ -5,6 +5,7 @@ import { ThemeManifest, ThemeManifestItem, Theme } from '../../../types/theme'; 
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 import { ThemePreview } from './ThemePreview';
+import { SettingsSectionHeader } from '../SettingsSectionHeader';
 
 interface LoadedTheme extends ThemeManifestItem {
     colors?: Theme['colors'];
@@ -60,9 +61,7 @@ export const AppearanceView: React.FC = () => {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
       <section className="space-y-4">
-        <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-          {t('settings.zoom') || 'Zoom'}
-        </h4>
+        <SettingsSectionHeader title={t('settings.zoom') || 'Zoom'} />
 
         <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
           <div className="flex flex-wrap items-center gap-2">
@@ -127,9 +126,7 @@ export const AppearanceView: React.FC = () => {
       </section>
 
       <section className="space-y-4">
-        <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-          {t('settings.codeOverflow') || 'Code overflow'}
-        </h4>
+        <SettingsSectionHeader title={t('settings.codeOverflow') || 'Code overflow'} />
 
         <div className="space-y-4 rounded-xl border border-border/50 bg-card/40 p-4">
           <p className="text-sm text-muted-foreground">
@@ -163,10 +160,8 @@ export const AppearanceView: React.FC = () => {
         </div>
       </section>
 
-      <section>
-        <h4 className="text-sm font-medium text-primary uppercase tracking-wider mb-4">
-          {t('settings.theme') || 'Theme'}
-        </h4>
+      <section className="space-y-4">
+        <SettingsSectionHeader title={t('settings.theme') || 'Theme'} />
         
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
           {themes.map((theme) => ( 

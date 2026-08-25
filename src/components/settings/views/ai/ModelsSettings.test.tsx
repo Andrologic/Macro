@@ -12,6 +12,7 @@ let loadMetadataModelConfigMock: ReturnType<typeof mock>;
 let saveMetadataModelConfigMock: ReturnType<typeof mock>;
 let addManualModelMock: ReturnType<typeof mock>;
 let updateManualModelMock: ReturnType<typeof mock>;
+let settingsSearchQuery: string;
 const translate = (_key: string, fallback?: string) => fallback ?? _key;
 
 const provider = (id: string, overrides: Partial<ProviderConfig> = {}): ProviderConfig => ({
@@ -135,6 +136,19 @@ const loadModelsSettings = async () => {
     cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
   }));
 
+  mock.module('../../search/SettingsSearch', () => ({
+    useSettingsSearch: () => ({
+      query: settingsSearchQuery,
+      setQuery: () => undefined,
+      matches: (...values: Array<string | false | null | undefined>) => {
+        const query = settingsSearchQuery.toLowerCase();
+        return !query || values.filter(Boolean).join(' ').toLowerCase().includes(query);
+      },
+    }),
+    SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
+    SettingsSearchEmpty: () => <div>No matching settings</div>,
+  }));
+
   importCounter += 1;
   return import(`./ModelsSettings.tsx?test=${importCounter}`);
 };
@@ -181,6 +195,7 @@ describe('ModelsSettings metadata model config', () => {
     addManualModelMock = mock(async () => undefined);
     updateManualModelMock = mock(async () => undefined);
     window.localStorage.clear();
+    settingsSearchQuery = '';
     container = document.createElement('div');
     document.body.appendChild(container);
   });
@@ -456,5 +471,39 @@ describe('ModelsSettings metadata model config', () => {
       'vendor-max',
     ]);
     expect(container!.textContent).toContain('vendor-max');
+  });
+
+  it('filters providers and models with the shared page search', async () => {
+    modelsByProvider = {
+      'provider-a': [model('provider-a', 'alpha-model', { name: 'Alpha Model' })],
+      'provider-b': [model('provider-b', 'beta-model', { name: 'Beta Model' })],
+    };
+    settingsSearchQuery = 'beta-model';
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    expect(container!.textContent).toContain('Provider B');
+    expect(container!.textContent).toContain('Beta Model');
+    expect(container!.textContent).not.toContain('Provider A');
+    expect(container!.textContent).toContain('Metadata generation');
+  });
+
+  it('shows the shared empty state when nothing matches', async () => {
+    settingsSearchQuery = 'no-such-setting';
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    expect(container!.textContent).toContain('No matching settings');
+    expect(container!.textContent).toContain('Metadata generation');
   });
 });

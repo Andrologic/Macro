@@ -16,6 +16,7 @@ import { PromptsView } from './views/PromptsView';
 import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
 import { useAppVersion } from '../../hooks/useAppVersion';
 import { Dialog } from '../ui/Dialog';
+import { SettingsSearchProvider } from './search/SettingsSearch';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -64,10 +65,7 @@ export const SettingsModal: React.FC = () => {
         {/* Sidebar */}
         <div className="flex max-h-56 w-full shrink-0 flex-col border-b border-border bg-card/50 md:max-h-none md:w-64 md:border-b-0 md:border-r">
           <div className="p-4 md:p-6">
-            <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
-              <div className="p-1.5 rounded-md bg-primary/20 text-primary">
-                <Icon name="settings" size={18} />
-              </div>
+            <h2 className="text-2xl font-bold tracking-tight text-foreground">
               {t('settings.title') || 'Settings'}
             </h2>
           </div>
@@ -100,42 +98,44 @@ export const SettingsModal: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 flex flex-col bg-background/50 min-h-0">
-          <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30">
-            <div>
-              <h3 className="text-lg font-semibold text-foreground">
-                {tabs.find(t => t.id === activeSettingsTab)?.label}
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                {activeTabDescription}
-              </p>
-            </div>
-            <button
-              type="button"
-              aria-label={t('common.close', 'Close')}
-              onClick={closeSettings}
-              className="p-2 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
-            >
-              <Icon name="x" size={20} />
-            </button>
-          </header>
+        <SettingsSearchProvider key={activeSettingsTab}>
+          <div className="flex-1 flex flex-col bg-background/50 min-h-0">
+            <header className="min-h-16 border-b border-border flex items-center justify-between px-4 md:px-8 py-3 md:py-0 bg-card/30">
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">
+                  {tabs.find(t => t.id === activeSettingsTab)?.label}
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  {activeTabDescription}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label={t('common.close', 'Close')}
+                onClick={closeSettings}
+                className="p-2 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
+              >
+                <Icon name="x" size={20} />
+              </button>
+            </header>
 
-          <div className="flex-1 overflow-y-auto p-4 md:p-8">
-            <div className="max-w-3xl mx-auto animate-fade-in">
-              {activeSettingsTab === 'general' && <GeneralView />}
-              {activeSettingsTab === 'notifications' && <NotificationsView />}
-              {activeSettingsTab === 'appearance' && <AppearanceView />}
-              {activeSettingsTab === 'providers' && <ProvidersSettings />}
-              {activeSettingsTab === 'models' && <ModelsSettings />}
-              {activeSettingsTab === 'speech' && <SpeechSettings />}
-              {activeSettingsTab === 'tools' && <ToolsView />}
-              {activeSettingsTab === 'skills' && <SkillsView />}
-              {activeSettingsTab === 'prompts' && <PromptsView />}
-              {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
-              {activeSettingsTab === 'shortcuts' && <ShortcutsView />}
+            <div className="flex-1 overflow-y-auto p-4 md:p-8">
+              <div className="max-w-3xl mx-auto animate-fade-in">
+                {activeSettingsTab === 'general' && <GeneralView />}
+                {activeSettingsTab === 'notifications' && <NotificationsView />}
+                {activeSettingsTab === 'appearance' && <AppearanceView />}
+                {activeSettingsTab === 'providers' && <ProvidersSettings />}
+                {activeSettingsTab === 'models' && <ModelsSettings />}
+                {activeSettingsTab === 'speech' && <SpeechSettings />}
+                {activeSettingsTab === 'tools' && <ToolsView />}
+                {activeSettingsTab === 'skills' && <SkillsView />}
+                {activeSettingsTab === 'prompts' && <PromptsView />}
+                {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
+                {activeSettingsTab === 'shortcuts' && <ShortcutsView />}
+              </div>
             </div>
           </div>
-        </div>
+        </SettingsSearchProvider>
       </div>
     </Dialog>
   );
