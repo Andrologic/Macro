@@ -42,6 +42,7 @@ let unvalidateArtifactMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
 let metadataModelConfigForTest: MetadataModelConfig | null = { mode: 'conversation' };
+const readMetadataModelConfigForTest = (): MetadataModelConfig | null => metadataModelConfigForTest;
 const metadataModelConfigListeners = new Set<(value: MetadataModelConfig | null) => void>();
 const hadInitialBackendTransport = Object.prototype.hasOwnProperty.call(
   process.env,
@@ -1425,7 +1426,7 @@ describe('FileChangesPanel', () => {
     });
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
-    expect(metadataModelConfigForTest).toEqual({
+    expect(readMetadataModelConfigForTest()).toEqual({
       mode: 'conversation',
     });
   });
