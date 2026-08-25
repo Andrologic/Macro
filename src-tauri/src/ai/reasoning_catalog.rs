@@ -1,5 +1,6 @@
 use regex::Regex;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -28,15 +29,69 @@ static REASONING_CATALOG: LazyLock<ReasoningCatalogFile> = LazyLock::new(|| {
         .expect("reasoning catalog must be valid JSON")
 });
 
-static VALID_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+static CANONICAL_EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+fn is_safe_effort(effort: &str) -> bool {
+    let mut chars = effort.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    effort.len() <= 64
+        && first.is_ascii_alphanumeric()
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
 
 fn normalize_efforts(efforts: Option<&[String]>) -> Vec<String> {
-    efforts
+    let mut seen = HashSet::new();
+    let mut normalized = efforts
         .into_iter()
         .flatten()
-        .filter(|effort| VALID_EFFORTS.contains(&effort.as_str()))
+        .filter(|effort| is_safe_effort(effort) && seen.insert((*effort).clone()))
         .cloned()
-        .collect()
+        .enumerate()
+        .collect::<Vec<_>>();
+    normalized.sort_by_key(|(input_index, effort)| {
+        (
+            CANONICAL_EFFORTS
+                .iter()
+                .position(|known| known == effort)
+                .unwrap_or(CANONICAL_EFFORTS.len()),
+            *input_index,
+        )
+    });
+    normalized.into_iter().map(|(_, effort)| effort).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_efforts, resolve_reasoning_capability};
+
+    #[test]
+    fn preserves_max_and_safe_provider_defined_efforts() {
+        let efforts = vec![
+            "provider_custom".to_string(),
+            "max".to_string(),
+            "low".to_string(),
+            "invalid effort".to_string(),
+        ];
+        assert_eq!(
+            normalize_efforts(Some(&efforts)),
+            vec!["low", "max", "provider_custom"]
+        );
+    }
+
+    #[test]
+    fn resolves_current_gpt_5_6_catalog_entry() {
+        let capability =
+            resolve_reasoning_capability(Some("openai"), Some("gpt-5.6"), None, None, None);
+        assert!(capability.reasoning_efforts.contains(&"max".to_string()));
+        assert_eq!(
+            capability.default_reasoning_effort.as_deref(),
+            Some("medium")
+        );
+    }
 }
 
 fn first_valid_effort(preferred: Option<&str>, efforts: &[String]) -> Option<String> {

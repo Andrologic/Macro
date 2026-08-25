@@ -1,5 +1,5 @@
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import type { ModelContextLimitSource } from '../types';
+import type { ModelContextLimitSource, ReasoningTransportMode } from '../types';
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
 export const MODEL_CONTEXT_CATALOG_TTL_MS = 5 * 60 * 1000;
@@ -14,6 +14,13 @@ export interface CatalogModelLimits {
   updatedAt: string;
 }
 
+export interface CatalogReasoningCapability {
+  reasoningEfforts: string[];
+  defaultReasoningEffort: string | null;
+  configurable: boolean;
+  transportMode?: ReasoningTransportMode;
+}
+
 export interface ModelContextCatalogStatus {
   lastFetchedAt: string | null;
   source: 'cache' | 'network' | 'snapshot';
@@ -23,6 +30,7 @@ export interface ModelContextCatalogStatus {
 
 interface ModelsDevModel {
   id?: unknown;
+  reasoning?: unknown;
   limit?: {
     context?: unknown;
     input?: unknown;
@@ -48,7 +56,11 @@ const SNAPSHOT_PROVIDERS: Record<string, ModelsDevProvider> = {
     models: {
       'gpt-4o': { id: 'gpt-4o', limit: { context: 128_000, output: 16_384 } },
       'gpt-4.1': { id: 'gpt-4.1', limit: { context: 1_047_576, output: 32_768 } },
-      'gpt-5': { id: 'gpt-5', limit: { context: 400_000, output: 128_000 } },
+      'gpt-5': {
+        id: 'gpt-5',
+        reasoning: { efforts: ['minimal', 'low', 'medium', 'high'], default: 'medium' },
+        limit: { context: 400_000, output: 128_000 },
+      },
     },
   },
   anthropic: {
@@ -126,6 +138,25 @@ const toPositiveInteger = (value: unknown): number | undefined =>
 
 const normalize = (value?: string | null): string =>
   (value || '').trim().toLowerCase();
+
+const toStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && !seen.has(entry) && seen.add(entry));
+};
+
+const toTransportMode = (value: unknown): ReasoningTransportMode | undefined => {
+  if (
+    value === 'openai_effort' ||
+    value === 'openrouter_reasoning' ||
+    value === 'deepseek_thinking' ||
+    value === 'kimi_fixed'
+  ) return value;
+  return undefined;
+};
 
 const normalizeBaseUrl = (value?: string | null): string =>
   normalize(value).replace(/\/+$/, '');
@@ -238,6 +269,34 @@ const limitFromModel = (
   };
 };
 
+const reasoningFromModel = (
+  model: ModelsDevModel | undefined,
+): CatalogReasoningCapability | null => {
+  const reasoning = model?.reasoning;
+  if (!reasoning || typeof reasoning !== 'object' || Array.isArray(reasoning)) return null;
+  const metadata = reasoning as Record<string, unknown>;
+  const reasoningEfforts = toStringArray(
+    metadata.efforts ?? metadata.levels ?? metadata.supported_efforts,
+  );
+  if (reasoningEfforts.length === 0) return null;
+  const requestedDefault =
+    typeof metadata.default === 'string'
+      ? metadata.default.trim()
+      : typeof metadata.default_effort === 'string'
+        ? metadata.default_effort.trim()
+        : '';
+  return {
+    reasoningEfforts,
+    defaultReasoningEffort: reasoningEfforts.includes(requestedDefault)
+      ? requestedDefault
+      : reasoningEfforts[0] ?? null,
+    configurable: typeof metadata.configurable === 'boolean'
+      ? metadata.configurable
+      : reasoningEfforts.length > 1,
+    transportMode: toTransportMode(metadata.transport_mode ?? metadata.transportMode),
+  };
+};
+
 export const lookupModelContextCatalogLimit = (params: {
   providerType?: string | null;
   providerId?: string | null;
@@ -267,6 +326,37 @@ export const lookupModelContextCatalogLimit = (params: {
     }
   }
 
+  return null;
+};
+
+export const lookupModelReasoningCatalogCapability = (params: {
+  providerType?: string | null;
+  providerId?: string | null;
+  baseUrl?: string | null;
+  modelId?: string | null;
+}): CatalogReasoningCapability | null => {
+  const catalogs = [readCachedCatalog(), getSnapshotCatalog()].filter(
+    (catalog): catalog is CachedCatalog => Boolean(catalog),
+  );
+  const providerAliases = getProviderAliases(params);
+  const modelCandidates = getModelCandidates(params.modelId);
+
+  for (const catalog of catalogs) {
+    for (const providerAlias of providerAliases) {
+      const provider = providerFromCatalog(catalog, providerAlias);
+      if (!provider?.models) continue;
+      const indexedModels = new Map(
+        Object.entries(provider.models).map(([key, model]) => [
+          normalize((model.id as string | undefined) ?? key),
+          model,
+        ]),
+      );
+      for (const candidate of modelCandidates) {
+        const capability = reasoningFromModel(indexedModels.get(candidate));
+        if (capability) return capability;
+      }
+    }
+  }
   return null;
 };
 

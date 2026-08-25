@@ -166,6 +166,34 @@ describe('scoped turn configuration', () => {
     });
   });
 
+  it('preserves safe provider-defined reasoning efforts', () => {
+    const input = snapshot({
+      agents: {
+        models: {
+          chat: {
+            providerId: 'provider',
+            modelId: 'future-model',
+            reasoningEffort: 'provider_custom',
+          },
+          architect: {
+            providerId: 'provider',
+            modelId: 'gpt-5.6',
+            reasoningEffort: 'max',
+          },
+        },
+      },
+      tools: { modes: {} },
+    });
+
+    const config = resolveScopedTurnConfiguration(input, {
+      projectIds: [],
+      focusProjectId: null,
+      mode: 'Chat',
+    });
+    expect(config.models.chat.reasoningEffort).toBe('provider_custom');
+    expect(config.models.architect.reasoningEffort).toBe('max');
+  });
+
   it('uses the effective focused-project MCP servers and keeps global disables restrictive', () => {
     const input = snapshot({
       agents: {},

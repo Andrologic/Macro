@@ -11,23 +11,11 @@ import {
   parseUserQuestionnaireResponseState,
 } from "./chatQuestionnaires";
 import { parseToolTracesJson } from "./toolTraceState";
-
-const REASONING_EFFORT_VALUES = new Set<ReasoningEffort>([
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
+import { normalizeReasoningEffortValue } from "./reasoningCatalog";
 
 export const normalizeReasoningEffort = (
   value: unknown,
-): ReasoningEffort | null =>
-  typeof value === "string" &&
-  REASONING_EFFORT_VALUES.has(value as ReasoningEffort)
-    ? (value as ReasoningEffort)
-    : null;
+): ReasoningEffort | null => normalizeReasoningEffortValue(value);
 
 export const mapDbConversationToConversation = (
   conversation: DbConversation,

@@ -8,9 +8,11 @@ describe('reasoningCatalog', () => {
         providerType: 'openai',
         modelId: 'gpt-5.4-pro',
       })
-    ).toEqual({
+    ).toMatchObject({
       reasoningEfforts: ['medium', 'high', 'xhigh'],
       defaultReasoningEffort: 'high',
+      transportMode: 'openai_effort',
+      source: 'embedded_catalog',
     });
   });
 
@@ -20,7 +22,7 @@ describe('reasoningCatalog', () => {
         providerType: 'chatgpt',
         modelId: 'gpt-5.4-mini',
       })
-    ).toEqual({
+    ).toMatchObject({
       reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
       defaultReasoningEffort: 'medium',
     });
@@ -30,7 +32,7 @@ describe('reasoningCatalog', () => {
         providerType: 'chatgpt',
         modelId: 'gpt-5.3-codex',
       })
-    ).toEqual({
+    ).toMatchObject({
       reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
       defaultReasoningEffort: 'medium',
     });
@@ -54,7 +56,7 @@ describe('reasoningCatalog', () => {
     ).toEqual(['minimal', 'low', 'medium', 'high']);
   });
 
-  it('keeps only valid direct provider effort metadata', () => {
+  it('preserves provider-defined effort values', () => {
     const capability = getReasoningCapabilityForModel({
       providerType: 'copilot',
       modelId: 'gpt-5',
@@ -62,7 +64,66 @@ describe('reasoningCatalog', () => {
       defaultReasoningEffort: 'medium',
     });
 
-    expect(capability.reasoningEfforts).toEqual(['low', 'medium']);
-    expect(getValidReasoningEffort(capability, 'bogus')).toBe('medium');
+    expect(capability.reasoningEfforts).toEqual(['low', 'medium', 'bogus']);
+    expect(getValidReasoningEffort(capability, 'bogus')).toBe('bogus');
+    expect(capability.source).toBe('provider_metadata');
+  });
+
+  it('orders canonical efforts before custom values without dropping either', () => {
+    const capability = getReasoningCapabilityForModel({
+      providerType: 'copilot',
+      modelId: 'future-model',
+      supportedReasoningEfforts: ['turbo', 'max', 'low', 'turbo', 'xhigh'],
+      defaultReasoningEffort: 'turbo',
+    });
+
+    expect(capability.reasoningEfforts).toEqual(['low', 'xhigh', 'max', 'turbo']);
+    expect(capability.defaultReasoningEffort).toBe('turbo');
+  });
+
+  it('gives a manual override priority over provider and catalog metadata', () => {
+    const capability = getReasoningCapabilityForModel({
+      providerType: 'openai',
+      modelId: 'gpt-5',
+      manualReasoningEfforts: ['high', 'custom'],
+      manualDefaultReasoningEffort: 'custom',
+      supportedReasoningEfforts: ['low', 'medium'],
+      defaultReasoningEffort: 'medium',
+    });
+
+    expect(capability).toMatchObject({
+      reasoningEfforts: ['high', 'custom'],
+      defaultReasoningEffort: 'custom',
+      configurable: true,
+      source: 'manual_override',
+    });
+  });
+
+  it('keeps a single manually configured effort selectable', () => {
+    expect(
+      getReasoningCapabilityForModel({
+        providerType: 'openai',
+        modelId: 'private-reasoner',
+        manualReasoningEfforts: ['high'],
+        manualDefaultReasoningEffort: 'high',
+      }),
+    ).toMatchObject({
+      reasoningEfforts: ['high'],
+      defaultReasoningEffort: 'high',
+      configurable: true,
+      source: 'manual_override',
+    });
+  });
+
+  it('supports current GPT-5.6 max reasoning', () => {
+    expect(
+      getReasoningCapabilityForModel({
+        providerType: 'openai',
+        modelId: 'gpt-5.6',
+      }),
+    ).toMatchObject({
+      reasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+      defaultReasoningEffort: 'medium',
+    });
   });
 });

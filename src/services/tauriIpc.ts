@@ -3367,11 +3367,16 @@ export async function registerManualModel(params: {
   providerId: string;
   modelId: string;
   name: string;
+  reasoning?: {
+    reasoningEfforts: string[];
+    defaultReasoningEffort: string | null;
+  } | null;
 }): Promise<DbAiModel[]> {
   return invoke<DbAiModel[]>("db_register_manual_model", {
     providerId: params.providerId,
     modelId: params.modelId,
     name: params.name,
+    reasoning: params.reasoning ?? null,
   });
 }
 
@@ -3380,12 +3385,17 @@ export async function updateManualModel(params: {
   currentModelId: string;
   nextModelId: string;
   name: string;
+  reasoning?: {
+    reasoningEfforts: string[];
+    defaultReasoningEffort: string | null;
+  } | null;
 }): Promise<DbAiModel[]> {
   return invoke<DbAiModel[]>("db_update_manual_model", {
     providerId: params.providerId,
     currentModelId: params.currentModelId,
     nextModelId: params.nextModelId,
     name: params.name,
+    reasoning: params.reasoning ?? null,
   });
 }
 
