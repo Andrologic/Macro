@@ -13,6 +13,7 @@ export type ShortcutId =
   | 'ai.cycleModel'
   | 'chat.stopStreaming'
   | 'chat.focusInput'
+  | 'chat.secondarySend'
   | 'chat.historyPrevious'
   | 'chat.historyNext';
 
@@ -110,6 +111,14 @@ export const shortcutDefinitions: ShortcutDefinition[] = [
     label: 'Focus chat input',
     description: 'Move cursor to chat composer',
     defaultBinding: 'Mod+/',
+  },
+  {
+    id: 'chat.secondarySend',
+    category: 'chat',
+    label: 'Secondary composer action',
+    description: 'Use the alternate action while a response is running',
+    defaultBinding: 'Mod+Enter',
+    allowInEditable: true,
   },
   {
     id: 'chat.historyPrevious',

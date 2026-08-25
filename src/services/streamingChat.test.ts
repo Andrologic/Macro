@@ -1452,6 +1452,56 @@ describe('streamingChat tool rendering helpers', () => {
     ]);
   });
 
+  it('continues the active turn when a steering message arrives before completion', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages?: Array<Record<string, unknown>> }> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+      const content = requestBodies.length === 1 ? 'Initial answer.' : 'Adjusted answer.';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    let pending = true;
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://example.com',
+      modelId: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'Start.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => { throw error; },
+      consumePendingSteers: () => {
+        if (!pending) return [];
+        pending = false;
+        return [{ role: 'user', content: 'Use the new direction.' }];
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestBodies[1]?.messages).toContainEqual({
+      role: 'user',
+      content: 'Use the new direction.',
+    });
+  });
+
   it('retries Kimi-compatible providers without thinking when the gateway rejects it', async () => {
     const encoder = new TextEncoder();
     const requestBodies: Array<Record<string, unknown>> = [];

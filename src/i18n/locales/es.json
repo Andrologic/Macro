@@ -443,6 +443,10 @@
     "deletingConversations": "Eliminando...",
     "typeMessage": "Escribe un mensaje, o / para añadir contexto...",
     "send": "enviar",
+    "steerActiveTurn": "Orientar el turno activo",
+    "queueNextTurn": "Añadir al siguiente turno",
+    "secondaryAction": "Acción alternativa",
+    "activeTurnSendFailed": "Mensaje no enviado",
     "stop": "Detener",
     "saveRegenerate": "Guardar y regenerar",
     "mermaidDiagram": "Diagrama de sirena",
@@ -2028,6 +2032,11 @@
     "recordingHint": "Presiona tu atajo ahora... (Esc para cancelar)",
     "promptHistoryBehavior": "Comportamiento del historial de prompts",
     "promptHistoryBehaviorDesc": "Utilice atajos dedicados (Ctrl/Cmd + Flecha arriba/Flecha abajo) en lugar de Flecha arriba/Flecha abajo contextuales.",
+    "activeTurnSendBehavior": "Acción predeterminada durante una respuesta",
+    "activeTurnSendBehaviorSteer": "Intro orienta el turno activo. El atajo secundario pone el mensaje en cola.",
+    "activeTurnSendBehaviorQueue": "Intro pone el mensaje en cola. El atajo secundario orienta el turno activo.",
+    "queue": "Cola",
+    "steer": "Orientar",
     "disabledInContextualMode": "Deshabilitado mientras el modo contextual ArrowUp/ArrowDown está activo.",
     "conflictWith": "Conflicto con",
     "recordShortcut": "Grabar acceso directo",
@@ -2095,6 +2104,10 @@
       "historyNext": {
         "label": "Prompt siguiente",
         "description": "Ve al prompt siguiente en el input del chat"
+      },
+      "secondarySend": {
+        "label": "Acción secundaria del compositor",
+        "description": "Usar la acción alternativa durante una respuesta"
       }
     }
   },
