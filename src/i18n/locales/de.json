@@ -1830,7 +1830,32 @@
       "identifierCollision": "Ein MCP-Server mit dieser Kennung ist bereits vorhanden.",
       "saveFailed": "Der MCP-Server konnte nicht gespeichert werden.",
       "deleteFailed": "Der MCP-Server konnte nicht gelöscht werden.",
-      "toggleFailed": "Der MCP-Server konnte nicht aktualisiert werden."
+      "toggleFailed": "Der MCP-Server konnte nicht aktualisiert werden.",
+      "transportHint": "Verwende stdio für lokale Server oder Streamable HTTP für ältere und zustandslose Remote-Server.",
+      "transport": { "stdio": "Lokales stdio", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://beispiel.de/mcp",
+      "headersPlaceholder": "Authorization=Bearer Token\nX-API-Key=Wert",
+      "protocol": { "auto": "Automatische Erkennung", "legacy": "Ältere Sitzung", "modern": "Modern und zustandslos" },
+      "oauth": {
+        "enable": "OAuth verwenden",
+        "scopes": "Durch Leerzeichen getrennte Bereiche",
+        "clientId": "Optionale vorregistrierte Client-ID",
+        "clientSecretStored": "Client-Secret gespeichert — zum Beibehalten leer lassen",
+        "clientSecret": "Optionales Client-Secret",
+        "clientMetadataUrl": "Optionale HTTPS-URL für Client-Metadaten",
+        "registrationHint": "Verwende entweder eine Client-ID oder eine URL für Client-Metadaten. Lasse beide nur leer, wenn der Server die dynamische Client-Registrierung unterstützt.",
+        "authorizeHint": "Diesen MCP-Server autorisieren",
+        "authorize": "Verbinden",
+        "logout": "OAuth-Autorisierung entfernen",
+        "clientIdentityConflict": "Verwende entweder eine OAuth-Client-ID oder eine URL für Client-Metadaten, nicht beides.",
+        "clientSecretNeedsId": "Ein OAuth-Client-Secret erfordert eine vorregistrierte Client-ID.",
+        "clientSecretSaveFailed": "OAuth-Secret konnte nicht gespeichert werden.",
+        "clientSecretCleanupFailed": "Das veraltete OAuth-Client-Secret konnte nicht entfernt werden.",
+        "authorized": "MCP-Server autorisiert und verbunden.",
+        "failed": "MCP-Autorisierung fehlgeschlagen.",
+        "loggedOut": "MCP-Autorisierung entfernt.",
+        "logoutFailed": "MCP-Autorisierung konnte nicht entfernt werden."
+      }
     }
   },
   "account": {

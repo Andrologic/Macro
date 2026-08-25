@@ -1829,7 +1829,32 @@
       "identifierCollision": "この識別子の MCP サーバーは既に存在します。",
       "saveFailed": "MCP サーバーを保存できませんでした。",
       "deleteFailed": "MCP サーバーを削除できませんでした。",
-      "toggleFailed": "MCP サーバーを更新できませんでした。"
+      "toggleFailed": "MCP サーバーを更新できませんでした。",
+      "transportHint": "ローカルサーバーには stdio、従来型およびステートレスのリモートサーバーには Streamable HTTP を使用します。",
+      "transport": { "stdio": "ローカル stdio", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://example.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
+      "protocol": { "auto": "自動検出", "legacy": "従来型セッション", "modern": "モダン・ステートレス" },
+      "oauth": {
+        "enable": "OAuth を使用",
+        "scopes": "スペース区切りのスコープ",
+        "clientId": "任意の事前登録済みクライアント ID",
+        "clientSecretStored": "クライアントシークレットは保存済みです。維持するには空欄のままにしてください",
+        "clientSecret": "任意のクライアントシークレット",
+        "clientMetadataUrl": "任意の HTTPS クライアントメタデータ URL",
+        "registrationHint": "クライアント ID またはクライアントメタデータ URL のいずれかを使用してください。サーバーが動的クライアント登録に対応している場合のみ、両方を空欄にできます。",
+        "authorizeHint": "この MCP サーバーを認証",
+        "authorize": "接続",
+        "logout": "OAuth 認証を削除",
+        "clientIdentityConflict": "OAuth クライアント ID またはクライアントメタデータ URL のいずれか一方を使用してください。",
+        "clientSecretNeedsId": "OAuth クライアントシークレットには事前登録済みクライアント ID が必要です。",
+        "clientSecretSaveFailed": "OAuth シークレットを保存できませんでした。",
+        "clientSecretCleanupFailed": "古い OAuth クライアントシークレットを削除できませんでした。",
+        "authorized": "MCP サーバーを認証して接続しました。",
+        "failed": "MCP 認証に失敗しました。",
+        "loggedOut": "MCP 認証を削除しました。",
+        "logoutFailed": "MCP 認証を削除できませんでした。"
+      }
     }
   },
   "account": {

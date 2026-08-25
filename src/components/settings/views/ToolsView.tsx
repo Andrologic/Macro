@@ -35,6 +35,10 @@ export const ToolsView: React.FC = () => {
     upsertMCPServer,
     removeMCPServer,
     refreshMCPServerTools,
+    authorizeMCPServer,
+    logoutMCPServer,
+    storeMCPOAuthClientSecret,
+    deleteMCPOAuthClientSecret,
     isToolEnabled,
   } = useToolsStore();
   const mode = useAppStore((state) => state.mode);
@@ -431,6 +435,10 @@ export const ToolsView: React.FC = () => {
             onUpsertServer={upsertMCPServer}
             onRemoveServer={removeMCPServer}
             onRefreshServerTools={refreshMCPServerTools}
+            onAuthorizeServer={authorizeMCPServer}
+            onLogoutServer={logoutMCPServer}
+            onStoreOAuthClientSecret={storeMCPOAuthClientSecret}
+            onDeleteOAuthClientSecret={deleteMCPOAuthClientSecret}
           />
         </TabsContent>
       </Tabs>

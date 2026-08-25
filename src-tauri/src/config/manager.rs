@@ -61,7 +61,7 @@ pub struct ConfigManager {
     root: Arc<PathBuf>,
     state: Arc<RwLock<ConfigState>>,
     document_locks: Arc<Mutex<BTreeMap<DocumentKey, Arc<Mutex<()>>>>>,
-    secret_reference_lock: Arc<Mutex<()>>,
+    mcp_runtime_authority: Arc<RwLock<()>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -136,7 +136,7 @@ impl ConfigManager {
             root: Arc::new(root),
             state: Arc::new(RwLock::new(ConfigState::default())),
             document_locks: Arc::new(Mutex::new(BTreeMap::new())),
-            secret_reference_lock: Arc::new(Mutex::new(())),
+            mcp_runtime_authority: Arc::new(RwLock::new(())),
         };
         manager.write_schemas()?;
 
@@ -150,8 +150,14 @@ impl ConfigManager {
         self.root.as_path()
     }
 
-    pub async fn lock_secret_references(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.secret_reference_lock.clone().lock_owned().await
+    pub async fn lock_secret_references(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.mcp_runtime_authority.clone().write_owned().await
+    }
+
+    pub(crate) async fn lock_mcp_runtime_configuration(
+        &self,
+    ) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.mcp_runtime_authority.clone().read_owned().await
     }
 
     pub async fn register_project_root(
@@ -679,7 +685,7 @@ impl ConfigManager {
             request.kind,
             ConfigDocumentKind::Providers | ConfigDocumentKind::Tools
         )
-        .then(|| self.secret_reference_lock.lock());
+        .then(|| self.mcp_runtime_authority.write());
         let _reference_guard = match _reference_guard {
             Some(guard) => Some(guard.await),
             None => None,
@@ -956,7 +962,7 @@ impl ConfigManager {
             kind,
             ConfigDocumentKind::Providers | ConfigDocumentKind::Tools
         )
-        .then(|| self.secret_reference_lock.lock());
+        .then(|| self.mcp_runtime_authority.write());
         let _reference_guard = match _reference_guard {
             Some(guard) => Some(guard.await),
             None => None,
@@ -1209,7 +1215,7 @@ impl ConfigManager {
     }
 
     pub async fn accept_pending_change(&self, id: &str) -> Result<ConfigDocument, ConfigApiError> {
-        let _reference_guard = self.secret_reference_lock.lock().await;
+        let _reference_guard = self.mcp_runtime_authority.write().await;
         let durable = self
             .state
             .read()
@@ -1311,7 +1317,7 @@ impl ConfigManager {
                 "Le refus doit confirmer explicitement la restauration de la dernière version approuvée.",
             ));
         }
-        let _reference_guard = self.secret_reference_lock.lock().await;
+        let _reference_guard = self.mcp_runtime_authority.write().await;
         let durable = self
             .state
             .read()

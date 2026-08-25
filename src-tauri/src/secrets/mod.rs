@@ -35,6 +35,10 @@ fn metadata_for_api_key(id: String) -> SecretMetadata {
     } else if let Some(rest) = id.strip_prefix("mcp-env:") {
         let reference_path = rest.replacen(':', "/", 1);
         ("mcp", format!("macro-secret://mcp-env/{reference_path}"))
+    } else if let Some(rest) = id.strip_prefix("mcp-oauth:") {
+        ("mcp", format!("macro-secret://mcp-oauth/{rest}"))
+    } else if let Some(rest) = id.strip_prefix("mcp-oauth-client:") {
+        ("mcp", format!("macro-secret://mcp-oauth-client/{rest}"))
     } else if let Some(rest) = id
         .strip_prefix("speech-provider:")
         .or_else(|| id.strip_prefix("speech:"))

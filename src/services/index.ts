@@ -155,6 +155,27 @@ export const services = {
     callProviderMethod('mcpDiscoverTools', server),
   mcpCallTool: (data: Parameters<ServiceProvider['mcpCallTool']>[0]) =>
     callProviderMethod('mcpCallTool', data),
+  mcpRuntimeGetSnapshot: () => callProviderMethod('mcpRuntimeGetSnapshot'),
+  mcpRuntimeConnect: (key: Parameters<ServiceProvider['mcpRuntimeConnect']>[0]) =>
+    callProviderMethod('mcpRuntimeConnect', key),
+  mcpStoreOAuthClientSecret: (
+    data: Parameters<ServiceProvider['mcpStoreOAuthClientSecret']>[0]
+  ) => callProviderMethod('mcpStoreOAuthClientSecret', data),
+  mcpDeleteOAuthClientSecret: (
+    serverId: Parameters<ServiceProvider['mcpDeleteOAuthClientSecret']>[0]
+  ) => callProviderMethod('mcpDeleteOAuthClientSecret', serverId),
+  mcpOAuthAuthorize: (selector: Parameters<ServiceProvider['mcpOAuthAuthorize']>[0]) =>
+    callProviderMethod('mcpOAuthAuthorize', selector),
+  mcpOAuthLogout: (selector: Parameters<ServiceProvider['mcpOAuthLogout']>[0]) =>
+    callProviderMethod('mcpOAuthLogout', selector),
+  mcpRuntimeDisconnect: (key: Parameters<ServiceProvider['mcpRuntimeDisconnect']>[0]) =>
+    callProviderMethod('mcpRuntimeDisconnect', key),
+  mcpRuntimeRefreshCatalog: (key: Parameters<ServiceProvider['mcpRuntimeRefreshCatalog']>[0]) =>
+    callProviderMethod('mcpRuntimeRefreshCatalog', key),
+  mcpRuntimeCallTool: (data: Parameters<ServiceProvider['mcpRuntimeCallTool']>[0]) =>
+    callProviderMethod('mcpRuntimeCallTool', data),
+  mcpRuntimeCancelOperation: (operationId: string) =>
+    callProviderMethod('mcpRuntimeCancelOperation', operationId),
   listSkills: (data?: Parameters<ServiceProvider['listSkills']>[0]) =>
     callProviderMethod('listSkills', data),
   getSkill: (data: Parameters<ServiceProvider['getSkill']>[0]) =>

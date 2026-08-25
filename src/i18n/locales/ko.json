@@ -1829,7 +1829,32 @@
       "identifierCollision": "이 식별자를 사용하는 MCP 서버가 이미 있습니다.",
       "saveFailed": "MCP 서버를 저장하지 못했습니다.",
       "deleteFailed": "MCP 서버를 삭제하지 못했습니다.",
-      "toggleFailed": "MCP 서버를 업데이트하지 못했습니다."
+      "toggleFailed": "MCP 서버를 업데이트하지 못했습니다.",
+      "transportHint": "로컬 서버에는 stdio를, 레거시 및 상태 비저장 원격 서버에는 Streamable HTTP를 사용합니다.",
+      "transport": { "stdio": "로컬 stdio", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://example.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
+      "protocol": { "auto": "자동 감지", "legacy": "레거시 세션", "modern": "모던 상태 비저장" },
+      "oauth": {
+        "enable": "OAuth 사용",
+        "scopes": "공백으로 구분된 범위",
+        "clientId": "선택적 사전 등록 클라이언트 ID",
+        "clientSecretStored": "클라이언트 시크릿이 저장되었습니다. 유지하려면 비워 두세요",
+        "clientSecret": "선택적 클라이언트 시크릿",
+        "clientMetadataUrl": "선택적 HTTPS 클라이언트 메타데이터 URL",
+        "registrationHint": "클라이언트 ID 또는 클라이언트 메타데이터 URL 중 하나를 사용하세요. 서버가 동적 클라이언트 등록을 지원하는 경우에만 둘 다 비워 두세요.",
+        "authorizeHint": "이 MCP 서버 인증",
+        "authorize": "연결",
+        "logout": "OAuth 인증 제거",
+        "clientIdentityConflict": "OAuth 클라이언트 ID 또는 클라이언트 메타데이터 URL 중 하나만 사용하세요.",
+        "clientSecretNeedsId": "OAuth 클라이언트 시크릿에는 사전 등록된 클라이언트 ID가 필요합니다.",
+        "clientSecretSaveFailed": "OAuth 시크릿을 저장하지 못했습니다.",
+        "clientSecretCleanupFailed": "더 이상 사용하지 않는 OAuth 클라이언트 시크릿을 제거하지 못했습니다.",
+        "authorized": "MCP 서버를 인증하고 연결했습니다.",
+        "failed": "MCP 인증에 실패했습니다.",
+        "loggedOut": "MCP 인증을 제거했습니다.",
+        "logoutFailed": "MCP 인증을 제거하지 못했습니다."
+      }
     }
   },
   "account": {
