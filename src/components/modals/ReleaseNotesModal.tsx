@@ -19,7 +19,6 @@ import {
   hasFinishedCurrentOnboarding,
   type OnboardingPreferenceState,
 } from '../onboarding/onboardingPreference';
-import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 
@@ -115,11 +114,13 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
       title={t('releaseNotes.dialogTitle', 'What’s new in Macro')}
       onClose={close}
       initialFocusRef={closeButtonRef}
+      closeOnBackdropClick
       backdropClassName="fixed inset-0 z-[12000] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm animate-fade-in md:p-6"
+      panelClassName="pointer-events-none flex w-full justify-center"
     >
       <article
         data-testid="release-notes-modal"
-        className="flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl ring-1 ring-white/5"
+        className="pointer-events-auto flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl ring-1 ring-white/5"
       >
         <header className="relative shrink-0 overflow-hidden border-b border-border px-5 py-5 sm:px-7 sm:py-6">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgb(var(--primary)/0.16),transparent_48%)]" />
@@ -151,6 +152,7 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
             </div>
 
             <button
+              ref={closeButtonRef}
               type="button"
               aria-label={t('common.close', 'Close')}
               title={t('common.close', 'Close')}
@@ -169,17 +171,6 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
           />
         </div>
 
-        <footer className="flex shrink-0 flex-col gap-3 border-t border-border bg-background/35 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
-          <p className="text-xs text-muted-foreground">
-            {t(
-              'releaseNotes.shownOnce',
-              'This note is shown once for each installed version.',
-            )}
-          </p>
-          <Button ref={closeButtonRef} type="button" size="sm" onClick={close}>
-            {t('releaseNotes.continue', 'Continue to Macro')}
-          </Button>
-        </footer>
       </article>
     </Dialog>
   );
