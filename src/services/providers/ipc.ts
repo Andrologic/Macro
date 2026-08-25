@@ -42,10 +42,7 @@ import {
   toPersistedMCPServers,
   toRuntimeMCPServers,
 } from './clientSettingsStorage';
-import {
-  isMCPEnvSecretRef,
-  isSensitiveMCPEnvKey,
-} from '../mcp';
+import { secureMCPServerSecrets } from '../mcp/secureSecrets';
 import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../configDocuments';
 
 const LEGACY_TOOL_ID_MAP: Record<string, string> = {
@@ -64,46 +61,6 @@ const normalizeToolSettings = (settings: Record<string, boolean>): Record<string
 type ToolsConfigDocument = {
   builtIn?: Record<string, boolean>;
   mcpServers?: Record<string, PersistedMCPServer>;
-};
-
-const secureMCPServerEnv = async (
-  servers: ReturnType<typeof normalizeMCPServerSettingsInput>
-): Promise<ReturnType<typeof normalizeMCPServerSettingsInput>> => {
-  const securedEntries = await Promise.all(
-    Object.entries(servers).map(async ([id, server]) => {
-      if (server.transport?.type !== 'stdio') {
-        return [id, server] as const;
-      }
-
-      const envEntries = await Promise.all(
-        Object.entries(server.transport.env ?? {}).map(async ([key, value]) => {
-          if (!isSensitiveMCPEnvKey(key) || !value || isMCPEnvSecretRef(value)) {
-            return [key, value] as const;
-          }
-
-          const secretRef = await tauriIpc.mcpStoreEnvSecret({
-            serverId: server.id,
-            key,
-            value,
-          });
-          return [key, secretRef] as const;
-        })
-      );
-
-      return [
-        id,
-        {
-          ...server,
-          transport: {
-            ...server.transport,
-            env: Object.fromEntries(envEntries),
-          },
-        },
-      ] as const;
-    })
-  );
-
-  return Object.fromEntries(securedEntries);
 };
 
 const toConversationDto = (conversation: tauriIpc.DbConversation): Conversation => ({
@@ -610,7 +567,10 @@ export const getMCPServerSettings = async (): Promise<MCPServerSettingsDto> => {
 };
 
 export const updateMCPServerSettings = async (settings: MCPServerSettingsDto): Promise<void> => {
-  const securedServers = await secureMCPServerEnv(normalizeMCPServerSettingsInput(settings));
+  const securedServers = await secureMCPServerSecrets(
+    normalizeMCPServerSettingsInput(settings),
+    tauriIpc.mcpStoreEnvSecret
+  );
   await patchUserConfigTopLevel('tools', 'mcpServers', toPersistedMCPServers(securedServers));
 };
 
@@ -628,6 +588,14 @@ export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = a
 
 export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async (selector) =>
   tauriIpc.mcpRuntimeConnect(selector);
+
+export const mcpStoreOAuthClientSecret: ServiceProvider['mcpStoreOAuthClientSecret'] = async (
+  data
+) => tauriIpc.mcpStoreOAuthClientSecret(data);
+
+export const mcpDeleteOAuthClientSecret: ServiceProvider['mcpDeleteOAuthClientSecret'] = async (
+  serverId
+) => tauriIpc.mcpDeleteOAuthClientSecret(serverId);
 
 export const mcpOAuthAuthorize: ServiceProvider['mcpOAuthAuthorize'] = async (selector) =>
   tauriIpc.mcpOAuthAuthorize(selector);
@@ -711,6 +679,8 @@ export const provider: ServiceProvider = {
   mcpCallTool,
   mcpRuntimeGetSnapshot,
   mcpRuntimeConnect,
+  mcpStoreOAuthClientSecret,
+  mcpDeleteOAuthClientSecret,
   mcpOAuthAuthorize,
   mcpOAuthLogout,
   mcpRuntimeDisconnect,

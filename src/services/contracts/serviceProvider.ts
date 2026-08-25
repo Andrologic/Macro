@@ -260,6 +260,8 @@ export interface ServiceProvider {
   // above stay unchanged until stores migrate to these methods).
   mcpRuntimeGetSnapshot: () => Promise<MCPRuntimeSnapshotDto>;
   mcpRuntimeConnect: (selector: MCPRuntimeSelector) => Promise<MCPRuntimeServerSnapshot>;
+  mcpStoreOAuthClientSecret: (data: { serverId: string; value: string }) => Promise<string>;
+  mcpDeleteOAuthClientSecret: (serverId: string) => Promise<void>;
   mcpOAuthAuthorize: (selector: MCPRuntimeSelector) => Promise<void>;
   mcpOAuthLogout: (selector: MCPRuntimeSelector) => Promise<void>;
   mcpRuntimeDisconnect: (key: MCPRuntimeKey) => Promise<void>;

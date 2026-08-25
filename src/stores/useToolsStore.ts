@@ -129,6 +129,8 @@ interface ToolsStore {
   refreshMCPServerTools: (serverId: string) => Promise<void>;
   authorizeMCPServer: (serverId: string) => Promise<void>;
   logoutMCPServer: (serverId: string) => Promise<void>;
+  storeMCPOAuthClientSecret: (serverId: string, value: string) => Promise<string>;
+  deleteMCPOAuthClientSecret: (serverId: string) => Promise<void>;
   saveAll: (tools?: Record<string, boolean>, servers?: Record<string, boolean>) => Promise<void>;
   resetToDefaults: () => Promise<void>;
   toggleChatTool: (toolId: string) => void;
@@ -427,6 +429,26 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     } catch (error) {
       const message = toServiceError(error).message;
       set({ saving: false, lastError: message });
+      throw new Error(message);
+    }
+  },
+
+  storeMCPOAuthClientSecret: async (serverId: string, value: string) => {
+    try {
+      return await services.mcpStoreOAuthClientSecret({ serverId, value });
+    } catch (error) {
+      const message = toServiceError(error).message;
+      set({ lastError: message });
+      throw new Error(message);
+    }
+  },
+
+  deleteMCPOAuthClientSecret: async (serverId: string) => {
+    try {
+      await services.mcpDeleteOAuthClientSecret(serverId);
+    } catch (error) {
+      const message = toServiceError(error).message;
+      set({ lastError: message });
       throw new Error(message);
     }
   },
