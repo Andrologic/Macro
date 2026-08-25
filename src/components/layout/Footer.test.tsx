@@ -976,9 +976,8 @@ describe('Footer', () => {
     act(() => {
       findButtonByIcon(container!, 'arrow-down')?.click();
     });
-    await flushAsyncWork();
+    await waitForText(container!, 'local changes');
 
-    expect(container?.textContent ?? '').toContain('local changes');
     expect(findButtonByText(container!, 'Stash, then merge')).toBeNull();
     expect(container?.textContent ?? '').toContain('Stash, then rebase');
 
