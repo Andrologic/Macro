@@ -282,7 +282,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
     }
 
     return (
-      <div 
+      <div
         className="flex items-center justify-center p-4 min-h-[200px]"
         dangerouslySetInnerHTML={{ __html: svg }}
       />
@@ -330,7 +330,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
               </button>
             </div>
           </div>
-          
+
           {/* Content */}
           <div className="flex-1 overflow-auto p-6">
             {showCode ? (
@@ -338,7 +338,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, blockKey
                 {code}
               </pre>
             ) : (
-              <div 
+              <div
                 className="flex items-center justify-center h-full"
                 dangerouslySetInnerHTML={{ __html: svg }}
               />

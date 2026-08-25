@@ -49,9 +49,9 @@ export const CodeFileViewerModal: React.FC = () => {
         </header>
 
         <div className="flex-1 overflow-auto p-4 bg-card">
-          <CodeViewer 
-            code={content} 
-            language={language as any || 'typescript'} 
+          <CodeViewer
+            code={content}
+            language={language as any || 'typescript'}
             className="h-full border-none"
           />
         </div>

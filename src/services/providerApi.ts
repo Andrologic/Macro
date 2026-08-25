@@ -940,7 +940,7 @@ export function formatModelName(modelId: string): string {
     const parts = modelId.split('/');
     return parts[parts.length - 1];
   }
-  
+
   // Common model name improvements
   return modelId
     .replace(/-/g, ' ')

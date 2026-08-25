@@ -67,7 +67,7 @@ interface StrategyGraphProps {
 
 /**
  * StrategyGraph - Visualizes project strategy as a graph or branch view
- * 
+ *
  * PERFORMANCE: Lazy loaded via ModeRouter, only rendered when Architect mode is active
  * Contains complex SVG rendering that benefits from code splitting
  */
