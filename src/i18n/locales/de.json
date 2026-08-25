@@ -43,8 +43,8 @@
   },
   "releaseNotes": {
     "dialogTitle": "Neu in Macro",
-    "shownOnce": "Dieser Hinweis wird für jede installierte Version einmal angezeigt.",
-    "continue": "Weiter zu Macro"
+    "continue": "Weiter zu Macro",
+    "version": "Version"
   },
   "updates": {
     "checking": "Nach Updates suchen",
