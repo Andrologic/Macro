@@ -261,10 +261,20 @@ mod windows_tests {
     #[tokio::test]
     async fn job_termination_kills_descendant_after_leader_exits() {
         let _serial = serialization_lock();
-        let mut command = background_contained_tokio_command("cmd");
-        command.args(["/C", "start \"\" /B ping -n 300 127.0.0.1"]);
+        let mut command = background_contained_tokio_command("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$startInfo = [System.Diagnostics.ProcessStartInfo]::new(); \
+             $startInfo.FileName = 'ping.exe'; \
+             $startInfo.Arguments = '-n 300 127.0.0.1'; \
+             $startInfo.UseShellExecute = $false; \
+             [System.Diagnostics.Process]::Start($startInfo) | Out-Null",
+        ]);
         let mut contained =
-            ContainedBackgroundProcess::spawn(command).expect("spawn contained cmd");
+            ContainedBackgroundProcess::spawn(command).expect("spawn contained PowerShell");
         assert!(
             poll_until(|| image_running("ping.exe"), Duration::from_secs(10)).await,
             "detached ping.exe never appeared",

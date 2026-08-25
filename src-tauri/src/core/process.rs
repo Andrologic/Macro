@@ -4,7 +4,9 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::CloseHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::ERROR_PROCESS_ABORTED;
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject, TerminateJobObject,
@@ -116,7 +118,7 @@ pub const DEFAULT_TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const HARD_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(windows)]
-type JobObjectHandle = windows_sys::Win32::Foundation::HANDLE;
+type JobObjectHandle = OwnedHandle;
 
 pub fn background_contained_tokio_command(program: impl AsRef<OsStr>) -> tokio::process::Command {
     let mut command = background_tokio_command(program);
@@ -149,6 +151,7 @@ impl ContainedBackgroundProcess {
         let job_object = match attach_child_to_job_object(&child) {
             Ok(job_object) => job_object,
             Err(error) => {
+                let mut child = child;
                 let _ = child.start_kill();
                 return Err(error);
             }
@@ -251,7 +254,7 @@ impl ContainedBackgroundProcess {
     async fn terminate_windows(&mut self, grace_period: Duration) -> io::Result<ExitStatus> {
         // Descendants can remain in the job after its original leader exits.
         // Terminating an empty job is harmless, so never gate this on child.id().
-        unsafe { TerminateJobObject(self.job_object, 0) };
+        unsafe { TerminateJobObject(self.job_object.as_raw_handle() as _, ERROR_PROCESS_ABORTED) };
         let reap_timeout = if grace_period.is_zero() {
             HARD_REAP_TIMEOUT
         } else {
@@ -281,34 +284,30 @@ fn attach_child_to_job_object(child: &tokio::process::Child) -> io::Result<JobOb
     };
 
     unsafe {
-        let job_object = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        if job_object.is_null() {
+        let raw_job_object = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if raw_job_object.is_null() {
             return Err(io::Error::last_os_error());
         }
+        let job_object = JobObjectHandle::from_raw_handle(raw_job_object as _);
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         let configured = SetInformationJobObject(
-            job_object,
+            job_object.as_raw_handle() as _,
             JobObjectExtendedLimitInformation,
             &limits as *const _ as *const core::ffi::c_void,
             size_of_val(&limits) as u32,
         );
         if configured == 0 {
-            let error = io::Error::last_os_error();
-            CloseHandle(job_object);
-            return Err(error);
+            return Err(io::Error::last_os_error());
         }
         let Some(process_handle) = child.raw_handle() else {
-            CloseHandle(job_object);
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "tokio child did not expose a raw process handle",
             ));
         };
-        if AssignProcessToJobObject(job_object, process_handle) == 0 {
-            let error = io::Error::last_os_error();
-            CloseHandle(job_object);
-            return Err(error);
+        if AssignProcessToJobObject(job_object.as_raw_handle() as _, process_handle) == 0 {
+            return Err(io::Error::last_os_error());
         }
         Ok(job_object)
     }
@@ -326,8 +325,9 @@ impl Drop for ContainedBackgroundProcess {
         }
         #[cfg(windows)]
         {
-            unsafe { TerminateJobObject(self.job_object, 0) };
-            CloseHandle(self.job_object);
+            unsafe {
+                TerminateJobObject(self.job_object.as_raw_handle() as _, ERROR_PROCESS_ABORTED)
+            };
         }
     }
 }
