@@ -32,7 +32,7 @@ export const AppearanceView: React.FC = () => {
         try {
             const manifestRes = await fetch('/themes/manifest.json');
             const manifest: ThemeManifest = await manifestRes.json();
-            
+
             // Fetch colors for each theme in parallel
             const loadedThemes = await Promise.all(
                 manifest.themes.map(async (item) => {
@@ -46,7 +46,7 @@ export const AppearanceView: React.FC = () => {
                     }
                 })
             );
-            
+
             setThemes(loadedThemes);
         } catch (error) {
             console.error('Failed to load theme manifest', error);
@@ -162,9 +162,9 @@ export const AppearanceView: React.FC = () => {
 
       <section className="space-y-4">
         <SettingsSectionHeader title={t('settings.theme') || 'Theme'} />
-        
+
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          {themes.map((theme) => ( 
+          {themes.map((theme) => (
             <button
               key={theme.id}
               onClick={() => setTheme(theme.id)}
@@ -191,7 +191,7 @@ export const AppearanceView: React.FC = () => {
                       theme.type === 'dark' ? "bg-slate-900" : "bg-slate-100"
                   )} />
               )}
-              
+
               <div>
                  <span className="text-sm font-semibold text-foreground block truncate">{theme.name}</span>
                  <span className="text-xs text-muted-foreground capitalize flex items-center gap-1">
@@ -201,7 +201,7 @@ export const AppearanceView: React.FC = () => {
               </div>
             </button>
           ))}
-          
+
           {isLoading && (
               // Loading Skeletons
               Array.from({ length: 9 }).map((_, i) => (

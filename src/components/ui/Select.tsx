@@ -17,7 +17,7 @@ export function Select({
   const generatedId = React.useId();
   const selectId = props.id ?? `select-${generatedId}`;
   const baseClassName = `
-    bg-background border border-border rounded-lg px-3 py-2 
+    bg-background border border-border rounded-lg px-3 py-2
     text-sm text-foreground focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20
     appearance-none cursor-pointer
     transition-all duration-200

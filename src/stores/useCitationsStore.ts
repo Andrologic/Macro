@@ -35,7 +35,7 @@ export interface Citation {
 
 interface CitationsState {
   citations: Citation[];
-  
+
   // Actions
   hydrateConversationCitations: (conversationId: string) => Promise<void>;
   ensureCitationContentLoaded: (id: string) => Promise<Citation | null>;
@@ -297,12 +297,12 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
       id,
       timestamp: new Date().toISOString(),
     };
-    
+
     set((state) => ({
       citations: [...state.citations, citation],
     }));
     persistCitationAsync(citation);
-    
+
     return id;
   },
 
