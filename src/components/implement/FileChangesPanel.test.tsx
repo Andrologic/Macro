@@ -12,6 +12,7 @@ import {
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { ArchitectPlanRecord } from '../../services/architectPlanService';
 import type { VisiblePlanTaskArtifactReviewEntry } from '../../services/architectPlanArtifactService';
+import type { MetadataModelConfig } from '../../services/metadataModelConfig';
 import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
 import {
   createTranslationMock,
@@ -26,8 +27,6 @@ let useChatStore!: typeof UseChatStoreHook;
 let useProviderStore!: typeof UseProviderStoreHook;
 let useFileChangesStore!: typeof UseFileChangesStoreHook;
 let clearPreferencesForTest!: typeof import('../../services/preferences').clearPreferences;
-let loadPersistedPreferenceForTest!: typeof import('../../services/preferences').loadPersistedPreference;
-let savePreferenceForTest!: typeof import('../../services/preferences').savePreference;
 let initialAppState: ReturnType<typeof useAppStore.getState> | null = null;
 let initialTaskState: ReturnType<typeof useTaskStore.getState> | null = null;
 let initialChatState: ReturnType<typeof useChatStore.getState> | null = null;
@@ -42,6 +41,8 @@ let validateArtifactMock: ReturnType<typeof mock>;
 let unvalidateArtifactMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let resizeObserverWidth = 640;
+let metadataModelConfigForTest: MetadataModelConfig | null = { mode: 'conversation' };
+const metadataModelConfigListeners = new Set<(value: MetadataModelConfig | null) => void>();
 const hadInitialBackendTransport = Object.prototype.hasOwnProperty.call(
   process.env,
   'VITE_BACKEND_TRANSPORT',
@@ -193,10 +194,21 @@ const loadFileChangesPanelModules = async () => {
     `../../services/preferences.ts?file-changes-panel-preferences-test=${importCounter}`
   );
   clearPreferencesForTest = preferencesModule.clearPreferences;
-  loadPersistedPreferenceForTest = preferencesModule.loadPersistedPreference;
-  savePreferenceForTest = preferencesModule.savePreference;
   mock.module('../../services/preferences', () => ({
     ...preferencesModule,
+  }));
+
+  mock.module('../../services/metadataModelPreference', () => ({
+    loadMetadataModelConfig: async () => metadataModelConfigForTest,
+    saveMetadataModelConfig: async (config: MetadataModelConfig | null) => {
+      metadataModelConfigForTest = config;
+      metadataModelConfigListeners.forEach((listener) => listener(config));
+      return config;
+    },
+    subscribeMetadataModelConfig: (listener: (value: MetadataModelConfig | null) => void) => {
+      metadataModelConfigListeners.add(listener);
+      return () => metadataModelConfigListeners.delete(listener);
+    },
   }));
 
   const architectPlanServiceModule = await import(
@@ -787,6 +799,8 @@ describe('FileChangesPanel', () => {
     validateArtifactMock = mock(async () => undefined);
     unvalidateArtifactMock = mock(async () => undefined);
     await loadFileChangesPanelModules();
+    metadataModelConfigForTest = { mode: 'conversation' };
+    metadataModelConfigListeners.clear();
     const resourcePressureBackoff = await import('../../services/resourcePressureBackoff');
     resourcePressureBackoff.__testables.reset();
     stageChangesMock = mock(async () => undefined);
@@ -825,7 +839,6 @@ describe('FileChangesPanel', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     await clearPreferencesForTest();
-    await savePreferenceForTest('metadataModelConfig', { mode: 'conversation' });
   });
 
   afterEach(async () => {
@@ -1380,6 +1393,7 @@ describe('FileChangesPanel', () => {
 
   it('asks for the metadata model choice the first time a commit is generated', async () => {
     await clearPreferencesForTest();
+    metadataModelConfigForTest = null;
     const repository = buildRepository(true);
     seedStores(repository);
 
@@ -1411,7 +1425,7 @@ describe('FileChangesPanel', () => {
     });
 
     expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
-    expect(await loadPersistedPreferenceForTest<{ mode: string }>('metadataModelConfig')).toEqual({
+    expect(metadataModelConfigForTest).toEqual({
       mode: 'conversation',
     });
   });
@@ -1583,12 +1597,12 @@ describe('FileChangesPanel', () => {
 
   it('uses the latest saved metadata model config when retrying after generation fails', async () => {
     const repository = buildRepository(true);
-    await savePreferenceForTest('metadataModelConfig', {
+    metadataModelConfigForTest = {
       mode: 'dedicated',
       providerId: 'provider-a',
       modelId: 'model-a',
       reasoningEffort: null,
-    });
+    };
     commitAllReadyTaskRepositoriesMock = mock(async () => {
       const error = new Error('model unavailable');
       error.name = 'SmartCommitMessageGenerationError';
@@ -1636,14 +1650,14 @@ describe('FileChangesPanel', () => {
       await flushRender();
     });
 
-    const preferences = await import('../../services/preferences');
     await act(async () => {
-      await preferences.savePreference(preferences.PREF_KEYS.METADATA_MODEL_CONFIG, {
+      metadataModelConfigForTest = {
         mode: 'dedicated',
         providerId: 'provider-b',
         modelId: 'model-b',
         reasoningEffort: null,
-      });
+      };
+      metadataModelConfigListeners.forEach((listener) => listener(metadataModelConfigForTest));
       await flushRender();
     });
 
