@@ -122,34 +122,11 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
         data-testid="release-notes-modal"
         className="pointer-events-auto flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl ring-1 ring-white/5"
       >
-        <header className="relative shrink-0 overflow-hidden border-b border-border px-5 py-5 sm:px-7 sm:py-6">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgb(var(--primary)/0.16),transparent_48%)]" />
-          <div className="relative flex items-start justify-between gap-4">
-            <div className="flex min-w-0 items-start gap-4">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 text-primary shadow-sm">
-                <Icon name="sparkles" size={20} />
-              </div>
-              <div className="min-w-0">
-                <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                  {note.eyebrow ? (
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-                      {note.eyebrow}
-                    </span>
-                  ) : null}
-                  <span className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                    v{note.version}
-                  </span>
-                </div>
-                <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
-                  {note.title}
-                </h2>
-                {note.summary ? (
-                  <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                    {note.summary}
-                  </p>
-                ) : null}
-              </div>
-            </div>
+        <header className="shrink-0 border-b border-border px-5 py-4 sm:px-7">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="min-w-0 truncate text-lg font-semibold tracking-tight text-foreground">
+              {note.title}
+            </h2>
 
             <button
               ref={closeButtonRef}
