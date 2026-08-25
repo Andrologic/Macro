@@ -50,7 +50,9 @@ const dbMessage = (patch: Partial<DbMessage> = {}): DbMessage => ({
 describe("chatDbMappers", () => {
   it("maps database conversations and normalizes reasoning effort", () => {
     expect(normalizeReasoningEffort("high")).toBe("high");
-    expect(normalizeReasoningEffort("invalid")).toBeNull();
+    expect(normalizeReasoningEffort("max")).toBe("max");
+    expect(normalizeReasoningEffort("provider_custom")).toBe("provider_custom");
+    expect(normalizeReasoningEffort("invalid effort")).toBeNull();
 
     const conversation = mapDbConversationToConversation(
       dbConversation({ description: null, last_message: null }),

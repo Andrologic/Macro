@@ -6,6 +6,7 @@ import {
   AIModel,
   ProviderSettings,
   ReasoningEffort,
+  ReasoningCapability,
 } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {
@@ -165,9 +166,17 @@ const applyNativeToolCallingToProvider = (provider: AIProvider, providerType?: s
 const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIModel => {
   const reasoningCapability = getReasoningCapabilityForModel({
     providerType,
+    providerId: model.provider_id,
     modelId: model.model_id,
-    supportedReasoningEfforts: model.reasoning_efforts,
-    defaultReasoningEffort: model.default_reasoning_effort,
+    ...(model.is_manual
+      ? {
+          manualReasoningEfforts: model.reasoning_efforts,
+          manualDefaultReasoningEffort: model.default_reasoning_effort,
+        }
+      : {
+          supportedReasoningEfforts: model.reasoning_efforts,
+          defaultReasoningEffort: model.default_reasoning_effort,
+        }),
   });
   const normalized: AIModel = {
     id: model.model_id,
@@ -180,6 +189,7 @@ const normalizeDbModel = (model: tauriIpc.DbAiModel, providerType?: string): AIM
       completion: model.pricing_completion ?? undefined,
       request: model.pricing_request ?? undefined,
     },
+    reasoningCapability,
     reasoningEfforts: reasoningCapability.reasoningEfforts,
     defaultReasoningEffort: reasoningCapability.defaultReasoningEffort,
     isEnabled: model.is_enabled,
@@ -223,8 +233,10 @@ const toDbProviderModelInput = (model: AIModel): tauriIpc.DbProviderModelInput =
   pricing_prompt: model.pricing?.prompt ?? null,
   pricing_completion: model.pricing?.completion ?? null,
   pricing_request: model.pricing?.request ?? null,
-  reasoning_efforts: model.reasoningEfforts ?? null,
-  default_reasoning_effort: model.defaultReasoningEffort ?? null,
+  reasoning_efforts:
+    model.reasoningCapability?.reasoningEfforts ?? model.reasoningEfforts ?? null,
+  default_reasoning_effort:
+    model.reasoningCapability?.defaultReasoningEffort ?? model.defaultReasoningEffort ?? null,
   context_window_tokens: model.contextWindowTokens ?? null,
   input_limit_tokens: model.inputLimitTokens ?? null,
   output_limit_tokens: model.outputLimitTokens ?? null,
@@ -261,6 +273,13 @@ const getFirstEnabledModelId = (models: AIModel[]): string | null => {
 const getReasoningUnsupportedKey = (providerId?: string | null, modelId?: string | null): string | null =>
   providerId && modelId ? `${providerId}::${modelId}` : null;
 
+const getReasoningUnsupportedEffortKey = (
+  providerId?: string | null,
+  modelId?: string | null,
+  effort?: string | null,
+): string | null =>
+  providerId && modelId && effort ? `${providerId}::${modelId}::${effort}` : null;
+
 const getModelReasoningEfforts = (
   model: AIModel | undefined,
   params?: { unsupported?: Record<string, boolean>; providerId?: string | null }
@@ -270,7 +289,16 @@ const getModelReasoningEfforts = (
   if (runtimeKey && params?.unsupported?.[runtimeKey]) {
     return [];
   }
-  return model.reasoningEfforts ?? [];
+  if (model.reasoningCapability?.configurable === false) return [];
+  const efforts = model.reasoningCapability?.reasoningEfforts ?? model.reasoningEfforts ?? [];
+  return efforts.filter((effort) => {
+    const effortKey = getReasoningUnsupportedEffortKey(
+      params?.providerId ?? model.provider_id,
+      model.id,
+      effort,
+    );
+    return !effortKey || !params?.unsupported?.[effortKey];
+  });
 };
 
 const resolveSelectedReasoningEffort = (params: {
@@ -288,7 +316,8 @@ const resolveSelectedReasoningEffort = (params: {
   return getValidReasoningEffort(
     {
       reasoningEfforts: getModelReasoningEfforts(model, { unsupported, providerId }),
-      defaultReasoningEffort: model.defaultReasoningEffort ?? null,
+      defaultReasoningEffort:
+        model.reasoningCapability?.defaultReasoningEffort ?? model.defaultReasoningEffort ?? null,
     },
     requested
   );
@@ -739,12 +768,18 @@ interface ProviderStore {
   refreshLoadedModelContextCatalog: (providerId?: string) => Promise<void>;
   setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) => Promise<void>;
   setAllProviderModelsEnabled: (providerId: string, enabled: boolean) => Promise<void>;
-  addManualModel: (providerId: string, modelId: string, name: string) => Promise<void>;
+  addManualModel: (
+    providerId: string,
+    modelId: string,
+    name: string,
+    reasoning?: Pick<ReasoningCapability, 'reasoningEfforts' | 'defaultReasoningEffort'> | null,
+  ) => Promise<void>;
   updateManualModel: (
     providerId: string,
     currentModelId: string,
     nextModelId: string,
-    name: string
+    name: string,
+    reasoning?: Pick<ReasoningCapability, 'reasoningEfforts' | 'defaultReasoningEffort'> | null,
   ) => Promise<void>;
   recordProviderModelContextOverflowLimit: (
     providerId: string,
@@ -781,6 +816,11 @@ interface ProviderStore {
   getAvailableReasoningEfforts: (providerId?: string | null, modelId?: string | null) => ReasoningEffort[];
   selectedSupportsReasoningEffort: () => boolean;
   markReasoningUnsupportedForModel: (providerId: string, modelId: string) => void;
+  markReasoningEffortUnsupportedForModel: (
+    providerId: string,
+    modelId: string,
+    effort: ReasoningEffort,
+  ) => void;
   cycleProvider: () => void;
   cycleModel: () => void;
   
@@ -1471,6 +1511,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             );
             const reasoningCapability = getReasoningCapabilityForModel({
               providerType: config.providerType,
+              providerId,
+              baseUrl: config.baseUrl,
               modelId: model.id,
               supportedParameters: model.supported_parameters,
               supportedReasoningEfforts: model.supported_reasoning_efforts,
@@ -1605,6 +1647,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         );
         const reasoningCapability = getReasoningCapabilityForModel({
           providerType: config.providerType,
+          providerId,
+          baseUrl: config.baseUrl,
           modelId: m.id,
           supportedParameters: m.supported_parameters,
           supportedReasoningEfforts: m.supported_reasoning_efforts,
@@ -1625,6 +1669,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           provider_id: providerId,
           owned_by: m.owned_by,
           description: m.description,
+          reasoningCapability,
           reasoningEfforts: reasoningCapability.reasoningEfforts,
           defaultReasoningEffort: reasoningCapability.defaultReasoningEffort,
           pricing: {
@@ -1747,9 +1792,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  addManualModel: async (providerId: string, modelId: string, name: string) => {
+  addManualModel: async (providerId, modelId, name, reasoning = null) => {
     if (tauriIpc.isTauriAvailable()) {
-      const updated = await tauriIpc.registerManualModel({ providerId, modelId, name });
+      const updated = await tauriIpc.registerManualModel({ providerId, modelId, name, reasoning });
       const providerType = get().providerConfigs.find((provider) => provider.id === providerId)?.providerType;
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
       set((state) => ({
@@ -1773,6 +1818,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return;
     }
 
+    const providerType = get().providerConfigs.find(
+      (provider) => provider.id === providerId,
+    )?.providerType;
+    const reasoningCapability = getReasoningCapabilityForModel({
+      providerType,
+      providerId,
+      modelId,
+      manualReasoningEfforts: reasoning?.reasoningEfforts,
+      manualDefaultReasoningEffort: reasoning?.defaultReasoningEffort,
+    });
     set((state) => ({
       modelsByProvider: {
         ...state.modelsByProvider,
@@ -1784,14 +1839,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             provider_id: providerId,
             isEnabled: true,
             isManual: true,
-            reasoningEfforts: getReasoningCapabilityForModel({
-              providerType: get().providerConfigs.find((provider) => provider.id === providerId)?.providerType,
-              modelId,
-            }).reasoningEfforts,
-            defaultReasoningEffort: getReasoningCapabilityForModel({
-              providerType: get().providerConfigs.find((provider) => provider.id === providerId)?.providerType,
-              modelId,
-            }).defaultReasoningEffort,
+            reasoningCapability,
+            reasoningEfforts: reasoningCapability.reasoningEfforts,
+            defaultReasoningEffort: reasoningCapability.defaultReasoningEffort,
             isFree: modelId.endsWith(':free'),
             nativeToolCalling: supportsNativeToolCallingForProviderType(
               get().providerConfigs.find((provider) => provider.id === providerId)?.providerType
@@ -1811,7 +1861,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     providerId: string,
     currentModelId: string,
     nextModelId: string,
-    name: string
+    name: string,
+    reasoning = null,
   ) => {
     if (tauriIpc.isTauriAvailable()) {
       const updated = await tauriIpc.updateManualModel({
@@ -1819,6 +1870,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         currentModelId,
         nextModelId,
         name,
+        reasoning,
       });
       const providerType = get().providerConfigs.find((provider) => provider.id === providerId)?.providerType;
       const normalized = updated.map((model) => normalizeDbModel(model, providerType));
@@ -1857,6 +1909,22 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               ...model,
               id: nextModelId,
               name,
+              ...(() => {
+                const capability = getReasoningCapabilityForModel({
+                  providerType: get().providerConfigs.find(
+                    (provider) => provider.id === providerId,
+                  )?.providerType,
+                  providerId,
+                  modelId: nextModelId,
+                  manualReasoningEfforts: reasoning?.reasoningEfforts,
+                  manualDefaultReasoningEffort: reasoning?.defaultReasoningEffort,
+                });
+                return {
+                  reasoningCapability: capability,
+                  reasoningEfforts: capability.reasoningEfforts,
+                  defaultReasoningEffort: capability.defaultReasoningEffort,
+                };
+              })(),
             };
             return {
               ...updatedModel,
@@ -2409,6 +2477,30 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       },
       ...(state.selectedProviderId === providerId && state.selectedModelId === modelId
         ? { selectedReasoningEffort: null }
+        : {}),
+    });
+  },
+
+  markReasoningEffortUnsupportedForModel: (providerId, modelId, effort) => {
+    const state = get();
+    const runtimeKey = getReasoningUnsupportedEffortKey(providerId, modelId, effort);
+    if (!runtimeKey) return;
+    const unsupported = {
+      ...state.reasoningUnsupportedModelKeys,
+      [runtimeKey]: true,
+    };
+    set({
+      reasoningUnsupportedModelKeys: unsupported,
+      ...(state.selectedProviderId === providerId && state.selectedModelId === modelId
+        ? {
+            selectedReasoningEffort: resolveSelectedReasoningEffort({
+              providerId,
+              modelId,
+              modelsByProvider: state.modelsByProvider,
+              unsupported,
+              requested: state.selectedReasoningEffort,
+            }),
+          }
         : {}),
     });
   },

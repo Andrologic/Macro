@@ -702,7 +702,10 @@ fn optional_text(value: String) -> Option<String> {
 }
 
 fn supports_reasoning_effort(provider_type: &str) -> bool {
-    provider_type.eq_ignore_ascii_case("openai") || provider_type.eq_ignore_ascii_case("openrouter")
+    provider_type.eq_ignore_ascii_case("openai")
+        || provider_type.eq_ignore_ascii_case("openrouter")
+        || provider_type.eq_ignore_ascii_case("ollama")
+        || provider_type.eq_ignore_ascii_case("lmstudio")
 }
 
 #[cfg(test)]
@@ -785,6 +788,21 @@ mod tests {
             Some("high")
         );
         assert_eq!(body.get("reasoning"), None);
+    }
+
+    #[test]
+    fn local_openai_compatible_providers_keep_reasoning_effort() {
+        for provider_type in ["ollama", "lmstudio"] {
+            let body =
+                build_chat_completions_request(&request(Some("max")), &provider(provider_type))
+                    .expect("body");
+
+            assert_eq!(
+                body.get("reasoning_effort").and_then(Value::as_str),
+                Some("max"),
+                "provider {provider_type}"
+            );
+        }
     }
 
     #[test]
