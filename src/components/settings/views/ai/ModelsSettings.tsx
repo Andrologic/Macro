@@ -28,6 +28,11 @@ import {
 } from '../../../../services/metadataModelPreference';
 import type { AIModel, ReasoningEffort } from '../../../../types';
 import { MetadataModelConfigPersistence } from './metadataModelConfigPersistence';
+import { getReasoningEffortLabel } from '../../../ai/reasoningLabels';
+import {
+  normalizeReasoningEfforts,
+  normalizeReasoningEffortValue,
+} from '../../../../services/reasoningCatalog';
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -39,6 +44,15 @@ const MANUAL_MODEL_MENU_WIDTH = 168;
 const MANUAL_MODEL_MENU_HEIGHT = 88;
 const MANUAL_MODEL_MENU_GAP = 6;
 const MANUAL_MODEL_MENU_VIEWPORT_PADDING = 12;
+const STANDARD_REASONING_EFFORTS: ReasoningEffort[] = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
 
 const getManualModelMenuPosition = (
   trigger: HTMLElement | null
@@ -125,6 +139,11 @@ export const ModelsSettings: React.FC = () => {
   } | null>(null);
   const [manualModelId, setManualModelId] = useState('');
   const [manualModelName, setManualModelName] = useState('');
+  const [manualReasoningConfigurable, setManualReasoningConfigurable] = useState(false);
+  const [manualReasoningEfforts, setManualReasoningEfforts] = useState<ReasoningEffort[]>([]);
+  const [manualDefaultReasoningEffort, setManualDefaultReasoningEffort] =
+    useState<ReasoningEffort | null>(null);
+  const [manualCustomReasoningEffort, setManualCustomReasoningEffort] = useState('');
   const [contextWindowEditor, setContextWindowEditor] = useState<{
     providerId: string;
     modelId: string;
@@ -217,6 +236,9 @@ export const ModelsSettings: React.FC = () => {
   const isMetadataReasoningUnavailable = dedicatedCommitReasoningEfforts.length === 0;
   const isEditingManualModel =
     manualModelEditor !== null && manualModelEditor.originalModelId !== null;
+  const manualCustomReasoningCandidate = normalizeReasoningEffortValue(
+    manualCustomReasoningEffort.trim()
+  );
   const getContextWindowSourceLabel = (source?: AIModel['contextWindowSource']): string => {
     switch (source) {
       case 'user_override':
@@ -276,6 +298,10 @@ export const ModelsSettings: React.FC = () => {
     setManualModelEditor(null);
     setManualModelId('');
     setManualModelName('');
+    setManualReasoningConfigurable(false);
+    setManualReasoningEfforts([]);
+    setManualDefaultReasoningEffort(null);
+    setManualCustomReasoningEffort('');
   };
 
   const resetManualModelEditor = () => {
@@ -287,14 +313,56 @@ export const ModelsSettings: React.FC = () => {
     setManualModelEditor({ providerId, originalModelId: null });
     setManualModelId('');
     setManualModelName('');
+    setManualReasoningConfigurable(false);
+    setManualReasoningEfforts([]);
+    setManualDefaultReasoningEffort(null);
+    setManualCustomReasoningEffort('');
     setActiveManualModelActions(null);
   };
 
-  const openEditManualModel = (providerId: string, model: { id: string; name: string }) => {
+  const openEditManualModel = (providerId: string, model: AIModel) => {
+    const manualCapability = model.reasoningCapability?.source === 'manual_override'
+      ? model.reasoningCapability
+      : null;
     setManualModelEditor({ providerId, originalModelId: model.id });
     setManualModelId(model.id);
     setManualModelName(model.name === model.id ? '' : model.name);
+    setManualReasoningConfigurable(!!manualCapability?.configurable);
+    setManualReasoningEfforts(manualCapability?.reasoningEfforts ?? []);
+    setManualDefaultReasoningEffort(manualCapability?.defaultReasoningEffort ?? null);
+    setManualCustomReasoningEffort('');
     setActiveManualModelActions(null);
+  };
+
+  const addManualReasoningEffort = (effort: ReasoningEffort) => {
+    if (!effort || manualReasoningEfforts.includes(effort)) return;
+    const nextEfforts = normalizeReasoningEfforts([...manualReasoningEfforts, effort]);
+    setManualReasoningEfforts(nextEfforts);
+    setManualDefaultReasoningEffort((current) => current ?? nextEfforts[0]);
+  };
+
+  const removeManualReasoningEffort = (effort: ReasoningEffort) => {
+    const nextEfforts = manualReasoningEfforts.filter((candidate) => candidate !== effort);
+    setManualReasoningEfforts(nextEfforts);
+    setManualDefaultReasoningEffort((current) =>
+      current === effort ? nextEfforts[0] ?? null : current
+    );
+  };
+
+  const moveManualReasoningEffort = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= manualReasoningEfforts.length) return;
+    const currentEffort = manualReasoningEfforts[index];
+    const adjacentEffort = manualReasoningEfforts[nextIndex];
+    if (
+      STANDARD_REASONING_EFFORTS.includes(currentEffort) ||
+      STANDARD_REASONING_EFFORTS.includes(adjacentEffort)
+    ) {
+      return;
+    }
+    const nextEfforts = [...manualReasoningEfforts];
+    [nextEfforts[index], nextEfforts[nextIndex]] = [nextEfforts[nextIndex], nextEfforts[index]];
+    setManualReasoningEfforts(nextEfforts);
   };
 
   const closeContextWindowEditor = () => {
@@ -497,7 +565,7 @@ export const ModelsSettings: React.FC = () => {
                   <option value="">{t('models.defaultReasoning', 'Default')}</option>
                   {dedicatedCommitReasoningEfforts.map((effort) => (
                     <option key={effort} value={effort}>
-                      {effort}
+                      {getReasoningEffortLabel(t, effort)}
                     </option>
                   ))}
                 </select>
@@ -827,12 +895,12 @@ export const ModelsSettings: React.FC = () => {
               type="button"
               role="menuitem"
               className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:bg-accent"
-              onClick={() =>
-                openEditManualModel(activeManualModelActions.providerId, {
-                  id: activeManualModelActions.modelId,
-                  name: activeManualModelActions.label,
-                })
-              }
+              onClick={() => {
+                const model = modelsByProvider[activeManualModelActions.providerId]?.find(
+                  (candidate) => candidate.id === activeManualModelActions.modelId
+                );
+                if (model) openEditManualModel(activeManualModelActions.providerId, model);
+              }}
             >
               <Icon name="edit" size={14} />
               {t('common.edit', 'Edit')}
@@ -900,6 +968,180 @@ export const ModelsSettings: React.FC = () => {
                   placeholder={t('models.displayNamePlaceholder', 'e.g. GPT-4o Mini')}
                 />
               </div>
+
+              <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <label className="text-sm font-medium">
+                      {t('models.configurableReasoning', 'Configurable reasoning')}
+                    </label>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {t(
+                        'models.configurableReasoningDescription',
+                        'Set the reasoning levels accepted by this model.'
+                      )}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={manualReasoningConfigurable}
+                    aria-label={t('models.configurableReasoning', 'Configurable reasoning')}
+                    onCheckedChange={(checked) => {
+                      setManualReasoningConfigurable(checked);
+                    }}
+                  />
+                </div>
+
+                {manualReasoningConfigurable && (
+                  <div className="space-y-3 border-t border-border pt-3">
+                    <fieldset className="space-y-2">
+                      <legend className="text-xs font-medium text-muted-foreground">
+                        {t('models.standardReasoningLevels', 'Standard levels')}
+                      </legend>
+                      <div className="flex flex-wrap gap-x-3 gap-y-2">
+                        {STANDARD_REASONING_EFFORTS.map((effort) => (
+                          <label key={effort} className="flex items-center gap-1.5 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={manualReasoningEfforts.includes(effort)}
+                              onChange={(event) => {
+                                if (event.target.checked) addManualReasoningEffort(effort);
+                                else removeManualReasoningEffort(effort);
+                              }}
+                            />
+                            {getReasoningEffortLabel(t, effort)}
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        {t('models.customReasoningLevel', 'Custom level')}
+                      </label>
+                      <div className="flex gap-2">
+                        <Input
+                          value={manualCustomReasoningEffort}
+                          onChange={(event) => setManualCustomReasoningEffort(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'Enter') return;
+                            event.preventDefault();
+                            if (!manualCustomReasoningCandidate) return;
+                            addManualReasoningEffort(manualCustomReasoningCandidate);
+                            setManualCustomReasoningEffort('');
+                          }}
+                          placeholder={t('models.customReasoningLevelPlaceholder', 'e.g. ultra')}
+                          className="font-mono text-sm"
+                        />
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={!manualCustomReasoningCandidate}
+                          onClick={() => {
+                            if (!manualCustomReasoningCandidate) return;
+                            addManualReasoningEffort(manualCustomReasoningCandidate);
+                            setManualCustomReasoningEffort('');
+                          }}
+                        >
+                          {t('common.add', 'Add')}
+                        </Button>
+                      </div>
+                      {manualCustomReasoningEffort.trim() && !manualCustomReasoningCandidate && (
+                        <p className="text-xs text-destructive">
+                          {t(
+                            'models.invalidCustomReasoningLevel',
+                            'Use letters, numbers, dots, underscores, or hyphens.'
+                          )}
+                        </p>
+                      )}
+                    </div>
+
+                    {manualReasoningEfforts.length > 0 ? (
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          {t('models.reasoningLevelOrder', 'Level order')}
+                        </label>
+                        <div className="space-y-1">
+                          {manualReasoningEfforts.map((effort, index) => (
+                            <div
+                              key={effort}
+                              className="flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1.5"
+                            >
+                              <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                                {getReasoningEffortLabel(t, effort)}
+                              </span>
+                              <button
+                                type="button"
+                                aria-label={t('models.moveReasoningLevelUp', 'Move level up')}
+                                className="text-muted-foreground disabled:opacity-30"
+                                disabled={
+                                  index === 0 ||
+                                  STANDARD_REASONING_EFFORTS.includes(effort) ||
+                                  STANDARD_REASONING_EFFORTS.includes(
+                                    manualReasoningEfforts[index - 1]
+                                  )
+                                }
+                                onClick={() => moveManualReasoningEffort(index, -1)}
+                              >
+                                <Icon name="arrow-up" size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={t('models.moveReasoningLevelDown', 'Move level down')}
+                                className="text-muted-foreground disabled:opacity-30"
+                                disabled={
+                                  index === manualReasoningEfforts.length - 1 ||
+                                  STANDARD_REASONING_EFFORTS.includes(effort) ||
+                                  STANDARD_REASONING_EFFORTS.includes(
+                                    manualReasoningEfforts[index + 1]
+                                  )
+                                }
+                                onClick={() => moveManualReasoningEffort(index, 1)}
+                              >
+                                <Icon name="chevron-down" size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={t('models.removeReasoningLevel', 'Remove level')}
+                                className="text-destructive"
+                                onClick={() => removeManualReasoningEffort(effort)}
+                              >
+                                <Icon name="x" size={13} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+
+                        <label className="block space-y-1.5">
+                          <span className="text-xs font-medium text-muted-foreground">
+                            {t('models.defaultReasoningLevel', 'Default level')}
+                          </span>
+                          <select
+                            aria-label={t('models.defaultReasoningLevel', 'Default level')}
+                            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                            value={manualDefaultReasoningEffort ?? ''}
+                            onChange={(event) =>
+                              setManualDefaultReasoningEffort(event.target.value as ReasoningEffort)
+                            }
+                          >
+                            {manualReasoningEfforts.map((effort) => (
+                              <option key={effort} value={effort}>
+                                {getReasoningEffortLabel(t, effort)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-amber-700 dark:text-amber-300">
+                        {t(
+                          'models.reasoningLevelRequired',
+                          'Add at least one reasoning level.'
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border px-5 py-4">
@@ -912,6 +1154,12 @@ export const ModelsSettings: React.FC = () => {
                   const modelId = manualModelId.trim();
                   if (!modelId) return;
                   const name = manualModelName.trim() || modelId;
+                  const reasoning = manualReasoningConfigurable
+                    ? {
+                        reasoningEfforts: manualReasoningEfforts,
+                        defaultReasoningEffort: manualDefaultReasoningEffort,
+                      }
+                    : null;
                   setIsSavingManualModel(true);
                   try {
                     if (manualModelEditor.originalModelId) {
@@ -919,11 +1167,12 @@ export const ModelsSettings: React.FC = () => {
                         manualModelEditor.providerId,
                         manualModelEditor.originalModelId,
                         modelId,
-                        name
+                        name,
+                        reasoning
                       );
                       notify.success(t('models.modelUpdated', 'Model updated successfully'));
                     } else {
-                      await addManualModel(manualModelEditor.providerId, modelId, name);
+                      await addManualModel(manualModelEditor.providerId, modelId, name, reasoning);
                       notify.success(t('models.modelAdded', 'Model added successfully'));
                     }
                     closeManualModelEditor();
@@ -940,7 +1189,11 @@ export const ModelsSettings: React.FC = () => {
                     setIsSavingManualModel(false);
                   }
                 }}
-                disabled={!manualModelId.trim()}
+                disabled={
+                  !manualModelId.trim() ||
+                  (manualReasoningConfigurable &&
+                    (manualReasoningEfforts.length === 0 || !manualDefaultReasoningEffort))
+                }
               >
                 {isEditingManualModel ? t('common.save', 'Save') : t('models.addModel', 'Add Model')}
               </Button>

@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
-import { getReasoningLabel } from '../../services/reasoningCatalog';
+import { getReasoningEffortLabel } from './reasoningLabels';
 
 export const ReasoningDropdown: React.FC = () => {
+  const { t } = useTranslation();
   const {
     selectedProviderId,
     selectedModelId,
@@ -18,10 +20,10 @@ export const ReasoningDropdown: React.FC = () => {
   const availableEfforts = getAvailableReasoningEfforts(selectedProviderId, selectedModelId);
   const hasChoices = availableEfforts.length > 0;
   const currentLabel = selectedReasoningEffort
-    ? getReasoningLabel(selectedReasoningEffort)
+    ? getReasoningEffortLabel(t, selectedReasoningEffort)
     : availableEfforts[0]
-      ? getReasoningLabel(availableEfforts[0])
-      : 'Reasoning';
+      ? getReasoningEffortLabel(t, availableEfforts[0])
+      : t('models.reasoningEffort', 'Reasoning');
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -76,7 +78,7 @@ export const ReasoningDropdown: React.FC = () => {
                   : 'text-muted-foreground hover:bg-accent'
               )}
             >
-              {getReasoningLabel(effort)}
+              {getReasoningEffortLabel(t, effort)}
             </button>
           ))}
         </div>

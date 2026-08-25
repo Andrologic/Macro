@@ -1251,6 +1251,37 @@ describe('useProviderStore secret resolution', () => {
     ).toEqual([]);
   });
 
+  it('removes only a rejected reasoning effort for the current session', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      modelsByProvider: {
+        'provider-openai': [{
+          id: 'gpt-5.6',
+          name: 'GPT-5.6',
+          provider_id: 'provider-openai',
+          isEnabled: true,
+          reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultReasoningEffort: 'medium',
+        }],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-5.6',
+      selectedReasoningEffort: 'xhigh',
+      reasoningUnsupportedModelKeys: {},
+    });
+
+    providerStore.useProviderStore
+      .getState()
+      .markReasoningEffortUnsupportedForModel('provider-openai', 'gpt-5.6', 'xhigh');
+
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBe('medium');
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'gpt-5.6'),
+    ).toEqual(['low', 'medium', 'high', 'max']);
+  });
+
   it('records provider overflow limits when the observed limit lowers catalog metadata', async () => {
     const providerStore = await loadProviderStore();
 

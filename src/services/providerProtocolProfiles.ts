@@ -1,4 +1,4 @@
-import type { ReasoningEffort } from '../types';
+import type { ReasoningEffort, ReasoningTransportMode } from '../types';
 
 export type ChatCompletionRequestReasoning =
   | 'none'
@@ -31,6 +31,7 @@ export interface ChatCompletionProviderProtocolParams {
   baseUrl?: string;
   modelId: string;
   forceReasoningContentReplay?: boolean;
+  reasoningTransportMode?: ReasoningTransportMode;
 }
 
 interface ProviderProtocolFamilies {
@@ -105,8 +106,14 @@ const detectProviderProtocolFamilies = (
 
 const resolveRequestReasoning = (
   providerType: string,
-  families: ProviderProtocolFamilies
+  families: ProviderProtocolFamilies,
+  transportMode?: ReasoningTransportMode
 ): ChatCompletionRequestReasoning => {
+  if (transportMode === 'none') return 'none';
+  if (transportMode === 'openai_effort') return 'openai_reasoning_effort';
+  if (transportMode === 'openrouter_reasoning') return 'openrouter_reasoning';
+  if (transportMode === 'deepseek_thinking') return 'deepseek_thinking';
+  if (transportMode === 'kimi_fixed') return 'kimi_thinking_keep_all';
   if (families.isOpenRouter) return 'openrouter_reasoning';
   if (families.isKimiFamily) return 'kimi_thinking_keep_all';
   if (families.isDeepSeekFamily) return 'deepseek_thinking';
@@ -126,9 +133,14 @@ const resolveToolCallIdPolicy = (
 
 const resolveReasoningReplay = (
   families: ProviderProtocolFamilies,
-  forceReasoningContentReplay?: boolean
+  forceReasoningContentReplay?: boolean,
+  requestReasoning?: ChatCompletionRequestReasoning
 ): ChatCompletionReasoningReplay => {
   if (forceReasoningContentReplay) return 'reasoning_content_all';
+  if (requestReasoning === 'openrouter_reasoning') return 'reasoning_details';
+  if (requestReasoning === 'kimi_thinking_keep_all') return 'reasoning_content_all';
+  if (requestReasoning === 'deepseek_thinking') return 'reasoning_content_tool_chain';
+  if (requestReasoning === 'openai_reasoning_effort' || requestReasoning === 'none') return 'none';
   if (families.isOpenRouter) return 'reasoning_details';
   if (families.isKimiFamily) return 'reasoning_content_all';
   if (families.isDeepSeekFamily) return 'reasoning_content_tool_chain';
@@ -140,14 +152,25 @@ export const resolveChatCompletionProviderProtocolProfile = (
 ): ChatCompletionProviderProtocolProfile => {
   const providerType = params.providerType.trim().toLowerCase();
   const families = detectProviderProtocolFamilies(params);
-  const requestReasoning = resolveRequestReasoning(providerType, families);
-  const reasoningReplay = resolveReasoningReplay(families, params.forceReasoningContentReplay);
+  const requestReasoning = resolveRequestReasoning(
+    providerType,
+    families,
+    params.reasoningTransportMode
+  );
+  const reasoningReplay = resolveReasoningReplay(
+    families,
+    params.forceReasoningContentReplay,
+    params.reasoningTransportMode === undefined ? undefined : requestReasoning
+  );
 
   return {
     requestReasoning,
     reasoningReplay,
     requiresGenericStreaming: reasoningReplay !== 'none',
-    toolMessageName: families.isKimiFamily,
+    toolMessageName:
+      params.reasoningTransportMode === undefined
+        ? families.isKimiFamily
+        : requestReasoning === 'kimi_thinking_keep_all',
     toolCallIdPolicy: resolveToolCallIdPolicy(families),
     insertAssistantAfterToolBeforeUser: families.isMistralFamily,
     injectNoopToolWhenHistoryHasTools: families.isLiteLlmProxy,

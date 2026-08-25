@@ -10,6 +10,8 @@ let modelsByProvider: Record<string, AIModel[]>;
 let metadataModelConfigListeners: Set<(value: unknown) => void>;
 let loadMetadataModelConfigMock: ReturnType<typeof mock>;
 let saveMetadataModelConfigMock: ReturnType<typeof mock>;
+let addManualModelMock: ReturnType<typeof mock>;
+let updateManualModelMock: ReturnType<typeof mock>;
 const translate = (_key: string, fallback?: string) => fallback ?? _key;
 
 const provider = (id: string, overrides: Partial<ProviderConfig> = {}): ProviderConfig => ({
@@ -49,8 +51,8 @@ const loadModelsSettings = async () => {
       providerSettingsById: {},
       setProviderModelEnabled: mock(async () => undefined),
       setAllProviderModelsEnabled: mock(async () => undefined),
-      addManualModel: mock(async () => undefined),
-      updateManualModel: mock(async () => undefined),
+      addManualModel: addManualModelMock,
+      updateManualModel: updateManualModelMock,
       deleteManualModel: mock(async () => undefined),
       resetProviderModelContextOverflowLimit: mock(async () => undefined),
       setProviderModelContextWindowOverride: mock(async () => undefined),
@@ -79,8 +81,9 @@ const loadModelsSettings = async () => {
       onClick,
       disabled,
       type = 'button',
+      isLoading: _isLoading,
       ...props
-    }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    }: React.ButtonHTMLAttributes<HTMLButtonElement> & { isLoading?: boolean }) => (
       <button type={type} onClick={onClick} disabled={disabled} {...props}>
         {children}
       </button>
@@ -92,7 +95,22 @@ const loadModelsSettings = async () => {
   }));
 
   mock.module('../../../ui/Switch', () => ({
-    Switch: () => <input type="checkbox" />,
+    Switch: ({
+      checked,
+      onCheckedChange,
+      ...props
+    }: {
+      checked?: boolean;
+      onCheckedChange?: (checked: boolean) => void;
+      'aria-label'?: string;
+    }) => (
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onCheckedChange?.(event.target.checked)}
+        {...props}
+      />
+    ),
   }));
 
   mock.module('../../../ui/ConfirmPromptModal', () => ({
@@ -126,6 +144,12 @@ const flush = async () => {
   await Promise.resolve();
 };
 
+const setInputValue = (input: HTMLInputElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+};
+
 describe('ModelsSettings metadata model config', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -154,6 +178,8 @@ describe('ModelsSettings metadata model config', () => {
       }
       return value;
     });
+    addManualModelMock = mock(async () => undefined);
+    updateManualModelMock = mock(async () => undefined);
     window.localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -333,5 +359,102 @@ describe('ModelsSettings metadata model config', () => {
     expect(container!.textContent).toContain('33k');
     expect(container!.textContent).toContain('Set');
     expect(container!.textContent).toContain('Edit');
+  });
+
+  it('saves ordered standard and custom reasoning levels for a manual model', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    const addModelButton = Array.from(container!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model');
+    act(() => addModelButton?.click());
+
+    const inputs = Array.from(container!.querySelectorAll<HTMLInputElement>('input'));
+    const modelIdInput = inputs.find((input) => input.placeholder === 'e.g. gpt-4o-mini');
+    const configurableSwitch = inputs.find(
+      (input) => input.getAttribute('aria-label') === 'Configurable reasoning'
+    );
+    await act(async () => {
+      setInputValue(modelIdInput!, 'custom-reasoner');
+      configurableSwitch!.click();
+    });
+
+    const lowCheckbox = Array.from(container!.querySelectorAll<HTMLInputElement>('input'))
+      .find((input) => input.parentElement?.textContent?.trim() === 'Low');
+    act(() => lowCheckbox?.click());
+
+    const customInput = container!.querySelector<HTMLInputElement>('input[placeholder="e.g. ultra"]');
+    await act(async () => {
+      setInputValue(customInput!, 'ultra');
+    });
+    const addCustomButton = Array.from(container!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add');
+    act(() => addCustomButton?.click());
+
+    const defaultSelect = container!.querySelector<HTMLSelectElement>(
+      'select[aria-label="Default level"]'
+    );
+    await act(async () => {
+      defaultSelect!.value = 'ultra';
+      defaultSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const manualModelModal = container!.querySelector<HTMLDivElement>('div.fixed');
+    const saveButton = Array.from(manualModelModal!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add Model');
+    await act(async () => {
+      saveButton?.click();
+      await flush();
+    });
+
+    expect(addManualModelMock).toHaveBeenCalledWith('provider-a', 'custom-reasoner', 'custom-reasoner', {
+      reasoningEfforts: ['low', 'ultra'],
+      defaultReasoningEffort: 'ultra',
+    });
+  });
+
+  it('prefills a manual reasoning override and keeps an unknown level exact', async () => {
+    modelsByProvider = {
+      'provider-a': [
+        model('provider-a', 'model-a', {
+          isManual: true,
+          reasoningCapability: {
+            reasoningEfforts: ['medium', 'vendor-max'],
+            defaultReasoningEffort: 'vendor-max',
+            transportMode: 'openai_effort',
+            configurable: true,
+            source: 'manual_override',
+          },
+        }),
+      ],
+      'provider-b': [model('provider-b', 'model-b')],
+    };
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    const actionsButton = container!.querySelector<HTMLButtonElement>('button[title="Model actions"]');
+    act(() => actionsButton?.click());
+    const editButton = document.body.querySelector<HTMLButtonElement>('[role="menu"] button');
+    act(() => editButton?.click());
+
+    const defaultSelect = container!.querySelector<HTMLSelectElement>(
+      'select[aria-label="Default level"]'
+    );
+    expect(defaultSelect?.value).toBe('vendor-max');
+    expect(Array.from(defaultSelect?.options ?? []).map((option) => option.value)).toEqual([
+      'medium',
+      'vendor-max',
+    ]);
+    expect(container!.textContent).toContain('vendor-max');
   });
 });

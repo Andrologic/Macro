@@ -671,6 +671,21 @@ describe('streamingChat tool rendering helpers', () => {
     );
     expect(openRouterBody.reasoning).toEqual({ effort: 'high' });
     expect(openRouterBody.include_reasoning).toBe(true);
+
+    const capabilityDrivenBody: Record<string, unknown> = {};
+    __testables.applyReasoningToChatCompletionsRequest(
+      capabilityDrivenBody,
+      __testables.resolveChatCompletionProviderCapabilities({
+        providerType: 'openai',
+        modelId: 'custom-deepseek-compatible-model',
+        reasoningTransportMode: 'deepseek_thinking',
+      }),
+      'provider-custom-level'
+    );
+    expect(capabilityDrivenBody).toEqual({
+      thinking: { type: 'enabled' },
+      reasoning_effort: 'provider-custom-level',
+    });
   });
 
   it('uses Kimi preserved-thinking parameters without OpenAI reasoning_effort', async () => {
@@ -703,12 +718,126 @@ describe('streamingChat tool rendering helpers', () => {
     })).toBe(false);
   });
 
-  it('detects unsupported reasoning parameter errors', async () => {
+  it('distinguishes unsupported reasoning parameters from rejected effort values', async () => {
     const { __testables } = await loadStreamingChat();
     expect(__testables.isReasoningUnsupportedError('Unknown parameter: reasoning_effort')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Unsupported value for reasoning')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Unknown parameter: thinking')).toBe(true);
     expect(__testables.isReasoningUnsupportedError('Request failed: 500')).toBe(false);
+    expect(__testables.classifyReasoningRejection('Unknown parameter: reasoning_effort')).toBe(
+      'parameter'
+    );
+    expect(
+      __testables.classifyReasoningRejection(
+        "Invalid value 'xhigh' for reasoning_effort. Supported values are low, medium, high."
+      )
+    ).toBe('value');
+    expect(__testables.classifyReasoningRejection('reasoning_effort')).toBeNull();
+  });
+
+  it('retries a rejected reasoning value without disabling the whole parameter', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+      if (requestBodies.length === 1) {
+        return {
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: {
+                message:
+                  "Invalid value 'xhigh' for reasoning_effort. Supported values are low, medium, high.",
+              },
+            }),
+        };
+      }
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n'));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'openai-provider',
+      providerType: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'test-key',
+      modelId: 'gpt-future',
+      reasoningEffort: 'xhigh',
+      messages: [{ role: 'user', content: 'Hello' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]?.reasoning_effort).toBe('xhigh');
+    expect(requestBodies[1]?.reasoning_effort).toBeUndefined();
+  });
+
+  it('retries an unsupported reasoning parameter once without control fields', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      requestBodies.push(body);
+      if (requestBodies.length === 1) {
+        return {
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({ error: { message: 'Unknown parameter: reasoning_effort' } }),
+        };
+      }
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n'));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'openai-provider',
+      providerType: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'test-key',
+      modelId: 'gpt-future',
+      reasoningEffort: 'max',
+      messages: [{ role: 'user', content: 'Hello' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]?.reasoning_effort).toBe('max');
+    expect(requestBodies[1]?.reasoning_effort).toBeUndefined();
   });
 
   it('serializes provider reasoning metadata without replaying visible think blocks as content', async () => {

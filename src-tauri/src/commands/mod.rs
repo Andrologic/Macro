@@ -5157,8 +5157,25 @@ async fn configured_provider_models(
                 pricing_prompt: None,
                 pricing_completion: None,
                 pricing_request: None,
-                reasoning_efforts: None,
-                default_reasoning_effort: None,
+                reasoning_efforts: definition
+                    .get("reasoningEfforts")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|values| !values.is_empty()),
+                default_reasoning_effort: definition
+                    .get("defaultReasoningEffort")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
                 context_window_tokens: definition
                     .get("contextWindow")
                     .and_then(Value::as_i64)
@@ -5207,6 +5224,45 @@ async fn configured_provider_models(
     }
     models.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(models)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualModelReasoningInput {
+    reasoning_efforts: Vec<String>,
+    default_reasoning_effort: Option<String>,
+}
+
+fn normalize_manual_model_reasoning(
+    reasoning: Option<ManualModelReasoningInput>,
+) -> CommandResult<Option<(Vec<String>, Option<String>)>> {
+    let Some(reasoning) = reasoning else {
+        return Ok(None);
+    };
+    let mut efforts = Vec::new();
+    for effort in reasoning.reasoning_efforts {
+        let effort = effort.trim().to_string();
+        if !effort.is_empty() && !efforts.contains(&effort) {
+            efforts.push(effort);
+        }
+    }
+    if efforts.is_empty() {
+        return Err(command_error(
+            "Reasoning efforts cannot be empty when reasoning is configurable.",
+        ));
+    }
+    let default_effort = reasoning
+        .default_reasoning_effort
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(default_effort) = &default_effort {
+        if !efforts.contains(default_effort) {
+            return Err(command_error(
+                "Default reasoning effort must be included in reasoning efforts.",
+            ));
+        }
+    }
+    Ok(Some((efforts, default_effort)))
 }
 
 #[tauri::command]
@@ -5643,8 +5699,10 @@ pub async fn db_register_manual_model(
     provider_id: String,
     model_id: String,
     name: String,
+    reasoning: Option<ManualModelReasoningInput>,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
+    let reasoning = normalize_manual_model_reasoning(reasoning)?;
 
     let document = config_manager
         .effective_user_document(ConfigDocumentKind::Providers)
@@ -5663,15 +5721,17 @@ pub async fn db_register_manual_model(
         )));
     }
     let stable_id = format!("{}:{}", provider_id, uuid::Uuid::new_v4().simple());
-    manual_models.insert(
-        stable_id,
-        serde_json::json!({
-            "providerId": provider_id,
-            "modelId": model_id,
-            "displayName": name,
-            "enabled": true
-        }),
-    );
+    let mut definition = serde_json::json!({
+        "providerId": provider_id,
+        "modelId": model_id,
+        "displayName": name,
+        "enabled": true
+    });
+    if let Some((efforts, default_effort)) = reasoning {
+        definition["reasoningEfforts"] = serde_json::json!(efforts);
+        definition["defaultReasoningEffort"] = serde_json::json!(default_effort);
+    }
+    manual_models.insert(stable_id, definition);
     patch_provider_document_top_level(
         config_manager.inner(),
         "manualModels",
@@ -5689,8 +5749,10 @@ pub async fn db_update_manual_model(
     current_model_id: String,
     next_model_id: String,
     name: String,
+    reasoning: Option<ManualModelReasoningInput>,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
+    let reasoning = normalize_manual_model_reasoning(reasoning)?;
 
     let document = config_manager
         .effective_user_document(ConfigDocumentKind::Providers)
@@ -5719,15 +5781,17 @@ pub async fn db_update_manual_model(
         .get("enabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    manual_models.insert(
-        target,
-        serde_json::json!({
-            "providerId": provider_id,
-            "modelId": next_model_id,
-            "displayName": name,
-            "enabled": enabled
-        }),
-    );
+    let mut definition = serde_json::json!({
+        "providerId": provider_id,
+        "modelId": next_model_id,
+        "displayName": name,
+        "enabled": enabled
+    });
+    if let Some((efforts, default_effort)) = reasoning {
+        definition["reasoningEfforts"] = serde_json::json!(efforts);
+        definition["defaultReasoningEffort"] = serde_json::json!(default_effort);
+    }
+    manual_models.insert(target, definition);
     patch_provider_document_top_level(
         config_manager.inner(),
         "manualModels",
