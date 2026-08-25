@@ -228,5 +228,25 @@ describe('useToolsStore chat toolbox policy', () => {
     await expect(
       useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
     ).rejects.toThrow('Access denied by MCP server');
+    expect(useToolsStore.getState().mcpServers[0]?.status).toBe('online');
+  });
+
+  it('degrades a server only when the persistent runtime reports a transport failure', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    await useToolsStore.getState().refreshMCPServerTools('github');
+
+    const { services } = await import('../services');
+    (services.mcpRuntimeCallTool as unknown as {
+      mockRejectedValueOnce: (value: { code: string; message: string }) => void;
+    }).mockRejectedValueOnce({
+      code: 'MCP_RUNTIME_CALL_TOOL_FAILED',
+      message: 'Transport closed',
+    });
+
+    await expect(
+      useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
+    ).rejects.toThrow('Transport closed');
+    expect(useToolsStore.getState().mcpServers[0]?.status).toBe('degraded');
   });
 });

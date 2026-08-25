@@ -16,6 +16,15 @@ export interface ScopedMcpRuntimeFailure {
   message: string;
 }
 
+export class ScopedMcpToolReportedError extends Error {
+  readonly code = 'MCP_TOOL_REPORTED_ERROR';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScopedMcpToolReportedError';
+  }
+}
+
 export interface ScopedMcpRuntime {
   servers: MCPServer[];
   tools: MCPTool[];
@@ -279,7 +288,9 @@ export const callScopedMcpTool = async (
           ])
         : await call;
       if (response.isError) {
-        throw new Error(response.content || `MCP tool ${tool.name} reported an error.`);
+        throw new ScopedMcpToolReportedError(
+          response.content || `MCP tool ${tool.name} reported an error.`,
+        );
       }
       return response.content;
     } finally {
