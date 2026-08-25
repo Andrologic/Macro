@@ -11,6 +11,7 @@ export const UPDATER_TARGETS = Object.freeze([
   'darwin-aarch64',
 ]);
 
+const SEMVER_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const STABLE_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const REPOSITORY = /^[^/\s]+\/[^/\s]+$/;
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -30,10 +31,15 @@ function validateAssetName(value, label = 'assetName') {
   return assetName;
 }
 
-function validateVersion(version) {
+function validateVersion(version, channel) {
   const normalized = requireNonEmpty(version, 'version').replace(/^v/, '');
-  if (!STABLE_VERSION.test(normalized)) {
-    throw new Error(`Updater version must be a stable x.y.z version; found "${version}".`);
+  const expectedPattern = channel === 'preview' ? SEMVER_VERSION : STABLE_VERSION;
+  if (!expectedPattern.test(normalized)) {
+    const expected = channel === 'preview' ? 'a valid semantic version' : 'a stable x.y.z version';
+    throw new Error(`Updater version must be ${expected}; found "${version}".`);
+  }
+  if (channel === 'preview' && !normalized.includes('-')) {
+    throw new Error(`Preview updater version must contain a prerelease identifier; found "${version}".`);
   }
   return normalized;
 }
@@ -87,15 +93,20 @@ function validateArtifact(target, artifact) {
 export function createUpdaterManifest({
   version,
   tag,
+  channel = 'stable',
   repository,
   notes = '',
   pubDate,
   artifacts,
 }) {
-  const normalizedVersion = validateVersion(version);
+  if (channel !== 'stable' && channel !== 'preview') {
+    throw new Error(`Unsupported updater channel: ${channel}`);
+  }
+  const normalizedVersion = validateVersion(version, channel);
   const normalizedTag = requireNonEmpty(tag, 'tag');
-  if (normalizedTag !== `v${normalizedVersion}`) {
-    throw new Error(`Updater tag must exactly match v${normalizedVersion}; found "${tag}".`);
+  const expectedTag = channel === 'preview' ? 'preview' : `v${normalizedVersion}`;
+  if (normalizedTag !== expectedTag) {
+    throw new Error(`Updater tag must exactly match ${expectedTag}; found "${tag}".`);
   }
   const normalizedRepository = requireNonEmpty(repository, 'repository');
   const normalizedNotes = typeof notes === 'string' ? notes : String(notes ?? '');
@@ -166,6 +177,10 @@ export function parseUpdaterArguments(args) {
         options.tag = nextArgument(args, index, argument);
         index += 1;
         break;
+      case '--channel':
+        options.channel = nextArgument(args, index, argument);
+        index += 1;
+        break;
       case '--repository':
         options.repository = nextArgument(args, index, argument);
         index += 1;
@@ -206,7 +221,8 @@ export function parseUpdaterArguments(args) {
 function printUsage() {
   console.log([
     'Usage:',
-    '  bun dev/release/updater-manifest.mjs --version <x.y.z> --tag <vX.Y.Z>',
+    '  bun dev/release/updater-manifest.mjs --version <semver> --tag <tag>',
+    '    [--channel <stable|preview>]',
     '    --repository <owner/name> --notes-file <path> --pub-date <RFC3339>',
     '    --output <path> --artifact <target> <path> <signature-path> <asset-name>',
     '',

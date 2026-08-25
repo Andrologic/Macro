@@ -27,6 +27,7 @@ const createFixture = () => {
   const relaunch = mock(async () => undefined);
   const bindings: NativeUpdaterBindings = {
     getVersion: mock(async () => '0.1.0'),
+    getUpdaterTarget: mock(async () => 'windows-x86_64'),
     check,
     relaunch,
   };
@@ -50,7 +51,11 @@ describe('TauriAppUpdaterClient', () => {
     });
     await client.download((event) => events.push(event));
 
-    expect(fixture.check).toHaveBeenCalledWith({ timeout: 30_000 });
+    expect(fixture.check).toHaveBeenCalledWith({
+      timeout: 30_000,
+      target: 'stable-windows-x86_64',
+      allowDowngrades: false,
+    });
     expect(events).toEqual([
       { type: 'started', contentLength: 12 },
       { type: 'progress', chunkLength: 12 },
@@ -67,6 +72,39 @@ describe('TauriAppUpdaterClient', () => {
     await expect(client.check()).resolves.toEqual({ currentVersion: '0.1.0', update: null });
 
     expect(fixture.close).toHaveBeenCalledTimes(1);
+  });
+
+  test('checks the preview target without allowing downgrades', async () => {
+    const fixture = createFixture();
+    const client = new TauriAppUpdaterClient(
+      async () => fixture.bindings,
+      async () => 'preview',
+    );
+
+    await client.check();
+
+    expect(fixture.check).toHaveBeenCalledWith({
+      timeout: 30_000,
+      target: 'preview-windows-x86_64',
+      allowDowngrades: false,
+    });
+  });
+
+  test('allows returning from a prerelease to the stable channel', async () => {
+    const fixture = createFixture();
+    fixture.bindings.getVersion = mock(async () => '0.2.0-nightly.20260825.12');
+    const client = new TauriAppUpdaterClient(
+      async () => fixture.bindings,
+      async () => 'stable',
+    );
+
+    await client.check();
+
+    expect(fixture.check).toHaveBeenCalledWith({
+      timeout: 30_000,
+      target: 'stable-windows-x86_64',
+      allowDowngrades: true,
+    });
   });
 
   test('installs, closes the native resource, and relaunches in order', async () => {

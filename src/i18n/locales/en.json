@@ -924,6 +924,17 @@
     "language": "Language",
     "language_desc": "Select your preferred language interface",
     "application": "Application",
+    "updateChannel": {
+      "label": "Update channel",
+      "stable": "Stable",
+      "preview": "Preview (nightly)",
+      "stableDescription": "Receive production releases only.",
+      "previewDescription": "Receive validated nightly and release candidate builds. Switching back to Stable may install an older version.",
+      "upToDate": "Macro is up to date on the selected channel.",
+      "stableConfirmationTitle": "Switch to Stable?",
+      "stableConfirmationDescription": "If the latest Stable version is older than this Preview, Macro will offer to install that older signed version.",
+      "switchToStable": "Switch to Stable"
+    },
     "sound_effects": "Sound Effects",
     "sound_effects_desc": "Play sounds on task completion or errors",
     "desktopNotificationsRuntime": "Runtime status",

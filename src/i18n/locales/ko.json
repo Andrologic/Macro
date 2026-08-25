@@ -901,6 +901,17 @@
     "language": "언어",
     "language_desc": "선호하는 언어 인터페이스를 선택하세요",
     "application": "애플리케이션",
+    "updateChannel": {
+      "label": "업데이트 채널",
+      "stable": "안정판",
+      "preview": "미리 보기 (Nightly)",
+      "stableDescription": "프로덕션 릴리스만 받습니다.",
+      "previewDescription": "검증된 Nightly 및 릴리스 후보 빌드를 받습니다. 안정판으로 돌아가면 이전 버전이 설치될 수 있습니다.",
+      "upToDate": "선택한 채널에서 Macro가 최신 상태입니다.",
+      "stableConfirmationTitle": "Stable 채널로 전환할까요?",
+      "stableConfirmationDescription": "최신 Stable 버전이 현재 Preview보다 이전 버전이면 Macro가 서명된 이전 버전 설치를 제안합니다.",
+      "switchToStable": "Stable로 전환"
+    },
     "sound_effects": "음향 효과",
     "sound_effects_desc": "작업 완료 또는 오류 시 소리 재생",
     "desktopNotificationsRuntime": "런타임 상태",

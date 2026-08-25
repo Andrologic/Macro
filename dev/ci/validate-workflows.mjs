@@ -55,7 +55,15 @@ export function validateWorkflowDocument(document, filePath) {
         && jobName === 'draft-release'
         && permission === 'contents'
         && level === 'write';
-      if (level === 'write' && !allowedReleaseWrite) {
+      const allowedChannelWrite = filePath.endsWith('publish-update-channel.yml')
+        && jobName === 'publish'
+        && permission === 'contents'
+        && level === 'write';
+      const allowedPreviewWrite = filePath.endsWith('preview.yml')
+        && jobName === 'publish'
+        && permission === 'contents'
+        && level === 'write';
+      if (level === 'write' && !allowedReleaseWrite && !allowedChannelWrite && !allowedPreviewWrite) {
         fail(`job "${jobName}" requests unexpected ${permission}: write permission.`);
       }
     }
