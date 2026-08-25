@@ -623,6 +623,21 @@ const loadChatZoneModule = async () => {
   ({ default: ChatZone } = await import(`./ChatZone.tsx?chat-zone-test=${importCounter}`));
 };
 
+const preloadChatZoneLazyComponents = async () => {
+  await Promise.all([
+    import('./ConversationGoalBanner'),
+    import('./QuestionnaireFooter'),
+    import('./ToolApprovalFooter'),
+    import('./QuestionnaireResponseSummary'),
+    import('./ImplementTaskTodoDropdown'),
+    import('./ContextWindowIndicator'),
+    import('./AgentCodeReplayConfirmModal'),
+    import('../modals/ImagePreviewModal'),
+    import('../architect/ArchitectPlanNamingRecoveryModal'),
+    import('../architect/PlanFormModal'),
+  ]);
+};
+
 const buildConversation = (): MockConversation => ({
   id: 'conv-1',
   title: 'New Conversation',
@@ -1013,6 +1028,7 @@ describe('ChatZone', () => {
     }
 
     await loadChatZoneModule();
+    await preloadChatZoneLazyComponents();
     resetState();
     resetNotifyMocks();
     markdownRendererContentMock.mockClear();
