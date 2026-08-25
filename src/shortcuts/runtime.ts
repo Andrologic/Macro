@@ -217,8 +217,8 @@ export const shortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefin
     },
   }),
   'chat.secondarySend': createRuntimeDefinition('chat.secondarySend', {
-    constraints: { isChatInputFocused: true },
-    contextHints: [],
+    constraints: { isChatInputFocused: true, isStreaming: true },
+    contextHints: ['streaming'],
     handler: ({ window }) => {
       window.dispatchEvent(new CustomEvent('macro:composer-secondary-send'));
       return true;

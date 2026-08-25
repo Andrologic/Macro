@@ -1148,7 +1148,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
   const secondarySendBinding = useShortcutsStore(
-    (state) => state.bindings?.['chat.secondarySend'] ?? 'Mod+Enter',
+    (state) => state.bindings ? state.bindings['chat.secondarySend'] : 'Mod+Enter',
   );
   const speechLanguage = useSpeechToTextStore((state) => state.language);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
@@ -2524,14 +2524,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (isBusySending) {
       if (!selectedConversationId || !text) return;
       try {
+        const internalAgentProfile = getConflictAssistantInternalAgentProfile(selectedConversationId);
         await submitDuringActiveTurn(
           {
             conversationId: selectedConversationId,
             content: text,
             taskId: implementTaskIdForSend,
+            images: [...composerImages],
+            ...(internalAgentProfile ? { internalAgentProfile } : {}),
           },
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
+        if (internalAgentProfile) {
+          clearConflictAssistantInternalAgentProfile(selectedConversationId);
+        }
         clearComposerDraftForContext(composerDraftContextKey);
         clearComposerDraftForContext(`conversation:${selectedConversationId}`);
         composerEditorRef.current?.clear();
