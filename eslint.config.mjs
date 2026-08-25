@@ -46,7 +46,7 @@ export default tseslint.config(
       '@typescript-eslint/ban-ts-comment': 'off',
       'no-case-declarations': 'off',
       'prefer-const': 'off',
-      'react-hooks/rules-of-hooks': 'off',
+      'react-hooks/rules-of-hooks': 'error',
       'react-hooks/set-state-in-effect': 'off',
       'react-hooks/purity': 'off',
       'react-hooks/incompatible-library': 'off',

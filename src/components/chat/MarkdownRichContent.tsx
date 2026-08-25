@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
@@ -404,6 +404,50 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ content, language = 'text', block
   );
 };
 
+const MarkdownCode: NonNullable<Components['code']> = ({ className, children, ...props }) => {
+  const domProps = omitMarkdownDomProps(props);
+  const [blockKey] = useState(() => ++blockKeySeed);
+  const languageMatch = /language-([^\s]+)/i.exec(className || '');
+  const language = languageMatch?.[1] || '';
+  const rawCodeText = getTextFromChildren(children);
+  const codeText = rawCodeText.replace(/\n$/, '');
+
+  if (language.toLowerCase() === 'mermaid' || language.toLowerCase() === 'mmd') {
+    return (
+      <Suspense fallback={<MermaidFallback />}>
+        <MermaidRenderer code={codeText} blockKey={blockKey} />
+      </Suspense>
+    );
+  }
+
+  if (language.toLowerCase() === 'thinking') {
+    return <div className="whitespace-pre-wrap text-sm text-muted-foreground">{codeText}</div>;
+  }
+
+  const isBlock = !!language || rawCodeText.endsWith('\n') || codeText.includes('\n');
+  if (isBlock) {
+    return (
+      <CodeBlock
+        content={codeText}
+        language={language || 'text'}
+        blockKey={blockKey}
+      />
+    );
+  }
+
+  return (
+    <code
+      {...domProps}
+      className={cn(
+        'px-1.5 py-0.5 mx-0.5 bg-muted border border-border/50 rounded-md text-[0.875em] font-mono text-primary font-medium',
+        className
+      )}
+    >
+      {children}
+    </code>
+  );
+};
+
 export interface MarkdownRichContentProps {
   content: string;
 }
@@ -514,49 +558,7 @@ const MarkdownRichContentBase: React.FC<MarkdownRichContentProps> = ({ content }
         </blockquote>
       );
     },
-    code: ({ className, children, ...props }) => {
-      const domProps = omitMarkdownDomProps(props);
-      const blockKeyRef = useRef(++blockKeySeed);
-      const languageMatch = /language-([^\s]+)/i.exec(className || '');
-      const language = languageMatch?.[1] || '';
-      const rawCodeText = getTextFromChildren(children);
-      const codeText = rawCodeText.replace(/\n$/, '');
-
-      if (language.toLowerCase() === 'mermaid' || language.toLowerCase() === 'mmd') {
-        return (
-          <Suspense fallback={<MermaidFallback />}>
-            <MermaidRenderer code={codeText} blockKey={blockKeyRef.current} />
-          </Suspense>
-        );
-      }
-
-      if (language.toLowerCase() === 'thinking') {
-        return <div className="whitespace-pre-wrap text-sm text-muted-foreground">{codeText}</div>;
-      }
-
-      const isBlock = !!language || rawCodeText.endsWith('\n') || codeText.includes('\n');
-      if (isBlock) {
-        return (
-          <CodeBlock
-            content={codeText}
-            language={language || 'text'}
-            blockKey={blockKeyRef.current}
-          />
-        );
-      }
-
-      return (
-        <code
-          {...domProps}
-          className={cn(
-            'px-1.5 py-0.5 mx-0.5 bg-muted border border-border/50 rounded-md text-[0.875em] font-mono text-primary font-medium',
-            className
-          )}
-        >
-          {children}
-        </code>
-      );
-    },
+    code: MarkdownCode,
     pre: (props) => <>{props.children}</>,
     ul: ({ className: listClassName, ...props }) => {
       const domProps = omitMarkdownDomProps(props);

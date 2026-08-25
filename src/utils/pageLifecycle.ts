@@ -10,18 +10,25 @@ export const markPageShuttingDown = (reason?: unknown): void => {
   pageLifecycleController.abort(reason);
 };
 
-if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', () => {
-    markPageShuttingDown('beforeunload');
-  });
+const handleBeforeUnload = (): void => {
+  markPageShuttingDown('beforeunload');
+};
 
-  window.addEventListener('pagehide', () => {
-    markPageShuttingDown('pagehide');
-  });
+const handlePageHide = (): void => {
+  markPageShuttingDown('pagehide');
+};
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', handleBeforeUnload);
+  window.addEventListener('pagehide', handlePageHide);
 }
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+    }
     markPageShuttingDown('hmr-dispose');
   });
 }

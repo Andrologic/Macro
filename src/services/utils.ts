@@ -3,10 +3,9 @@ export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 export const maybeFail = (rate: number) => {
   if (rate <= 0) return;
   if (Math.random() < rate) {
-    throw {
+    throw Object.assign(new Error('Simulated backend error'), {
       code: 'MOCK_ERROR',
-      message: 'Simulated backend error',
       details: { rate },
-    };
+    });
   }
 };
