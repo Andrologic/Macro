@@ -1,0 +1,25 @@
+{
+  "name": "Catppuccin Latte",
+  "type": "light",
+  "colors": {
+    "background": "#eff1f5",
+    "foreground": "#4c4f69",
+    "card": "#eff1f5",
+    "cardForeground": "#4c4f69",
+    "popover": "#eff1f5",
+    "popoverForeground": "#4c4f69",
+    "primary": "#8839ef",
+    "primaryForeground": "#eff1f5",
+    "secondary": "#e6e9ef",
+    "secondaryForeground": "#4c4f69",
+    "muted": "#e6e9ef",
+    "mutedForeground": "#6c6f85",
+    "accent": "#ea76cb",
+    "accentForeground": "#eff1f5",
+    "destructive": "#d20f39",
+    "destructiveForeground": "#eff1f5",
+    "border": "#e6e9ef",
+    "input": "#e6e9ef",
+    "ring": "#8839ef"
+  }
+}

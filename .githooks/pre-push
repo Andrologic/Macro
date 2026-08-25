@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+bun dev/ci/pre-push.mjs "$@"

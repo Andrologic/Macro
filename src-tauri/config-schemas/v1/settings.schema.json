@@ -1,0 +1,202 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SettingsDocument",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "appearance": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AppearanceSettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "applications": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ApplicationSettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "code": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CodeDisplaySettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "extensions": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    },
+    "language": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "notifications": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/NotificationSettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "promptHistoryNavigationMode": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schemaVersion": {
+      "default": 1,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "shortcuts": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "AppearanceSettings": {
+      "type": "object",
+      "properties": {
+        "nativeMacosTitlebarBackground": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nativeMacosTitlebarTheme": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "zoomLevel": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "zoomMode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApplicationSettings": {
+      "type": "object",
+      "properties": {
+        "editorApp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "editorCommand": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filesApp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filesCommand": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "terminalApp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "terminalCommand": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "CodeDisplaySettings": {
+      "type": "object",
+      "properties": {
+        "overflowMode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NotificationSettings": {
+      "type": "object",
+      "properties": {
+        "channelModes": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "inAppEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

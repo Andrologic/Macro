@@ -1,0 +1,118 @@
+{
+  "themes": [
+    {
+      "id": "macro-dark",
+      "name": "Macro Dark",
+      "path": "/themes/macro-dark.json",
+      "type": "dark"
+    },
+    {
+      "id": "macro-light",
+      "name": "Macro Light",
+      "path": "/themes/macro-light.json",
+      "type": "light"
+    },
+    {
+      "id": "dracula",
+      "name": "Dracula",
+      "path": "/themes/dracula.json",
+      "type": "dark"
+    },
+    {
+      "id": "catppuccin-mocha",
+      "name": "Catppuccin Mocha",
+      "path": "/themes/catppuccin-mocha.json",
+      "type": "dark"
+    },
+    {
+      "id": "catppuccin-latte",
+      "name": "Catppuccin Latte",
+      "path": "/themes/catppuccin-latte.json",
+      "type": "light"
+    },
+    {
+      "id": "catppuccin-frappe",
+      "name": "Catppuccin Frappé",
+      "path": "/themes/catppuccin-frappe.json",
+      "type": "dark"
+    },
+    {
+      "id": "catppuccin-macchiato",
+      "name": "Catppuccin Macchiato",
+      "path": "/themes/catppuccin-macchiato.json",
+      "type": "dark"
+    },
+    {
+      "id": "gruvbox-dark",
+      "name": "Gruvbox Dark",
+      "path": "/themes/gruvbox-dark.json",
+      "type": "dark"
+    },
+    {
+      "id": "gruvbox-light",
+      "name": "Gruvbox Light",
+      "path": "/themes/gruvbox-light.json",
+      "type": "light"
+    },
+    {
+      "id": "nord",
+      "name": "Nord",
+      "path": "/themes/nord.json",
+      "type": "dark"
+    },
+    {
+      "id": "tokyo-night",
+      "name": "Tokyo Night",
+      "path": "/themes/tokyo-night.json",
+      "type": "dark"
+    },
+    {
+      "id": "tokyo-day",
+      "name": "Tokyo Day",
+      "path": "/themes/tokyo-day.json",
+      "type": "light"
+    },
+    {
+      "id": "tokyo-storm",
+      "name": "Tokyo Storm",
+      "path": "/themes/tokyo-storm.json",
+      "type": "dark"
+    },
+    {
+      "id": "tokyo-moon",
+      "name": "Tokyo Moon",
+      "path": "/themes/tokyo-moon.json",
+      "type": "dark"
+    },
+    {
+      "id": "solarized-dark",
+      "name": "Solarized Dark",
+      "path": "/themes/solarized-dark.json",
+      "type": "dark"
+    },
+    {
+      "id": "solarized-light",
+      "name": "Solarized Light",
+      "path": "/themes/solarized-light.json",
+      "type": "light"
+    },
+    {
+      "id": "github-dark",
+      "name": "GitHub Dark",
+      "path": "/themes/github-dark.json",
+      "type": "dark"
+    },
+    {
+      "id": "github-light",
+      "name": "GitHub Light",
+      "path": "/themes/github-light.json",
+      "type": "light"
+    },
+    {
+      "id": "one-dark",
+      "name": "One Dark",
+      "path": "/themes/one-dark.json",
+      "type": "dark"
+    }
+  ]
+}

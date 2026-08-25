@@ -1,0 +1,121 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+
+const loadPreferenceMock = mock(async (_key: string): Promise<string | null> => null);
+const savePreferenceMock = mock(async () => undefined);
+const openExternalTargetMock = mock(async () => undefined);
+const listExternalAppsMock = mock(async () => ({
+  editor: [
+    { id: 'none', label: 'Do nothing', action: 'editor', kind: 'none' },
+    { id: 'vscode', label: 'Visual Studio Code', action: 'editor', kind: 'detected' },
+    { id: 'cursor', label: 'Cursor', action: 'editor', kind: 'detected' },
+  ],
+  terminal: [
+    { id: 'none', label: 'Do nothing', action: 'terminal', kind: 'none' },
+    { id: 'terminal', label: 'Terminal', action: 'terminal', kind: 'builtin' },
+    { id: 'wezterm', label: 'WezTerm', action: 'terminal', kind: 'detected' },
+  ],
+  files: [
+    { id: 'none', label: 'Do nothing', action: 'files', kind: 'none' },
+    { id: 'finder', label: 'Finder', action: 'files', kind: 'builtin' },
+  ],
+}));
+
+const actualTauriIpc = await import('./tauriIpc');
+let importCounter = 0;
+
+const loadProjectOpeners = async () => {
+  const actualPreferences = await import(
+    `./preferences.ts?project-openers-preferences-test=${importCounter + 1}`
+  );
+
+  mock.module('./preferences', () => ({
+    ...actualPreferences,
+    loadPreference: loadPreferenceMock,
+    savePreference: savePreferenceMock,
+  }));
+
+  mock.module('./tauriIpc', () => ({
+    ...actualTauriIpc,
+    isTauriAvailable: () => true,
+    listExternalApps: listExternalAppsMock,
+    openExternalTarget: openExternalTargetMock,
+  }));
+
+  importCounter += 1;
+  return import(`./projectOpeners.ts?test=${importCounter}`);
+};
+
+describe('projectOpeners', () => {
+  beforeEach(() => {
+    loadPreferenceMock.mockReset();
+    savePreferenceMock.mockReset();
+    openExternalTargetMock.mockReset();
+    listExternalAppsMock.mockReset();
+    listExternalAppsMock.mockImplementation(async () => ({
+      editor: [
+        { id: 'none', label: 'Do nothing', action: 'editor', kind: 'none' },
+        { id: 'vscode', label: 'Visual Studio Code', action: 'editor', kind: 'detected' },
+        { id: 'cursor', label: 'Cursor', action: 'editor', kind: 'detected' },
+      ],
+      terminal: [
+        { id: 'none', label: 'Do nothing', action: 'terminal', kind: 'none' },
+        { id: 'terminal', label: 'Terminal', action: 'terminal', kind: 'builtin' },
+        { id: 'wezterm', label: 'WezTerm', action: 'terminal', kind: 'detected' },
+      ],
+      files: [
+        { id: 'none', label: 'Do nothing', action: 'files', kind: 'none' },
+        { id: 'finder', label: 'Finder', action: 'files', kind: 'builtin' },
+      ],
+    }));
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it('migrates a legacy command preference to a detected app id', async () => {
+    loadPreferenceMock.mockImplementation(async (key: string) => {
+      if (key === 'projectOpenEditorCommand') {
+        return 'code -n';
+      }
+      return null;
+    });
+
+    const { loadProjectOpenSettings } = await loadProjectOpeners();
+    const result = await loadProjectOpenSettings();
+
+    expect(result.selectedAppIdsByAction.editor).toBe('vscode');
+    expect(savePreferenceMock).toHaveBeenCalledWith('projectOpenEditorApp', 'vscode');
+  });
+
+  it('uses none when saved and hides the action', async () => {
+    loadPreferenceMock.mockImplementation(async (key: string) => {
+      if (key === 'projectOpenTerminalApp') {
+        return 'none';
+      }
+      return null;
+    });
+
+    const { loadProjectOpenSettings, shouldRenderProjectOpenAction } = await loadProjectOpeners();
+    const result = await loadProjectOpenSettings();
+
+    expect(result.selectedAppIdsByAction.terminal).toBe('none');
+    expect(shouldRenderProjectOpenAction(result.selectedAppIdsByAction, 'terminal')).toBe(false);
+  });
+
+  it('opens with the selected app id', async () => {
+    const { openProjectInExternalApp } = await loadProjectOpeners();
+
+    await openProjectInExternalApp({
+      targetPath: '/workspace/api',
+      action: 'editor',
+      appId: 'cursor',
+    });
+
+    expect(openExternalTargetMock).toHaveBeenCalledWith({
+      targetPath: '/workspace/api',
+      action: 'editor',
+      appId: 'cursor',
+    });
+  });
+});

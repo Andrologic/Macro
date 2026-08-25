@@ -1,0 +1,420 @@
+/* =============================================================================
+   HIGHLIGHT.JS SYNTAX HIGHLIGHTING THEME
+   A custom dark theme matching the app's design system
+   Based on VS Code Dark+ with custom accent colors
+   ============================================================================= */
+
+.hljs-code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  color: #d4d4d4;
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Monaco, Inconsolata, monospace;
+  line-height: 1.6;
+}
+
+/* Comments */
+.hljs-comment,
+.hljs-quote {
+  color: #6a9955;
+  font-style: italic;
+}
+
+/* Keywords */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-addition {
+  color: #569cd6;
+}
+
+/* Control flow */
+.hljs-control-flow {
+  color: #c586c0;
+}
+
+/* Built-ins */
+.hljs-built_in,
+.hljs-name,
+.hljs-tag {
+  color: #4ec9b0;
+}
+
+/* Literals */
+.hljs-literal,
+.hljs-number,
+.hljs-bullet {
+  color: #b5cea8;
+}
+
+/* Strings */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet {
+  color: #ce9178;
+}
+
+/* Regex */
+.hljs-regexp {
+  color: #d16969;
+}
+
+/* Titles, functions */
+.hljs-title,
+.hljs-section,
+.hljs-selector-id,
+.hljs-function {
+  color: #dcdcaa;
+}
+
+/* Class names */
+.hljs-class .hljs-title,
+.hljs-title.class_ {
+  color: #4ec9b0;
+}
+
+/* Methods */
+.hljs-function .hljs-title,
+.hljs-title.function_ {
+  color: #dcdcaa;
+}
+
+/* Variables */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-class,
+.hljs-selector-attr {
+  color: #9cdcfe;
+}
+
+/* Attributes */
+.hljs-attr,
+.hljs-attribute {
+  color: #9cdcfe;
+}
+
+/* Types */
+.hljs-type {
+  color: #4ec9b0;
+}
+
+/* Parameters */
+.hljs-params {
+  color: #9cdcfe;
+}
+
+/* Operators */
+.hljs-operator,
+.hljs-selector-pseudo {
+  color: #d4d4d4;
+}
+
+/* Meta */
+.hljs-meta {
+  color: #569cd6;
+}
+
+/* Deletion */
+.hljs-deletion {
+  color: #f85149;
+}
+
+/* Emphasis */
+.hljs-emphasis {
+  font-style: italic;
+}
+
+/* Strong */
+.hljs-strong {
+  font-weight: bold;
+}
+
+/* Links */
+.hljs-link {
+  color: #3794ff;
+  text-decoration: underline;
+}
+
+/* Punctuation */
+.hljs-punctuation {
+  color: #d4d4d4;
+}
+
+/* =============================================================================
+   LANGUAGE-SPECIFIC TWEAKS
+   ============================================================================= */
+
+/* TypeScript/JavaScript specific */
+.hljs.language-typescript .hljs-keyword,
+.hljs.language-javascript .hljs-keyword {
+  color: #569cd6;
+}
+
+/* Rust specific */
+.hljs.language-rust .hljs-keyword {
+  color: #c586c0;
+}
+
+.hljs.language-rust .hljs-macro {
+  color: #4ec9b0;
+}
+
+/* Python specific */
+.hljs.language-python .hljs-decorator {
+  color: #dcdcaa;
+}
+
+.hljs.language-python .hljs-string-interpolation {
+  color: #9cdcfe;
+}
+
+/* JSON specific */
+.hljs.language-json .hljs-attr {
+  color: #9cdcfe;
+}
+
+.hljs.language-json .hljs-string {
+  color: #ce9178;
+}
+
+/* CSS specific */
+.hljs.language-css .hljs-property {
+  color: #9cdcfe;
+}
+
+.hljs.language-css .hljs-selector-tag {
+  color: #d7ba7d;
+}
+
+/* Bash/Shell specific */
+.hljs.language-bash .hljs-variable,
+.hljs.language-shell .hljs-variable {
+  color: #9cdcfe;
+}
+
+/* =============================================================================
+   SCROLLBAR STYLING FOR CODE BLOCKS
+   ============================================================================= */
+
+.markdown-code-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+
+.markdown-code-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.markdown-code-scroll::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 4px;
+}
+
+.markdown-code-scroll::-webkit-scrollbar-thumb:hover {
+  background: #4f4f4f;
+}
+
+/* Firefox */
+.markdown-code-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #424242 transparent;
+}
+
+/* =============================================================================
+   MERMAID DIAGRAM STYLING
+   Styling for Mermaid-rendered diagrams to match the app's dark theme
+   ============================================================================= */
+
+.mermaid-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
+}
+
+/* Mermaid SVG styling */
+.mermaid-container svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Mermaid nodes */
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node ellipse,
+.mermaid .node polygon,
+.mermaid .node path {
+  fill: #1e1e1e;
+  stroke: #424242;
+  stroke-width: 2px;
+}
+
+/* Mermaid node text */
+.mermaid .node text {
+  fill: #d4d4d4;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
+/* Mermaid edges/lines */
+.mermaid .edgePath .path {
+  stroke: #606060;
+  stroke-width: 2px;
+}
+
+/* Mermaid edge labels */
+.mermaid .edgeLabel {
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  font-size: 12px;
+}
+
+/* Mermaid cluster backgrounds */
+.mermaid .cluster rect {
+  fill: #1e1e1e;
+  stroke: #424242;
+  stroke-width: 1px;
+}
+
+/* Mermaid class diagram */
+.mermaid .classBox rect {
+  fill: #1e1e1e;
+  stroke: #424242;
+}
+
+.mermaid .classBox text {
+  fill: #d4d4d4;
+  font-weight: 500;
+}
+
+.mermaid .classLabel rect {
+  fill: #252526;
+  stroke: #424242;
+}
+
+/* Mermaid sequence diagram */
+.mermaid .actor rect,
+.mermaid .actor line {
+  fill: #1e1e1e;
+  stroke: #424242;
+}
+
+.mermaid .actor text {
+  fill: #d4d4d4;
+}
+
+.mermaid .messageLine0,
+.mermaid .messageLine1 {
+  stroke: #606060;
+  stroke-width: 2px;
+}
+
+.mermaid .messageText {
+  fill: #d4d4d4;
+  font-size: 12px;
+}
+
+/* Mermaid state diagram */
+.mermaid .state circle,
+.mermaid .state rect {
+  fill: #1e1e1e;
+  stroke: #424242;
+}
+
+.mermaid .state text {
+  fill: #d4d4d4;
+}
+
+/* Mermaid gantt chart */
+.mermaid .taskText {
+  fill: #d4d4d4;
+}
+
+.mermaid .titleText {
+  fill: #d4d4d4;
+  font-weight: 600;
+}
+
+.mermaid .grid .tick line {
+  stroke: #424242;
+}
+
+/* Mermaid pie chart */
+.mermaid .pie text {
+  fill: #d4d4d4;
+  font-size: 12px;
+}
+
+/* Mermaid entity relationship diagram */
+.mermaid .entityBox rect {
+  fill: #1e1e1e;
+  stroke: #424242;
+}
+
+.mermaid .entityBox text {
+  fill: #d4d4d4;
+}
+
+/* Mermaid journey diagram */
+.mermaid .task text {
+  fill: #d4d4d4;
+}
+
+.mermaid .task rect {
+  fill: #1e1e1e;
+  stroke: #424242;
+}
+
+/* Mermaid mindmap */
+.mermaid .mindmapEdge line {
+  stroke: #606060;
+}
+
+.mermaid .mindmapNode rect {
+  fill: #1e1e1e;
+  stroke: #424242;
+}
+
+.mermaid .mindmapNode text {
+  fill: #d4d4d4;
+}
+
+/* Mermaid timeline */
+.mermaid .timelineText {
+  fill: #d4d4d4;
+}
+
+.mermaid .timelineLine {
+  stroke: #424242;
+}
+
+/* Mermaid flowchart decision diamond */
+.mermaid .node.decision rect {
+  transform: rotate(45deg);
+}
+
+/* Mermaid flowchart start/end rounded nodes */
+.mermaid .node.statement rect {
+  rx: 5;
+  ry: 5;
+}
+
+/* Hover effects for interactive elements */
+.mermaid .node:hover rect,
+.mermaid .node:hover circle,
+.mermaid .node:hover ellipse {
+  stroke: #569cd6;
+  stroke-width: 3px;
+  cursor: pointer;
+}
+
+.mermaid .edgePath:hover .path {
+  stroke: #569cd6;
+  stroke-width: 3px;
+}
+
+/* Focus styles for accessibility */
+.mermaid .node:focus rect,
+.mermaid .node:focus circle,
+.mermaid .node:focus ellipse {
+  outline: 2px solid #569cd6;
+  outline-offset: 2px;
+}

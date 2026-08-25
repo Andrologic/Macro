@@ -4,7 +4,30 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "opener:default"
+    "core:app:allow-version",
+    "core:image:default",
+    "core:resources:allow-close",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-destroy",
+    "core:window:allow-set-icon",
+    "core:window:allow-set-theme",
+    "core:window:allow-start-dragging",
+    "opener:default",
+    "dialog:default",
+    "notification:default",
+    "store:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://localhost:*" },
+        { "url": "http://127.0.0.1:*" },
+        { "url": "https://*" }
+      ]
+    }
   ]
 }

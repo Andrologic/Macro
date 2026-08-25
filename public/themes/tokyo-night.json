@@ -1,0 +1,25 @@
+{
+  "name": "Tokyo Night",
+  "type": "dark",
+  "colors": {
+    "background": "#1a1b26",
+    "foreground": "#c0caf5",
+    "card": "#1a1b26",
+    "cardForeground": "#c0caf5",
+    "popover": "#1a1b26",
+    "popoverForeground": "#c0caf5",
+    "primary": "#7aa2f7",
+    "primaryForeground": "#1a1b26",
+    "secondary": "#24283b",
+    "secondaryForeground": "#c0caf5",
+    "muted": "#24283b",
+    "mutedForeground": "#565f89",
+    "accent": "#bb9af7",
+    "accentForeground": "#1a1b26",
+    "destructive": "#f7768e",
+    "destructiveForeground": "#c0caf5",
+    "border": "#24283b",
+    "input": "#24283b",
+    "ring": "#7aa2f7"
+  }
+}

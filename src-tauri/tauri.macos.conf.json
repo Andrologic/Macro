@@ -1,0 +1,43 @@
+{
+  "bundle": {
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist",
+      "dmg": {
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Macro",
+        "width": 1200,
+        "height": 800,
+        "decorations": true,
+        "transparent": false,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "backgroundColor": "#09090b",
+        "trafficLightPosition": {
+          "x": 15,
+          "y": 30
+        },
+        "visible": false
+      }
+    ]
+  }
+}

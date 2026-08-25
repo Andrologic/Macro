@@ -1,0 +1,199 @@
+import { describe, expect, it } from "bun:test";
+import {
+  buildInternalAgentProfileSystemPrompt,
+  filterToolIdsForInternalAgentProfile,
+  getInternalAgentProfilePromptPreferenceKey,
+  resolveInternalAgentProfile,
+} from "./internalAgentProfile";
+
+describe("internalAgentProfile", () => {
+  it("derives profiles from the existing product context", () => {
+    expect(resolveInternalAgentProfile({ mode: "Architect" })).toBe(
+      "plan_explorer"
+    );
+    expect(
+      resolveInternalAgentProfile({
+        mode: "Implement",
+        taskStatus: "InReview",
+      })
+    ).toBe("task_reviewer");
+    expect(
+      resolveInternalAgentProfile({
+        mode: "Implement",
+        taskStatus: "InProgress",
+      })
+    ).toBe("default_executor");
+    expect(resolveInternalAgentProfile({ mode: "Chat" })).toBeNull();
+  });
+
+  it("lets explicit overrides force the repo auditor profile", () => {
+    expect(
+      resolveInternalAgentProfile({
+        mode: "Implement",
+        overrideProfile: "repo_auditor",
+      })
+    ).toBe("repo_auditor");
+  });
+
+  it("keeps plan explorer read-only relative to architect mode", () => {
+    const filtered = filterToolIdsForInternalAgentProfile(
+      [
+        "list",
+        "read",
+        "ast_grep",
+        "apply_patch",
+        "write",
+        "git_status",
+        "git_commit",
+        "plan_get",
+        "strategy_update",
+      ],
+      "plan_explorer"
+    );
+
+    expect(filtered).toEqual([
+      "list",
+      "read",
+      "ast_grep",
+      "git_status",
+      "plan_get",
+      "strategy_update",
+    ]);
+  });
+
+  it("keeps plan explorer aligned with the Architect chat action surface", () => {
+    const filtered = filterToolIdsForInternalAgentProfile(
+      ["strategy_update", "strategy_delete", "plan_create", "plan_get"],
+      "plan_explorer"
+    );
+
+    expect(filtered).toEqual([
+      "strategy_update",
+      "strategy_delete",
+      "plan_create",
+      "plan_get",
+    ]);
+  });
+
+  it("keeps task reviewer focused on read, patch, and verification tools", () => {
+    const filtered = filterToolIdsForInternalAgentProfile(
+      [
+        "read",
+        "apply_patch",
+        "git_diff",
+        "git_commit",
+        "terminal_create_session",
+        "terminal_run",
+        "terminal_read",
+      ],
+      "task_reviewer"
+    );
+
+    expect(filtered).toEqual([
+      "read",
+      "apply_patch",
+      "git_diff",
+      "terminal_create_session",
+      "terminal_run",
+      "terminal_read",
+    ]);
+  });
+
+  it("keeps repo auditor limited to repository and workspace inspection", () => {
+    const filtered = filterToolIdsForInternalAgentProfile(
+      [
+        "list",
+        "read",
+        "git_status",
+        "git_diff",
+        "terminal_run",
+        "apply_patch",
+        "web_search",
+      ],
+      "repo_auditor"
+    );
+
+    expect(filtered).toEqual(["list", "read", "git_status", "git_diff"]);
+  });
+
+  it("keeps goal auditor on the same read-only surface as repo auditor", () => {
+    const candidateToolIds = [
+      "list",
+      "read",
+      "glob",
+      "grep",
+      "ast_grep",
+      "git_status",
+      "git_diff",
+      "terminal_create_session",
+      "terminal_run",
+      "terminal_read",
+      "apply_patch",
+      "delete",
+      "write",
+      "web_search",
+    ];
+
+    expect(
+      filterToolIdsForInternalAgentProfile(candidateToolIds, "goal_auditor")
+    ).toEqual([
+      "list",
+      "read",
+      "glob",
+      "grep",
+      "ast_grep",
+      "git_status",
+      "git_diff",
+    ]);
+    expect(
+      filterToolIdsForInternalAgentProfile(candidateToolIds, "goal_auditor")
+    ).toEqual(
+      filterToolIdsForInternalAgentProfile(candidateToolIds, "repo_auditor")
+    );
+  });
+
+  it("fails closed for an unknown internal profile", () => {
+    expect(
+      filterToolIdsForInternalAgentProfile(
+        ["read", "apply_patch", "git_commit"],
+        "unknown_profile" as never
+      )
+    ).toEqual([]);
+  });
+
+  it("provides distinct system guidance for specialized profiles", () => {
+    expect(buildInternalAgentProfileSystemPrompt("plan_explorer")).toContain(
+      "PLAN_EXPLORER"
+    );
+    expect(buildInternalAgentProfileSystemPrompt("task_reviewer")).toContain(
+      "TASK_REVIEWER"
+    );
+    expect(buildInternalAgentProfileSystemPrompt("repo_auditor")).toContain(
+      "REPO_AUDITOR"
+    );
+    expect(buildInternalAgentProfileSystemPrompt("goal_auditor")).toContain(
+      "GOAL_AUDITOR"
+    );
+    expect(
+      buildInternalAgentProfileSystemPrompt("default_executor")
+    ).toBeNull();
+  });
+
+  it("maps specialized profiles to prompt preference keys", () => {
+    expect(getInternalAgentProfilePromptPreferenceKey("plan_explorer")).toBe(
+      "promptPlanExplorer"
+    );
+    expect(getInternalAgentProfilePromptPreferenceKey("task_reviewer")).toBe(
+      "promptTaskReviewer"
+    );
+    expect(getInternalAgentProfilePromptPreferenceKey("repo_auditor")).toBe(
+      "promptRepoAuditor"
+    );
+    expect(getInternalAgentProfilePromptPreferenceKey("goal_auditor")).toBe(
+      "promptGoalAuditor"
+    );
+    expect(getInternalAgentProfilePromptPreferenceKey("default_executor")).toBe(
+      null
+    );
+  });
+});

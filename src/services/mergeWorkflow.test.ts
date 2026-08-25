@@ -1,0 +1,274 @@
+import { describe, expect, it } from 'bun:test';
+import {
+  buildMergeWorkflowRepositoryBlockingState,
+  collectMergeWorkflowDirtyFiles,
+  isMergeWorkflowFileConflictRepository,
+  resolveMergeWorkflowExecutionAction,
+  resolveMergeWorkflowStrategy,
+} from './mergeWorkflow';
+
+describe('mergeWorkflow strategy resolution', () => {
+  it('classifies dirty repositories before mergeability checks', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: {
+        is_clean: false,
+        staged_files: [{ path: 'src/staged.ts', status: 'modified' }],
+        unstaged_files: [{ path: 'src/unstaged.ts', status: 'modified' }],
+        untracked_files: [{ path: 'src/new.ts', status: 'untracked' }],
+      },
+      mergeCheck: {
+        mergeable: false,
+        conflictFiles: [],
+        hasChanges: true,
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('dirty');
+    expect(strategy.recommendedAction).toBe('stash_dirty');
+    expect(strategy.dirtyFiles.map((file) => `${file.area}:${file.path}`)).toEqual([
+      'staged:src/staged.ts',
+      'unstaged:src/unstaged.ts',
+      'untracked:src/new.ts',
+    ]);
+  });
+
+  it('classifies staged-only dirty repositories as staged resolutions', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: {
+        is_clean: false,
+        staged_files: [
+          { path: 'lib/l10n/app_localizations.dart', status: 'modified' },
+          { path: 'lib/l10n/app_ar.arb', status: 'added' },
+        ],
+        unstaged_files: [],
+        untracked_files: [],
+      },
+      mergeCheck: {
+        mergeable: true,
+        conflictFiles: [],
+        hasChanges: true,
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('dirty');
+    expect(strategy.recommendedAction).toBe('commit_staged_resolution');
+    expect(strategy.availableActions).toContain('commit_staged_resolution');
+  });
+
+  it('classifies fast-forwardable branches', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: { is_clean: true },
+      mergeCheck: {
+        mergeable: true,
+        conflictFiles: [],
+        hasChanges: true,
+        ahead: 2,
+        behind: 0,
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('fast_forward_available');
+    expect(strategy.recommendedAction).toBe('fast_forward');
+    expect(strategy.availableActions).toContain('merge_commit');
+  });
+
+  it('uses merge commits by default when fast-forward is available', () => {
+    expect(
+      resolveMergeWorkflowExecutionAction({
+        availableActions: ['fast_forward', 'merge_commit'],
+        conflictFiles: [],
+        hasChanges: true,
+        mergeInProgress: false,
+        blockingKind: null,
+        progressState: 'pending',
+      })
+    ).toBe('merge_commit');
+  });
+
+  it('uses fast-forward when the completion policy requests it', () => {
+    expect(
+      resolveMergeWorkflowExecutionAction({
+        availableActions: ['fast_forward', 'merge_commit'],
+        conflictFiles: [],
+        hasChanges: true,
+        mergeInProgress: false,
+        blockingKind: null,
+        progressState: 'pending',
+      }, {
+        completionMergePolicy: 'fast_forward',
+      })
+    ).toBe('fast_forward');
+  });
+
+  it('does not auto-rebase for fast-forward policy fallbacks', () => {
+    expect(
+      resolveMergeWorkflowExecutionAction({
+        availableActions: ['rebase_then_continue', 'merge_commit', 'assistant'],
+        conflictFiles: [],
+        hasChanges: true,
+        mergeInProgress: false,
+        blockingKind: null,
+        progressState: 'pending',
+      }, {
+        completionMergePolicy: 'fast_forward',
+      })
+    ).toBe('merge_commit');
+  });
+
+  it('classifies clean local divergent branches as rebaseable when the check passes', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: { is_clean: true },
+      mergeCheck: {
+        mergeable: true,
+        conflictFiles: [],
+        hasChanges: true,
+        ahead: 1,
+        behind: 1,
+      },
+      isSourcePublished: false,
+      rebaseCheck: {
+        rebaseable: true,
+        conflictFiles: [],
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('rebase_available');
+    expect(strategy.recommendedAction).toBe('rebase_then_continue');
+  });
+
+  it('classifies a merge in progress without conflicted files as ready to complete', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: {
+        is_clean: false,
+        merge_in_progress: true,
+        conflicted_files: [],
+        staged_files: [{ path: 'src/resolved.ts', status: 'modified' }],
+      },
+      mergeCheck: {
+        mergeable: true,
+        conflictFiles: [],
+        hasChanges: true,
+      },
+    });
+    const blocking = buildMergeWorkflowRepositoryBlockingState({
+      repositoryPath: '/repos/web',
+      status: {
+        is_clean: false,
+        merge_in_progress: true,
+        conflicted_files: [],
+        staged_files: [{ path: 'src/resolved.ts', status: 'modified' }],
+      },
+      mergeCheck: {
+        mergeable: true,
+        conflictFiles: [],
+        hasChanges: true,
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('merge_ready_to_complete');
+    expect(strategy.recommendedAction).toBe('complete_merge');
+    expect(strategy.availableActions).toEqual([
+      'complete_merge',
+      'abort_merge',
+      'retry_check',
+    ]);
+    expect(blocking).toMatchObject({
+      blockingKind: null,
+      blockingReason: null,
+      nextAction: 'complete_merge',
+      conflictFiles: [],
+      mergeInProgress: true,
+    });
+  });
+
+  it('keeps a merge in progress with conflicted files as a file conflict', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: {
+        is_clean: false,
+        merge_in_progress: true,
+        conflicted_files: ['src/conflict.ts'],
+      },
+      mergeCheck: {
+        mergeable: false,
+        conflictFiles: ['src/conflict.ts'],
+        hasChanges: true,
+      },
+    });
+    const blocking = buildMergeWorkflowRepositoryBlockingState({
+      repositoryPath: '/repos/web',
+      status: {
+        is_clean: false,
+        merge_in_progress: true,
+        conflicted_files: ['src/conflict.ts'],
+      },
+      mergeCheck: {
+        mergeable: false,
+        conflictFiles: ['src/conflict.ts'],
+        hasChanges: true,
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('file_conflict');
+    expect(strategy.recommendedAction).toBe('assistant');
+    expect(blocking).toMatchObject({
+      blockingKind: 'merge_conflict',
+      nextAction: 'resolve_conflicts',
+      conflictFiles: ['src/conflict.ts'],
+      mergeInProgress: true,
+    });
+  });
+
+  it('does not offer rebase for published divergent branches', () => {
+    const strategy = resolveMergeWorkflowStrategy({
+      status: { is_clean: true },
+      mergeCheck: {
+        mergeable: true,
+        conflictFiles: [],
+        hasChanges: true,
+        ahead: 1,
+        behind: 1,
+      },
+      isSourcePublished: true,
+      rebaseCheck: {
+        rebaseable: true,
+        conflictFiles: [],
+      },
+    });
+
+    expect(strategy.mergeStrategy).toBe('merge_commit_available');
+    expect(strategy.recommendedAction).toBe('merge_commit');
+  });
+
+  it('collects dirty files from all git status areas', () => {
+    expect(
+      collectMergeWorkflowDirtyFiles({
+        is_clean: false,
+        staged_files: [{ path: 'a.ts', status: 'added' }],
+        unstaged_files: [{ path: 'b.ts', status: 'modified' }],
+        untracked_files: [{ path: 'c.ts' }],
+      })
+    ).toEqual([
+      { path: 'a.ts', status: 'added', area: 'staged' },
+      { path: 'b.ts', status: 'modified', area: 'unstaged' },
+      { path: 'c.ts', status: 'untracked', area: 'untracked' },
+    ]);
+  });
+
+  it('does not treat dirty repositories as file-conflict repositories', () => {
+    expect(
+      isMergeWorkflowFileConflictRepository({
+        mergeStrategy: 'dirty',
+        blockingKind: 'repository_dirty',
+        conflictFiles: ['src/conflict.ts'],
+      })
+    ).toBe(false);
+
+    expect(
+      isMergeWorkflowFileConflictRepository({
+        mergeStrategy: 'file_conflict',
+        blockingKind: 'merge_conflict',
+        conflictFiles: ['src/conflict.ts'],
+      })
+    ).toBe(true);
+  });
+});

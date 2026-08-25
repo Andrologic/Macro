@@ -1,0 +1,25 @@
+{
+  "name": "Gruvbox Light",
+  "type": "light",
+  "colors": {
+    "background": "#fbf1c7",
+    "foreground": "#3c3836",
+    "card": "#fbf1c7",
+    "cardForeground": "#3c3836",
+    "popover": "#fbf1c7",
+    "popoverForeground": "#3c3836",
+    "primary": "#af3a03",
+    "primaryForeground": "#fbf1c7",
+    "secondary": "#ebdbb2",
+    "secondaryForeground": "#3c3836",
+    "muted": "#ebdbb2",
+    "mutedForeground": "#665c54",
+    "accent": "#f2e5bc",
+    "accentForeground": "#fbf1c7",
+    "destructive": "#cc241d",
+    "destructiveForeground": "#fbf1c7",
+    "border": "#ebdbb2",
+    "input": "#ebdbb2",
+    "ring": "#af3a03"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "openai": {
+      "apiKey": "OPENAI_API_KEY_HERE"
+    },
+    "minimax": {
+      "name": "MiniMax",
+      "providerType": "openai",
+      "baseUrl": "https://api.minimax.io/v1",
+      "apiKey": "your-minimax-key"
+    },
+    "opencode-go": {
+      "name": "OpenCode Go",
+      "providerType": "openai",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "apiKey": "your-opencode-go-key"
+    }
+  }
+}

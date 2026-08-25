@@ -1,0 +1,25 @@
+{
+  "name": "Tokyo Day",
+  "type": "light",
+  "colors": {
+    "background": "#e1e2e7",
+    "foreground": "#414868",
+    "card": "#e1e2e7",
+    "cardForeground": "#414868",
+    "popover": "#e1e2e7",
+    "popoverForeground": "#414868",
+    "primary": "#2e3c64",
+    "primaryForeground": "#e1e2e7",
+    "secondary": "#c4cbd8",
+    "secondaryForeground": "#414868",
+    "muted": "#c4cbd8",
+    "mutedForeground": "#787c99",
+    "accent": "#565f89",
+    "accentForeground": "#e1e2e7",
+    "destructive": "#f52a65",
+    "destructiveForeground": "#e1e2e7",
+    "border": "#c4cbd8",
+    "input": "#c4cbd8",
+    "ring": "#2e3c64"
+  }
+}

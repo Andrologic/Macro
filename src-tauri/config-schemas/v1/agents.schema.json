@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AgentsDocument",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "compaction": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CompactionSettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "extensions": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    },
+    "maxTurns": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "models": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/ModelSelection"
+      }
+    },
+    "prompts": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AgentPromptSettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reviewPresentation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schemaVersion": {
+      "default": 1,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "smartCommitPrompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "AgentPromptSettings": {
+      "type": "object",
+      "properties": {
+        "architect": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "chat": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "implement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan_explorer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo_auditor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_reviewer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "CompactionSettings": {
+      "type": "object",
+      "properties": {
+        "automatic": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "manualVisible": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "prune": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reservedTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelSelection": {
+      "type": "object",
+      "required": [
+        "modelId",
+        "providerId"
+      ],
+      "properties": {
+        "modelId": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "reasoningEffort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

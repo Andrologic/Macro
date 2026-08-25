@@ -1,13 +1,23 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@codemirror/autocomplete": ["node_modules/@codemirror/autocomplete"],
+      "@codemirror/commands": ["node_modules/@codemirror/commands"],
+      "@codemirror/language": ["node_modules/@codemirror/language"],
+      "@codemirror/lint": ["node_modules/@codemirror/lint"],
+      "@codemirror/search": ["node_modules/@codemirror/search"],
+      "@codemirror/state": ["node_modules/@codemirror/state"],
+      "@codemirror/view": ["node_modules/@codemirror/view"]
+    },
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
@@ -18,7 +28,10 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* Bun compatibility */
+    "types": ["bun-types"]
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]

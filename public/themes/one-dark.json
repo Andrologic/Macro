@@ -1,0 +1,25 @@
+{
+  "name": "One Dark",
+  "type": "dark",
+  "colors": {
+    "background": "#21252b",
+    "foreground": "#abb2bf",
+    "card": "#21252b",
+    "cardForeground": "#abb2bf",
+    "popover": "#21252b",
+    "popoverForeground": "#abb2bf",
+    "primary": "#61afef",
+    "primaryForeground": "#21252b",
+    "secondary": "#2c313a",
+    "secondaryForeground": "#abb2bf",
+    "muted": "#2c313a",
+    "mutedForeground": "#5c6370",
+    "accent": "#c678dd",
+    "accentForeground": "#21252b",
+    "destructive": "#e06c75",
+    "destructiveForeground": "#abb2bf",
+    "border": "#2c313a",
+    "input": "#21252b",
+    "ring": "#61afef"
+  }
+}
