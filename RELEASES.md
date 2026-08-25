@@ -228,6 +228,26 @@ unsigned as documented, and inspects AppImage/deb/rpm contents.
 The macOS verification checks the Copilot runtime, manifest, license, and the
 absence of `macro-headless`.
 
+## Update Channels
+
+Macro exposes `Stable` and `Preview` in General Settings. Stable follows
+published `vX.Y.Z` releases. Preview follows one rolling GitHub prerelease named
+`Macro Preview` on the mutable `preview` tag. The same `Andrologic/Macro`
+repository hosts both channels.
+
+The orphan `updates` branch stores only per-platform channel manifests under
+`channels/`. Stable publication advances `stable-*.json`. A successful Preview
+workflow advances `preview-*.json` after it uploads every signed updater asset.
+Switching from Preview to Stable may offer an older stable version; the client
+asks for confirmation and enables Tauri's signed downgrade path for that check.
+
+Scheduled previews start only after the public stable `v0.1.0` release exists.
+They build `develop` once per night when its commit changed. Use the manual
+Preview workflow with an `x.y.z-rc.n` version for a release candidate. Configure
+the `preview` GitHub environment with the same Tauri updater and Apple signing
+secrets as the `release` environment. No second repository or personal access
+token is involved.
+
 Desktop builds compile the Macro AI runtime sidecar into `src-tauri/binaries/`
 before packaging. Universal macOS builds combine the Apple Silicon and Intel
 sidecars with `lipo`, then Tauri embeds the packaged sidecar as

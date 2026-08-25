@@ -105,6 +105,7 @@ export const PREF_KEYS = {
   ONBOARDING_STATE: "onboardingState",
   RELEASE_NOTES_SEEN_VERSIONS: "releaseNotesSeenVersions",
   RELEASE_NOTES_PENDING_UPDATE: "releaseNotesPendingUpdate",
+  UPDATE_CHANNEL: "updateChannel",
   METADATA_MODEL_CONFIG: "metadataModelConfig",
   SMART_COMMIT_MODEL_CONFIG: "smartCommitModelConfig",
   SMART_COMMIT_PROMPT: "smartCommitPrompt",
@@ -352,6 +353,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   },
   [PREF_KEYS.RELEASE_NOTES_SEEN_VERSIONS]: [],
   [PREF_KEYS.RELEASE_NOTES_PENDING_UPDATE]: null,
+  [PREF_KEYS.UPDATE_CHANNEL]: "stable",
   [PREF_KEYS.METADATA_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_MODEL_CONFIG]: null,
   [PREF_KEYS.SMART_COMMIT_PROMPT]: DEFAULT_SMART_COMMIT_PROMPT,
@@ -523,6 +525,9 @@ const isToolRiskLevel = (value: unknown): value is ToolRiskLevel =>
   (TOOL_RISK_LEVELS as readonly string[]).includes(value);
 
 const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
+  if (key === PREF_KEYS.UPDATE_CHANNEL) {
+    return value === "stable" || value === "preview";
+  }
   if (key === PREF_KEYS.TOOL_RISK_LEVEL) {
     return isToolRiskLevel(value);
   }

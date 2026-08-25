@@ -4214,6 +4214,10 @@ export async function stateClear(): Promise<StateSnapshotDto> {
   return invoke<StateSnapshotDto>("state_clear");
 }
 
+export async function updaterTarget(): Promise<string> {
+  return invoke<string>("updater_target");
+}
+
 // ============ Utility ============
 
 /**

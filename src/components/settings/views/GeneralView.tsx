@@ -26,6 +26,7 @@ import { Switch } from '../../ui/Switch';
 import { ToolSecuritySettingsSection } from './ToolSecuritySettingsSection';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { notify } from '../../ui/toastService';
+import { UpdateChannelSettings } from './UpdateChannelSettings';
 
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
@@ -311,6 +312,8 @@ export const GeneralView: React.FC = () => {
                 <ToolSecuritySettingsSection />
 
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
+                    <UpdateChannelSettings />
+                    <div className="border-t border-border/50" />
                     <div className="flex flex-col gap-3">
                         <div className="space-y-1">
                             <label htmlFor="chat-max-turns-enabled" className="text-sm font-medium text-foreground">

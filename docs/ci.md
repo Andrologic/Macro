@@ -83,6 +83,28 @@ All actions are pinned to immutable commits, checkouts do not persist credential
 The `Release` workflow is tag-only. A stable tag named exactly `v<package version>` must point to a commit contained in `origin/main`. Cheap metadata, lockfile, frontend, bundle, sidecar, and Rust checks complete before the release build matrix starts.
 
 The build matrix creates a signed and notarized universal macOS DMG, an intentionally Authenticode-unsigned Windows x64 NSIS installer, and Linux x64 AppImage, DEB, and RPM packages. Tauri signs every supported automatic-update artifact independently of platform code signing. The workflow verifies the documented signing state or package contents, refuses missing artifacts, and uploads short-lived build artifacts. The final job calculates SHA-256 sums and creates a draft GitHub release only. Publishing the draft is always a manual owner action.
+### Stable and Preview update channels
+
+The application reads channel manifests from the orphan `updates` branch. Each
+platform has a stable pointer and a preview pointer under `channels/`. The
+branch contains JSON manifests only. Installers remain GitHub Release assets.
+
+Publishing a stable release advances the stable pointers after the owner
+publishes the draft. The `Preview` workflow builds `develop` every night at
+02:17 UTC, but only after `v0.1.0` exists as a published stable release. It
+skips scheduled builds when `develop` has not changed. A manual run can publish
+either a nightly or an explicit `x.y.z-rc.n` release candidate.
+
+All preview assets live on the mutable `preview` tag in one GitHub prerelease
+named `Macro Preview`. Asset names include the semantic version, so an existing
+manifest always addresses the matching signed binary while a new preview is
+uploaded. The workflow moves the `preview` tag to the validated `develop`
+commit and records that commit in the release notes. Stable releases still use
+immutable `v*` tags and remain eligible for GitHub's `Latest` badge.
+
+The application checks the selected channel immediately after the user changes
+it. Returning from a prerelease to Stable enables Tauri's downgrade option for
+that check. Tauri still verifies the updater signature before installation.
 
 Before a release tag is created or pushed, `bun run release:preflight` requires
 a clean checkout whose HEAD exactly matches `origin/main`, verifies the stable
@@ -132,5 +154,15 @@ Create an environment named `release` and configure:
 - no access from pull request jobs.
 
 The build matrix declares this environment, so it waits for approval before consuming costly platform minutes or receiving signing secrets. Do not authorize a release until the validation job and tag provenance have been reviewed.
+
+### Protected `preview` environment
+
+Create an environment named `preview`, allow deployments from the default
+`main` branch, and copy the Tauri updater and Apple signing secrets used by the
+release build. GitHub starts scheduled workflows from the default branch; the
+workflow itself checks out and records the exact `develop` commit that it
+builds. Do not require a reviewer for scheduled nightlies. Pull request
+workflows never reference this environment. The workflow needs no personal
+access token or second repository.
 
 An administrator can still create many commits or tags and can bypass some repository controls. Branch rules, the tag ruleset, restricted credentials, and the protected environment are therefore essential parts of the design, not optional workflow hardening.

@@ -1,4 +1,11 @@
 import { isTauriEnvironment } from '../utils/isTauriEnvironment';
+import { updaterTarget } from './tauriIpc';
+import {
+  loadUpdateChannel,
+  shouldAllowChannelDowngrade,
+  type UpdateChannel,
+  updaterTargetForChannel,
+} from './updateChannels';
 
 export interface AppUpdateMetadata {
   currentVersion: string;
@@ -41,11 +48,17 @@ export type NativeUpdate = {
 
 export interface NativeUpdaterBindings {
   getVersion: () => Promise<string>;
-  check: (options?: { timeout?: number }) => Promise<NativeUpdate | null>;
+  getUpdaterTarget: () => Promise<string>;
+  check: (options?: {
+    timeout?: number;
+    target?: string;
+    allowDowngrades?: boolean;
+  }) => Promise<NativeUpdate | null>;
   relaunch: () => Promise<void>;
 }
 
 export type LoadNativeUpdaterBindings = () => Promise<NativeUpdaterBindings>;
+export type LoadUpdateChannel = () => Promise<UpdateChannel>;
 
 const CHECK_TIMEOUT_MS = 30_000;
 
@@ -67,7 +80,7 @@ const loadNativeUpdaterBindings: LoadNativeUpdaterBindings = async () => {
     import('@tauri-apps/plugin-updater'),
     import('@tauri-apps/plugin-process'),
   ]);
-  return { getVersion, check, relaunch };
+  return { getVersion, getUpdaterTarget: updaterTarget, check, relaunch };
 };
 
 export class TauriAppUpdaterClient implements AppUpdaterClient {
@@ -76,6 +89,7 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
 
   constructor(
     private readonly loadBindings: LoadNativeUpdaterBindings = loadNativeUpdaterBindings,
+    private readonly loadChannel: LoadUpdateChannel = loadUpdateChannel,
   ) {}
 
   async reset(): Promise<void> {
@@ -87,9 +101,17 @@ export class TauriAppUpdaterClient implements AppUpdaterClient {
 
   async check(): Promise<AppUpdateCheckResult> {
     await this.reset();
-    const { getVersion, check } = await this.loadBindings();
+    const { getVersion, getUpdaterTarget, check } = await this.loadBindings();
     const currentVersion = await getVersion();
-    const update = await check({ timeout: CHECK_TIMEOUT_MS }) as NativeUpdate | null;
+    const [channel, nativeTarget] = await Promise.all([
+      this.loadChannel(),
+      getUpdaterTarget(),
+    ]);
+    const update = await check({
+      timeout: CHECK_TIMEOUT_MS,
+      target: updaterTargetForChannel(channel, nativeTarget),
+      allowDowngrades: shouldAllowChannelDowngrade(channel, currentVersion),
+    }) as NativeUpdate | null;
     this.pendingUpdate = update;
 
     return {
