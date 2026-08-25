@@ -1,4 +1,9 @@
+// Durable agent-run persistence is implemented and tested ahead of its runtime
+// orchestration wiring. Keep the dormant internal API warning-free until that
+// integration makes the entry points reachable from the application.
+#[allow(dead_code)]
 pub mod agent_runs;
+#[allow(dead_code)]
 pub mod models;
 pub mod repository;
 
@@ -48,7 +53,10 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 
     let db_path = app_db_path(&app_dir);
 
-    create_pool(&db_path).await
+    let pool = create_pool(&db_path).await?;
+    agent_runs::reconcile_active_agent_runs_after_restart(&pool).await?;
+
+    Ok(pool)
 }
 
 /// Create a pool for the given database path.
