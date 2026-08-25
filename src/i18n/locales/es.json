@@ -47,8 +47,8 @@
   },
   "releaseNotes": {
     "dialogTitle": "Novedades de Macro",
-    "continue": "Continuar a Macro",
-    "version": "Versión"
+    "shownOnce": "Esta nota se muestra una sola vez por cada versión instalada.",
+    "continue": "Continuar a Macro"
   },
   "updates": {
     "checking": "Buscando actualizaciones",

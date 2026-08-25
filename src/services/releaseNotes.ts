@@ -20,42 +20,48 @@ const RELEASE_NOTES: Record<string, Record<ReleaseNoteLocale, ReleaseNote>> = {
       eyebrow: 'First stable release',
       title: 'Macro 0.1 is ready',
       summary:
-        'Turn a plan into isolated changes, review every diff, then commit only what you want.',
-      content: `## One place to run the work
+        'This release establishes the local-first desktop workflow for planning, implementing, reviewing, and integrating agentic software work.',
+      content: `## A complete desktop workflow
 
-- Move from a plan in **Architect** to an isolated task in **Implement** without rebuilding the context.
-- Inspect and edit every change before it reaches your repository history.
+- Plan work in **Architect**, run isolated tasks in **Implement**, and keep lightweight conversations in **Chat**.
+- Coordinate plans across several projects with dedicated branches, worktrees, and task checklists.
+- Review and edit generated changes before creating separate commits for each repository.
 
-## Sessions that stay usable
+## Built for longer sessions
 
-- Macro compacts long conversations before they become unwieldy.
-- The terminal, model controls, and agent questions stay attached to the task you are working on.
+- Conversation compaction keeps long-running agent sessions usable.
+- The integrated terminal, provider controls, and structured clarification questions stay close to the active task.
+- The \`@macro\` metadata flow preserves plans, conversations, and execution history outside product branches.
 
-## Your repository stays yours
+## Reliability and safety
 
-- Tasks run in dedicated branches and worktrees, away from your current changes.
-- Provider secrets stay in Macro's local storage, and workspace operations cannot leave authorized project roots.`,
+- Task, plan, review, commit, and cleanup transitions now reject stale or conflicting operations.
+- Streaming, provider recovery, database migrations, and workspace restoration have broader regression coverage.
+- Provider secrets remain in Macro private local storage, and workspace operations reject paths outside their authorized roots.`,
     },
     fr: {
       version: '0.1.0',
       eyebrow: 'Première version stable',
       title: 'Macro 0.1 est prêt',
       summary:
-        'Transformez un plan en changements isolés, relisez chaque diff, puis commitez uniquement ce que vous voulez garder.',
-      content: `## Tout le travail au même endroit
+        'Cette version pose le workflow desktop local-first pour planifier, implémenter, relire et intégrer du travail logiciel réalisé avec des agents.',
+      content: `## Un workflow desktop complet
 
-- Passez d’un plan dans **Architect** à une tâche isolée dans **Implement** sans reconstruire le contexte.
-- Inspectez et modifiez chaque changement avant qu’il entre dans l’historique du dépôt.
+- Planifiez dans **Architect**, exécutez des tâches isolées dans **Implement** et gardez les échanges légers dans **Chat**.
+- Coordonnez des plans sur plusieurs projets avec des branches, des worktrees et des checklists dédiés.
+- Relisez et modifiez les changements générés avant de créer des commits séparés pour chaque dépôt.
 
-## Des sessions qui restent lisibles
+## Pensé pour les sessions longues
 
-- Macro compacte les longues conversations avant qu’elles deviennent difficiles à suivre.
-- Le terminal, le choix du modèle et les questions de l’agent restent liés à la tâche en cours.
+- Le compactage des conversations maintient les longues sessions d’agent exploitables.
+- Le terminal intégré, les réglages des fournisseurs et les questions structurées restent proches de la tâche active.
+- Le flux de métadonnées \`@macro\` conserve les plans, les conversations et l’historique d’exécution hors des branches produit.
 
-## Votre dépôt reste sous votre contrôle
+## Fiabilité et sécurité
 
-- Les tâches s’exécutent dans des branches et des worktrees dédiés, à l’écart de vos changements en cours.
-- Les secrets restent dans le stockage local de Macro, et les opérations ne peuvent pas sortir des racines autorisées du projet.`,
+- Les transitions de tâche, de plan, de review, de commit et de nettoyage refusent désormais les opérations obsolètes ou conflictuelles.
+- Le streaming, la récupération des fournisseurs, les migrations de base de données et la restauration du workspace ont une couverture de régression plus large.
+- Les secrets des fournisseurs restent dans le stockage local privé de Macro, et les opérations sur le workspace refusent les chemins qui sortent des racines autorisées.`,
     },
   },
 };

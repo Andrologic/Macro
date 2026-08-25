@@ -115,24 +115,39 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
       title={t('releaseNotes.dialogTitle', 'What’s new in Macro')}
       onClose={close}
       initialFocusRef={closeButtonRef}
-      backdropClassName="fixed inset-0 z-[12000] flex items-center justify-center bg-black/75 p-3 backdrop-blur-md animate-fade-in md:p-6"
+      backdropClassName="fixed inset-0 z-[12000] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm animate-fade-in md:p-6"
     >
       <article
         data-testid="release-notes-modal"
-        className="relative flex max-h-[min(88vh,720px)] w-full max-w-4xl flex-col overflow-hidden rounded-[20px] border border-border/80 bg-card text-card-foreground shadow-2xl ring-1 ring-white/[0.04]"
+        className="flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl ring-1 ring-white/5"
       >
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-primary/70" />
-
-        <header className="relative shrink-0 overflow-hidden border-b border-border/70 px-5 pb-5 pt-4 sm:px-8 sm:pb-6 sm:pt-5">
-          <div className="pointer-events-none absolute -left-20 -top-24 h-64 w-64 rounded-full bg-primary/[0.12] blur-3xl" />
-          <div className="relative mb-6 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
-                <Icon name="sparkles" size={14} />
+        <header className="relative shrink-0 overflow-hidden border-b border-border px-5 py-5 sm:px-7 sm:py-6">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgb(var(--primary)/0.16),transparent_48%)]" />
+          <div className="relative flex items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 text-primary shadow-sm">
+                <Icon name="sparkles" size={20} />
               </div>
-              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
-                {note.eyebrow || t('releaseNotes.dialogTitle', 'What’s new in Macro')}
-              </span>
+              <div className="min-w-0">
+                <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                  {note.eyebrow ? (
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+                      {note.eyebrow}
+                    </span>
+                  ) : null}
+                  <span className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                    v{note.version}
+                  </span>
+                </div>
+                <h2 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+                  {note.title}
+                </h2>
+                {note.summary ? (
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                    {note.summary}
+                  </p>
+                ) : null}
+              </div>
             </div>
 
             <button
@@ -140,44 +155,29 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
               aria-label={t('common.close', 'Close')}
               title={t('common.close', 'Close')}
               onClick={close}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <Icon name="x" size={16} />
             </button>
           </div>
-
-          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-8">
-            <div className="min-w-0">
-              <h2 className="text-2xl font-semibold tracking-[-0.025em] text-foreground sm:text-[30px] sm:leading-9">
-                {note.title}
-              </h2>
-              {note.summary ? (
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  {note.summary}
-                </p>
-              ) : null}
-            </div>
-            <div className="flex shrink-0 items-baseline gap-2 border-l-2 border-primary/50 pl-3 sm:block sm:min-w-20">
-              <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                {t('releaseNotes.version', 'Version')}
-              </span>
-              <div className="font-mono text-sm font-semibold text-foreground">{note.version}</div>
-            </div>
-          </div>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-8 sm:py-7">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7 sm:py-6">
           <MarkdownRenderer
             content={note.content}
-            className={`release-notes-markdown mx-auto max-w-3xl ${
-              pendingNoteVersion ? '' : 'release-notes-markdown--cards'
-            }`}
+            className="release-notes-markdown mx-auto max-w-2xl"
           />
         </div>
 
-        <footer className="flex shrink-0 justify-end border-t border-border/70 bg-background/25 px-5 py-4 sm:px-8">
-          <Button ref={closeButtonRef} type="button" size="sm" onClick={close} className="min-w-32">
-            {t('releaseNotes.continue', 'Open Macro')}
+        <footer className="flex shrink-0 flex-col gap-3 border-t border-border bg-background/35 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+          <p className="text-xs text-muted-foreground">
+            {t(
+              'releaseNotes.shownOnce',
+              'This note is shown once for each installed version.',
+            )}
+          </p>
+          <Button ref={closeButtonRef} type="button" size="sm" onClick={close}>
+            {t('releaseNotes.continue', 'Continue to Macro')}
           </Button>
         </footer>
       </article>

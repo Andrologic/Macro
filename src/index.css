@@ -733,29 +733,6 @@
     @apply text-sm leading-6 text-muted-foreground;
   }
 
-  @media (min-width: 640px) {
-    .release-notes-markdown--cards {
-      display: grid;
-      grid-auto-flow: column;
-      grid-auto-columns: minmax(0, 1fr);
-      grid-template-rows: auto 1fr;
-      gap: 0 0.75rem;
-    }
-
-    .release-notes-markdown--cards h2 {
-      @apply m-0 rounded-t-xl border border-b-0 border-border/70 bg-background/35 px-4 pb-2 pt-4 text-sm;
-    }
-
-    .release-notes-markdown--cards ul,
-    .release-notes-markdown--cards ol {
-      @apply m-0 space-y-3 rounded-b-xl border border-t-0 border-border/70 bg-background/35 px-4 pb-4 pt-2;
-    }
-
-    .release-notes-markdown--cards li {
-      @apply text-[13px] leading-5 marker:text-primary;
-    }
-  }
-
   /* Status indicator */
   .status-dot {
     @apply w-2 h-2 rounded-full;

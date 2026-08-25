@@ -93,10 +93,8 @@ describe('ReleaseNotesModal', () => {
     expect(modal).not.toBeNull();
     expect(modal?.textContent ?? '').toContain('Macro 0.1 est prêt');
     expect(modal?.querySelector('.release-notes-markdown')).not.toBeNull();
-    expect(modal?.querySelector('.release-notes-markdown--cards')).not.toBeNull();
 
-    expect(modal?.textContent ?? '').not.toContain('shown once');
-    const continueButton = buttonByText('Open Macro');
+    const continueButton = buttonByText('Continue to Macro');
     expect(continueButton).toBeDefined();
 
     await act(async () => continueButton?.click());
@@ -123,8 +121,7 @@ describe('ReleaseNotesModal', () => {
     await renderModal();
 
     expect(document.body.textContent).toContain('Notes received from latest.json');
-    expect(document.querySelector('.release-notes-markdown--cards')).toBeNull();
-    await act(async () => buttonByText('Open Macro')?.click());
+    await act(async () => buttonByText('Continue to Macro')?.click());
 
     expect(savePreferenceMock).toHaveBeenCalledWith(
       preferenceKeys.RELEASE_NOTES_PENDING_UPDATE,
