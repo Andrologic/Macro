@@ -215,15 +215,16 @@ stapled. The GitHub release workflow requires these secrets:
 - `APPLE_API_KEY_P8`
 - `APPLE_TEAM_ID`
 
-Windows release builds are Authenticode-signed with SHA-256 and DigiCert
-timestamping. The workflow refuses to publish Windows without:
-
-- `WINDOWS_CERTIFICATE_PFX_BASE64`
-- `WINDOWS_CERTIFICATE_PASSWORD`
+Windows NSIS release builds are intentionally not Authenticode-signed for the
+initial release channel. Windows can therefore display an `Unknown publisher`
+or SmartScreen warning during the first installation. The Tauri updater archive
+and its `.sig` file remain cryptographically signed, so installed clients reject
+tampered automatic updates. `SHA256SUMS.txt` covers the initial installer and
+all other release assets.
 
 The release matrix verifies the signed universal macOS bundle and its expected
-Apple Team ID, validates that the Windows NSIS Authenticode signer matches the
-certificate imported for the release, and inspects AppImage/deb/rpm contents.
+Apple Team ID, verifies that the Windows NSIS installer exists and remains
+unsigned as documented, and inspects AppImage/deb/rpm contents.
 The macOS verification checks the Copilot runtime, manifest, license, and the
 absence of `macro-headless`.
 
