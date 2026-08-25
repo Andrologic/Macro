@@ -81,23 +81,27 @@ describe('ReleaseNotesModal', () => {
     });
   };
 
-  const buttonByText = (text: string): HTMLButtonElement | undefined =>
-    Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === text,
-    );
+  const closeButton = (): HTMLButtonElement | null =>
+    document.querySelector('button[aria-label="Close"]');
 
   it('shows the current localized note and remembers it when closed', async () => {
     await renderModal();
 
     const modal = document.querySelector('[data-testid="release-notes-modal"]');
     expect(modal).not.toBeNull();
-    expect(modal?.textContent ?? '').toContain('Macro 0.1 est prêt');
+    expect(modal?.textContent ?? '').toContain('Release notes');
+    expect(modal?.textContent ?? '').toContain('Macro 0.1.0');
+    expect(modal?.textContent ?? '').not.toContain('Macro 0.1 est prêt');
+    expect(modal?.textContent ?? '').not.toContain('Première version stable');
+    expect(modal?.textContent ?? '').not.toContain(
+      'Cette version pose le workflow desktop local-first',
+    );
     expect(modal?.querySelector('.release-notes-markdown')).not.toBeNull();
 
-    const continueButton = buttonByText('Continue to Macro');
-    expect(continueButton).toBeDefined();
+    expect(modal?.querySelector('footer')).toBeNull();
+    expect(closeButton()).not.toBeNull();
 
-    await act(async () => continueButton?.click());
+    await act(async () => closeButton()?.click());
 
     expect(document.querySelector('[data-testid="release-notes-modal"]')).toBeNull();
     expect(savePreferenceMock).toHaveBeenCalledWith(
@@ -121,7 +125,7 @@ describe('ReleaseNotesModal', () => {
     await renderModal();
 
     expect(document.body.textContent).toContain('Notes received from latest.json');
-    await act(async () => buttonByText('Continue to Macro')?.click());
+    await act(async () => closeButton()?.click());
 
     expect(savePreferenceMock).toHaveBeenCalledWith(
       preferenceKeys.RELEASE_NOTES_PENDING_UPDATE,
@@ -147,5 +151,20 @@ describe('ReleaseNotesModal', () => {
     });
 
     expect(document.querySelector('[data-testid="release-notes-modal"]')).not.toBeNull();
+  });
+
+  it('dismisses the note when the backdrop is clicked', async () => {
+    await renderModal();
+
+    const backdrop = document.querySelector<HTMLElement>('[data-macro-dialog-root]');
+    expect(backdrop).not.toBeNull();
+
+    await act(async () => backdrop?.click());
+
+    expect(document.querySelector('[data-testid="release-notes-modal"]')).toBeNull();
+    expect(savePreferenceMock).toHaveBeenCalledWith(
+      preferenceKeys.RELEASE_NOTES_SEEN_VERSIONS,
+      ['0.1.0'],
+    );
   });
 });

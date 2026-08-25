@@ -43,6 +43,17 @@ use tokio::sync::RwLock;
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 
+fn shutdown_mcp_runtime(app_handle: &tauri::AppHandle) {
+    let runtime = app_handle.state::<commands::mcp::McpRuntimeManager>();
+    let result = tauri::async_runtime::block_on(tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        runtime.shutdown_all(),
+    ));
+    if result.is_err() {
+        tracing::warn!("MCP runtime shutdown exceeded its 12-second budget");
+    }
+}
+
 #[derive(Clone)]
 pub struct WorkspaceMetadataRoot(pub Arc<RwLock<std::path::PathBuf>>);
 
@@ -124,6 +135,12 @@ async fn frontend_log(level: String, scope: String, message: String) -> Result<(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+fn updater_target() -> Result<String, String> {
+    tauri_plugin_updater::target()
+        .ok_or_else(|| "Automatic updates are not supported on this platform.".to_string())
 }
 
 #[tauri::command]
@@ -251,6 +268,7 @@ pub fn run() {
         .manage(DbPool::default())
         .manage(AiState::default())
         .manage(GitState::new())
+        .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .on_window_event(|window, event| {
@@ -432,6 +450,7 @@ pub fn run() {
             state_manager::state_set_value,
             state_manager::state_delete_value,
             state_manager::state_clear,
+            updater_target,
             frontend_log,
             show_main_window,
             window_close,
@@ -566,6 +585,16 @@ pub fn run() {
             commands::mcp::mcp_call_tool,
             commands::mcp::mcp_store_env_secret,
             commands::mcp::mcp_delete_env_secret,
+            commands::mcp::mcp_store_oauth_client_secret,
+            commands::mcp::mcp_delete_oauth_client_secret,
+            commands::mcp::mcp_oauth_authorize,
+            commands::mcp::mcp_oauth_logout,
+            commands::mcp::mcp_runtime_get_snapshot,
+            commands::mcp::mcp_runtime_connect,
+            commands::mcp::mcp_runtime_disconnect,
+            commands::mcp::mcp_runtime_refresh_catalog,
+            commands::mcp::mcp_runtime_call_tool,
+            commands::mcp::mcp_runtime_cancel_operation,
             commands::web_search::web_search_get_secret_status,
             commands::web_search::web_search_set_secret,
             commands::web_search::web_search_execute,
@@ -694,10 +723,12 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { .. } => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");
+            shutdown_mcp_runtime(app_handle);
         }
         tauri::RunEvent::Exit => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
+            shutdown_mcp_runtime(app_handle);
         }
         _ => {}
     });

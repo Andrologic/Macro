@@ -1,4 +1,12 @@
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
@@ -23,6 +31,7 @@ import type {
 import { useProviderStore } from '../../stores/useProviderStore';
 import { useSpeechToTextStore } from '../../stores/useSpeechToTextStore';
 import { useShortcutsStore } from '../../stores/useShortcutsStore';
+import { formatBindingForDisplay } from '../../shortcuts/utils';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { Icon, type IconName } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
@@ -395,12 +404,20 @@ interface ChatMessageRowProps {
 
 const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
 
-interface ComposerEditSession {
-  messageId: string;
-  originalContent: string;
+interface SavedComposerDraft {
   savedDraftText: string;
   savedDraftImages: MessageImageAttachment[];
   savedDraftContextRefs: ContextReference[];
+}
+
+interface ComposerEditSession extends SavedComposerDraft {
+  messageId: string;
+  originalContent: string;
+}
+
+interface GoalComposerEditSession extends SavedComposerDraft {
+  conversationId: string;
+  goalId: string;
 }
 
 interface ComposerDraftSnapshot {
@@ -1005,6 +1022,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     lastError,
     stopStreaming,
     sendMessage,
+    submitDuringActiveTurn = async () => 'steered' as const,
     clearLastError,
     clearConversationRuntimeError,
     editMessage,
@@ -1061,6 +1079,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     lastError: state.lastError,
     stopStreaming: state.stopStreaming,
     sendMessage: state.sendMessage,
+    submitDuringActiveTurn: state.submitDuringActiveTurn,
     clearLastError: state.clearLastError,
     clearConversationRuntimeError: state.clearConversationRuntimeError,
     editMessage: state.editMessage,
@@ -1112,6 +1131,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const {
     activeConversationGoal,
     activateConversationGoal,
+    beginConversationGoalEdit,
+    settleConversationGoalEdit,
     setConversationGoalStatus,
     clearConversationGoal,
   } = useConversationGoalStore(useShallow((state) => ({
@@ -1119,10 +1140,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? state.goalsByConversationId[selectedConversationId] ?? null
       : null,
     activateConversationGoal: state.activateGoal,
+    beginConversationGoalEdit: state.beginGoalEdit,
+    settleConversationGoalEdit: state.settleGoalEdit,
     setConversationGoalStatus: state.setOperationalStatus,
     clearConversationGoal: state.clearGoal,
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
+  const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
+  const secondarySendBinding = useShortcutsStore(
+    (state) => state.bindings ? state.bindings['chat.secondarySend'] : 'Mod+Enter',
+  );
   const speechLanguage = useSpeechToTextStore((state) => state.language);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -1143,6 +1170,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [inputValue, setInputValue] = useState('');
   const [composerEditSession, setComposerEditSession] =
     useState<ComposerEditSession | null>(null);
+  const [goalComposerEditSession, setGoalComposerEditSession] =
+    useState<GoalComposerEditSession | null>(null);
+  const goalComposerEditSessionRef = useRef<GoalComposerEditSession | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
@@ -1173,6 +1203,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     pendingSpeechInsertionRef.current = null;
   }, [composerDraftContextKey]);
   const activeComposerDraftContextKeyRef = useRef<string | null>(null);
+  const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
   const latestComposerDraftRef = useRef({
     text: '',
     images: [] as MessageImageAttachment[],
@@ -1555,6 +1586,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   }, [addComposerContextRef, clearComposerContextRefs, inputValue]);
 
+  useLayoutEffect(() => {
+    if (renderedComposerDraftContextKeyRef.current === composerDraftContextKey) return;
+    renderedComposerDraftContextKeyRef.current = composerDraftContextKey;
+    goalComposerEditSessionRef.current = null;
+  }, [composerDraftContextKey]);
+
   useEffect(() => {
     const previousContextKey = activeComposerDraftContextKeyRef.current;
     if (previousContextKey === composerDraftContextKey) return;
@@ -1566,6 +1603,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             images: composerEditSession.savedDraftImages,
             contextRefs: composerEditSession.savedDraftContextRefs,
           }
+        : goalComposerEditSession
+          ? {
+              text: goalComposerEditSession.savedDraftText,
+              images: goalComposerEditSession.savedDraftImages,
+              contextRefs: goalComposerEditSession.savedDraftContextRefs,
+            }
         : latestComposerDraftRef.current;
       saveComposerDraftForContext(previousContextKey, draftToSave);
     }
@@ -1581,6 +1624,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       contextRefs: [],
     };
     setComposerEditSession(null);
+    goalComposerEditSessionRef.current = null;
+    setGoalComposerEditSession(null);
     setInputValue(nextDraft.text);
     setComposerImages([...nextDraft.images]);
     // Conversation toolbox refs hydrate asynchronously after a selection.
@@ -1612,6 +1657,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [
     composerDraftContextKey,
     composerEditSession,
+    goalComposerEditSession,
     getComposerDraftForContext,
     replaceComposerContextRefs,
     resetPromptHistoryNavigation,
@@ -2442,8 +2488,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setPreviewImage(image);
   };
 
-  const restoreComposerDraft = useCallback((session: ComposerEditSession) => {
-    setComposerEditSession(null);
+  const applySavedComposerDraft = useCallback((session: SavedComposerDraft) => {
     setComposerImages(session.savedDraftImages);
     setInputValue(session.savedDraftText);
     clearComposerContextRefs();
@@ -2456,11 +2501,57 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   }, [addComposerContextRef, clearComposerContextRefs]);
 
-  const sendComposerMessage = async (textOverride?: string) => {
+  const restoreComposerDraft = useCallback((session: ComposerEditSession) => {
+    setComposerEditSession(null);
+    applySavedComposerDraft(session);
+  }, [applySavedComposerDraft]);
+
+  const restoreGoalComposerDraft = useCallback((session: GoalComposerEditSession) => {
+    if (goalComposerEditSessionRef.current !== session) return;
+    goalComposerEditSessionRef.current = null;
+    setGoalComposerEditSession(null);
+    applySavedComposerDraft(session);
+  }, [applySavedComposerDraft]);
+
+  const sendComposerMessage = async (
+    textOverride?: string,
+    activeBehaviorOverride?: 'steer' | 'queue',
+  ) => {
     if (isComposerDisabled || activeQuestionnaire) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
+    if (isBusySending) {
+      if (!selectedConversationId || !text) return;
+      try {
+        const internalAgentProfile = getConflictAssistantInternalAgentProfile(selectedConversationId);
+        await submitDuringActiveTurn(
+          {
+            conversationId: selectedConversationId,
+            content: text,
+            taskId: implementTaskIdForSend,
+            images: [...composerImages],
+            ...(internalAgentProfile ? { internalAgentProfile } : {}),
+          },
+          activeBehaviorOverride ?? activeTurnSendBehavior,
+        );
+        if (internalAgentProfile) {
+          clearConflictAssistantInternalAgentProfile(selectedConversationId);
+        }
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(`conversation:${selectedConversationId}`);
+        composerEditorRef.current?.clear();
+        clearComposerContextRefs();
+        setComposerImages([]);
+        setInputValue('');
+        resetPromptHistoryNavigation();
+      } catch (error) {
+        notify.error(t('chat.activeTurnSendFailed', 'Message not sent'), {
+          description: toServiceError(error).message,
+        });
+      }
+      return;
+    }
     if (composerEditSession) {
       if (!text || isBusySending) return;
       await requestReplay({
@@ -2497,11 +2588,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if ((!text && composerImages.length === 0 && composerContextRefs.length === 0) || isBusySending) return;
-    saveComposerDraftForContext(composerDraftContextKey, {
-      text,
-      images: [...composerImages],
-      contextRefs: cloneContextRefs(composerContextRefs),
-    });
+    if (!goalComposerEditSession) {
+      saveComposerDraftForContext(composerDraftContextKey, {
+        text,
+        images: [...composerImages],
+        contextRefs: cloneContextRefs(composerContextRefs),
+      });
+    }
     const conversationId = await ensureConversation();
     if (!conversationId) return;
     const conversationDraftKey = `conversation:${conversationId}`;
@@ -2511,15 +2604,29 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const internalAgentProfile =
       getConflictAssistantInternalAgentProfile(conversationId);
     let tracksGoalTurn = false;
+    let goalEditTransactionId: string | null = null;
 
     if (goalCommand?.kind === 'activate') {
-      activateConversationGoal({
-        conversationId,
-        objective: goalCommand.objective,
-        providerId: selectedProviderId,
-        modelId: selectedModelId,
-        reasoningEffort: selectedReasoningEffort,
-      });
+      if (goalComposerEditSession) {
+        const transaction = beginConversationGoalEdit({
+          conversationId,
+          objective: goalCommand.objective,
+          providerId: selectedProviderId,
+          modelId: selectedModelId,
+          reasoningEffort: selectedReasoningEffort,
+          expectedGoalId: goalComposerEditSession.goalId,
+        });
+        if (!transaction) return;
+        goalEditTransactionId = transaction.transactionId;
+      } else {
+        activateConversationGoal({
+          conversationId,
+          objective: goalCommand.objective,
+          providerId: selectedProviderId,
+          modelId: selectedModelId,
+          reasoningEffort: selectedReasoningEffort,
+        });
+      }
       tracksGoalTurn = true;
     } else {
       const currentGoal = useConversationGoalStore.getState()
@@ -2543,24 +2650,47 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
       if (result.status === 'sent') {
-        if (tracksGoalTurn) {
+        if (goalEditTransactionId) {
+          if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
+            setConversationGoalStatus(conversationId, 'executor_running');
+          }
+        } else if (tracksGoalTurn) {
           setConversationGoalStatus(conversationId, 'executor_running');
         }
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(conversationId);
         }
-        clearComposerDraftForContext(composerDraftContextKey);
-        clearComposerDraftForContext(conversationDraftKey);
-        composerEditorRef.current?.clear();
-        clearComposerContextRefs();
-        setComposerImages([]);
-        setInputValue('');
+        if (goalComposerEditSession) {
+          const targetDraftKey = `conversation:${goalComposerEditSession.conversationId}`;
+          if (
+            goalComposerEditSessionRef.current === goalComposerEditSession &&
+            activeComposerDraftContextKeyRef.current === targetDraftKey
+          ) {
+            saveComposerDraftForContext(targetDraftKey, {
+              text: goalComposerEditSession.savedDraftText,
+              images: [...goalComposerEditSession.savedDraftImages],
+              contextRefs: cloneContextRefs(goalComposerEditSession.savedDraftContextRefs),
+            });
+            restoreGoalComposerDraft(goalComposerEditSession);
+          }
+        } else {
+          clearComposerDraftForContext(composerDraftContextKey);
+          clearComposerDraftForContext(conversationDraftKey);
+          composerEditorRef.current?.clear();
+          clearComposerContextRefs();
+          setComposerImages([]);
+          setInputValue('');
+        }
         resetPromptHistoryNavigation();
+      } else if (goalEditTransactionId) {
+        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
       } else if (tracksGoalTurn) {
         setConversationGoalStatus(conversationId, 'paused');
       }
     } catch (error) {
-      if (tracksGoalTurn) {
+      if (goalEditTransactionId) {
+        settleConversationGoalEdit(goalEditTransactionId, 'rollback');
+      } else if (tracksGoalTurn) {
         setConversationGoalStatus(
           conversationId,
           'error',
@@ -2581,6 +2711,56 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (!selectedConversationId) return;
     setConversationGoalStatus(selectedConversationId, 'active_ready');
   }, [selectedConversationId, setConversationGoalStatus]);
+
+  const handleEditGoal = useCallback(() => {
+    if (
+      !activeConversationGoal ||
+      !selectedConversationId ||
+      goalComposerEditSession ||
+      composerEditSession ||
+      activeQuestionnaire ||
+      activePendingToolApproval ||
+      isBusySending
+    ) {
+      return;
+    }
+    const savedDraft: GoalComposerEditSession = {
+      conversationId: selectedConversationId,
+      goalId: activeConversationGoal.goalId,
+      savedDraftText: composerEditorRef.current?.getTextContent() ?? inputValue,
+      savedDraftImages: [...composerImages],
+      savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+    };
+    const goalDraft = `/goal ${activeConversationGoal.objective}`;
+    saveComposerDraftForContext(composerDraftContextKey, {
+      text: savedDraft.savedDraftText,
+      images: savedDraft.savedDraftImages,
+      contextRefs: savedDraft.savedDraftContextRefs,
+    });
+    goalComposerEditSessionRef.current = savedDraft;
+    setGoalComposerEditSession(savedDraft);
+    clearComposerContextRefs();
+    setComposerImages([]);
+    setInputValue(goalDraft);
+    composerEditorRef.current?.setText(goalDraft, []);
+    resetPromptHistoryNavigation();
+    window.requestAnimationFrame(() => composerEditorRef.current?.focus());
+  }, [
+    activeConversationGoal,
+    activeQuestionnaire,
+    activePendingToolApproval,
+    clearComposerContextRefs,
+    composerDraftContextKey,
+    composerEditSession,
+    composerContextRefs,
+    composerImages,
+    goalComposerEditSession,
+    inputValue,
+    isBusySending,
+    resetPromptHistoryNavigation,
+    saveComposerDraftForContext,
+    selectedConversationId,
+  ]);
 
   const handleStopGoal = useCallback(() => {
     if (!selectedConversationId) return;
@@ -2743,7 +2923,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleEditStart = (message: ChatMessage) => {
-    if (composerEditSession || isBusySending || activePendingToolApproval) {
+    if (
+      composerEditSession ||
+      goalComposerEditSession ||
+      isBusySending ||
+      activePendingToolApproval
+    ) {
       return;
     }
 
@@ -2814,6 +2999,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     onEditCommitted: handleEditCommitted,
   });
 
+  useEffect(() => {
+    const handleSecondarySend = () => {
+      if (!isBusySending) return;
+      void sendComposerMessage(
+        undefined,
+        activeTurnSendBehavior === 'steer' ? 'queue' : 'steer',
+      );
+    };
+    window.addEventListener('macro:composer-secondary-send', handleSecondarySend);
+    return () => window.removeEventListener('macro:composer-secondary-send', handleSecondarySend);
+  });
+
   const handleCopy = async (content: string, messageId: string) => {
     await navigator.clipboard.writeText(content);
     setCopiedMessageId(messageId);
@@ -2833,12 +3030,43 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     !activeQuestionnaire &&
     !isConversationPending &&
     (
-      composerEditSession
+      goalComposerEditSession
+        ? parseConversationGoalCommand(inputValue)?.kind === 'activate'
+        : composerEditSession
         ? Boolean(inputValue.trim())
         : isImplementComposerInKickoffMode
         ? Boolean(inputValue.trim())
         : Boolean(inputValue.trim()) || composerImages.length > 0 || composerContextRefs.length > 0
     );
+  const isGoalComposerDraft = useMemo(
+    () => !composerEditSession && parseConversationGoalCommand(inputValue) !== null,
+    [composerEditSession, inputValue],
+  );
+  const handleRemoveGoalComposerCommand = useCallback(() => {
+    if (goalComposerEditSession) {
+      restoreGoalComposerDraft(goalComposerEditSession);
+      window.requestAnimationFrame(() => composerEditorRef.current?.focus());
+      return;
+    }
+    const currentText = composerEditorRef.current?.getTextContent() ?? inputValue;
+    const goalCommand = parseConversationGoalCommand(currentText);
+    if (!goalCommand) return;
+
+    const nextText = goalCommand.kind === 'activate' ? goalCommand.objective : '';
+    setInputValue(nextText);
+    composerEditorRef.current?.setText(nextText);
+    window.requestAnimationFrame(() => composerEditorRef.current?.focus());
+  }, [goalComposerEditSession, inputValue, restoreGoalComposerDraft]);
+
+  useEffect(() => {
+    if (
+      !goalComposerEditSession ||
+      parseConversationGoalCommand(inputValue) !== null
+    ) {
+      return;
+    }
+    restoreGoalComposerDraft(goalComposerEditSession);
+  }, [goalComposerEditSession, inputValue, restoreGoalComposerDraft]);
   const hasComposerSkillReference = useMemo(
     () => composerContextRefs.some((ref) => ref.kind === 'skill'),
     [composerContextRefs]
@@ -2851,6 +3079,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     !nativeToolsSupported && (hasComposerSkillReference || hasComposerSkillMention);
 
   const navigatePromptHistory = useCallback((direction: 'up' | 'down') => {
+    if (goalComposerEditSession) return;
     if (promptHistory.length === 0) return;
 
     if (direction === 'up') {
@@ -2896,6 +3125,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     draftBeforeHistory,
     findPromptHistoryIndexByText,
     getComposerDraftSnapshot,
+    goalComposerEditSession,
     inputValue,
     promptHistory,
     promptHistoryIndex,
@@ -3017,6 +3247,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           <Suspense fallback={null}>
             <ConversationGoalBanner
               goal={activeConversationGoal}
+              onEdit={handleEditGoal}
               onPause={handlePauseGoal}
               onResume={handleResumeGoal}
               onStop={handleStopGoal}
@@ -3419,149 +3650,181 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 />
               </Suspense>
             ) : (
-              <div
-                data-chat-composer-editing={
-                  composerEditSession ? 'true' : undefined
-                }
-                className={cn(
-                  'flex items-center gap-2 rounded-xl border px-2 py-1.5 transition-colors',
-                  composerEditSession
-                    ? 'border-border bg-card/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
-                    : 'border-border bg-card/80'
-                )}
-                onPasteCapture={handleComposerPaste}
-                data-tour-id="chat-composer"
-              >
-                <div
-                  className={cn('min-w-0 flex-1', showSpeechRecordingBar && 'hidden')}
-                  aria-hidden={showSpeechRecordingBar || undefined}
-                >
-                  <Suspense fallback={<ComposerFallbackStatus />}>
-                    <LazyComposerEditor
-                      ref={composerEditorRef}
-                      editable={!isBusySending && !!selectedProviderId && !!selectedModelId && !isComposerDisabled}
-                      readOnly={isSpeechEnhancing}
-                      className={isSpeechEnhancing ? 'speech-cleanup-text' : undefined}
-                      placeholder={
-                        composerEditSession
-                          ? t('chat.editMessagePlaceholder', 'Edit message...')
-                        : isConversationPending
-                          ? t('chat.loadingConversation', 'Restoring conversation...')
-                        : isModeProjectWorkspaceMissing
-                          ? workspaceState.kind === 'noProjectAvailable'
-                            ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
-                            : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
-                        : isArchitectPlanSelectionMissing
-                          ? missingArchitectPlanMessage
-                        : isImplementTaskSelectionMissing
-                          ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
-                        : isSelectedTaskDependencyBlocked
-                          ? t(
-                              'implement.taskBlockedComposerPlaceholder',
-                              'Task blocked until prerequisites are completed'
-                            )
-                        : isImplementComposerInKickoffMode
-                          ? t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')
-                          : !selectedProviderId || !selectedModelId
-                            ? t('chat.selectProvider')
-                            : t('chat.typeMessage')
-                      }
-                      onTextChange={(text) => {
-                        if (composerError) {
-                          clearConversationRuntimeError(selectedConversationId ?? '');
-                          clearLastError();
-                        }
-                        const pendingPromptHistoryText = pendingPromptHistoryTextRef.current;
-                        const isPromptHistoryText = pendingPromptHistoryText === text;
-                        if (pendingPromptHistoryText !== null) {
-                          pendingPromptHistoryTextRef.current = null;
-                        }
-                        setInputValue(text);
-                        if (!isPromptHistoryText && promptHistoryIndex !== null) {
-                          resetPromptHistoryNavigation();
-                        }
-                      }}
-                      onSend={handleSend}
-                      onPromptHistory={
-                        !composerEditSession &&
-                        promptHistoryNavigationMode === 'contextual_arrows'
-                          ? navigatePromptHistory
-                          : undefined
-                      }
-                    />
-                  </Suspense>
-                </div>
-                {showSpeechRecordingBar && (
-                  <SpeechRecordingBar
-                    phase={speechDictation.phase as 'recording' | 'transcribing'}
-                    completion={speechDictation.completion}
-                    elapsedSeconds={speechDictation.elapsedSeconds}
-                    getAudioLevel={speechDictation.getAudioLevel}
-                    recordingLabel={t('speech.recording.active', 'Recording')}
-                    transcribingLabel={t('speech.button.transcribing', 'Audio sent · Transcribing')}
-                    stopLabel={t('speech.recording.stopAndInsert', 'Stop and insert transcription')}
-                    sendLabel={t('speech.recording.stopAndSend', 'Stop, transcribe and send')}
-                    onStop={() => {
-                      void speechDictation.finish('insert');
-                    }}
-                    onSend={() => {
-                      void speechDictation.finish('send');
-                    }}
-                  />
-                )}
-              {composerEditSession && !isStreaming && !showSpeechRecordingBar && (
-                <button
-                  type="button"
-                  onClick={handleEditCancel}
-                  data-tour-id="chat-edit-cancel-button"
-                  aria-label={t('common.cancel')}
-                  title={t('common.cancel')}
-                  className="flex h-9 min-w-[2.375rem] items-center justify-center rounded-lg bg-muted px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <Icon name="x" size={14} />
-                </button>
-              )}
-              {isStreaming ? (
-                <button
-                  onClick={handleStopStreaming}
-                  data-tour-id="chat-stop-button"
-                  className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
-                >
-                  <Icon name="square" size={14} />
-                  <span className="text-xs">{t('chat.stop')}</span>
-                </button>
-              ) : !showSpeechRecordingBar ? (
-                <>
-                  <SpeechDictationButton
-                    phase={speechDictation.phase}
-                    elapsedSeconds={speechDictation.elapsedSeconds}
-                    disabled={isBusySending || isComposerDisabled}
-                    label={t('speech.button.start', 'Start dictation')}
-                    recordingLabel={t('speech.button.stop', 'Stop dictation')}
-                    transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
-                    onToggle={() => {
-                      void speechDictation.toggle();
-                    }}
-                  />
+              <div className="flex items-center gap-2">
+                {isGoalComposerDraft && !showSpeechRecordingBar && (
                   <button
-                    onClick={handleSend}
-                    data-tour-id="chat-send-button"
-                    disabled={isBusySending || speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
-                    className={cn(
-                      'rounded-lg px-3 h-9 flex items-center transition-colors',
-                      isBusySending || speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
-                        ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                        : 'bg-primary hover:bg-primary/90 text-primary-foreground'
-                    )}
+                    type="button"
+                    data-chat-goal-command-control="true"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={handleRemoveGoalComposerCommand}
+                    aria-label={t('goal.removeCommand', 'Remove Goal command')}
+                    title={t('goal.removeCommand', 'Remove Goal command')}
+                    className="group relative flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-lg text-primary/80 transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
                   >
-                    {isBusySending ? (
-                      <SpinnerIcon size={14} />
-                    ) : (
-                      <Icon name="arrow-up" size={14} />
-                    )}
+                    <Icon
+                      name="target"
+                      size={18}
+                      className="transition-[opacity,transform] group-hover:scale-75 group-hover:opacity-0 group-focus-visible:scale-75 group-focus-visible:opacity-0"
+                    />
+                    <Icon
+                      name="x"
+                      size={14}
+                      className="absolute scale-75 opacity-0 transition-[opacity,transform] group-hover:scale-100 group-hover:opacity-100 group-focus-visible:scale-100 group-focus-visible:opacity-100"
+                    />
                   </button>
-                </>
-              ) : null}
+                )}
+                <div
+                  data-chat-composer-editing={
+                    composerEditSession ? 'true' : undefined
+                  }
+                  data-chat-composer-goal={isGoalComposerDraft ? 'true' : undefined}
+                  className={cn(
+                    'relative flex min-w-0 flex-1 items-center gap-2 rounded-xl border px-2 py-1.5 transition-[border-color,background-color,box-shadow] duration-200',
+                    isGoalComposerDraft
+                      ? 'border-primary/40 bg-[linear-gradient(105deg,rgb(var(--primary)/0.11),rgb(var(--card)/0.88)_32%,rgb(var(--card)/0.82))] shadow-[inset_0_1px_0_rgb(var(--primary)/0.12),0_0_0_1px_rgb(var(--primary)/0.04),0_8px_28px_-20px_rgb(var(--primary)/0.65)]'
+                      : composerEditSession
+                        ? 'border-border bg-card/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+                        : 'border-border bg-card/80'
+                  )}
+                  onPasteCapture={handleComposerPaste}
+                  data-tour-id="chat-composer"
+                >
+                  <div
+                    className={cn('min-w-0 flex-1', showSpeechRecordingBar && 'hidden')}
+                    aria-hidden={showSpeechRecordingBar || undefined}
+                  >
+                    <Suspense fallback={<ComposerFallbackStatus />}>
+                      <LazyComposerEditor
+                        ref={composerEditorRef}
+                        editable={!!selectedProviderId && !!selectedModelId && !isComposerDisabled}
+                        readOnly={isSpeechEnhancing}
+                        className={isSpeechEnhancing ? 'speech-cleanup-text' : undefined}
+                        placeholder={
+                          composerEditSession
+                            ? t('chat.editMessagePlaceholder', 'Edit message...')
+                          : isConversationPending
+                            ? t('chat.loadingConversation', 'Restoring conversation...')
+                          : isModeProjectWorkspaceMissing
+                            ? workspaceState.kind === 'noProjectAvailable'
+                              ? t('project.emptyWorkspaceTitle', 'Ajoutez un projet pour commencer avec Macro.')
+                              : t('project.noProjectSelectedTitle', 'Sélectionnez un projet pour continuer.')
+                          : isArchitectPlanSelectionMissing
+                            ? missingArchitectPlanMessage
+                          : isImplementTaskSelectionMissing
+                            ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
+                          : isSelectedTaskDependencyBlocked
+                            ? t(
+                                'implement.taskBlockedComposerPlaceholder',
+                                'Task blocked until prerequisites are completed'
+                              )
+                          : isImplementComposerInKickoffMode
+                            ? t('implement.executionNotesPlaceholder', 'Optional guidance for this task kickoff')
+                            : !selectedProviderId || !selectedModelId
+                              ? t('chat.selectProvider')
+                              : t('chat.typeMessage')
+                        }
+                        onTextChange={(text) => {
+                          if (composerError) {
+                            clearConversationRuntimeError(selectedConversationId ?? '');
+                            clearLastError();
+                          }
+                          const pendingPromptHistoryText = pendingPromptHistoryTextRef.current;
+                          const isPromptHistoryText = pendingPromptHistoryText === text;
+                          if (pendingPromptHistoryText !== null) {
+                            pendingPromptHistoryTextRef.current = null;
+                          }
+                          setInputValue(text);
+                          if (!isPromptHistoryText && promptHistoryIndex !== null) {
+                            resetPromptHistoryNavigation();
+                          }
+                        }}
+                        onSend={handleSend}
+                        onPromptHistory={
+                          !composerEditSession &&
+                          !goalComposerEditSession &&
+                          promptHistoryNavigationMode === 'contextual_arrows'
+                            ? navigatePromptHistory
+                            : undefined
+                        }
+                      />
+                    </Suspense>
+                  </div>
+                  {showSpeechRecordingBar && (
+                    <SpeechRecordingBar
+                      phase={speechDictation.phase as 'recording' | 'transcribing'}
+                      completion={speechDictation.completion}
+                      elapsedSeconds={speechDictation.elapsedSeconds}
+                      getAudioLevel={speechDictation.getAudioLevel}
+                      recordingLabel={t('speech.recording.active', 'Recording')}
+                      transcribingLabel={t('speech.button.transcribing', 'Audio sent · Transcribing')}
+                      stopLabel={t('speech.recording.stopAndInsert', 'Stop and insert transcription')}
+                      sendLabel={t('speech.recording.stopAndSend', 'Stop, transcribe and send')}
+                      onStop={() => {
+                        void speechDictation.finish('insert');
+                      }}
+                      onSend={() => {
+                        void speechDictation.finish('send');
+                      }}
+                    />
+                  )}
+                  {composerEditSession && !isStreaming && !showSpeechRecordingBar && (
+                    <button
+                      type="button"
+                      onClick={handleEditCancel}
+                      data-tour-id="chat-edit-cancel-button"
+                      aria-label={t('common.cancel')}
+                      title={t('common.cancel')}
+                      className="flex h-9 min-w-[2.375rem] items-center justify-center rounded-lg bg-muted px-3 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
+                  )}
+                  {isStreaming && !showSpeechRecordingBar && (
+                    <button
+                      onClick={handleStopStreaming}
+                      data-tour-id="chat-stop-button"
+                      className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
+                    >
+                      <Icon name="square" size={14} />
+                      <span className="text-xs">{t('chat.stop')}</span>
+                    </button>
+                  )}
+                  {!showSpeechRecordingBar ? (
+                    <>
+                      {!isStreaming && (
+                        <SpeechDictationButton
+                          phase={speechDictation.phase}
+                          elapsedSeconds={speechDictation.elapsedSeconds}
+                          disabled={isComposerDisabled}
+                          label={t('speech.button.start', 'Start dictation')}
+                          recordingLabel={t('speech.button.stop', 'Stop dictation')}
+                          transcribingLabel={t('speech.button.transcribing', 'Transcribing')}
+                          onToggle={() => {
+                            void speechDictation.toggle();
+                          }}
+                        />
+                      )}
+                      <button
+                        onClick={handleSend}
+                        data-tour-id="chat-send-button"
+                        title={isStreaming
+                          ? `${activeTurnSendBehavior === 'steer'
+                            ? t('chat.steerActiveTurn', 'Steer active turn')
+                            : t('chat.queueNextTurn', 'Queue for next turn')}. ${t('chat.secondaryAction', 'Alternate action')}: ${formatBindingForDisplay(secondarySendBinding)}`
+                          : t('chat.send', 'Send')}
+                        disabled={speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled}
+                        className={cn(
+                          'rounded-lg px-3 h-9 flex items-center transition-colors',
+                          speechDictation.isBusy || !canSend || !selectedProviderId || !selectedModelId || isComposerDisabled
+                            ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                            : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                        )}
+                      >
+                        <Icon name="arrow-up" size={14} />
+                      </button>
+                    </>
+                  ) : null}
+                </div>
               </div>
             )}
           </div>

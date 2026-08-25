@@ -82,6 +82,36 @@ const loadUseToolsStore = async () => {
         ],
       })),
       mcpCallTool: mock(async () => ({ content: 'ok' })),
+      mcpRuntimeConnect: mock(async () => ({
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        state: 'ready',
+        protocolEra: 'legacy',
+        negotiatedProtocolVersion: '2025-11-25',
+      })),
+      mcpRuntimeRefreshCatalog: mock(async () => ({
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        tools: [
+          {
+            id: 'mcp__github__list_issues',
+            serverId: 'github',
+            name: 'list_issues',
+            description: 'List issues',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      })),
+      mcpRuntimeCallTool: mock(async () => ({ content: 'ok' })),
+      mcpRuntimeCancelOperation: mock(async () => false),
     },
   }));
 
@@ -188,7 +218,7 @@ describe('useToolsStore chat toolbox policy', () => {
     await useToolsStore.getState().refreshMCPServerTools('github');
 
     const { services } = await import('../services');
-    (services.mcpCallTool as unknown as {
+    (services.mcpRuntimeCallTool as unknown as {
       mockResolvedValueOnce: (value: { content: string; isError: boolean }) => void;
     }).mockResolvedValueOnce({
       content: 'Access denied by MCP server',
@@ -198,5 +228,25 @@ describe('useToolsStore chat toolbox policy', () => {
     await expect(
       useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
     ).rejects.toThrow('Access denied by MCP server');
+    expect(useToolsStore.getState().mcpServers[0]?.status).toBe('online');
+  });
+
+  it('degrades a server only when the persistent runtime reports a transport failure', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    await useToolsStore.getState().refreshMCPServerTools('github');
+
+    const { services } = await import('../services');
+    (services.mcpRuntimeCallTool as unknown as {
+      mockRejectedValueOnce: (value: { code: string; message: string }) => void;
+    }).mockRejectedValueOnce({
+      code: 'MCP_RUNTIME_CALL_TOOL_FAILED',
+      message: 'Transport closed',
+    });
+
+    await expect(
+      useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
+    ).rejects.toThrow('Transport closed');
+    expect(useToolsStore.getState().mcpServers[0]?.status).toBe('degraded');
   });
 });

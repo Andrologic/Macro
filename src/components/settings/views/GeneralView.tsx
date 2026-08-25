@@ -24,7 +24,9 @@ import { Select } from '../../ui/Select';
 import { Input } from '../../ui/Input';
 import { Switch } from '../../ui/Switch';
 import { ToolSecuritySettingsSection } from './ToolSecuritySettingsSection';
+import { SettingsSectionHeader } from '../SettingsSectionHeader';
 import { notify } from '../../ui/toastService';
+import { UpdateChannelSettings } from './UpdateChannelSettings';
 
 export const GeneralView: React.FC = () => {
     const { t, i18n } = useTranslation();
@@ -276,9 +278,7 @@ export const GeneralView: React.FC = () => {
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section className="space-y-4">
-                <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-                    {t('settings.language_region', 'Language & Region')}
-                </h4>
+                <SettingsSectionHeader title={t('settings.language_region', 'Language & Region')} />
 
                 <div className="grid grid-cols-1 gap-6 bg-card/40 p-4 rounded-xl border border-border/50">
                     <div className="flex items-center justify-between">
@@ -307,13 +307,13 @@ export const GeneralView: React.FC = () => {
             </section>
 
              <section className="space-y-4">
-                <h4 className="text-sm font-medium text-primary uppercase tracking-wider">
-                    {t('settings.application', 'Application')}
-                </h4>
+                <SettingsSectionHeader title={t('settings.application', 'Application')} />
 
                 <ToolSecuritySettingsSection />
 
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
+                    <UpdateChannelSettings />
+                    <div className="border-t border-border/50" />
                     <div className="flex flex-col gap-3">
                         <div className="space-y-1">
                             <label htmlFor="chat-max-turns-enabled" className="text-sm font-medium text-foreground">

@@ -23,6 +23,11 @@ import {
 } from '../../../services/webSearchSettings';
 import type { WebSearchSettings } from '../../../services/webSearchSettings';
 import { MCPServersPanel } from '../mcp/MCPServersPanel';
+import {
+  SettingsCollectionHeader,
+  SettingsSearchEmpty,
+  useSettingsSearch,
+} from '../search/SettingsSearch';
 
 export const ToolsView: React.FC = () => {
   const { t } = useTranslation();
@@ -35,6 +40,10 @@ export const ToolsView: React.FC = () => {
     upsertMCPServer,
     removeMCPServer,
     refreshMCPServerTools,
+    authorizeMCPServer,
+    logoutMCPServer,
+    storeMCPOAuthClientSecret,
+    deleteMCPOAuthClientSecret,
     isToolEnabled,
   } = useToolsStore();
   const mode = useAppStore((state) => state.mode);
@@ -78,7 +87,8 @@ export const ToolsView: React.FC = () => {
     [toolRiskLevel]
   );
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const { query, setQuery, matches } = useSettingsSearch();
+  const [activeToolsTab, setActiveToolsTab] = useState('websearch');
   const [webSearchSettings, setWebSearchSettings] = useState<WebSearchSettings>(getWebSearchSettings);
   const [webSearchSecretDraft, setWebSearchSecretDraft] = useState('');
   const hasSelectedWebSearchKey = useMemo(() => {
@@ -135,15 +145,12 @@ export const ToolsView: React.FC = () => {
     setWebSearchSecretDraft('');
   };
 
-  const filteredTools = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return Object.values(internalTools).filter(
-      (tool) =>
-        tool.config?.visible !== false &&
-        (tool.name.toLowerCase().includes(query) || tool.description.toLowerCase().includes(query))
-    );
-  }, [internalTools, searchQuery]);
-
+  const filteredTools = useMemo(
+    () => Object.values(internalTools).filter(
+      (tool) => tool.config?.visible !== false && matches(tool.name, tool.description, tool.category)
+    ),
+    [internalTools, matches]
+  );
   const modeHint =
     mode === 'Chat'
       ? t(
@@ -170,16 +177,15 @@ export const ToolsView: React.FC = () => {
         </div>
       )}
 
-      <div className="mb-6">
-        <Input
-          placeholder={t('tools.searchPlaceholder', 'Search tools & servers...')}
-          value={searchQuery}
-          onChange={(event) => setSearchQuery(event.target.value)}
-          className="max-w-md"
-        />
-      </div>
-
-      <Tabs defaultValue="websearch" className="flex-1 flex flex-col overflow-hidden">
+      <Tabs
+        defaultValue="websearch"
+        value={activeToolsTab}
+        onValueChange={(nextTab) => {
+          setActiveToolsTab(nextTab);
+          setQuery('');
+        }}
+        className="flex-1 flex flex-col overflow-hidden"
+      >
         <TabsList className="mb-4">
           <TabsTrigger value="websearch" className="flex items-center gap-2">
             <Icon name="search" size={14} />
@@ -333,6 +339,15 @@ export const ToolsView: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="tools" className="flex-1 overflow-y-auto pr-2 space-y-3">
+          <SettingsCollectionHeader
+            title={t('tools.builtInTools', 'Built-in tools')}
+            description={t(
+              'tools.builtInToolsDescription',
+              'Control which tools models can use'
+            )}
+            searchPlaceholder={t('tools.searchBuiltInTools', 'Search tools...')}
+            className="pb-1"
+          />
           {filteredTools.map((tool) => {
             const webSearchLockedByKey = tool.id === 'web_search' && !hasSelectedWebSearchKey;
             const switchDisabled = webSearchLockedByKey || !nativeToolsSupported;
@@ -417,20 +432,28 @@ export const ToolsView: React.FC = () => {
           })}
 
           {filteredTools.length === 0 && (
-            <p className="text-center text-muted-foreground py-8">
-              {t('tools.noToolsFound', 'No tools found.')}
-            </p>
+            query.trim()
+              ? <SettingsSearchEmpty />
+              : (
+                <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
+                  {t('tools.noToolsFound', 'No tools found')}
+                </div>
+              )
           )}
         </TabsContent>
 
         <TabsContent value="mcp" className="flex-1 overflow-y-auto pr-2 space-y-3">
           <MCPServersPanel
             servers={mcpServers}
-            searchQuery={searchQuery}
+            searchQuery={query}
             onToggleServer={toggleMCPServer}
             onUpsertServer={upsertMCPServer}
             onRemoveServer={removeMCPServer}
             onRefreshServerTools={refreshMCPServerTools}
+            onAuthorizeServer={authorizeMCPServer}
+            onLogoutServer={logoutMCPServer}
+            onStoreOAuthClientSecret={storeMCPOAuthClientSecret}
+            onDeleteOAuthClientSecret={deleteMCPOAuthClientSecret}
           />
         </TabsContent>
       </Tabs>

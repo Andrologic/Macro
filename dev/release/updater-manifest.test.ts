@@ -73,6 +73,26 @@ describe('updater manifest', () => {
     }
   });
 
+  test('creates a preview manifest on the permanent preview tag', () => {
+    const root = mkdtempSync(join(tmpdir(), 'macro-updater-manifest-'));
+    try {
+      const manifest = createUpdaterManifest({
+        version: '0.2.0-nightly.20260825.12',
+        tag: 'preview',
+        channel: 'preview',
+        repository: 'Andrologic/Macro',
+        notes: 'Validated preview build.',
+        pubDate: '2026-08-25T10:20:30Z',
+        artifacts: fixtureArtifacts(root),
+      });
+
+      expect(manifest.version).toBe('0.2.0-nightly.20260825.12');
+      expect(manifest.platforms['windows-x86_64'].url).toContain('/releases/download/preview/');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects incomplete, empty, and unsupported artifacts', () => {
     const root = mkdtempSync(join(tmpdir(), 'macro-updater-manifest-'));
     try {
@@ -130,6 +150,15 @@ describe('updater manifest', () => {
       pubDate: '2026-08-19T10:20:30Z',
       artifacts: {},
     })).toThrow('stable x.y.z');
+
+    expect(() => createUpdaterManifest({
+      version: '0.2.0',
+      tag: 'preview',
+      channel: 'preview',
+      repository: 'Andrologic/Macro',
+      pubDate: '2026-08-19T10:20:30Z',
+      artifacts: {},
+    })).toThrow('prerelease identifier');
 
     expect(() => createUpdaterManifest({
       version: '0.2.0',

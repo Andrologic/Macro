@@ -987,6 +987,9 @@ async fn write_bytes_atomically_with_parent_creation(
     expected_revision: Option<&str>,
     unix_mode: Option<u32>,
 ) -> CommandResult<()> {
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+
     let parent = path
         .parent()
         .ok_or_else(|| command_error(format!("Invalid file path: {}", path.display())))?;
@@ -4901,6 +4904,24 @@ pub async fn db_delete_architect_plan_conversation_sync(
 
 // ============ PROVIDER CONFIGS ============
 
+fn provider_is_enabled(
+    configured_enabled: bool,
+    provider_type: &str,
+    has_api_key: bool,
+    auth_status: Option<&str>,
+) -> bool {
+    configured_enabled
+        || has_api_key
+        || match provider_type {
+            "chatgpt" => matches!(
+                auth_status,
+                Some("authenticated" | "refreshing" | "expired")
+            ),
+            "copilot" => auth_status == Some("connected"),
+            _ => false,
+        }
+}
+
 async fn configured_provider_configs(
     manager: &ConfigManager,
     pool: &SqlitePool,
@@ -4923,6 +4944,13 @@ async fn configured_provider_configs(
     let now = chrono::Utc::now().to_rfc3339();
     let mut providers = Vec::with_capacity(definitions.len());
     for (id, definition) in definitions {
+        if definition
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let status = legacy_status.get(id);
         let provider_type = definition
             .get("providerType")
@@ -4932,6 +4960,20 @@ async fn configured_provider_configs(
         let has_stored_api_key = secrets::get_api_key(id)
             .map_err(|error| command_error(format!("Failed to inspect provider secret: {error}")))?
             .is_some();
+        let is_local = definition
+            .get("isLocal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let auth_status = status.and_then(|value| value.auth_status.clone());
+        let is_enabled = provider_is_enabled(
+            definition
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            &provider_type,
+            has_stored_api_key,
+            auth_status.as_deref(),
+        );
         providers.push(ProviderConfig {
             id: id.clone(),
             name: definition
@@ -4947,15 +4989,9 @@ async fn configured_provider_configs(
                 .to_string(),
             api_key: None,
             has_stored_api_key,
-            is_enabled: definition
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            is_local: definition
-                .get("isLocal")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            auth_status: status.and_then(|value| value.auth_status.clone()),
+            is_enabled,
+            is_local,
+            auth_status,
             auth_source: status.and_then(|value| value.auth_source.clone()),
             plan_type: status.and_then(|value| value.plan_type.clone()),
             account_label: status.and_then(|value| value.account_label.clone()),
@@ -5124,8 +5160,25 @@ async fn configured_provider_models(
                 pricing_prompt: None,
                 pricing_completion: None,
                 pricing_request: None,
-                reasoning_efforts: None,
-                default_reasoning_effort: None,
+                reasoning_efforts: definition
+                    .get("reasoningEfforts")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|values| !values.is_empty()),
+                default_reasoning_effort: definition
+                    .get("defaultReasoningEffort")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
                 context_window_tokens: definition
                     .get("contextWindow")
                     .and_then(Value::as_i64)
@@ -5174,6 +5227,45 @@ async fn configured_provider_models(
     }
     models.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(models)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualModelReasoningInput {
+    reasoning_efforts: Vec<String>,
+    default_reasoning_effort: Option<String>,
+}
+
+fn normalize_manual_model_reasoning(
+    reasoning: Option<ManualModelReasoningInput>,
+) -> CommandResult<Option<(Vec<String>, Option<String>)>> {
+    let Some(reasoning) = reasoning else {
+        return Ok(None);
+    };
+    let mut efforts = Vec::new();
+    for effort in reasoning.reasoning_efforts {
+        let effort = effort.trim().to_string();
+        if !effort.is_empty() && !efforts.contains(&effort) {
+            efforts.push(effort);
+        }
+    }
+    if efforts.is_empty() {
+        return Err(command_error(
+            "Reasoning efforts cannot be empty when reasoning is configurable.",
+        ));
+    }
+    let default_effort = reasoning
+        .default_reasoning_effort
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(default_effort) = &default_effort {
+        if !efforts.contains(default_effort) {
+            return Err(command_error(
+                "Default reasoning effort must be included in reasoning efforts.",
+            ));
+        }
+    }
+    Ok(Some((efforts, default_effort)))
 }
 
 #[tauri::command]
@@ -5353,12 +5445,27 @@ pub async fn db_update_provider_config(
         .map_err(|error| command_error(format!("Failed to update provider secret: {error}")))?;
     }
 
+    let provider_type = params
+        .provider_type
+        .unwrap_or(previous_config.provider_type);
+    let is_local = params.is_local.unwrap_or(previous_config.is_local);
+    let has_api_key = params
+        .api_key
+        .as_deref()
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(previous_config.has_stored_api_key);
+    let is_enabled = if provider_type == "chatgpt" || provider_type == "copilot" {
+        params.is_enabled.unwrap_or(previous_config.is_enabled)
+    } else {
+        is_local || has_api_key
+    };
+
     let definition = serde_json::json!({
-        "providerType": params.provider_type.unwrap_or(previous_config.provider_type),
+        "providerType": provider_type,
         "name": params.name.unwrap_or(previous_config.name),
-        "enabled": params.is_enabled.unwrap_or(previous_config.is_enabled),
+        "enabled": is_enabled,
         "baseUrl": params.base_url.unwrap_or(previous_config.base_url),
-        "isLocal": params.is_local.unwrap_or(previous_config.is_local),
+        "isLocal": is_local,
     });
     if let Err(error) =
         patch_provider_definition(config_manager.inner(), &provider_id, Some(definition)).await
@@ -5384,14 +5491,14 @@ pub async fn db_create_provider_config(
     base_url: String,
     api_key: Option<String>,
     is_local: bool,
-    is_enabled: bool,
 ) -> CommandResult<ProviderConfig> {
     let pool = get_pool(&pool).await?;
     let id = format!("provider-{}", uuid::Uuid::new_v4().simple());
+    let has_api_key = api_key.as_deref().is_some_and(|key| !key.trim().is_empty());
     let definition = serde_json::json!({
         "providerType": provider_type,
         "name": name,
-        "enabled": is_enabled,
+        "enabled": is_local || has_api_key,
         "baseUrl": base_url,
         "isLocal": is_local,
     });
@@ -5426,15 +5533,11 @@ pub async fn db_delete_provider_config(
 
     let lock = provider_mutation_lock(&id);
     let _guard = lock.lock().await;
-    let previous_config = configured_provider_configs(config_manager.inner(), &pool)
+    configured_provider_configs(config_manager.inner(), &pool)
         .await?
         .into_iter()
         .find(|provider| provider.id == id)
         .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
-    let document = config_manager
-        .get_document(ConfigDocumentKind::Providers, ConfigScope::User)
-        .await
-        .map_err(|error| command_error(error.message))?;
     let escaped = id.replace('~', "~0").replace('/', "~1");
     let previous_api_key = secrets::get_api_key(&id)
         .map_err(|error| command_error(format!("Failed to read provider secret: {error}")))?;
@@ -5456,21 +5559,10 @@ pub async fn db_delete_provider_config(
             "Failed to delete provider ChatGPT session: {error}"
         )));
     }
-    let definition = if document
-        .value
+    let is_builtin = crate::config::default_document(ConfigDocumentKind::Providers)
         .pointer(&format!("/providers/{escaped}"))
-        .is_some()
-    {
-        None
-    } else {
-        Some(serde_json::json!({
-            "providerType": previous_config.provider_type,
-            "name": previous_config.name,
-            "enabled": false,
-            "baseUrl": previous_config.base_url,
-            "isLocal": previous_config.is_local,
-        }))
-    };
+        .is_some();
+    let definition = is_builtin.then(|| serde_json::json!({ "deleted": true }));
     if let Err(error) = patch_provider_definition(config_manager.inner(), &id, definition).await {
         restore_deleted_provider_secrets(
             &id,
@@ -5500,6 +5592,7 @@ pub async fn db_upsert_provider_models(
     config_manager: State<'_, ConfigManager>,
     provider_id: String,
     models: Vec<ProviderModelInput>,
+    replace_discovered: Option<bool>,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
 
@@ -5541,9 +5634,15 @@ pub async fn db_upsert_provider_models(
         .await?;
     }
 
-    repository::upsert_provider_models(&pool, &provider_id, &models)
-        .await
-        .map_err(CommandError::from)?;
+    if replace_discovered.unwrap_or(false) {
+        repository::replace_discovered_provider_models(&pool, &provider_id, &models)
+            .await
+            .map_err(CommandError::from)?;
+    } else {
+        repository::upsert_provider_models(&pool, &provider_id, &models)
+            .await
+            .map_err(CommandError::from)?;
+    }
 
     configured_provider_models(config_manager.inner(), &pool, &provider_id).await
 }
@@ -5603,8 +5702,10 @@ pub async fn db_register_manual_model(
     provider_id: String,
     model_id: String,
     name: String,
+    reasoning: Option<ManualModelReasoningInput>,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
+    let reasoning = normalize_manual_model_reasoning(reasoning)?;
 
     let document = config_manager
         .effective_user_document(ConfigDocumentKind::Providers)
@@ -5623,15 +5724,17 @@ pub async fn db_register_manual_model(
         )));
     }
     let stable_id = format!("{}:{}", provider_id, uuid::Uuid::new_v4().simple());
-    manual_models.insert(
-        stable_id,
-        serde_json::json!({
-            "providerId": provider_id,
-            "modelId": model_id,
-            "displayName": name,
-            "enabled": true
-        }),
-    );
+    let mut definition = serde_json::json!({
+        "providerId": provider_id,
+        "modelId": model_id,
+        "displayName": name,
+        "enabled": true
+    });
+    if let Some((efforts, default_effort)) = reasoning {
+        definition["reasoningEfforts"] = serde_json::json!(efforts);
+        definition["defaultReasoningEffort"] = serde_json::json!(default_effort);
+    }
+    manual_models.insert(stable_id, definition);
     patch_provider_document_top_level(
         config_manager.inner(),
         "manualModels",
@@ -5649,8 +5752,10 @@ pub async fn db_update_manual_model(
     current_model_id: String,
     next_model_id: String,
     name: String,
+    reasoning: Option<ManualModelReasoningInput>,
 ) -> CommandResult<Vec<AiModel>> {
     let pool = get_pool(&pool).await?;
+    let reasoning = normalize_manual_model_reasoning(reasoning)?;
 
     let document = config_manager
         .effective_user_document(ConfigDocumentKind::Providers)
@@ -5679,15 +5784,17 @@ pub async fn db_update_manual_model(
         .get("enabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    manual_models.insert(
-        target,
-        serde_json::json!({
-            "providerId": provider_id,
-            "modelId": next_model_id,
-            "displayName": name,
-            "enabled": enabled
-        }),
-    );
+    let mut definition = serde_json::json!({
+        "providerId": provider_id,
+        "modelId": next_model_id,
+        "displayName": name,
+        "enabled": enabled
+    });
+    if let Some((efforts, default_effort)) = reasoning {
+        definition["reasoningEfforts"] = serde_json::json!(efforts);
+        definition["defaultReasoningEffort"] = serde_json::json!(default_effort);
+    }
+    manual_models.insert(target, definition);
     patch_provider_document_top_level(
         config_manager.inner(),
         "manualModels",
@@ -5953,22 +6060,24 @@ pub async fn db_set_setting(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::{
-        apply_mutation_backups, apply_patch_hunks_to_content, command_error,
-        commit_and_validate_pending_file_changes,
+        apply_mutation_backups, execute_workspace_tool_controlled_with_options,
+        prepare_mutation_backups, validate_post_write_changes, WorkspaceToolExecutionOptions,
+    };
+    use super::{
+        apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
         commit_and_validate_pending_file_changes_with_create_dirs, commit_with_post_mutation_gate,
-        exact_edit_match_error, execute_workspace_tool,
-        execute_workspace_tool_controlled_with_options, format_bounded_git_status,
-        parse_apply_patch, prepare_mutation_backups, provider_definition_patch_operations,
+        exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
+        parse_apply_patch, provider_definition_patch_operations, provider_is_enabled,
         register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
         resolve_requested_workspace, resolve_workspace_for_tool_path,
         restore_deleted_provider_secrets, rollback_pending_file_changes,
         rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
-        validate_agent_git_repo_path, validate_checkpoint_size_values, validate_post_write_changes,
+        validate_agent_git_repo_path, validate_checkpoint_size_values,
         wsl_mutation_backup_read_script, wsl_mutation_backup_write_script, DbPool,
-        ParsedPatchOperation, PendingFileChange, WorkspaceToolExecutionOptions,
-        INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD, MAX_CHECKPOINT_FILES_PER_MUTATION,
-        MAX_CHECKPOINT_TOTAL_BYTES,
+        ParsedPatchOperation, PendingFileChange, INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
+        MAX_CHECKPOINT_FILES_PER_MUTATION, MAX_CHECKPOINT_TOTAL_BYTES,
     };
     use crate::commands::fs::{
         content_revision, install_write_before_revalidation_hook, EXPECTED_REVISION_ABSENT,
@@ -5976,6 +6085,7 @@ mod tests {
     use crate::commands::git::{GitFileStatus, GitStatusDto};
     use crate::git::GitState;
     use serde_json::{json, Value};
+    #[cfg(unix)]
     use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
@@ -6413,6 +6523,19 @@ mod tests {
                 .and_then(Value::as_str),
             Some("openai")
         );
+    }
+
+    #[test]
+    fn provider_activation_follows_credentials_without_a_manual_switch() {
+        assert!(provider_is_enabled(false, "openai", true, None));
+        assert!(provider_is_enabled(true, "ollama", false, None));
+        assert!(provider_is_enabled(
+            false,
+            "chatgpt",
+            false,
+            Some("authenticated")
+        ));
+        assert!(!provider_is_enabled(false, "openai", false, None));
     }
 
     #[test]

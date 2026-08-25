@@ -216,6 +216,14 @@ export const shortcutRuntimeDefinitions: Record<ShortcutId, ShortcutRuntimeDefin
       return true;
     },
   }),
+  'chat.secondarySend': createRuntimeDefinition('chat.secondarySend', {
+    constraints: { isChatInputFocused: true, isStreaming: true },
+    contextHints: ['streaming'],
+    handler: ({ window }) => {
+      window.dispatchEvent(new CustomEvent('macro:composer-secondary-send'));
+      return true;
+    },
+  }),
   'chat.historyPrevious': createRuntimeDefinition('chat.historyPrevious', {
     constraints: { isChatInputFocused: true, promptHistoryNavigationMode: 'shortcut_only' },
     contextHints: ['composerShortcutMode'],

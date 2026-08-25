@@ -6,7 +6,6 @@
 
 .hljs-code {
   display: block;
-  overflow-x: auto;
   padding: 0;
   background: transparent;
   color: #d4d4d4;
@@ -196,25 +195,25 @@
    SCROLLBAR STYLING FOR CODE BLOCKS
    ============================================================================= */
 
-.hljs-code::-webkit-scrollbar {
+.markdown-code-scroll::-webkit-scrollbar {
   height: 8px;
 }
 
-.hljs-code::-webkit-scrollbar-track {
+.markdown-code-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.hljs-code::-webkit-scrollbar-thumb {
+.markdown-code-scroll::-webkit-scrollbar-thumb {
   background: #424242;
   border-radius: 4px;
 }
 
-.hljs-code::-webkit-scrollbar-thumb:hover {
+.markdown-code-scroll::-webkit-scrollbar-thumb:hover {
   background: #4f4f4f;
 }
 
 /* Firefox */
-.hljs-code {
+.markdown-code-scroll {
   scrollbar-width: thin;
   scrollbar-color: #424242 transparent;
 }

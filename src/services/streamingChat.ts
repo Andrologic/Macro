@@ -34,6 +34,7 @@ import type {
   ProjectMount,
   ProviderTurnState,
   ReasoningEffort,
+  ReasoningTransportMode,
   ToolTrace,
 } from '../types';
 import { devLogger } from '../utils/devLogger';
@@ -364,6 +365,7 @@ export interface StreamingChatOptions {
   apiKey?: string;
   modelId: string;
   reasoningEffort?: ReasoningEffort | null;
+  reasoningTransportMode?: ReasoningTransportMode;
   messages: StreamMessage[];
   onToken: (token: string) => void;
   onComplete: (result: StreamCompletionResult) => void;
@@ -394,6 +396,7 @@ export interface StreamingChatOptions {
     | StreamingFollowUpCompactionResult
     | StreamMessage[]
     | void;
+  consumePendingSteers?: () => StreamMessage[];
   fileToolContext?: Array<{
     title: string;
     source: string;
@@ -457,21 +460,49 @@ const maybeCompactFollowUpMessages = async (
   return params.messages;
 };
 
-const isReasoningUnsupportedError = (message: string): boolean => {
+type ReasoningRejectionKind = 'parameter' | 'value';
+
+const classifyReasoningRejection = (message: string): ReasoningRejectionKind | null => {
   const normalized = message.toLowerCase();
-  return (
-    normalized.includes('reasoning_effort') ||
-    normalized.includes('reasoning.effort') ||
-    normalized.includes('unsupported value for reasoning') ||
+  if (!normalized.includes('reasoning') && !normalized.includes('thinking')) {
+    return null;
+  }
+
+  if (
     normalized.includes('unsupported parameter: reasoning') ||
     normalized.includes('unknown parameter: reasoning') ||
     normalized.includes('unknown parameter: reasoning_effort') ||
     normalized.includes('unsupported parameter: thinking') ||
     normalized.includes('unknown parameter: thinking') ||
+    /(?:unknown|unsupported|unrecognized) (?:parameter|field)[^\n]*(?:reasoning|thinking)/.test(
+      normalized
+    ) ||
+    /(?:reasoning|thinking)[^\n]*(?:parameter|field) (?:is )?(?:unknown|unsupported|unrecognized)/.test(
+      normalized
+    ) ||
+    /(?:reasoning_effort|reasoning\.effort|thinking) is not supported/.test(normalized) ||
     normalized.includes('does not support thinking') ||
     normalized.includes('does not support reasoning')
-  );
+  ) {
+    return 'parameter';
+  }
+
+  if (
+    normalized.includes('unsupported value') ||
+    normalized.includes('invalid value') ||
+    normalized.includes('invalid enum') ||
+    normalized.includes('allowed values') ||
+    normalized.includes('supported values') ||
+    normalized.includes('must be one of')
+  ) {
+    return 'value';
+  }
+
+  return null;
 };
+
+const isReasoningUnsupportedError = (message: string): boolean =>
+  classifyReasoningRejection(message) !== null;
 
 const isReasoningReplayRequiredError = (message: string): boolean => {
   const normalized = message.toLowerCase();
@@ -490,6 +521,20 @@ const isContextOverflowError = (message: string, status?: number): boolean => {
 const disableReasoningForSession = (providerId: string, modelId: string) => {
   try {
     useProviderStore.getState().markReasoningUnsupportedForModel(providerId, modelId);
+  } catch {
+    // Ignore runtime fallback bookkeeping outside app contexts.
+  }
+};
+
+const disableReasoningEffortForSession = (
+  providerId: string,
+  modelId: string,
+  effort: ReasoningEffort
+) => {
+  try {
+    useProviderStore
+      .getState()
+      .markReasoningEffortUnsupportedForModel(providerId, modelId, effort);
   } catch {
     // Ignore runtime fallback bookkeeping outside app contexts.
   }
@@ -519,8 +564,23 @@ const resolveChatCompletionProviderProfile = (params: {
   baseUrl?: string;
   modelId: string;
   forceReasoningContentReplay?: boolean;
+  reasoningTransportMode?: ReasoningTransportMode;
 }): ChatCompletionProviderProtocolProfile =>
   resolveChatCompletionProviderProtocolProfile(params);
+
+const resolveModelReasoningTransportMode = (
+  providerId: string,
+  modelId: string
+): ReasoningTransportMode | undefined => {
+  try {
+    return useProviderStore
+      .getState()
+      .modelsByProvider[providerId]?.find((model) => model.id === modelId)
+      ?.reasoningCapability?.transportMode;
+  } catch {
+    return undefined;
+  }
+};
 
 const isChatCompletionProviderMessageItem = (
   item: unknown
@@ -2400,6 +2460,7 @@ export const __testables = {
   buildToolContextBlock,
   chatCompletionMessagesHaveToolHistory,
   classifyProviderError,
+  classifyReasoningRejection,
   collectAllowedTools,
   compactToolResultForChatGptModelContext,
   createStreamAccumulator,
@@ -2478,6 +2539,25 @@ const NATIVE_STREAMING_PROVIDER_TYPES = new Set([
 
 const shouldUseNativeStreamingProvider = (providerType: string): boolean =>
   NATIVE_STREAMING_PROVIDER_TYPES.has(providerType.trim().toLowerCase());
+
+const nativeProviderSupportsReasoningTransport = (
+  providerType: string,
+  transportMode?: ReasoningTransportMode
+): boolean => {
+  if (!transportMode || transportMode === 'none') return true;
+  const normalizedProviderType = providerType.trim().toLowerCase();
+  if (normalizedProviderType === 'openrouter') {
+    return transportMode === 'openrouter_reasoning';
+  }
+  if (
+    normalizedProviderType === 'openai' ||
+    normalizedProviderType === 'ollama' ||
+    normalizedProviderType === 'lmstudio'
+  ) {
+    return transportMode === 'openai_effort';
+  }
+  return true;
+};
 
 const streamNativeTurnViaTauri = async (params: {
   sessionId?: string;
@@ -2841,6 +2921,10 @@ const streamChatViaNativeToolCallingProvider = async (
   let architectPostToolRetryCount = 0;
   let enforceGuidedToolRetry = Boolean(options.guidedToolRetry);
   const architectToolNamesUsed = new Set<string>();
+  let currentReasoningEffort =
+    options.reasoningTransportMode === 'none' ? null : options.reasoningEffort;
+  let didRetryWithoutReasoning = false;
+  const rejectedReasoningEfforts = new Set<ReasoningEffort>();
 
   const completeNativeStream = (completionReason?: StreamCompletionReason) => {
     onComplete({
@@ -2860,41 +2944,68 @@ const streamChatViaNativeToolCallingProvider = async (
 
       const shouldBufferTurnOutput = enforceGuidedToolRetry;
       let streamedTurnContent = '';
-      const turnResult = await streamNativeTurnViaTauri({
-        sessionId: options.sessionId,
-        providerId,
-        providerType,
-        modelId,
-        reasoningEffort: options.reasoningEffort,
-        conversationId: options.conversationId,
-        messages: currentMessages,
-        tools,
-        allowedToolIds: options.allowedToolIds,
-        workspacePath: options.workspacePath,
-        defaultWorkspacePath: options.defaultWorkspacePath,
-        projectMounts: options.projectMounts,
-        virtualRootEnabled: options.virtualRootEnabled,
-        focusedProjectId: options.focusedProjectId,
-        copilotSendTimeoutMs: options.copilotSendTimeoutMs,
-        signal: options.signal,
-        onTimeline: (event) => emitStreamTimeline(options, event),
-        onDelta: (delta) => {
-          streamedTurnContent += delta;
-          if (!shouldBufferTurnOutput) {
-            streamAccumulator.appendProviderDelta(delta);
+      let turnResult: StreamingTurnResult;
+      while (true) {
+        try {
+          turnResult = await streamNativeTurnViaTauri({
+            sessionId: options.sessionId,
+            providerId,
+            providerType,
+            modelId,
+            reasoningEffort: currentReasoningEffort,
+            conversationId: options.conversationId,
+            messages: currentMessages,
+            tools,
+            allowedToolIds: options.allowedToolIds,
+            workspacePath: options.workspacePath,
+            defaultWorkspacePath: options.defaultWorkspacePath,
+            projectMounts: options.projectMounts,
+            virtualRootEnabled: options.virtualRootEnabled,
+            focusedProjectId: options.focusedProjectId,
+            copilotSendTimeoutMs: options.copilotSendTimeoutMs,
+            signal: options.signal,
+            onTimeline: (event) => emitStreamTimeline(options, event),
+            onDelta: (delta) => {
+              streamedTurnContent += delta;
+              if (!shouldBufferTurnOutput) {
+                streamAccumulator.appendProviderDelta(delta);
+              }
+            },
+            onToolTrace: (toolTrace) => {
+              streamAccumulator.upsertToolTraceFromProvider(toolTrace);
+            },
+            onToolCall,
+            onToolResult,
+            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext }) => {
+              const detail = formatToolTraceDetail(toolName, args);
+              streamAccumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
+              streamAccumulator.addHiddenContextBlock(hiddenContext);
+            },
+          });
+          break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const rejection = classifyReasoningRejection(message);
+          const rejectedEffort = currentReasoningEffort;
+          if (rejection === 'parameter' && rejectedEffort && !didRetryWithoutReasoning) {
+            didRetryWithoutReasoning = true;
+            currentReasoningEffort = null;
+            disableReasoningForSession(providerId, modelId);
+            continue;
           }
-        },
-        onToolTrace: (toolTrace) => {
-          streamAccumulator.upsertToolTraceFromProvider(toolTrace);
-        },
-        onToolCall,
-        onToolResult,
-        onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext }) => {
-          const detail = formatToolTraceDetail(toolName, args);
-          streamAccumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
-          streamAccumulator.addHiddenContextBlock(hiddenContext);
-        },
-      });
+          if (
+            rejection === 'value' &&
+            rejectedEffort &&
+            !rejectedReasoningEfforts.has(rejectedEffort)
+          ) {
+            rejectedReasoningEfforts.add(rejectedEffort);
+            disableReasoningEffortForSession(providerId, modelId, rejectedEffort);
+            currentReasoningEffort = null;
+            continue;
+          }
+          throw error;
+        }
+      }
       turnResult.toolTraces?.forEach((toolTrace) => {
         streamAccumulator.upsertToolTraceFromProvider(toolTrace);
       });
@@ -2962,6 +3073,12 @@ const streamChatViaNativeToolCallingProvider = async (
       }
 
       if (validToolCalls.length === 0) {
+        const pendingSteers = options.consumePendingSteers?.() ?? [];
+        if (pendingSteers.length > 0) {
+          currentMessages.push(...pendingSteers.map(cloneStreamMessage));
+          turnCount += 1;
+          continue;
+        }
         if (
           shouldRetryArchitectPostToolResponse({
             mode: options.mode,
@@ -3358,12 +3475,17 @@ const streamChatViaCopilotProvider = async (options: StreamingChatOptions): Prom
 };
 
 export async function streamChat(options: StreamingChatOptions): Promise<void> {
+  const reasoningTransportMode =
+    options.reasoningTransportMode ??
+    resolveModelReasoningTransportMode(options.providerId, options.modelId);
+  const effectiveOptions = { ...options, reasoningTransportMode };
+
   if (options.providerType === 'chatgpt') {
-    return streamChatViaChatGptProvider(options);
+    return streamChatViaChatGptProvider(effectiveOptions);
   }
 
   if (options.providerType === 'copilot') {
-    return streamChatViaCopilotProvider(options);
+    return streamChatViaCopilotProvider(effectiveOptions);
   }
 
   const protocolProfile = resolveChatCompletionProviderProfile({
@@ -3371,10 +3493,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     providerId: options.providerId,
     baseUrl: options.baseUrl,
     modelId: options.modelId,
+    reasoningTransportMode,
   });
 
   if (
     shouldUseNativeStreamingProvider(options.providerType) &&
+    nativeProviderSupportsReasoningTransport(options.providerType, reasoningTransportMode) &&
     !protocolProfile.requiresGenericStreaming &&
     tauriIpc.isTauriAvailable() &&
     (!options.apiKey?.trim() ||
@@ -3382,7 +3506,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       options.providerType === 'lmstudio')
   ) {
     try {
-      return await streamChatViaNativeToolCallingProvider(options);
+      return await streamChatViaNativeToolCallingProvider(effectiveOptions);
     } catch (error) {
       if (options.providerType === 'ollama' || options.providerType === 'lmstudio') {
         throw error;
@@ -3439,6 +3563,10 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
+    if (providerType === 'anthropic') {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    }
   }
 
   // OpenRouter specific headers
@@ -3466,6 +3594,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       baseUrl,
       modelId,
       forceReasoningContentReplay,
+      reasoningTransportMode,
     });
   const initialProfile = getChatCompletionProfile();
 
@@ -3478,6 +3607,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let currentReasoningEffort = reasoningEffort;
   let providerReasoningEnabled = true;
   let didRetryWithoutReasoning = false;
+  const rejectedReasoningEfforts = new Set<ReasoningEffort>();
   applyReasoningToChatCompletionsRequest(
     requestBody,
     initialProfile,
@@ -3572,17 +3702,30 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 cause: error,
               });
 
+          const reasoningRejection = classifyReasoningRejection(runtimeError.message);
           if (
             shouldRequestProviderReasoning(profile, currentReasoningEffort, {
               enabled: providerReasoningEnabled,
             }) &&
             !didRetryWithoutReasoning &&
-            runtimeError.kind === 'unsupported_reasoning'
+            reasoningRejection === 'parameter'
           ) {
             didRetryWithoutReasoning = true;
             providerReasoningEnabled = false;
             currentReasoningEffort = null;
             disableReasoningForSession(providerId, modelId);
+            continue;
+          }
+
+          if (
+            reasoningRejection === 'value' &&
+            currentReasoningEffort &&
+            !rejectedReasoningEfforts.has(currentReasoningEffort)
+          ) {
+            const rejectedEffort = currentReasoningEffort;
+            rejectedReasoningEfforts.add(rejectedEffort);
+            disableReasoningEffortForSession(providerId, modelId, rejectedEffort);
+            currentReasoningEffort = null;
             continue;
           }
 
@@ -4249,6 +4392,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
       // If no valid tool calls were made in this turn, we are done
       if (validToolCalls.length === 0) {
+        const pendingSteers = options.consumePendingSteers?.() ?? [];
+        if (pendingSteers.length > 0) {
+          currentMessages.push(...pendingSteers.map(cloneStreamMessage));
+          turnCount += 1;
+          continue;
+        }
         break;
       }
 
@@ -4317,29 +4466,62 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     onComplete,
     onError,
   } = options;
+  const reasoningTransportMode =
+    options.reasoningTransportMode ?? resolveModelReasoningTransportMode(providerId, modelId);
 
   if (providerType === 'chatgpt' || providerType === 'copilot') {
     try {
-      const turn = await streamNativeTurnViaTauri({
-        sessionId: options.sessionId,
-        conversationId: options.conversationId,
-        providerId,
-        providerType,
-        modelId,
-        reasoningEffort: options.reasoningEffort,
-        messages,
-        tools: [],
-        allowedToolIds: options.allowedToolIds,
-        workspacePath: options.workspacePath,
-        defaultWorkspacePath: options.defaultWorkspacePath,
-        projectMounts: options.projectMounts,
-        virtualRootEnabled: options.virtualRootEnabled,
-        focusedProjectId: options.focusedProjectId,
-        signal: options.signal,
-        onDelta: () => {
-          // No-op for metadata generation.
-        },
-      });
+      let currentReasoningEffort =
+        reasoningTransportMode === 'none' ? null : options.reasoningEffort;
+      let didRetryWithoutReasoning = false;
+      const rejectedReasoningEfforts = new Set<ReasoningEffort>();
+      let turn: StreamingTurnResult;
+      while (true) {
+        try {
+          turn = await streamNativeTurnViaTauri({
+            sessionId: options.sessionId,
+            conversationId: options.conversationId,
+            providerId,
+            providerType,
+            modelId,
+            reasoningEffort: currentReasoningEffort,
+            messages,
+            tools: [],
+            allowedToolIds: options.allowedToolIds,
+            workspacePath: options.workspacePath,
+            defaultWorkspacePath: options.defaultWorkspacePath,
+            projectMounts: options.projectMounts,
+            virtualRootEnabled: options.virtualRootEnabled,
+            focusedProjectId: options.focusedProjectId,
+            signal: options.signal,
+            onDelta: () => {
+              // No-op for metadata generation.
+            },
+          });
+          break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const rejection = classifyReasoningRejection(message);
+          const rejectedEffort = currentReasoningEffort;
+          if (rejection === 'parameter' && rejectedEffort && !didRetryWithoutReasoning) {
+            didRetryWithoutReasoning = true;
+            currentReasoningEffort = null;
+            disableReasoningForSession(providerId, modelId);
+            continue;
+          }
+          if (
+            rejection === 'value' &&
+            rejectedEffort &&
+            !rejectedReasoningEfforts.has(rejectedEffort)
+          ) {
+            rejectedReasoningEfforts.add(rejectedEffort);
+            disableReasoningEffortForSession(providerId, modelId, rejectedEffort);
+            currentReasoningEffort = null;
+            continue;
+          }
+          throw error;
+        }
+      }
       onComplete({
         visibleContent:
           providerType === 'chatgpt' || providerType === 'copilot'
@@ -4364,6 +4546,10 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
 
   if (apiKey) {
     headers['Authorization'] = `Bearer ${apiKey}`;
+    if (providerType === 'anthropic') {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+    }
   }
 
   if (providerType === 'openrouter') {
@@ -4377,6 +4563,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
     let currentReasoningEffort = reasoningEffort;
     let providerReasoningEnabled = true;
     let didRetryWithoutReasoning = false;
+    const rejectedReasoningEfforts = new Set<ReasoningEffort>();
     let requestAttempt = 0;
     let response: Response | null = null;
 
@@ -4386,6 +4573,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         providerId,
         baseUrl,
         modelId,
+        reasoningTransportMode,
       });
       const requestMessages = buildChatCompletionMessages(messages, profile);
       const requestBody: Record<string, unknown> = {
@@ -4418,17 +4606,30 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
       }
 
       const runtimeError = await extractProviderErrorMessage(candidateResponse);
+      const reasoningRejection = classifyReasoningRejection(runtimeError.message);
       if (
         shouldRequestProviderReasoning(profile, currentReasoningEffort, {
           enabled: providerReasoningEnabled,
         }) &&
         !didRetryWithoutReasoning &&
-        runtimeError.kind === 'unsupported_reasoning'
+        reasoningRejection === 'parameter'
       ) {
         didRetryWithoutReasoning = true;
         providerReasoningEnabled = false;
         currentReasoningEffort = null;
         disableReasoningForSession(providerId, modelId);
+        continue;
+      }
+
+      if (
+        reasoningRejection === 'value' &&
+        currentReasoningEffort &&
+        !rejectedReasoningEfforts.has(currentReasoningEffort)
+      ) {
+        const rejectedEffort = currentReasoningEffort;
+        rejectedReasoningEfforts.add(rejectedEffort);
+        disableReasoningEffortForSession(providerId, modelId, rejectedEffort);
+        currentReasoningEffort = null;
         continue;
       }
 

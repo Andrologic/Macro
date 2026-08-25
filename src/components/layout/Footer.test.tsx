@@ -334,6 +334,7 @@ const loadFooter = async () => {
 
   mock.module('../../services/tauriIpc', () => ({
     isTauriAvailable: () => true,
+    updaterTarget: async () => 'linux-x86_64',
     gitStatus: (repoPath: string) => gitStatusMock(repoPath),
     gitFetch: (params: { repoPath: string }) => gitFetchMock(params),
     gitPull: (params: { repoPath: string }) => gitPullMock(params),

@@ -125,21 +125,6 @@ const enabledToolIds = new Set(chatTools.map((tool) => tool.id));
 let contextCitations: MockCitation[] = createInitialContextCitations();
 let sourceCitations: MockCitation[] = createInitialSourceCitations();
 let selectedConversationIdMock: string | null = 'chat-conv';
-let chatConversationsMock: Array<{
-  id: string;
-  scope_mode: 'Chat';
-  task_id: null;
-  group_id: string | null;
-  project_id: string | null;
-}> = [
-  {
-    id: 'chat-conv',
-    scope_mode: 'Chat',
-    task_id: null,
-    group_id: null,
-    project_id: 'project-1',
-  },
-];
 let composerContextRefs: Array<{
   id: string;
   kind: string;
@@ -219,7 +204,6 @@ const getMockCitationState = () => ({
 });
 const toggleChatToolMock = mock((_toolId: string) => undefined);
 const createConversationMock = mock(async () => ({ id: 'chat-conv' }));
-const setChatConversationWorkspaceMock = mock(async () => undefined);
 const addComposerContextRefMock = mock((ref: {
   id: string;
   kind: string;
@@ -388,23 +372,11 @@ const loadContextToolbox = async () => {
 
   mock.module('../../stores/useChatStore', () => ({
     useChatStore: () => ({
-      conversations: chatConversationsMock,
       selectedConversationId: selectedConversationIdMock,
       createConversation: createConversationMock,
-      setChatConversationWorkspace: setChatConversationWorkspaceMock,
       composerContextRefs,
       addComposerContextRef: addComposerContextRefMock,
       removeComposerContextRef: removeComposerContextRefMock,
-    }),
-  }));
-
-  mock.module('../../stores/useAppStore', () => ({
-    useAppStore: (selector: (state: {
-      standaloneProjects: Array<{ id: string; name: string; isReadOnly: boolean }>;
-      projectGroups: unknown[];
-    }) => unknown) => selector({
-      standaloneProjects: [{ id: 'project-1', name: 'Macro', isReadOnly: false }],
-      projectGroups: [],
     }),
   }));
 
@@ -531,15 +503,6 @@ describe('ContextToolbox', () => {
     contextCitations = createInitialContextCitations();
     sourceCitations = createInitialSourceCitations();
     selectedConversationIdMock = 'chat-conv';
-    chatConversationsMock = [
-      {
-        id: 'chat-conv',
-        scope_mode: 'Chat',
-        task_id: null,
-        group_id: null,
-        project_id: 'project-1',
-      },
-    ];
     composerContextRefs = [];
     citationCounter = 0;
     citationVersion = 0;
@@ -600,7 +563,6 @@ describe('ContextToolbox', () => {
     addComposerContextRefMock.mockClear();
     removeComposerContextRefMock.mockClear();
     toggleChatToolMock.mockClear();
-    setChatConversationWorkspaceMock.mockClear();
     mock.restore();
   });
 
@@ -630,6 +592,7 @@ describe('ContextToolbox', () => {
     });
 
     expect(container?.textContent).toContain('Built-in Tools');
+    expect(container?.querySelector('select[aria-label="Agent workspace"]')).toBeNull();
     for (const label of ['Web Search', 'Web Fetch', 'Question', 'Read File', 'Terminal', 'Sources']) {
       expect(container?.textContent).toContain(label);
     }
@@ -709,46 +672,6 @@ describe('ContextToolbox', () => {
     await clickIconButton(container!, 'trash');
     expect(removeCitationMock).toHaveBeenCalledWith('source-interesting');
     expect(removeComposerContextRefMock).toHaveBeenCalledWith('source-interesting', 'source');
-  });
-
-  it('binds an agent workspace from the Tools tab', async () => {
-    chatConversationsMock = [
-      {
-        id: 'chat-conv',
-        scope_mode: 'Chat',
-        task_id: null,
-        group_id: null,
-        project_id: null,
-      },
-    ];
-    const { ContextToolbox } = await loadContextToolbox();
-
-    await act(async () => {
-      root?.render(<ContextToolbox />);
-      await Promise.resolve();
-    });
-    await act(async () => {
-      findButtonByText(container!, 'Tools').click();
-      await Promise.resolve();
-    });
-
-    const select = container?.querySelector(
-      'select[aria-label="Agent workspace"]',
-    ) as HTMLSelectElement | null;
-    expect(select).toBeTruthy();
-    await act(async () => {
-      if (select) {
-        select.value = 'project:project-1';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(setChatConversationWorkspaceMock).toHaveBeenCalledWith('chat-conv', {
-      groupId: null,
-      projectId: 'project-1',
-    });
   });
 
   it('shows source composer references as already added', async () => {

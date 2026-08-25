@@ -7,7 +7,7 @@ describe("agent definition validation", () => {
       id: "",
       role: "Auditor",
       description: "Read-only audit",
-      effort: "extreme",
+      effort: "invalid effort",
       capabilities: ["workspace.read", "root.access"],
       limitations: [""],
       limits: {
@@ -26,5 +26,24 @@ describe("agent definition validation", () => {
       "limitations",
       "limits.maxChildDepth",
     ]);
+  });
+
+  it("accepts provider-defined safe reasoning efforts", () => {
+    for (const effort of ["max", "provider_custom"]) {
+      const result = validateAgentDefinition({
+        id: "reviewer",
+        role: "Reviewer",
+        description: "Reviews code",
+        effort,
+        capabilities: ["workspace.read"],
+        limitations: ["Read only"],
+        limits: {
+          maxChildDepth: 1,
+          maxConcurrencyPerParent: 1,
+          maxContextBytes: 1024,
+        },
+      });
+      expect(result.ok).toBe(true);
+    }
   });
 });

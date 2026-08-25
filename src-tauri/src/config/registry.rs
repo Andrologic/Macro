@@ -343,9 +343,16 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
             .and_then(Value::as_object)
         {
             for (header_name, header_value) in headers {
-                if header_value
-                    .as_str()
-                    .is_some_and(|value| value.starts_with("macro-secret://"))
+                let Some(reference) = header_value.as_str() else {
+                    continue;
+                };
+                if reference.starts_with("macro-secret://")
+                    && !matches!(
+                        crate::commands::mcp::parse_mcp_env_secret_ref(reference),
+                        Some((reference_server_id, reference_key))
+                            if reference_server_id == expected_server_id
+                                && reference_key.eq_ignore_ascii_case(header_name)
+                    )
                 {
                     diagnostics.push((
                         format!(
@@ -353,8 +360,78 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
                             server_id.replace('~', "~0").replace('/', "~1"),
                             header_name.replace('~', "~0").replace('/', "~1")
                         ),
-                        "config.tools.mcp_secret_ref_unsupported",
-                        "Les références de secrets dans les en-têtes MCP distants ne sont pas prises en charge dans cette version."
+                        "config.tools.mcp_header_secret_ref_invalid",
+                        "La référence de secret doit cibler ce serveur MCP et le même nom d’en-tête."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        if let Some(authorization) = server.get("authorization").and_then(Value::as_object) {
+            let transport_is_http = server.pointer("/transport/type").and_then(Value::as_str)
+                == Some("streamable_http");
+            if !transport_is_http {
+                diagnostics.push((
+                    format!("/mcpServers/{server_id}/authorization"),
+                    "config.tools.mcp_oauth_transport_invalid",
+                    "OAuth MCP n’est pris en charge qu’avec le transport Streamable HTTP."
+                        .to_string(),
+                ));
+            }
+            let client_id = authorization.get("clientId").and_then(Value::as_str);
+            let client_metadata_url = authorization
+                .get("clientMetadataUrl")
+                .and_then(Value::as_str);
+            if client_id.is_some() && client_metadata_url.is_some() {
+                diagnostics.push((
+                    format!("/mcpServers/{server_id}/authorization"),
+                    "config.tools.mcp_oauth_client_identity_ambiguous",
+                    "OAuth MCP doit utiliser soit un client préenregistré, soit un document de métadonnées client."
+                        .to_string(),
+                ));
+            }
+            if let Some(reference) = authorization.get("clientSecretRef").and_then(Value::as_str) {
+                let valid = client_id.is_some()
+                    && matches!(
+                        crate::commands::mcp::parse_mcp_oauth_client_secret_ref(reference),
+                        Some(reference_server_id) if reference_server_id == expected_server_id
+                    );
+                if !valid {
+                    diagnostics.push((
+                        format!(
+                            "/mcpServers/{server_id}/authorization/clientSecretRef"
+                        ),
+                        "config.tools.mcp_oauth_client_secret_ref_invalid",
+                        "Le secret OAuth doit cibler ce serveur et accompagner un client préenregistré."
+                            .to_string(),
+                    ));
+                }
+            }
+            if let Some(url) = client_metadata_url {
+                let valid = url::Url::parse(url).ok().is_some_and(|url| {
+                    url.scheme() == "https" && url.host_str().is_some() && url.path() != "/"
+                });
+                if !valid {
+                    diagnostics.push((
+                        format!(
+                            "/mcpServers/{server_id}/authorization/clientMetadataUrl"
+                        ),
+                        "config.tools.mcp_oauth_client_metadata_url_invalid",
+                        "Le document de métadonnées client doit être une URL HTTPS avec un chemin non racine."
+                            .to_string(),
+                    ));
+                }
+            }
+            if let Some(scopes) = authorization.get("scopes").and_then(Value::as_array) {
+                if scopes.iter().any(|scope| {
+                    scope.as_str().is_some_and(|scope| {
+                        scope.trim().is_empty() || scope.chars().any(char::is_whitespace)
+                    })
+                }) {
+                    diagnostics.push((
+                        format!("/mcpServers/{server_id}/authorization/scopes"),
+                        "config.tools.mcp_oauth_scope_invalid",
+                        "Chaque portée OAuth doit être une valeur non vide sans espace."
                             .to_string(),
                     ));
                 }
@@ -416,6 +493,46 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
         }
     }
     diagnostics
+}
+
+fn validate_mcp_policy_bounds(value: &Value) -> Vec<(String, &'static str, String)> {
+    const BOUNDS: [(&str, u64, u64); 3] = [
+        ("startupTimeoutMs", 1_000, 300_000),
+        ("operationTimeoutMs", 1_000, 600_000),
+        ("maxConcurrentOperations", 1, 16),
+    ];
+    let mut violations = Vec::new();
+    let Some(servers) = value.get("mcpServers").and_then(Value::as_object) else {
+        return violations;
+    };
+    for (server_id, server) in servers {
+        for (field, minimum, maximum) in BOUNDS {
+            if let Some(number) = server.get(field).and_then(Value::as_u64) {
+                if !(minimum..=maximum).contains(&number) {
+                    violations.push((
+                        format!("/mcpServers/{server_id}/{field}"),
+                        "config.tools.mcp_policy_out_of_range",
+                        format!("{field} doit être compris entre {minimum} et {maximum}."),
+                    ));
+                }
+            }
+        }
+        if let Some(number) = server
+            .get("protocol")
+            .and_then(Value::as_object)
+            .and_then(|protocol| protocol.get("probeTimeoutMs"))
+            .and_then(Value::as_u64)
+        {
+            if !(500..=15_000).contains(&number) {
+                violations.push((
+                    format!("/mcpServers/{server_id}/protocol/probeTimeoutMs"),
+                    "config.tools.mcp_policy_out_of_range",
+                    "probeTimeoutMs doit être compris entre 500 et 15000.".to_string(),
+                ));
+            }
+        }
+    }
+    violations
 }
 
 fn validate_skill_paths(value: &Value, scope: &ConfigScope) -> Vec<(String, String)> {
@@ -514,6 +631,35 @@ pub fn validate_document(
         }
     }
 
+    if kind == ConfigDocumentKind::Providers && matches!(scope, ConfigScope::User) {
+        let defaults = default_document(ConfigDocumentKind::Providers);
+        let default_providers = defaults.get("providers").and_then(Value::as_object);
+        if let Some(providers) = value.get("providers").and_then(Value::as_object) {
+            for (provider_id, definition) in providers {
+                let is_builtin =
+                    default_providers.is_some_and(|entries| entries.contains_key(provider_id));
+                let is_deleted = definition
+                    .get("deleted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let has_provider_type = definition
+                    .get("providerType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|provider_type| !provider_type.trim().is_empty());
+                if !is_builtin && !is_deleted && !has_provider_type {
+                    let escaped = provider_id.replace('~', "~0").replace('/', "~1");
+                    diagnostics.push(diagnostic(
+                        kind,
+                        scope,
+                        Some(format!("/providers/{escaped}/providerType")),
+                        "config.provider.type_missing",
+                        "providerType est obligatoire pour un provider personnalisé.",
+                    ));
+                }
+            }
+        }
+    }
+
     if matches!(scope, ConfigScope::Project { .. }) && !kind.supports_project_scope() {
         diagnostics.push(diagnostic(
             kind,
@@ -569,6 +715,11 @@ pub fn validate_document(
     if kind == ConfigDocumentKind::Tools {
         diagnostics.extend(
             validate_mcp_secret_refs(value)
+                .into_iter()
+                .map(|(path, code, message)| diagnostic(kind, scope, Some(path), code, message)),
+        );
+        diagnostics.extend(
+            validate_mcp_policy_bounds(value)
                 .into_iter()
                 .map(|(path, code, message)| diagnostic(kind, scope, Some(path), code, message)),
         );
@@ -1552,6 +1703,24 @@ mod tests {
     }
 
     #[test]
+    fn accepts_sparse_builtin_providers_but_requires_a_type_for_custom_providers() {
+        let mut builtin = sparse_document(ConfigDocumentKind::Providers);
+        builtin["providers"] = json!({ "openai": { "enabled": true } });
+        assert!(
+            validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &builtin).valid
+        );
+
+        let mut custom = sparse_document(ConfigDocumentKind::Providers);
+        custom["providers"] = json!({ "custom": { "enabled": true } });
+        let result = validate_document(ConfigDocumentKind::Providers, &ConfigScope::User, &custom);
+        assert!(!result.valid);
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|entry| entry.code == "config.provider.type_missing"));
+    }
+
+    #[test]
     fn project_cannot_raise_tool_risk_or_grant_skill_trust() {
         let global = default_document(ConfigDocumentKind::Tools);
         let project = json!({"riskLevel": "yolo"});
@@ -2018,6 +2187,35 @@ mod tests {
     }
 
     #[test]
+    fn mcp_policy_bounds_are_enforced_by_runtime_validation() {
+        let mut document = sparse_document(ConfigDocumentKind::Tools);
+        document["mcpServers"] = json!({
+            "bounded_server": {
+                "transport": {"type": "stdio", "command": "bounded-mcp"},
+                "protocol": {"mode": "auto", "probeTimeoutMs": 15_001},
+                "startupTimeoutMs": 999,
+                "operationTimeoutMs": 600_001,
+                "maxConcurrentOperations": 17
+            }
+        });
+
+        let result = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+
+        assert!(!result.valid);
+        for path in [
+            "/mcpServers/bounded_server/protocol/probeTimeoutMs",
+            "/mcpServers/bounded_server/startupTimeoutMs",
+            "/mcpServers/bounded_server/operationTimeoutMs",
+            "/mcpServers/bounded_server/maxConcurrentOperations",
+        ] {
+            assert!(result.diagnostics.iter().any(|entry| {
+                entry.code == "config.tools.mcp_policy_out_of_range"
+                    && entry.path.as_deref() == Some(path)
+            }));
+        }
+    }
+
+    #[test]
     fn project_mcp_ids_cannot_collide_with_global_ids_after_normalization() {
         let global = json!({
             "mcpServers": {
@@ -2042,7 +2240,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_mcp_headers_reject_unresolved_secret_references() {
+    fn remote_mcp_headers_accept_scoped_secret_references_and_reject_invalid_ones() {
         let mut document = sparse_document(ConfigDocumentKind::Tools);
         document["mcpServers"] = json!({
             "remote": {
@@ -2056,13 +2254,56 @@ mod tests {
             }
         });
 
-        let result = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
-        assert!(!result.valid);
-        assert!(result.diagnostics.iter().any(|entry| {
-            entry.code == "config.tools.mcp_secret_ref_unsupported"
+        let valid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(valid.valid, "{:?}", valid.diagnostics);
+
+        document["mcpServers"]["remote"]["transport"]["headers"]["Authorization"] =
+            json!("macro-secret://mcp-env/other/AUTHORIZATION");
+        let invalid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(!invalid.valid);
+        assert!(invalid.diagnostics.iter().any(|entry| {
+            entry.code == "config.tools.mcp_header_secret_ref_invalid"
                 && entry.path.as_deref()
                     == Some("/mcpServers/remote/transport/headers/Authorization")
         }));
+    }
+
+    #[test]
+    fn mcp_oauth_configuration_is_scoped_and_transport_bound() {
+        let mut document = sparse_document(ConfigDocumentKind::Tools);
+        document["mcpServers"] = json!({
+            "remote": {
+                "transport": {
+                    "type": "streamable_http",
+                    "url": "https://mcp.example.test/mcp"
+                },
+                "authorization": {
+                    "type": "oauth",
+                    "clientId": "macro-desktop",
+                    "clientSecretRef": "macro-secret://mcp-oauth-client/remote",
+                    "scopes": ["tools:read"]
+                }
+            }
+        });
+        let valid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(valid.valid, "{:?}", valid.diagnostics);
+
+        document["mcpServers"]["remote"]["transport"] = json!({
+            "type": "stdio",
+            "command": "remote"
+        });
+        document["mcpServers"]["remote"]["authorization"]["clientSecretRef"] =
+            json!("macro-secret://mcp-oauth-client/other");
+        let invalid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(!invalid.valid);
+        assert!(invalid
+            .diagnostics
+            .iter()
+            .any(|entry| entry.code == "config.tools.mcp_oauth_transport_invalid"));
+        assert!(invalid
+            .diagnostics
+            .iter()
+            .any(|entry| entry.code == "config.tools.mcp_oauth_client_secret_ref_invalid"));
     }
 
     #[test]

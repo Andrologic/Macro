@@ -6,14 +6,17 @@ import { loadPreference, PREF_KEYS, savePreference } from '../services/preferenc
 
 type ShortcutBindings = Record<ShortcutId, string | null>;
 export type PromptHistoryNavigationMode = 'contextual_arrows' | 'shortcut_only';
+export type ActiveTurnSendBehavior = 'steer' | 'queue';
 
 interface ShortcutsStore {
   bindings: ShortcutBindings;
   promptHistoryNavigationMode: PromptHistoryNavigationMode;
+  activeTurnSendBehavior: ActiveTurnSendBehavior;
   isLoaded: boolean;
   initialize: () => Promise<void>;
   setBinding: (id: ShortcutId, binding: string | null) => void;
   setPromptHistoryNavigationMode: (mode: PromptHistoryNavigationMode) => void;
+  setActiveTurnSendBehavior: (behavior: ActiveTurnSendBehavior) => void;
   resetBinding: (id: ShortcutId) => void;
   resetAll: () => void;
 }
@@ -45,15 +48,17 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
   return {
     bindings: buildNormalizedDefaults(),
     promptHistoryNavigationMode: 'contextual_arrows',
+    activeTurnSendBehavior: 'steer',
     isLoaded: false,
 
     initialize: async () => {
       const defaults = buildNormalizedDefaults();
       const hydrationVersion = mutationVersion;
       try {
-        const [rawStored, rawNavigationMode] = await Promise.all([
+        const [rawStored, rawNavigationMode, rawActiveTurnSendBehavior] = await Promise.all([
           loadPreference<Record<string, unknown>>(PREF_KEYS.SHORTCUT_BINDINGS),
           loadPreference<string>(PREF_KEYS.PROMPT_HISTORY_NAV_MODE),
+          loadPreference<string>(PREF_KEYS.ACTIVE_TURN_SEND_BEHAVIOR),
         ]);
         if (hydrationVersion !== mutationVersion) {
           set({ isLoaded: true });
@@ -62,6 +67,8 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
         const stored = rawStored && typeof rawStored === 'object' ? rawStored : {};
         const promptHistoryNavigationMode: PromptHistoryNavigationMode =
           rawNavigationMode === 'shortcut_only' ? 'shortcut_only' : 'contextual_arrows';
+        const activeTurnSendBehavior: ActiveTurnSendBehavior =
+          rawActiveTurnSendBehavior === 'queue' ? 'queue' : 'steer';
 
         const merged: ShortcutBindings = { ...defaults };
         Object.keys(defaults).forEach((id) => {
@@ -73,7 +80,7 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
           }
         });
 
-        set({ bindings: merged, promptHistoryNavigationMode, isLoaded: true });
+        set({ bindings: merged, promptHistoryNavigationMode, activeTurnSendBehavior, isLoaded: true });
       } catch {
         if (hydrationVersion === mutationVersion) {
           set({ bindings: defaults, promptHistoryNavigationMode: 'contextual_arrows', isLoaded: true });
@@ -105,6 +112,12 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
       set({ promptHistoryNavigationMode: mode });
     },
 
+    setActiveTurnSendBehavior: (behavior) => {
+      mutationVersion += 1;
+      void savePreference(PREF_KEYS.ACTIVE_TURN_SEND_BEHAVIOR, behavior);
+      set({ activeTurnSendBehavior: behavior });
+    },
+
     resetBinding: (id) => {
       mutationVersion += 1;
       set((state) => {
@@ -129,8 +142,9 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
       void Promise.all([
         persistBindings(nextBindings),
         savePreference(PREF_KEYS.PROMPT_HISTORY_NAV_MODE, 'contextual_arrows'),
+        savePreference(PREF_KEYS.ACTIVE_TURN_SEND_BEHAVIOR, 'steer'),
       ]);
-      set({ bindings: nextBindings, promptHistoryNavigationMode: 'contextual_arrows' });
+      set({ bindings: nextBindings, promptHistoryNavigationMode: 'contextual_arrows', activeTurnSendBehavior: 'steer' });
     },
   };
 });

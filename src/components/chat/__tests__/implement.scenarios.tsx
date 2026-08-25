@@ -72,6 +72,7 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
 
     await act(async () => {
       requireRoot().render(renderChatZone());
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
     const toggle = requireContainer().querySelector(

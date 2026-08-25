@@ -28,8 +28,11 @@ import {
 import { useChatStore } from '../../../stores/useChatStore';
 import type { ContextRefKind, ContextReference } from '../../../types';
 import { cn } from '../../../utils/cn';
+import { isPrimaryComposerSubmitKey } from './composerSubmitKey';
 import { MentionNode, $createMentionNode, type MentionSurface } from './MentionNode';
 import { MentionPlugin } from './MentionPlugin';
+import { GoalCommandNode } from './GoalCommandNode';
+import { GoalCommandPlugin } from './GoalCommandPlugin';
 import { LexicalComposer } from './SafeLexicalComposer';
 import { SlashContextMenuPlugin } from './SlashContextMenuPlugin';
 import {
@@ -351,7 +354,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
       return editor.registerCommand(
         KEY_ENTER_COMMAND,
         (event: KeyboardEvent | null) => {
-          if (event?.shiftKey) return false;
+          if (event && !isPrimaryComposerSubmitKey(event)) return false;
           event?.preventDefault();
           onSend();
           return true;
@@ -488,6 +491,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           ignoreHistoryMergeTagChange={false}
         />
         <ComposerHistoryPlugin />
+        {surface === 'composer' && <GoalCommandPlugin />}
         {syncContextRefs && <MentionPlugin />}
         {syncContextRefs && surface === 'composer' && <SlashContextMenuPlugin />}
       </>
@@ -526,7 +530,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     const initialConfig = useMemo(() => ({
       namespace: 'MacroComposer',
       theme: composerTheme,
-      nodes: [MentionNode],
+      nodes: [MentionNode, GoalCommandNode],
       editorState: initializeComposerState,
       onError: (error: Error) => {
         console.error('[ComposerEditor]', error);

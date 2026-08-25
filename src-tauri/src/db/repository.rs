@@ -2017,6 +2017,13 @@ pub async fn list_provider_configs(pool: &SqlitePool) -> DbResult<Vec<ProviderCo
     let now = chrono::Utc::now().to_rfc3339();
     let mut configured = Vec::with_capacity(definitions.len());
     for (id, definition) in definitions {
+        if definition
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let status = legacy.get(id);
         configured.push(ProviderConfig {
             id: id.clone(),
@@ -2299,9 +2306,19 @@ pub async fn upsert_provider_models(
     provider_id: &str,
     models: &[ProviderModelInput],
 ) -> DbResult<()> {
-    let now = chrono::Utc::now().to_rfc3339();
-
     let mut tx = pool.begin().await?;
+    upsert_provider_models_on_connection(&mut tx, provider_id, models).await?;
+    tx.commit().await?;
+
+    Ok(())
+}
+
+async fn upsert_provider_models_on_connection(
+    connection: &mut SqliteConnection,
+    provider_id: &str,
+    models: &[ProviderModelInput],
+) -> DbResult<()> {
+    let now = chrono::Utc::now().to_rfc3339();
 
     for model in models {
         let id = format!("{}::{}", provider_id, model.model_id);
@@ -2352,10 +2369,29 @@ pub async fn upsert_provider_models(
         .bind(&model.context_limits_updated_at)
         .bind(&now)
         .bind(&now)
-        .execute(&mut *tx)
+        .execute(&mut *connection)
         .await?;
     }
 
+    Ok(())
+}
+
+pub async fn replace_discovered_provider_models(
+    pool: &SqlitePool,
+    provider_id: &str,
+    models: &[ProviderModelInput],
+) -> DbResult<()> {
+    let mut tx = pool.begin().await?;
+    upsert_provider_models_on_connection(&mut tx, provider_id, models).await?;
+    prune_provider_models_on_connection(
+        &mut tx,
+        provider_id,
+        &models
+            .iter()
+            .map(|model| model.model_id.clone())
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     tx.commit().await?;
 
     Ok(())
@@ -2366,7 +2402,20 @@ pub async fn prune_provider_models(
     provider_id: &str,
     keep_model_ids: &[String],
 ) -> DbResult<()> {
+    let mut connection = pool.acquire().await?;
+    prune_provider_models_on_connection(&mut connection, provider_id, keep_model_ids).await
+}
+
+async fn prune_provider_models_on_connection(
+    connection: &mut SqliteConnection,
+    provider_id: &str,
+    keep_model_ids: &[String],
+) -> DbResult<()> {
     if keep_model_ids.is_empty() {
+        sqlx::query("DELETE FROM ai_models WHERE provider_id = ? AND is_manual = 0")
+            .bind(provider_id)
+            .execute(&mut *connection)
+            .await?;
         return Ok(());
     }
 
@@ -2382,7 +2431,7 @@ pub async fn prune_provider_models(
         statement = statement.bind(model_id);
     }
 
-    statement.execute(pool).await?;
+    statement.execute(&mut *connection).await?;
     Ok(())
 }
 
@@ -3247,6 +3296,182 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
         (temp_dir, pool)
+    }
+
+    #[tokio::test]
+    async fn pruning_an_empty_provider_catalog_removes_only_discovered_models() {
+        let (_temp_dir, pool) = test_pool().await;
+        upsert_provider_config_by_id(
+            &pool,
+            "provider-openai",
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            false,
+        )
+        .await
+        .expect("insert provider");
+        let now = chrono::Utc::now().to_rfc3339();
+        for (id, is_manual) in [("discovered", false), ("manual", true)] {
+            sqlx::query(
+                r#"
+                INSERT INTO ai_models (
+                    id, provider_id, model_id, name, is_enabled, is_manual,
+                    first_seen_at, last_seen_at
+                ) VALUES (?, 'provider-openai', ?, ?, 1, ?, ?, ?)
+                "#,
+            )
+            .bind(format!("provider-openai::{id}"))
+            .bind(id)
+            .bind(id)
+            .bind(is_manual)
+            .bind(&now)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .expect("insert model");
+        }
+
+        prune_provider_models(&pool, "provider-openai", &[])
+            .await
+            .expect("prune empty catalog");
+
+        let rows = sqlx::query("SELECT model_id FROM ai_models ORDER BY model_id")
+            .fetch_all(&pool)
+            .await
+            .expect("remaining models");
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| row.get::<String, _>("model_id"))
+                .collect::<Vec<_>>(),
+            vec!["manual"]
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_provider_model_upserts_preserve_other_discovered_models() {
+        let (_temp_dir, pool) = test_pool().await;
+        upsert_provider_config_by_id(
+            &pool,
+            "provider-openai",
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            false,
+        )
+        .await
+        .expect("insert provider");
+        let model = |model_id: &str, name: &str| ProviderModelInput {
+            model_id: model_id.to_string(),
+            name: name.to_string(),
+            description: None,
+            owned_by: None,
+            pricing_prompt: None,
+            pricing_completion: None,
+            pricing_request: None,
+            reasoning_efforts: None,
+            default_reasoning_effort: None,
+            context_window_tokens: None,
+            input_limit_tokens: None,
+            output_limit_tokens: None,
+            context_window_source: None,
+            context_limits_updated_at: None,
+        };
+
+        upsert_provider_models(
+            &pool,
+            "provider-openai",
+            &[model("gpt-one", "GPT One"), model("gpt-two", "GPT Two")],
+        )
+        .await
+        .expect("insert catalog");
+        upsert_provider_models(
+            &pool,
+            "provider-openai",
+            &[model("gpt-one", "GPT One Updated")],
+        )
+        .await
+        .expect("partially update catalog");
+
+        let rows = sqlx::query("SELECT model_id, name FROM ai_models ORDER BY model_id")
+            .fetch_all(&pool)
+            .await
+            .expect("models after partial update");
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| (
+                    row.get::<String, _>("model_id"),
+                    row.get::<String, _>("name")
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("gpt-one".to_string(), "GPT One Updated".to_string()),
+                ("gpt-two".to_string(), "GPT Two".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn replacing_discovered_provider_models_rolls_back_when_pruning_fails() {
+        let (_temp_dir, pool) = test_pool().await;
+        upsert_provider_config_by_id(
+            &pool,
+            "provider-openai",
+            "OpenAI",
+            "openai",
+            "https://api.openai.com/v1",
+            false,
+        )
+        .await
+        .expect("insert provider");
+        let model = |model_id: &str| ProviderModelInput {
+            model_id: model_id.to_string(),
+            name: model_id.to_string(),
+            description: None,
+            owned_by: None,
+            pricing_prompt: None,
+            pricing_completion: None,
+            pricing_request: None,
+            reasoning_efforts: None,
+            default_reasoning_effort: None,
+            context_window_tokens: None,
+            input_limit_tokens: None,
+            output_limit_tokens: None,
+            context_window_source: None,
+            context_limits_updated_at: None,
+        };
+        upsert_provider_models(&pool, "provider-openai", &[model("gpt-old")])
+            .await
+            .expect("insert old catalog");
+        sqlx::query(
+            r#"
+            CREATE TRIGGER block_provider_model_prune
+            BEFORE DELETE ON ai_models
+            BEGIN
+                SELECT RAISE(ABORT, 'prune blocked');
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create failing prune trigger");
+
+        let error =
+            replace_discovered_provider_models(&pool, "provider-openai", &[model("gpt-new")])
+                .await
+                .expect_err("replacement must fail when pruning fails");
+        assert!(error.to_string().contains("prune blocked"));
+
+        let rows = sqlx::query("SELECT model_id FROM ai_models ORDER BY model_id")
+            .fetch_all(&pool)
+            .await
+            .expect("catalog after rollback");
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| row.get::<String, _>("model_id"))
+                .collect::<Vec<_>>(),
+            vec!["gpt-old"]
+        );
     }
 
     #[tokio::test]

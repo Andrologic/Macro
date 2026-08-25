@@ -3212,6 +3212,27 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn workspace_root_identity_rejects_a_replaced_directory() {
+        let root = setup_empty_workspace();
+        let workspace = root.path().join("workspace");
+        let original = root.path().join("original-workspace");
+        fs::create_dir(&workspace).expect("create workspace");
+        let expected = workspace_root_identity(&workspace).expect("read workspace identity");
+
+        fs::rename(&workspace, &original).expect("move original workspace");
+        fs::create_dir(&workspace).expect("replace workspace");
+
+        let error =
+            open_workspace_capability(&workspace, &workspace.join("target.txt"), Some(expected))
+                .err()
+                .expect("replaced workspace must be rejected");
+        assert!(error
+            .to_string()
+            .contains("changed after server validation"));
+    }
+
     #[test]
     fn wsl_recursive_list_depth_is_bounded_by_default_and_at_the_upper_limit() {
         assert_eq!(wsl_list_depth(Some(false), Some(20)), 1);

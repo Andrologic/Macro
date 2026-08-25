@@ -25,7 +25,8 @@
       "activeProvider": "使用するプロバイダー", "noProvider": "プロバイダーなし", "language": "言語", "autoLanguage": "自動",
       "maxDuration": "最大録音時間", "enhancementTitle": "文字起こしのスマート補正", "enhancementDescription": "会話で使用中のモデルにより、認識ミス、ためらい、繰り返しだけを短く慎重に補正します。",
       "noProviderPrivacy": "録音音声の送信先を確認するにはプロバイダーを選択してください。", "localPrivacy": "ローカルまたはキーレスのプロバイダー：API キーを必須とせず、設定したエンドポイントへ音声を送信します。",
-      "andrologicPrivacy": "Andrologic：音声は認証済みの Macro ゲートウェイで処理され、保存されません。文字起こしされたテキストは運用ログに記録されます。",
+      "andrologicPrivacy": "Andrologic は認証済みの Macro ゲートウェイ経由で音声を処理し、保存しません。文字起こしは運用ログに記録されます。",
+      "durationUnit": "秒",
       "remotePrivacy": "リモートプロバイダー：録音音声は設定したエンドポイントへ送信されます。", "providers": "音声プロバイダー",
       "compatibility": "OpenAI互換およびDeepgramの文字起こしエンドポイントに対応します。", "addProvider": "プロバイダーを追加",
       "keyStored": "APIキーはローカルに保存済み", "managedAuth": "認証は Macro が管理", "noKeyRequired": "APIキー不要", "keyMissing": "APIキーが必要",
@@ -41,7 +42,7 @@
     "failedSteps": "失敗した手順"
   },
   "releaseNotes": {
-    "dialogTitle": "Macro の新機能",
+    "dialogTitle": "リリースノート",
     "shownOnce": "このノートは、インストールされたバージョンごとに一度だけ表示されます。",
     "continue": "Macro を続ける"
   },
@@ -438,6 +439,10 @@
     "deletingConversations": "削除中...",
     "typeMessage": "メッセージを入力、または / でコンテキストを追加...",
     "send": "送信",
+    "steerActiveTurn": "進行中のターンを修正",
+    "queueNextTurn": "次のターンに追加",
+    "secondaryAction": "別の操作",
+    "activeTurnSendFailed": "メッセージを送信できませんでした",
     "stop": "停止",
     "saveRegenerate": "保存と再生成",
     "mermaidDiagram": "人魚の図",
@@ -571,11 +576,6 @@
       "previewUnavailable": "プレビューを利用できません",
       "removeFromContext": "コンテキストから削除",
       "toolsUnavailableWarning": "現在選択されているプロバイダーまたはモデルではツールを使用できません。ネイティブ ツール呼び出しサポートを有効にするには、サポートを備えたモデルを選択します。",
-      "agentWorkspace": "エージェントのワークスペース",
-      "noAgentWorkspace": "ワークスペースなし",
-      "agentWorkspaceDescription": "このワークスペースはプロジェクトのコンテキストを提供します。汎用ターミナルの範囲は制限しません。",
-      "noAgentWorkspaceDescription": "プロジェクトワークスペースは関連付けられていません。汎用ターミナルは有効にすると利用できます。",
-      "workspaceUpdateFailed": "エージェントのワークスペースを変更できませんでした",
       "builtInTools": "内蔵ツール",
       "noToolsEnabled": "有効なツールはありません",
       "mcpServers": "MCPサーバー",
@@ -751,6 +751,9 @@
     }
   },
   "skills": {
+    "collectionTitle": "スキル",
+    "collectionDescription": "検出されたスキルを管理します",
+    "empty": "スキルが見つかりません",
     "importDialogTitle": "Skill フォルダーを選択",
     "importFailed": "Skill をインポートできませんでした",
     "imported": "Skill をインポートしました",
@@ -838,6 +841,7 @@
     "moreDiagnostics": "+{{count}} 件の追加診断"
   },
   "settings": {
+    "searchNoResults": "一致する設定はありません",
     "title": "設定",
     "general": "一般的な",
     "appearance": "外観",
@@ -848,6 +852,8 @@
     "architect": "Git ワークフロー",
     "shortcuts": "ショートカット",
     "desc": {
+      "skills": "再利用可能なエージェントスキルとそのソースを管理します",
+      "prompts": "Macro が使用するシステムプロンプトをカスタマイズします",
       "general": "言語、アプリケーション、承認の設定を構成する",
       "appearance": "アプリケーションの外観と操作性をカスタマイズする",
       "ai": "AI モデル、プロバイダー、API キーを管理する",
@@ -894,7 +900,18 @@
     "language_region": "言語と地域",
     "language": "言語",
     "language_desc": "好みの言語インターフェースを選択してください",
-    "application": "応用",
+    "application": "アプリケーション",
+    "updateChannel": {
+      "label": "更新チャンネル",
+      "stable": "安定版",
+      "preview": "プレビュー（Nightly）",
+      "stableDescription": "製品版のみを受け取ります。",
+      "previewDescription": "検証済みのNightlyとリリース候補版を受け取ります。安定版に戻すと、以前のバージョンがインストールされる場合があります。",
+      "upToDate": "選択したチャンネルでMacroは最新です。",
+      "stableConfirmationTitle": "Stable チャンネルに切り替えますか？",
+      "stableConfirmationDescription": "最新の Stable がこの Preview より古い場合、Macro はその署名済み旧バージョンのインストールを提案します。",
+      "switchToStable": "Stable に切り替える"
+    },
     "sound_effects": "効果音",
     "sound_effects_desc": "タスクの完了またはエラー時にサウンドを再生する",
     "desktopNotificationsRuntime": "実行時ステータス",
@@ -1621,6 +1638,9 @@
     "totalChanges": "合計の変更"
   },
   "providers": {
+    "collectionTitle": "プロバイダー",
+    "collectionDescription": "設定済みの接続を管理します",
+    "emptyDescription": "プロバイダーを追加して Macro を AI サービスに接続します。",
     "macroAi": {
       "included": "Macro ベータに AI が含まれます",
       "dropdownNotice": "ベータ版に AI が含まれます"
@@ -1632,6 +1652,8 @@
     "delete": "プロバイダーを削除",
     "deleted": "プロバイダーを削除しました",
     "searchPlaceholder": "プロバイダーを検索...",
+    "configuredTitle": "設定済みプロバイダー",
+    "unconfiguredTitle": "設定が必要なプロバイダー",
     "testSaveFirst": "テスト前にプロバイダーを保存してください。",
     "testConnection": "テスト接続",
     "saveProvider": "プロバイダーを保存",
@@ -1727,6 +1749,10 @@
     }
   },
   "tools": {
+    "builtInToolsDescription": "モデルが使用できるツールを管理します",
+    "mcpServersDescription": "外部ツールへの接続を管理します",
+    "searchBuiltInTools": "ツールを検索...",
+    "searchMcpServers": "MCP サーバーを検索...",
     "title": "ツールの構成",
     "subtitle": "利用可能な機能と MCP サーバーを管理する",
     "addServer": "サーバーの追加",
@@ -1825,7 +1851,32 @@
       "identifierCollision": "この識別子の MCP サーバーは既に存在します。",
       "saveFailed": "MCP サーバーを保存できませんでした。",
       "deleteFailed": "MCP サーバーを削除できませんでした。",
-      "toggleFailed": "MCP サーバーを更新できませんでした。"
+      "toggleFailed": "MCP サーバーを更新できませんでした。",
+      "transportHint": "ローカルサーバーには stdio、従来型およびステートレスのリモートサーバーには Streamable HTTP を使用します。",
+      "transport": { "stdio": "ローカル stdio", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://example.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
+      "protocol": { "auto": "自動検出", "legacy": "従来型セッション", "modern": "モダン・ステートレス" },
+      "oauth": {
+        "enable": "OAuth を使用",
+        "scopes": "スペース区切りのスコープ",
+        "clientId": "任意の事前登録済みクライアント ID",
+        "clientSecretStored": "クライアントシークレットは保存済みです。維持するには空欄のままにしてください",
+        "clientSecret": "任意のクライアントシークレット",
+        "clientMetadataUrl": "任意の HTTPS クライアントメタデータ URL",
+        "registrationHint": "クライアント ID またはクライアントメタデータ URL のいずれかを使用してください。サーバーが動的クライアント登録に対応している場合のみ、両方を空欄にできます。",
+        "authorizeHint": "この MCP サーバーを認証",
+        "authorize": "接続",
+        "logout": "OAuth 認証を削除",
+        "clientIdentityConflict": "OAuth クライアント ID またはクライアントメタデータ URL のいずれか一方を使用してください。",
+        "clientSecretNeedsId": "OAuth クライアントシークレットには事前登録済みクライアント ID が必要です。",
+        "clientSecretSaveFailed": "OAuth シークレットを保存できませんでした。",
+        "clientSecretCleanupFailed": "古い OAuth クライアントシークレットを削除できませんでした。",
+        "authorized": "MCP サーバーを認証して接続しました。",
+        "failed": "MCP 認証に失敗しました。",
+        "loggedOut": "MCP 認証を削除しました。",
+        "logoutFailed": "MCP 認証を削除できませんでした。"
+      }
     }
   },
   "account": {
@@ -1936,6 +1987,9 @@
     }
   },
   "models": {
+    "collectionTitle": "モデル",
+    "collectionDescription": "プロバイダーごとにモデルを管理します",
+    "searchPlaceholder": "モデルを検索...",
     "noProviders": "まだプロバイダーが設定されていません。先にプロバイダーを追加してください。",
     "total": "合計",
     "enabled": "有効",
@@ -1980,6 +2034,26 @@
     "commitPromptDescription": "このプロンプトはスマートコミット生成を制御します。Macro は最終メッセージを引き続き検証し、コミット前にスコープを削除します。",
     "reasoningEffort": "推論",
     "defaultReasoning": "デフォルト",
+    "reasoningUnavailable": "このモデルではサポートされていません",
+    "configurableReasoning": "設定可能な推論",
+    "configurableReasoningDescription": "このモデルが受け付ける推論レベルを設定します。",
+    "standardReasoningLevels": "標準レベル",
+    "customReasoningLevel": "カスタムレベル",
+    "customReasoningLevelPlaceholder": "例: ultra",
+    "invalidCustomReasoningLevel": "英字、数字、ピリオド、アンダースコア、ハイフンを使用してください。",
+    "reasoningLevelOrder": "レベルの順序",
+    "defaultReasoningLevel": "デフォルトレベル",
+    "reasoningLevelRequired": "推論レベルを1つ以上追加してください。",
+    "moveReasoningLevelUp": "レベルを上に移動",
+    "moveReasoningLevelDown": "レベルを下に移動",
+    "removeReasoningLevel": "レベルを削除",
+    "reasoningLevelNone": "なし",
+    "reasoningLevelMinimal": "最小",
+    "reasoningLevelLow": "低",
+    "reasoningLevelMedium": "中",
+    "reasoningLevelHigh": "高",
+    "reasoningLevelXHigh": "最高",
+    "reasoningLevelMax": "最大",
     "contextWindowLabel": "コンテキスト",
     "contextWindowUnknown": "推定",
     "contextWindowSet": "設定",
@@ -2003,6 +2077,8 @@
     "learnedContextLimitResetFailed": "学習済みコンテキスト制限をリセットできませんでした"
   },
   "shortcuts": {
+    "collectionTitle": "ショートカット",
+    "collectionDescription": "キーボードショートカットを検索してカスタマイズします",
     "categories": {
       "app": "応用",
       "mode": "モード",
@@ -2022,6 +2098,11 @@
     "recordingHint": "今すぐショートカットを押してください... (キャンセルするには Esc)",
     "promptHistoryBehavior": "Prompt 履歴の動作",
     "promptHistoryBehaviorDesc": "コンテキストに応じた ArrowUp/ArrowDown の代わりに、専用のショートカット (Ctrl/Cmd + ArrowUp/ArrowDown) を使用します。",
+    "activeTurnSendBehavior": "応答中の既定の操作",
+    "activeTurnSendBehaviorSteer": "Enter で進行中のターンを修正し、別のショートカットでキューに追加します。",
+    "activeTurnSendBehaviorQueue": "Enter でキューに追加し、別のショートカットで進行中のターンを修正します。",
+    "queue": "キュー",
+    "steer": "修正",
     "disabledInContextualMode": "コンテキスト ArrowUp/ArrowDown モードがアクティブな間は無効になります。",
     "conflictWith": "との衝突",
     "recordShortcut": "録音ショートカット",
@@ -2089,6 +2170,10 @@
       "historyNext": {
         "label": "次の prompt",
         "description": "チャット入力で次の prompt に移動"
+      },
+      "secondarySend": {
+        "label": "Composer の別操作",
+        "description": "応答中に別の操作を使用します"
       }
     }
   },
@@ -2199,7 +2284,9 @@
   },
   "goal": {
     "bannerLabel": "会話の目標",
-    "modeLabel": "Goalモード",
+    "shortLabel": "Goal",
+    "edit": "目標を編集",
+    "editHint": "入力欄で現在の目標を編集",
     "status": {
       "executorRunning": "エージェントが作業中",
       "executorRunningDescription": "エージェントが目標の達成に向けて作業しています。",
@@ -2236,7 +2323,8 @@
     "commandMissingObjectiveDescription": "/goal に続けて、エージェントに達成してほしい結果を入力してください。",
     "executionFailed": "エージェントターンに失敗しました。",
     "commandDescription": "独立した確認で目標が承認されるまで作業を続ける",
-    "commandHint": "Goalモードを開始して目標を入力"
+    "commandHint": "Goalモードを開始して目標を入力",
+    "removeCommand": "Goalコマンドを削除"
   },
   "composer": {
     "searchingFiles": "ファイルを検索中...",
