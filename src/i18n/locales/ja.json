@@ -42,8 +42,8 @@
   },
   "releaseNotes": {
     "dialogTitle": "Macro の新機能",
-    "shownOnce": "このノートは、インストールされたバージョンごとに一度だけ表示されます。",
-    "continue": "Macro を続ける"
+    "continue": "Macro を続ける",
+    "version": "バージョン"
   },
   "updates": {
     "checking": "更新を確認しています",
