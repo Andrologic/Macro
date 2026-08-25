@@ -1847,7 +1847,32 @@
       "identifierCollision": "An MCP server with this identifier already exists.",
       "saveFailed": "Failed to save MCP server.",
       "deleteFailed": "Failed to delete MCP server.",
-      "toggleFailed": "Failed to update MCP server."
+      "toggleFailed": "Failed to update MCP server.",
+      "transportHint": "Use stdio for local servers or Streamable HTTP for legacy and stateless remote servers.",
+      "transport": { "stdio": "Local stdio", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://example.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
+      "protocol": { "auto": "Automatic detection", "legacy": "Legacy session", "modern": "Modern stateless" },
+      "oauth": {
+        "enable": "Use OAuth",
+        "scopes": "Scopes, separated by spaces",
+        "clientId": "Optional pre-registered client ID",
+        "clientSecretStored": "Client secret stored — leave blank to keep it",
+        "clientSecret": "Optional client secret",
+        "clientMetadataUrl": "Optional HTTPS client metadata URL",
+        "registrationHint": "Use either a client ID or a client metadata URL. Leave both empty only for servers that support dynamic client registration.",
+        "authorizeHint": "Authorize this MCP server",
+        "authorize": "Connect",
+        "logout": "Remove OAuth authorization",
+        "clientIdentityConflict": "Use either an OAuth client ID or a client metadata URL, not both.",
+        "clientSecretNeedsId": "An OAuth client secret requires a pre-registered client ID.",
+        "clientSecretSaveFailed": "Failed to store OAuth secret.",
+        "clientSecretCleanupFailed": "The obsolete OAuth client secret could not be removed.",
+        "authorized": "MCP server authorized and connected.",
+        "failed": "MCP authorization failed.",
+        "loggedOut": "MCP authorization removed.",
+        "logoutFailed": "Failed to remove MCP authorization."
+      }
     }
   },
   "account": {
