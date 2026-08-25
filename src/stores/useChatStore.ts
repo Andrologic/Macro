@@ -959,6 +959,7 @@ export interface ComposerSubmissionPayload {
   taskId?: string | null;
   images?: MessageImageAttachment[];
   internalAgentProfile?: InternalAgentProfile | null;
+  contextRefs?: ChatMessage["context_refs"];
 }
 
 interface ChatStore {
@@ -1129,6 +1130,7 @@ interface ChatStore {
     internalAgentProfile?: InternalAgentProfile | null;
     hiddenContext?: string;
     providerInputItems?: unknown[];
+    contextRefs?: ChatMessage["context_refs"];
   }) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
@@ -8366,11 +8368,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
     drainingQueuedConversationIds.add(conversationId);
+    let shouldContinue = true;
     try {
       await get().sendMessage(next);
+    } catch {
+      shouldContinue = false;
     } finally {
       drainingQueuedConversationIds.delete(conversationId);
-      queueMicrotask(() => void drainQueuedSubmissions(conversationId));
+      if (shouldContinue) {
+        queueMicrotask(() => void drainQueuedSubmissions(conversationId));
+      }
     }
   };
 
@@ -10951,6 +10958,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       streamPromise,
     );
     const releaseStreamPromise = () => {
+      pendingSteersByConversationId.delete(params.conversationId);
       if (
         activeAssistantStreamPromisesByConversationId.get(
           params.conversationId,
@@ -14427,7 +14435,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       if (behavior === "queue") {
         const queue = queuedSubmissionsByConversationId.get(payload.conversationId) ?? [];
-        queue.push({ ...payload, images: payload.images ? [...payload.images] : undefined });
+        queue.push({
+          ...payload,
+          images: payload.images ? [...payload.images] : undefined,
+          contextRefs: persistableContextRefs(get().composerContextRefs),
+        });
         queuedSubmissionsByConversationId.set(payload.conversationId, queue);
         return "queued";
       }
@@ -14439,7 +14451,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       const contextRefs = persistableContextRefs(get().composerContextRefs);
       const revision = composerContextRefsRevision;
-      const steerMessage: StreamMessage = { role: "user", content };
+      const steerMessage: StreamMessage = {
+        role: "user",
+        content: payload.images?.length
+          ? [
+              { type: "text", text: content },
+              ...payload.images.map((image) => ({
+                type: "image_url" as const,
+                image_url: { url: image.dataUrl },
+              })),
+            ]
+          : content,
+      };
       const pending = pendingSteersByConversationId.get(payload.conversationId) ?? [];
       pending.push(steerMessage);
       pendingSteersByConversationId.set(payload.conversationId, pending);
@@ -14474,8 +14497,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         internalAgentProfile,
         hiddenContext,
         providerInputItems,
+        contextRefs: contextRefsOverride,
       } = payload;
-      const contextRefsForMessage = persistableContextRefs(get().composerContextRefs);
+      const contextRefsForMessage = contextRefsOverride ?? persistableContextRefs(get().composerContextRefs);
+      const shouldClearComposerContextRefs = contextRefsOverride === undefined;
       const composerContextRefsRevisionAtSend = composerContextRefsRevision;
       let activeSessionId: string | null = null;
       let activeTurnId: string | null = null;
@@ -14771,18 +14796,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         if (!isCurrentPreparation()) {
           publishUserMessage();
-          clearComposerContextRefsIfRevisionMatches(
-            conversationId,
-            composerContextRefsRevisionAtSend,
-          );
+          if (shouldClearComposerContextRefs) {
+            clearComposerContextRefsIfRevisionMatches(
+              conversationId,
+              composerContextRefsRevisionAtSend,
+            );
+          }
           return sentWithoutAssistantResult();
         }
 
         publishUserMessage();
-        clearComposerContextRefsIfRevisionMatches(
-          conversationId,
-          composerContextRefsRevisionAtSend,
-        );
+        if (shouldClearComposerContextRefs) {
+          clearComposerContextRefsIfRevisionMatches(
+            conversationId,
+            composerContextRefsRevisionAtSend,
+          );
+        }
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
           let skipMetadataGeneration = false;
