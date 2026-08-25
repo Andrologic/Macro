@@ -21,7 +21,7 @@ export const QuestionnaireResponseSummary: React.FC<QuestionnaireResponseSummary
       <div className="flex items-center gap-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         <Icon name="message-circle-question" size={13} className="shrink-0 text-primary/75" />
         <span className="truncate">
-          {t('chat.questionnaireResponseSummaryTitle', 'Reponses au questionnaire')}
+          {t('chat.questionnaireResponseSummaryTitle', 'Réponses au questionnaire')}
         </span>
       </div>
       <div className="space-y-3">

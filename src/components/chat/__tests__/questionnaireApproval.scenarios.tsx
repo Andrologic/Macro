@@ -568,7 +568,7 @@ export const registerQuestionnaireApprovalScenarios = (
     });
 
     expect(requireContainer().querySelector('[data-testid="questionnaire-response-summary"]')).not.toBeNull();
-    expect(requireContainer().textContent).toContain('Reponses au questionnaire');
+    expect(requireContainer().textContent).toContain('Réponses au questionnaire');
     expect(requireContainer().textContent).toContain('Which scope should I use?');
     expect(requireContainer().textContent).toContain('Stay below one day of rework');
   });
