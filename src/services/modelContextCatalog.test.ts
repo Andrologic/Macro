@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   __testables,
   lookupModelContextCatalogLimit,
+  lookupModelReasoningCatalogCapability,
   refreshModelContextCatalog,
 } from './modelContextCatalog';
 
@@ -104,6 +105,38 @@ describe('modelContextCatalog', () => {
       contextTokens: 111_000,
       inputTokens: 100_000,
       outputTokens: 10_000,
+    });
+  });
+
+  it('reads reasoning metadata from the same Models.dev cache', () => {
+    __testables.writeCachedCatalog({
+      fetchedAt: new Date().toISOString(),
+      providers: {
+        openai: {
+          id: 'openai',
+          models: {
+            'future-model': {
+              id: 'future-model',
+              reasoning: {
+                efforts: ['low', 'max', 'future'],
+                default: 'future',
+                configurable: true,
+                transport_mode: 'openai_effort',
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(lookupModelReasoningCatalogCapability({
+      providerType: 'openai',
+      modelId: 'future-model',
+    })).toEqual({
+      reasoningEfforts: ['low', 'max', 'future'],
+      defaultReasoningEffort: 'future',
+      configurable: true,
+      transportMode: 'openai_effort',
     });
   });
 

@@ -6,9 +6,9 @@ import {
   type DelegationLimits,
   type DelegationResult,
 } from "./types";
+import { normalizeReasoningEffortValue } from "../reasoningCatalog";
 
 const CAPABILITY_SET = new Set<string>(AGENT_CAPABILITIES);
-const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 
 const error = (
   code: DelegationError["code"],
@@ -69,7 +69,7 @@ export const validateAgentDefinition = (
   validateRequiredText(input.description, "description", errors);
 
   if (input.model !== undefined) validateRequiredText(input.model, "model", errors);
-  if (input.effort !== undefined && !EFFORTS.has(String(input.effort))) {
+  if (input.effort !== undefined && normalizeReasoningEffortValue(input.effort) === null) {
     errors.push(
       error("invalid_agent_definition", "effort", "Expected a supported reasoning effort.")
     );
