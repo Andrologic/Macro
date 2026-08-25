@@ -8358,6 +8358,15 @@ mod tests {
     fn init_repo() -> (TempDir, Repository) {
         let temp = TempDir::new().expect("temp dir");
         let repo = Repository::init(temp.path()).expect("init repo");
+        {
+            let mut config = repo.config().expect("repo config");
+            config
+                .set_str("user.name", "Tester")
+                .expect("set user name");
+            config
+                .set_str("user.email", "tester@example.com")
+                .expect("set user email");
+        }
 
         let file_path = temp.path().join("README.md");
         fs::write(&file_path, "hello").expect("write file");
