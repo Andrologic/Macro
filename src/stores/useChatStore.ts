@@ -1064,10 +1064,6 @@ interface ChatStore {
   ensureConversationForCurrentMode: () => Promise<string | null>;
   reapplySelectionForCurrentContext: () => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
-  setChatConversationWorkspace: (
-    conversationId: string,
-    workspace: { groupId: string | null; projectId: string | null },
-  ) => Promise<void>;
   togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
     conversationId: string,
@@ -13619,76 +13615,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set((state) => ({
         conversations: state.conversations.map((conv) =>
           conv.id === conversationId ? { ...conv, title } : conv,
-        ),
-      }));
-    },
-
-    setChatConversationWorkspace: async (conversationId, workspace) => {
-      const conversation = get().conversations.find(
-        (candidate) => candidate.id === conversationId,
-      );
-      if (!conversation || deletedConversationIds.has(conversationId)) {
-        throw new Error("Conversation introuvable.");
-      }
-      if (conversation.scope_mode !== "Chat") {
-        throw new Error(
-          "Le workspace de conversation ne peut être défini que pour une conversation Chat.",
-        );
-      }
-
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        conversationId,
-      );
-      if (runtime.phase !== "idle" && runtime.phase !== "error") {
-        throw new Error(
-          "Attendez la fin de la réponse avant de changer le workspace de la conversation.",
-        );
-      }
-
-      const appState = useAppStore.getState();
-      const group = workspace.groupId
-        ? appState.projectGroups.find((candidate) => candidate.id === workspace.groupId) ?? null
-        : null;
-      const project = workspace.projectId
-        ? appState.getProjectById(workspace.projectId) ?? null
-        : null;
-      if (workspace.groupId && !group) {
-        throw new Error("Groupe de projets introuvable.");
-      }
-      if (workspace.projectId && !project) {
-        throw new Error("Projet introuvable.");
-      }
-      if (
-        group &&
-        project &&
-        !group.projects.some((candidate) => candidate.id === project.id)
-      ) {
-        throw new Error("Le projet sélectionné n’appartient pas à ce groupe.");
-      }
-
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.updateConversationScope({
-          id: conversationId,
-          scopeMode: "Chat",
-          taskId: null,
-          groupId: workspace.groupId,
-          projectId: workspace.projectId,
-        });
-      }
-
-      clearConversationSecurityState(conversationId);
-      set((state) => ({
-        conversations: state.conversations.map((candidate) =>
-          candidate.id === conversationId
-            ? {
-                ...candidate,
-                task_id: null,
-                group_id: workspace.groupId,
-                project_id: workspace.projectId,
-                updated_at: new Date().toISOString(),
-              }
-            : candidate,
         ),
       }));
     },

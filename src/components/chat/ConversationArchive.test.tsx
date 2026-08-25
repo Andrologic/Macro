@@ -82,4 +82,30 @@ describe('ConversationArchive', () => {
     expect(toolbar?.textContent).toContain('0');
     expect(toolbar?.querySelectorAll('button')).toHaveLength(4);
   });
+
+  it('shows the archive toggle in the header and switches to the archived view', async () => {
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+
+    const archiveToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="chat-archive-toggle"]'
+    );
+    const header = archiveToggle?.closest('.h-12.border-b');
+
+    expect(archiveToggle).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(archiveToggle?.getAttribute('aria-label')).toBe('Archives');
+    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('false');
+    expect(document.body.querySelector('.border-t [data-tour-id="chat-archive-toggle"]')).toBeNull();
+
+    await act(async () => {
+      archiveToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
+    expect(document.body.textContent).toContain('No archived conversations');
+  });
 });
