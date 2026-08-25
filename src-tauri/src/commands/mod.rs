@@ -987,6 +987,9 @@ async fn write_bytes_atomically_with_parent_creation(
     expected_revision: Option<&str>,
     unix_mode: Option<u32>,
 ) -> CommandResult<()> {
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+
     let parent = path
         .parent()
         .ok_or_else(|| command_error(format!("Invalid file path: {}", path.display())))?;
@@ -6057,22 +6060,24 @@ pub async fn db_set_setting(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::{
-        apply_mutation_backups, apply_patch_hunks_to_content, command_error,
-        commit_and_validate_pending_file_changes,
+        apply_mutation_backups, execute_workspace_tool_controlled_with_options,
+        prepare_mutation_backups, validate_post_write_changes, WorkspaceToolExecutionOptions,
+    };
+    use super::{
+        apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
         commit_and_validate_pending_file_changes_with_create_dirs, commit_with_post_mutation_gate,
-        exact_edit_match_error, execute_workspace_tool,
-        execute_workspace_tool_controlled_with_options, format_bounded_git_status,
-        parse_apply_patch, prepare_mutation_backups, provider_definition_patch_operations,
-        provider_is_enabled, register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
+        exact_edit_match_error, execute_workspace_tool, format_bounded_git_status,
+        parse_apply_patch, provider_definition_patch_operations, provider_is_enabled,
+        register_tool_execution, resolve_confined_wsl_repo_path_for_workspace,
         resolve_requested_workspace, resolve_workspace_for_tool_path,
         restore_deleted_provider_secrets, rollback_pending_file_changes,
         rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
-        validate_agent_git_repo_path, validate_checkpoint_size_values, validate_post_write_changes,
+        validate_agent_git_repo_path, validate_checkpoint_size_values,
         wsl_mutation_backup_read_script, wsl_mutation_backup_write_script, DbPool,
-        ParsedPatchOperation, PendingFileChange, WorkspaceToolExecutionOptions,
-        INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD, MAX_CHECKPOINT_FILES_PER_MUTATION,
-        MAX_CHECKPOINT_TOTAL_BYTES,
+        ParsedPatchOperation, PendingFileChange, INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
+        MAX_CHECKPOINT_FILES_PER_MUTATION, MAX_CHECKPOINT_TOTAL_BYTES,
     };
     use crate::commands::fs::{
         content_revision, install_write_before_revalidation_hook, EXPECTED_REVISION_ABSENT,
@@ -6080,6 +6085,7 @@ mod tests {
     use crate::commands::git::{GitFileStatus, GitStatusDto};
     use crate::git::GitState;
     use serde_json::{json, Value};
+    #[cfg(unix)]
     use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
