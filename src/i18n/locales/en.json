@@ -63,7 +63,7 @@
     "failedSteps": "Failed steps"
   },
   "releaseNotes": {
-    "dialogTitle": "What’s new in Macro",
+    "dialogTitle": "Release notes",
     "shownOnce": "This note is shown once for each installed version.",
     "continue": "Continue to Macro"
   },

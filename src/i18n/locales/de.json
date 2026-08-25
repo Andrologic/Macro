@@ -42,7 +42,7 @@
     "failedSteps": "Fehlgeschlagene Schritte"
   },
   "releaseNotes": {
-    "dialogTitle": "Neu in Macro",
+    "dialogTitle": "Versionshinweise",
     "shownOnce": "Dieser Hinweis wird für jede installierte Version einmal angezeigt.",
     "continue": "Weiter zu Macro"
   },
