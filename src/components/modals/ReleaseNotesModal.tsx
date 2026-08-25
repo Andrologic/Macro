@@ -111,7 +111,7 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
 
   return (
     <Dialog
-      title={t('releaseNotes.dialogTitle', 'What’s new in Macro')}
+      title={t('releaseNotes.dialogTitle', 'Release notes')}
       onClose={close}
       initialFocusRef={closeButtonRef}
       closeOnBackdropClick
@@ -122,11 +122,17 @@ export const ReleaseNotesModal: React.FC<ReleaseNotesModalProps> = ({ enabled })
         data-testid="release-notes-modal"
         className="pointer-events-auto flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl ring-1 ring-white/5"
       >
-        <header className="shrink-0 border-b border-border px-5 py-4 sm:px-7">
-          <div className="flex items-center justify-between gap-4">
-            <h2 className="min-w-0 truncate text-lg font-semibold tracking-tight text-foreground">
-              {note.title}
-            </h2>
+        <header className="relative shrink-0 overflow-hidden border-b border-border px-5 py-5 sm:px-7">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgb(var(--primary)/0.14),transparent_52%)]" />
+          <div className="relative flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+                {t('releaseNotes.dialogTitle', 'Release notes')}
+              </p>
+              <h2 className="mt-1 truncate text-xl font-semibold tracking-tight text-foreground">
+                Macro {note.version}
+              </h2>
+            </div>
 
             <button
               ref={closeButtonRef}

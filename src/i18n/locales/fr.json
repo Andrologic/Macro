@@ -63,7 +63,7 @@
     "failedSteps": "Étapes en échec"
   },
   "releaseNotes": {
-    "dialogTitle": "Nouveautés de Macro",
+    "dialogTitle": "Notes de version",
     "shownOnce": "Cette note s’affiche une seule fois pour chaque version installée.",
     "continue": "Continuer vers Macro"
   },

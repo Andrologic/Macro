@@ -89,7 +89,9 @@ describe('ReleaseNotesModal', () => {
 
     const modal = document.querySelector('[data-testid="release-notes-modal"]');
     expect(modal).not.toBeNull();
-    expect(modal?.textContent ?? '').toContain('Macro 0.1 est prêt');
+    expect(modal?.textContent ?? '').toContain('Release notes');
+    expect(modal?.textContent ?? '').toContain('Macro 0.1.0');
+    expect(modal?.textContent ?? '').not.toContain('Macro 0.1 est prêt');
     expect(modal?.textContent ?? '').not.toContain('Première version stable');
     expect(modal?.textContent ?? '').not.toContain(
       'Cette version pose le workflow desktop local-first',

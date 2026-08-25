@@ -46,7 +46,7 @@
     "failedSteps": "Pasos fallidos"
   },
   "releaseNotes": {
-    "dialogTitle": "Novedades de Macro",
+    "dialogTitle": "Notas de la versión",
     "shownOnce": "Esta nota se muestra una sola vez por cada versión instalada.",
     "continue": "Continuar a Macro"
   },

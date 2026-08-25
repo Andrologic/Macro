@@ -41,7 +41,7 @@
     "failedSteps": "失敗した手順"
   },
   "releaseNotes": {
-    "dialogTitle": "Macro の新機能",
+    "dialogTitle": "リリースノート",
     "shownOnce": "このノートは、インストールされたバージョンごとに一度だけ表示されます。",
     "continue": "Macro を続ける"
   },

@@ -41,7 +41,7 @@
     "failedSteps": "실패한 단계"
   },
   "releaseNotes": {
-    "dialogTitle": "Macro의 새로운 기능",
+    "dialogTitle": "릴리스 노트",
     "shownOnce": "이 안내는 설치된 버전마다 한 번만 표시됩니다.",
     "continue": "Macro 계속 사용"
   },
