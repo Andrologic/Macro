@@ -1,4 +1,5 @@
 const MCP_ENV_SECRET_REF_PREFIX: &str = "macro-secret://mcp-env/";
+const MCP_OAUTH_CLIENT_SECRET_REF_PREFIX: &str = "macro-secret://mcp-oauth-client/";
 
 pub(crate) fn normalize_identifier(value: &str, fallback: &str) -> String {
     let mut output = String::new();
@@ -43,6 +44,26 @@ pub(crate) fn build_mcp_env_secret_ref(server_id: &str, key: &str) -> String {
         normalize_identifier(server_id, "server"),
         key.trim()
     )
+}
+
+pub(crate) fn build_mcp_oauth_client_secret_id(server_id: &str) -> String {
+    format!(
+        "mcp-oauth-client:{}",
+        normalize_identifier(server_id, "server")
+    )
+}
+
+pub(crate) fn build_mcp_oauth_client_secret_ref(server_id: &str) -> String {
+    format!(
+        "{}{}",
+        MCP_OAUTH_CLIENT_SECRET_REF_PREFIX,
+        normalize_identifier(server_id, "server")
+    )
+}
+
+pub(crate) fn parse_mcp_oauth_client_secret_ref(value: &str) -> Option<&str> {
+    let server_id = value.strip_prefix(MCP_OAUTH_CLIENT_SECRET_REF_PREFIX)?;
+    is_canonical_mcp_server_id(server_id).then_some(server_id)
 }
 
 pub(crate) fn is_valid_mcp_env_key(value: &str) -> bool {
@@ -100,5 +121,21 @@ mod tests {
         assert!(is_canonical_mcp_server_id("github_server"));
         assert!(!is_canonical_mcp_server_id("GitHub Server"));
         assert!(!is_canonical_mcp_server_id(""));
+    }
+
+    #[test]
+    fn scopes_oauth_client_secret_references_to_one_server() {
+        assert_eq!(
+            build_mcp_oauth_client_secret_ref("GitHub Server"),
+            "macro-secret://mcp-oauth-client/github_server"
+        );
+        assert_eq!(
+            parse_mcp_oauth_client_secret_ref("macro-secret://mcp-oauth-client/github_server"),
+            Some("github_server")
+        );
+        assert_eq!(
+            parse_mcp_oauth_client_secret_ref("macro-secret://mcp-oauth-client/GitHub Server"),
+            None
+        );
     }
 }

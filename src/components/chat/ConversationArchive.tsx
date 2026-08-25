@@ -12,6 +12,7 @@ import { formatDate } from '../../i18n/format';
 import type { Conversation } from '../../types';
 import { resolveRunningConversationIds } from '../../services/taskStatusPresentation';
 import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
+import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import {
   areConversationIdSetsEqual,
   canApplyArchivedConversationHydration,
@@ -801,13 +802,6 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     setShowArchived((current) => !current);
   }, [exitMultiSelectMode]);
 
-  const footerCountLabel = showArchived
-    ? t('chat.archivedConversationCount', '{{count}} archived', {
-        count: archiveSourceConversations.length,
-      })
-    : t('chat.conversationCount', '{{count}} conversations', {
-        count: archiveSourceConversations.length,
-      });
   const archiveButtonLabel = showArchived
     ? t('common.restore', 'Restore')
     : t('common.archive', 'Archive');
@@ -816,10 +810,6 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const selectAllLabel = t('common.selectAll', 'Select all');
   const deleteSelectedLabel = t('common.delete', 'Delete');
   const cancelSelectionLabel = t('common.cancel', 'Cancel');
-  const footerButtonLabel = showArchived
-    ? t('chat.activeConversations', 'Conversations')
-    : t('chat.archives', 'Archives');
-  const footerButtonIcon = showArchived ? 'arrow-left' : 'archive';
   const hasNoActiveConversations = !showArchived && archiveSourceConversations.length === 0;
   const hasAnyChatConversations = chatConversations.length > 0;
 
@@ -835,6 +825,13 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             {t('chat.conversations', 'Conversations')}
           </h1>
           <div className="flex items-center gap-1">
+            <PanelHeaderIconButton
+              icon="archive"
+              label={t('chat.archives', 'Archives')}
+              pressed={showArchived}
+              onClick={handleToggleArchivedView}
+              data-tour-id="chat-archive-toggle"
+            />
             {!isMultiSelectMode && (
               <button
                 type="button"
@@ -1020,18 +1017,6 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           ) : null}
         </div>
 
-        <div className="h-12 border-t border-border flex items-center justify-between px-4 bg-card">
-          <span className="text-xs text-muted-foreground">{footerCountLabel}</span>
-          <button
-            type="button"
-            onClick={handleToggleArchivedView}
-            data-tour-id="chat-archive-toggle"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-          >
-            <Icon name={footerButtonIcon} size={12} />
-            {footerButtonLabel}
-          </button>
-        </div>
       </aside>
 
       <ConfirmPromptModal

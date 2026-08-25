@@ -8,6 +8,7 @@ import React, {
   type RefAttributes,
 } from 'react';
 import { cn } from '../../../utils/cn';
+import { isPrimaryComposerSubmitKey } from './composerSubmitKey';
 import type { ComposerEditorHandle } from './ComposerEditor';
 import type { MentionSurface } from './MentionNode';
 import { prepareContextualTextInsertion } from './composerTextInsertion';
@@ -217,7 +218,10 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
             onTextChange(event.target.value);
           }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (
+              event.key === 'Enter' &&
+              isPrimaryComposerSubmitKey(event)
+            ) {
               event.preventDefault();
               onSend();
               return;

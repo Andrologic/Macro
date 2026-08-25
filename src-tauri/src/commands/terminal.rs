@@ -1,5 +1,7 @@
 use crate::commands::{command_error, CommandResult, DbPool};
-use crate::core::process::{background_command, background_tokio_command};
+#[cfg(not(windows))]
+use crate::core::process::background_command;
+use crate::core::process::background_tokio_command;
 use crate::db::{models::TerminalTabRecord, repository};
 use crate::git::GitState;
 use crate::project_path::{join_wsl_path, parse_wsl_unc_path, wsl_unc_path, WslProjectPath};
@@ -3435,7 +3437,7 @@ mod tests {
         let cancelled = run_legacy_session_internal(
             terminal_store.clone(),
             "terminal-test".to_string(),
-            "printf should-not-run".to_string(),
+            "echo should-not-run".to_string(),
             Some(5_000),
             Some("cancelled-execution".to_string()),
         )
@@ -3447,14 +3449,17 @@ mod tests {
         let completed = run_legacy_session_internal(
             terminal_store,
             "terminal-test".to_string(),
-            "printf next-run".to_string(),
+            "echo next-run".to_string(),
             Some(5_000),
             Some("next-execution".to_string()),
         )
         .await
         .expect("run after scoped cancellation");
         assert_eq!(completed.status, "completed");
-        assert_eq!(completed.output, "next-run");
+        assert_eq!(
+            completed.output.trim_end_matches(&['\r', '\n'][..]),
+            "next-run"
+        );
     }
 
     #[cfg(unix)]

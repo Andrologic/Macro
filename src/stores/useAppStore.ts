@@ -113,7 +113,6 @@ export type SettingsTab =
   | "speech"
   | "tools"
   | "skills"
-  | "configuration"
   | "shortcuts"
   | "prompts"
   | "architect";

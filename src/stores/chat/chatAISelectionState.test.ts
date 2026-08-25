@@ -78,7 +78,7 @@ describe("chatAISelectionState", () => {
     expect(
       normalized.providerSelectionsByMode.Implement?.["provider-implement"]
         ?.reasoningEffort,
-    ).toBeNull();
+    ).toBe("unsupported");
   });
 
   it("clones and updates a context without mutating the previous state", () => {

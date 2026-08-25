@@ -21,6 +21,9 @@ export const getMCPStatusLabel = (status: MCPServerStatus): string => {
 };
 
 export const summarizeMCPServerCommand = (server: MCPServer): string => {
+  if (server.transport?.type === 'streamable_http' || server.transport?.type === 'sse') {
+    return server.transport.url;
+  }
   if (server.transport?.type !== 'stdio') {
     return server.description;
   }

@@ -8,13 +8,19 @@ import {
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
-import { Switch } from '../../../ui/Switch';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
 import type { ProviderConfig } from '../../../../types';
 import { isMacroAiProvider } from '../../../../config/macroAi';
 import { AndrologicProviderIcon } from '../../../ai/AndrologicProviderIcon';
+import { providerHasUsableCredentials } from '../../../../services/providerCredentials';
+import { SettingsSectionHeader } from '../../SettingsSectionHeader';
+import {
+  SettingsCollectionHeader,
+  SettingsSearchEmpty,
+  useSettingsSearch,
+} from '../../search/SettingsSearch';
 
 interface EditingProvider {
   id: string;
@@ -24,7 +30,6 @@ interface EditingProvider {
   hasStoredApiKey: boolean;
   apiKeyLoaded: boolean;
   apiKeyTouched: boolean;
-  isEnabled: boolean;
   isLocal: boolean;
   providerType: string;
   copilotSendTimeoutMinutes: string;
@@ -110,7 +115,7 @@ export const ProvidersSettings: React.FC = () => {
     resolveProviderApiKey,
   } = useProviderStore();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const { matches } = useSettingsSearch();
   const [editingProvider, setEditingProvider] = useState<EditingProvider | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -126,14 +131,38 @@ export const ProvidersSettings: React.FC = () => {
   const apiKeyInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const filteredProviders = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return providerConfigs.filter(
-      (provider) =>
-        provider.name.toLowerCase().includes(query) ||
-        provider.providerType.toLowerCase().includes(query) ||
-        provider.baseUrl.toLowerCase().includes(query)
+    return providerConfigs.filter((provider) =>
+      matches(provider.name, provider.id, provider.providerType, provider.baseUrl)
     );
-  }, [providerConfigs, searchQuery]);
+  }, [matches, providerConfigs]);
+
+  const providerListItems = useMemo(
+    () =>
+      [
+        {
+          id: 'configured',
+          title: t('providers.configuredTitle', 'Configured providers'),
+          providers: filteredProviders.filter(providerHasUsableCredentials),
+        },
+        {
+          id: 'unconfigured',
+          title: t('providers.unconfiguredTitle', 'Providers to configure'),
+          providers: filteredProviders.filter(
+            (provider) => !providerHasUsableCredentials(provider)
+          ),
+        },
+      ]
+        .filter((group) => group.providers.length > 0)
+        .flatMap((group) => [
+          {
+            kind: 'heading' as const,
+            id: group.id,
+            title: group.title,
+          },
+          ...group.providers.map((provider) => ({ kind: 'provider' as const, provider })),
+        ]),
+    [filteredProviders, t]
+  );
 
   const translateAuthError = (code: string, fallback: string) =>
     t(`providers.authErrors.${code}`, fallback);
@@ -381,14 +410,6 @@ export const ProvidersSettings: React.FC = () => {
       };
     }
 
-    if (!provider.isEnabled) {
-      return {
-        label: t('providers.status.disabled', 'Disabled'),
-        dot: 'bg-muted-foreground',
-        text: 'text-muted-foreground',
-      };
-    }
-
     if (!provider.hasStoredApiKey && !provider.apiKey) {
       return {
         label: t('providers.status.noKey', 'No key'),
@@ -436,7 +457,6 @@ export const ProvidersSettings: React.FC = () => {
       hasStoredApiKey: config.hasStoredApiKey,
       apiKeyLoaded: config.apiKeyLoaded === true,
       apiKeyTouched: false,
-      isEnabled: config.isEnabled,
       isLocal: config.isLocal,
       providerType: config.providerType,
       copilotSendTimeoutMinutes: timeoutMsToMinutesInput(providerSettings?.copilotSendTimeoutMs),
@@ -454,7 +474,6 @@ export const ProvidersSettings: React.FC = () => {
       hasStoredApiKey: false,
       apiKeyLoaded: true,
       apiKeyTouched: false,
-      isEnabled: true,
       isLocal: false,
       providerType: 'openai',
       copilotSendTimeoutMinutes: String(DEFAULT_COPILOT_SEND_TIMEOUT_MINUTES),
@@ -473,7 +492,6 @@ export const ProvidersSettings: React.FC = () => {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
           apiKey: editingProvider.apiKey,
-          isEnabled: editingProvider.isEnabled,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
         });
@@ -487,7 +505,6 @@ export const ProvidersSettings: React.FC = () => {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
           apiKey: apiKeyUpdate,
-          isEnabled: editingProvider.isEnabled,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
         });
@@ -667,7 +684,7 @@ export const ProvidersSettings: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4">
             <div className="space-y-1">
               <label className="text-sm font-medium">{t('common.type', 'Type')}</label>
               <select
@@ -698,23 +715,6 @@ export const ProvidersSettings: React.FC = () => {
               </select>
             </div>
 
-            <div className="space-y-1">
-              <label className="text-sm font-medium">{t('common.status', 'Status')}</label>
-              <div className="flex h-9 items-center px-1">
-                <span className="mr-3 text-sm text-muted-foreground">
-                  {editingProvider.isEnabled
-                    ? t('common.enabled', 'Enabled')
-                    : t('common.disabled', 'Disabled')}
-                </span>
-                <Switch
-                  checked={editingProvider.isEnabled}
-                  aria-label={t('common.enabled', 'Enabled')}
-                  onCheckedChange={(checked) =>
-                    setEditingProvider({ ...editingProvider, isEnabled: checked })
-                  }
-                />
-              </div>
-            </div>
           </div>
 
           {showLinkedFields && (
@@ -899,29 +899,43 @@ export const ProvidersSettings: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="flex items-center justify-between">
-        <div className="relative w-64">
-          <Icon
-            name="search"
-            size={16}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+      {providerConfigs.length > 0 ? (
+        <>
+          <SettingsCollectionHeader
+            title={t('providers.collectionTitle', 'Providers')}
+            description={t(
+              'providers.collectionDescription',
+              'Manage configured connections'
+            )}
+            searchPlaceholder={t('providers.searchPlaceholder', 'Search providers...')}
+            action={(
+              <Button
+                onClick={handleCreate}
+                className="h-9 w-9 shrink-0 p-0"
+                aria-label={t('providers.add', 'Add Provider')}
+                title={t('providers.add', 'Add Provider')}
+              >
+                <Icon name="plus" size={16} />
+              </Button>
+            )}
           />
-          <Input
-            className="pl-9"
-            placeholder={t('providers.searchPlaceholder', 'Search providers...')}
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-          />
-        </div>
 
-        <Button onClick={handleCreate}>
-          <Icon name="plus" size={16} className="mr-2" />
-          {t('providers.add', 'Add Provider')}
-        </Button>
-      </div>
+          {providerListItems.length === 0 ? (
+            <SettingsSearchEmpty />
+          ) : (
+        <div className="grid grid-cols-1 gap-3">
+          {providerListItems.map((item) => {
+            if (item.kind === 'heading') {
+              return (
+                <SettingsSectionHeader
+                  key={item.id}
+                  title={item.title}
+                  className="mt-3 px-1 first:mt-0"
+                />
+              );
+            }
 
-      <div className="grid grid-cols-1 gap-3">
-        {filteredProviders.map((provider) => {
+          const provider = item.provider;
           const status = getProviderStatus(provider);
           const isManagedMacroAi = isMacroAiProvider(provider.id);
           const authError = authErrorsByProvider[provider.id];
@@ -1391,15 +1405,28 @@ export const ProvidersSettings: React.FC = () => {
               </div>
             </div>
           );
-        })}
-
-        {filteredProviders.length === 0 && (
-          <div className="py-12 text-center text-muted-foreground">
-            <Icon name="search" size={32} className="mx-auto mb-3 opacity-50" />
-            <p>{t('providers.noProvidersFound', 'No providers found matching your search.')}</p>
-          </div>
-        )}
-      </div>
+          })}
+        </div>
+          )}
+        </>
+      ) : (
+        <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center">
+          <Icon name="server" size={28} className="mx-auto mb-3 text-muted-foreground/60" />
+          <p className="text-sm font-medium text-foreground">
+            {t('chat.noProvidersConfigured', 'No providers configured')}
+          </p>
+          <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+            {t(
+              'providers.emptyDescription',
+              'Add a provider to connect Macro to an AI service.'
+            )}
+          </p>
+          <Button onClick={handleCreate} className="mt-4 h-9 px-3" size="sm">
+            <Icon name="plus" size={15} />
+            {t('providers.add', 'Add Provider')}
+          </Button>
+        </div>
+      )}
     </div>
   );
 };

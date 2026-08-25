@@ -9,6 +9,12 @@ const toggleMcpServerMock = mock(() => undefined);
 const upsertMcpServerMock = mock(async () => undefined);
 const removeMcpServerMock = mock(async () => undefined);
 const refreshMcpServerToolsMock = mock(async () => undefined);
+const authorizeMcpServerMock = mock(async () => undefined);
+const logoutMcpServerMock = mock(async () => undefined);
+const storeMcpOAuthClientSecretMock = mock(async () =>
+  'macro-secret://mcp-oauth-client/remote_mcp'
+);
+const deleteMcpOAuthClientSecretMock = mock(async () => undefined);
 const saveWebSearchSettingsMock = mock((_value?: unknown) => undefined);
 
 let importCounter = 0;
@@ -55,6 +61,13 @@ const mcpServers: Array<{
 const loadToolsView = async () => {
   mock.restore();
 
+  mock.module('../search/SettingsSearch', () => ({
+    useSettingsSearch: () => ({ query: '', setQuery: () => undefined, matches: () => true }),
+    SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
+    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    matchesSettingsSearch: () => true,
+  }));
+
   mock.module('react-i18next', () => ({
     useTranslation: () => ({
       t: (
@@ -80,6 +93,10 @@ const loadToolsView = async () => {
       upsertMCPServer: upsertMcpServerMock,
       removeMCPServer: removeMcpServerMock,
       refreshMCPServerTools: refreshMcpServerToolsMock,
+      authorizeMCPServer: authorizeMcpServerMock,
+      logoutMCPServer: logoutMcpServerMock,
+      storeMCPOAuthClientSecret: storeMcpOAuthClientSecretMock,
+      deleteMCPOAuthClientSecret: deleteMcpOAuthClientSecretMock,
       isToolEnabled: () => true,
     }),
   }));
@@ -213,6 +230,10 @@ describe('ToolsView', () => {
     upsertMcpServerMock.mockClear();
     removeMcpServerMock.mockClear();
     refreshMcpServerToolsMock.mockClear();
+    authorizeMcpServerMock.mockClear();
+    logoutMcpServerMock.mockClear();
+    storeMcpOAuthClientSecretMock.mockClear();
+    deleteMcpOAuthClientSecretMock.mockClear();
     saveWebSearchSettingsMock.mockClear();
     mcpServers.length = 0;
     appState = { mode: 'Chat' };
@@ -361,5 +382,163 @@ describe('ToolsView', () => {
     expect(savedServer.transport.env.API_TOKEN).toBe(
       'macro-secret://mcp-env/secret_server/API_TOKEN'
     );
+  });
+
+  it('creates a stateless Streamable HTTP server with OAuth from settings', async () => {
+    const { ToolsView } = await loadToolsView();
+    await act(async () => {
+      root?.render(<ToolsView />);
+      await Promise.resolve();
+    });
+
+    const changeValue = async (
+      element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
+      value: string
+    ) => {
+      await act(async () => {
+        const prototype = Object.getPrototypeOf(element) as object;
+        Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(element, value);
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+
+    await changeValue(
+      container!.querySelector('input[placeholder="Server name"]') as HTMLInputElement,
+      'Remote MCP'
+    );
+    const transport = container!.querySelector('select') as HTMLSelectElement;
+    await changeValue(transport, 'streamable_http');
+    await changeValue(
+      container!.querySelector('input[placeholder="https://example.com/mcp"]') as HTMLInputElement,
+      'https://mcp.example.com/mcp'
+    );
+    const headers = Array.from(container!.querySelectorAll('textarea')).find((textarea) =>
+      textarea.placeholder.includes('Authorization=Bearer token')
+    )!;
+    await changeValue(headers, 'Authorization=Bearer test-token');
+    const protocol = Array.from(container!.querySelectorAll('select')).find((select) =>
+      Array.from(select.options).some((option) => option.value === 'modern')
+    )!;
+    await changeValue(protocol, 'modern');
+
+    const oauthSwitch = Array.from(container!.querySelectorAll('label')).find((label) =>
+      label.textContent?.includes('Use OAuth')
+    )!.querySelector('input')!;
+    await act(async () => {
+      oauthSwitch.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await changeValue(
+      container!.querySelector(
+        'input[placeholder="Scopes, separated by spaces"]'
+      ) as HTMLInputElement,
+      'tools.read tools.call'
+    );
+    await changeValue(
+      container!.querySelector(
+        'input[placeholder="Optional pre-registered client ID"]'
+      ) as HTMLInputElement,
+      'macro-desktop'
+    );
+    await changeValue(
+      container!.querySelector('input[placeholder="Optional client secret"]') as HTMLInputElement,
+      'client-secret'
+    );
+
+    const addButton = Array.from(container!.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Add')
+    )!;
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(upsertMcpServerMock).toHaveBeenCalledTimes(1);
+    const savedServer = (upsertMcpServerMock.mock.calls as unknown as Array<[any]>)[0]?.[0];
+    expect(savedServer.transport).toEqual({
+      type: 'streamable_http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    expect(savedServer.protocol).toEqual({ mode: 'modern' });
+    expect(savedServer.authorization).toEqual({
+      type: 'oauth',
+      scopes: ['tools.read', 'tools.call'],
+      clientId: 'macro-desktop',
+      clientSecretRef: 'macro-secret://mcp-oauth-client/remote_mcp',
+    });
+    expect(storeMcpOAuthClientSecretMock).toHaveBeenCalledWith(
+      'remote_mcp',
+      'client-secret'
+    );
+  });
+
+  it('preserves masked HTTP and OAuth secrets when an existing server is saved unchanged', async () => {
+    mcpServers.push({
+      id: 'remote_mcp',
+      name: 'Remote MCP',
+      description: 'Remote server',
+      status: 'online',
+      transport: {
+        type: 'streamable_http',
+        url: 'https://mcp.example.com/mcp',
+        headers: {
+          Authorization: 'macro-secret://mcp-env/remote_mcp/Authorization',
+          'X-Tenant': 'tenant-a',
+        },
+      },
+      protocol: { mode: 'modern' },
+      authorization: {
+        type: 'oauth',
+        clientId: 'macro-desktop',
+        clientSecretRef: 'macro-secret://mcp-oauth-client/remote_mcp',
+        scopes: ['tools.read'],
+      },
+      tools: [],
+      config: { enabled: true },
+      lastError: null,
+      discoveredAt: null,
+    } as any);
+    const { ToolsView } = await loadToolsView();
+    await act(async () => {
+      root?.render(<ToolsView />);
+      await Promise.resolve();
+    });
+
+    const editButton = container!.querySelector('button[title="Edit"]')!;
+    await act(async () => {
+      editButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const headers = Array.from(container!.querySelectorAll('textarea')).find((textarea) =>
+      textarea.placeholder.includes('Authorization=Bearer token')
+    )!;
+    expect(headers.value).toContain('Authorization=********');
+    expect(headers.value).toContain('X-Tenant=tenant-a');
+    expect(
+      container!.querySelector(
+        'input[placeholder="Client secret stored — leave blank to keep it"]'
+      )
+    ).toBeTruthy();
+
+    const saveButton = Array.from(container!.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Save')
+    )!;
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const savedServer = (upsertMcpServerMock.mock.calls as unknown as Array<[any]>)[0]?.[0];
+    expect(savedServer.transport.headers.Authorization).toBe(
+      'macro-secret://mcp-env/remote_mcp/Authorization'
+    );
+    expect(savedServer.authorization.clientSecretRef).toBe(
+      'macro-secret://mcp-oauth-client/remote_mcp'
+    );
+    expect(storeMcpOAuthClientSecretMock).not.toHaveBeenCalled();
+    expect(deleteMcpOAuthClientSecretMock).not.toHaveBeenCalled();
   });
 });

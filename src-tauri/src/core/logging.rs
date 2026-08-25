@@ -25,6 +25,13 @@ pub fn init_logging() {
         // such as opening/closing CodeMirror diff modals. Keep real app warnings visible.
         EnvFilter::new("info,tao::platform_impl::platform::event_loop::runner=error")
     });
+    // rmcp's OAuth implementation emits authorization codes at debug level.
+    // Keep that module at info even when a broad RUST_LOG=debug/trace is set.
+    let env_filter = env_filter.add_directive(
+        "rmcp::transport::auth=info"
+            .parse()
+            .expect("static tracing directive must parse"),
+    );
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
     #[cfg(target_os = "macos")]

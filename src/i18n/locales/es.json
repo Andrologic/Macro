@@ -30,7 +30,8 @@
       "activeProvider": "Proveedor activo", "noProvider": "Sin proveedor", "language": "Idioma", "autoLanguage": "Automático",
       "maxDuration": "Duración máxima de grabación", "enhancementTitle": "Limpieza inteligente de la transcripción", "enhancementDescription": "Usa el modelo activo de la conversación para corregir de forma breve y prudente errores de reconocimiento, vacilaciones y repeticiones.",
       "noProviderPrivacy": "Selecciona un proveedor para ver dónde se enviará el audio grabado.", "localPrivacy": "Proveedor local o sin clave: el audio se envía al endpoint configurado sin exigir una clave API.",
-      "andrologicPrivacy": "Andrologic: el audio se procesa mediante el gateway autenticado de Macro y nunca se conserva. El texto transcrito se incluye en los registros operativos.",
+      "andrologicPrivacy": "Andrologic procesa el audio mediante la pasarela autenticada de Macro y no lo conserva. Las transcripciones se registran en los registros operativos.",
+      "durationUnit": "segundos",
       "remotePrivacy": "Proveedor remoto: el audio grabado se envía al endpoint configurado.", "providers": "Proveedores de voz",
       "compatibility": "Admite endpoints de transcripción compatibles con OpenAI y Deepgram.", "addProvider": "Añadir proveedor",
       "keyStored": "Clave API guardada localmente", "managedAuth": "Autenticación gestionada por Macro", "noKeyRequired": "No se requiere clave API", "keyMissing": "Se requiere clave API",
@@ -46,7 +47,7 @@
     "failedSteps": "Pasos fallidos"
   },
   "releaseNotes": {
-    "dialogTitle": "Novedades de Macro",
+    "dialogTitle": "Notas de la versión",
     "shownOnce": "Esta nota se muestra una sola vez por cada versión instalada.",
     "continue": "Continuar a Macro"
   },
@@ -443,6 +444,10 @@
     "deletingConversations": "Eliminando...",
     "typeMessage": "Escribe un mensaje, o / para añadir contexto...",
     "send": "enviar",
+    "steerActiveTurn": "Orientar el turno activo",
+    "queueNextTurn": "Añadir al siguiente turno",
+    "secondaryAction": "Acción alternativa",
+    "activeTurnSendFailed": "Mensaje no enviado",
     "stop": "Detener",
     "saveRegenerate": "Guardar y regenerar",
     "mermaidDiagram": "Diagrama de sirena",
@@ -576,11 +581,6 @@
       "previewUnavailable": "Vista previa no disponible",
       "removeFromContext": "Quitar del contexto",
       "toolsUnavailableWarning": "Las herramientas no están disponibles para el proveedor o modelo seleccionado actualmente. Seleccione un modelo con soporte de llamadas de herramientas nativas para habilitarlas.",
-      "agentWorkspace": "Espacio de trabajo del agente",
-      "noAgentWorkspace": "Sin espacio de trabajo",
-      "agentWorkspaceDescription": "Este espacio de trabajo aporta contexto del proyecto. No limita el terminal general.",
-      "noAgentWorkspaceDescription": "No hay ningún espacio de trabajo de proyecto adjunto. El terminal general sigue disponible cuando está activado.",
-      "workspaceUpdateFailed": "No se pudo cambiar el espacio de trabajo del agente",
       "builtInTools": "Herramientas integradas",
       "noToolsEnabled": "No hay herramientas habilitadas",
       "mcpServers": "Servidores MCP",
@@ -756,6 +756,9 @@
     }
   },
   "skills": {
+    "collectionTitle": "Skills",
+    "collectionDescription": "Gestiona los skills detectados",
+    "empty": "No se detectaron skills",
     "importDialogTitle": "Seleccionar una carpeta de skill",
     "importFailed": "No se pudo importar la skill",
     "imported": "Skill importada",
@@ -843,6 +846,7 @@
     "moreDiagnostics": "+{{count}} diagnósticos más"
   },
   "settings": {
+    "searchNoResults": "No hay ajustes coincidentes",
     "title": "Configuración",
     "general": "generales",
     "appearance": "Apariencia",
@@ -853,6 +857,8 @@
     "architect": "Workflow Git",
     "shortcuts": "Atajos",
     "desc": {
+      "skills": "Gestiona los skills reutilizables y sus fuentes",
+      "prompts": "Personaliza los prompts del sistema utilizados por Macro",
       "general": "Configurar las preferencias de idioma, aplicación y aprobación",
       "appearance": "Personaliza la apariencia de la aplicación.",
       "ai": "Gestione modelos de IA, proveedores y claves API",
@@ -899,7 +905,18 @@
     "language_region": "Idioma y región",
     "language": "Idioma",
     "language_desc": "Seleccione su interfaz de idioma preferido",
-    "application": "Solicitud",
+    "application": "Aplicación",
+    "updateChannel": {
+      "label": "Canal de actualizaciones",
+      "stable": "Estable",
+      "preview": "Vista previa (nightly)",
+      "stableDescription": "Recibir únicamente versiones de producción.",
+      "previewDescription": "Recibir versiones nightly validadas y candidatas. Volver al canal Estable puede instalar una versión anterior.",
+      "upToDate": "Macro está actualizado en el canal seleccionado.",
+      "stableConfirmationTitle": "¿Cambiar al canal Stable?",
+      "stableConfirmationDescription": "Si la última versión Stable es anterior a esta Preview, Macro ofrecerá instalar esa versión firmada anterior.",
+      "switchToStable": "Cambiar a Stable"
+    },
     "sound_effects": "Efectos de sonido",
     "sound_effects_desc": "Reproducir sonidos al completar tareas o errores",
     "desktopNotificationsRuntime": "Estado de ejecución",
@@ -1626,6 +1643,9 @@
     "totalChanges": "cambios totales"
   },
   "providers": {
+    "collectionTitle": "Proveedores",
+    "collectionDescription": "Gestiona las conexiones configuradas",
+    "emptyDescription": "Añade un proveedor para conectar Macro con un servicio de IA.",
     "macroAi": {
       "included": "IA incluida con la beta de Macro",
       "dropdownNotice": "IA incluida con la beta"
@@ -1637,6 +1657,8 @@
     "delete": "Eliminar provider",
     "deleted": "Provider eliminado",
     "searchPlaceholder": "Buscar providers...",
+    "configuredTitle": "Providers configurados",
+    "unconfiguredTitle": "Providers por configurar",
     "testSaveFirst": "Guarda el provider antes de probarlo.",
     "testConnection": "Conexión de prueba",
     "saveProvider": "Guardar provider",
@@ -1732,6 +1754,10 @@
     }
   },
   "tools": {
+    "builtInToolsDescription": "Controla qué herramientas pueden usar los modelos",
+    "mcpServersDescription": "Gestiona las conexiones de herramientas externas",
+    "searchBuiltInTools": "Buscar herramientas...",
+    "searchMcpServers": "Buscar servidores MCP...",
     "title": "Configuración de herramientas",
     "subtitle": "Administrar capacidades disponibles y servidores MCP",
     "addServer": "Agregar servidor",
@@ -1830,7 +1856,32 @@
       "identifierCollision": "Ya existe un servidor MCP con este identificador.",
       "saveFailed": "No se pudo guardar el servidor MCP.",
       "deleteFailed": "No se pudo eliminar el servidor MCP.",
-      "toggleFailed": "No se pudo actualizar el servidor MCP."
+      "toggleFailed": "No se pudo actualizar el servidor MCP.",
+      "transportHint": "Usa stdio para servidores locales o Streamable HTTP para servidores remotos heredados y sin estado.",
+      "transport": { "stdio": "Stdio local", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://ejemplo.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=valor",
+      "protocol": { "auto": "Detección automática", "legacy": "Sesión heredada", "modern": "Moderno sin estado" },
+      "oauth": {
+        "enable": "Usar OAuth",
+        "scopes": "Ámbitos separados por espacios",
+        "clientId": "ID de cliente preregistrado opcional",
+        "clientSecretStored": "Secreto de cliente guardado; déjalo en blanco para conservarlo",
+        "clientSecret": "Secreto de cliente opcional",
+        "clientMetadataUrl": "URL HTTPS opcional de metadatos del cliente",
+        "registrationHint": "Usa un ID de cliente o una URL de metadatos del cliente. Deja ambos vacíos solo si el servidor admite el registro dinámico de clientes.",
+        "authorizeHint": "Autorizar este servidor MCP",
+        "authorize": "Conectar",
+        "logout": "Eliminar la autorización OAuth",
+        "clientIdentityConflict": "Usa un ID de cliente OAuth o una URL de metadatos del cliente, pero no ambos.",
+        "clientSecretNeedsId": "Un secreto de cliente OAuth requiere un ID de cliente preregistrado.",
+        "clientSecretSaveFailed": "No se pudo guardar el secreto OAuth.",
+        "clientSecretCleanupFailed": "No se pudo eliminar el secreto de cliente OAuth obsoleto.",
+        "authorized": "Servidor MCP autorizado y conectado.",
+        "failed": "Falló la autorización MCP.",
+        "loggedOut": "Autorización MCP eliminada.",
+        "logoutFailed": "No se pudo eliminar la autorización MCP."
+      }
     }
   },
   "account": {
@@ -1941,6 +1992,9 @@
     }
   },
   "models": {
+    "collectionTitle": "Modelos",
+    "collectionDescription": "Gestiona los modelos por proveedor",
+    "searchPlaceholder": "Buscar modelos...",
     "noProviders": "Todavía no hay providers configurados. Añade primero un provider.",
     "total": "total",
     "enabled": "habilitado",
@@ -1985,6 +2039,26 @@
     "commitPromptDescription": "Este prompt guía la generación inteligente de commits. Macro sigue validando el mensaje final y elimina los scopes antes de hacer commit.",
     "reasoningEffort": "Razonamiento",
     "defaultReasoning": "Predeterminado",
+    "reasoningUnavailable": "No compatible con este modelo",
+    "configurableReasoning": "Razonamiento configurable",
+    "configurableReasoningDescription": "Define los niveles de razonamiento que acepta este modelo.",
+    "standardReasoningLevels": "Niveles estándar",
+    "customReasoningLevel": "Nivel personalizado",
+    "customReasoningLevelPlaceholder": "p. ej. ultra",
+    "invalidCustomReasoningLevel": "Usa letras, números, puntos, guiones bajos o guiones.",
+    "reasoningLevelOrder": "Orden de los niveles",
+    "defaultReasoningLevel": "Nivel predeterminado",
+    "reasoningLevelRequired": "Añade al menos un nivel de razonamiento.",
+    "moveReasoningLevelUp": "Subir nivel",
+    "moveReasoningLevelDown": "Bajar nivel",
+    "removeReasoningLevel": "Eliminar nivel",
+    "reasoningLevelNone": "Ninguno",
+    "reasoningLevelMinimal": "Mínimo",
+    "reasoningLevelLow": "Bajo",
+    "reasoningLevelMedium": "Medio",
+    "reasoningLevelHigh": "Alto",
+    "reasoningLevelXHigh": "Muy alto",
+    "reasoningLevelMax": "Máximo",
     "contextWindowLabel": "Contexto",
     "contextWindowUnknown": "Estimado",
     "contextWindowSet": "Definir",
@@ -2008,6 +2082,8 @@
     "learnedContextLimitResetFailed": "No se pudo restablecer el límite de contexto aprendido"
   },
   "shortcuts": {
+    "collectionTitle": "Atajos",
+    "collectionDescription": "Busca y personaliza los atajos de teclado",
     "categories": {
       "app": "Solicitud",
       "mode": "Modos",
@@ -2027,6 +2103,11 @@
     "recordingHint": "Presiona tu atajo ahora... (Esc para cancelar)",
     "promptHistoryBehavior": "Comportamiento del historial de prompts",
     "promptHistoryBehaviorDesc": "Utilice atajos dedicados (Ctrl/Cmd + Flecha arriba/Flecha abajo) en lugar de Flecha arriba/Flecha abajo contextuales.",
+    "activeTurnSendBehavior": "Acción predeterminada durante una respuesta",
+    "activeTurnSendBehaviorSteer": "Intro orienta el turno activo. El atajo secundario pone el mensaje en cola.",
+    "activeTurnSendBehaviorQueue": "Intro pone el mensaje en cola. El atajo secundario orienta el turno activo.",
+    "queue": "Cola",
+    "steer": "Orientar",
     "disabledInContextualMode": "Deshabilitado mientras el modo contextual ArrowUp/ArrowDown está activo.",
     "conflictWith": "Conflicto con",
     "recordShortcut": "Grabar acceso directo",
@@ -2094,6 +2175,10 @@
       "historyNext": {
         "label": "Prompt siguiente",
         "description": "Ve al prompt siguiente en el input del chat"
+      },
+      "secondarySend": {
+        "label": "Acción secundaria del compositor",
+        "description": "Usar la acción alternativa durante una respuesta"
       }
     }
   },
@@ -2204,7 +2289,9 @@
   },
   "goal": {
     "bannerLabel": "Objetivo de la conversación",
-    "modeLabel": "Modo Goal",
+    "shortLabel": "Goal",
+    "edit": "Editar objetivo",
+    "editHint": "Editar el objetivo actual en el editor",
     "status": {
       "executorRunning": "El agente está trabajando",
       "executorRunningDescription": "El agente está trabajando para alcanzar el objetivo.",
@@ -2241,7 +2328,8 @@
     "commandMissingObjectiveDescription": "Escribe /goal seguido del resultado que quieres que alcance el agente.",
     "executionFailed": "El turno del agente falló.",
     "commandDescription": "Seguir trabajando hasta que una revisión independiente acepte el objetivo",
-    "commandHint": "Iniciar el modo Goal y describir el objetivo"
+    "commandHint": "Iniciar el modo Goal y describir el objetivo",
+    "removeCommand": "Quitar el comando Goal"
   },
   "composer": {
     "searchingFiles": "Buscando archivos...",

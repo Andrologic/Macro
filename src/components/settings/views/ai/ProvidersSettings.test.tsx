@@ -3,13 +3,28 @@ import { act } from 'react';
 import type React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-const updateProviderConfigMock = mock(async () => undefined);
+const updateProviderConfigMock = mock(
+  async (_providerId: string, _updates: Record<string, unknown>) => undefined
+);
 const updateProviderSettingsMock = mock(async () => undefined);
 const testConnectionMock = mock(async () => ({ success: true, message: 'ok' }));
 
 type ProviderType = 'copilot' | 'openai';
 
-const makeProvider = (providerType: ProviderType) => ({
+const makeProvider = (
+  providerType: ProviderType,
+  overrides: Partial<{
+    id: string;
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+    hasStoredApiKey: boolean;
+    apiKeyLoaded: boolean;
+    isEnabled: boolean;
+    isLocal: boolean;
+    authStatus: string | undefined;
+  }> = {}
+) => ({
   id: providerType,
   name: providerType === 'copilot' ? 'GitHub Copilot' : 'OpenAI Compatible',
   baseUrl: providerType === 'copilot' ? 'copilot://' : 'https://api.example.test/v1',
@@ -20,10 +35,13 @@ const makeProvider = (providerType: ProviderType) => ({
   isLocal: false,
   providerType,
   authStatus: providerType === 'copilot' ? 'connected' : undefined,
+  ...overrides,
 });
 
 let providerType: ProviderType = 'copilot';
 let copilotTimeoutMs: number | null = 2_700_000;
+let providerConfigsOverride: ReturnType<typeof makeProvider>[] | null = null;
+let settingsSearchQuery = '';
 let importCounter = 0;
 
 const click = (element: Element) => {
@@ -60,10 +78,12 @@ const loadProvidersSettings = async () => {
 
   mock.module('../../../../stores/useProviderStore', () => ({
     isLinkedProviderType: (value: string) => value === 'copilot' || value === 'chatgpt',
+    providerHasCredentials: (provider: { isEnabled: boolean; isLocal: boolean; apiKey?: string; hasStoredApiKey: boolean }) =>
+      provider.isEnabled && (provider.isLocal || !!provider.apiKey || provider.hasStoredApiKey),
     providerHasAuthSession: (provider: { authStatus?: string }) =>
       provider.authStatus === 'connected',
     useProviderStore: () => ({
-      providerConfigs: [makeProvider(providerType)],
+      providerConfigs: providerConfigsOverride ?? [makeProvider(providerType)],
       providerReachabilityById: {},
       copilotStatusByProvider: {
         copilot: {
@@ -161,6 +181,19 @@ const loadProvidersSettings = async () => {
       values.filter(Boolean).join(' '),
   }));
 
+  mock.module('../../search/SettingsSearch', () => ({
+    useSettingsSearch: () => ({
+      query: settingsSearchQuery,
+      setQuery: () => undefined,
+      matches: (...values: Array<string | false | null | undefined>) => {
+        const query = settingsSearchQuery.toLowerCase();
+        return !query || values.filter(Boolean).join(' ').toLowerCase().includes(query);
+      },
+    }),
+    SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
+    SettingsSearchEmpty: () => <div>No matching settings</div>,
+  }));
+
   importCounter += 1;
   return import(`./ProvidersSettings.tsx?test=${importCounter}`);
 };
@@ -175,6 +208,8 @@ describe('ProvidersSettings Copilot timeout', () => {
     testConnectionMock.mockClear();
     providerType = 'copilot';
     copilotTimeoutMs = 2_700_000;
+    providerConfigsOverride = null;
+    settingsSearchQuery = '';
     container = document.createElement('div');
     document.body.appendChild(container);
   });
@@ -243,6 +278,93 @@ describe('ProvidersSettings Copilot timeout', () => {
     });
 
     expect(container!.textContent).not.toContain('Copilot response timeout');
+  });
+
+  it('shows configured providers first and keeps the add action', async () => {
+    providerConfigsOverride = [
+      makeProvider('openai', {
+        id: 'needs-key',
+        name: 'Needs a key',
+      }),
+      makeProvider('openai', {
+        id: 'ready',
+        name: 'Ready provider',
+        hasStoredApiKey: true,
+      }),
+    ];
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+
+    const text = container!.textContent ?? '';
+    expect(text).toContain('Configured providers');
+    expect(text).toContain('Providers to configure');
+    expect(text.indexOf('Configured providers')).toBeLessThan(
+      text.indexOf('Providers to configure')
+    );
+    expect(text.indexOf('Ready provider')).toBeLessThan(text.indexOf('Needs a key'));
+
+    const addButton = container!.querySelector<HTMLButtonElement>('button[aria-label="Add Provider"]');
+    expect(addButton?.className).toContain('h-9');
+    expect(addButton?.className).toContain('w-9');
+    expect(container!.querySelector('input[aria-label="Search providers..."]')).toBeNull();
+  });
+
+  it('filters providers with the shared page search', async () => {
+    providerConfigsOverride = [
+      makeProvider('openai', { id: 'needs-key', name: 'Needs a key' }),
+      makeProvider('openai', { id: 'ready', name: 'Ready provider', hasStoredApiKey: true }),
+    ];
+    settingsSearchQuery = 'needs';
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+
+    expect(container!.textContent).not.toContain('Configured providers');
+    expect(container!.textContent).toContain('Providers to configure');
+    expect(container!.textContent).not.toContain('Ready provider');
+  });
+
+  it('saves an API key without rendering a provider enabled switch', async () => {
+    providerType = 'openai';
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+
+    await act(async () => {
+      click(
+        Array.from(container!.querySelectorAll('button')).find(
+          (button) => button.textContent === 'Edit'
+        )!
+      );
+    });
+
+    expect(container!.querySelector('input[type="checkbox"]')).toBeNull();
+    const apiKeyInput = container!.querySelector('input[type="password"]') as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(apiKeyInput, 'new-api-key');
+      click(
+        Array.from(container!.querySelectorAll('button')).find(
+          (button) => button.textContent === 'Save Provider'
+        )!
+      );
+    });
+
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      'openai',
+      expect.objectContaining({ apiKey: 'new-api-key' })
+    );
+    expect(updateProviderConfigMock.mock.calls[0]?.[1]).not.toHaveProperty('isEnabled');
   });
 
   it('uses an icon-only refresh action on Copilot provider cards', async () => {

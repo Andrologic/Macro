@@ -25,7 +25,8 @@
       "activeProvider": "활성 공급자", "noProvider": "공급자 없음", "language": "언어", "autoLanguage": "자동",
       "maxDuration": "최대 녹음 시간", "enhancementTitle": "변환 내용 스마트 정리", "enhancementDescription": "현재 대화 모델을 사용하여 인식 오류, 머뭇거림 및 반복을 짧고 신중하게 수정합니다.",
       "noProviderPrivacy": "녹음된 오디오의 전송 위치를 확인하려면 공급자를 선택하세요.", "localPrivacy": "로컬 또는 키 없는 공급자: API 키를 요구하지 않고 설정된 엔드포인트로 오디오를 전송합니다.",
-      "andrologicPrivacy": "Andrologic: 오디오는 인증된 Macro 게이트웨이에서 처리되며 보관되지 않습니다. 변환된 텍스트는 운영 로그에 포함됩니다.",
+      "andrologicPrivacy": "Andrologic은 인증된 Macro 게이트웨이를 통해 오디오를 처리하며 보관하지 않습니다. 변환된 텍스트는 운영 로그에 기록됩니다.",
+      "durationUnit": "초",
       "remotePrivacy": "원격 공급자: 녹음된 오디오가 설정된 엔드포인트로 전송됩니다.", "providers": "음성 공급자",
       "compatibility": "OpenAI 호환 및 Deepgram 음성 변환 엔드포인트를 지원합니다.", "addProvider": "공급자 추가",
       "keyStored": "API 키가 로컬에 저장됨", "managedAuth": "Macro에서 인증 관리", "noKeyRequired": "API 키가 필요하지 않음", "keyMissing": "API 키 필요",
@@ -41,7 +42,7 @@
     "failedSteps": "실패한 단계"
   },
   "releaseNotes": {
-    "dialogTitle": "Macro의 새로운 기능",
+    "dialogTitle": "릴리스 노트",
     "shownOnce": "이 안내는 설치된 버전마다 한 번만 표시됩니다.",
     "continue": "Macro 계속 사용"
   },
@@ -438,6 +439,10 @@
     "deletingConversations": "삭제 중...",
     "typeMessage": "메시지를 입력하거나 /로 컨텍스트 추가...",
     "send": "보내다",
+    "steerActiveTurn": "진행 중인 턴 조정",
+    "queueNextTurn": "다음 턴에 추가",
+    "secondaryAction": "대체 작업",
+    "activeTurnSendFailed": "메시지를 보내지 못했습니다",
     "stop": "멈추다",
     "saveRegenerate": "저장 및 재생성",
     "mermaidDiagram": "인어 다이어그램",
@@ -571,11 +576,6 @@
       "previewUnavailable": "미리보기를 사용할 수 없음",
       "removeFromContext": "컨텍스트에서 제거",
       "toolsUnavailableWarning": "현재 선택한 제공업체 또는 모델에서는 도구를 사용할 수 없습니다. 활성화하려면 기본 도구 호출 지원이 포함된 모델을 선택하세요.",
-      "agentWorkspace": "에이전트 작업 공간",
-      "noAgentWorkspace": "작업 공간 없음",
-      "agentWorkspaceDescription": "이 작업 공간은 프로젝트 컨텍스트를 제공합니다. 범용 터미널의 범위를 제한하지 않습니다.",
-      "noAgentWorkspaceDescription": "연결된 프로젝트 작업 공간이 없습니다. 범용 터미널은 활성화하면 계속 사용할 수 있습니다.",
-      "workspaceUpdateFailed": "에이전트 작업 공간을 변경할 수 없습니다",
       "builtInTools": "내장 도구",
       "noToolsEnabled": "활성화된 도구가 없습니다.",
       "mcpServers": "MCP 서버",
@@ -751,6 +751,9 @@
     }
   },
   "skills": {
+    "collectionTitle": "스킬",
+    "collectionDescription": "검색된 스킬을 관리합니다",
+    "empty": "검색된 스킬이 없습니다",
     "importDialogTitle": "Skill 폴더 선택",
     "importFailed": "Skill을 가져올 수 없습니다",
     "imported": "Skill을 가져왔습니다",
@@ -838,6 +841,7 @@
     "moreDiagnostics": "추가 진단 {{count}}개"
   },
   "settings": {
+    "searchNoResults": "일치하는 설정이 없습니다",
     "title": "설정",
     "general": "일반적인",
     "appearance": "모습",
@@ -848,6 +852,8 @@
     "architect": "Git workflow",
     "shortcuts": "단축키",
     "desc": {
+      "skills": "재사용 가능한 에이전트 스킬과 소스를 관리합니다",
+      "prompts": "Macro가 사용하는 시스템 프롬프트를 사용자 지정합니다",
       "general": "언어, 애플리케이션 및 승인 기본 설정 구성",
       "appearance": "애플리케이션의 모양과 느낌을 사용자 정의",
       "ai": "AI 모델, 공급자 및 API 키 관리",
@@ -895,6 +901,17 @@
     "language": "언어",
     "language_desc": "선호하는 언어 인터페이스를 선택하세요",
     "application": "애플리케이션",
+    "updateChannel": {
+      "label": "업데이트 채널",
+      "stable": "안정판",
+      "preview": "미리 보기 (Nightly)",
+      "stableDescription": "프로덕션 릴리스만 받습니다.",
+      "previewDescription": "검증된 Nightly 및 릴리스 후보 빌드를 받습니다. 안정판으로 돌아가면 이전 버전이 설치될 수 있습니다.",
+      "upToDate": "선택한 채널에서 Macro가 최신 상태입니다.",
+      "stableConfirmationTitle": "Stable 채널로 전환할까요?",
+      "stableConfirmationDescription": "최신 Stable 버전이 현재 Preview보다 이전 버전이면 Macro가 서명된 이전 버전 설치를 제안합니다.",
+      "switchToStable": "Stable로 전환"
+    },
     "sound_effects": "음향 효과",
     "sound_effects_desc": "작업 완료 또는 오류 시 소리 재생",
     "desktopNotificationsRuntime": "런타임 상태",
@@ -1621,6 +1638,9 @@
     "totalChanges": "총 변경사항"
   },
   "providers": {
+    "collectionTitle": "공급자",
+    "collectionDescription": "구성된 연결을 관리합니다",
+    "emptyDescription": "공급자를 추가하여 Macro를 AI 서비스에 연결하세요.",
     "macroAi": {
       "included": "Macro 베타에 AI 포함",
       "dropdownNotice": "베타에 AI 포함"
@@ -1632,6 +1652,8 @@
     "delete": "프로바이더 삭제",
     "deleted": "프로바이더가 삭제되었습니다",
     "searchPlaceholder": "프로바이더 검색...",
+    "configuredTitle": "구성된 프로바이더",
+    "unconfiguredTitle": "구성이 필요한 프로바이더",
     "testSaveFirst": "테스트 전에 프로바이더를 저장하세요.",
     "testConnection": "연결 테스트",
     "saveProvider": "프로바이더 저장",
@@ -1727,6 +1749,10 @@
     }
   },
   "tools": {
+    "builtInToolsDescription": "모델이 사용할 수 있는 도구를 관리합니다",
+    "mcpServersDescription": "외부 도구 연결을 관리합니다",
+    "searchBuiltInTools": "도구 검색...",
+    "searchMcpServers": "MCP 서버 검색...",
     "title": "도구 구성",
     "subtitle": "사용 가능한 기능 및 MCP 서버 관리",
     "addServer": "서버 추가",
@@ -1825,7 +1851,32 @@
       "identifierCollision": "이 식별자를 사용하는 MCP 서버가 이미 있습니다.",
       "saveFailed": "MCP 서버를 저장하지 못했습니다.",
       "deleteFailed": "MCP 서버를 삭제하지 못했습니다.",
-      "toggleFailed": "MCP 서버를 업데이트하지 못했습니다."
+      "toggleFailed": "MCP 서버를 업데이트하지 못했습니다.",
+      "transportHint": "로컬 서버에는 stdio를, 레거시 및 상태 비저장 원격 서버에는 Streamable HTTP를 사용합니다.",
+      "transport": { "stdio": "로컬 stdio", "streamableHttp": "Streamable HTTP" },
+      "urlPlaceholder": "https://example.com/mcp",
+      "headersPlaceholder": "Authorization=Bearer token\nX-API-Key=value",
+      "protocol": { "auto": "자동 감지", "legacy": "레거시 세션", "modern": "모던 상태 비저장" },
+      "oauth": {
+        "enable": "OAuth 사용",
+        "scopes": "공백으로 구분된 범위",
+        "clientId": "선택적 사전 등록 클라이언트 ID",
+        "clientSecretStored": "클라이언트 시크릿이 저장되었습니다. 유지하려면 비워 두세요",
+        "clientSecret": "선택적 클라이언트 시크릿",
+        "clientMetadataUrl": "선택적 HTTPS 클라이언트 메타데이터 URL",
+        "registrationHint": "클라이언트 ID 또는 클라이언트 메타데이터 URL 중 하나를 사용하세요. 서버가 동적 클라이언트 등록을 지원하는 경우에만 둘 다 비워 두세요.",
+        "authorizeHint": "이 MCP 서버 인증",
+        "authorize": "연결",
+        "logout": "OAuth 인증 제거",
+        "clientIdentityConflict": "OAuth 클라이언트 ID 또는 클라이언트 메타데이터 URL 중 하나만 사용하세요.",
+        "clientSecretNeedsId": "OAuth 클라이언트 시크릿에는 사전 등록된 클라이언트 ID가 필요합니다.",
+        "clientSecretSaveFailed": "OAuth 시크릿을 저장하지 못했습니다.",
+        "clientSecretCleanupFailed": "더 이상 사용하지 않는 OAuth 클라이언트 시크릿을 제거하지 못했습니다.",
+        "authorized": "MCP 서버를 인증하고 연결했습니다.",
+        "failed": "MCP 인증에 실패했습니다.",
+        "loggedOut": "MCP 인증을 제거했습니다.",
+        "logoutFailed": "MCP 인증을 제거하지 못했습니다."
+      }
     }
   },
   "account": {
@@ -1936,6 +1987,9 @@
     }
   },
   "models": {
+    "collectionTitle": "모델",
+    "collectionDescription": "공급자별로 모델을 관리합니다",
+    "searchPlaceholder": "모델 검색...",
     "noProviders": "아직 설정된 프로바이더가 없습니다. 먼저 프로바이더를 추가하세요.",
     "total": "총",
     "enabled": "활성화됨",
@@ -1980,6 +2034,26 @@
     "commitPromptDescription": "이 프롬프트는 스마트 커밋 생성을 안내합니다. Macro는 최종 메시지를 계속 검증하고 커밋 전에 scope를 제거합니다.",
     "reasoningEffort": "추론",
     "defaultReasoning": "기본값",
+    "reasoningUnavailable": "이 모델에서는 지원되지 않음",
+    "configurableReasoning": "설정 가능한 추론",
+    "configurableReasoningDescription": "이 모델에서 허용하는 추론 수준을 설정합니다.",
+    "standardReasoningLevels": "표준 수준",
+    "customReasoningLevel": "사용자 지정 수준",
+    "customReasoningLevelPlaceholder": "예: ultra",
+    "invalidCustomReasoningLevel": "문자, 숫자, 마침표, 밑줄 또는 하이픈을 사용하세요.",
+    "reasoningLevelOrder": "수준 순서",
+    "defaultReasoningLevel": "기본 수준",
+    "reasoningLevelRequired": "추론 수준을 하나 이상 추가하세요.",
+    "moveReasoningLevelUp": "수준 위로 이동",
+    "moveReasoningLevelDown": "수준 아래로 이동",
+    "removeReasoningLevel": "수준 삭제",
+    "reasoningLevelNone": "없음",
+    "reasoningLevelMinimal": "최소",
+    "reasoningLevelLow": "낮음",
+    "reasoningLevelMedium": "보통",
+    "reasoningLevelHigh": "높음",
+    "reasoningLevelXHigh": "매우 높음",
+    "reasoningLevelMax": "최대",
     "contextWindowLabel": "컨텍스트",
     "contextWindowUnknown": "추정",
     "contextWindowSet": "설정",
@@ -2003,6 +2077,8 @@
     "learnedContextLimitResetFailed": "학습된 컨텍스트 제한을 재설정하지 못했습니다"
   },
   "shortcuts": {
+    "collectionTitle": "단축키",
+    "collectionDescription": "키보드 단축키를 검색하고 사용자 지정합니다",
     "categories": {
       "app": "애플리케이션",
       "mode": "모드",
@@ -2022,6 +2098,11 @@
     "recordingHint": "지금 바로가기를 누르세요... (취소하려면 Esc를 누르세요)",
     "promptHistoryBehavior": "프롬프트 히스토리 동작",
     "promptHistoryBehaviorDesc": "상황별 ArrowUp/ArrowDown 대신 전용 단축키(Ctrl/Cmd + ArrowUp/ArrowDown)를 사용하세요.",
+    "activeTurnSendBehavior": "응답 중 기본 작업",
+    "activeTurnSendBehaviorSteer": "Enter로 진행 중인 턴을 조정하고 보조 단축키로 메시지를 대기열에 추가합니다.",
+    "activeTurnSendBehaviorQueue": "Enter로 메시지를 대기열에 추가하고 보조 단축키로 진행 중인 턴을 조정합니다.",
+    "queue": "대기열",
+    "steer": "조정",
     "disabledInContextualMode": "상황별 ArrowUp/ArrowDown 모드가 활성화된 동안에는 비활성화됩니다.",
     "conflictWith": "갈등",
     "recordShortcut": "녹음 바로가기",
@@ -2089,6 +2170,10 @@
       "historyNext": {
         "label": "다음 프롬프트",
         "description": "채팅 입력에서 다음 프롬프트로 이동"
+      },
+      "secondarySend": {
+        "label": "Composer 보조 작업",
+        "description": "응답 중 대체 작업 사용"
       }
     }
   },
@@ -2199,7 +2284,9 @@
   },
   "goal": {
     "bannerLabel": "대화 목표",
-    "modeLabel": "Goal 모드",
+    "shortLabel": "Goal",
+    "edit": "목표 편집",
+    "editHint": "입력창에서 현재 목표 편집",
     "status": {
       "executorRunning": "에이전트 작업 중",
       "executorRunningDescription": "에이전트가 목표를 달성하기 위해 작업하고 있습니다.",
@@ -2236,7 +2323,8 @@
     "commandMissingObjectiveDescription": "/goal 뒤에 에이전트가 달성할 결과를 입력하세요.",
     "executionFailed": "에이전트 턴이 실패했습니다.",
     "commandDescription": "독립적인 검토에서 목표를 승인할 때까지 작업 계속",
-    "commandHint": "Goal 모드를 시작하고 목표 설명"
+    "commandHint": "Goal 모드를 시작하고 목표 설명",
+    "removeCommand": "Goal 명령 제거"
   },
   "composer": {
     "searchingFiles": "파일 검색 중...",

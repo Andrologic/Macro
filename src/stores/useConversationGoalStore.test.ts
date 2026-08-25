@@ -115,4 +115,90 @@ describe('useConversationGoalStore', () => {
       'applyAuditorVerdict',
     );
   });
+
+  it('rolls back a Goal edit without exposing the previous record to callers', () => {
+    const store = useConversationGoalStore.getState();
+    const previousGoal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Original objective',
+    });
+    const transaction = store.beginGoalEdit({
+      conversationId: 'conversation-1',
+      objective: 'Edited objective',
+      expectedGoalId: previousGoal.goalId,
+    });
+
+    expect(transaction).not.toBeNull();
+    expect(
+      useConversationGoalStore.getState().settleGoalEdit(
+        transaction?.transactionId ?? '',
+        'rollback',
+      ),
+    ).toBe(true);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conversation-1'],
+    ).toEqual(previousGoal);
+
+    expect(useConversationGoalStore.getState()).not.toHaveProperty(
+      'restoreGoalIfCurrent',
+    );
+  });
+
+  it('settles Goal edits once and never rolls back over a newer Goal', () => {
+    const store = useConversationGoalStore.getState();
+    const previousGoal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Original objective',
+    });
+    const transaction = store.beginGoalEdit({
+      conversationId: 'conversation-1',
+      objective: 'Edited objective',
+      expectedGoalId: previousGoal.goalId,
+    });
+    expect(transaction).not.toBeNull();
+
+    const newerGoal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Newer objective',
+    });
+    expect(
+      useConversationGoalStore.getState().settleGoalEdit(
+        transaction?.transactionId ?? '',
+        'rollback',
+      ),
+    ).toBe(false);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conversation-1'],
+    ).toEqual(newerGoal);
+    expect(
+      useConversationGoalStore.getState().settleGoalEdit(
+        transaction?.transactionId ?? '',
+        'rollback',
+      ),
+    ).toBe(false);
+  });
+
+  it('commits a Goal edit without allowing a later rollback', () => {
+    const store = useConversationGoalStore.getState();
+    const previousGoal = store.activateGoal({
+      conversationId: 'conversation-1',
+      objective: 'Original objective',
+    });
+    const transaction = store.beginGoalEdit({
+      conversationId: 'conversation-1',
+      objective: 'Edited objective',
+      expectedGoalId: previousGoal.goalId,
+    });
+    if (!transaction) throw new Error('Expected a Goal edit transaction');
+
+    expect(
+      store.settleGoalEdit(transaction.transactionId, 'commit'),
+    ).toBe(true);
+    expect(
+      useConversationGoalStore.getState().goalsByConversationId['conversation-1'],
+    ).toEqual(transaction.goal);
+    expect(
+      store.settleGoalEdit(transaction.transactionId, 'rollback'),
+    ).toBe(false);
+  });
 });

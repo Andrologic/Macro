@@ -12,6 +12,7 @@ import type { AppMode, ReasoningEffort, ToolRiskLevel } from '../types';
 import { remoteRequest, resolveRemoteConfig } from './providers/remoteHttp';
 import type { OrphanSecretDto } from './tauriIpc';
 import * as tauriIpc from './tauriIpc';
+import { normalizeReasoningEffortValue } from './reasoningCatalog';
 
 const isNativeConfigClientAvailable = (): boolean =>
   (tauriIpc.isTauriAvailable?.() ?? false)
@@ -62,15 +63,6 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     ? value as Record<string, unknown>
     : {};
 
-const REASONING_EFFORTS = new Set<ReasoningEffort>([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-]);
-
 const asModelSelections = (value: unknown): Record<string, ScopedModelSelection> => {
   const selections: Record<string, ScopedModelSelection> = {};
   for (const [key, candidate] of Object.entries(asRecord(value))) {
@@ -78,10 +70,7 @@ const asModelSelections = (value: unknown): Record<string, ScopedModelSelection>
     if (typeof selection.providerId !== 'string' || typeof selection.modelId !== 'string') {
       continue;
     }
-    const reasoningEffort = typeof selection.reasoningEffort === 'string'
-      && REASONING_EFFORTS.has(selection.reasoningEffort as ReasoningEffort)
-      ? selection.reasoningEffort as ReasoningEffort
-      : null;
+    const reasoningEffort = normalizeReasoningEffortValue(selection.reasoningEffort);
     selections[key] = {
       providerId: selection.providerId,
       modelId: selection.modelId,

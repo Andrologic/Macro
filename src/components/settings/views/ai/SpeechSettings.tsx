@@ -130,7 +130,7 @@ export const SpeechSettings: React.FC = () => {
   return (
     <div className="space-y-6">
       <section className="rounded-xl border border-border bg-card/60 p-4">
-        <div className="mb-4 flex items-start justify-between gap-4">
+        <div className="mb-4">
           <div>
             <h4 className="font-semibold text-foreground">
               {t('speech.settings.title', 'Microphone dictation')}
@@ -142,7 +142,6 @@ export const SpeechSettings: React.FC = () => {
               )}
             </p>
           </div>
-          <Icon name="mic" size={20} className="text-primary" />
         </div>
         <div className="grid gap-4 md:grid-cols-2">
           <label className="space-y-1.5 text-sm">
@@ -178,16 +177,18 @@ export const SpeechSettings: React.FC = () => {
             <span className="text-muted-foreground">
               {t('speech.settings.maxDuration', 'Maximum recording duration')}
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background">
               <input
                 type="number"
                 min={10}
                 max={selectedProviderId === MACRO_AI_SPEECH_PROVIDER_ID ? 120 : 600}
                 value={maxDurationSeconds}
                 onChange={(event) => void setMaxDurationSeconds(Number(event.target.value))}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground"
+                className="min-w-0 flex-1 appearance-none border-0 bg-transparent py-2 pl-3 pr-1 text-foreground outline-none ring-0 [appearance:textfield] focus:border-0 focus:outline-none focus:ring-0 focus-visible:[box-shadow:none] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               />
-              <span className="text-muted-foreground">s</span>
+              <span className="pointer-events-none shrink-0 pr-3 text-muted-foreground/80">
+                {t('speech.settings.durationUnit', 'seconds')}
+              </span>
             </div>
           </label>
           <div className="rounded-lg border border-border bg-background/50 p-3 text-xs text-muted-foreground">
@@ -199,7 +200,7 @@ export const SpeechSettings: React.FC = () => {
               : selectedIsAndrologic
               ? t(
                   'speech.settings.andrologicPrivacy',
-                  'Andrologic: audio is processed by the authenticated Macro gateway and is never retained. Transcribed text is included in operational logs.',
+                  'Andrologic processes audio through Macro\'s authenticated gateway and does not retain it. Transcripts are recorded in operational logs.',
                 )
               : selectedProvider.isLocal
               ? t(

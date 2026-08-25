@@ -57,6 +57,11 @@ const savePreferencesMock = mock(async (_preferences: Record<string, string>) =>
 let importCounter = 0;
 
 const loadPromptsView = async () => {
+  mock.module('../search/SettingsSearch', () => ({
+    useSettingsSearch: () => ({ query: '', matches: () => true }),
+    SettingsSearchEmpty: () => <div>No matching settings</div>,
+  }));
+
   const actualPreferences = await import(
     `../../../services/preferences.ts?prompts-view-preferences-test=${importCounter + 1}`
   );

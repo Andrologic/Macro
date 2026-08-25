@@ -136,6 +136,40 @@ describe('preferences JSON configuration adapter', () => {
     expect(localStorage.getItem('macro_theme')).toBeNull();
   });
 
+  it('stores the dedicated metadata model in the agents model-selection format', async () => {
+    const { calls } = installConfigRuntime();
+    const { savePreference, PREF_KEYS } = await loadPreferencesModule();
+
+    await savePreference(PREF_KEYS.METADATA_MODEL_CONFIG, {
+      mode: 'dedicated',
+      providerId: 'openai',
+      modelId: 'gpt-5.6',
+      reasoningEffort: 'medium',
+    });
+
+    const patchCall = calls.find((call) => call.command === 'config_apply_patch');
+    expect(patchCall?.payload).toEqual({
+      request: {
+        kind: 'agents',
+        scope: { type: 'user' },
+        expectedEtag: 'agents-etag',
+        patch: [{
+          op: 'add',
+          path: '/models',
+          value: {
+            metadata: {
+              providerId: 'openai',
+              modelId: 'gpt-5.6',
+              reasoningEffort: 'medium',
+            },
+          },
+          from: null,
+        }],
+        source: 'userInterface',
+      },
+    });
+  });
+
   it('writes window and panel state to state.json instead of configuration', async () => {
     const { calls } = installConfigRuntime();
     const { savePreference, PREF_KEYS } = await loadPreferencesModule();

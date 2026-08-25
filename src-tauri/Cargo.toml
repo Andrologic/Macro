@@ -18,6 +18,10 @@ name = "lsp_core"
 path = "tests/lsp_core.rs"
 harness = false
 
+[[test]]
+name = "process_containment"
+path = "tests/process_containment.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -67,8 +71,19 @@ walkdir = "2"
 cap-std = "=4.0.3"
 
 # AI
+# MCP dual-era runtime (plan Lots C/E): official Rust SDK, exact pin per plan §4.1.
+# Client role only; stdio and Streamable HTTP transports stay Macro-owned:
+# stdio framing in src/commands/mcp/rmcp_adapter.rs, guarded HTTP in
+# src/commands/mcp/streamable_http.rs (SSRF pinning, redirect policy,
+# header precedence). The auth feature supplies protocol discovery and PKCE,
+# while every OAuth request is routed through Macro's guarded HTTP adapter.
+rmcp = { version = "=3.1.3", default-features = false, features = ["auth", "client", "transport-streamable-http-client"] }
 reqwest = { version = "0.12", features = ["stream", "json", "multipart"] }
+http = "1"
+bytes = "1"
+sse-stream = "0.2.4"
 futures = "0.3"
+async-trait = "0.1"
 axum = "0.8"
 tower-http = { version = "0.6.8", features = ["cors"] }
 base64 = "0.22"
@@ -91,13 +106,16 @@ tauri-plugin-notification = "2.3.3"
 # Utils
 [dev-dependencies]
 tempfile = "3"
-
+rmcp = { version = "=3.1.3", default-features = false, features = ["client", "server", "transport-async-rw"] }
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSGeometry", "NSThread", "objc2-core-foundation"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSView", "NSWindow"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading"] }

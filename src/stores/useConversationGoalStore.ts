@@ -14,9 +14,31 @@ interface ActivateConversationGoalInput {
   reasoningEffort?: ReasoningEffort | null;
 }
 
+interface BeginConversationGoalEditInput extends ActivateConversationGoalInput {
+  expectedGoalId: string;
+}
+
+interface ConversationGoalEditTransaction {
+  transactionId: string;
+  goal: ConversationGoalRecord;
+}
+
+interface PendingConversationGoalEdit {
+  conversationId: string;
+  previousGoal: ConversationGoalRecord;
+  replacementGoalId: string;
+}
+
 interface ConversationGoalState {
   goalsByConversationId: Record<string, ConversationGoalRecord>;
   activateGoal: (input: ActivateConversationGoalInput) => ConversationGoalRecord;
+  beginGoalEdit: (
+    input: BeginConversationGoalEditInput,
+  ) => ConversationGoalEditTransaction | null;
+  settleGoalEdit: (
+    transactionId: string,
+    outcome: 'commit' | 'rollback',
+  ) => boolean;
   setOperationalStatus: (
     conversationId: string,
     status: ConversationGoalOperationalStatus,
@@ -34,6 +56,34 @@ interface ConversationGoalState {
 const createGoalId = (): string =>
   globalThis.crypto?.randomUUID?.() ??
   `goal-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const pendingGoalEdits = new Map<string, PendingConversationGoalEdit>();
+
+const createGoal = (
+  input: ActivateConversationGoalInput,
+): ConversationGoalRecord => {
+  const now = new Date().toISOString();
+  return {
+    conversationId: input.conversationId,
+    goalId: createGoalId(),
+    revision: 1,
+    status: 'active_ready',
+    objective: input.objective.trim(),
+    providerId: input.providerId ?? null,
+    modelId: input.modelId ?? null,
+    reasoningEffort: input.reasoningEffort ?? null,
+    createdAt: now,
+    updatedAt: now,
+    lastAuditedAt: null,
+    lastExecutorTurnAt: null,
+    awaitingUserSinceAt: null,
+    executorTurnCount: 0,
+    auditCount: 0,
+    continuationCount: 0,
+    latestVerdict: null,
+    lastError: null,
+  };
+};
 
 const updateGoal = (
   goal: ConversationGoalRecord,
@@ -77,27 +127,7 @@ export const useConversationGoalStore = create<ConversationGoalState>((set) => (
   goalsByConversationId: {},
 
   activateGoal: (input) => {
-    const now = new Date().toISOString();
-    const goal: ConversationGoalRecord = {
-      conversationId: input.conversationId,
-      goalId: createGoalId(),
-      revision: 1,
-      status: 'active_ready',
-      objective: input.objective.trim(),
-      providerId: input.providerId ?? null,
-      modelId: input.modelId ?? null,
-      reasoningEffort: input.reasoningEffort ?? null,
-      createdAt: now,
-      updatedAt: now,
-      lastAuditedAt: null,
-      lastExecutorTurnAt: null,
-      awaitingUserSinceAt: null,
-      executorTurnCount: 0,
-      auditCount: 0,
-      continuationCount: 0,
-      latestVerdict: null,
-      lastError: null,
-    };
+    const goal = createGoal(input);
 
     set((state) => ({
       goalsByConversationId: {
@@ -106,6 +136,55 @@ export const useConversationGoalStore = create<ConversationGoalState>((set) => (
       },
     }));
     return goal;
+  },
+
+  beginGoalEdit: (input) => {
+    let transaction: ConversationGoalEditTransaction | null = null;
+    set((state) => {
+      const previousGoal = state.goalsByConversationId[input.conversationId];
+      if (!previousGoal || previousGoal.goalId !== input.expectedGoalId) {
+        return state;
+      }
+
+      const goal = createGoal(input);
+      const transactionId = createGoalId();
+      pendingGoalEdits.set(transactionId, {
+        conversationId: input.conversationId,
+        previousGoal,
+        replacementGoalId: goal.goalId,
+      });
+      transaction = { transactionId, goal };
+      return {
+        goalsByConversationId: {
+          ...state.goalsByConversationId,
+          [input.conversationId]: goal,
+        },
+      };
+    });
+    return transaction;
+  },
+
+  settleGoalEdit: (transactionId, outcome) => {
+    const pendingEdit = pendingGoalEdits.get(transactionId);
+    if (!pendingEdit) return false;
+    pendingGoalEdits.delete(transactionId);
+
+    let settled = false;
+    set((state) => {
+      const currentGoal = state.goalsByConversationId[pendingEdit.conversationId];
+      if (!currentGoal || currentGoal.goalId !== pendingEdit.replacementGoalId) {
+        return state;
+      }
+      settled = true;
+      if (outcome === 'commit') return state;
+      return {
+        goalsByConversationId: {
+          ...state.goalsByConversationId,
+          [pendingEdit.conversationId]: pendingEdit.previousGoal,
+        },
+      };
+    });
+    return settled;
   },
 
   setOperationalStatus: (conversationId, status, reason = null) => {

@@ -984,23 +984,27 @@ fn build_provider_models_uses_chatgpt_reasoning_metadata_from_codex_models() {
 }
 
 #[test]
-fn build_provider_models_filters_invalid_chatgpt_reasoning_metadata() {
+fn build_provider_models_preserves_safe_and_filters_unsafe_reasoning_metadata() {
     let entries = vec![ModelsCacheEntry {
         slug: "provider-model".to_string(),
         display_name: Some("Provider Model".to_string()),
         description: None,
-        default_reasoning_level: Some("bogus".to_string()),
+        default_reasoning_level: Some("invalid effort".to_string()),
         supported_reasoning_levels: Some(vec![
             ModelsCacheReasoningLevel {
                 effort: "low".to_string(),
                 description: None,
             },
             ModelsCacheReasoningLevel {
-                effort: "bogus".to_string(),
+                effort: "invalid effort".to_string(),
                 description: None,
             },
             ModelsCacheReasoningLevel {
                 effort: "high".to_string(),
+                description: None,
+            },
+            ModelsCacheReasoningLevel {
+                effort: "provider_custom".to_string(),
                 description: None,
             },
         ]),
@@ -1012,7 +1016,11 @@ fn build_provider_models_filters_invalid_chatgpt_reasoning_metadata() {
 
     assert_eq!(
         models[0].reasoning_efforts.clone().unwrap_or_default(),
-        vec!["low".to_string(), "high".to_string()]
+        vec![
+            "low".to_string(),
+            "high".to_string(),
+            "provider_custom".to_string()
+        ]
     );
     assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("low"));
 }

@@ -281,7 +281,27 @@ export type ProjectActivity = 'idle' | 'ai-active' | 'completed' | 'error';
 export type AuthStatus = 'authenticated' | 'unauthenticated' | 'loading';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type Language = SupportedLanguage;
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+/** Provider-defined reasoning level. Known values are ordered in reasoningCatalog.ts. */
+export type ReasoningEffort = string;
+export type ReasoningTransportMode =
+  | 'none'
+  | 'openai_effort'
+  | 'openrouter_reasoning'
+  | 'deepseek_thinking'
+  | 'kimi_fixed';
+export type ReasoningCapabilitySource =
+  | 'none'
+  | 'manual_override'
+  | 'provider_metadata'
+  | 'models_dev'
+  | 'embedded_catalog';
+export interface ReasoningCapability {
+  reasoningEfforts: ReasoningEffort[];
+  defaultReasoningEffort: ReasoningEffort | null;
+  transportMode: ReasoningTransportMode;
+  configurable: boolean;
+  source: ReasoningCapabilitySource;
+}
 export type CodeOverflowMode = 'wrap' | 'horizontal_scroll';
 
 // Tools & MCP types
@@ -333,6 +353,39 @@ export interface MCPHttpTransportConfig {
 
 export type MCPTransportConfig = MCPStdioTransportConfig | MCPHttpTransportConfig;
 
+export type MCPProtocolMode = 'auto' | 'legacy' | 'modern';
+
+export interface MCPProtocolSettings {
+  mode?: MCPProtocolMode;
+  probeTimeoutMs?: number;
+}
+
+export interface MCPOAuthAuthorization {
+  type: 'oauth';
+  clientId?: string;
+  clientSecretRef?: string;
+  clientMetadataUrl?: string;
+  scopes?: string[];
+}
+
+export type MCPAuthorization = MCPOAuthAuthorization;
+
+export interface MCPServerDefinition {
+  name?: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  website?: string;
+  enabled?: boolean;
+  transport: MCPTransportConfig;
+  protocol?: MCPProtocolSettings;
+  authorization?: MCPAuthorization;
+  startupTimeoutMs?: number;
+  operationTimeoutMs?: number;
+  maxConcurrentOperations?: number;
+  disabledTools?: string[];
+}
+
 export interface MCPTool {
   id: string;
   serverId: string;
@@ -352,6 +405,12 @@ export interface MCPServer {
   icon: IconName;
   website?: string;
   transport?: MCPTransportConfig;
+  protocol?: MCPProtocolSettings;
+  authorization?: MCPAuthorization;
+  startupTimeoutMs?: number;
+  operationTimeoutMs?: number;
+  maxConcurrentOperations?: number;
+  disabledTools?: string[];
   tools?: MCPTool[];
   lastError?: string | null;
   discoveredAt?: string | null;
@@ -1198,7 +1257,10 @@ export interface AIModel {
   provider_id: string;
   description?: string;
   capabilities?: string[];
+  reasoningCapability?: ReasoningCapability;
+  /** @deprecated Read reasoningCapability.reasoningEfforts. */
   reasoningEfforts?: ReasoningEffort[];
+  /** @deprecated Read reasoningCapability.defaultReasoningEffort. */
   defaultReasoningEffort?: ReasoningEffort | null;
   owned_by?: string;
   pricing?: {

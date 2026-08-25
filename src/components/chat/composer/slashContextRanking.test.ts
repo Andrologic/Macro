@@ -86,7 +86,7 @@ describe('slashContextRanking', () => {
       {
         key: 'command:goal',
         kind: 'command',
-        title: '/goal',
+        title: 'Goal',
         searchText: 'goal objective autonomous review',
       },
       {

@@ -6,6 +6,7 @@ mod watcher;
 pub use commands::*;
 pub(crate) use manager::atomic_write_json;
 pub use manager::{ConfigApiError, ConfigManager};
+pub(crate) use registry::default_document;
 pub use registry::{descriptors, schema_for_kind};
 pub use types::*;
 pub use watcher::{ConfigWatcher, ConfigWatcherState};

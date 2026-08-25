@@ -147,6 +147,7 @@ import { buildArchitectPlanToolFollowUpInstruction } from "../services/architect
 import { normalizeArchitectToolId } from "../services/architectToolNames";
 import { selectInjectableMCPToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
+import { notify } from "../components/ui/toastService";
 import {
   callScopedMcpTool,
   resolveScopedMcpRuntime,
@@ -951,6 +952,17 @@ export interface LiveStreamContextEstimate {
   updatedAt: string;
 }
 
+export type ActiveTurnSubmissionBehavior = "steer" | "queue";
+
+export interface ComposerSubmissionPayload {
+  conversationId: string;
+  content: string;
+  taskId?: string | null;
+  images?: MessageImageAttachment[];
+  internalAgentProfile?: InternalAgentProfile | null;
+  contextRefs?: ChatMessage["context_refs"];
+}
+
 interface ChatStore {
   messages: ChatMessage[];
   messagesByConversationId: Record<string, ChatMessage[]>;
@@ -1052,10 +1064,6 @@ interface ChatStore {
   ensureConversationForCurrentMode: () => Promise<string | null>;
   reapplySelectionForCurrentContext: () => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
-  setChatConversationWorkspace: (
-    conversationId: string,
-    workspace: { groupId: string | null; projectId: string | null },
-  ) => Promise<void>;
   togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
     conversationId: string,
@@ -1119,7 +1127,12 @@ interface ChatStore {
     internalAgentProfile?: InternalAgentProfile | null;
     hiddenContext?: string;
     providerInputItems?: unknown[];
+    contextRefs?: ChatMessage["context_refs"];
   }) => Promise<ChatSendResult | ChatSendCancelledResult>;
+  submitDuringActiveTurn: (
+    payload: ComposerSubmissionPayload,
+    behavior: ActiveTurnSubmissionBehavior,
+  ) => Promise<"steered" | "queued">;
   stopConversationStream: (conversationId: string) => void;
   clearConversationRuntimeError: (conversationId: string) => void;
   stopStreaming: () => void;
@@ -1378,6 +1391,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
   const latestConversationSessionIdByConversationId = new Map<string, string>();
+  const pendingSteersByConversationId = new Map<string, StreamMessage[]>();
+  const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
+  const drainingQueuedConversationIds = new Set<string>();
   const completionPersistenceOwnersByConversationId = new Map<
     string,
     { sessionId: string; turnId: string | null; assistantMessageId: string }
@@ -5390,6 +5406,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         normalizedToolName,
         args,
         operation.mcpServers,
+        {
+          projectIds:
+            operation.scopedTurnConfiguration?.projectIds ??
+            operation.executionContext.projectIds,
+          signal,
+        },
       );
       return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
     }
@@ -8334,6 +8356,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
+  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
+    if (drainingQueuedConversationIds.has(conversationId)) return;
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
+    if (isConversationRuntimeActive(runtime)) return;
+    const queue = queuedSubmissionsByConversationId.get(conversationId);
+    const next = queue?.shift();
+    if (!next) {
+      queuedSubmissionsByConversationId.delete(conversationId);
+      return;
+    }
+    if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
+    drainingQueuedConversationIds.add(conversationId);
+    let shouldContinue = true;
+    try {
+      await get().sendMessage(next);
+    } catch {
+      shouldContinue = false;
+    } finally {
+      drainingQueuedConversationIds.delete(conversationId);
+      if (shouldContinue) {
+        queueMicrotask(() => void drainQueuedSubmissions(conversationId));
+      }
+    }
+  };
+
   const buildUserMessageForSend = async (params: {
     conversationId: string;
     turnId: string;
@@ -8454,22 +8504,63 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     }
     const toolsState = useToolsStore.getState();
+    const providerSupportsNativeToolCalling =
+      params.providerSupportsNativeToolCalling ??
+      useProviderStore.getState().selectedSupportsNativeToolCalling();
     const scopedMcpRuntime = scopedTurnConfiguration
       ? await resolveScopedMcpRuntime(
           scopedTurnConfiguration.mcpServers,
-          toolsState.mcpServers,
+          toolsState.mcpServers ?? [],
+          { projectIds: scopedTurnConfiguration.projectIds },
         )
       : {
-          servers: toolsState.mcpServers,
+          // Compatibility path for runtimes without the scoped configuration
+          // API. Tool execution still acquires an authoritative backend key.
+          servers: toolsState.mcpServers ?? [],
           tools: toolsState.getEnabledMCPTools(),
+          failures: [],
         };
+    if (scopedMcpRuntime.failures.length > 0) {
+      const unavailableServers = scopedMcpRuntime.failures
+        .map((failure) => `${failure.serverId} (${failure.code})`)
+        .join(", ");
+      devLogger.warn("Scoped MCP servers are unavailable", {
+        failures: scopedMcpRuntime.failures,
+      });
+      notify.warning("Some MCP servers are unavailable", {
+        description: unavailableServers,
+      });
+    }
     const scopedMcpTools = scopedMcpRuntime.tools;
-    const frozenMcpToolIds = new Set(scopedMcpTools.map((tool) => tool.id));
-    const allowedToolIds = applyScopedToolRestrictions(
-      taskAllowedToolIds,
+    const injectableMcpToolIds = selectInjectableMCPToolIds({
+      enabledToolIds: scopedMcpTools.map((tool) => tool.id),
+      supportsNativeToolCalling: providerSupportsNativeToolCalling,
+      providerType: params.providerConfig.providerType,
+      mode: params.modeAtSend,
+      agentType: params.agentTypeAtSend ?? null,
+    });
+    const policyAllowedMcpToolIds = applyScopedToolRestrictions(
+      filterDeniedToolIdsForRiskLevel(
+        filterToolIdsForInternalAgentProfile(
+          injectableMcpToolIds,
+          internalAgentProfile,
+        ),
+        riskLevel,
+        params.modeAtSend,
+      ),
       scopedTurnConfiguration,
-    ).filter((toolId) => !isMCPToolId(toolId) || frozenMcpToolIds.has(toolId));
-    const mcpTools = scopedMcpTools.filter((tool) => allowedToolIds.includes(tool.id));
+    );
+    const injectableMcpToolIdsSet = new Set(policyAllowedMcpToolIds);
+    const allowedToolIds = Array.from(new Set(applyScopedToolRestrictions(
+      [
+        ...taskAllowedToolIds.filter((toolId) => !isMCPToolId(toolId)),
+        ...policyAllowedMcpToolIds,
+      ],
+      scopedTurnConfiguration,
+    )));
+    const mcpTools = scopedMcpTools.filter((tool) =>
+      injectableMcpToolIdsSet.has(tool.id),
+    );
     const showToolTraces = false;
     const skillPermissionSnapshot = useSkillsStore
       .getState()
@@ -10828,7 +10919,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
           tool_traces: toolTraces,
         });
       },
-      onBeforeFollowUpRequest: compactFollowUpMessagesBeforeProviderRequest,
+      onBeforeFollowUpRequest: async (request) => {
+        const compacted = await compactFollowUpMessagesBeforeProviderRequest(request);
+        const compactedMessages = Array.isArray(compacted)
+          ? compacted
+          : compacted?.messages ?? request.messages;
+        const pendingSteers = pendingSteersByConversationId.get(params.conversationId) ?? [];
+        if (pendingSteers.length === 0) {
+          return compactedMessages;
+        }
+        pendingSteersByConversationId.delete(params.conversationId);
+        return [...compactedMessages, ...pendingSteers];
+      },
+      consumePendingSteers: () => {
+        const pending = pendingSteersByConversationId.get(params.conversationId) ?? [];
+        pendingSteersByConversationId.delete(params.conversationId);
+        return pending;
+      },
       onLiveContextUpdate: (snapshot) => {
         if (!shouldAcceptStreamUpdate()) {
           return;
@@ -10895,6 +11002,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       streamPromise,
     );
     const releaseStreamPromise = () => {
+      pendingSteersByConversationId.delete(params.conversationId);
       if (
         activeAssistantStreamPromisesByConversationId.get(
           params.conversationId,
@@ -10904,6 +11012,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.conversationId,
         );
       }
+      queueMicrotask(() => {
+        void drainQueuedSubmissions(params.conversationId);
+      });
     };
     void streamPromise.then(releaseStreamPromise, releaseStreamPromise);
   };
@@ -13508,76 +13619,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }));
     },
 
-    setChatConversationWorkspace: async (conversationId, workspace) => {
-      const conversation = get().conversations.find(
-        (candidate) => candidate.id === conversationId,
-      );
-      if (!conversation || deletedConversationIds.has(conversationId)) {
-        throw new Error("Conversation introuvable.");
-      }
-      if (conversation.scope_mode !== "Chat") {
-        throw new Error(
-          "Le workspace de conversation ne peut être défini que pour une conversation Chat.",
-        );
-      }
-
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        conversationId,
-      );
-      if (runtime.phase !== "idle" && runtime.phase !== "error") {
-        throw new Error(
-          "Attendez la fin de la réponse avant de changer le workspace de la conversation.",
-        );
-      }
-
-      const appState = useAppStore.getState();
-      const group = workspace.groupId
-        ? appState.projectGroups.find((candidate) => candidate.id === workspace.groupId) ?? null
-        : null;
-      const project = workspace.projectId
-        ? appState.getProjectById(workspace.projectId) ?? null
-        : null;
-      if (workspace.groupId && !group) {
-        throw new Error("Groupe de projets introuvable.");
-      }
-      if (workspace.projectId && !project) {
-        throw new Error("Projet introuvable.");
-      }
-      if (
-        group &&
-        project &&
-        !group.projects.some((candidate) => candidate.id === project.id)
-      ) {
-        throw new Error("Le projet sélectionné n’appartient pas à ce groupe.");
-      }
-
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.updateConversationScope({
-          id: conversationId,
-          scopeMode: "Chat",
-          taskId: null,
-          groupId: workspace.groupId,
-          projectId: workspace.projectId,
-        });
-      }
-
-      clearConversationSecurityState(conversationId);
-      set((state) => ({
-        conversations: state.conversations.map((candidate) =>
-          candidate.id === conversationId
-            ? {
-                ...candidate,
-                task_id: null,
-                group_id: workspace.groupId,
-                project_id: workspace.projectId,
-                updated_at: new Date().toISOString(),
-              }
-            : candidate,
-        ),
-      }));
-    },
-
     clearSelectedConversation: () => {
       const mode = useAppStore.getState().mode;
       clearConversationSelection(mode);
@@ -14358,6 +14399,69 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return result;
     },
 
+    submitDuringActiveTurn: async (payload, behavior) => {
+      const runtime = getConversationRuntimeSnapshot(
+        get().conversationRuntimeById,
+        payload.conversationId,
+      );
+      if (!isConversationRuntimeActive(runtime)) {
+        throw buildSendError("The conversation is no longer running.");
+      }
+      if (behavior === "queue") {
+        const queue = queuedSubmissionsByConversationId.get(payload.conversationId) ?? [];
+        queue.push({
+          ...payload,
+          images: payload.images ? [...payload.images] : undefined,
+          contextRefs: persistableContextRefs(get().composerContextRefs),
+        });
+        queuedSubmissionsByConversationId.set(payload.conversationId, queue);
+        return "queued";
+      }
+
+      const content = payload.content.trim();
+      if (!content) throw buildSendError("Write a direction before sending it.");
+      const conversation = get().conversations.find(
+        (candidate) => candidate.id === payload.conversationId,
+      );
+      const contextRefs = persistableContextRefs(get().composerContextRefs);
+      const revision = composerContextRefsRevision;
+      const steerMessage: StreamMessage = {
+        role: "user",
+        content: payload.images?.length
+          ? [
+              { type: "text", text: content },
+              ...payload.images.map((image) => ({
+                type: "image_url" as const,
+                image_url: { url: image.dataUrl },
+              })),
+            ]
+          : content,
+      };
+      const pending = pendingSteersByConversationId.get(payload.conversationId) ?? [];
+      pending.push(steerMessage);
+      pendingSteersByConversationId.set(payload.conversationId, pending);
+      let userMessage: ChatMessage;
+      try {
+        userMessage = await buildUserMessageForSend({
+          conversationId: payload.conversationId,
+          turnId: runtime.turnId ?? createConversationTurnId(),
+          taskId: payload.taskId ?? conversation?.task_id ?? "",
+          content,
+          contextRefs,
+        });
+      } catch (error) {
+        const remaining = (pendingSteersByConversationId.get(payload.conversationId) ?? [])
+          .filter((message) => message !== steerMessage);
+        if (remaining.length > 0) pendingSteersByConversationId.set(payload.conversationId, remaining);
+        else pendingSteersByConversationId.delete(payload.conversationId);
+        throw error;
+      }
+      get().addMessage(userMessage);
+      if (payload.images?.length) get().setMessageImages(userMessage.id, payload.images);
+      clearComposerContextRefsIfRevisionMatches(payload.conversationId, revision);
+      return "steered";
+    },
+
     sendMessage: async (payload) => {
       let {
         conversationId,
@@ -14367,8 +14471,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         internalAgentProfile,
         hiddenContext,
         providerInputItems,
+        contextRefs: contextRefsOverride,
       } = payload;
-      const contextRefsForMessage = persistableContextRefs(get().composerContextRefs);
+      const contextRefsForMessage = contextRefsOverride ?? persistableContextRefs(get().composerContextRefs);
+      const shouldClearComposerContextRefs = contextRefsOverride === undefined;
       const composerContextRefsRevisionAtSend = composerContextRefsRevision;
       let activeSessionId: string | null = null;
       let activeTurnId: string | null = null;
@@ -14664,18 +14770,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
         if (!isCurrentPreparation()) {
           publishUserMessage();
-          clearComposerContextRefsIfRevisionMatches(
-            conversationId,
-            composerContextRefsRevisionAtSend,
-          );
+          if (shouldClearComposerContextRefs) {
+            clearComposerContextRefsIfRevisionMatches(
+              conversationId,
+              composerContextRefsRevisionAtSend,
+            );
+          }
           return sentWithoutAssistantResult();
         }
 
         publishUserMessage();
-        clearComposerContextRefsIfRevisionMatches(
-          conversationId,
-          composerContextRefsRevisionAtSend,
-        );
+        if (shouldClearComposerContextRefs) {
+          clearComposerContextRefsIfRevisionMatches(
+            conversationId,
+            composerContextRefsRevisionAtSend,
+          );
+        }
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
           let skipMetadataGeneration = false;

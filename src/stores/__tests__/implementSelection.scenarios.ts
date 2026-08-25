@@ -20,7 +20,6 @@ export const registerImplementSelectionScenarios = (
     streamChatMock,
     taskStoreState,
     updateConversationDetailsMock,
-    updateConversationScopeMock,
   } = context;
 
   describe('useChatStore Implement selection and manual features', () => {
@@ -401,42 +400,6 @@ export const registerImplementSelectionScenarios = (
       expect(conversation.project_id).toBeNull();
       expect(conversation.group_id).toBeNull();
       expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBe(conversation.id);
-    });
-
-    it('updates the durable workspace scope of a chat conversation', async () => {
-      appState.mode = 'Chat';
-      context.tauriAvailable = true;
-      const { useChatStore } = await loadChatStore();
-      useChatStore.setState({
-        conversations: [
-          {
-            ...createConversation('chat-1'),
-            scope_mode: 'Chat',
-            task_id: null,
-            group_id: null,
-            project_id: null,
-          },
-        ],
-        selectedConversationId: 'chat-1',
-        selectedConversationIdsByMode: { Chat: 'chat-1' },
-        conversationRuntimeById: {},
-      });
-
-      await useChatStore.getState().setChatConversationWorkspace('chat-1', {
-        groupId: 'group-1',
-        projectId: 'project-1',
-      });
-
-      const conversation = useChatStore.getState().conversations[0];
-      expect(conversation?.group_id).toBe('group-1');
-      expect(conversation?.project_id).toBe('project-1');
-      expect(updateConversationScopeMock).toHaveBeenCalledWith({
-        id: 'chat-1',
-        scopeMode: 'Chat',
-        taskId: null,
-        groupId: 'group-1',
-        projectId: 'project-1',
-      });
     });
 
     it('recreates a fresh implement conversation after deleting the previous one', async () => {

@@ -47,13 +47,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-label={inputAriaLabel ?? placeholder}
-        className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground"
+        className="min-w-0 flex-1 border-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:[box-shadow:none]"
       />
       {showClear && value && (
         <button
           type="button"
           onClick={handleClear}
-          className="flex-shrink-0 p-0.5 hover:bg-accent rounded transition-colors mx-1"
+          className="mx-1 flex-shrink-0 rounded p-0.5 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:[box-shadow:none]"
           aria-label={i18n.t('common.clearSearch', 'Clear search')}
         >
           <Icon name="x" size={14} className="text-muted-foreground hover:text-foreground" />

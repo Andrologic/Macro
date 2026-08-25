@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export const UPDATER_ENDPOINT = 'https://github.com/Andrologic/Macro/releases/latest/download/latest.json';
+export const UPDATER_ENDPOINT = 'https://raw.githubusercontent.com/Andrologic/Macro/updates/channels/{{target}}.json';
 export const LOCAL_TAURI_CONFIG_PATH = 'src-tauri/tauri.local.conf.json';
 export const TAURI_CAPABILITIES_PATH = 'src-tauri/capabilities/default.json';
 const REQUIRED_UPDATER_PERMISSIONS = Object.freeze([
