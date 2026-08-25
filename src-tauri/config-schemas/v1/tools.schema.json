@@ -180,6 +180,49 @@
       },
       "additionalProperties": false
     },
+    "McpAuthorization": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "client_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "client_metadata_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "client_secret_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scopes": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "oauth"
+              ]
+            }
+          }
+        }
+      ]
+    },
     "McpProtocolMode": {
       "type": "string",
       "enum": [
@@ -219,6 +262,16 @@
         "transport"
       ],
       "properties": {
+        "authorization": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpAuthorization"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "category": {
           "type": [
             "string",

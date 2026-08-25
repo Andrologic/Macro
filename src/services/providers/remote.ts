@@ -319,6 +319,12 @@ export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = a
 export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async () =>
   remoteUnsupported('mcpRuntimeConnect');
 
+export const mcpOAuthAuthorize: ServiceProvider['mcpOAuthAuthorize'] = async () =>
+  remoteUnsupported('mcpOAuthAuthorize');
+
+export const mcpOAuthLogout: ServiceProvider['mcpOAuthLogout'] = async () =>
+  remoteUnsupported('mcpOAuthLogout');
+
 export const mcpRuntimeDisconnect: ServiceProvider['mcpRuntimeDisconnect'] = async () =>
   remoteUnsupported('mcpRuntimeDisconnect');
 
@@ -466,6 +472,8 @@ export const provider: ServiceProvider = {
   mcpCallTool,
   mcpRuntimeGetSnapshot,
   mcpRuntimeConnect,
+  mcpOAuthAuthorize,
+  mcpOAuthLogout,
   mcpRuntimeDisconnect,
   mcpRuntimeRefreshCatalog,
   mcpRuntimeCallTool,

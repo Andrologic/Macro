@@ -340,6 +340,16 @@ export interface MCPProtocolSettings {
   probeTimeoutMs?: number;
 }
 
+export interface MCPOAuthAuthorization {
+  type: 'oauth';
+  clientId?: string;
+  clientSecretRef?: string;
+  clientMetadataUrl?: string;
+  scopes?: string[];
+}
+
+export type MCPAuthorization = MCPOAuthAuthorization;
+
 export interface MCPServerDefinition {
   name?: string;
   description?: string;
@@ -349,6 +359,7 @@ export interface MCPServerDefinition {
   enabled?: boolean;
   transport: MCPTransportConfig;
   protocol?: MCPProtocolSettings;
+  authorization?: MCPAuthorization;
   startupTimeoutMs?: number;
   operationTimeoutMs?: number;
   maxConcurrentOperations?: number;
@@ -375,6 +386,7 @@ export interface MCPServer {
   website?: string;
   transport?: MCPTransportConfig;
   protocol?: MCPProtocolSettings;
+  authorization?: MCPAuthorization;
   startupTimeoutMs?: number;
   operationTimeoutMs?: number;
   maxConcurrentOperations?: number;

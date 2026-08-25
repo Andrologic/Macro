@@ -2,6 +2,7 @@ import { BUILT_IN_TOOLS, BUILT_IN_MCP_SERVERS } from '../tools/builtInTools';
 import type {
   MCPProtocolSettings,
   MCPProtocolMode,
+  MCPAuthorization,
   MCPServer,
   MCPTransportConfig,
   Tool,
@@ -38,6 +39,7 @@ export interface PersistedMCPServer {
   enabled?: boolean;
   transport?: MCPTransportConfig;
   protocol?: MCPProtocolSettings;
+  authorization?: MCPAuthorization;
   startupTimeoutMs?: number;
   operationTimeoutMs?: number;
   maxConcurrentOperations?: number;
@@ -47,11 +49,40 @@ export interface PersistedMCPServer {
 type MCPServerPolicyFields = Pick<
   MCPServer,
   | 'protocol'
+  | 'authorization'
   | 'startupTimeoutMs'
   | 'operationTimeoutMs'
   | 'maxConcurrentOperations'
   | 'disabledTools'
 >;
+
+export const normalizeMCPAuthorization = (value: unknown): MCPAuthorization | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  if (source.type !== 'oauth') return undefined;
+  const clientId = typeof source.clientId === 'string' ? source.clientId.trim() : undefined;
+  const clientSecretRef =
+    typeof source.clientSecretRef === 'string' ? source.clientSecretRef.trim() : undefined;
+  const clientMetadataUrl =
+    typeof source.clientMetadataUrl === 'string' ? source.clientMetadataUrl.trim() : undefined;
+  const scopes = Array.isArray(source.scopes)
+    ? Array.from(
+        new Set(
+          source.scopes
+            .filter((scope): scope is string => typeof scope === 'string')
+            .map((scope) => scope.trim())
+            .filter((scope) => scope.length > 0 && !/\s/.test(scope))
+        )
+      )
+    : [];
+  return {
+    type: 'oauth',
+    ...(clientId ? { clientId } : {}),
+    ...(clientSecretRef ? { clientSecretRef } : {}),
+    ...(clientMetadataUrl ? { clientMetadataUrl } : {}),
+    ...(scopes.length > 0 ? { scopes } : {}),
+  };
+};
 
 export const clampBoundedNumber = (value: unknown, range: BoundedRange): number | undefined => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -109,6 +140,10 @@ export const normalizeMCPServerPolicy = (
   const protocol = normalizeMCPProtocolSettings(server.protocol);
   if (protocol) {
     policy.protocol = protocol;
+  }
+  const authorization = normalizeMCPAuthorization(server.authorization);
+  if (authorization) {
+    policy.authorization = authorization;
   }
   const startupTimeoutMs = clampBoundedNumber(
     server.startupTimeoutMs,

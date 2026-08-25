@@ -158,6 +158,10 @@ export const services = {
   mcpRuntimeGetSnapshot: () => callProviderMethod('mcpRuntimeGetSnapshot'),
   mcpRuntimeConnect: (key: Parameters<ServiceProvider['mcpRuntimeConnect']>[0]) =>
     callProviderMethod('mcpRuntimeConnect', key),
+  mcpOAuthAuthorize: (selector: Parameters<ServiceProvider['mcpOAuthAuthorize']>[0]) =>
+    callProviderMethod('mcpOAuthAuthorize', selector),
+  mcpOAuthLogout: (selector: Parameters<ServiceProvider['mcpOAuthLogout']>[0]) =>
+    callProviderMethod('mcpOAuthLogout', selector),
   mcpRuntimeDisconnect: (key: Parameters<ServiceProvider['mcpRuntimeDisconnect']>[0]) =>
     callProviderMethod('mcpRuntimeDisconnect', key),
   mcpRuntimeRefreshCatalog: (key: Parameters<ServiceProvider['mcpRuntimeRefreshCatalog']>[0]) =>

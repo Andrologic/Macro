@@ -82,6 +82,36 @@ const loadUseToolsStore = async () => {
         ],
       })),
       mcpCallTool: mock(async () => ({ content: 'ok' })),
+      mcpRuntimeConnect: mock(async () => ({
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        state: 'ready',
+        protocolEra: 'legacy',
+        negotiatedProtocolVersion: '2025-11-25',
+      })),
+      mcpRuntimeRefreshCatalog: mock(async () => ({
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        tools: [
+          {
+            id: 'mcp__github__list_issues',
+            serverId: 'github',
+            name: 'list_issues',
+            description: 'List issues',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      })),
+      mcpRuntimeCallTool: mock(async () => ({ content: 'ok' })),
+      mcpRuntimeCancelOperation: mock(async () => false),
     },
   }));
 
@@ -188,7 +218,7 @@ describe('useToolsStore chat toolbox policy', () => {
     await useToolsStore.getState().refreshMCPServerTools('github');
 
     const { services } = await import('../services');
-    (services.mcpCallTool as unknown as {
+    (services.mcpRuntimeCallTool as unknown as {
       mockResolvedValueOnce: (value: { content: string; isError: boolean }) => void;
     }).mockResolvedValueOnce({
       content: 'Access denied by MCP server',

@@ -1,6 +1,7 @@
 use super::modern_adapter::{
     McpModernProbeOutcome, McpModernToolCallOutcome, RmcpModernStdioClient,
 };
+use super::oauth::load_oauth_token_provider;
 use super::rmcp_adapter::{RmcpLegacyStdioClient, RmcpStdioServerConfig};
 use super::runtime::{
     McpAuthorityGuard, McpConnectedSession, McpConnectionRequest, McpConnector, McpFuture,
@@ -16,8 +17,8 @@ use super::types::{
     McpServerDto, McpToolDto, McpTransportDto,
 };
 use crate::config::{
-    self, ConfigDocumentKind, McpProtocolMode as ConfigProtocolMode, McpServerDefinition,
-    McpTransport,
+    self, ConfigDocumentKind, McpAuthorization, McpProtocolMode as ConfigProtocolMode,
+    McpServerDefinition, McpTransport,
 };
 use crate::secrets;
 use serde_json::{json, Value};
@@ -28,7 +29,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use url::Url;
 
-use super::ids::{build_mcp_env_secret_id, parse_mcp_env_secret_ref};
+use super::ids::{
+    build_mcp_env_secret_id, build_mcp_oauth_client_secret_id, parse_mcp_env_secret_ref,
+    parse_mcp_oauth_client_secret_ref,
+};
 
 const MAX_TOOLS_LIST_PAGES: usize = 100;
 const MAX_TOOLS_CATALOG_BYTES: usize = 16 * 1024 * 1024;
@@ -122,8 +126,7 @@ impl McpConnector for ConfiguredMcpConnector {
             let (session, negotiated_era, negotiated_protocol_version, decision_reason) =
                 match &definition.transport {
                     McpTransport::StreamableHttp { .. } => {
-                        let transport =
-                            resolve_http_transport(&request.key.server_id, &definition).await?;
+                        let transport = resolve_http_transport(&request.key, &definition).await?;
                         let actual_fingerprint =
                             http_config_fingerprint(&definition, &transport.fingerprint_input());
                         if actual_fingerprint != request.config_fingerprint {
@@ -237,12 +240,74 @@ fn resolve_remote_header_value(
     }
 }
 
+pub(crate) struct ResolvedOAuthSettings {
+    pub(crate) client_id: Option<String>,
+    pub(crate) client_secret: Option<String>,
+    pub(crate) client_metadata_url: Option<String>,
+    pub(crate) scopes: Vec<String>,
+}
+
+pub(crate) fn resolve_oauth_settings(
+    server_id: &str,
+    definition: &McpServerDefinition,
+) -> Result<Option<ResolvedOAuthSettings>, McpRuntimeError> {
+    let Some(McpAuthorization::OAuth {
+        client_id,
+        client_secret_ref,
+        client_metadata_url,
+        scopes,
+        ..
+    }) = &definition.authorization
+    else {
+        return Ok(None);
+    };
+    let client_secret = match client_secret_ref {
+        Some(reference) => {
+            let reference_server =
+                parse_mcp_oauth_client_secret_ref(reference).ok_or_else(|| {
+                    runtime_error(
+                        "MCP_RUNTIME_CONFIG_INVALID",
+                        "The MCP OAuth client secret reference is malformed.",
+                    )
+                })?;
+            if reference_server != server_id || client_id.is_none() {
+                return Err(runtime_error(
+                    "MCP_RUNTIME_CONFIG_INVALID",
+                    "The MCP OAuth client secret must target this server and a pre-registered client.",
+                ));
+            }
+            secrets::get_api_key(&build_mcp_oauth_client_secret_id(reference_server))
+                .map_err(|_| {
+                    runtime_error(
+                        "MCP_RUNTIME_SECRETS_UNAVAILABLE",
+                        "The MCP OAuth client secret store is unavailable.",
+                    )
+                })?
+                .ok_or_else(|| {
+                    runtime_error(
+                        "MCP_RUNTIME_CONFIG_INVALID",
+                        "The MCP OAuth client secret is missing.",
+                    )
+                })?
+                .into()
+        }
+        None => None,
+    };
+    Ok(Some(ResolvedOAuthSettings {
+        client_id: client_id.clone(),
+        client_secret,
+        client_metadata_url: client_metadata_url.clone(),
+        scopes: scopes.clone(),
+    }))
+}
+
 /// Fully resolved Streamable HTTP transport: validated endpoint (URL policy,
 /// DNS pinning) plus user headers with every secret reference resolved.
 struct ResolvedHttpTransport {
     endpoint: ValidatedEndpoint,
     resolved_headers: BTreeMap<String, String>,
     client: GuardedStreamableHttpClient,
+    oauth_client_secret: Option<String>,
 }
 
 impl ResolvedHttpTransport {
@@ -251,6 +316,7 @@ impl ResolvedHttpTransport {
             url: self.endpoint.url.as_str().to_owned(),
             origin: self.endpoint.origin_ascii(),
             headers: self.resolved_headers.clone(),
+            oauth_client_secret: self.oauth_client_secret.clone(),
         }
     }
 }
@@ -259,6 +325,7 @@ struct HttpFingerprintInput {
     url: String,
     origin: String,
     headers: BTreeMap<String, String>,
+    oauth_client_secret: Option<String>,
 }
 
 /// DNS-free identity input for the HTTP transport: normalized URL, ASCII
@@ -292,11 +359,13 @@ fn http_transport_fingerprint_input(
         url: normalized.as_str().to_owned(),
         origin: normalized.origin().ascii_serialization(),
         headers: resolved_headers,
+        oauth_client_secret: resolve_oauth_settings(server_id, definition)?
+            .and_then(|settings| settings.client_secret),
     })
 }
 
 async fn resolve_http_transport(
-    server_id: &str,
+    key: &McpRuntimeKey,
     definition: &McpServerDefinition,
 ) -> Result<ResolvedHttpTransport, McpRuntimeError> {
     let McpTransport::StreamableHttp { url, headers } = &definition.transport else {
@@ -312,17 +381,44 @@ async fn resolve_http_transport(
     for (name, value) in headers {
         resolved_headers.insert(
             name.clone(),
-            resolve_remote_header_value(server_id, name, value)?,
+            resolve_remote_header_value(&key.server_id, name, value)?,
         );
     }
     let user_headers = user_header_map(&resolved_headers)
         .map_err(|error| runtime_error("MCP_RUNTIME_CONFIG_INVALID", error.message))?;
-    let client = GuardedStreamableHttpClient::new(endpoint.clone(), user_headers, None)
+    let mut client = GuardedStreamableHttpClient::new(endpoint.clone(), user_headers, None)
         .map_err(|error| runtime_error("MCP_RUNTIME_CONNECT_FAILED", error.message))?;
+    let oauth = resolve_oauth_settings(&key.server_id, definition)?;
+    let oauth_client_secret = oauth
+        .as_ref()
+        .and_then(|settings| settings.client_secret.clone());
+    if let Some(oauth) = oauth {
+        let preregistered = oauth
+            .client_id
+            .as_deref()
+            .map(|client_id| (client_id, oauth.client_secret.as_deref()));
+        let provider =
+            load_oauth_token_provider(key, endpoint.url.as_str(), preregistered, &oauth.scopes)
+                .await
+                .map_err(|error| {
+                    runtime_error("MCP_RUNTIME_OAUTH_DISCOVERY_FAILED", error.message)
+                })?
+                .ok_or_else(|| {
+                    runtime_error(
+                        "MCP_RUNTIME_AUTH_REQUIRED",
+                        format!(
+                            "MCP server '{}' requires OAuth authorization.",
+                            key.server_id
+                        ),
+                    )
+                })?;
+        client = client.with_bearer_token_provider(provider);
+    }
     Ok(ResolvedHttpTransport {
         endpoint,
         resolved_headers,
         client,
+        oauth_client_secret,
     })
 }
 
@@ -337,6 +433,10 @@ fn http_config_fingerprint(
     for (name, value) in &input.headers {
         hashed_headers.insert(name.clone(), format!("sha256:{:x}", Sha256::digest(value)));
     }
+    let oauth_client_secret = input
+        .oauth_client_secret
+        .as_ref()
+        .map(|value| format!("sha256:{:x}", Sha256::digest(value)));
     let payload = json!({
         "definition": definition_without_transport(definition),
         "transport": {
@@ -344,6 +444,7 @@ fn http_config_fingerprint(
             "url": input.url,
             "origin": input.origin,
             "headers": hashed_headers,
+            "oauthClientSecret": oauth_client_secret,
         },
     });
     let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| payload.to_string().into_bytes());
@@ -1106,7 +1207,7 @@ impl McpSession for LegacyRmcpSession {
     }
 }
 
-async fn resolve_server_definition(
+pub(crate) async fn resolve_server_definition(
     key: &McpRuntimeKey,
 ) -> Result<McpServerDefinition, McpRuntimeError> {
     let manager = config::runtime_config_manager().ok_or_else(|| {
