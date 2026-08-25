@@ -1,0 +1,310 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { isMacroAiSpeechProvider } from '../config/macroAi';
+import { prepareAudioForSpeechProvider } from '../services/speech/andrologicAudio';
+import { MicrophoneRecorder } from '../services/speech/microphoneRecorder';
+import {
+  enhanceSpeechTranscript,
+  type SpeechTranscriptContext,
+} from '../services/speech/transcriptEnhancement';
+import { useSpeechToTextStore } from '../stores/useSpeechToTextStore';
+
+export type SpeechDictationPhase =
+  | 'idle'
+  | 'requesting-permission'
+  | 'recording'
+  | 'transcribing'
+  | 'enhancing';
+
+export type SpeechDictationCompletion = 'insert' | 'send';
+
+export type SpeechDictationErrorCode =
+  | 'provider-missing'
+  | 'provider-disabled'
+  | 'api-key-missing'
+  | 'permission-denied'
+  | 'microphone-missing'
+  | 'microphone-unavailable'
+  | 'recording-unsupported'
+  | 'context-changed'
+  | 'empty-transcript'
+  | 'transcription-failed';
+
+export interface SpeechDictationError {
+  code: SpeechDictationErrorCode;
+  detail?: string;
+}
+
+interface UseSpeechDictationOptions {
+  contextKey: string;
+  enhancementContext: SpeechTranscriptContext;
+  onInterimTranscript?: (text: string) => void;
+  onTranscript: (text: string, completion: SpeechDictationCompletion) => void;
+  onError: (error: SpeechDictationError) => void;
+  onEnhancementError?: (detail?: string) => void;
+  enhanceTranscript?: typeof enhanceSpeechTranscript;
+}
+
+const normalizeTranscript = (text: string): string => text.trim();
+
+const classifyMicrophoneError = (error: unknown): SpeechDictationError => {
+  if (error instanceof DOMException) {
+    if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+      return { code: 'permission-denied' };
+    }
+    if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+      return { code: 'microphone-missing' };
+    }
+    if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+      return { code: 'microphone-unavailable' };
+    }
+  }
+  const detail = error instanceof Error ? error.message : undefined;
+  if (detail?.includes('not supported')) return { code: 'recording-unsupported' };
+  return { code: 'microphone-unavailable', detail };
+};
+
+export const useSpeechDictation = ({
+  contextKey,
+  enhancementContext,
+  onInterimTranscript,
+  onTranscript,
+  onError,
+  onEnhancementError,
+  enhanceTranscript = enhanceSpeechTranscript,
+}: UseSpeechDictationOptions) => {
+  const initialize = useSpeechToTextStore((state) => state.initialize);
+  const transcribe = useSpeechToTextStore((state) => state.transcribe);
+  const [phase, setPhase] = useState<SpeechDictationPhase>('idle');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [completion, setCompletion] = useState<SpeechDictationCompletion | null>(null);
+  const recorderRef = useRef<MicrophoneRecorder | null>(null);
+  const mountedRef = useRef(true);
+  const finishingRef = useRef(false);
+  const operationIdRef = useRef(0);
+  const operationContextRef = useRef<string | null>(null);
+  const operationProviderIdRef = useRef<string | null>(null);
+  const operationEnhancementRef = useRef<{
+    enabled: boolean;
+    context: SpeechTranscriptContext;
+  } | null>(null);
+  const enhancementAbortControllerRef = useRef<AbortController | null>(null);
+  const contextKeyRef = useRef(contextKey);
+  const enhancementContextRef = useRef(enhancementContext);
+
+  useEffect(() => {
+    void initialize();
+  }, [initialize]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      operationIdRef.current += 1;
+      operationProviderIdRef.current = null;
+      operationEnhancementRef.current = null;
+      enhancementAbortControllerRef.current?.abort();
+      enhancementAbortControllerRef.current = null;
+      recorderRef.current?.cancel();
+      recorderRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    contextKeyRef.current = contextKey;
+    enhancementContextRef.current = enhancementContext;
+  }, [contextKey, enhancementContext]);
+
+  useEffect(() => {
+    if (!operationContextRef.current || operationContextRef.current === contextKey) return;
+
+    operationIdRef.current += 1;
+    operationContextRef.current = null;
+    operationProviderIdRef.current = null;
+    operationEnhancementRef.current = null;
+    enhancementAbortControllerRef.current?.abort();
+    enhancementAbortControllerRef.current = null;
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    setElapsedSeconds(0);
+    if (phase !== 'transcribing' && phase !== 'enhancing') {
+      finishingRef.current = false;
+      setPhase('idle');
+    }
+    onError({ code: 'context-changed' });
+  }, [contextKey, onError, phase]);
+
+  useEffect(() => {
+    if (phase !== 'recording') return;
+    const startedAt = Date.now();
+    setElapsedSeconds(0);
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [phase]);
+
+  const finishRecording = useCallback(async (
+    requestedCompletion: SpeechDictationCompletion = 'insert',
+  ) => {
+    if (finishingRef.current || !recorderRef.current) return;
+    const operationId = operationIdRef.current;
+    const operationContext = operationContextRef.current;
+    const providerId = operationProviderIdRef.current;
+    const enhancement = operationEnhancementRef.current;
+    finishingRef.current = true;
+    setCompletion(requestedCompletion);
+    setPhase('transcribing');
+    try {
+      const recorded = await recorderRef.current.stop();
+      recorderRef.current = null;
+      if (!providerId) throw new Error('The speech provider changed during recording.');
+      const prepared = await prepareAudioForSpeechProvider(recorded, providerId);
+      const bytes = new Uint8Array(await prepared.blob.arrayBuffer());
+      const result = await transcribe({
+        providerId,
+        audio: bytes,
+        mimeType: prepared.mimeType,
+        fileName: prepared.fileName,
+      });
+      const rawText = normalizeTranscript(result.text);
+      if (
+        operationId !== operationIdRef.current ||
+        operationContext !== contextKeyRef.current
+      ) {
+        return;
+      }
+      if (!rawText) {
+        if (mountedRef.current) onError({ code: 'empty-transcript' });
+        return;
+      }
+      let finalText = rawText;
+      if (enhancement?.enabled) {
+        if (mountedRef.current) onInterimTranscript?.(rawText);
+        setPhase('enhancing');
+        const controller = new AbortController();
+        enhancementAbortControllerRef.current = controller;
+        try {
+          finalText = await enhanceTranscript({
+            transcript: rawText,
+            context: enhancement.context,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (
+            operationId !== operationIdRef.current ||
+            operationContext !== contextKeyRef.current ||
+            (error instanceof DOMException && error.name === 'AbortError')
+          ) {
+            return;
+          }
+          onEnhancementError?.(error instanceof Error ? error.message : undefined);
+          finalText = rawText;
+        } finally {
+          if (enhancementAbortControllerRef.current === controller) {
+            enhancementAbortControllerRef.current = null;
+          }
+        }
+      }
+      if (
+        operationId !== operationIdRef.current ||
+        operationContext !== contextKeyRef.current
+      ) {
+        return;
+      }
+      if (mountedRef.current) onTranscript(finalText, requestedCompletion);
+    } catch (error) {
+      if (mountedRef.current && operationId === operationIdRef.current) {
+        onError({
+          code: 'transcription-failed',
+          detail: error instanceof Error ? error.message : undefined,
+        });
+      }
+    } finally {
+      finishingRef.current = false;
+      if (operationId === operationIdRef.current) {
+        operationContextRef.current = null;
+        operationProviderIdRef.current = null;
+        operationEnhancementRef.current = null;
+      }
+      if (mountedRef.current) {
+        setCompletion(null);
+        setElapsedSeconds(0);
+        setPhase('idle');
+      }
+    }
+  }, [enhanceTranscript, onEnhancementError, onError, onInterimTranscript, onTranscript, transcribe]);
+
+  const toggle = useCallback(async () => {
+    if (phase === 'recording') {
+      await finishRecording('insert');
+      return;
+    }
+    if (phase !== 'idle') return;
+
+    const operationId = operationIdRef.current + 1;
+    operationIdRef.current = operationId;
+    operationContextRef.current = contextKeyRef.current;
+    setPhase('requesting-permission');
+    await initialize();
+    if (!mountedRef.current || operationId !== operationIdRef.current) return;
+
+    const speechState = useSpeechToTextStore.getState();
+    const provider = speechState.providers.find(
+      (entry) => entry.id === speechState.selectedProviderId,
+    );
+    if (!provider) {
+      operationContextRef.current = null;
+      setPhase('idle');
+      onError({ code: 'provider-missing', detail: speechState.error ?? undefined });
+      return;
+    }
+    if (!provider.isEnabled) {
+      operationContextRef.current = null;
+      setPhase('idle');
+      onError({ code: 'provider-disabled' });
+      return;
+    }
+    if (
+      !provider.isLocal &&
+      !provider.hasStoredApiKey &&
+      !isMacroAiSpeechProvider(provider.id)
+    ) {
+      operationContextRef.current = null;
+      setPhase('idle');
+      onError({ code: 'api-key-missing' });
+      return;
+    }
+
+    operationProviderIdRef.current = provider.id;
+    operationEnhancementRef.current = {
+      enabled: speechState.enhancementEnabled,
+      context: enhancementContextRef.current,
+    };
+    const recorder = new MicrophoneRecorder();
+    recorderRef.current = recorder;
+    try {
+      await recorder.start(speechState.maxDurationSeconds, () => {
+        void finishRecording();
+      });
+      if (mountedRef.current && operationId === operationIdRef.current) setPhase('recording');
+    } catch (error) {
+      recorderRef.current = null;
+      if (mountedRef.current && operationId === operationIdRef.current) {
+        operationContextRef.current = null;
+        operationProviderIdRef.current = null;
+        setPhase('idle');
+        onError(classifyMicrophoneError(error));
+      }
+    }
+  }, [finishRecording, initialize, onError, phase]);
+
+  return {
+    phase,
+    completion,
+    elapsedSeconds,
+    toggle,
+    finish: finishRecording,
+    getAudioLevel: () => recorderRef.current?.getAudioLevel() ?? 0,
+    isBusy: phase !== 'idle',
+  };
+};

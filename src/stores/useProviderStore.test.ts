@@ -1,0 +1,2190 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { CopilotStatusDto } from '../services/tauriIpc';
+import { __testables as catalogTestables } from '../services/modelContextCatalog';
+
+let importCounter = 0;
+let tauriAvailable = true;
+
+type TauriEventHandler = (event: { payload: unknown }) => void;
+
+const tauriEventHandlers = new Map<string, TauriEventHandler[]>();
+const listenMock = mock(async (eventName: string, handler: TauriEventHandler) => {
+  const handlers = tauriEventHandlers.get(eventName) ?? [];
+  handlers.push(handler);
+  tauriEventHandlers.set(eventName, handlers);
+
+  return () => {
+    const currentHandlers = tauriEventHandlers.get(eventName) ?? [];
+    tauriEventHandlers.set(
+      eventName,
+      currentHandlers.filter((entry) => entry !== handler)
+    );
+  };
+});
+
+const emitTauriEvent = (eventName: string, payload: unknown) => {
+  for (const handler of tauriEventHandlers.get(eventName) ?? []) {
+    handler({ payload });
+  }
+};
+
+const listProviderConfigsMock = mock(async () => [
+  {
+    id: 'provider-openai',
+    name: 'OpenAI',
+    provider_type: 'openai',
+    base_url: 'https://api.openai.com/v1',
+    api_key: null,
+    has_stored_api_key: true,
+    is_enabled: true,
+    is_local: false,
+    auth_status: null,
+    auth_source: null,
+    plan_type: null,
+    account_label: null,
+    token_expires_at: null,
+    created_at: '2026-04-04T00:00:00.000Z',
+    updated_at: '2026-04-04T00:00:00.000Z',
+  },
+]);
+
+const revealProviderApiKeyMock = mock(async () => 'test-api-key');
+const updateProviderConfigMock = mock(async () => undefined);
+const createProviderConfigMock = mock(async () => ({
+  id: 'provider-created',
+  name: 'Created Provider',
+  provider_type: 'openai',
+  base_url: 'https://api.openai.com/v1',
+  api_key: null,
+  has_stored_api_key: true,
+  is_enabled: true,
+  is_local: false,
+  auth_status: null,
+  auth_source: null,
+  plan_type: null,
+  account_label: null,
+  token_expires_at: null,
+  created_at: '2026-04-04T00:00:00.000Z',
+  updated_at: '2026-04-04T00:00:00.000Z',
+}));
+const deleteProviderConfigMock = mock(async (_providerId: string) => undefined);
+const getProviderSettingsMock = mock(async () => ({
+  provider_id: 'provider-openai',
+  filter_free_models: false,
+  copilot_send_timeout_ms: 1_800_000,
+}));
+const updateProviderSettingsMock = mock(async () => undefined);
+const listProviderModelsMock = mock(async () => []);
+const upsertProviderModelsMock = mock(async () => []);
+const aiDownloadCopilotRuntimeMock = mock(
+  async (_params: { requestId: string; providerId?: string }) => undefined
+);
+const aiCancelCopilotRuntimeDownloadMock = mock(async () => undefined);
+const aiGetCopilotStatusMock = mock(async (): Promise<CopilotStatusDto> => ({
+  ok: false,
+  runtime_source: 'none',
+  runtime_status: 'missing',
+  runtime_version: null,
+  min_cli_version: '1.0.12',
+  auth_status: 'error',
+  auth_source: null,
+  account_label: null,
+  status_message: null,
+  error_code: 'runtime_missing',
+  error_message: 'GitHub Copilot runtime is not installed.',
+}));
+const aiSyncProviderModelsMock = mock(async () => []);
+const aiProvisionMacroAiMock = mock(async () => ({
+  providerId: 'macro-ai',
+  modelId: 'macro-ai',
+  contextWindowTokens: 200_000,
+  activatedNow: false,
+}));
+const fetchModelsFromProviderMock = mock(async () => ({
+  success: true,
+  models: [],
+}));
+const probeModelsEndpointMock = mock(async () => ({
+  success: true,
+  status: 'reachable',
+  source: 'models_endpoint',
+  message: 'Connected! Found 0 models.',
+  models: [],
+}));
+const probeProviderReachabilityMock = mock(async () => ({
+  success: true,
+  message: 'Connected',
+  status: 'reachable',
+  source: 'models_endpoint',
+  models: [],
+}));
+
+const flushAsyncWork = async (cycles = 4) => {
+  for (let index = 0; index < cycles; index += 1) {
+    await Promise.resolve();
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+};
+
+const dbModel = (
+  providerId: string,
+  modelId: string,
+  overrides: Record<string, unknown> = {}
+) => ({
+  id: `db-${providerId}-${modelId}`,
+  provider_id: providerId,
+  model_id: modelId,
+  name: modelId,
+  description: null,
+  owned_by: null,
+  pricing_prompt: null,
+  pricing_completion: null,
+  pricing_request: null,
+  reasoning_efforts: null,
+  default_reasoning_effort: null,
+  context_window_tokens: null,
+  input_limit_tokens: null,
+  output_limit_tokens: null,
+  context_window_source: null,
+  context_limits_updated_at: null,
+  is_enabled: true,
+  is_manual: false,
+  first_seen_at: '2026-05-18T00:00:00.000Z',
+  last_seen_at: '2026-05-18T00:00:00.000Z',
+  ...overrides,
+});
+const appStoreState = {
+  mode: 'Chat' as const,
+};
+const useAppStoreMock = Object.assign(
+  <TSelected = typeof appStoreState>(
+    selector?: (state: typeof appStoreState) => TSelected
+  ) => (selector ? selector(appStoreState) : (appStoreState as TSelected)),
+  {
+    getState: () => appStoreState,
+    setState: (
+      patch: Partial<typeof appStoreState> | ((state: typeof appStoreState) => Partial<typeof appStoreState>)
+    ) => {
+      Object.assign(appStoreState, typeof patch === 'function' ? patch(appStoreState) : patch);
+    },
+    subscribe: () => () => undefined,
+  }
+);
+const actualTauriIpc = await import('../services/tauriIpc');
+const { loadPreference: actualLoadPreference } = await import('../services/preferences');
+const loadPreferenceMock = mock(
+  async (key: string): Promise<unknown> => actualLoadPreference(key as any)
+);
+const savePreferenceMock = mock(async () => undefined);
+
+const copilotProviderConfig = {
+  id: 'copilot',
+  name: 'GitHub Copilot',
+  providerType: 'copilot',
+  baseUrl: 'copilot://cli',
+  hasStoredApiKey: false,
+  apiKeyLoaded: false,
+  isEnabled: true,
+  isLocal: false,
+  authStatus: 'login_required' as const,
+  nativeToolCalling: true,
+};
+
+const copilotProvider = {
+  id: 'copilot',
+  name: 'GitHub Copilot',
+  status: 'offline' as const,
+  baseUrl: 'copilot://cli',
+  isLocal: false,
+  isEnabled: true,
+  nativeToolCalling: true,
+};
+
+const makeCopilotStatus = (overrides: Partial<CopilotStatusDto> = {}): CopilotStatusDto => ({
+  ok: false,
+  runtime_source: 'none',
+  runtime_status: 'missing',
+  runtime_version: null,
+  min_cli_version: '1.0.12',
+  auth_status: 'error',
+  auth_source: null,
+  account_label: null,
+  status_message: null,
+  error_code: 'runtime_missing',
+  error_message: 'GitHub Copilot runtime is not installed.',
+  ...overrides,
+});
+
+const loadProviderStore = async () => {
+  const actualPreferences = await import(
+    `../services/preferences.ts?provider-store-preferences-test=${importCounter + 1}`
+  );
+
+  mock.module('@tauri-apps/api/event', () => ({
+    listen: listenMock,
+  }));
+  mock.module('../services/tauriIpc', () => ({
+    ...actualTauriIpc,
+    isTauriAvailable: () => tauriAvailable,
+    listProviderConfigs: listProviderConfigsMock,
+    revealProviderApiKey: revealProviderApiKeyMock,
+    updateProviderConfig: updateProviderConfigMock,
+    createProviderConfig: createProviderConfigMock,
+    deleteProviderConfig: deleteProviderConfigMock,
+    updateConversationDetails: mock(async () => undefined),
+    createMessage: mock(async (conversationId: string, role: string, content: string) => ({
+      id: `message-${conversationId}-${role}`,
+      conversation_id: conversationId,
+      role,
+      content,
+      timestamp: '2026-04-04T00:00:00.000Z',
+    })),
+    getProviderSettings: getProviderSettingsMock,
+    updateProviderSettings: updateProviderSettingsMock,
+    listProviderModels: listProviderModelsMock,
+    upsertProviderModels: upsertProviderModelsMock,
+    aiDownloadCopilotRuntime: aiDownloadCopilotRuntimeMock,
+    aiCancelCopilotRuntimeDownload: aiCancelCopilotRuntimeDownloadMock,
+    aiGetCopilotStatus: aiGetCopilotStatusMock,
+    aiSyncProviderModels: aiSyncProviderModelsMock,
+    aiProvisionMacroAi: aiProvisionMacroAiMock,
+    getChatSnapshot: mock(async () => ({ conversations: [], messages: [] })),
+    listConversations: mock(async () => []),
+    importMessages: mock(async () => []),
+    deleteConversations: mock(async () => undefined),
+    gitBranchList: mock(async () => ({ local: [], remote: [], current: null })),
+  }));
+  mock.module('../services/providerApi', () => ({
+    fetchModelsFromProvider: fetchModelsFromProviderMock,
+    probeModelsEndpoint: probeModelsEndpointMock,
+    probeProviderReachability: probeProviderReachabilityMock,
+  }));
+mock.module('../services/aiConfig', () => ({
+  loadAIConfigFile: async () => null,
+  findProviderConfig: () => undefined,
+  getProviderConfig: async () =>
+    (globalThis as typeof globalThis & {
+      __CHAT_COMPLETIONS_PROVIDER_CONFIG__?: { apiKey?: string; baseUrl?: string };
+    }).__CHAT_COMPLETIONS_PROVIDER_CONFIG__ ?? {},
+}));
+  mock.module('../services/preferences', () => ({
+    ...actualPreferences,
+    loadPreference: loadPreferenceMock,
+    savePreference: savePreferenceMock,
+  }));
+  mock.module('./useAppStore', () => ({
+    useAppStore: useAppStoreMock,
+  }));
+
+  importCounter += 1;
+  return import(`./useProviderStore.ts?provider-store-test=${importCounter}`);
+};
+
+describe('useProviderStore secret resolution', () => {
+  beforeEach(() => {
+    tauriAvailable = true;
+    useAppStoreMock.setState({ mode: 'Chat' });
+    loadPreferenceMock.mockClear();
+    savePreferenceMock.mockClear();
+    listProviderConfigsMock.mockClear();
+    revealProviderApiKeyMock.mockClear();
+    updateProviderConfigMock.mockClear();
+    createProviderConfigMock.mockClear();
+    deleteProviderConfigMock.mockClear();
+    getProviderSettingsMock.mockClear();
+    updateProviderSettingsMock.mockClear();
+    listProviderModelsMock.mockClear();
+    upsertProviderModelsMock.mockClear();
+    listenMock.mockClear();
+    aiDownloadCopilotRuntimeMock.mockClear();
+    aiCancelCopilotRuntimeDownloadMock.mockClear();
+    aiGetCopilotStatusMock.mockClear();
+    aiSyncProviderModelsMock.mockClear();
+    aiProvisionMacroAiMock.mockClear();
+    aiDownloadCopilotRuntimeMock.mockImplementation(
+      async (_params: { requestId: string; providerId?: string }) => undefined
+    );
+    aiCancelCopilotRuntimeDownloadMock.mockImplementation(async () => undefined);
+    aiGetCopilotStatusMock.mockImplementation(async () => makeCopilotStatus());
+    aiSyncProviderModelsMock.mockImplementation(async () => []);
+    upsertProviderModelsMock.mockImplementation(async () => []);
+    fetchModelsFromProviderMock.mockClear();
+    probeModelsEndpointMock.mockClear();
+    probeProviderReachabilityMock.mockClear();
+    catalogTestables.reset();
+    tauriEventHandlers.clear();
+  });
+
+  afterEach(() => {
+    useAppStoreMock.setState({ mode: 'Chat' });
+    mock.restore();
+  });
+
+  it('loads provider configs without revealing stored secrets', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [],
+      providers: [],
+      modelsByProvider: {},
+      providerSettingsById: {},
+      selectedProviderId: null,
+      selectedModelId: null,
+      isLoading: false,
+      isLoadingModels: false,
+      lastError: null,
+      connectionStatus: {},
+      providerReachabilityById: {},
+      authErrorsByProvider: {},
+      authRequestIdsByProvider: {},
+      copilotStatusByProvider: {},
+      copilotDownloadStateByProvider: {},
+      copilotAuthStateByProvider: {},
+    });
+
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      id: 'provider-openai',
+      hasStoredApiKey: true,
+      apiKey: undefined,
+      apiKeyLoaded: false,
+    });
+    expect(providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']).toBeUndefined();
+    expect(providerStore.useProviderStore.getState().connectionStatus['provider-openai']).toBeUndefined();
+  });
+
+  it('activates a provider when a stored API key exists even if legacy config disabled it', async () => {
+    listProviderConfigsMock.mockImplementationOnce(async () => [
+      {
+        id: 'provider-openai',
+        name: 'OpenAI',
+        provider_type: 'openai',
+        base_url: 'https://api.openai.com/v1',
+        api_key: null,
+        has_stored_api_key: true,
+        is_enabled: false,
+        is_local: false,
+        auth_status: null,
+        auth_source: null,
+        plan_type: null,
+        account_label: null,
+        token_expires_at: null,
+        created_at: '2026-04-04T00:00:00.000Z',
+        updated_at: '2026-04-04T00:00:00.000Z',
+      },
+    ]);
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      hasStoredApiKey: true,
+      isEnabled: true,
+    });
+    expect(providerStore.providerHasCredentials(
+      providerStore.useProviderStore.getState().providerConfigs[0]
+    )).toBe(true);
+  });
+
+  it('reveals a stored key once and caches it for the session', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    const store = providerStore.useProviderStore.getState();
+    await store.testConnection('provider-openai');
+    await providerStore.useProviderStore.getState().testConnection('provider-openai');
+
+    expect(revealProviderApiKeyMock).toHaveBeenCalledTimes(1);
+    expect(probeProviderReachabilityMock).toHaveBeenCalledTimes(2);
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      hasStoredApiKey: true,
+      apiKey: 'test-api-key',
+      apiKeyLoaded: true,
+    });
+  });
+
+  it('uses a stored API key to scan models after a restart', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    await providerStore.useProviderStore
+      .getState()
+      .scanModelsForProvider('provider-openai');
+
+    expect(revealProviderApiKeyMock).toHaveBeenCalledTimes(1);
+    expect(probeModelsEndpointMock).toHaveBeenCalledWith({
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      providerId: 'openai',
+      providerType: 'openai',
+    });
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      hasStoredApiKey: true,
+      apiKey: 'test-api-key',
+      apiKeyLoaded: true,
+    });
+  });
+
+  it('initializes without auto-revealing stored API keys', async () => {
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().initialize();
+
+    expect(loadPreferenceMock).not.toHaveBeenCalled();
+    expect(aiProvisionMacroAiMock).toHaveBeenCalledTimes(1);
+    expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
+    expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBeNull();
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBeNull();
+  });
+
+  it('selects the compatible Fast model by default when both managed models are available', async () => {
+    listProviderConfigsMock.mockImplementationOnce(async () => [
+      {
+        id: 'macro-ai',
+        name: 'Andrologic',
+        provider_type: 'openai',
+        base_url: 'https://lmstudio.andrologic.ai/v1',
+        api_key: null,
+        has_stored_api_key: true,
+        is_enabled: true,
+        is_local: false,
+        auth_status: null,
+        auth_source: null,
+        plan_type: null,
+        account_label: null,
+        token_expires_at: null,
+        created_at: '2026-08-10T00:00:00.000Z',
+        updated_at: '2026-08-10T00:00:00.000Z',
+      },
+    ]);
+    listProviderModelsMock.mockImplementationOnce(
+      async () =>
+        [
+          dbModel('macro-ai', 'macro-ai', {
+            name: 'Macro AI Fast',
+            context_window_tokens: 200_000,
+            input_limit_tokens: 200_000,
+            output_limit_tokens: 16_384,
+            context_window_source: 'provider_metadata',
+          }),
+          dbModel('macro-ai', 'macro-ai-deep', {
+            name: 'Macro AI Deep',
+            context_window_tokens: 200_000,
+            input_limit_tokens: 200_000,
+            output_limit_tokens: 16_384,
+            context_window_source: 'provider_metadata',
+          }),
+        ] as never[]
+    );
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().initialize();
+
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBe('macro-ai');
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('macro-ai');
+  });
+
+  it('clears cached secret metadata when the key is removed', async () => {
+    const manualModel = dbModel('provider-openai', 'manual-model', { is_manual: true });
+    upsertProviderModelsMock.mockImplementationOnce(async () => [manualModel] as never[]);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await providerStore.useProviderStore.getState().resolveProviderApiKey('provider-openai');
+    providerStore.useProviderStore.setState({
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-old',
+    });
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      apiKey: '',
+    });
+
+    expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: false })
+    );
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      hasStoredApiKey: false,
+      apiKey: undefined,
+      apiKeyLoaded: true,
+    });
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBeNull();
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBeNull();
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [],
+      replaceDiscovered: true,
+    });
+    expect(providerStore.useProviderStore.getState().modelsByProvider['provider-openai'])
+      .toEqual([expect.objectContaining({ id: 'manual-model' })]);
+
+    listProviderModelsMock.mockImplementationOnce(async () => [manualModel] as never[]);
+    await providerStore.useProviderStore.getState().loadProviderModels('provider-openai');
+    expect(providerStore.useProviderStore.getState().modelsByProvider['provider-openai'])
+      .toEqual([expect.objectContaining({ id: 'manual-model' })]);
+  });
+
+  it('rescans models and replaces a stale selection after updating a provider key', async () => {
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable' as const,
+      source: 'models_endpoint' as const,
+      message: 'Connected! Found 1 model.',
+      models: [{ id: 'gpt-new', name: 'GPT New' }],
+    }));
+    upsertProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'gpt-new'),
+    ] as never[]);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    providerStore.useProviderStore.setState({
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-old',
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-old',
+            name: 'GPT Old',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      apiKey: 'replacement-api-key',
+    });
+
+    expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isEnabled: true })
+    );
+    expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
+    expect(probeModelsEndpointMock).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'replacement-api-key' })
+    );
+    expect(providerStore.useProviderStore.getState().modelsByProvider['provider-openai'])
+      .toEqual([expect.objectContaining({ id: 'gpt-new' })]);
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('gpt-new');
+  });
+
+  it('ignores an obsolete model scan after the provider key changes', async () => {
+    let resolveOldScan!: (result: unknown) => void;
+    const oldScan = new Promise<unknown>((resolve) => {
+      resolveOldScan = resolve;
+    });
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => oldScan);
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable' as const,
+      source: 'models_endpoint' as const,
+      message: 'Connected! Found 1 model.',
+      models: [{ id: 'gpt-new', name: 'GPT New' }],
+    }));
+    upsertProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'gpt-new'),
+    ] as never[]);
+
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    const obsoleteScan = providerStore.useProviderStore
+      .getState()
+      .scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      apiKey: 'replacement-api-key',
+    });
+    resolveOldScan({
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [{ id: 'gpt-old', name: 'GPT Old' }],
+    });
+    await obsoleteScan;
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'provider-openai',
+        replaceDiscovered: true,
+        models: [expect.objectContaining({ model_id: 'gpt-new' })],
+      })
+    );
+    expect(providerStore.useProviderStore.getState().modelsByProvider['provider-openai'])
+      .toEqual([expect.objectContaining({ id: 'gpt-new' })]);
+  });
+
+  it('rescans a local provider when its optional token is removed', async () => {
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable' as const,
+      source: 'models_endpoint' as const,
+      message: 'Connected! Found 1 model.',
+      models: [{ id: 'qwen-local', name: 'Qwen Local' }],
+    }));
+    upsertProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('ollama', 'qwen-local'),
+    ] as never[]);
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'ollama',
+          name: 'Ollama',
+          providerType: 'ollama',
+          baseUrl: 'http://localhost:11434/v1',
+          apiKey: 'optional-token',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          isEnabled: true,
+          isLocal: true,
+        },
+      ],
+      selectedProviderId: 'ollama',
+      selectedModelId: 'stale-local-model',
+      modelsByProvider: {
+        ollama: [
+          {
+            id: 'stale-local-model',
+            name: 'Stale Local Model',
+            provider_id: 'ollama',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('ollama', {
+      apiKey: '',
+    });
+
+    expect(probeModelsEndpointMock).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: undefined, providerType: 'ollama' })
+    );
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: 'ollama', replaceDiscovered: true })
+    );
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBe('ollama');
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('qwen-local');
+  });
+
+  it('purges queued model persistence when a provider is deleted during a scan', async () => {
+    let resolveScan!: (result: unknown) => void;
+    const deferredScan = new Promise<unknown>((resolve) => {
+      resolveScan = resolve;
+    });
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => deferredScan);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    const scan = providerStore.useProviderStore
+      .getState()
+      .scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+
+    await providerStore.useProviderStore.getState().deleteProviderConfig('provider-openai');
+    resolveScan({
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [{ id: 'gpt-obsolete', name: 'GPT Obsolete' }],
+    });
+    await scan;
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [],
+      replaceDiscovered: true,
+    });
+    expect(providerStore.useProviderStore.getState().providerConfigs).toEqual([]);
+    expect(providerStore.useProviderStore.getState().modelsByProvider['provider-openai'])
+      .toBeUndefined();
+  });
+
+  it('keeps a deleted provider removed when model cleanup fails', async () => {
+    upsertProviderModelsMock.mockImplementationOnce(async () => {
+      throw new Error('cleanup unavailable');
+    });
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    await providerStore.useProviderStore.getState().deleteProviderConfig('provider-openai');
+
+    expect(providerStore.useProviderStore.getState().providerConfigs).toEqual([]);
+    expect(providerStore.useProviderStore.getState().modelsByProvider['provider-openai'])
+      .toBeUndefined();
+    expect(providerStore.useProviderStore.getState().lastError)
+      .toContain('Provider deleted, but model cleanup failed: cleanup unavailable');
+  });
+
+  it('runs the deletion purge after an in-flight model metadata write', async () => {
+    let resolveMetadataWrite!: (models: unknown[]) => void;
+    const metadataWrite = new Promise<unknown[]>((resolve) => {
+      resolveMetadataWrite = resolve;
+    });
+    upsertProviderModelsMock.mockImplementationOnce(async () => metadataWrite as never);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    providerStore.useProviderStore.setState({
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-current',
+            name: 'GPT Current',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 128_000,
+          },
+        ],
+      },
+    });
+
+    const metadataUpdate = providerStore.useProviderStore
+      .getState()
+      .recordProviderModelContextOverflowLimit('provider-openai', 'gpt-current', 64_000);
+    await flushAsyncWork();
+    const deletion = providerStore.useProviderStore
+      .getState()
+      .deleteProviderConfig('provider-openai');
+    await flushAsyncWork();
+    resolveMetadataWrite([]);
+    await Promise.all([metadataUpdate, deletion]);
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(2);
+    expect(upsertProviderModelsMock).toHaveBeenLastCalledWith({
+      providerId: 'provider-openai',
+      models: [],
+      replaceDiscovered: true,
+    });
+    expect(providerStore.useProviderStore.getState().modelsByProvider['provider-openai'])
+      .toBeUndefined();
+  });
+
+  it('persists provider settings partially', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    await providerStore.useProviderStore.getState().updateProviderSettings('provider-openai', {
+      copilotSendTimeoutMs: 2_400_000,
+    });
+
+    expect(updateProviderSettingsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      copilotSendTimeoutMs: 2_400_000,
+    });
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({
+        filterFreeModels: false,
+        copilotSendTimeoutMs: 2_400_000,
+      });
+  });
+
+  it('persists providerType and isLocal when updating an existing provider', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      providerType: 'anthropic',
+      isLocal: true,
+    });
+
+    expect(updateProviderConfigMock).toHaveBeenCalledWith({
+      id: 'provider-openai',
+      name: undefined,
+      providerType: 'anthropic',
+      baseUrl: undefined,
+      apiKey: undefined,
+      isLocal: true,
+      isEnabled: true,
+    });
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]).toMatchObject({
+      providerType: 'anthropic',
+      isLocal: true,
+    });
+  });
+
+  it('scans models immediately after creating a provider with an API key', async () => {
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().createProviderConfig({
+      name: 'Created Provider',
+      providerType: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      isLocal: false,
+    });
+
+    expect(createProviderConfigMock).toHaveBeenCalledTimes(1);
+    expect(createProviderConfigMock).toHaveBeenCalledWith({
+      name: 'Created Provider',
+      providerType: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'test-api-key',
+      isLocal: false,
+    });
+    expect(revealProviderApiKeyMock).not.toHaveBeenCalled();
+    expect(probeModelsEndpointMock).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'test-api-key' })
+    );
+    expect(fetchModelsFromProviderMock).not.toHaveBeenCalled();
+    expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+  });
+
+  it('infers local custom Ollama providers without a separate enabled flag', async () => {
+    const providerStore = await loadProviderStore();
+
+    await providerStore.useProviderStore.getState().createProviderConfig({
+      name: 'Custom Ollama',
+      providerType: 'ollama',
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: '',
+      isLocal: false,
+    });
+
+    expect(createProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isLocal: true })
+    );
+  });
+
+  it('rejects a second ChatGPT OAuth start while one is active', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      authRequestIdsByProvider: { chatgpt: 'already-started' },
+    });
+
+    await expect(
+      providerStore.useProviderStore.getState().startChatGptAuth('chatgpt')
+    ).rejects.toThrow('ChatGPT login is already in progress');
+  });
+
+  it('rejects provider mutations outside desktop IPC', async () => {
+    tauriAvailable = false;
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: false,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [],
+      lastError: null,
+    });
+
+    await expect(
+      providerStore.useProviderStore.getState().createProviderConfig({
+        name: 'Created Provider',
+        providerType: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'test-api-key',
+        isLocal: false,
+      })
+    ).rejects.toThrow('Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.');
+    await expect(
+      providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+        apiKey: 'test-api-key',
+      })
+    ).rejects.toThrow('Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.');
+    await expect(
+      providerStore.useProviderStore.getState().deleteProviderConfig('provider-openai')
+    ).rejects.toThrow('Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.');
+
+    expect(createProviderConfigMock).not.toHaveBeenCalled();
+    expect(updateProviderConfigMock).not.toHaveBeenCalled();
+    expect(providerStore.useProviderStore.getState().lastError).toBe(
+      'Provider configuration requires the Macro desktop Tauri runtime. Remote mode is not available in Macro 0.1.'
+    );
+  });
+
+  it('reassigns the selected provider and model when the selected provider is deleted', async () => {
+    const providerStore = await loadProviderStore();
+    const fallbackProvider = {
+      id: 'provider-fallback',
+      name: 'Fallback',
+      providerType: 'openai',
+      baseUrl: 'https://fallback.example.test/v1',
+      apiKey: 'fallback-key',
+      hasStoredApiKey: true,
+      apiKeyLoaded: true,
+      isEnabled: true,
+      isLocal: false,
+      nativeToolCalling: true,
+    };
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: 'openai-key',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          isEnabled: true,
+          isLocal: false,
+          nativeToolCalling: true,
+        },
+        fallbackProvider,
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isEnabled: true,
+          nativeToolCalling: true,
+        },
+        {
+          id: 'provider-fallback',
+          name: 'Fallback',
+          status: 'online',
+          baseUrl: fallbackProvider.baseUrl,
+          isEnabled: true,
+          nativeToolCalling: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [dbModel('provider-openai', 'old-model')],
+        'provider-fallback': [dbModel('provider-fallback', 'fallback-model')],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'old-model',
+      selectedReasoningEffort: 'medium',
+      providerSettingsById: {
+        'provider-openai': {
+          providerId: 'provider-openai',
+          filterFreeModels: false,
+          copilotSendTimeoutMs: null,
+        },
+      },
+    });
+
+    await providerStore.useProviderStore.getState().deleteProviderConfig('provider-openai');
+
+    const state = providerStore.useProviderStore.getState();
+    expect(deleteProviderConfigMock).toHaveBeenCalledWith('provider-openai');
+    expect(state.selectedProviderId).toBe('provider-fallback');
+    expect(state.selectedModelId).toBe('db-provider-fallback-fallback-model');
+    expect(state.selectedReasoningEffort).toBeNull();
+    expect(state.providerConfigs.map((provider: { id: string }) => provider.id)).toEqual([
+      'provider-fallback',
+    ]);
+    expect(state.modelsByProvider['provider-openai']).toBeUndefined();
+    expect(state.providerSettingsById['provider-openai']).toBeUndefined();
+  });
+
+  it('invalidates previous reachability when the base URL changes', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    providerStore.useProviderStore.setState({
+      providerReachabilityById: {
+        'provider-openai': {
+          status: 'reachable',
+          lastVerifiedAt: '2026-04-04T00:00:00.000Z',
+          lastVerifiedBy: 'models_endpoint',
+        },
+      },
+      connectionStatus: {
+        'provider-openai': 'online',
+      },
+    });
+
+    await providerStore.useProviderStore.getState().updateProviderConfig('provider-openai', {
+      baseUrl: 'https://proxy.example.com/v1',
+    });
+
+    expect(providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']).toBeUndefined();
+    expect(providerStore.useProviderStore.getState().connectionStatus['provider-openai']).toBeUndefined();
+  });
+
+  it('promotes a provider to reachable after a successful runtime response', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    providerStore.useProviderStore
+      .getState()
+      .markProviderReachable('provider-openai', { modelId: 'MiniMax-M2.7' });
+
+    expect(providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']).toMatchObject({
+      status: 'reachable',
+      lastVerifiedBy: 'chat_completion_runtime',
+      modelIdUsed: 'MiniMax-M2.7',
+    });
+    expect(providerStore.useProviderStore.getState().connectionStatus['provider-openai']).toBe('online');
+  });
+
+  it('passes known models to the reachability probe for fallback verification', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    providerStore.useProviderStore.setState({
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'MiniMax-M2.7',
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'MiniMax-M2.7',
+            name: 'MiniMax-M2.7',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore.getState().testConnection('provider-openai');
+
+    expect(probeProviderReachabilityMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferredModelId: 'MiniMax-M2.7',
+        modelIds: [],
+      })
+    );
+  });
+
+  it('falls back to the new model default reasoning effort when the previous effort is invalid', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isLocal: false,
+          isEnabled: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-5.4-pro',
+            name: 'GPT-5.4 Pro',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['medium', 'high', 'xhigh'],
+            defaultReasoningEffort: 'medium',
+          },
+          {
+            id: 'gpt-5-pro',
+            name: 'GPT-5 Pro',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['high'],
+            defaultReasoningEffort: 'high',
+          },
+        ],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-5.4-pro',
+      selectedReasoningEffort: 'xhigh',
+    });
+
+    providerStore.useProviderStore.getState().selectModel('gpt-5-pro');
+
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('gpt-5-pro');
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBe('high');
+  });
+
+  it('commits a restored selection atomically and normalizes the reasoning effort', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isLocal: false,
+          isEnabled: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-5-pro',
+            name: 'GPT-5 Pro',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['high'],
+            defaultReasoningEffort: 'high',
+          },
+        ],
+      },
+      selectedProviderId: null,
+      selectedModelId: null,
+      selectedReasoningEffort: null,
+    });
+
+    const committed = await providerStore.useProviderStore.getState().commitRestoredSelection({
+      providerId: 'provider-openai',
+      modelId: 'gpt-5-pro',
+      reasoningEffort: 'xhigh',
+    });
+
+    expect(committed).toEqual({
+      providerId: 'provider-openai',
+      modelId: 'gpt-5-pro',
+      reasoningEffort: 'high',
+    });
+    expect(providerStore.useProviderStore.getState().selectedProviderId).toBe('provider-openai');
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('gpt-5-pro');
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBe('high');
+  });
+
+  it('hides reasoning efforts for the session after a model is marked unsupported', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isLocal: false,
+          isEnabled: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-5',
+            name: 'GPT-5',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            reasoningEfforts: ['minimal', 'low', 'medium', 'high'],
+            defaultReasoningEffort: 'medium',
+          },
+        ],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-5',
+      selectedReasoningEffort: 'medium',
+      reasoningUnsupportedModelKeys: {},
+    });
+
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'gpt-5')
+    ).toEqual([
+      'minimal',
+      'low',
+      'medium',
+      'high',
+    ]);
+
+    providerStore.useProviderStore
+      .getState()
+      .markReasoningUnsupportedForModel('provider-openai', 'gpt-5');
+
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBeNull();
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'gpt-5')
+    ).toEqual([]);
+  });
+
+  it('removes only a rejected reasoning effort for the current session', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      modelsByProvider: {
+        'provider-openai': [{
+          id: 'gpt-5.6',
+          name: 'GPT-5.6',
+          provider_id: 'provider-openai',
+          isEnabled: true,
+          reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultReasoningEffort: 'medium',
+        }],
+      },
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-5.6',
+      selectedReasoningEffort: 'xhigh',
+      reasoningUnsupportedModelKeys: {},
+    });
+
+    providerStore.useProviderStore
+      .getState()
+      .markReasoningEffortUnsupportedForModel('provider-openai', 'gpt-5.6', 'xhigh');
+
+    expect(providerStore.useProviderStore.getState().selectedReasoningEffort).toBe('medium');
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'gpt-5.6'),
+    ).toEqual(['low', 'medium', 'high', 'max']);
+  });
+
+  it('records provider overflow limits when the observed limit lowers catalog metadata', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-catalog',
+            name: 'GPT Catalog',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 128_000,
+            contextWindowSource: 'models_dev',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .recordProviderModelContextOverflowLimit(
+        'provider-openai',
+        'gpt-catalog',
+        64_000
+      );
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [
+        expect.objectContaining({
+          model_id: 'gpt-catalog',
+          context_window_tokens: 64_000,
+          context_window_source: 'provider_overflow_error',
+        }),
+      ],
+    });
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider[
+        'provider-openai'
+      ][0]
+    ).toMatchObject({
+      contextWindowTokens: 64_000,
+      contextWindowSource: 'provider_overflow_error',
+    });
+  });
+
+  it('resets a learned provider overflow limit back to catalog metadata', async () => {
+    const providerStore = await loadProviderStore();
+    catalogTestables.writeCachedCatalog({
+      fetchedAt: new Date().toISOString(),
+      providers: {
+        openai: {
+          id: 'openai',
+          models: {
+            'gpt-catalog': {
+              id: 'gpt-catalog',
+              limit: { context: 222_000, input: 200_000, output: 16_000 },
+            },
+          },
+        },
+      },
+    });
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-catalog',
+            name: 'GPT Catalog',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 64_000,
+            contextWindowSource: 'provider_overflow_error',
+            contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .resetProviderModelContextOverflowLimit('provider-openai', 'gpt-catalog');
+
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider[
+        'provider-openai'
+      ][0]
+    ).toMatchObject({
+      contextWindowTokens: 222_000,
+      inputLimitTokens: 200_000,
+      outputLimitTokens: 16_000,
+      contextWindowSource: 'models_dev',
+    });
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [
+        expect.objectContaining({
+          model_id: 'gpt-catalog',
+          context_window_tokens: 222_000,
+          context_window_source: 'models_dev',
+        }),
+      ],
+    });
+  });
+
+  it('does not replace user overrides or increase known provider limits from overflow hints', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'manual-model',
+            name: 'Manual Model',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 16_000,
+            contextWindowSource: 'user_override',
+          },
+          {
+            id: 'provider-model',
+            name: 'Provider Model',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 64_000,
+            contextWindowSource: 'provider_metadata',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .recordProviderModelContextOverflowLimit(
+        'provider-openai',
+        'manual-model',
+        8_000
+      );
+    await providerStore.useProviderStore
+      .getState()
+      .recordProviderModelContextOverflowLimit(
+        'provider-openai',
+        'provider-model',
+        128_000
+      );
+
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider[
+        'provider-openai'
+      ]
+    ).toMatchObject([
+      {
+        id: 'manual-model',
+        contextWindowTokens: 16_000,
+        contextWindowSource: 'user_override',
+      },
+      {
+        id: 'provider-model',
+        contextWindowTokens: 64_000,
+        contextWindowSource: 'provider_metadata',
+      },
+    ]);
+  });
+
+  it('persists a user context window override for any provider model', async () => {
+    const providerStore = await loadProviderStore();
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'lmstudio',
+          name: 'LM Studio',
+          providerType: 'lmstudio',
+          baseUrl: 'http://localhost:1234/v1',
+          hasStoredApiKey: false,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: true,
+        },
+      ],
+      modelsByProvider: {
+        lmstudio: [
+          {
+            id: 'qwen/qwen3-coder',
+            name: 'Qwen3 Coder',
+            provider_id: 'lmstudio',
+            isEnabled: true,
+            contextWindowTokens: 16_000,
+            contextWindowSource: 'provider_metadata',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .setProviderModelContextWindowOverride('lmstudio', 'qwen/qwen3-coder', 32_768);
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'lmstudio',
+      models: [
+        expect.objectContaining({
+          model_id: 'qwen/qwen3-coder',
+          context_window_tokens: 32_768,
+          context_window_source: 'user_override',
+        }),
+      ],
+    });
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider.lmstudio[0]
+    ).toMatchObject({
+      contextWindowTokens: 32_768,
+      contextWindowSource: 'user_override',
+    });
+  });
+
+  it('refreshes selected model context metadata when the selected model has no reliable window', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'lmstudio',
+          name: 'LM Studio',
+          providerType: 'lmstudio',
+          baseUrl: 'http://localhost:1234/v1',
+          hasStoredApiKey: false,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: true,
+        },
+      ],
+      modelsByProvider: {
+        lmstudio: [
+          {
+            id: 'qwen/qwen3-coder',
+            name: 'Qwen3 Coder',
+            provider_id: 'lmstudio',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .ensureSelectedModelContextMetadata('lmstudio', 'qwen/qwen3-coder', 'pre_send');
+
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes loaded models from the context catalog and persists reliable enrichments', async () => {
+    const providerStore = await loadProviderStore();
+    catalogTestables.writeCachedCatalog({
+      fetchedAt: new Date().toISOString(),
+      providers: {
+        openai: {
+          id: 'openai',
+          models: {
+            'gpt-catalog': {
+              id: 'gpt-catalog',
+              limit: { context: 222_000, input: 200_000, output: 16_000 },
+            },
+          },
+        },
+      },
+    });
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: false,
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-catalog',
+            name: 'GPT Catalog',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .refreshLoadedModelContextCatalog('provider-openai');
+
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider[
+        'provider-openai'
+      ][0]
+    ).toMatchObject({
+      contextWindowTokens: 222_000,
+      inputLimitTokens: 200_000,
+      outputLimitTokens: 16_000,
+      contextWindowSource: 'models_dev',
+    });
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      models: [
+        expect.objectContaining({
+          model_id: 'gpt-catalog',
+          context_window_tokens: 222_000,
+          context_window_source: 'models_dev',
+        }),
+      ],
+    });
+  });
+
+  it('preserves user context overrides when provider scans return metadata', async () => {
+    const providerStore = await loadProviderStore();
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [
+        {
+          id: 'manual-model',
+          name: 'Manual Model',
+          context_length: 200_000,
+          max_input_tokens: 180_000,
+        },
+      ],
+    }));
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'manual-model',
+            name: 'Manual Model',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+            contextWindowTokens: 16_000,
+            contextWindowSource: 'user_override',
+            contextLimitsUpdatedAt: '2026-05-10T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .scanModelsForProvider('provider-openai');
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      replaceDiscovered: true,
+      models: [
+        expect.objectContaining({
+          model_id: 'manual-model',
+          context_window_tokens: 16_000,
+          input_limit_tokens: 180_000,
+          context_window_source: 'user_override',
+        }),
+      ],
+    });
+  });
+
+  it('persists and exposes provider-supplied reasoning metadata from model scans', async () => {
+    const providerStore = await loadProviderStore();
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [
+        {
+          id: 'provider-reasoning-model',
+          name: 'Provider Reasoning Model',
+          supported_reasoning_efforts: ['low', 'medium', 'high'],
+          default_reasoning_effort: 'medium',
+        },
+      ],
+    }));
+    upsertProviderModelsMock.mockImplementationOnce(async () => [
+      {
+        id: 'db-model-1',
+        provider_id: 'provider-openai',
+        model_id: 'provider-reasoning-model',
+        name: 'Provider Reasoning Model',
+        description: null,
+        owned_by: null,
+        pricing_prompt: null,
+        pricing_completion: null,
+        pricing_request: null,
+        reasoning_efforts: ['low', 'medium', 'high'],
+        default_reasoning_effort: 'medium',
+        context_window_tokens: null,
+        input_limit_tokens: null,
+        output_limit_tokens: null,
+        context_window_source: null,
+        context_limits_updated_at: null,
+        is_enabled: true,
+        is_manual: false,
+        first_seen_at: '2026-05-18T00:00:00.000Z',
+        last_seen_at: '2026-05-18T00:00:00.000Z',
+      },
+    ] as never[]);
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {},
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .scanModelsForProvider('provider-openai');
+
+    expect(upsertProviderModelsMock).toHaveBeenCalledWith({
+      providerId: 'provider-openai',
+      replaceDiscovered: true,
+      models: [
+        expect.objectContaining({
+          model_id: 'provider-reasoning-model',
+          reasoning_efforts: ['low', 'medium', 'high'],
+          default_reasoning_effort: 'medium',
+        }),
+      ],
+    });
+    expect(
+      providerStore.useProviderStore
+        .getState()
+        .getAvailableReasoningEfforts('provider-openai', 'provider-reasoning-model')
+    ).toEqual(['low', 'medium', 'high']);
+  });
+
+  it('waits for the active provider connectivity check before completing restoration', async () => {
+    listProviderConfigsMock.mockImplementationOnce(async () => [
+      {
+        id: 'provider-openai',
+        name: 'OpenAI',
+        provider_type: 'openai',
+        base_url: 'https://api.openai.com/v1',
+        api_key: null,
+        has_stored_api_key: true,
+        is_enabled: true,
+        is_local: false,
+        auth_status: null,
+        auth_source: null,
+        plan_type: null,
+        account_label: null,
+        token_expires_at: null,
+        created_at: '2026-04-04T00:00:00.000Z',
+        updated_at: '2026-04-04T00:00:00.000Z',
+      },
+      {
+        id: 'provider-anthropic',
+        name: 'Anthropic',
+        provider_type: 'anthropic',
+        base_url: 'https://api.anthropic.com/v1',
+        api_key: null,
+        has_stored_api_key: true,
+        is_enabled: true,
+        is_local: false,
+        auth_status: null,
+        auth_source: null,
+        plan_type: null,
+        account_label: null,
+        token_expires_at: null,
+        created_at: '2026-04-04T00:00:00.000Z',
+        updated_at: '2026-04-04T00:00:00.000Z',
+      },
+    ]);
+    (listProviderModelsMock as unknown as {
+      mockImplementation: (
+        implementation: (providerId: string) => Promise<unknown>
+      ) => void;
+    }).mockImplementation(async (providerId: string) => [
+      dbModel(providerId, `${providerId}-persisted`),
+    ]);
+    let resolveConnectivityCheck!: (result: unknown) => void;
+    const connectivityCheck = new Promise<unknown>((resolve) => {
+      resolveConnectivityCheck = resolve;
+    });
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => connectivityCheck);
+    const successfulConnectivityResult = {
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [{ id: 'gpt-fresh', name: 'GPT Fresh' }],
+    };
+    upsertProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'gpt-fresh'),
+    ] as never[]);
+
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'provider-openai-persisted',
+    });
+
+    let initializationSettled = false;
+    const initialization = providerStore.useProviderStore.getState().initialize().finally(() => {
+      initializationSettled = true;
+    });
+    await flushAsyncWork();
+
+    expect(initializationSettled).toBe(false);
+    expect(
+      providerStore.useProviderStore.getState().providerReachabilityById['provider-openai']?.status
+    ).toBe('checking');
+    resolveConnectivityCheck(successfulConnectivityResult);
+    await initialization;
+
+    expect(initializationSettled).toBe(true);
+    expect(listProviderModelsMock).toHaveBeenCalledWith('provider-openai');
+    expect(listProviderModelsMock).toHaveBeenCalledWith('provider-anthropic');
+    expect(revealProviderApiKeyMock).toHaveBeenCalledTimes(1);
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+    expect(probeModelsEndpointMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: 'https://api.openai.com/v1',
+        providerId: 'openai',
+      })
+    );
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider['provider-openai'][0]
+    ).toMatchObject({ id: 'gpt-fresh' });
+    expect(
+      providerStore.useProviderStore.getState().modelsByProvider['provider-anthropic'][0]
+    ).toMatchObject({ id: 'provider-anthropic-persisted' });
+  });
+
+  it('refreshes selected provider models once and skips repeated selections during cooldown', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      providers: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          status: 'online',
+          baseUrl: 'https://api.openai.com/v1',
+          isLocal: false,
+          isEnabled: true,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-cached',
+            name: 'GPT Cached',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    providerStore.useProviderStore.getState().selectProvider('provider-openai');
+    await flushAsyncWork();
+    providerStore.useProviderStore.getState().selectProvider('provider-openai');
+    await flushAsyncWork();
+
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets manual refresh bypass the provider selection cooldown', async () => {
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-cached',
+            name: 'GPT Cached',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .refreshModelsForProviderIfNeeded('provider-openai', 'provider_selection');
+    await providerStore.useProviderStore
+      .getState()
+      .refreshModelsForProviderIfNeeded('provider-openai', 'manual');
+
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('deduplicates concurrent provider model refreshes', async () => {
+    let resolveProbe!: () => void;
+    probeModelsEndpointMock.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          resolveProbe = () =>
+            resolve({
+              success: true,
+              status: 'reachable',
+              source: 'models_endpoint',
+              message: 'Connected! Found 0 models.',
+              models: [],
+            });
+        })
+    );
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      modelsByProvider: {},
+    });
+
+    const firstRefresh = providerStore.useProviderStore
+      .getState()
+      .refreshModelsForProviderIfNeeded('provider-openai', 'manual');
+    const secondRefresh = providerStore.useProviderStore
+      .getState()
+      .refreshModelsForProviderIfNeeded('provider-openai', 'manual');
+
+    await flushAsyncWork();
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+    resolveProbe();
+    await Promise.all([firstRefresh, secondRefresh]);
+  });
+
+  it('selects the first enabled model when refresh removes the selected model', async () => {
+    (probeModelsEndpointMock as unknown as {
+      mockImplementationOnce: (implementation: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => ({
+      success: true,
+      status: 'reachable',
+      source: 'models_endpoint',
+      message: 'Connected! Found 1 model.',
+      models: [{ id: 'gpt-fresh', name: 'GPT Fresh' }],
+    }));
+    upsertProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'gpt-fresh'),
+    ] as never[]);
+    const providerStore = await loadProviderStore();
+    providerStore.useProviderStore.setState({
+      providerConfigs: [
+        {
+          id: 'provider-openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          hasStoredApiKey: true,
+          apiKeyLoaded: true,
+          apiKey: 'test-api-key',
+          isEnabled: true,
+          isLocal: false,
+        },
+      ],
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'gpt-old',
+      modelsByProvider: {
+        'provider-openai': [
+          {
+            id: 'gpt-old',
+            name: 'GPT Old',
+            provider_id: 'provider-openai',
+            isEnabled: true,
+          },
+        ],
+      },
+    });
+
+    await providerStore.useProviderStore
+      .getState()
+      .refreshModelsForProviderIfNeeded('provider-openai', 'manual');
+
+    expect(providerStore.useProviderStore.getState().selectedModelId).toBe('gpt-fresh');
+  });
+
+  it('applies fresh Copilot runtime status when download completes', async () => {
+    const providerStore = await loadProviderStore();
+    const completionStatus = makeCopilotStatus({
+      ok: false,
+      runtime_source: 'managed',
+      runtime_status: 'ready',
+      runtime_version: '1.0.12',
+      auth_status: 'login_required',
+      status_message: 'Connect GitHub Copilot to finish setup.',
+      error_code: null,
+      error_message: null,
+    });
+
+    aiDownloadCopilotRuntimeMock.mockImplementation(
+      async ({ requestId, providerId }: { requestId: string; providerId?: string }) => {
+        emitTauriEvent('ai:copilot-download-complete', {
+          request_id: requestId,
+          provider_id: providerId ?? 'copilot',
+          runtime_version: '1.0.12',
+          runtime_source: 'managed',
+          status: completionStatus,
+        });
+      }
+    );
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [copilotProviderConfig],
+      providers: [copilotProvider],
+      copilotStatusByProvider: {
+        copilot: makeCopilotStatus(),
+      },
+      copilotDownloadStateByProvider: {},
+      providerReachabilityById: {},
+      authErrorsByProvider: {},
+      connectionStatus: {},
+    });
+
+    await providerStore.useProviderStore.getState().startCopilotRuntimeDownload('copilot');
+
+    const state = providerStore.useProviderStore.getState();
+    expect(state.copilotDownloadStateByProvider.copilot).toBeUndefined();
+    expect(state.copilotStatusByProvider.copilot).toMatchObject({
+      runtime_status: 'ready',
+      auth_status: 'login_required',
+      runtime_source: 'managed',
+    });
+    expect(state.providerConfigs[0]).toMatchObject({
+      id: 'copilot',
+      authStatus: 'login_required',
+    });
+    expect(state.connectionStatus.copilot).toBe('offline');
+    expect(aiGetCopilotStatusMock).not.toHaveBeenCalled();
+    expect(listProviderModelsMock).not.toHaveBeenCalled();
+    expect(aiSyncProviderModelsMock).not.toHaveBeenCalled();
+  });
+
+  it('uses completion status instead of a stale Copilot status check and syncs models when connected', async () => {
+    const providerStore = await loadProviderStore();
+    const completionStatus = makeCopilotStatus({
+      ok: true,
+      runtime_source: 'managed',
+      runtime_status: 'ready',
+      runtime_version: '1.0.12',
+      auth_status: 'connected',
+      auth_source: 'oauth',
+      account_label: 'octo@example.com',
+      status_message: 'GitHub Copilot connected.',
+      error_code: null,
+      error_message: null,
+    });
+
+    aiGetCopilotStatusMock.mockImplementation(async () =>
+      makeCopilotStatus({
+        runtime_status: 'missing',
+        auth_status: 'error',
+        error_code: 'runtime_missing',
+      })
+    );
+    aiDownloadCopilotRuntimeMock.mockImplementation(
+      async ({ requestId, providerId }: { requestId: string; providerId?: string }) => {
+        emitTauriEvent('ai:copilot-download-complete', {
+          request_id: requestId,
+          provider_id: providerId ?? 'copilot',
+          runtime_version: '1.0.12',
+          runtime_source: 'managed',
+          status: completionStatus,
+        });
+      }
+    );
+
+    providerStore.useProviderStore.setState({
+      providerConfigs: [copilotProviderConfig],
+      providers: [copilotProvider],
+      copilotStatusByProvider: {
+        copilot: makeCopilotStatus(),
+      },
+      copilotDownloadStateByProvider: {},
+      providerReachabilityById: {},
+      authErrorsByProvider: {},
+      connectionStatus: {},
+      modelsByProvider: {},
+    });
+
+    await providerStore.useProviderStore.getState().startCopilotRuntimeDownload('copilot');
+
+    const state = providerStore.useProviderStore.getState();
+    expect(aiGetCopilotStatusMock).not.toHaveBeenCalled();
+    expect(listProviderModelsMock).toHaveBeenCalledWith('copilot');
+    expect(aiSyncProviderModelsMock).toHaveBeenCalledWith('copilot');
+    expect(state.copilotDownloadStateByProvider.copilot).toBeUndefined();
+    expect(state.copilotStatusByProvider.copilot).toMatchObject({
+      runtime_status: 'ready',
+      auth_status: 'connected',
+      account_label: 'octo@example.com',
+    });
+    expect(state.providerConfigs[0]).toMatchObject({
+      id: 'copilot',
+      authStatus: 'connected',
+      authSource: 'oauth',
+      accountLabel: 'octo@example.com',
+    });
+    expect(state.connectionStatus.copilot).toBe('online');
+  });
+});

@@ -1,0 +1,25 @@
+{
+  "name": "Gruvbox Dark",
+  "type": "dark",
+  "colors": {
+    "background": "#282828",
+    "foreground": "#ebdbb2",
+    "card": "#282828",
+    "cardForeground": "#ebdbb2",
+    "popover": "#282828",
+    "popoverForeground": "#ebdbb2",
+    "primary": "#fe8019",
+    "primaryForeground": "#282828",
+    "secondary": "#3c3836",
+    "secondaryForeground": "#ebdbb2",
+    "muted": "#3c3836",
+    "mutedForeground": "#928374",
+    "accent": "#504945",
+    "accentForeground": "#ebdbb2",
+    "destructive": "#fb4934",
+    "destructiveForeground": "#ebdbb2",
+    "border": "#3c3836",
+    "input": "#3c3836",
+    "ring": "#fe8019"
+  }
+}

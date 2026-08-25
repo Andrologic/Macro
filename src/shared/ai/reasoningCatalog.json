@@ -1,0 +1,140 @@
+{
+  "version": 2,
+  "entries": [
+    {
+      "id": "gpt-5.6",
+      "provider_types": ["chatgpt", "copilot", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.6(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-5.5",
+      "provider_types": ["chatgpt", "copilot", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.5(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["none", "low", "medium", "high", "xhigh"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-5-pro",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5-pro(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["high"],
+      "default_effort": "high"
+    },
+    {
+      "id": "gpt-5.4-pro",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.4-pro(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["medium", "high", "xhigh"],
+      "default_effort": "high"
+    },
+    {
+      "id": "gpt-5.4",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.4(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-5.2-pro",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.2-pro(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["medium", "high", "xhigh"],
+      "default_effort": "high"
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.3-codex-spark(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "high"
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.3-codex(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-5.2",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.2(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["low", "medium", "high", "xhigh"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-5.1",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5\\.1(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["none", "low", "medium", "high"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-5",
+      "provider_types": ["chatgpt", "openai", "openrouter"],
+      "model_patterns": ["^(?:openai/)?gpt-5(?:-[A-Za-z0-9._-]+)?$"],
+      "supported_efforts": ["minimal", "low", "medium", "high"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "gpt-oss",
+      "provider_types": ["openrouter", "lmstudio", "ollama"],
+      "model_patterns": [
+        "^(?:openai/)?gpt-oss-(?:20b|120b)(?:-[A-Za-z0-9._-]+)?$",
+        "^gpt-oss:(?:20b|120b)(?:-[A-Za-z0-9._-]+)?$",
+        "^openai/gpt-oss-(?:20b|120b)(?::[A-Za-z0-9._-]+)?$",
+        "^gpt-oss-(?:20b|120b)(?::[A-Za-z0-9._-]+)?$"
+      ],
+      "supported_efforts": ["low", "medium", "high"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "openrouter-claude",
+      "provider_types": ["openrouter"],
+      "model_patterns": ["^(?:anthropic/)?claude-(?:3-7|sonnet-4|opus-4|haiku-4).*$"],
+      "supported_efforts": ["low", "medium", "high", "max"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "openrouter-gemini",
+      "provider_types": ["openrouter"],
+      "model_patterns": ["^(?:google/)?gemini-(?:2\\.5|3).*$"],
+      "supported_efforts": ["low", "medium", "high"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "qwen-reasoning",
+      "provider_types": ["openrouter", "ollama", "lmstudio", "openai"],
+      "model_patterns": ["^(?:qwen/)?qwen(?:3|3\\.5|3\\.6).*$", "^qwen[^/]*:.*$"],
+      "supported_efforts": ["low", "medium", "high"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "glm-reasoning",
+      "provider_types": ["openrouter", "ollama", "lmstudio", "openai"],
+      "model_patterns": ["^(?:z-ai/|thudm/)?glm-(?:4\\.5|4\\.6|4\\.7|5).*$", "^glm[^/]*:.*$"],
+      "supported_efforts": ["low", "medium", "high"],
+      "default_effort": "medium"
+    },
+    {
+      "id": "deepseek-thinking",
+      "provider_types": ["openrouter", "ollama", "lmstudio", "openai"],
+      "model_patterns": ["^(?:deepseek/)?deepseek-(?:r1|reasoner).*$", "^deepseek-(?:r1|reasoner):.*$"],
+      "supported_efforts": ["high"],
+      "default_effort": "high",
+      "configurable": false,
+      "transport_mode": "deepseek_thinking"
+    },
+    {
+      "id": "kimi-thinking",
+      "provider_types": ["openrouter", "ollama", "lmstudio", "openai"],
+      "model_patterns": ["^(?:moonshotai/)?kimi-(?:k2|k2\\.5|k2\\.6|thinking).*$", "^kimi[^/]*:.*$"],
+      "supported_efforts": ["high"],
+      "default_effort": "high",
+      "configurable": false,
+      "transport_mode": "kimi_fixed"
+    }
+  ]
+}

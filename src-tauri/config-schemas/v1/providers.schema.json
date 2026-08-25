@@ -1,0 +1,266 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProvidersDocument",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "extensions": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true
+    },
+    "manualModels": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/ManualModelDefinition"
+      }
+    },
+    "modelOverrides": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/ModelOverride"
+      }
+    },
+    "providers": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/ProviderDefinition"
+      }
+    },
+    "schemaVersion": {
+      "default": 1,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "speech": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SpeechSettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "speechProviders": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/definitions/SpeechProviderDefinition"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "ManualModelDefinition": {
+      "type": "object",
+      "required": [
+        "modelId",
+        "providerId"
+      ],
+      "properties": {
+        "contextWindow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelOverride": {
+      "type": "object",
+      "properties": {
+        "contextWindow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProviderDefinition": {
+      "type": "object",
+      "properties": {
+        "baseUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "isLocal": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "providerType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secretRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SpeechProviderDefinition": {
+      "type": "object",
+      "required": [
+        "baseUrl",
+        "model",
+        "name",
+        "providerType"
+      ],
+      "properties": {
+        "baseUrl": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "isLocal": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "providerType": {
+          "type": "string"
+        },
+        "secretRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SpeechSettings": {
+      "type": "object",
+      "properties": {
+        "enhancementEnabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxDurationSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "providerId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

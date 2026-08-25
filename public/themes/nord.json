@@ -1,0 +1,25 @@
+{
+  "name": "Nord",
+  "type": "dark",
+  "colors": {
+    "background": "#2e3440",
+    "foreground": "#eceff4",
+    "card": "#2e3440",
+    "cardForeground": "#eceff4",
+    "popover": "#2e3440",
+    "popoverForeground": "#eceff4",
+    "primary": "#88c0d0",
+    "primaryForeground": "#2e3440",
+    "secondary": "#3b4252",
+    "secondaryForeground": "#eceff4",
+    "muted": "#3b4252",
+    "mutedForeground": "#a3be8c",
+    "accent": "#81a1c1",
+    "accentForeground": "#2e3440",
+    "destructive": "#bf616a",
+    "destructiveForeground": "#eceff4",
+    "border": "#3b4252",
+    "input": "#3b4252",
+    "ring": "#88c0d0"
+  }
+}

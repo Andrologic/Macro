@@ -1,0 +1,442 @@
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+
+let importCounter = 0;
+
+const tauriFetchMock = mock(
+  async (_input: string, _init?: RequestInit) => new Response()
+);
+let pageLifecycleController = new AbortController();
+let pageShuttingDown = false;
+
+const loadProviderApi = async () => {
+  mock.module('@tauri-apps/plugin-http', () => ({
+    fetch: tauriFetchMock,
+  }));
+
+  mock.module('../utils/pageLifecycle', () => ({
+    getPageLifecycleSignal: () => pageLifecycleController.signal,
+    isPageShuttingDown: () => pageShuttingDown,
+  }));
+
+  importCounter += 1;
+  return import(`./providerApi.ts?provider-api-test=${importCounter}`);
+};
+
+describe('providerApi fetchModelsFromProvider', () => {
+  beforeEach(() => {
+    mock.restore();
+    tauriFetchMock.mockClear();
+    pageLifecycleController = new AbortController();
+    pageShuttingDown = false;
+  });
+
+  it('returns normalized models on success', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'model-a', name: 'Model A', owned_by: 'team-a' },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://example.com/v1',
+      providerId: 'custom',
+    });
+
+    expect(result).toEqual({
+      success: true,
+      models: [
+        {
+          id: 'model-a',
+          name: 'Model A',
+          created: undefined,
+          owned_by: 'team-a',
+          description: undefined,
+          pricing: undefined,
+        },
+      ],
+    });
+  });
+
+  it('uses Anthropic API key and version headers when scanning models', async () => {
+    tauriFetchMock.mockImplementation(async (_input: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({
+        Authorization: 'Bearer anthropic-key',
+        'x-api-key': 'anthropic-key',
+        'anthropic-version': '2023-06-01',
+      });
+      return new Response(
+        JSON.stringify({ data: [{ id: 'claude-sonnet', display_name: 'Claude Sonnet' }] }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { probeModelsEndpoint } = await loadProviderApi();
+    const result = await probeModelsEndpoint({
+      baseUrl: 'https://api.anthropic.com/v1',
+      providerId: 'anthropic',
+      providerType: 'anthropic',
+      apiKey: 'anthropic-key',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models).toEqual([
+      expect.objectContaining({ id: 'claude-sonnet', name: 'Claude Sonnet' }),
+    ]);
+  });
+
+  it('keeps the active vLLM model length from OpenAI-compatible metadata', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'ling-3.0-flash-nvfp4',
+            owned_by: 'vllm',
+            max_model_len: 131_072,
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://dgx.example.test/v1',
+      providerId: 'dgx-ling',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]).toMatchObject({
+      id: 'ling-3.0-flash-nvfp4',
+      max_model_len: 131_072,
+    });
+  });
+
+  it('returns a timeout message when the request is aborted by the local timeout', async () => {
+    tauriFetchMock.mockImplementation(
+      async (_input: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener(
+            'abort',
+            () => reject(new Error('Request cancelled')),
+            { once: true }
+          );
+        })
+    );
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://example.com/v1',
+      providerId: 'custom',
+      timeout: 1,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.models).toEqual([]);
+    expect(result.error).toContain('Connection timeout');
+  });
+
+  it('returns request cancelled when the page lifecycle aborts the request', async () => {
+    tauriFetchMock.mockImplementation(
+      async (_input: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener(
+            'abort',
+            () => reject(new Error('Request cancelled')),
+            { once: true }
+          );
+        })
+    );
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    setTimeout(() => {
+      pageShuttingDown = true;
+      pageLifecycleController.abort('hmr-dispose');
+    }, 0);
+
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://example.com/v1',
+      providerId: 'custom',
+      timeout: 100,
+    });
+
+    expect(result).toEqual({
+      success: false,
+      models: [],
+      error: 'Request cancelled.',
+    });
+  });
+
+  it('keeps supported_parameters from provider model payloads', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'openai/gpt-5',
+            name: 'GPT-5',
+            supported_parameters: ['reasoning', 'tools'],
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      providerId: 'openrouter',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]?.supported_parameters).toEqual(['reasoning', 'tools']);
+  });
+
+  it('keeps provider reasoning metadata from model payloads', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'gpt-5.5',
+            name: 'GPT-5.5',
+            default_reasoning_level: 'medium',
+            supported_reasoning_levels: [
+              { effort: 'low', description: 'Fast responses with lighter reasoning' },
+              { effort: 'medium', description: 'Balances speed and reasoning depth' },
+              { effort: 'high', description: 'Greater reasoning depth' },
+              { effort: 'xhigh', description: 'Extra high reasoning depth' },
+            ],
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://api.openai.com/v1',
+      providerId: 'openai',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]).toMatchObject({
+      id: 'gpt-5.5',
+      supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'],
+      default_reasoning_effort: 'medium',
+    });
+  });
+
+  it('keeps OpenRouter context length metadata from provider model payloads', async () => {
+    tauriFetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({
+        object: 'list',
+        data: [
+          {
+            id: 'openai/gpt-5',
+            name: 'GPT-5',
+            context_length: 200_000,
+            top_provider: {
+              context_length: 131_072,
+              max_completion_tokens: 16_000,
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      providerId: 'openrouter',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models[0]).toMatchObject({
+      id: 'openai/gpt-5',
+      context_length: 200_000,
+      top_provider: {
+        context_length: 131_072,
+        max_completion_tokens: 16_000,
+      },
+    });
+  });
+
+  it('uses LM Studio native model metadata before the OpenAI-compatible endpoint', async () => {
+    tauriFetchMock.mockImplementation(async (input: string) => {
+      expect(String(input)).toBe('http://localhost:1234/api/v1/models');
+      return new Response(
+        JSON.stringify({
+          models: [
+            {
+              type: 'llm',
+              publisher: 'qwen',
+              key: 'qwen/qwen3-coder',
+              display_name: 'Qwen3 Coder',
+              loaded_instances: [
+                {
+                  id: 'qwen/qwen3-coder',
+                  config: { context_length: 32768 },
+                },
+              ],
+              max_context_length: 131072,
+            },
+            {
+              type: 'embedding',
+              key: 'text-embedding',
+              display_name: 'Embedding',
+              max_context_length: 2048,
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      providerId: 'lmstudio',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]).toMatchObject({
+      id: 'qwen/qwen3-coder',
+      name: 'Qwen3 Coder',
+      context_length: 32768,
+      max_context_length: 131072,
+    });
+  });
+
+  it('falls back to LM Studio v0 metadata when the native v1 endpoint is unavailable', async () => {
+    tauriFetchMock.mockImplementation(async (input: string) => {
+      if (String(input) === 'http://localhost:1234/api/v1/models') {
+        return new Response('missing', { status: 404 });
+      }
+      expect(String(input)).toBe('http://localhost:1234/api/v0/models');
+      return new Response(
+        JSON.stringify({
+          object: 'list',
+          data: [
+            {
+              id: 'llama-3.1-8b',
+              type: 'llm',
+              publisher: 'meta',
+              max_context_length: 131072,
+            },
+            {
+              id: 'nomic-embed',
+              type: 'embeddings',
+              max_context_length: 2048,
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { fetchModelsFromProvider } = await loadProviderApi();
+    const result = await fetchModelsFromProvider({
+      baseUrl: 'http://localhost:1234/v1',
+      providerId: 'lmstudio',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.models).toEqual([
+      expect.objectContaining({
+        id: 'llama-3.1-8b',
+        max_context_length: 131072,
+      }),
+    ]);
+  });
+
+  it('falls back to chat completions when the models endpoint is unsupported', async () => {
+    tauriFetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (String(input).endsWith('/models')) {
+        return new Response('missing', { status: 404 });
+      }
+
+      expect(init?.method).toBe('POST');
+      return new Response(
+        JSON.stringify({
+          id: 'resp_123',
+          choices: [{ message: { role: 'assistant', content: 'ok' } }],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    });
+
+    const { probeProviderReachability } = await loadProviderApi();
+    const result = await probeProviderReachability({
+      baseUrl: 'https://api.minimax.io/v1',
+      providerId: 'custom',
+      preferredModelId: 'MiniMax-M2.7',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'reachable',
+      source: 'chat_completions_probe',
+      modelIdUsed: 'MiniMax-M2.7',
+    });
+  });
+
+  it('returns probe_unsupported when verification needs a model and none is known', async () => {
+    tauriFetchMock.mockImplementation(async (input: string) => {
+      if (String(input).endsWith('/models')) {
+        return new Response('missing', { status: 404 });
+      }
+
+      throw new Error('unexpected request');
+    });
+
+    const { probeProviderReachability } = await loadProviderApi();
+    const result = await probeProviderReachability({
+      baseUrl: 'https://api.minimax.io/v1',
+      providerId: 'custom',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 'probe_unsupported',
+      source: 'chat_completions_probe',
+    });
+    expect(result.message).toContain('requires a known model');
+  });
+});

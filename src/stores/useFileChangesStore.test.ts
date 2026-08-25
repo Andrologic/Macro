@@ -1,0 +1,1848 @@
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createFileChangesStore, resolveChangeFilePath } from './useFileChangesStore';
+import { toBranchWorktreeKey } from '../services/implementTaskDerivation';
+import {
+  SmartCommitMessageGenerationError,
+  type GeneratedCommitMessages,
+} from '../services/smartCommitMessageGenerator';
+
+const repoAPath = 'C:/repos/project-a';
+const repoBPath = 'C:/repos/project-b';
+const repoCPath = 'C:/repos/project-c';
+const worktreeAPath = 'C:/worktrees/project-a-feature';
+const worktreeBPath = 'C:/worktrees/project-b-feature';
+const worktreeKeyA = toBranchWorktreeKey('project-a', 'feature/task-a');
+const worktreeKeyB = toBranchWorktreeKey('project-b', 'feature/task-b');
+const missingWorktreeKey = toBranchWorktreeKey('project-b', 'feature/task-a');
+const directWorktreeKey = toBranchWorktreeKey('project-a', 'direct');
+const directRepositoryId = `project-a::${directWorktreeKey}`;
+const repositoryIdA = `project-a::${worktreeKeyA}`;
+const repositoryIdB = `project-b::${worktreeKeyB}`;
+const changeIdA = `${repositoryIdA}::src/main.ts`;
+const changeIdB = `${repositoryIdB}::README.md`;
+
+const makeProject = (id: string, name: string, path: string) => ({
+  id,
+  name,
+  mountName: id,
+  path,
+  created_at: '2026-04-13T00:00:00.000Z',
+  status: 'active' as const,
+  metadata: {
+    description: '',
+    tags: [],
+    team_members: [],
+    api_contracts: [],
+    dependencies: [],
+  },
+});
+
+const initialOriginalFiles: Record<string, Record<string, string>> = {
+  [worktreeAPath]: {
+    'src/main.ts': 'const value = 1;\nconsole.log(value);',
+    'src/deleted.ts': 'export const removed = true;\n',
+  },
+  [worktreeBPath]: {
+    'README.md': 'Hello',
+  },
+};
+
+let currentFiles: Record<string, Record<string, string | null>> = {};
+let stagedFiles: Record<string, Record<string, string | null>> = {};
+let pathsWithEmptyGitDiff = new Set<string>();
+let directProjectMode = false;
+let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
+  'task-1': 'InProgress',
+  'task-2': 'InProgress',
+  'task-3': 'InProgress',
+  'task-4': 'Pending',
+  'task-6': 'InProgress',
+};
+
+const getHeadContent = (repoPath: string, path: string): string | undefined =>
+  initialOriginalFiles[repoPath]?.[path];
+
+const getIndexContent = (repoPath: string, path: string): string | undefined => {
+  const overrides = stagedFiles[repoPath] ?? {};
+  if (Object.prototype.hasOwnProperty.call(overrides, path)) {
+    return typeof overrides[path] === 'string' ? overrides[path] ?? undefined : undefined;
+  }
+  return getHeadContent(repoPath, path);
+};
+
+const getWorktreeContent = (repoPath: string, path: string): string | undefined => {
+  const overrides = currentFiles[repoPath] ?? {};
+  if (Object.prototype.hasOwnProperty.call(overrides, path)) {
+    return typeof overrides[path] === 'string' ? overrides[path] ?? undefined : undefined;
+  }
+  return getIndexContent(repoPath, path);
+};
+
+const toStatus = (
+  leftContent: string | undefined,
+  rightContent: string | undefined,
+  whenAdded: string = 'added'
+): string | null => {
+  if (leftContent === rightContent) {
+    return null;
+  }
+  if (leftContent === undefined && rightContent !== undefined) {
+    return whenAdded;
+  }
+  if (leftContent !== undefined && rightContent === undefined) {
+    return 'deleted';
+  }
+  return 'modified';
+};
+
+const getRepositoryPaths = (repoPath: string): string[] => {
+  const head = Object.keys(initialOriginalFiles[repoPath] ?? {});
+  const index = Object.keys(stagedFiles[repoPath] ?? {});
+  const worktree = Object.keys(currentFiles[repoPath] ?? {});
+  return Array.from(new Set([...head, ...index, ...worktree])).sort((left, right) => left.localeCompare(right));
+};
+
+const buildPatch = (repoPath: string, path: string): string => {
+  const original = getHeadContent(repoPath, path) ?? '';
+  const modified = getWorktreeContent(repoPath, path) ?? '';
+  const originalLines = original.split('\n');
+  const modifiedLines = modified.split('\n');
+  const patchLines = [
+    `diff --git a/${path} b/${path}`,
+    'index 1111111..2222222 100644',
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    `@@ -1,${originalLines.length} +1,${modifiedLines.length} @@`,
+  ];
+
+  const maxLines = Math.max(originalLines.length, modifiedLines.length);
+  for (let index = 0; index < maxLines; index += 1) {
+    const originalLine = originalLines[index];
+    const modifiedLine = modifiedLines[index];
+
+    if (originalLine === modifiedLine) {
+      patchLines.push(` ${originalLine ?? ''}`);
+      continue;
+    }
+
+    if (originalLine !== undefined) {
+      patchLines.push(`-${originalLine}`);
+    }
+
+    if (modifiedLine !== undefined) {
+      patchLines.push(`+${modifiedLine}`);
+    }
+  }
+
+  return patchLines.join('\n');
+};
+
+const buildGitStatus = (repoPath: string) => {
+  const paths = getRepositoryPaths(repoPath);
+  const staged = paths.flatMap((path) => {
+    const status = toStatus(getHeadContent(repoPath, path), getIndexContent(repoPath, path));
+    return status ? [{ path, status }] : [];
+  });
+  const unstaged = paths.flatMap((path) => {
+    const indexContent = getIndexContent(repoPath, path);
+    const worktreeContent = getWorktreeContent(repoPath, path);
+    const status = toStatus(indexContent, worktreeContent);
+    if (!status || status === 'added') {
+      return [];
+    }
+    return [{ path, status }];
+  });
+  const untracked = paths.flatMap((path) => {
+    const indexContent = getIndexContent(repoPath, path);
+    const worktreeContent = getWorktreeContent(repoPath, path);
+    return indexContent === undefined && worktreeContent !== undefined
+      ? [{ path, status: 'untracked' }]
+      : [];
+  });
+  const changes = [...staged, ...unstaged, ...untracked];
+
+  if (repoPath === worktreeAPath) {
+    return {
+      branch: 'feature/task-a',
+      head_commit: null,
+      staged_files: staged,
+      unstaged_files: unstaged,
+      untracked_files: untracked,
+      conflicted_files: [],
+      conflictedFiles: [],
+      merge_in_progress: false,
+      mergeInProgress: false,
+      is_clean: changes.length === 0,
+    };
+  }
+
+  if (repoPath === worktreeBPath) {
+    return {
+      branch: 'feature/task-b',
+      head_commit: null,
+      staged_files: staged,
+      unstaged_files: unstaged,
+      untracked_files: untracked,
+      conflicted_files: [],
+      conflictedFiles: [],
+      merge_in_progress: false,
+      mergeInProgress: false,
+      is_clean: changes.length === 0,
+    };
+  }
+
+  return {
+    branch: 'develop',
+    head_commit: null,
+    staged_files: [],
+    unstaged_files: [],
+    untracked_files: [],
+    conflicted_files: [],
+    conflictedFiles: [],
+    merge_in_progress: false,
+    mergeInProgress: false,
+    is_clean: true,
+  };
+};
+
+const gitStatusMock = mock(async (repoPath: string) => buildGitStatus(repoPath));
+const gitWorktreeInspectMock = mock(async (
+  params: { repoPath: string; taskId: string; branchName?: string | null }
+) => {
+  if (params.taskId === worktreeKeyA) {
+    return {
+      taskId: params.taskId,
+      worktreePath: worktreeAPath,
+      branchName: params.branchName ?? 'feature/task-a',
+      status: 'ready' as const,
+      isDirty: false,
+    };
+  }
+  if (params.taskId === worktreeKeyB) {
+    return {
+      taskId: params.taskId,
+      worktreePath: worktreeBPath,
+      branchName: params.branchName ?? 'feature/task-b',
+      status: 'ready' as const,
+      isDirty: false,
+    };
+  }
+  return {
+    taskId: params.taskId,
+    worktreePath: '',
+    branchName: params.branchName ?? null,
+    status: 'absent' as const,
+    isDirty: null,
+  };
+});
+
+const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?: string[] }) => {
+  const path = paths?.[0] || '';
+  if (pathsWithEmptyGitDiff.has(`${repoPath}::${path}`)) {
+    return '';
+  }
+  return buildPatch(repoPath, paths?.[0] || '');
+});
+const gitMergeCheckMock = mock(async (_params: { repoPath: string; branchName: string; intoBranch: string }) => ({
+  mergeable: true,
+  conflictFiles: [],
+  hasChanges: false,
+}));
+
+const gitReadFilePairMock = mock(async ({ repoPath, path }: { repoPath: string; path: string }) => {
+  const headContent = getHeadContent(repoPath, path);
+  const indexContent = getIndexContent(repoPath, path);
+  const worktreeContent = getWorktreeContent(repoPath, path);
+  return {
+    headExists: headContent !== undefined,
+    headContent: headContent ?? '',
+    indexExists: indexContent !== undefined,
+    indexContent: indexContent ?? '',
+    worktreeExists: worktreeContent !== undefined,
+    worktreeContent: worktreeContent ?? '',
+    originalContent: headContent ?? '',
+    modifiedContent: worktreeContent ?? '',
+  };
+});
+
+const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: string }) => {
+  const normalized = path.replace(/\\/g, '/');
+  const isWorktreeA = normalized.startsWith(`${worktreeAPath}/`);
+  const base = isWorktreeA ? worktreeAPath : worktreeBPath;
+  const relative = normalized.slice(base.length + 1);
+  currentFiles[base] ||= {};
+  currentFiles[base][relative] = content;
+  return {
+    path: normalized,
+    bytes_written: content.length,
+    created: false,
+    skipped: false,
+  };
+});
+
+const resolveMockWorkspaceFile = (path: string): {
+  base: string;
+  relative: string;
+  content: string | null | undefined;
+} => {
+  const normalized = path.replace(/\\/g, '/');
+  const base = normalized.startsWith(`${worktreeAPath}/`)
+    ? worktreeAPath
+    : worktreeBPath;
+  const relative = normalized.slice(base.length + 1);
+  return {
+    base,
+    relative,
+    content: currentFiles[base]?.[relative],
+  };
+};
+
+const fsExistsMock = mock(async (path: string) => {
+  const { content } = resolveMockWorkspaceFile(path);
+  return content !== undefined && content !== null;
+});
+
+const fsReadFileWithOptionsMock = mock(async ({ path }: { path: string }) => {
+  const { content } = resolveMockWorkspaceFile(path);
+  if (content === undefined || content === null) {
+    throw new Error(`File not found: ${path}`);
+  }
+  return {
+    content,
+    language: 'TypeScript',
+    is_binary: false,
+    size: content.length,
+    encoding: 'utf-8',
+    revision: `revision:${content}`,
+  };
+});
+
+const gitRestorePathsMock = mock(async ({
+  repoPath,
+  paths,
+  target,
+}: {
+  repoPath: string;
+  paths: string[];
+  target?: 'worktree' | 'staged' | 'staged_and_worktree';
+}) => {
+  currentFiles[repoPath] ||= {};
+  stagedFiles[repoPath] ||= {};
+  for (const path of paths) {
+    if (target === 'staged') {
+      const stagedContent = stagedFiles[repoPath][path];
+      if (Object.prototype.hasOwnProperty.call(stagedFiles[repoPath], path)) {
+        currentFiles[repoPath][path] = stagedContent ?? null;
+        delete stagedFiles[repoPath][path];
+      }
+      continue;
+    }
+    if (target === 'staged_and_worktree') {
+      delete stagedFiles[repoPath][path];
+    }
+    delete currentFiles[repoPath][path];
+  }
+});
+
+const gitAddMock = mock(async ({ repoPath, paths }: { repoPath: string; paths: string[] }) => {
+  stagedFiles[repoPath] ||= {};
+  currentFiles[repoPath] ||= {};
+  for (const path of paths) {
+    const headContent = getHeadContent(repoPath, path);
+    const worktreeContent = getWorktreeContent(repoPath, path);
+    if (worktreeContent === headContent) {
+      delete stagedFiles[repoPath][path];
+    } else {
+      stagedFiles[repoPath][path] = worktreeContent ?? null;
+    }
+    delete currentFiles[repoPath][path];
+  }
+});
+const commitRepository = async ({ repoPath }: { repoPath: string }) => {
+  stagedFiles[repoPath] = {};
+  return repoPath === worktreeAPath ? 'hash-a' : 'hash-b';
+};
+
+const buildGeneratedCommitMessages = async (input: {
+  repositories: Array<{ repositoryId: string }>;
+}): Promise<GeneratedCommitMessages> => ({
+  repositories: input.repositories.map((repository) => ({
+    repositoryId: repository.repositoryId,
+    type: 'feat' as const,
+    scope: repository.repositoryId.split('::')[0],
+    subject: `implement ${repository.repositoryId} flow`,
+    body: `Update ${repository.repositoryId}.`,
+  })),
+});
+
+const gitCommitMock = mock(commitRepository);
+const generateCommitMessagesMock = mock(buildGeneratedCommitMessages);
+
+const tasksById = {
+  'task-1': {
+    id: 'task-1',
+    title: 'Implement multi repo flow',
+    description: 'Test task',
+    status: 'InProgress' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a', 'project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'feature/task-a',
+        worktreeKey: worktreeKeyA,
+        planBranchName: 'plan/integration',
+      },
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-b',
+        worktreeKey: worktreeKeyB,
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
+  'task-2': {
+    id: 'task-2',
+    title: 'Follow-up review task',
+    description: 'Second task',
+    status: 'InProgress' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a', 'project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'feature/task-a',
+        worktreeKey: worktreeKeyA,
+        planBranchName: 'plan/integration',
+      },
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-b',
+        worktreeKey: worktreeKeyB,
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
+  'task-3': {
+    id: 'task-3',
+    title: 'Same branch without dedicated worktree',
+    description: 'Missing worktree mapping',
+    status: 'InProgress' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-b',
+    project_ids: ['project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-a',
+        worktreeKey: missingWorktreeKey,
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
+  'task-4': {
+    id: 'task-4',
+    title: 'Integrate GCC Compiler',
+    description: 'Pending task without worktree yet',
+    status: 'Pending' as const,
+    task_source: 'architect' as const,
+    project_id: 'project-b',
+    project_ids: ['project-b'],
+    assigned_branch: 'feature/task-a',
+    execution_targets: [
+      {
+        projectId: 'project-b',
+        branchName: 'feature/task-a',
+        worktreeKey: missingWorktreeKey,
+        planBranchName: 'plan/integration',
+      },
+    ],
+  },
+  'task-5': {
+    id: 'task-5',
+    title: 'Standalone release merge',
+    description: 'Standalone task with a repo-specific target branch',
+    status: 'InProgress' as const,
+    task_source: 'standalone' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a'],
+    assigned_branch: 'feature/task-a',
+    base_branch: 'develop',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'feature/task-a',
+        targetBranchName: 'release/project-a',
+        worktreeKey: worktreeKeyA,
+      },
+    ],
+  },
+  'task-6': {
+    id: 'task-6',
+    title: 'Direct edit task',
+    description: 'Task without Git',
+    status: 'InProgress' as const,
+    task_source: 'standalone' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a'],
+    assigned_branch: 'direct',
+    base_branch: 'direct',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'direct',
+        executionMode: 'direct' as const,
+        checkpointId: 'task-6-0000000000000001',
+        targetBranchName: 'direct',
+        worktreeKey: directWorktreeKey,
+      },
+    ],
+  },
+};
+
+type TestTask = Omit<(typeof tasksById)[keyof typeof tasksById], 'status'> & {
+  status: typeof taskStatuses[string];
+};
+
+const setTaskStatusMock = mock(async (taskId: string, status: string) => {
+  if (taskId in taskStatuses) {
+    taskStatuses[taskId] = status as typeof taskStatuses[string];
+  }
+});
+
+const taskStoreState: {
+  activeRepositoryPath: string | null;
+  activeBranchName: string | null;
+  branchWorktrees: Record<string, string>;
+  getTaskById: (taskId: string) => TestTask | undefined;
+  setTaskStatus: typeof setTaskStatusMock;
+  completeTask: () => Promise<void>;
+} = {
+  activeRepositoryPath: worktreeAPath,
+  activeBranchName: 'feature/task-a',
+  branchWorktrees: {
+    [worktreeKeyA]: worktreeAPath,
+    [worktreeKeyB]: worktreeBPath,
+  },
+  getTaskById: (taskId: string) => {
+    const task = tasksById[taskId as keyof typeof tasksById];
+    if (!task) return undefined;
+    return { ...task, status: taskStatuses[taskId] ?? task.status };
+  },
+  setTaskStatus: setTaskStatusMock,
+  completeTask: async () => undefined,
+};
+
+const appStoreState = {
+  selectedProjectId: null as string | null,
+  selectedGroupId: 'group-1' as string | null,
+  selectedTaskId: 'task-1' as string | null,
+  projectGroups: [
+    {
+      id: 'group-1',
+      name: 'Group 1',
+      isOpen: true,
+      projects: [
+        makeProject('project-a', 'Project A', repoAPath),
+        makeProject('project-b', 'Project B', repoBPath),
+      ],
+    },
+    {
+      id: 'group-2',
+      name: 'Group 2',
+      isOpen: true,
+      projects: [
+        makeProject('project-c', 'Project C', repoCPath),
+      ],
+    },
+  ],
+  getProjectById: (projectId: string) => {
+    if (projectId === 'project-a') return {
+      id: 'project-a',
+      name: 'Project A',
+      path: repoAPath,
+      directEdit: directProjectMode,
+      gitSetupState: directProjectMode ? 'not_git' as const : 'ready' as const,
+    };
+    if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath };
+    if (projectId === 'project-c') return { id: 'project-c', name: 'Project C', path: repoCPath };
+    return undefined;
+  },
+};
+
+let useFileChangesStore: ReturnType<typeof createFileChangesStore>;
+
+describe('useFileChangesStore', () => {
+  beforeEach(() => {
+    currentFiles = {
+      [worktreeAPath]: {
+        'src/main.ts': 'const value = 2;\nconsole.log(value);',
+      },
+      [worktreeBPath]: {
+        'README.md': 'Hello\nupdated',
+      },
+    };
+    stagedFiles = {
+      [worktreeAPath]: {},
+      [worktreeBPath]: {},
+    };
+    taskStatuses = {
+      'task-1': 'InProgress',
+      'task-2': 'InProgress',
+      'task-3': 'InProgress',
+      'task-4': 'Pending',
+      'task-5': 'InProgress',
+      'task-6': 'InProgress',
+    };
+    pathsWithEmptyGitDiff = new Set();
+    directProjectMode = false;
+    appStoreState.selectedGroupId = 'group-1';
+    appStoreState.selectedProjectId = null;
+    appStoreState.selectedTaskId = 'task-1';
+    Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+      delete taskStoreState.branchWorktrees[key];
+    });
+    taskStoreState.branchWorktrees[worktreeKeyA] = worktreeAPath;
+    taskStoreState.branchWorktrees[worktreeKeyB] = worktreeBPath;
+
+    gitStatusMock.mockClear();
+    gitWorktreeInspectMock.mockClear();
+    gitDiffMock.mockClear();
+    gitMergeCheckMock.mockClear();
+    gitMergeCheckMock.mockImplementation(async (_params: { repoPath: string; branchName: string; intoBranch: string }) => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: false,
+    }));
+    gitReadFilePairMock.mockClear();
+    fsExistsMock.mockClear();
+    fsReadFileWithOptionsMock.mockClear();
+    fsWriteFileMock.mockClear();
+    gitRestorePathsMock.mockClear();
+    gitAddMock.mockClear();
+    gitCommitMock.mockClear();
+    gitCommitMock.mockImplementation(commitRepository);
+    generateCommitMessagesMock.mockClear();
+    generateCommitMessagesMock.mockImplementation(buildGeneratedCommitMessages);
+    setTaskStatusMock.mockClear();
+
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: (partial) => {
+        if (partial.branchWorktrees) {
+          Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+            delete taskStoreState.branchWorktrees[key];
+          });
+          Object.assign(taskStoreState.branchWorktrees, partial.branchWorktrees);
+        }
+        if ('activeRepositoryPath' in partial) {
+          taskStoreState.activeRepositoryPath = partial.activeRepositoryPath ?? null;
+        }
+        if ('activeBranchName' in partial) {
+          taskStoreState.activeBranchName = partial.activeBranchName ?? null;
+        }
+      },
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    useFileChangesStore.getState().resetReviewState();
+  });
+
+  it('builds absolute file paths with normalized separators', () => {
+    expect(resolveChangeFilePath('C:\\repos\\macro\\', 'src\\main.ts')).toBe('C:/repos/macro/src/main.ts');
+  });
+
+  it('loads one review repository per execution target', async () => {
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const { repositories, reviewSummary } = useFileChangesStore.getState();
+    expect(repositories).toHaveLength(2);
+    expect(repositories.map((repository: { projectId: string }) => repository.projectId)).toEqual(['project-a', 'project-b']);
+    expect(
+      repositories.map((repository: { stats: { pendingVisibleFileCount: number } }) =>
+        repository.stats.pendingVisibleFileCount
+      )
+    ).toEqual([1, 1]);
+    expect(reviewSummary.repositoryCount).toBe(2);
+    expect(reviewSummary.nextAction).toBe('validate_repository');
+    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdA);
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+  });
+
+  it('reviews and accepts direct edits without invoking project Git commands', async () => {
+    directProjectMode = false;
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    let directStaged = false;
+    let directAccepted = false;
+    const directReviewSnapshotMock = mock(async () => ({
+      branch: 'direct',
+      stagedPaths: directStaged && !directAccepted ? ['src/main.ts'] : [],
+      changes: directAccepted ? [] : [{
+        path: 'src/main.ts',
+        status: 'modified',
+        additions: 1,
+        deletions: 1,
+        hasPendingVisibleChange: !directStaged,
+        hasValidatedStage: directStaged,
+        validatedRemovedLineNumbers: directStaged ? [1] : [],
+        validatedAddedLineNumbers: directStaged ? [1] : [],
+        isBinary: false,
+        tooLarge: false,
+        requiresHydration: false,
+        originalContent: 'const value = 1;',
+        indexContent: directStaged ? 'const value = 2;' : 'const value = 1;',
+        modifiedContent: 'const value = 2;',
+        language: 'TypeScript',
+        hunks: [],
+      }],
+      conflictedFiles: [],
+      mergeInProgress: false,
+      isClean: directAccepted,
+      hasAcceptedChanges: directAccepted,
+    }));
+    const directStagePathsMock = mock(async () => {
+      directStaged = true;
+    });
+    const directAcceptChangesMock = mock(async () => {
+      directAccepted = true;
+      return 'checkpoint-hash';
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+        directStagePaths: directStagePathsMock,
+        directAcceptChanges: directAcceptChangesMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const directRepository = useFileChangesStore.getState().getRepository(directRepositoryId);
+    expect(directRepository?.executionMode).toBe('direct');
+    const changeId = directRepository?.changes[0]?.id;
+    expect(changeId).toBeTruthy();
+
+    await useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!]);
+    const result = await useFileChangesStore.getState().commitAllReadyTaskRepositories();
+
+    expect(result.commits[0]?.hash).toBe('checkpoint-hash');
+    expect(directStagePathsMock).toHaveBeenCalledWith({
+      taskId: 'task-6',
+      projectPath: repoAPath,
+      checkpointId: 'task-6-0000000000000001',
+      paths: ['src/main.ts'],
+    });
+    expect(directAcceptChangesMock).toHaveBeenCalledWith({
+      taskId: 'task-6',
+      projectPath: repoAPath,
+      checkpointId: 'task-6-0000000000000001',
+    });
+    expect(generateCommitMessagesMock).not.toHaveBeenCalled();
+    expect(gitAddMock).not.toHaveBeenCalled();
+    expect(gitCommitMock).not.toHaveBeenCalled();
+
+    const restartedStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+    await restartedStore.getState().loadCurrentChanges();
+
+    expect(restartedStore.getState().getRepository(directRepositoryId)?.commitState).toBe('committed');
+  });
+
+  it('rehydrates prepared task worktree mappings before loading changes', async () => {
+    Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+      delete taskStoreState.branchWorktrees[key];
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const { repositories, currentTaskLoadState } = useFileChangesStore.getState();
+    expect(currentTaskLoadState).toBe('ready');
+    expect(repositories).toHaveLength(2);
+    expect(taskStoreState.branchWorktrees).toEqual({
+      [worktreeKeyA]: worktreeAPath,
+      [worktreeKeyB]: worktreeBPath,
+    });
+    expect(gitWorktreeInspectMock).toHaveBeenCalledTimes(2);
+    expect(gitStatusMock).toHaveBeenCalledWith(worktreeAPath);
+    expect(gitStatusMock).toHaveBeenCalledWith(worktreeBPath);
+  });
+
+  it('normalizes legacy branch-name worktree mappings before loading changes', async () => {
+    Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
+      delete taskStoreState.branchWorktrees[key];
+    });
+    taskStoreState.branchWorktrees['feature/task-a'] = worktreeAPath;
+    taskStoreState.branchWorktrees['feature/task-b'] = worktreeBPath;
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(useFileChangesStore.getState().currentTaskLoadState).toBe('ready');
+    expect(taskStoreState.branchWorktrees).toMatchObject({
+      'feature/task-a': worktreeAPath,
+      'feature/task-b': worktreeBPath,
+      [worktreeKeyA]: worktreeAPath,
+      [worktreeKeyB]: worktreeBPath,
+    });
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to legacy Git review loading only when the Rust command is unsupported', async () => {
+    const gitReviewSnapshotMock = mock(async () => {
+      throw new Error('unknown command git_review_snapshot');
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(gitReviewSnapshotMock).toHaveBeenCalled();
+    expect(gitStatusMock).toHaveBeenCalled();
+  });
+
+  it('propagates real Rust Git review errors instead of masking them', async () => {
+    const gitReviewSnapshotMock = mock(async () => {
+      throw new Error('git_review_snapshot failed: repository is locked');
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(useFileChangesStore.getState().lastError).toContain('repository is locked');
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the execution target branch as the standalone integration branch', async () => {
+    appStoreState.selectedTaskId = 'task-5';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(repository?.planBranchName).toBe('release/project-a');
+  });
+
+  it('narrows loaded repositories to the selected project scope', async () => {
+    appStoreState.selectedProjectId = 'project-b';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const { repositories, reviewSummary } = useFileChangesStore.getState();
+    expect(repositories).toHaveLength(1);
+    expect(repositories[0]?.projectId).toBe('project-b');
+    expect(reviewSummary.repositoryCount).toBe(1);
+    expect(reviewSummary.nextRepositoryId).toBe(repositoryIdB);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeBPath]);
+  });
+
+  it('marks the task as out of scope when the selected group has no matching repositories', async () => {
+    appStoreState.selectedGroupId = 'group-2';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-1');
+    expect(nextState.currentTaskLoadState).toBe('out_of_scope');
+    expect(nextState.currentTaskLoadMessage).toBe('This task has no changes in Group 2.');
+    expect(nextState.repositories).toHaveLength(0);
+    expect(nextState.reviewSummary.repositoryCount).toBe(0);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('recomputes the scoped repository list when the focused project changes on the same task', async () => {
+    appStoreState.selectedProjectId = 'project-a';
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+    expect(useFileChangesStore.getState().reviewSummary.nextRepositoryId).toBe(repositoryIdA);
+
+    appStoreState.selectedProjectId = 'project-b';
+    await store.loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-1');
+    expect(nextState.repositories).toHaveLength(1);
+    expect(nextState.repositories[0]?.projectId).toBe('project-b');
+    expect(nextState.reviewSummary.nextRepositoryId).toBe(repositoryIdB);
+  });
+
+  it('reads repository changes from the task worktrees and reloads external edits', async () => {
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).toEqual([worktreeAPath, worktreeBPath]);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).not.toContain(repoAPath);
+    expect(gitStatusMock.mock.calls.map((call) => call[0])).not.toContain(repoBPath);
+
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const value = 3;\nconsole.log(value);';
+
+    await store.loadCurrentChanges();
+
+    const refreshedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(refreshedRepository?.worktreePath).toBe(worktreeAPath);
+    expect(refreshedRepository?.changes[0]?.modifiedContent).toContain('const value = 3;');
+  });
+
+  it('builds a synthetic textual diff for untracked created files when git diff is empty', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    pathsWithEmptyGitDiff.add(`${worktreeAPath}::src/new.ts`);
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const newChange = repository?.changes.find((change) => change.path === 'src/new.ts');
+
+    expect(newChange?.status).toBe('added');
+    expect(newChange?.modifiedContent).toBe('export const created = true;\n');
+    expect(newChange?.additions).toBeGreaterThan(0);
+    expect(newChange?.deletions).toBe(0);
+    expect(newChange?.hunks).toHaveLength(1);
+    expect(newChange?.hunks[0]?.lines.every((line) => line.type === 'added')).toBe(true);
+    expect(gitReadFilePairMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      path: 'src/new.ts',
+    });
+  });
+
+  it('builds a synthetic textual diff for deleted files when git diff is empty', async () => {
+    currentFiles[worktreeAPath]['src/deleted.ts'] = null;
+    pathsWithEmptyGitDiff.add(`${worktreeAPath}::src/deleted.ts`);
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const deletedChange = repository?.changes.find((change) => change.path === 'src/deleted.ts');
+
+    expect(deletedChange?.status).toBe('deleted');
+    expect(deletedChange?.originalContent).toBe('export const removed = true;\n');
+    expect(deletedChange?.additions).toBe(0);
+    expect(deletedChange?.deletions).toBeGreaterThan(0);
+    expect(deletedChange?.hunks).toHaveLength(1);
+    expect(deletedChange?.hunks[0]?.lines.every((line) => line.type === 'removed')).toBe(true);
+    expect(gitReadFilePairMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      path: 'src/deleted.ts',
+    });
+  });
+
+  it('keeps the current repository list visible during silent refreshes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+
+    const stateWhileRefreshing = useFileChangesStore.getState();
+    expect(stateWhileRefreshing.currentTaskLoadState).toBe('ready');
+    expect(stateWhileRefreshing.isLoading).toBe(false);
+    expect(stateWhileRefreshing.repositories).toHaveLength(2);
+
+    releaseStatuses();
+    await silentRefresh;
+  });
+
+  it('preserves an open diff modal session during silent refreshes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 42;\nconsole.log(value);');
+
+    await store.loadCurrentChanges({ silent: true });
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(true);
+    expect(nextState.selectedDiffTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: changeIdA,
+    });
+    expect(nextState.diffModalSession?.rightDraftContent).toContain('const value = 42;');
+    expect(nextState.diffModalSession?.isDirty).toBe(true);
+  });
+
+  it('preserves a diff modal opened while a silent refresh is in flight', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 42;\nconsole.log(value);');
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(true);
+    expect(nextState.selectedDiffTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: changeIdA,
+    });
+    expect(nextState.diffModalSession?.rightDraftContent).toContain('const value = 42;');
+    expect(nextState.diffModalSession?.isDirty).toBe(true);
+  });
+
+  it('closes a diff modal when its file disappears during a silent refresh', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    delete currentFiles[worktreeAPath]['src/main.ts'];
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(false);
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
+  });
+
+  it('does not reopen a diff modal closed while a silent refresh is in flight', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    let releaseStatuses: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatuses = resolve;
+    });
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      await statusGate;
+      return buildGitStatus(repoPath);
+    });
+
+    const silentRefresh = store.loadCurrentChanges({ silent: true });
+    store.closeDiffModal();
+
+    releaseStatuses();
+    await silentRefresh;
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.isDiffModalOpen).toBe(false);
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
+  });
+
+  it('clears stale diff state when switching to another task', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    expect(useFileChangesStore.getState().selectedDiffTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: changeIdA,
+    });
+    expect(useFileChangesStore.getState().isDiffModalOpen).toBe(true);
+
+    appStoreState.selectedTaskId = 'task-2';
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-2');
+    expect(nextState.currentTaskLoadState).toBe('ready');
+    expect(nextState.selectedDiffTarget).toBeNull();
+    expect(nextState.diffModalSession).toBeNull();
+    expect(nextState.isDiffModalOpen).toBe(false);
+  });
+
+  it('creates an independent right-side draft session when opening the diff modal', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    expect(session).not.toBeNull();
+    expect(session?.repositoryId).toBe(repositoryIdA);
+    expect(session?.changeId).toBe(changeIdA);
+    expect(session?.originalContent).toContain('const value = 1;');
+    expect(session?.rightDraftContent).toContain('const value = 2;');
+    expect(session?.isDirty).toBe(false);
+
+    store.updateRightDraft('const value = 42;\nconsole.log(value);');
+
+    const updatedSession = useFileChangesStore.getState().getDiffModalSession();
+    expect(updatedSession?.rightDraftContent).toContain('const value = 42;');
+    expect(updatedSession?.isDirty).toBe(true);
+    expect(useFileChangesStore.getState().getChange(repositoryIdA, changeIdA)?.modifiedContent).toContain('const value = 2;');
+  });
+
+  it('opens the diff modal with full file hydration while keeping focused as the initial presentation mode', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    const initialGitDiffCalls = gitDiffMock.mock.calls.length;
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    const change = useFileChangesStore.getState().getChange(repositoryIdA, changeIdA);
+
+    expect(session?.isHydratingFullContext).toBe(false);
+    expect(change?.contextMode).toBe('focused');
+    expect(session?.originalContent).toContain('const value = 1;');
+    expect(gitReadFilePairMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      path: 'src/main.ts',
+    });
+    expect(gitDiffMock.mock.calls.length).toBe(initialGitDiffCalls);
+  });
+
+  it('resets only the right-side draft content', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 7;\nconsole.log(value);');
+
+    expect(useFileChangesStore.getState().getDiffModalSession()?.isDirty).toBe(true);
+
+    store.resetRightDraft();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    expect(session?.isDirty).toBe(false);
+    expect(session?.rightDraftContent).toContain('const value = 2;');
+  });
+
+  it('saves the right-side draft, reloads the diff, and keeps the file pending', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const value = 8;\nconsole.log(value);';
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 9;\nconsole.log(value);');
+
+    await store.saveRightDraft();
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    const change = useFileChangesStore.getState().getChange(repositoryIdA, changeIdA);
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(fsWriteFileMock).toHaveBeenCalledTimes(1);
+    expect(fsReadFileWithOptionsMock).toHaveBeenCalledWith({
+      path: `${worktreeAPath}/src/main.ts`,
+      allowOutsideWorkspace: false,
+      workspacePath: worktreeAPath,
+    });
+    expect(fsWriteFileMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: `${worktreeAPath}/src/main.ts`,
+        allowOutsideWorkspace: false,
+        workspacePath: worktreeAPath,
+        expectedRevision: expect.stringContaining('revision:const value = 8;'),
+      }),
+    );
+    expect(session?.isDirty).toBe(false);
+    expect(session?.rightDraftContent).toContain('const value = 9;');
+    expect(change?.modifiedContent).toContain('const value = 9;');
+    expect(repository?.stats.pendingVisibleFileCount).toBe(1);
+  });
+
+  it('stages visible changes in batch for a repository scope', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const changeIds = repository?.changes.map((change) => change.id) ?? [];
+    expect(changeIds).toHaveLength(2);
+
+    await store.stageChanges(repositoryIdA, changeIds);
+
+    const updatedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(updatedRepository?.stats.validatedStagedFileCount).toBe(2);
+    expect(updatedRepository?.stats.pendingVisibleFileCount).toBe(0);
+    expect(updatedRepository?.changes.map((change) => change.path)).toEqual([
+      'src/main.ts',
+      'src/new.ts',
+    ]);
+    expect(updatedRepository?.changes.every((change) => change.hasPendingVisibleChange)).toBe(false);
+    expect(updatedRepository?.changes.every((change) => change.hasValidatedStage)).toBe(true);
+  });
+
+  it('does not infer a repository scope when staging all changes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageAllChanges();
+
+    expect(gitAddMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().getRepository(repositoryIdA)?.stats.pendingVisibleFileCount).toBe(1);
+
+    await store.stageAllChanges(repositoryIdA);
+
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/main.ts'],
+    });
+    expect(useFileChangesStore.getState().getRepository(repositoryIdA)?.stats.pendingVisibleFileCount).toBe(0);
+  });
+
+  it('keeps repository stats explicit while overall stats remain global', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    expect(store.getStats().pendingVisibleFileCount).toBe(0);
+    expect(store.getStats(repositoryIdA).pendingVisibleFileCount).toBe(1);
+    expect(store.getOverallStats().pendingVisibleFileCount).toBe(2);
+  });
+
+  it('keeps staged-only files visible without marking them pending', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const mainChange = repository?.changes.find((change) => change.path === 'src/main.ts');
+    expect(repository?.stats.pendingVisibleFileCount).toBe(0);
+    expect(repository?.stats.validatedStagedFileCount).toBe(1);
+    expect(mainChange).toBeDefined();
+    expect(mainChange?.hasPendingVisibleChange).toBe(false);
+    expect(mainChange?.hasValidatedStage).toBe(true);
+  });
+
+  it('unstages validated files while preserving them as pending worktree changes', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+
+    await store.unstageChanges(repositoryIdA, [changeIdA]);
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const mainChange = repository?.changes.find((change) => change.path === 'src/main.ts');
+    expect(gitRestorePathsMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/main.ts'],
+      target: 'staged',
+    });
+    expect(repository?.stats.pendingVisibleFileCount).toBe(1);
+    expect(repository?.stats.validatedStagedFileCount).toBe(0);
+    expect(mainChange?.hasPendingVisibleChange).toBe(true);
+    expect(mainChange?.hasValidatedStage).toBe(false);
+  });
+
+  it('reverts modified, added, and deleted files then reloads the repository state', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    currentFiles[worktreeAPath]['src/deleted.ts'] = null;
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(repository?.changes.map((change) => change.path)).toEqual([
+      'src/deleted.ts',
+      'src/main.ts',
+      'src/new.ts',
+    ]);
+
+    await store.revertChanges(
+      repositoryIdA,
+      repository?.changes.map((change) => change.id) ?? []
+    );
+
+    expect(gitRestorePathsMock).toHaveBeenCalledTimes(1);
+    expect(gitRestorePathsMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/deleted.ts', 'src/main.ts', 'src/new.ts'],
+      target: 'worktree',
+    });
+
+    const refreshedRepository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(refreshedRepository?.changes).toHaveLength(0);
+    expect(useFileChangesStore.getState().reviewSummary.stateCounts.no_changes).toBe(1);
+  });
+
+  it('opens the next file in the diff modal when reverting the currently opened file', async () => {
+    currentFiles[worktreeAPath]['src/new.ts'] = 'export const created = true;\n';
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    const mainChange = repository?.changes.find((change) => change.path === 'src/main.ts');
+    const newChange = repository?.changes.find((change) => change.path === 'src/new.ts');
+    expect(mainChange).toBeDefined();
+    expect(newChange).toBeDefined();
+
+    store.openDiffModal(repositoryIdA, mainChange!.id);
+    await Promise.resolve();
+
+    await store.revertChanges(repositoryIdA, [mainChange!.id]);
+
+    const selectedTarget = useFileChangesStore.getState().getSelectedDiffTarget();
+    expect(selectedTarget).toEqual({
+      repositoryId: repositoryIdA,
+      changeId: newChange!.id,
+    });
+  });
+
+  it('does not reuse the active repository path when the dedicated worktree mapping is missing', async () => {
+    appStoreState.selectedTaskId = 'task-3';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-3');
+    expect(nextState.currentTaskLoadState).toBe('invalid_mapping');
+    expect(nextState.currentTaskLoadMessage).toContain('Macro could not find the prepared task worktree');
+    expect(nextState.repositories).toHaveLength(0);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('shows an awaiting-worktree state for a pending task that has not started yet', async () => {
+    appStoreState.selectedTaskId = 'task-4';
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.currentTaskId).toBe('task-4');
+    expect(nextState.currentTaskLoadState).toBe('awaiting_worktree');
+    expect(nextState.currentTaskLoadMessage).toBe('Make your first changes to this task to see them here.');
+    expect(nextState.currentTaskLoadMessage?.toLowerCase()).not.toContain('worktree');
+    expect(nextState.repositories).toHaveLength(0);
+    expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale async results when a newer task selection has already won', async () => {
+    let releaseTaskOneStatuses: () => void = () => undefined;
+    const taskOneStatusGate = new Promise<void>((resolve) => {
+      releaseTaskOneStatuses = resolve;
+    });
+
+    gitStatusMock.mockImplementation(async (repoPath: string) => {
+      if (appStoreState.selectedTaskId === 'task-1') {
+        await taskOneStatusGate;
+      }
+      return buildGitStatus(repoPath);
+    });
+
+    const firstLoad = useFileChangesStore.getState().loadCurrentChanges();
+    expect(useFileChangesStore.getState().currentTaskId).toBe('task-1');
+    expect(useFileChangesStore.getState().currentTaskLoadState).toBe('loading');
+    expect(useFileChangesStore.getState().repositories).toHaveLength(0);
+
+    appStoreState.selectedTaskId = 'task-3';
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    let state = useFileChangesStore.getState();
+    expect(state.currentTaskId).toBe('task-3');
+    expect(state.currentTaskLoadState).toBe('invalid_mapping');
+    expect(state.repositories).toHaveLength(0);
+
+    releaseTaskOneStatuses();
+    await firstLoad;
+
+    state = useFileChangesStore.getState();
+    expect(state.currentTaskId).toBe('task-3');
+    expect(state.currentTaskLoadState).toBe('invalid_mapping');
+    expect(state.repositories).toHaveLength(0);
+  });
+
+  it('keeps the task in progress after repository commits complete', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    await store.stageChanges(repositoryIdB, [changeIdB]);
+
+    const firstCommit = await store.commitStagedChanges(
+      repositoryIdA,
+      'feat: commit project a'
+    );
+    expect(firstCommit.taskCompleted).toBe(false);
+    expect(firstCommit.taskStatus).toBe('InProgress');
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
+    expect(useFileChangesStore.getState().reviewSummary.nextRepositoryId).toBe(repositoryIdB);
+
+    const secondCommit = await store.commitStagedChanges(
+      repositoryIdB,
+      'feat: commit project b'
+    );
+    expect(secondCommit.taskCompleted).toBe(false);
+    expect(secondCommit.taskStatus).toBe('InProgress');
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('restores committed clean repositories after a restart by checking commits ahead of the target', async () => {
+    currentFiles[worktreeAPath] = {};
+    currentFiles[worktreeBPath] = {};
+    gitMergeCheckMock.mockImplementation(async ({ repoPath }: { repoPath: string }) => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+      ahead: repoPath === worktreeAPath || repoPath === worktreeBPath ? 1 : 0,
+      behind: 0,
+    }));
+
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    expect(store.getRepository(repositoryIdA)?.commitState).toBe('committed');
+    expect(store.getRepository(repositoryIdB)?.commitState).toBe('committed');
+    expect(useFileChangesStore.getState().reviewSummary.hasCommittedRepositories).toBe(true);
+    expect(useFileChangesStore.getState().reviewSummary.allRepositoriesResolved).toBe(true);
+    expect(gitMergeCheckMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      branchName: 'feature/task-a',
+      intoBranch: 'plan/integration',
+    });
+    expect(gitMergeCheckMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      branchName: 'feature/task-b',
+      intoBranch: 'plan/integration',
+    });
+  });
+
+  it('validates pending changes across all task repositories', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageAllTaskChanges();
+
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      paths: ['src/main.ts'],
+    });
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      paths: ['README.md'],
+    });
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.pending_validation).toBe(0);
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.ready_to_commit).toBe(2);
+  });
+
+  it('stores the stable backend validation message when staging fails', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    const validationError = {
+      code: 'Validation',
+      message: 'Staged files outside this task were found: src/extra.ts.',
+    };
+    gitAddMock.mockImplementationOnce(async () => {
+      throw validationError;
+    });
+
+    await expect(store.stageChanges(repositoryIdA, [changeIdA])).rejects.toEqual(validationError);
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.lastError).toBe('Staged files outside this task were found: src/extra.ts.');
+    expect(nextState.getRepository(repositoryIdA)?.lastError).toBe(
+      'Staged files outside this task were found: src/extra.ts.'
+    );
+  });
+
+  it('commits all ready task repositories with one logical action', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+    const loadCurrentChangesMock = mock(store.loadCurrentChanges);
+    useFileChangesStore.setState({ loadCurrentChanges: loadCurrentChangesMock });
+
+    const result = await store.commitAllReadyTaskRepositories();
+
+    expect(result.commits).toHaveLength(2);
+    expect(result.commits.map((commit) => commit.committedRepositoryId)).toEqual([
+      repositoryIdA,
+      repositoryIdB,
+    ]);
+    expect(gitCommitMock).toHaveBeenCalledTimes(2);
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      message: `feat: implement ${repositoryIdA} flow\n\nUpdate ${repositoryIdA}.`,
+      stageAll: false,
+    });
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      message: `feat: implement ${repositoryIdB} flow\n\nUpdate ${repositoryIdB}.`,
+      stageAll: false,
+    });
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(1);
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+    const [input] = generateCommitMessagesMock.mock.calls[0] as unknown as [{
+      repositories: Array<{ projectId: string; projectName?: string | null; scopeCandidates?: string[]; recommendedScope?: string | null }>;
+    }];
+    const projectAInput = input.repositories.find((repository) => repository.projectId === 'project-a');
+    expect(projectAInput?.projectName).toBe('Project A');
+    expect(projectAInput).not.toHaveProperty('scopeCandidates');
+    expect(projectAInput).not.toHaveProperty('recommendedScope');
+    expect(useFileChangesStore.getState().executionRecords[repositoryIdA]?.projectId).toBe('project-a');
+    expect(useFileChangesStore.getState().executionRecords[repositoryIdB]?.projectId).toBe('project-b');
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps successful commits when a later repository commit fails', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+    const loadCurrentChangesMock = mock(store.loadCurrentChanges);
+    useFileChangesStore.setState({ loadCurrentChanges: loadCurrentChangesMock });
+
+    gitCommitMock.mockImplementationOnce(async ({ repoPath }: { repoPath: string }) => {
+      stagedFiles[repoPath] = {};
+      return 'hash-a';
+    });
+    gitCommitMock.mockImplementationOnce(async () => {
+      throw new Error('Commit rejected');
+    });
+
+    await expect(
+      store.commitAllReadyTaskRepositories()
+    ).rejects.toThrow('project-b: Commit rejected');
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.executionRecords[repositoryIdA]?.projectId).toBe('project-a');
+    expect(nextState.executionRecords[repositoryIdB]).toBeUndefined();
+    expect(nextState.getRepository(repositoryIdB)?.lastError).toBe('Commit rejected');
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries generated commit messages before creating commits', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementationOnce(async () => {
+      throw new Error('invalid json');
+    });
+    generateCommitMessagesMock.mockImplementationOnce(async () => {
+      throw new Error('missing repo');
+    });
+    generateCommitMessagesMock.mockImplementationOnce(async (input: {
+      repositories: Array<{ repositoryId: string }>;
+    }) => ({
+      repositories: input.repositories.map((repository) => ({
+        repositoryId: repository.repositoryId,
+        type: 'fix' as const,
+        scope: null,
+        subject: `recover ${repository.repositoryId} messages`,
+        body: `Recovered ${repository.repositoryId}.`,
+      })),
+    }));
+
+    const result = await store.commitAllReadyTaskRepositories();
+
+    expect(result.commits).toHaveLength(2);
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
+    expect(gitCommitMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries when generated commit messages are structurally valid but not conventional', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementationOnce(async (input: {
+      repositories: Array<{ repositoryId: string }>;
+    }) => {
+      throw new SmartCommitMessageGenerationError('Commit message must follow Conventional Commits', {
+        generatedMessages: {
+          repositories: input.repositories.map((repository) => ({
+            repositoryId: repository.repositoryId,
+            type: 'chore' as const,
+            scope: null,
+            subject: 'update generated messages',
+            body: `Update ${repository.repositoryId}.`,
+          })),
+        },
+      });
+    });
+    generateCommitMessagesMock.mockImplementationOnce(buildGeneratedCommitMessages);
+
+    const result = await store.commitAllReadyTaskRepositories();
+
+    expect(result.commits).toHaveLength(2);
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(2);
+    const retryOptions = (
+      generateCommitMessagesMock.mock.calls as unknown as Array<[unknown, unknown]>
+    )[1]?.[1];
+    expect(retryOptions).toMatchObject({
+      validationFeedback: 'Commit message must follow Conventional Commits',
+    });
+    expect(gitCommitMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call git commit when generated messages stay non-conventional', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementation(async (input: {
+      repositories: Array<{ repositoryId: string }>;
+    }) => {
+      throw new SmartCommitMessageGenerationError('Commit message must follow Conventional Commits', {
+        generatedMessages: {
+          repositories: input.repositories.map((repository) => ({
+            repositoryId: repository.repositoryId,
+            type: 'chore' as const,
+            scope: null,
+            subject: 'update generated messages',
+            body: `Update ${repository.repositoryId}.`,
+          })),
+        },
+      });
+    });
+
+    try {
+      await store.commitAllReadyTaskRepositories();
+      throw new Error('expected commit to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SmartCommitMessageGenerationError);
+      expect((error as SmartCommitMessageGenerationError).generatedMessages?.repositories[0]?.subject)
+        .toBe('update generated messages');
+    }
+
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
+    expect(gitCommitMock).not.toHaveBeenCalled();
+  });
+
+  it('commits multi-repo changes with manually edited conventional messages', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    const result = await store.commitAllReadyTaskRepositories({
+      messagesByRepositoryId: {
+        [repositoryIdA]: 'fix(project-a): commit edited changes',
+        [repositoryIdB]: 'fix(project-b): commit edited changes',
+      },
+    });
+
+    expect(result.commits).toHaveLength(2);
+    expect(generateCommitMessagesMock).not.toHaveBeenCalled();
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeAPath,
+      message: 'fix(project-a): commit edited changes',
+      stageAll: false,
+    });
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: worktreeBPath,
+      message: 'fix(project-b): commit edited changes',
+      stageAll: false,
+    });
+  });
+
+  it('does not create commits when generated commit messages keep failing', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+
+    generateCommitMessagesMock.mockImplementation(async () => {
+      throw new Error('model unavailable');
+    });
+
+    await expect(store.commitAllReadyTaskRepositories()).rejects.toThrow('model unavailable');
+
+    expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
+    expect(gitCommitMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().lastError).toBeNull();
+  });
+
+  it('does not change the task status when only the focused project is resolved', async () => {
+    appStoreState.selectedProjectId = 'project-a';
+    const store = useFileChangesStore.getState();
+
+    await store.loadCurrentChanges();
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    const loadCurrentChangesMock = mock(store.loadCurrentChanges);
+    useFileChangesStore.setState({ loadCurrentChanges: loadCurrentChangesMock });
+
+    const result = await store.commitStagedChanges(
+      repositoryIdA,
+      'feat: commit project a'
+    );
+
+    expect(result.taskStatus).toBe('InProgress');
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
+    expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows new unstaged changes again after a file was already validated', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.ready_to_commit).toBe(1);
+
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const value = 4;\nconsole.log(value);';
+    await store.loadCurrentChanges();
+
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA);
+    expect(repository?.changes[0]?.hasValidatedStage).toBe(true);
+    expect(repository?.changes[0]?.hasPendingVisibleChange).toBe(true);
+    expect(repository?.stats.validatedStagedFileCount).toBe(1);
+    expect(useFileChangesStore.getState().reviewSummary.actionCounts.pending_validation).toBe(2);
+
+    const commitResult = await store.commitStagedChanges(repositoryIdA, 'feat: commit project a');
+    expect(commitResult.hash).toBe('hash-a');
+  });
+
+  it('stores the stable backend validation message when commit fails', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+
+    const validationError = {
+      code: 'Validation',
+      message: 'Staged files outside this task were found: src/extra.ts.',
+    };
+    gitCommitMock.mockImplementationOnce(async () => {
+      throw validationError;
+    });
+
+    await expect(
+      store.commitStagedChanges(repositoryIdA, 'feat: commit project a')
+    ).rejects.toEqual(validationError);
+
+    const nextState = useFileChangesStore.getState();
+    expect(nextState.lastError).toBe('Staged files outside this task were found: src/extra.ts.');
+    expect(nextState.getRepository(repositoryIdA)?.lastError).toBe(
+      'Staged files outside this task were found: src/extra.ts.'
+    );
+  });
+});

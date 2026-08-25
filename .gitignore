@@ -1,3 +1,10 @@
+.macro
+.codex
+.playwright-cli/
+.toast-placement*.png
+__pycache__/
+*.py[cod]
+
 # Logs
 logs
 *.log
@@ -6,12 +13,19 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+bun-debug.log*
 
 node_modules
 dist
 dist-ssr
 output/
 *.local
+/coverage/
+
+# Bun
+.bun/
+*.bun-build
+bun.lockb
 
 # Editor directories and files
 .vscode/*
@@ -40,3 +54,24 @@ src-tauri/binaries/
 src-tauri/resources/macro-ai-runtime*
 src-tauri/resources/macro-copilot-bridge*
 src-tauri/macro.db
+
+# Local AI keys
+public/ai-keys.local.json
+dev/ai-keys.local.json
+
+# Local secrets and signing material
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.p8
+*.p12
+*.key
+Etude-Marche-Macro.pdf
+Plan-Action-Revente-Macro.pdf
+
+# Temporary visual QA reports and captures
+/design-qa.md
+/design-qa-artifacts/
+/docs/design-qa/

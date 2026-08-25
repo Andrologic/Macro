@@ -1,0 +1,104 @@
+# =============================================================================
+# BUN CONFIGURATION - Macro Project (Performance Optimized)
+# =============================================================================
+
+[install]
+# Use exact versions from package.json for reproducible builds
+exact = true
+
+# Registry to use
+registry = "https://registry.npmjs.org/"
+
+# Peer dependencies handling
+peer = true
+
+# Development dependencies
+dev = true
+
+# Production dependencies
+production = false
+
+# Optional dependencies
+optional = true
+
+# Linker strategy: "hoisted" for compatibility and stability
+# Valid options: "hoisted" (traditional) or "isolated" (pnpm-style)
+linker = "hoisted"
+
+# Auto-install dependencies when node_modules is missing
+auto = "auto"
+
+# For CI/CD: set to true to fail if lockfile is out of sync
+frozenLockfile = false
+
+# Concurrent network requests for faster downloads
+concurrency = 64
+
+# Cache configuration - Optimized for performance
+[install.cache]
+
+# Keep cache enabled for fast reinstalls
+disable = false
+# Use manifest cache for faster resolution
+disableManifest = false
+
+[install.scopes]
+# Private registry scopes if needed
+# "@company" = { token = "$NPM_TOKEN", url = "https://npm.company.com" }
+
+[run]
+# Shell to use for running scripts
+# 'bun' = use Bun's shell (faster), 'system' = use system shell
+shell = "bun"
+
+# Parallel script execution
+silent = false
+
+# Environment variables shared by Bun scripts
+[run.env]
+# Keep enough memory available for builds and the full test suite
+NODE_OPTIONS = "--max-old-space-size=4096"
+
+[test]
+# Test runner configuration
+# Coverage is opt-in (bun run test:coverage); enabling it here would instrument
+# every spawned bun test process and write a report for each.
+preload = ["./test-setup.ts"]
+# Parallel test execution
+timeout = 30000
+
+[build]
+# Build configuration - Maximum optimization
+minify = true
+sourcemap = false
+# Target modern browsers
+target = "browser"
+# Enable tree-shaking
+external = []
+
+# =============================================================================
+# TAURI INTEGRATION
+# =============================================================================
+
+[tauri]
+# Tauri CLI path (installed via devDependencies)
+cli = "./node_modules/.bin/tauri"
+
+# =============================================================================
+# PERFORMANCE SETTINGS
+# =============================================================================
+
+[install.lockfile]
+# Use text-based lockfile for better diffing (disabled to avoid yarn.lock generation)
+# print = "yarn"
+
+# Always save the lockfile
+save = true
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+[log]
+# Log level
+level = "info"

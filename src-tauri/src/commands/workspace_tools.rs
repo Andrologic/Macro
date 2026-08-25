@@ -1,0 +1,2196 @@
+use super::{
+    apply_patch_hunks_to_content, command_error, commit_and_validate_pending_file_changes,
+    commit_and_validate_pending_file_changes_with_create_dirs, compute_line_change_stats,
+    exact_edit_match_error, format_with_line_numbers, fs, join_text_lines, json_arg_bool,
+    json_arg_string, json_arg_string_map, json_arg_u32, mutation_response_fields,
+    normalize_tool_map_path, parse_apply_patch, resolve_validated_tool_path, CommandError,
+    CommandResult, ParsedPatchOperation, PendingFileChange,
+};
+use crate::core::tool_policy::validate_tool_execution;
+use glob::Pattern;
+use regex::RegexBuilder;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjectMount {
+    #[serde(alias = "project_id")]
+    pub project_id: String,
+    #[serde(alias = "mount_name")]
+    pub mount_name: String,
+    #[serde(alias = "workspace_path")]
+    pub workspace_path: Option<String>,
+    #[serde(default, alias = "display_name")]
+    pub display_name: Option<String>,
+    #[serde(default, alias = "is_read_only")]
+    pub is_read_only: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VirtualWorkspaceContext<'a> {
+    pub mounts: &'a [WorkspaceProjectMount],
+    pub focused_project_id: Option<&'a str>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResolvedMountTarget<'a> {
+    pub mount: &'a WorkspaceProjectMount,
+    pub relative_path: String,
+}
+
+pub(crate) type PendingVirtualChange = PendingFileChange;
+pub(crate) type VirtualToolResponse = Option<String>;
+
+pub(crate) fn normalize_tool_path(value: &str) -> String {
+    let mut normalized = value.trim().replace('\\', "/");
+    while normalized.starts_with("./") {
+        normalized = normalized[2..].to_string();
+    }
+    normalized.trim_matches('/').to_string()
+}
+
+fn validate_virtual_relative_path(value: &str) -> CommandResult<String> {
+    let normalized_separators = value.trim().replace('\\', "/");
+    let has_windows_drive = normalized_separators
+        .as_bytes()
+        .get(1)
+        .is_some_and(|byte| *byte == b':');
+    if normalized_separators.starts_with('/')
+        || has_windows_drive
+        || normalized_separators.contains('\0')
+    {
+        return Err(command_error(format!(
+            "Virtual workspace paths must be relative to a project mount: {}",
+            value
+        )));
+    }
+
+    let normalized = normalize_tool_path(&normalized_separators);
+    if normalized.split('/').any(|component| component == "..") {
+        return Err(command_error(format!(
+            "Virtual workspace path escapes its project mount: {}",
+            value
+        )));
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn virtual_path_for_mount(mount: &WorkspaceProjectMount, relative_path: &str) -> String {
+    let relative = normalize_tool_path(relative_path);
+    if relative.is_empty() || relative == "." {
+        mount.mount_name.clone()
+    } else {
+        format!("{}/{}", mount.mount_name, relative)
+    }
+}
+
+pub(crate) fn mount_workspace_path(mount: &WorkspaceProjectMount) -> CommandResult<PathBuf> {
+    let raw = mount
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            command_error(format!(
+                "Project {} has no workspace path.",
+                mount.mount_name
+            ))
+        })?;
+    Ok(PathBuf::from(raw))
+}
+
+fn canonicalize_headless_allowed_roots(
+    allowed_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, CommandError> {
+    if allowed_roots.is_empty() {
+        return Err(command_error(
+            "Headless execution has no allowed filesystem roots.",
+        ));
+    }
+
+    let mut canonical_roots = Vec::with_capacity(allowed_roots.len());
+    for root in allowed_roots {
+        let canonical_root = root.canonicalize().map_err(|error| {
+            command_error(format!(
+                "Headless allowed root is not accessible: {} ({})",
+                root.display(),
+                error
+            ))
+        })?;
+        if !canonical_root.is_dir() {
+            return Err(command_error(format!(
+                "Headless allowed root is not a directory: {}",
+                root.display()
+            )));
+        }
+        if !canonical_roots.contains(&canonical_root) {
+            canonical_roots.push(canonical_root);
+        }
+    }
+    Ok(canonical_roots)
+}
+
+fn canonicalize_headless_path(
+    path: &Path,
+    allowed_roots: &[PathBuf],
+    description: &str,
+) -> Result<PathBuf, CommandError> {
+    let canonical_roots = canonicalize_headless_allowed_roots(allowed_roots)?;
+    let canonical_path = path.canonicalize().map_err(|error| {
+        command_error(format!(
+            "{} is not accessible: {} ({})",
+            description,
+            path.display(),
+            error
+        ))
+    })?;
+    if !canonical_path.is_dir() {
+        return Err(command_error(format!(
+            "{} must be a directory: {}",
+            description,
+            path.display()
+        )));
+    }
+    if !canonical_roots
+        .iter()
+        .any(|root| canonical_path == *root || canonical_path.starts_with(root))
+    {
+        return Err(command_error(format!(
+            "{} is outside the explicitly allowed headless roots: {}",
+            description,
+            path.display()
+        )));
+    }
+    Ok(canonical_path)
+}
+
+fn validate_mount_identifier(value: &str, field: &str) -> Result<String, CommandError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+    {
+        return Err(command_error(format!(
+            "Headless mount {} must be a single non-empty path component.",
+            field
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Validate and canonicalize project mounts received by the headless API.
+///
+/// The desktop path is already operating on user-selected state. Headless
+/// requests, however, can supply mounts over the network, so every mount must
+/// resolve to an existing directory below an explicitly configured root.
+pub fn validate_headless_project_mounts(
+    mounts: &[WorkspaceProjectMount],
+    allowed_roots: &[PathBuf],
+) -> Result<Vec<WorkspaceProjectMount>, CommandError> {
+    let _ = canonicalize_headless_allowed_roots(allowed_roots)?;
+    let mut project_ids = HashSet::new();
+    let mut mount_names = HashSet::new();
+    let mut validated = Vec::with_capacity(mounts.len());
+
+    for mount in mounts {
+        let project_id = validate_mount_identifier(&mount.project_id, "project_id")?;
+        let mount_name = validate_mount_identifier(&mount.mount_name, "mount_name")?;
+        if !project_ids.insert(project_id.to_lowercase()) {
+            return Err(command_error(format!(
+                "Duplicate headless mount project_id: {}",
+                project_id
+            )));
+        }
+        if !mount_names.insert(mount_name.to_lowercase()) {
+            return Err(command_error(format!(
+                "Duplicate headless mount_name: {}",
+                mount_name
+            )));
+        }
+
+        let workspace_path = mount_workspace_path(mount)?;
+        let canonical_workspace =
+            canonicalize_headless_path(&workspace_path, allowed_roots, "Headless project mount")?;
+        let mut sanitized = mount.clone();
+        sanitized.project_id = project_id;
+        sanitized.mount_name = mount_name;
+        sanitized.workspace_path = Some(canonical_workspace.to_string_lossy().to_string());
+        validated.push(sanitized);
+    }
+
+    Ok(validated)
+}
+
+/// Validate the optional workspace override used by a headless tool request.
+/// Relative paths retain the same workspace-root semantics as the normal
+/// workspace tool dispatcher.
+pub fn validate_headless_workspace_path(
+    raw_path: Option<&str>,
+    workspace_root: &Path,
+    allowed_roots: &[PathBuf],
+) -> Result<Option<String>, CommandError> {
+    let Some(raw_path) = raw_path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let requested_path = PathBuf::from(raw_path);
+    let candidate = if requested_path.is_absolute() {
+        requested_path
+    } else {
+        workspace_root.join(requested_path)
+    };
+    let canonical =
+        canonicalize_headless_path(&candidate, allowed_roots, "Headless workspace path")?;
+    Ok(Some(canonical.to_string_lossy().to_string()))
+}
+
+fn project_mount_aliases(mount: &WorkspaceProjectMount) -> Vec<String> {
+    let mut aliases = Vec::new();
+    for value in [
+        mount.mount_name.as_str(),
+        mount.project_id.as_str(),
+        mount.display_name.as_deref().unwrap_or_default(),
+    ] {
+        let normalized = normalize_tool_path(value).to_lowercase();
+        if !normalized.is_empty() && !aliases.contains(&normalized) {
+            aliases.push(normalized);
+        }
+    }
+    if let Some(workspace_path) = mount.workspace_path.as_ref() {
+        if let Some(tail) = Path::new(workspace_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+        {
+            let normalized = normalize_tool_path(tail).to_lowercase();
+            if !normalized.is_empty() && !aliases.contains(&normalized) {
+                aliases.push(normalized);
+            }
+        }
+    }
+    aliases
+}
+
+fn mount_has_workspace(mount: &WorkspaceProjectMount) -> bool {
+    mount
+        .workspace_path
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn single_mount_or_ambiguous<'a>(
+    matches: Vec<&'a WorkspaceProjectMount>,
+    description: &str,
+) -> CommandResult<&'a WorkspaceProjectMount> {
+    match matches.as_slice() {
+        [] => Err(command_error(format!(
+            "Unknown project_id: {}",
+            description
+        ))),
+        [mount] => Ok(*mount),
+        _ => Err(command_error(format!(
+            "Ambiguous virtual-root project selector '{}'. Provide a unique project_id.",
+            description
+        ))),
+    }
+}
+
+pub(crate) fn resolve_virtual_mount_target<'a>(
+    context: VirtualWorkspaceContext<'a>,
+    raw_path: &str,
+    explicit_project_id: Option<&str>,
+) -> CommandResult<ResolvedMountTarget<'a>> {
+    let normalized_path = validate_virtual_relative_path(raw_path)?;
+    if let Some(project_id) = explicit_project_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let project_id_lower = project_id.to_lowercase();
+        let matches = context
+            .mounts
+            .iter()
+            .filter(|mount| {
+                mount.project_id == project_id
+                    || project_mount_aliases(mount)
+                        .iter()
+                        .any(|alias| alias == &project_id_lower)
+            })
+            .collect::<Vec<_>>();
+        let mount = single_mount_or_ambiguous(matches, project_id)?;
+        return Ok(ResolvedMountTarget {
+            mount,
+            relative_path: normalized_path.if_empty(".").to_string(),
+        });
+    }
+
+    let normalized_path_lower = normalized_path.to_lowercase();
+    if !normalized_path.is_empty() && normalized_path != "." {
+        let mut matches = Vec::new();
+        for mount in context.mounts {
+            for alias in project_mount_aliases(mount) {
+                if normalized_path_lower == alias {
+                    matches.push((mount, ".".to_string()));
+                    continue;
+                }
+                let alias_prefix = format!("{}/", alias);
+                if normalized_path_lower.starts_with(&alias_prefix) {
+                    let rest = normalized_path
+                        .get(alias_prefix.len()..)
+                        .unwrap_or_default()
+                        .if_empty(".")
+                        .to_string();
+                    matches.push((mount, rest));
+                }
+            }
+        }
+        match matches.as_slice() {
+            [] => {}
+            [(mount, relative_path)] => {
+                return Ok(ResolvedMountTarget {
+                    mount,
+                    relative_path: relative_path.clone(),
+                })
+            }
+            _ => {
+                return Err(command_error(format!(
+                    "Ambiguous virtual-root path '{}'. Provide project_id or use a unique mount prefix.",
+                    raw_path
+                )))
+            }
+        }
+    }
+
+    if let Some(project_id) = context
+        .focused_project_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(mount) = context
+            .mounts
+            .iter()
+            .find(|mount| mount.project_id == project_id)
+        {
+            return Ok(ResolvedMountTarget {
+                mount,
+                relative_path: normalized_path.if_empty(".").to_string(),
+            });
+        }
+    }
+
+    let available_mounts = context
+        .mounts
+        .iter()
+        .filter(|mount| mount_has_workspace(mount))
+        .collect::<Vec<_>>();
+    match available_mounts.as_slice() {
+        [] => Err(command_error("No virtual-root project is available.")),
+        [mount] => Ok(ResolvedMountTarget {
+            mount,
+            relative_path: normalized_path.if_empty(".").to_string(),
+        }),
+        _ => Err(command_error(format!(
+            "Ambiguous virtual-root path '{}'. Provide project_id or a mount prefix.",
+            raw_path
+        ))),
+    }
+}
+
+pub fn affected_virtual_tool_project_ids(
+    tool_id: &str,
+    args: &Value,
+    mounts: &[WorkspaceProjectMount],
+    focused_project_id: Option<&str>,
+) -> CommandResult<Vec<String>> {
+    if mounts.is_empty() {
+        return Ok(focused_project_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default());
+    }
+    let context = VirtualWorkspaceContext {
+        mounts,
+        focused_project_id,
+    };
+    let all_mounts = || {
+        mounts
+            .iter()
+            .filter(|mount| mount_has_workspace(mount))
+            .map(|mount| mount.project_id.clone())
+            .collect::<Vec<_>>()
+    };
+    let resolve_one = |path: &str, project_id: Option<&str>| {
+        resolve_virtual_mount_target(context, path, project_id)
+            .map(|target| target.mount.project_id.clone())
+    };
+
+    let mut affected = match tool_id.trim() {
+        "glob" | "grep" => {
+            let project_id = json_arg_string(args, "project_id");
+            match project_id.as_deref() {
+                Some(project_id) => vec![resolve_one(".", Some(project_id))?],
+                None => all_mounts(),
+            }
+        }
+        "list" => {
+            let path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+            let project_id = json_arg_string(args, "project_id");
+            let normalized = normalize_tool_path(&path);
+            if project_id.is_none() && (normalized.is_empty() || normalized == ".") {
+                focused_project_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| vec![value.to_string()])
+                    .unwrap_or_default()
+            } else {
+                vec![resolve_one(&path, project_id.as_deref())?]
+            }
+        }
+        "ast_grep" => {
+            let path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+            let project_id = json_arg_string(args, "project_id");
+            let normalized = normalize_tool_path(&path);
+            if project_id.is_none() && (normalized.is_empty() || normalized == ".") {
+                all_mounts()
+            } else {
+                vec![resolve_one(&path, project_id.as_deref())?]
+            }
+        }
+        "apply_patch" => {
+            let patch_text = json_arg_string(args, "patch_text").ok_or_else(|| {
+                command_error("Missing patch_text argument for apply_patch tool.")
+            })?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let mut project_ids = Vec::new();
+            for operation in parse_apply_patch(&patch_text)? {
+                project_ids.push(resolve_one(
+                    operation.path(),
+                    explicit_project_id.as_deref(),
+                )?);
+            }
+            project_ids
+        }
+        "read" | "write" | "edit" | "delete" => {
+            let path = json_arg_string(args, "path").ok_or_else(|| {
+                command_error(format!("Missing path argument for {tool_id} tool."))
+            })?;
+            let project_id = json_arg_string(args, "project_id");
+            vec![resolve_one(&path, project_id.as_deref())?]
+        }
+        _ => focused_project_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default(),
+    };
+    affected.sort();
+    affected.dedup();
+    Ok(affected)
+}
+
+trait EmptyStringExt {
+    fn if_empty<'a>(&'a self, fallback: &'a str) -> &'a str;
+}
+
+impl EmptyStringExt for str {
+    fn if_empty<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.is_empty() {
+            fallback
+        } else {
+            self
+        }
+    }
+}
+
+/// Cumulative cap on files a single virtual glob/grep/ast_grep scan may
+/// consider across every project mount, so a pathological tree fails fast
+/// with guidance instead of enumerating without bound.
+pub(crate) const VIRTUAL_SCAN_CANDIDATE_LIMIT: usize = 20_000;
+
+struct CandidateScanBudget {
+    charged: usize,
+    limit: usize,
+}
+
+impl CandidateScanBudget {
+    fn new(limit: usize) -> Self {
+        Self { charged: 0, limit }
+    }
+
+    fn charge(&mut self, additional: usize) -> CommandResult<()> {
+        self.charged = self.charged.saturating_add(additional);
+        if self.charged > self.limit {
+            return Err(command_error(format!(
+                "Virtual workspace scan stopped after {} candidate files because it exceeded the cumulative limit of {} candidates across all project mounts (glob/grep/ast_grep). Narrow the request with an explicit path or project_id scope, or add an include_pattern, before retrying.",
+                self.charged, self.limit
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// One candidate file for a virtual glob/grep/ast_grep scan. The project
+/// mount is referenced by index so no mount data is cloned per candidate.
+type VirtualScanCandidate = (usize, String, Option<u64>);
+
+async fn collect_virtual_scan_candidates(
+    mounts: &[WorkspaceProjectMount],
+    include_hidden: bool,
+    candidate_limit: usize,
+) -> CommandResult<Vec<VirtualScanCandidate>> {
+    let mut budget = CandidateScanBudget::new(candidate_limit);
+    let mut candidates = Vec::new();
+    for (mount_index, mount) in mounts.iter().enumerate() {
+        let Ok(workspace) = mount_workspace_path(mount) else {
+            continue;
+        };
+        let entries = fs::list_dir_internal(
+            &workspace,
+            ".".to_string(),
+            Some(true),
+            Some(include_hidden),
+            None,
+            Some(false),
+        )
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+        let file_entries = entries
+            .into_iter()
+            .filter(|entry| entry.kind == "file")
+            .collect::<Vec<_>>();
+        budget.charge(file_entries.len())?;
+        candidates.extend(file_entries.into_iter().map(|entry| {
+            (
+                mount_index,
+                entry.relative_path.replace('\\', "/"),
+                entry.size,
+            )
+        }));
+    }
+    Ok(candidates)
+}
+
+async fn execute_virtual_workspace_search_tool(
+    tool_id: &str,
+    args: &Value,
+    mounts: &[WorkspaceProjectMount],
+) -> CommandResult<String> {
+    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
+    let mut all_files =
+        collect_virtual_scan_candidates(mounts, include_hidden, VIRTUAL_SCAN_CANDIDATE_LIMIT)
+            .await?;
+    let workspace_roots = mounts
+        .iter()
+        .map(|mount| mount_workspace_path(mount).ok())
+        .collect::<Vec<_>>();
+    all_files.sort_by(|left, right| {
+        let left_virtual = virtual_path_for_mount(&mounts[left.0], &left.1);
+        let right_virtual = virtual_path_for_mount(&mounts[right.0], &right.1);
+        left_virtual.cmp(&right_virtual)
+    });
+    let mount_scope = serde_json::json!(mounts
+        .iter()
+        .map(|mount| [
+            mount.project_id.as_str(),
+            mount.mount_name.as_str(),
+            mount.workspace_path.as_deref().unwrap_or("")
+        ])
+        .collect::<Vec<_>>())
+    .to_string();
+
+    if tool_id == "glob" {
+        let pattern = json_arg_string(args, "pattern").unwrap_or_else(|| "**/*".to_string());
+        let compiled = Pattern::new(&pattern)
+            .map_err(|error| command_error(format!("Invalid glob pattern: {}", error)))?;
+        let mut paths = all_files
+            .into_iter()
+            .filter_map(|(mount_index, relative, _)| {
+                let virtual_path = virtual_path_for_mount(&mounts[mount_index], &relative);
+                (compiled.matches(&relative) || compiled.matches(&virtual_path))
+                    .then_some(virtual_path)
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths.dedup();
+        let cursor_scope = format!("glob\0{mount_scope}\0{pattern}\0{include_hidden}");
+        let total_count = paths.len();
+        let page = super::tool_output::paginate_items(
+            &paths,
+            args,
+            &cursor_scope,
+            super::tool_output::GLOB_DEFAULT_LIMIT,
+            super::tool_output::GLOB_MAX_LIMIT,
+        )?;
+        return serde_json::to_string_pretty(&serde_json::json!({
+            "pattern": pattern,
+            "virtual_root": true,
+            "count": page.items.len(),
+            "total_count": total_count,
+            "paths": page.items,
+            "limit": page.limit,
+            "offset": page.offset,
+            "truncated": page.truncated,
+            "next_cursor": page.next_cursor
+        }))
+        .map_err(|error| command_error(error.to_string()));
+    }
+
+    let query = json_arg_string(args, "query")
+        .filter(|query| !query.is_empty())
+        .ok_or_else(|| command_error("Missing query argument for grep tool."))?;
+    let is_regexp = json_arg_bool(args, "is_regexp").unwrap_or(false);
+    let include_pattern = json_arg_string(args, "include_pattern");
+    let include_glob = include_pattern
+        .as_ref()
+        .map(|glob| Pattern::new(glob))
+        .transpose()
+        .map_err(|error| command_error(format!("Invalid include_pattern glob: {}", error)))?;
+    let regex = if is_regexp {
+        Some(
+            RegexBuilder::new(&query)
+                .case_insensitive(true)
+                .build()
+                .map_err(|error| {
+                    command_error(format!("Invalid regex pattern for grep: {}", error))
+                })?,
+        )
+    } else {
+        None
+    };
+    let query_lower = query.to_lowercase();
+    let cursor_scope = format!(
+        "grep\0{mount_scope}\0{query}\0{is_regexp}\0{}\0{include_hidden}",
+        include_pattern.as_deref().unwrap_or("")
+    );
+    let page = super::tool_output::resolve_tool_page(
+        args,
+        &cursor_scope,
+        super::tool_output::GREP_DEFAULT_LIMIT,
+        super::tool_output::GREP_MAX_LIMIT,
+    )?;
+    let mut results = Vec::new();
+    let mut seen_matches = 0usize;
+    let mut files_scanned = 0usize;
+    let mut skipped_binary = 0usize;
+    let mut skipped_too_large = 0usize;
+    let mut column_truncated_matches = 0usize;
+    for (mount_index, relative, size) in all_files {
+        let mount = &mounts[mount_index];
+        let Some(workspace) = workspace_roots[mount_index].as_ref() else {
+            continue;
+        };
+        let virtual_path = virtual_path_for_mount(mount, &relative);
+        if let Some(pattern) = include_glob.as_ref() {
+            if !pattern.matches(&relative) && !pattern.matches(&virtual_path) {
+                continue;
+            }
+        }
+        if size.unwrap_or(0) > super::tool_output::GREP_MAX_FILE_BYTES {
+            skipped_too_large += 1;
+            continue;
+        }
+        let content = fs::read_file_internal(workspace, relative, Some(false))
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+        if content.size > super::tool_output::GREP_MAX_FILE_BYTES {
+            skipped_too_large += 1;
+            continue;
+        }
+        if content.is_binary {
+            skipped_binary += 1;
+            continue;
+        }
+        files_scanned += 1;
+        for (index, line) in content.content.lines().enumerate() {
+            let is_match = if let Some(compiled) = regex.as_ref() {
+                compiled.is_match(line)
+            } else {
+                line.to_lowercase().contains(&query_lower)
+            };
+            if is_match {
+                if seen_matches < page.offset {
+                    seen_matches += 1;
+                    continue;
+                }
+                seen_matches += 1;
+                let (text, was_truncated) = super::tool_output::truncate_grep_line(line.trim());
+                results.push(serde_json::json!({
+                    "path": virtual_path,
+                    "line": index + 1,
+                    "text": text,
+                    "text_truncated": was_truncated,
+                    "project_id": mount.project_id.clone(),
+                    "mount_name": mount.mount_name.clone(),
+                }));
+                if was_truncated && results.len() <= page.limit {
+                    column_truncated_matches += 1;
+                }
+                if results.len() > page.limit {
+                    break;
+                }
+            }
+        }
+        if results.len() > page.limit {
+            break;
+        }
+    }
+    let truncated = results.len() > page.limit;
+    if truncated {
+        results.truncate(page.limit);
+    }
+    let next_cursor = truncated.then(|| {
+        super::tool_output::create_tool_cursor(&cursor_scope, page.offset + results.len())
+    });
+    serde_json::to_string_pretty(&serde_json::json!({
+        "query": query,
+        "total": results.len(),
+        "count": results.len(),
+        "total_count": (!truncated).then_some(page.offset + results.len()),
+        "total_is_exact": !truncated,
+        "results": results,
+        "limit": page.limit,
+        "offset": page.offset,
+        "truncated": truncated,
+        "next_cursor": next_cursor,
+        "files_scanned": files_scanned,
+        "scan_complete": !truncated,
+        "skipped_files": {
+            "binary": skipped_binary,
+            "too_large": skipped_too_large,
+            "max_file_bytes": super::tool_output::GREP_MAX_FILE_BYTES,
+            "is_exact": !truncated
+        },
+        "column_truncated_matches": column_truncated_matches,
+        "max_columns": super::tool_output::GREP_MAX_COLUMNS
+    }))
+    .map_err(|error| command_error(error.to_string()))
+}
+
+/// Collect ast_grep candidates across the requested virtual targets under a
+/// cumulative budget. Candidates stay lightweight (mount index + paths) until
+/// the whole set passed the bound, so an over-limit request never materializes
+/// a full candidate list.
+async fn collect_virtual_ast_candidates(
+    mounts: &[WorkspaceProjectMount],
+    targets: Vec<(usize, String)>,
+    requested_path: &str,
+    include_hidden: bool,
+    candidate_limit: usize,
+) -> CommandResult<Vec<super::ast_search::AstSearchCandidate>> {
+    let mut budget = CandidateScanBudget::new(candidate_limit);
+    let mut raw_candidates = Vec::<(usize, String, Option<u64>)>::new();
+    for (mount_index, base_path) in targets {
+        let mount = &mounts[mount_index];
+        let workspace = mount_workspace_path(mount)?;
+        let stats = fs::stat_internal(&workspace, base_path.clone())
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
+        if stats.kind == "file" {
+            budget.charge(1)?;
+            raw_candidates.push((mount_index, base_path, Some(stats.size)));
+            continue;
+        }
+        if stats.kind != "directory" {
+            return Err(command_error(format!(
+                "ast_grep path must be a file or directory: {}",
+                requested_path
+            )));
+        }
+        let entries = fs::list_dir_internal(
+            &workspace,
+            base_path.clone(),
+            Some(true),
+            Some(include_hidden),
+            None,
+            Some(false),
+        )
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
+        let file_entries = entries
+            .into_iter()
+            .filter(|entry| entry.kind == "file")
+            .collect::<Vec<_>>();
+        budget.charge(file_entries.len())?;
+        for entry in file_entries {
+            let relative = entry.relative_path.replace('\\', "/");
+            let read_path = if base_path.is_empty() || base_path == "." {
+                relative
+            } else {
+                format!(
+                    "{}/{}",
+                    base_path.trim_end_matches(['/', '\\']),
+                    relative.trim_start_matches(['/', '\\'])
+                )
+            };
+            raw_candidates.push((mount_index, read_path, entry.size));
+        }
+    }
+
+    raw_candidates
+        .into_iter()
+        .map(|(mount_index, read_path, size)| {
+            let mount = &mounts[mount_index];
+            Ok(super::ast_search::AstSearchCandidate {
+                workspace: mount_workspace_path(mount)?,
+                display_path: virtual_path_for_mount(mount, &read_path),
+                read_path,
+                size,
+                project_id: Some(mount.project_id.clone()),
+                mount_name: Some(mount.mount_name.clone()),
+            })
+        })
+        .collect()
+}
+
+async fn execute_virtual_ast_search(
+    args: &Value,
+    context: VirtualWorkspaceContext<'_>,
+    cancellation: Option<Arc<super::ToolCancellation>>,
+) -> CommandResult<String> {
+    let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+    let explicit_project_id = json_arg_string(args, "project_id");
+    let normalized_path = validate_virtual_relative_path(&raw_path)?;
+    let include_hidden = json_arg_bool(args, "include_hidden").unwrap_or(false);
+    let mut targets = Vec::<(usize, String)>::new();
+
+    if explicit_project_id.is_none() && (normalized_path.is_empty() || normalized_path == ".") {
+        targets.extend(
+            context
+                .mounts
+                .iter()
+                .enumerate()
+                .filter(|(_, mount)| mount_has_workspace(mount))
+                .map(|(mount_index, _)| (mount_index, ".".to_string())),
+        );
+    } else {
+        let resolved =
+            resolve_virtual_mount_target(context, &raw_path, explicit_project_id.as_deref())?;
+        let mount_index = context
+            .mounts
+            .iter()
+            .position(|mount| std::ptr::eq(mount, resolved.mount))
+            .expect("resolved mount belongs to the virtual context");
+        targets.push((mount_index, resolved.relative_path));
+    }
+
+    let candidates = collect_virtual_ast_candidates(
+        context.mounts,
+        targets,
+        &raw_path,
+        include_hidden,
+        VIRTUAL_SCAN_CANDIDATE_LIMIT,
+    )
+    .await?;
+
+    let mount_scope = serde_json::json!(context
+        .mounts
+        .iter()
+        .map(|mount| [
+            mount.project_id.as_str(),
+            mount.mount_name.as_str(),
+            mount.workspace_path.as_deref().unwrap_or("")
+        ])
+        .collect::<Vec<_>>())
+    .to_string();
+    let cursor_scope = format!(
+        "ast_grep\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        mount_scope,
+        raw_path,
+        explicit_project_id.as_deref().unwrap_or(""),
+        json_arg_string(args, "pattern").unwrap_or_default(),
+        json_arg_string(args, "language").unwrap_or_default(),
+        json_arg_string(args, "strictness").unwrap_or_else(|| "smart".to_string()),
+        json_arg_string(args, "include_pattern").unwrap_or_default(),
+        include_hidden
+    );
+    super::ast_search::execute_ast_search(args, candidates, &cursor_scope, true, cancellation).await
+}
+
+pub(crate) async fn execute_virtual_workspace_tool(
+    mode: &str,
+    tool_id: &str,
+    args: &Value,
+    mounts: &[WorkspaceProjectMount],
+    focused_project_id: Option<&str>,
+    cancellation: Option<Arc<super::ToolCancellation>>,
+    capture_checkpoint_snapshots: bool,
+) -> CommandResult<VirtualToolResponse> {
+    if mounts.is_empty() {
+        return Ok(None);
+    }
+    let virtual_context = VirtualWorkspaceContext {
+        mounts,
+        focused_project_id,
+    };
+
+    match tool_id {
+        "list" => {
+            let raw_path = json_arg_string(args, "path").unwrap_or_else(|| ".".to_string());
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let normalized_path = normalize_tool_path(&raw_path);
+            if explicit_project_id.is_none()
+                && (normalized_path.is_empty() || normalized_path == ".")
+            {
+                let mut entries = mounts
+                    .iter()
+                    .map(|mount| {
+                        serde_json::json!({
+                            "path": mount.mount_name,
+                            "relative_path": mount.mount_name,
+                            "name": mount.mount_name,
+                            "kind": "directory",
+                            "is_hidden": false,
+                            "is_readonly": mount.is_read_only,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                entries.sort_by(|left, right| {
+                    left.get("relative_path")
+                        .and_then(Value::as_str)
+                        .cmp(&right.get("relative_path").and_then(Value::as_str))
+                });
+                let mount_scope = serde_json::json!(mounts
+                    .iter()
+                    .map(|mount| [mount.project_id.as_str(), mount.mount_name.as_str()])
+                    .collect::<Vec<_>>())
+                .to_string();
+                let cursor_scope = format!("list\0virtual-root\0{mount_scope}");
+                let total_count = entries.len();
+                let page = super::tool_output::paginate_items(
+                    &entries,
+                    args,
+                    &cursor_scope,
+                    super::tool_output::LIST_DEFAULT_LIMIT,
+                    super::tool_output::LIST_MAX_LIMIT,
+                )?;
+                return serde_json::to_string_pretty(&serde_json::json!({
+                    "path": ".",
+                    "virtual_root": true,
+                    "count": page.items.len(),
+                    "total_count": total_count,
+                    "entries": page.items,
+                    "limit": page.limit,
+                    "offset": page.offset,
+                    "truncated": page.truncated,
+                    "next_cursor": page.next_cursor
+                }))
+                .map(Some)
+                .map_err(|error| command_error(error.to_string()));
+            }
+
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            let workspace = mount_workspace_path(mount)?;
+            let recursive = json_arg_bool(args, "recursive");
+            let include_hidden = json_arg_bool(args, "include_hidden");
+            let max_depth = json_arg_u32(args, "max_depth");
+            let mut entries = fs::list_dir_internal(
+                &workspace,
+                relative_path.clone(),
+                recursive,
+                include_hidden,
+                max_depth,
+                Some(false),
+            )
+            .await
+            .map_err(|error| command_error(error.to_string()))?
+            .into_iter()
+            .map(|mut entry| {
+                entry.path = virtual_path_for_mount(mount, &entry.relative_path);
+                entry.relative_path = entry.path.clone();
+                entry
+            })
+            .collect::<Vec<_>>();
+
+            entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+            let cursor_scope = format!(
+                "list\0{}\0{}\0{}\0{}\0{}",
+                workspace.to_string_lossy(),
+                relative_path,
+                recursive.unwrap_or(false),
+                include_hidden.unwrap_or(false),
+                max_depth.map_or_else(String::new, |value| value.to_string())
+            );
+            let total_count = entries.len();
+            let page = super::tool_output::paginate_items(
+                &entries,
+                args,
+                &cursor_scope,
+                super::tool_output::LIST_DEFAULT_LIMIT,
+                super::tool_output::LIST_MAX_LIMIT,
+            )?;
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "path": virtual_path_for_mount(mount, &relative_path),
+                "project_id": mount.project_id,
+                "mount_name": mount.mount_name,
+                "count": page.items.len(),
+                "total_count": total_count,
+                "entries": page.items,
+                "limit": page.limit,
+                "offset": page.offset,
+                "truncated": page.truncated,
+                "next_cursor": page.next_cursor
+            }))
+            .map(Some)
+            .map_err(|error| command_error(error.to_string()))
+        }
+        "read" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for read tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            let workspace = mount_workspace_path(mount)?;
+            let result = fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+            let virtual_path = virtual_path_for_mount(mount, &relative_path);
+            if result.is_binary {
+                return Ok(Some(format!(
+                    "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nBINARY: true\nSIZE: {}\nENCODING: {}\nREVISION: {}\nCONTENT_OMITTED: binary",
+                    virtual_path,
+                    mount.project_id,
+                    mount.mount_name,
+                    result.size,
+                    result.encoding,
+                    result.revision
+                )));
+            }
+
+            let end_line_scope =
+                json_arg_u32(args, "end_line").map_or_else(String::new, |value| value.to_string());
+            let cursor_scope = format!(
+                "read\0{}\0{}\0{}\0{}",
+                workspace.to_string_lossy(),
+                relative_path,
+                result.revision,
+                end_line_scope
+            );
+            let page =
+                super::tool_output::paginate_read_content(&result.content, args, &cursor_scope)?;
+            let selected = page.lines.iter().map(String::as_str).collect::<Vec<_>>();
+            let numbered = format_with_line_numbers(&selected, page.start_line);
+            Ok(Some(format!(
+                "FILE: {}\nSOURCE: WORKSPACE_FILE\nPROJECT_ID: {}\nMOUNT: {}\nLANGUAGE: {}\nSIZE: {}\nREVISION: {}\nLINES: {}-{}\nTOTAL_LINES: {}\nRETURNED_LINES: {}\nTRUNCATED: {}\nNEXT_CURSOR: {}\nLIMITS: max_lines={}, max_bytes={}, max_columns={}\nCOLUMN_TRUNCATED_LINES: {}\n\n---BEGIN FILE CONTENT---\n{}\n---END FILE CONTENT---",
+                virtual_path,
+                mount.project_id,
+                mount.mount_name,
+                result.language,
+                result.size,
+                result.revision,
+                page.start_line,
+                page.end_line,
+                page.total_lines,
+                page.returned_lines,
+                page.truncated,
+                page.next_cursor.as_deref().unwrap_or("none"),
+                page.max_lines,
+                page.max_bytes,
+                super::tool_output::READ_MAX_COLUMNS,
+                page.column_truncated_lines,
+                numbered
+            )))
+        }
+        "glob" | "grep" => {
+            let explicit_project_id = json_arg_string(args, "project_id");
+            if let Some(project_id) = explicit_project_id.as_deref() {
+                let resolved =
+                    resolve_virtual_mount_target(virtual_context, ".", Some(project_id))?;
+                execute_virtual_workspace_search_tool(
+                    tool_id,
+                    args,
+                    std::slice::from_ref(resolved.mount),
+                )
+                .await
+                .map(Some)
+            } else {
+                execute_virtual_workspace_search_tool(tool_id, args, mounts)
+                    .await
+                    .map(Some)
+            }
+        }
+        "ast_grep" => execute_virtual_ast_search(args, virtual_context, cancellation)
+            .await
+            .map(Some),
+        "write" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for write tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            if mount.is_read_only {
+                return Ok(Some(format!(
+                    "Cannot write to read-only project mount {}.",
+                    mount.mount_name
+                )));
+            }
+            let content = json_arg_string(args, "content")
+                .ok_or_else(|| command_error("Missing content argument for write tool."))?;
+            let create_dirs = json_arg_bool(args, "create_dirs");
+            let expected_revision = json_arg_string(args, "expected_revision");
+            let workspace = mount_workspace_path(mount)?;
+            let display_path = virtual_path_for_mount(mount, &relative_path);
+            let absolute_path =
+                resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+
+            if !create_dirs.unwrap_or(true) {
+                let parent = absolute_path.parent();
+                if !parent.is_some_and(Path::exists) {
+                    return Ok(Some(format!(
+                        "Parent directory does not exist for {}: {}",
+                        display_path,
+                        parent
+                            .map(|value| value.display().to_string())
+                            .unwrap_or_default()
+                    )));
+                }
+            }
+
+            let existed = fs::exists_internal(&workspace, relative_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before write: {}",
+                        display_path, error
+                    ))
+                })?;
+            let created = !existed;
+            let bytes_written = content.len() as u64;
+            let change: PendingVirtualChange = PendingFileChange {
+                display_path: display_path.clone(),
+                effective_workspace: workspace,
+                effective_path: relative_path,
+                absolute_path,
+                status: if created {
+                    "created".to_string()
+                } else {
+                    "updated".to_string()
+                },
+                new_content: Some(content.clone()),
+                created,
+                bytes_written,
+                additions: content.lines().count(),
+                deletions: 0,
+                expected_revision,
+                requested_unix_mode: None,
+            };
+            commit_and_validate_pending_file_changes_with_create_dirs(
+                vec![change],
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        ("path".to_string(), Value::String(display_path)),
+                        (
+                            "bytes_written".to_string(),
+                            Value::Number(serde_json::Number::from(bytes_written)),
+                        ),
+                        ("created".to_string(), Value::Bool(created)),
+                        (
+                            "project_id".to_string(),
+                            Value::String(mount.project_id.clone()),
+                        ),
+                    ]),
+                ),
+                create_dirs.unwrap_or(true),
+            )
+            .await
+            .map(Some)
+        }
+        "edit" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for edit tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            if mount.is_read_only {
+                return Ok(Some(format!(
+                    "Cannot edit read-only project mount {}.",
+                    mount.mount_name
+                )));
+            }
+            let old_text = json_arg_string(args, "old_text")
+                .ok_or_else(|| command_error("Missing old_text argument for edit tool."))?;
+            let new_text = json_arg_string(args, "new_text")
+                .ok_or_else(|| command_error("Missing new_text argument for edit tool."))?;
+            let replace_all = json_arg_bool(args, "replace_all").unwrap_or(false);
+            let expected_revision = json_arg_string(args, "expected_revision");
+            let workspace = mount_workspace_path(mount)?;
+            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+            let display_path = virtual_path_for_mount(mount, &relative_path);
+            if current.is_binary {
+                return Ok(Some(format!("Cannot edit binary file: {}", display_path)));
+            }
+            fs::validate_expected_revision(
+                &display_path,
+                expected_revision.as_deref(),
+                Some(&current.revision),
+            )
+            .map_err(|error| command_error(error.to_string()))?;
+            let mutation_revision = expected_revision
+                .clone()
+                .unwrap_or_else(|| current.revision.clone());
+            let occurrences = current.content.matches(&old_text).count();
+            if let Some(error) = exact_edit_match_error(&display_path, occurrences, replace_all) {
+                return Ok(Some(error));
+            }
+            let updated = if replace_all {
+                current.content.replace(&old_text, &new_text)
+            } else {
+                current.content.replacen(&old_text, &new_text, 1)
+            };
+            let absolute_path =
+                resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+            let (additions, deletions) = compute_line_change_stats(&current.content, &updated);
+            let bytes_written = updated.len() as u64;
+            let change: PendingVirtualChange = PendingFileChange {
+                display_path: display_path.clone(),
+                effective_workspace: workspace,
+                effective_path: relative_path,
+                absolute_path,
+                status: "updated".to_string(),
+                new_content: Some(updated.clone()),
+                created: false,
+                bytes_written,
+                additions,
+                deletions,
+                expected_revision: Some(mutation_revision),
+                requested_unix_mode: None,
+            };
+            commit_and_validate_pending_file_changes(
+                vec![change],
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        (
+                            "replacements".to_string(),
+                            Value::Number(serde_json::Number::from(if replace_all {
+                                occurrences as u64
+                            } else {
+                                1
+                            })),
+                        ),
+                        ("path".to_string(), Value::String(display_path)),
+                        (
+                            "bytes_written".to_string(),
+                            Value::Number(serde_json::Number::from(bytes_written)),
+                        ),
+                        ("created".to_string(), Value::Bool(false)),
+                        (
+                            "project_id".to_string(),
+                            Value::String(mount.project_id.clone()),
+                        ),
+                    ]),
+                ),
+            )
+            .await
+            .map(Some)
+        }
+        "delete" => {
+            let raw_path = json_arg_string(args, "path")
+                .ok_or_else(|| command_error("Missing path argument for delete tool."))?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let resolved = resolve_virtual_mount_target(
+                virtual_context,
+                &raw_path,
+                explicit_project_id.as_deref(),
+            )?;
+            let mount = resolved.mount;
+            let relative_path = resolved.relative_path;
+            let expected_revision = json_arg_string(args, "expected_revision");
+            if mount.is_read_only {
+                return Ok(Some(format!(
+                    "Cannot delete from read-only project mount {}.",
+                    mount.mount_name
+                )));
+            }
+            let workspace = mount_workspace_path(mount)?;
+            let absolute_path =
+                resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
+            let display_path = virtual_path_for_mount(mount, &relative_path);
+            let metadata = fs::stat_internal(&workspace, relative_path.clone())
+                .await
+                .map_err(|error| {
+                    command_error(format!(
+                        "Failed to inspect {} before delete: {}",
+                        display_path, error
+                    ))
+                })?;
+            if metadata.kind == "directory" {
+                return Ok(Some(format!(
+                    "Cannot delete directory with delete tool: {}. Only files are supported.",
+                    display_path
+                )));
+            }
+            let current = fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
+            let deletions = if current.is_binary {
+                0
+            } else {
+                current.content.lines().count()
+            };
+            fs::validate_expected_revision(
+                &display_path,
+                expected_revision.as_deref(),
+                Some(&current.revision),
+            )
+            .map_err(|error| command_error(error.to_string()))?;
+            let mutation_revision = expected_revision
+                .clone()
+                .unwrap_or_else(|| current.revision.clone());
+            let change: PendingVirtualChange = PendingFileChange {
+                display_path: display_path.clone(),
+                effective_workspace: workspace,
+                effective_path: relative_path,
+                absolute_path,
+                status: "deleted".to_string(),
+                new_content: None,
+                created: false,
+                bytes_written: 0,
+                additions: 0,
+                deletions,
+                expected_revision: Some(mutation_revision),
+                requested_unix_mode: None,
+            };
+            commit_and_validate_pending_file_changes(
+                vec![change],
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([
+                        ("path".to_string(), Value::String(display_path)),
+                        (
+                            "project_id".to_string(),
+                            Value::String(mount.project_id.clone()),
+                        ),
+                    ]),
+                ),
+            )
+            .await
+            .map(Some)
+        }
+        "apply_patch" => {
+            let patch_text = json_arg_string(args, "patch_text").ok_or_else(|| {
+                command_error("Missing patch_text argument for apply_patch tool.")
+            })?;
+            let explicit_project_id = json_arg_string(args, "project_id");
+            let expected_revisions = json_arg_string_map(args, "expected_revisions");
+            let operations = parse_apply_patch(&patch_text)?;
+            let mut pending_changes: Vec<PendingVirtualChange> = Vec::new();
+
+            for operation in operations.iter() {
+                let operation_path = match operation {
+                    ParsedPatchOperation::Add { path, .. }
+                    | ParsedPatchOperation::Update { path, .. }
+                    | ParsedPatchOperation::Delete { path } => path,
+                };
+                let validation =
+                    validate_tool_execution(mode, tool_id, Some(operation_path.as_str()));
+                if !validation.allowed {
+                    return Ok(Some(validation.reason.unwrap_or_else(|| {
+                        format!(
+                            "Tool {} is not allowed for path {}",
+                            tool_id, operation_path
+                        )
+                    })));
+                }
+            }
+
+            for operation in operations {
+                match operation {
+                    ParsedPatchOperation::Add { path, lines } => {
+                        let expected_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned()
+                            .or_else(|| Some(fs::EXPECTED_REVISION_ABSENT.to_string()));
+                        let resolved = resolve_virtual_mount_target(
+                            virtual_context,
+                            &path,
+                            explicit_project_id.as_deref(),
+                        )?;
+                        let mount = resolved.mount;
+                        let relative_path = resolved.relative_path;
+                        if mount.is_read_only {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to read-only project mount {}.",
+                                mount.mount_name
+                            )));
+                        }
+                        let workspace = mount_workspace_path(mount)?;
+                        let absolute_path =
+                            resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+                        let display_path = virtual_path_for_mount(mount, &relative_path);
+                        if fs::exists_internal(&workspace, relative_path.clone())
+                            .await
+                            .map_err(|error| {
+                                command_error(format!(
+                                    "Failed to inspect {} before apply_patch: {}",
+                                    display_path, error
+                                ))
+                            })?
+                        {
+                            return Ok(Some(format!(
+                                "Cannot add file {} because it already exists.",
+                                display_path
+                            )));
+                        }
+                        let new_content = join_text_lines(&lines, true);
+                        pending_changes.push(PendingFileChange {
+                            display_path,
+                            effective_workspace: workspace,
+                            effective_path: relative_path,
+                            absolute_path,
+                            status: "created".to_string(),
+                            new_content: Some(new_content.clone()),
+                            created: true,
+                            bytes_written: new_content.len() as u64,
+                            additions: new_content.lines().count(),
+                            deletions: 0,
+                            expected_revision,
+                            requested_unix_mode: None,
+                        });
+                    }
+                    ParsedPatchOperation::Update { path, hunks } => {
+                        let requested_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned();
+                        let resolved = resolve_virtual_mount_target(
+                            virtual_context,
+                            &path,
+                            explicit_project_id.as_deref(),
+                        )?;
+                        let mount = resolved.mount;
+                        let relative_path = resolved.relative_path;
+                        if mount.is_read_only {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to read-only project mount {}.",
+                                mount.mount_name
+                            )));
+                        }
+                        let workspace = mount_workspace_path(mount)?;
+                        let display_path = virtual_path_for_mount(mount, &relative_path);
+                        let current =
+                            fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
+                                .await
+                                .map_err(|error| command_error(error.to_string()))?;
+                        if current.is_binary {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to binary file: {}",
+                                display_path
+                            )));
+                        }
+                        fs::validate_expected_revision(
+                            &display_path,
+                            requested_revision.as_deref(),
+                            Some(&current.revision),
+                        )
+                        .map_err(|error| command_error(error.to_string()))?;
+                        let expected_revision =
+                            requested_revision.unwrap_or_else(|| current.revision.clone());
+                        let absolute_path =
+                            resolve_validated_tool_path(&workspace, relative_path.as_str(), true)?;
+                        let new_content = apply_patch_hunks_to_content(
+                            display_path.as_str(),
+                            &current.content,
+                            &hunks,
+                        )?;
+                        let (additions, deletions) =
+                            compute_line_change_stats(&current.content, &new_content);
+                        pending_changes.push(PendingFileChange {
+                            display_path,
+                            effective_workspace: workspace,
+                            effective_path: relative_path,
+                            absolute_path,
+                            status: "updated".to_string(),
+                            new_content: Some(new_content.clone()),
+                            created: false,
+                            bytes_written: new_content.len() as u64,
+                            additions,
+                            deletions,
+                            expected_revision: Some(expected_revision),
+                            requested_unix_mode: None,
+                        });
+                    }
+                    ParsedPatchOperation::Delete { path } => {
+                        let requested_revision = expected_revisions
+                            .get(&normalize_tool_map_path(&path))
+                            .cloned();
+                        let resolved = resolve_virtual_mount_target(
+                            virtual_context,
+                            &path,
+                            explicit_project_id.as_deref(),
+                        )?;
+                        let mount = resolved.mount;
+                        let relative_path = resolved.relative_path;
+                        if mount.is_read_only {
+                            return Ok(Some(format!(
+                                "Cannot apply patch to read-only project mount {}.",
+                                mount.mount_name
+                            )));
+                        }
+                        let workspace = mount_workspace_path(mount)?;
+                        let absolute_path =
+                            resolve_validated_tool_path(&workspace, relative_path.as_str(), false)?;
+                        let display_path = virtual_path_for_mount(mount, &relative_path);
+                        let current =
+                            fs::read_file_internal(&workspace, relative_path.clone(), Some(false))
+                                .await
+                                .map_err(|error| command_error(error.to_string()))?;
+                        fs::validate_expected_revision(
+                            &display_path,
+                            requested_revision.as_deref(),
+                            Some(&current.revision),
+                        )
+                        .map_err(|error| command_error(error.to_string()))?;
+                        let expected_revision =
+                            requested_revision.unwrap_or_else(|| current.revision.clone());
+                        let deletion_count = if current.is_binary {
+                            0
+                        } else {
+                            current.content.lines().count()
+                        };
+                        pending_changes.push(PendingFileChange {
+                            display_path,
+                            effective_workspace: workspace,
+                            effective_path: relative_path,
+                            absolute_path,
+                            status: "deleted".to_string(),
+                            new_content: None,
+                            created: false,
+                            bytes_written: 0,
+                            additions: 0,
+                            deletions: deletion_count,
+                            expected_revision: Some(expected_revision),
+                            requested_unix_mode: None,
+                        });
+                    }
+                }
+            }
+
+            let applied_operations = pending_changes.len() as u64;
+            commit_and_validate_pending_file_changes(
+                pending_changes,
+                mutation_response_fields(
+                    capture_checkpoint_snapshots,
+                    serde_json::Map::from_iter([(
+                        "applied_operations".to_string(),
+                        Value::Number(serde_json::Number::from(applied_operations)),
+                    )]),
+                ),
+            )
+            .await
+            .map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        affected_virtual_tool_project_ids, collect_virtual_ast_candidates,
+        collect_virtual_scan_candidates, execute_virtual_workspace_tool,
+        resolve_virtual_mount_target, validate_headless_project_mounts,
+        validate_headless_workspace_path, CandidateScanBudget, ResolvedMountTarget,
+        VirtualWorkspaceContext, WorkspaceProjectMount,
+    };
+    use crate::commands::{
+        commit_and_validate_pending_file_changes, commit_with_post_mutation_gate, PendingFileChange,
+    };
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn mount(
+        project_id: &str,
+        mount_name: &str,
+        display_name: Option<&str>,
+    ) -> WorkspaceProjectMount {
+        WorkspaceProjectMount {
+            project_id: project_id.to_string(),
+            mount_name: mount_name.to_string(),
+            workspace_path: Some(format!("/tmp/{}", project_id)),
+            display_name: display_name.map(str::to_string),
+            is_read_only: false,
+        }
+    }
+
+    fn temp_mount(project_id: &str, mount_name: &str, workspace: &Path) -> WorkspaceProjectMount {
+        WorkspaceProjectMount {
+            project_id: project_id.to_string(),
+            mount_name: mount_name.to_string(),
+            workspace_path: Some(workspace.to_string_lossy().to_string()),
+            display_name: None,
+            is_read_only: false,
+        }
+    }
+
+    fn virtual_change(
+        workspace: &Path,
+        relative_path: &str,
+        status: &str,
+        new_content: Option<&str>,
+    ) -> PendingFileChange {
+        PendingFileChange {
+            display_path: format!("{}/{}", "web", relative_path),
+            effective_workspace: workspace.to_path_buf(),
+            effective_path: relative_path.to_string(),
+            absolute_path: workspace.join(relative_path),
+            status: status.to_string(),
+            new_content: new_content.map(str::to_string),
+            created: false,
+            bytes_written: new_content.map_or(0, str::len) as u64,
+            additions: 1,
+            deletions: 1,
+            expected_revision: None,
+            requested_unix_mode: None,
+        }
+    }
+
+    fn resolve<'a>(
+        mounts: &'a [WorkspaceProjectMount],
+        raw_path: &str,
+        project_id: Option<&str>,
+        focused_project_id: Option<&'a str>,
+    ) -> Result<ResolvedMountTarget<'a>, String> {
+        resolve_virtual_mount_target(
+            VirtualWorkspaceContext {
+                mounts,
+                focused_project_id,
+            },
+            raw_path,
+            project_id,
+        )
+        .map_err(|error| error.message)
+    }
+
+    #[test]
+    fn resolve_virtual_mount_requires_selector_when_path_is_ambiguous() {
+        let mounts = vec![mount("web", "web", None), mount("api", "api", None)];
+
+        let error = resolve(&mounts, "src/main.rs", None, None).expect_err("ambiguous path");
+
+        assert!(error.contains("Ambiguous virtual-root path"));
+        assert!(error.contains("project_id"));
+    }
+
+    #[test]
+    fn affected_projects_follow_the_actual_virtual_tool_targets() {
+        let mounts = vec![
+            mount("api", "api", Some("API")),
+            mount("web", "web", Some("Web")),
+        ];
+
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "write",
+                &json!({ "path": "api/src/index.ts" }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("routed write"),
+            vec!["api"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "apply_patch",
+                &json!({
+                    "patch_text": "*** Begin Patch\n*** Add File: api/a.txt\n+a\n*** Add File: web/b.txt\n+b\n*** End Patch"
+                }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("multi-project patch"),
+            vec!["api", "web"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "glob",
+                &json!({ "pattern": "**/*.ts", "project_id": "api" }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("project-scoped glob"),
+            vec!["api"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "grep",
+                &json!({ "query": "needle" }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("global grep"),
+            vec!["api", "web"]
+        );
+        assert_eq!(
+            affected_virtual_tool_project_ids(
+                "list",
+                &json!({ "path": "." }),
+                &mounts,
+                Some("web"),
+            )
+            .expect("virtual mount listing"),
+            vec!["web"]
+        );
+    }
+
+    #[test]
+    fn resolve_virtual_mount_detects_ambiguous_aliases() {
+        let mounts = vec![
+            mount("frontend", "web", Some("app")),
+            mount("backend", "api", Some("app")),
+        ];
+
+        let error = resolve(&mounts, "app/src/index.ts", None, None).expect_err("ambiguous alias");
+
+        assert!(error.contains("Ambiguous virtual-root path"));
+    }
+
+    #[test]
+    fn resolve_virtual_mount_uses_focused_project_when_available() {
+        let mounts = vec![mount("web", "web", None), mount("api", "api", None)];
+
+        let resolved = resolve(&mounts, "src/main.rs", None, Some("api")).expect("focused project");
+
+        assert_eq!(resolved.mount.project_id, "api");
+        assert_eq!(resolved.relative_path, "src/main.rs");
+    }
+
+    #[test]
+    fn resolve_virtual_mount_rejects_paths_that_escape_a_mount() {
+        let mounts = vec![mount("web", "web", None)];
+
+        for path in [
+            "../secret.txt",
+            "web/../../secret.txt",
+            "/tmp/secret.txt",
+            "C:/secret.txt",
+        ] {
+            let error = resolve(&mounts, path, Some("web"), None).expect_err("unsafe path");
+            assert!(
+                error.contains("relative to a project mount")
+                    || error.contains("escapes its project mount"),
+                "unexpected error for {path}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_headless_mounts_canonicalizes_paths_below_allowed_root() {
+        let allowed = TempDir::new().expect("allowed root");
+        let project = allowed.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+        let mounts = vec![WorkspaceProjectMount {
+            project_id: "project-1".to_string(),
+            mount_name: "project".to_string(),
+            workspace_path: Some(project.to_string_lossy().to_string()),
+            display_name: Some("Project".to_string()),
+            is_read_only: false,
+        }];
+
+        let validated = validate_headless_project_mounts(&mounts, &[allowed.path().to_path_buf()])
+            .expect("mount below allowed root");
+
+        assert_eq!(
+            validated[0].workspace_path.as_deref(),
+            Some(
+                project
+                    .canonicalize()
+                    .expect("canonical project path")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_headless_mounts_rejects_symlink_outside_allowed_root() {
+        use std::os::unix::fs::symlink;
+
+        let allowed = TempDir::new().expect("allowed root");
+        let outside = TempDir::new().expect("outside root");
+        let link = allowed.path().join("linked-project");
+        symlink(outside.path(), &link).expect("project symlink");
+        let mounts = vec![WorkspaceProjectMount {
+            project_id: "project-1".to_string(),
+            mount_name: "project".to_string(),
+            workspace_path: Some(link.to_string_lossy().to_string()),
+            display_name: None,
+            is_read_only: false,
+        }];
+
+        let error = validate_headless_project_mounts(&mounts, &[allowed.path().to_path_buf()])
+            .expect_err("external mount must be rejected");
+
+        assert!(error.message.contains("outside the explicitly allowed"));
+    }
+
+    #[test]
+    fn validate_headless_workspace_path_keeps_relative_paths_inside_root() {
+        let allowed = TempDir::new().expect("allowed root");
+        let project = allowed.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+
+        let validated = validate_headless_workspace_path(
+            Some("project"),
+            allowed.path(),
+            &[allowed.path().to_path_buf()],
+        )
+        .expect("workspace path")
+        .expect("workspace path present");
+
+        assert_eq!(
+            validated,
+            project
+                .canonicalize()
+                .expect("canonical project path")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn candidate_scan_budget_fails_closed_with_guidance_once_exhausted() {
+        let mut budget = CandidateScanBudget::new(3);
+
+        budget.charge(3).expect("charge within the limit");
+        let error = budget.charge(1).expect_err("over-limit charge must fail");
+
+        assert!(error.message.contains("cumulative limit of 3 candidates"));
+        assert!(error.message.contains("include_pattern"));
+    }
+
+    #[tokio::test]
+    async fn virtual_scan_candidates_are_capped_cumulatively_across_mounts() {
+        let first = TempDir::new().expect("first mount");
+        let second = TempDir::new().expect("second mount");
+        for directory in [first.path(), second.path()] {
+            for name in ["a.rs", "b.rs", "c.rs"] {
+                fs::write(directory.join(name), "").expect("seed scan fixture");
+            }
+        }
+        let mounts = vec![
+            temp_mount("one", "one", first.path()),
+            temp_mount("two", "two", second.path()),
+        ];
+
+        let error = collect_virtual_scan_candidates(&mounts, false, 5)
+            .await
+            .expect_err("six cumulative candidates must exceed a limit of five");
+        assert!(error.message.contains("cumulative limit of 5 candidates"));
+
+        let candidates = collect_virtual_scan_candidates(&mounts, false, 6)
+            .await
+            .expect("six candidates fit a limit of six");
+        assert_eq!(candidates.len(), 6);
+        assert!(candidates
+            .iter()
+            .all(|(mount_index, _, _)| *mount_index < 2));
+    }
+
+    #[tokio::test]
+    async fn virtual_ast_grep_candidates_respect_the_cumulative_bound() {
+        let api = TempDir::new().expect("api workspace");
+        let web = TempDir::new().expect("web workspace");
+        for (index, directory) in [api.path(), web.path()].iter().enumerate() {
+            for name in ["app.ts", "util.ts"] {
+                fs::write(directory.join(name), format!("const v{index} = 1;\n"))
+                    .expect("seed ast fixture");
+            }
+        }
+        let mounts = vec![
+            temp_mount("web-project", "web", web.path()),
+            temp_mount("api-project", "api", api.path()),
+        ];
+        let targets = vec![(0usize, ".".to_string()), (1usize, ".".to_string())];
+
+        let error = collect_virtual_ast_candidates(&mounts, targets.clone(), ".", false, 3)
+            .await
+            .expect_err("four candidates must exceed a limit of three");
+        assert!(error.message.contains("cumulative limit of 3 candidates"));
+
+        let candidates = collect_virtual_ast_candidates(&mounts, targets, ".", false, 4)
+            .await
+            .expect("four candidates fit a limit of four");
+        assert_eq!(candidates.len(), 4);
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.project_id.as_deref() == Some("web-project")));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.project_id.as_deref() == Some("api-project")));
+    }
+
+    #[tokio::test]
+    async fn virtual_glob_respects_max_results() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("a.rs"), "").expect("write a");
+        fs::write(temp.path().join("b.rs"), "").expect("write b");
+        fs::write(temp.path().join("c.rs"), "").expect("write c");
+        let mounts = vec![WorkspaceProjectMount {
+            project_id: "api".to_string(),
+            mount_name: "api".to_string(),
+            workspace_path: Some(temp.path().to_string_lossy().to_string()),
+            display_name: None,
+            is_read_only: false,
+        }];
+
+        let result = execute_virtual_workspace_tool(
+            "Implement",
+            "glob",
+            &json!({ "pattern": "**/*.rs", "max_results": 2 }),
+            &mounts,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("glob")
+        .expect("handled by virtual root");
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("json response");
+
+        assert_eq!(
+            parsed.get("count").and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            parsed
+                .get("paths")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_ast_grep_searches_all_project_mounts() {
+        let api = TempDir::new().expect("api workspace");
+        let web = TempDir::new().expect("web workspace");
+        fs::write(api.path().join("app.ts"), "console.log(apiValue);\n")
+            .expect("write api fixture");
+        fs::write(web.path().join("app.ts"), "console.log(webValue);\n")
+            .expect("write web fixture");
+        let mounts = vec![
+            WorkspaceProjectMount {
+                project_id: "web-project".to_string(),
+                mount_name: "web".to_string(),
+                workspace_path: Some(web.path().to_string_lossy().to_string()),
+                display_name: None,
+                is_read_only: false,
+            },
+            WorkspaceProjectMount {
+                project_id: "api-project".to_string(),
+                mount_name: "api".to_string(),
+                workspace_path: Some(api.path().to_string_lossy().to_string()),
+                display_name: None,
+                is_read_only: false,
+            },
+        ];
+
+        let result = execute_virtual_workspace_tool(
+            "Implement",
+            "ast_grep",
+            &json!({
+                "pattern": "console.log($ARG)",
+                "include_meta": true,
+                "limit": 10
+            }),
+            &mounts,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("ast grep")
+        .expect("handled by virtual root");
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("json response");
+
+        assert_eq!(parsed["virtual_root"], true);
+        assert_eq!(parsed["count"], 2);
+        assert_eq!(parsed["total_count"], 2);
+        assert_eq!(parsed["matches"][0]["path"], "api/app.ts");
+        assert_eq!(parsed["matches"][0]["project_id"], "api-project");
+        assert_eq!(parsed["matches"][0]["meta_variables"]["ARG"], "apiValue");
+        assert_eq!(parsed["matches"][1]["path"], "web/app.ts");
+        assert_eq!(parsed["matches"][1]["project_id"], "web-project");
+    }
+
+    #[tokio::test]
+    async fn virtual_exact_edit_rejects_ambiguous_old_text() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(
+            temp.path().join("app.ts"),
+            "const value = 1;\nconst value = 1;\n",
+        )
+        .expect("write fixture");
+        let mounts = vec![WorkspaceProjectMount {
+            project_id: "web".to_string(),
+            mount_name: "web".to_string(),
+            workspace_path: Some(temp.path().to_string_lossy().to_string()),
+            display_name: None,
+            is_read_only: false,
+        }];
+
+        let result = execute_virtual_workspace_tool(
+            "Implement",
+            "edit",
+            &json!({
+                "path": "app.ts",
+                "old_text": "const value = 1;",
+                "new_text": "const value = 2;"
+            }),
+            &mounts,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("edit")
+        .expect("handled by virtual root");
+
+        assert!(result.contains("old_text matched 2 locations"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("app.ts")).expect("read fixture"),
+            "const value = 1;\nconst value = 1;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_write_commits_through_the_transactional_pipeline() {
+        let temp = TempDir::new().expect("temp dir");
+        let mounts = vec![temp_mount("web-project", "web", temp.path())];
+
+        let result = execute_virtual_workspace_tool(
+            "Implement",
+            "write",
+            &json!({ "path": "src/app.ts", "content": "export const value = 1;\n" }),
+            &mounts,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("write")
+        .expect("handled by virtual root");
+        let parsed: Value = serde_json::from_str(&result).expect("json response");
+
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["created"], true);
+        assert_eq!(parsed["path"], "web/src/app.ts");
+        assert_eq!(parsed["project_id"], "web-project");
+        assert_eq!(parsed["files"][0]["validation"]["readable"], true);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src/app.ts")).expect("read written file"),
+            "export const value = 1;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_mount_rolls_back_a_write_when_post_mutation_validation_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("app.ts"), "original\n").expect("seed mount file");
+
+        let error = commit_with_post_mutation_gate(
+            vec![virtual_change(
+                temp.path(),
+                "app.ts",
+                "updated",
+                Some("macro mutation\n"),
+            )],
+            Default::default(),
+            true,
+            |_| false,
+        )
+        .await
+        .expect_err("injected validation failure must fail the call");
+
+        assert!(error.message.contains("Post-mutation validation failed"));
+        assert!(error
+            .message
+            .contains("Injected post-mutation validation failure for web/app.ts"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("app.ts")).expect("restored mount file"),
+            "original\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn virtual_mount_delete_is_compensated_when_validation_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("removed.ts"), "keep me\n").expect("seed mount file");
+
+        let error = commit_with_post_mutation_gate(
+            vec![virtual_change(temp.path(), "removed.ts", "deleted", None)],
+            Default::default(),
+            true,
+            |_| false,
+        )
+        .await
+        .expect_err("injected validation failure must fail the call");
+
+        assert!(error.message.contains("Post-mutation validation failed"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("removed.ts"))
+                .expect("deleted mount file must be restored"),
+            "keep me\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn validated_commit_reports_the_standard_response_for_virtual_changes() {
+        let temp = TempDir::new().expect("temp dir");
+        fs::write(temp.path().join("app.ts"), "original\n").expect("seed mount file");
+
+        let response = commit_and_validate_pending_file_changes(
+            vec![virtual_change(
+                temp.path(),
+                "app.ts",
+                "updated",
+                Some("macro mutation\n"),
+            )],
+            Default::default(),
+        )
+        .await
+        .expect("validated virtual change must succeed");
+        let parsed: Value = serde_json::from_str(&response).expect("json response");
+
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["files"][0]["path"], "web/app.ts");
+        assert_eq!(
+            parsed["files"][0]["validation"]["revision"],
+            crate::commands::fs::content_revision(b"macro mutation\n")
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("app.ts")).expect("read mutated file"),
+            "macro mutation\n"
+        );
+    }
+}
