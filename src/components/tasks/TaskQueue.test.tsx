@@ -930,14 +930,17 @@ describe('TaskQueue', () => {
     await act(async () => {
       root?.render(<TaskQueueComponent />);
       await flushRender();
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
     const createButton = document.body.querySelector<HTMLButtonElement>(
       '[data-tour-id="implement-create-task"]'
     );
+    expect(createButton).not.toBeNull();
     await act(async () => {
       createButton?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
     const dialog = document.body.querySelector('[role="dialog"]');
