@@ -42,8 +42,8 @@
   },
   "releaseNotes": {
     "dialogTitle": "Macro의 새로운 기능",
-    "shownOnce": "이 안내는 설치된 버전마다 한 번만 표시됩니다.",
-    "continue": "Macro 계속 사용"
+    "continue": "Macro 계속 사용",
+    "version": "버전"
   },
   "updates": {
     "checking": "업데이트 확인 중",

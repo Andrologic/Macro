@@ -16,7 +16,7 @@ describe('release notes', () => {
     expect(getReleaseNote('0.1.0', 'fr-FR')?.title).toBe('Macro 0.1 est prêt');
     expect(getReleaseNote('0.1.0', 'de-DE')?.title).toBe('Macro 0.1 is ready');
     expect(getReleaseNote('0.1.0', 'fr-FR')?.content).toContain(
-      '## Un workflow desktop complet',
+      '## Tout le travail au même endroit',
     );
   });
 
