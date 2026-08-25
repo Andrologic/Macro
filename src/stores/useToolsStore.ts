@@ -33,6 +33,15 @@ const CHAT_TOGGLE_GROUPS: Record<string, readonly string[]> = {
   terminal: CHAT_TERMINAL_TOOL_IDS,
 };
 
+const MCP_SERVER_DEGRADING_ERROR_CODES = new Set([
+  'MCP_RUNTIME_NOT_CONNECTED',
+  'MCP_RUNTIME_STALE_GENERATION',
+  'MCP_RUNTIME_CONFIG_CHANGED',
+  'MCP_RUNTIME_CONNECT_FAILED',
+  'MCP_RUNTIME_CALL_TOOL_FAILED',
+  'MCP_RUNTIME_CLOSE_TIMEOUT',
+]);
+
 const getConfigBoolean = (tool: Tool, key: string): boolean | undefined => {
   const value = tool.config?.[key];
   return typeof value === 'boolean' ? value : undefined;
@@ -566,7 +575,14 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     try {
       return await callScopedMcpTool(toolId, args, [resolved.server]);
     } catch (error) {
-      const message = toServiceError(error).message;
+      const normalizedError = toServiceError(error);
+      const message = normalizedError.message;
+      if (!MCP_SERVER_DEGRADING_ERROR_CODES.has(normalizedError.code)) {
+        set({ lastError: message });
+        throw new Error(
+          `Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`
+        );
+      }
       const nextServers = get().mcpServers.map((server) =>
         server.id === resolved.server.id
           ? { ...server, status: 'degraded' as const, lastError: message }
