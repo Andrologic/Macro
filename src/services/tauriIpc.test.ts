@@ -1099,6 +1099,10 @@ describe("tauriIpc persistent MCP runtime", () => {
     await tauriIpc.mcpRuntimeGetSnapshot();
     const selector = { serverId: "test", projectIds: ["project-1"] };
     await tauriIpc.mcpRuntimeConnect(selector);
+    await tauriIpc.mcpOAuthAuthorize(selector);
+    await tauriIpc.mcpOAuthLogout(selector);
+    await tauriIpc.mcpStoreOAuthClientSecret({ serverId: "test", value: "secret" });
+    await tauriIpc.mcpDeleteOAuthClientSecret("test");
     await tauriIpc.mcpRuntimeDisconnect(key);
     await tauriIpc.mcpRuntimeRefreshCatalog(key);
     await tauriIpc.mcpRuntimeCallTool({
@@ -1117,6 +1121,22 @@ describe("tauriIpc persistent MCP runtime", () => {
       {
         command: "mcp_runtime_connect",
         payload: { selector },
+      },
+      {
+        command: "mcp_oauth_authorize",
+        payload: { selector },
+      },
+      {
+        command: "mcp_oauth_logout",
+        payload: { selector },
+      },
+      {
+        command: "mcp_store_oauth_client_secret",
+        payload: { serverId: "test", value: "secret" },
+      },
+      {
+        command: "mcp_delete_oauth_client_secret",
+        payload: { serverId: "test" },
       },
       {
         command: "mcp_runtime_disconnect",

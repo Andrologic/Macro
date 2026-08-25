@@ -3681,6 +3681,25 @@ export async function mcpDeleteEnvSecret(params: {
   });
 }
 
+export async function mcpStoreOAuthClientSecret(params: {
+  serverId: string;
+  value: string;
+}): Promise<string> {
+  return invoke<string>('mcp_store_oauth_client_secret', params);
+}
+
+export async function mcpDeleteOAuthClientSecret(serverId: string): Promise<void> {
+  return invoke('mcp_delete_oauth_client_secret', { serverId });
+}
+
+export async function mcpOAuthAuthorize(selector: MCPRuntimeSelector): Promise<void> {
+  return invoke('mcp_oauth_authorize', { selector });
+}
+
+export async function mcpOAuthLogout(selector: MCPRuntimeSelector): Promise<void> {
+  return invoke('mcp_oauth_logout', { selector });
+}
+
 // ============ Persistent MCP runtime ============
 // Tauri commands for the persistent MCP runtime. The event channel remains
 // reserved for status/catalog push notifications added with the UI migration.

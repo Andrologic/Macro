@@ -6,6 +6,7 @@ import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { getToolModePolicy } from '../services/toolModePolicy';
 import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../services/configDocuments';
 import { isConfigurationClientAvailable } from '../services/configurationClient';
+import { callScopedMcpTool } from '../services/scopedMcpRuntime';
 import {
   isMCPServerEnabled,
   isMCPToolId,
@@ -117,6 +118,8 @@ interface ToolsStore {
   upsertMCPServer: (server: MCPServer) => Promise<void>;
   removeMCPServer: (serverId: string) => Promise<void>;
   refreshMCPServerTools: (serverId: string) => Promise<void>;
+  authorizeMCPServer: (serverId: string) => Promise<void>;
+  logoutMCPServer: (serverId: string) => Promise<void>;
   saveAll: (tools?: Record<string, boolean>, servers?: Record<string, boolean>) => Promise<void>;
   resetToDefaults: () => Promise<void>;
   toggleChatTool: (toolId: string) => void;
@@ -348,7 +351,8 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     }
 
     try {
-      const response = await services.mcpDiscoverTools(server);
+      const snapshot = await services.mcpRuntimeConnect({ serverId, projectIds: [] });
+      const response = await services.mcpRuntimeRefreshCatalog(snapshot.key);
       const discoveredAt = new Date().toISOString();
       const tools = normalizeMCPServerTools(server, response.tools).map((tool) => ({
         ...tool,
@@ -383,6 +387,38 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       );
       set({ mcpServers: nextServers, saving: false, lastError: message });
       throw error;
+    }
+  },
+
+  authorizeMCPServer: async (serverId: string) => {
+    set({ saving: true, lastError: null });
+    try {
+      await services.mcpOAuthAuthorize({ serverId, projectIds: [] });
+      set({ saving: false });
+      await get().refreshMCPServerTools(serverId);
+    } catch (error) {
+      const message = toServiceError(error).message;
+      set({ saving: false, lastError: message });
+      throw new Error(message);
+    }
+  },
+
+  logoutMCPServer: async (serverId: string) => {
+    set({ saving: true, lastError: null });
+    try {
+      await services.mcpOAuthLogout({ serverId, projectIds: [] });
+      set((state) => ({
+        mcpServers: state.mcpServers.map((server) =>
+          server.id === serverId
+            ? { ...server, status: 'offline' as const, lastError: null }
+            : server
+        ),
+        saving: false,
+      }));
+    } catch (error) {
+      const message = toServiceError(error).message;
+      set({ saving: false, lastError: message });
+      throw new Error(message);
     }
   },
 
@@ -528,15 +564,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     }
 
     try {
-      const response = await services.mcpCallTool({
-        server: resolved.server,
-        toolName: resolved.tool.name,
-        arguments: args,
-      });
-      if (response.isError) {
-        throw new Error(response.content || `MCP tool ${resolved.tool.name} reported an error.`);
-      }
-      return response.content;
+      return await callScopedMcpTool(toolId, args, [resolved.server]);
     } catch (error) {
       const message = toServiceError(error).message;
       const nextServers = get().mcpServers.map((server) =>

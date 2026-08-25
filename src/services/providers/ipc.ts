@@ -629,6 +629,12 @@ export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = a
 export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async (selector) =>
   tauriIpc.mcpRuntimeConnect(selector);
 
+export const mcpOAuthAuthorize: ServiceProvider['mcpOAuthAuthorize'] = async (selector) =>
+  tauriIpc.mcpOAuthAuthorize(selector);
+
+export const mcpOAuthLogout: ServiceProvider['mcpOAuthLogout'] = async (selector) =>
+  tauriIpc.mcpOAuthLogout(selector);
+
 export const mcpRuntimeDisconnect: ServiceProvider['mcpRuntimeDisconnect'] = async (key) => {
   await tauriIpc.mcpRuntimeDisconnect(key);
 };
@@ -705,6 +711,8 @@ export const provider: ServiceProvider = {
   mcpCallTool,
   mcpRuntimeGetSnapshot,
   mcpRuntimeConnect,
+  mcpOAuthAuthorize,
+  mcpOAuthLogout,
   mcpRuntimeDisconnect,
   mcpRuntimeRefreshCatalog,
   mcpRuntimeCallTool,

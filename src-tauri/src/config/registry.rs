@@ -367,6 +367,76 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
                 }
             }
         }
+        if let Some(authorization) = server.get("authorization").and_then(Value::as_object) {
+            let transport_is_http = server.pointer("/transport/type").and_then(Value::as_str)
+                == Some("streamable_http");
+            if !transport_is_http {
+                diagnostics.push((
+                    format!("/mcpServers/{server_id}/authorization"),
+                    "config.tools.mcp_oauth_transport_invalid",
+                    "OAuth MCP n’est pris en charge qu’avec le transport Streamable HTTP."
+                        .to_string(),
+                ));
+            }
+            let client_id = authorization.get("clientId").and_then(Value::as_str);
+            let client_metadata_url = authorization
+                .get("clientMetadataUrl")
+                .and_then(Value::as_str);
+            if client_id.is_some() && client_metadata_url.is_some() {
+                diagnostics.push((
+                    format!("/mcpServers/{server_id}/authorization"),
+                    "config.tools.mcp_oauth_client_identity_ambiguous",
+                    "OAuth MCP doit utiliser soit un client préenregistré, soit un document de métadonnées client."
+                        .to_string(),
+                ));
+            }
+            if let Some(reference) = authorization.get("clientSecretRef").and_then(Value::as_str) {
+                let valid = client_id.is_some()
+                    && matches!(
+                        crate::commands::mcp::parse_mcp_oauth_client_secret_ref(reference),
+                        Some(reference_server_id) if reference_server_id == expected_server_id
+                    );
+                if !valid {
+                    diagnostics.push((
+                        format!(
+                            "/mcpServers/{server_id}/authorization/clientSecretRef"
+                        ),
+                        "config.tools.mcp_oauth_client_secret_ref_invalid",
+                        "Le secret OAuth doit cibler ce serveur et accompagner un client préenregistré."
+                            .to_string(),
+                    ));
+                }
+            }
+            if let Some(url) = client_metadata_url {
+                let valid = url::Url::parse(url).ok().is_some_and(|url| {
+                    url.scheme() == "https" && url.host_str().is_some() && url.path() != "/"
+                });
+                if !valid {
+                    diagnostics.push((
+                        format!(
+                            "/mcpServers/{server_id}/authorization/clientMetadataUrl"
+                        ),
+                        "config.tools.mcp_oauth_client_metadata_url_invalid",
+                        "Le document de métadonnées client doit être une URL HTTPS avec un chemin non racine."
+                            .to_string(),
+                    ));
+                }
+            }
+            if let Some(scopes) = authorization.get("scopes").and_then(Value::as_array) {
+                if scopes.iter().any(|scope| {
+                    scope.as_str().is_some_and(|scope| {
+                        scope.trim().is_empty() || scope.chars().any(char::is_whitespace)
+                    })
+                }) {
+                    diagnostics.push((
+                        format!("/mcpServers/{server_id}/authorization/scopes"),
+                        "config.tools.mcp_oauth_scope_invalid",
+                        "Chaque portée OAuth doit être une valeur non vide sans espace."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
         let Some(env) = server.pointer("/transport/env").and_then(Value::as_object) else {
             continue;
         };
@@ -2149,6 +2219,44 @@ mod tests {
                 && entry.path.as_deref()
                     == Some("/mcpServers/remote/transport/headers/Authorization")
         }));
+    }
+
+    #[test]
+    fn mcp_oauth_configuration_is_scoped_and_transport_bound() {
+        let mut document = sparse_document(ConfigDocumentKind::Tools);
+        document["mcpServers"] = json!({
+            "remote": {
+                "transport": {
+                    "type": "streamable_http",
+                    "url": "https://mcp.example.test/mcp"
+                },
+                "authorization": {
+                    "type": "oauth",
+                    "clientId": "macro-desktop",
+                    "clientSecretRef": "macro-secret://mcp-oauth-client/remote",
+                    "scopes": ["tools:read"]
+                }
+            }
+        });
+        let valid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(valid.valid, "{:?}", valid.diagnostics);
+
+        document["mcpServers"]["remote"]["transport"] = json!({
+            "type": "stdio",
+            "command": "remote"
+        });
+        document["mcpServers"]["remote"]["authorization"]["clientSecretRef"] =
+            json!("macro-secret://mcp-oauth-client/other");
+        let invalid = validate_document(ConfigDocumentKind::Tools, &ConfigScope::User, &document);
+        assert!(!invalid.valid);
+        assert!(invalid
+            .diagnostics
+            .iter()
+            .any(|entry| entry.code == "config.tools.mcp_oauth_transport_invalid"));
+        assert!(invalid
+            .diagnostics
+            .iter()
+            .any(|entry| entry.code == "config.tools.mcp_oauth_client_secret_ref_invalid"));
     }
 
     #[test]

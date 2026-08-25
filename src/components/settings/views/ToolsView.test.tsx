@@ -9,6 +9,8 @@ const toggleMcpServerMock = mock(() => undefined);
 const upsertMcpServerMock = mock(async () => undefined);
 const removeMcpServerMock = mock(async () => undefined);
 const refreshMcpServerToolsMock = mock(async () => undefined);
+const authorizeMcpServerMock = mock(async () => undefined);
+const logoutMcpServerMock = mock(async () => undefined);
 const saveWebSearchSettingsMock = mock((_value?: unknown) => undefined);
 
 let importCounter = 0;
@@ -80,6 +82,8 @@ const loadToolsView = async () => {
       upsertMCPServer: upsertMcpServerMock,
       removeMCPServer: removeMcpServerMock,
       refreshMCPServerTools: refreshMcpServerToolsMock,
+      authorizeMCPServer: authorizeMcpServerMock,
+      logoutMCPServer: logoutMcpServerMock,
       isToolEnabled: () => true,
     }),
   }));
@@ -213,6 +217,8 @@ describe('ToolsView', () => {
     upsertMcpServerMock.mockClear();
     removeMcpServerMock.mockClear();
     refreshMcpServerToolsMock.mockClear();
+    authorizeMcpServerMock.mockClear();
+    logoutMcpServerMock.mockClear();
     saveWebSearchSettingsMock.mockClear();
     mcpServers.length = 0;
     appState = { mode: 'Chat' };
@@ -361,5 +367,74 @@ describe('ToolsView', () => {
     expect(savedServer.transport.env.API_TOKEN).toBe(
       'macro-secret://mcp-env/secret_server/API_TOKEN'
     );
+  });
+
+  it('creates a stateless Streamable HTTP server with OAuth from settings', async () => {
+    const { ToolsView } = await loadToolsView();
+    await act(async () => {
+      root?.render(<ToolsView />);
+      await Promise.resolve();
+    });
+
+    const changeValue = async (
+      element: HTMLInputElement | HTMLSelectElement,
+      value: string
+    ) => {
+      await act(async () => {
+        const prototype = Object.getPrototypeOf(element) as object;
+        Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(element, value);
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+
+    await changeValue(
+      container!.querySelector('input[placeholder="Server name"]') as HTMLInputElement,
+      'Remote MCP'
+    );
+    const transport = container!.querySelector('select') as HTMLSelectElement;
+    await changeValue(transport, 'streamable_http');
+    await changeValue(
+      container!.querySelector('input[placeholder="https://example.com/mcp"]') as HTMLInputElement,
+      'https://mcp.example.com/mcp'
+    );
+    const protocol = Array.from(container!.querySelectorAll('select')).find((select) =>
+      Array.from(select.options).some((option) => option.value === 'modern')
+    )!;
+    await changeValue(protocol, 'modern');
+
+    const oauthSwitch = Array.from(container!.querySelectorAll('label')).find((label) =>
+      label.textContent?.includes('Use OAuth')
+    )!.querySelector('input')!;
+    await act(async () => {
+      oauthSwitch.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await changeValue(
+      container!.querySelector(
+        'input[placeholder="Scopes, separated by spaces"]'
+      ) as HTMLInputElement,
+      'tools.read tools.call'
+    );
+
+    const addButton = Array.from(container!.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Add')
+    )!;
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(upsertMcpServerMock).toHaveBeenCalledTimes(1);
+    const savedServer = (upsertMcpServerMock.mock.calls as unknown as Array<[any]>)[0]?.[0];
+    expect(savedServer.transport).toEqual({
+      type: 'streamable_http',
+      url: 'https://mcp.example.com/mcp',
+    });
+    expect(savedServer.protocol).toEqual({ mode: 'modern' });
+    expect(savedServer.authorization).toEqual({
+      type: 'oauth',
+      scopes: ['tools.read', 'tools.call'],
+    });
   });
 });

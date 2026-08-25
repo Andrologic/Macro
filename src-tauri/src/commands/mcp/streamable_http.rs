@@ -48,6 +48,7 @@ use url::Url;
 
 use super::ids::build_mcp_tool_id;
 use super::modern_adapter::{McpModernServerMetadata, MODERN_PROTOCOL_VERSION};
+use super::oauth::McpBearerTokenProvider;
 use super::result_format::format_tool_call_result;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
@@ -251,7 +252,7 @@ impl ValidatedEndpoint {
         self.url.origin().ascii_serialization()
     }
 
-    fn build_client(&self) -> CommandResult<reqwest::Client> {
+    pub(crate) fn build_client(&self) -> CommandResult<reqwest::Client> {
         let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -357,6 +358,8 @@ pub(crate) enum HttpTransportError {
     Header(String),
     #[error("transport attempted to use an unexpected MCP endpoint")]
     UnexpectedEndpoint,
+    #[error("OAuth authorization is required for the MCP endpoint")]
+    Authorization,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -637,6 +640,7 @@ pub(crate) struct GuardedStreamableHttpClient {
     endpoint: Arc<ValidatedEndpoint>,
     user_headers: Arc<HashMap<HeaderName, HeaderValue>>,
     request_head_timeout: Duration,
+    bearer_token_provider: Option<Arc<dyn McpBearerTokenProvider>>,
 }
 
 impl GuardedStreamableHttpClient {
@@ -651,7 +655,33 @@ impl GuardedStreamableHttpClient {
             endpoint: Arc::new(endpoint),
             user_headers: Arc::new(user_headers),
             request_head_timeout: operation_timeout.unwrap_or(DEFAULT_OPERATION_TIMEOUT),
+            bearer_token_provider: None,
         })
+    }
+
+    pub(crate) fn with_bearer_token_provider(
+        mut self,
+        provider: Arc<dyn McpBearerTokenProvider>,
+    ) -> Self {
+        self.bearer_token_provider = Some(provider);
+        self
+    }
+
+    async fn resolve_auth_token(
+        &self,
+        supplied: Option<String>,
+    ) -> Result<Option<String>, StreamableHttpError<AdapterError>> {
+        if supplied.is_some() {
+            return Ok(supplied);
+        }
+        let Some(provider) = &self.bearer_token_provider else {
+            return Ok(None);
+        };
+        provider
+            .access_token()
+            .await
+            .map(Some)
+            .map_err(|_| StreamableHttpError::Client(AdapterError::Authorization))
     }
 
     fn redirect_refused(
@@ -732,13 +762,14 @@ impl GuardedStreamableHttpClient {
         extra_protocol_headers: &HashMap<HeaderName, HeaderValue>,
         timeout: Duration,
     ) -> Result<RawHttpResponse, StreamableHttpError<AdapterError>> {
+        let auth_token = self.resolve_auth_token(None).await?;
         let headers = build_request_header_map(
             &self.user_headers,
             extra_protocol_headers,
             ForcedRequestHeaders {
                 accept: ACCEPT_MIME_TYPES,
                 json_content_type: true,
-                auth_token: None,
+                auth_token,
                 session_id: None,
             },
         )?;
@@ -833,6 +864,7 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
         max_sse_event_size: usize,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
         self.validate_transport_uri(&uri)?;
+        let auth_token = self.resolve_auth_token(auth_token).await?;
         // Precedence (plan §9): user headers first, rmcp protocol headers over
         // them, forced runtime headers (accept/content-type/authorization/
         // session id) last so generated values always win.
@@ -960,6 +992,7 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), StreamableHttpError<Self::Error>> {
         self.validate_transport_uri(&uri)?;
+        let auth_token = self.resolve_auth_token(auth_token).await?;
         let headers = build_request_header_map(
             &self.user_headers,
             &custom_headers,
@@ -1006,6 +1039,7 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
     ) -> Result<BoxStream<'static, Result<Sse, sse_stream::Error>>, StreamableHttpError<Self::Error>>
     {
         self.validate_transport_uri(&uri)?;
+        let auth_token = self.resolve_auth_token(auth_token).await?;
         let mut headers = build_request_header_map(
             &self.user_headers,
             &custom_headers,
@@ -1904,6 +1938,56 @@ mod tests {
                 .with_server_info(Implementation::new("modern-http-fixture", "1.0.0"));
                 ServerJsonRpcMessage::response(ServerResult::DiscoverResult(result), id)
             }
+            (FixtureEra::Legacy, "tools/list") => ServerJsonRpcMessage::response(
+                ServerResult::ListToolsResult(
+                    serde_json::from_value(serde_json::json!({
+                        "tools": [{
+                            "name": "echo",
+                            "description": "Echo a value",
+                            "inputSchema": {"type": "object"}
+                        }]
+                    }))
+                    .unwrap(),
+                ),
+                id,
+            ),
+            (FixtureEra::Modern, "tools/list") => ServerJsonRpcMessage::response(
+                ServerResult::ListToolsResult(
+                    serde_json::from_value(serde_json::json!({
+                        "resultType": "complete",
+                        "tools": [{
+                            "name": "echo",
+                            "description": "Echo a value",
+                            "inputSchema": {"type": "object"}
+                        }],
+                        "ttlMs": 0,
+                        "cacheScope": "private"
+                    }))
+                    .unwrap(),
+                ),
+                id,
+            ),
+            (FixtureEra::Legacy, "tools/call") => ServerJsonRpcMessage::response(
+                ServerResult::CallToolResult(
+                    serde_json::from_value(serde_json::json!({
+                        "content": [{"type": "text", "text": "legacy:ok"}],
+                        "isError": false
+                    }))
+                    .unwrap(),
+                ),
+                id,
+            ),
+            (FixtureEra::Modern, "tools/call") => ServerJsonRpcMessage::response(
+                ServerResult::CallToolResult(
+                    serde_json::from_value(serde_json::json!({
+                        "resultType": "complete",
+                        "content": [{"type": "text", "text": "modern:ok"}],
+                        "isError": false
+                    }))
+                    .unwrap(),
+                ),
+                id,
+            ),
             _ => ServerJsonRpcMessage::error(
                 ErrorData::new(ErrorCode::METHOD_NOT_FOUND, "method not found", None),
                 Some(id),
@@ -1971,6 +2055,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(legacy.negotiated_protocol_version(), "2025-11-25");
+        let legacy_tools = legacy.list_tools_page(None).await.unwrap();
+        assert_eq!(legacy_tools.tools[0].name, "echo");
+        let legacy_call = legacy
+            .call_tool("echo", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(legacy_call.content, "legacy:ok");
         legacy.shutdown().await;
         let legacy_calls = legacy_methods
             .lock()
@@ -2002,12 +2093,22 @@ mod tests {
             modern.server_metadata().negotiated_protocol_version,
             MODERN_PROTOCOL_VERSION
         );
+        let modern_tools = modern.list_tools_page(None).await.unwrap();
+        assert_eq!(modern_tools.tools[0].name, "echo");
+        let modern_call = modern
+            .call_tool_complete("echo", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(modern_call.content, "modern:ok");
         modern.shutdown().await;
         let modern_calls = modern_methods
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        assert_eq!(modern_calls, vec!["server/discover"]);
+        assert_eq!(modern_calls[0], "server/discover");
+        assert!(modern_calls.iter().any(|method| method == "tools/list"));
+        assert!(modern_calls.iter().any(|method| method == "tools/call"));
+        assert!(!modern_calls.iter().any(|method| method == "initialize"));
         modern_server.abort();
     }
 

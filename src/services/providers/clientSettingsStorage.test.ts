@@ -7,6 +7,7 @@ import {
   MCP_PROBE_TIMEOUT_MS_RANGE,
   MCP_STARTUP_TIMEOUT_MS_RANGE,
   normalizeMCPDisabledTools,
+  normalizeMCPAuthorization,
   normalizeMCPProtocolMode,
   normalizeMCPProtocolSettings,
   normalizeMCPServerPolicy,
@@ -185,6 +186,21 @@ describe('persisted MCP server policy helpers', () => {
     expect(normalizeMCPProtocolSettings({ mode: 'bogus' })).toBeUndefined();
     expect(normalizeMCPProtocolSettings('modern')).toBeUndefined();
     expect(normalizeMCPProtocolSettings(null)).toBeUndefined();
+  });
+
+  it('normalizes OAuth identity without retaining malformed scopes', () => {
+    expect(
+      normalizeMCPAuthorization({
+        type: 'oauth',
+        clientId: ' macro-desktop ',
+        scopes: ['tools:read', 'tools:read', 'bad scope', ''],
+      })
+    ).toEqual({
+      type: 'oauth',
+      clientId: 'macro-desktop',
+      scopes: ['tools:read'],
+    });
+    expect(normalizeMCPAuthorization({ type: 'bearer' })).toBeUndefined();
   });
 
   it('normalizes disabled tool lists without inventing entries', () => {
