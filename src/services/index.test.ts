@@ -139,6 +139,16 @@ describe('services index', () => {
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeConnect' },
     });
+    await expect(
+      services.mcpStoreOAuthClientSecret({ serverId: 'test', value: 'secret' }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpStoreOAuthClientSecret' },
+    });
+    await expect(services.mcpDeleteOAuthClientSecret('test')).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpDeleteOAuthClientSecret' },
+    });
     await expect(services.mcpRuntimeDisconnect(key)).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeDisconnect' },

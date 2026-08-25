@@ -319,6 +319,12 @@ export const mcpRuntimeGetSnapshot: ServiceProvider['mcpRuntimeGetSnapshot'] = a
 export const mcpRuntimeConnect: ServiceProvider['mcpRuntimeConnect'] = async () =>
   remoteUnsupported('mcpRuntimeConnect');
 
+export const mcpStoreOAuthClientSecret: ServiceProvider['mcpStoreOAuthClientSecret'] = async () =>
+  remoteUnsupported('mcpStoreOAuthClientSecret');
+
+export const mcpDeleteOAuthClientSecret: ServiceProvider['mcpDeleteOAuthClientSecret'] = async () =>
+  remoteUnsupported('mcpDeleteOAuthClientSecret');
+
 export const mcpOAuthAuthorize: ServiceProvider['mcpOAuthAuthorize'] = async () =>
   remoteUnsupported('mcpOAuthAuthorize');
 
@@ -472,6 +478,8 @@ export const provider: ServiceProvider = {
   mcpCallTool,
   mcpRuntimeGetSnapshot,
   mcpRuntimeConnect,
+  mcpStoreOAuthClientSecret,
+  mcpDeleteOAuthClientSecret,
   mcpOAuthAuthorize,
   mcpOAuthLogout,
   mcpRuntimeDisconnect,

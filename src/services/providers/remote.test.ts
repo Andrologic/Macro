@@ -11,6 +11,8 @@ import {
   mcpRuntimeCancelOperation,
   mcpRuntimeCallTool,
   mcpRuntimeConnect,
+  mcpStoreOAuthClientSecret,
+  mcpDeleteOAuthClientSecret,
   mcpRuntimeDisconnect,
   mcpRuntimeGetSnapshot,
   mcpRuntimeRefreshCatalog,
@@ -408,6 +410,16 @@ describe('remote provider', () => {
     ).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
       details: { feature: 'mcpRuntimeConnect' },
+    });
+    await expect(
+      mcpStoreOAuthClientSecret({ serverId: 'test', value: 'secret' }),
+    ).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpStoreOAuthClientSecret' },
+    });
+    await expect(mcpDeleteOAuthClientSecret('test')).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',
+      details: { feature: 'mcpDeleteOAuthClientSecret' },
     });
     await expect(mcpRuntimeDisconnect(key)).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED_IN_REMOTE_MODE',

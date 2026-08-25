@@ -158,6 +158,12 @@ export const services = {
   mcpRuntimeGetSnapshot: () => callProviderMethod('mcpRuntimeGetSnapshot'),
   mcpRuntimeConnect: (key: Parameters<ServiceProvider['mcpRuntimeConnect']>[0]) =>
     callProviderMethod('mcpRuntimeConnect', key),
+  mcpStoreOAuthClientSecret: (
+    data: Parameters<ServiceProvider['mcpStoreOAuthClientSecret']>[0]
+  ) => callProviderMethod('mcpStoreOAuthClientSecret', data),
+  mcpDeleteOAuthClientSecret: (
+    serverId: Parameters<ServiceProvider['mcpDeleteOAuthClientSecret']>[0]
+  ) => callProviderMethod('mcpDeleteOAuthClientSecret', serverId),
   mcpOAuthAuthorize: (selector: Parameters<ServiceProvider['mcpOAuthAuthorize']>[0]) =>
     callProviderMethod('mcpOAuthAuthorize', selector),
   mcpOAuthLogout: (selector: Parameters<ServiceProvider['mcpOAuthLogout']>[0]) =>

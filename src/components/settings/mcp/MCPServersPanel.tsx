@@ -26,6 +26,8 @@ interface MCPServersPanelProps {
   onRefreshServerTools: (serverId: string) => Promise<void>;
   onAuthorizeServer: (serverId: string) => Promise<void>;
   onLogoutServer: (serverId: string) => Promise<void>;
+  onStoreOAuthClientSecret: (serverId: string, value: string) => Promise<string>;
+  onDeleteOAuthClientSecret: (serverId: string) => Promise<void>;
 }
 
 interface MCPServerDraft {
@@ -35,11 +37,14 @@ interface MCPServerDraft {
   args: string;
   env: string;
   url: string;
+  headers: string;
   protocolMode: 'auto' | 'legacy' | 'modern';
   oauth: boolean;
   scopes: string;
   oauthClientId: string;
   oauthClientMetadataUrl: string;
+  oauthClientSecret: string;
+  oauthClientSecretConfigured: boolean;
   enabled: boolean;
 }
 
@@ -50,11 +55,14 @@ const emptyDraft = (): MCPServerDraft => ({
   args: '',
   env: '',
   url: '',
+  headers: '',
   protocolMode: 'auto',
   oauth: false,
   scopes: '',
   oauthClientId: '',
   oauthClientMetadataUrl: '',
+  oauthClientSecret: '',
+  oauthClientSecretConfigured: false,
   enabled: true,
 });
 
@@ -164,6 +172,15 @@ const MCPServerForm: React.FC<{
               onChange={(event) => onChange({ ...draft, url: event.target.value })}
               className="font-mono md:col-span-2"
             />
+            <textarea
+              placeholder={t(
+                'tools.mcp.headersPlaceholder',
+                'Authorization=Bearer token\nX-API-Key=value'
+              )}
+              value={draft.headers}
+              onChange={(event) => onChange({ ...draft, headers: event.target.value })}
+              className="min-h-20 rounded-md border border-border bg-background px-3 py-2 font-mono text-sm text-foreground outline-none focus:ring-2 focus:ring-primary/30 md:col-span-2"
+            />
             <select
               value={draft.protocolMode}
               onChange={(event) =>
@@ -198,7 +215,29 @@ const MCPServerForm: React.FC<{
                   placeholder={t('tools.mcp.oauth.clientId', 'Optional pre-registered client ID')}
                   value={draft.oauthClientId}
                   onChange={(event) =>
-                    onChange({ ...draft, oauthClientId: event.target.value })
+                    onChange({
+                      ...draft,
+                      oauthClientId: event.target.value,
+                      oauthClientSecret: '',
+                      oauthClientSecretConfigured: false,
+                    })
+                  }
+                  className="font-mono"
+                />
+                <Input
+                  type="password"
+                  placeholder={
+                    draft.oauthClientSecretConfigured
+                      ? t(
+                          'tools.mcp.oauth.clientSecretStored',
+                          'Client secret stored — leave blank to keep it'
+                        )
+                      : t('tools.mcp.oauth.clientSecret', 'Optional client secret')
+                  }
+                  value={draft.oauthClientSecret}
+                  disabled={!draft.oauthClientId.trim()}
+                  onChange={(event) =>
+                    onChange({ ...draft, oauthClientSecret: event.target.value })
                   }
                   className="font-mono"
                 />
@@ -212,7 +251,7 @@ const MCPServerForm: React.FC<{
                   onChange={(event) =>
                     onChange({ ...draft, oauthClientMetadataUrl: event.target.value })
                   }
-                  className="font-mono"
+                  className="font-mono md:col-span-2"
                 />
                 <p className="text-xs text-muted-foreground md:col-span-2">
                   {t(
@@ -407,6 +446,8 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
   onRefreshServerTools,
   onAuthorizeServer,
   onLogoutServer,
+  onStoreOAuthClientSecret,
+  onDeleteOAuthClientSecret,
 }) => {
   const { t } = useTranslation();
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
@@ -441,6 +482,10 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
           ? formatMCPEnvForEdit(server.transport.env)
           : '',
       url: server.transport?.type === 'streamable_http' ? server.transport.url : '',
+      headers:
+        server.transport?.type === 'streamable_http'
+          ? formatMCPEnvForEdit(server.transport.headers ?? {})
+          : '',
       protocolMode: server.protocol?.mode ?? 'auto',
       oauth: server.authorization?.type === 'oauth',
       scopes:
@@ -453,6 +498,9 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
         server.authorization?.type === 'oauth'
           ? server.authorization.clientMetadataUrl ?? ''
           : '',
+      oauthClientSecret: '',
+      oauthClientSecretConfigured:
+        server.authorization?.type === 'oauth' && Boolean(server.authorization.clientSecretRef),
       enabled: server.config?.enabled === true,
     });
   };
@@ -478,6 +526,15 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
       );
       return;
     }
+    if (draft.oauthClientSecret && !oauthClientId) {
+      notify.error(
+        t(
+          'tools.mcp.oauth.clientSecretNeedsId',
+          'An OAuth client secret requires a pre-registered client ID.'
+        )
+      );
+      return;
+    }
 
     const existing = editingServerId
       ? servers.find((server) => server.id === editingServerId)
@@ -494,6 +551,29 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
     }
     const previousEnv =
       existing?.transport?.type === 'stdio' ? existing.transport.env ?? {} : {};
+    const previousHeaders =
+      existing?.transport?.type === 'streamable_http' ? existing.transport.headers ?? {} : {};
+    const existingOAuthSecretRef =
+      existing?.authorization?.type === 'oauth'
+        ? existing.authorization.clientSecretRef
+        : undefined;
+    let oauthClientSecretRef =
+      draft.oauth &&
+      oauthClientId &&
+      existing?.authorization?.type === 'oauth' &&
+      existing.authorization.clientId === oauthClientId
+        ? existingOAuthSecretRef
+        : undefined;
+    if (draft.oauth && oauthClientId && draft.oauthClientSecret) {
+      try {
+        oauthClientSecretRef = await onStoreOAuthClientSecret(id, draft.oauthClientSecret);
+      } catch (error) {
+        notify.error(t('tools.mcp.oauth.clientSecretSaveFailed', 'Failed to store OAuth secret.'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
     const server: MCPServer = {
       ...(existing ?? {
         id,
@@ -519,6 +599,7 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
               ...(existing?.transport?.type === 'streamable_http' ? existing.transport : {}),
               type: 'streamable_http',
               url,
+              headers: parseMCPEnv(draft.headers, previousHeaders),
             },
       protocol:
         draft.transportType === 'streamable_http'
@@ -538,12 +619,7 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
               ),
               ...(oauthClientId ? { clientId: oauthClientId } : {}),
               ...(oauthClientMetadataUrl ? { clientMetadataUrl: oauthClientMetadataUrl } : {}),
-              ...(oauthClientId &&
-              existing?.authorization?.type === 'oauth' &&
-              existing.authorization.clientId === oauthClientId &&
-              existing.authorization.clientSecretRef
-                ? { clientSecretRef: existing.authorization.clientSecretRef }
-                : {}),
+              ...(oauthClientSecretRef ? { clientSecretRef: oauthClientSecretRef } : {}),
             }
           : undefined,
       status: existing?.status === 'online' ? 'offline' : existing?.status ?? 'offline',
@@ -556,6 +632,16 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
 
     try {
       await onUpsertServer(server);
+      if (existingOAuthSecretRef && !oauthClientSecretRef) {
+        await onDeleteOAuthClientSecret(id).catch(() => {
+          notify.warning(
+            t(
+              'tools.mcp.oauth.clientSecretCleanupFailed',
+              'The obsolete OAuth client secret could not be removed.'
+            )
+          );
+        });
+      }
       notify.success(
         editingServerId
           ? t('tools.mcp.serverUpdated', 'MCP server updated.')
@@ -582,7 +668,21 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
 
   const deleteServer = async (serverId: string) => {
     try {
+      const server = servers.find((candidate) => candidate.id === serverId);
+      if (server?.authorization?.type === 'oauth') {
+        await onLogoutServer(serverId).catch(() => undefined);
+      }
       await onRemoveServer(serverId);
+      if (server?.authorization?.type === 'oauth' && server.authorization.clientSecretRef) {
+        await onDeleteOAuthClientSecret(serverId).catch(() => {
+          notify.warning(
+            t(
+              'tools.mcp.oauth.clientSecretCleanupFailed',
+              'The obsolete OAuth client secret could not be removed.'
+            )
+          );
+        });
+      }
       if (editingServerId === serverId) resetDraft();
       notify.success(t('tools.mcp.serverDeleted', 'MCP server deleted.'));
     } catch (error) {
