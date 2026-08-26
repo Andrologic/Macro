@@ -71,7 +71,6 @@ pub async fn sync_models(pool: &SqlitePool, provider_id: &str) -> Result<Vec<AiM
                 warn!(
                     provider_id = %provider_id,
                     client_version = %client_version,
-                    error = %remote_error,
                     "ChatGPT remote model fetch failed, using local Codex cache"
                 );
                 models
@@ -80,7 +79,6 @@ pub async fn sync_models(pool: &SqlitePool, provider_id: &str) -> Result<Vec<AiM
                 error!(
                     provider_id = %provider_id,
                     client_version = %client_version,
-                    remote_error = %remote_error,
                     cache_error = %cache_error,
                     "ChatGPT model sync failed for both remote and local cache"
                 );
@@ -163,7 +161,6 @@ async fn fetch_remote_models(
         warn!(
             provider_id = %provider.id,
             status = status.as_u16(),
-            response_error = %extract_response_error(status.as_u16(), &body),
             "ChatGPT models endpoint returned non-success status"
         );
         return Err(extract_response_error(status.as_u16(), &body));
