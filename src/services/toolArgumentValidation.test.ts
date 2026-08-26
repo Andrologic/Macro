@@ -48,15 +48,13 @@ describe('tool argument validation', () => {
     expect(editIssues).toEqual([]);
   });
 
-  it('uses explicit minLength rules for identifiers that cannot be empty', () => {
+  it('reports an empty required identifier once', () => {
     const issues = validateToolArguments(
       { citation_id: '', action: 'reclassify' },
       requireMacroToolRegistryEntry('edit_source_passage').parameters,
     );
 
-    expect(issues).toEqual([
-      { path: '$.citation_id', message: 'expected at least 1 character(s)' },
-    ]);
+    expect(issues).toEqual([{ path: '$.citation_id', message: 'required value is missing' }]);
   });
 
   it('rejects empty required queries, URLs, paths, and search patterns', () => {
@@ -68,6 +66,19 @@ describe('tool argument validation', () => {
       ['edit', { path: '', old_text: '', new_text: '' }],
       ['glob', { pattern: '' }],
       ['grep', { query: '' }],
+    ] as const) {
+      expect(
+        validateToolArguments(args, requireMacroToolRegistryEntry(toolName).parameters),
+      ).not.toEqual([]);
+    }
+  });
+
+  it('rejects whitespace-only required identifiers and commands by default', () => {
+    for (const [toolName, args] of [
+      ['git_checkout', { branch_or_commit: '   ' }],
+      ['git_merge', { branch_name: ' ', into_branch: 'develop' }],
+      ['terminal_run', { session_id: 'session', command: '\t' }],
+      ['plan_get', { plan_id: '  ' }],
     ] as const) {
       expect(
         validateToolArguments(args, requireMacroToolRegistryEntry(toolName).parameters),

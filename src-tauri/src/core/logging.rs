@@ -1,6 +1,8 @@
+use fs2::FileExt;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -11,8 +13,12 @@ const MAX_DAILY_LOG_BYTES: u64 = 20 * 1024 * 1024;
 struct DailySizeLimitedWriter<W> {
     inner: W,
     day: chrono::NaiveDate,
-    written: u64,
+    log_dir: PathBuf,
     max_bytes: u64,
+}
+
+fn daily_log_path(log_dir: &Path, day: chrono::NaiveDate) -> PathBuf {
+    log_dir.join(format!("macro.{day}.log"))
 }
 
 impl<W: Write> Write for DailySizeLimitedWriter<W> {
@@ -20,15 +26,28 @@ impl<W: Write> Write for DailySizeLimitedWriter<W> {
         let today = chrono::Utc::now().date_naive();
         if today != self.day {
             self.day = today;
-            self.written = 0;
         }
 
-        let remaining = self.max_bytes.saturating_sub(self.written) as usize;
-        if remaining > 0 {
-            let accepted = remaining.min(buffer.len());
-            self.inner.write_all(&buffer[..accepted])?;
-            self.written += accepted as u64;
-        }
+        let lock_path = self.log_dir.join(".macro-log.lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        lock_file.lock_exclusive()?;
+
+        let log_path = daily_log_path(&self.log_dir, self.day);
+        let current_size = fs::metadata(log_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let write_result = if current_size.saturating_add(buffer.len() as u64) <= self.max_bytes {
+            self.inner.write_all(buffer)
+        } else {
+            Ok(())
+        };
+        let unlock_result = FileExt::unlock(&lock_file);
+        write_result?;
+        unlock_result?;
         Ok(buffer.len())
     }
 
@@ -87,14 +106,10 @@ pub fn init_logging() {
                 .build(&log_dir);
             if let Ok(file_appender) = file_appender {
                 let today = chrono::Utc::now().date_naive();
-                let current_log = log_dir.join(format!("macro.{today}.log"));
-                let written = fs::metadata(current_log)
-                    .map(|metadata| metadata.len())
-                    .unwrap_or(0);
                 let limited_writer = DailySizeLimitedWriter {
                     inner: file_appender,
                     day: today,
-                    written,
+                    log_dir: log_dir.clone(),
                     max_bytes: MAX_DAILY_LOG_BYTES,
                 };
                 let (non_blocking, guard) = tracing_appender::non_blocking(limited_writer);
@@ -126,15 +141,19 @@ mod tests {
 
     #[test]
     fn daily_size_limited_writer_discards_bytes_after_the_limit() {
+        let temp = tempfile::tempdir().expect("temporary log directory");
+        let day = chrono::Utc::now().date_naive();
+        fs::write(daily_log_path(temp.path(), day), b"1234").expect("seed log file");
         let mut writer = DailySizeLimitedWriter {
             inner: Vec::new(),
-            day: chrono::Utc::now().date_naive(),
-            written: 3,
+            day,
+            log_dir: temp.path().to_path_buf(),
             max_bytes: 5,
         };
 
         assert_eq!(writer.write(b"abcd").expect("write succeeds"), 4);
-        assert_eq!(writer.inner, b"ab");
-        assert_eq!(writer.written, 5);
+        assert!(writer.inner.is_empty());
+        assert_eq!(writer.write(b"a").expect("write succeeds"), 1);
+        assert_eq!(writer.inner, b"a");
     }
 }

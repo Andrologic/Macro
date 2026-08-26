@@ -28,13 +28,26 @@ const validateValue = (
     const record = value as Record<string, unknown>;
     for (const requiredKey of schema.required ?? []) {
       const requiredValue = record[requiredKey];
-      if (requiredValue === undefined || requiredValue === null) {
+      const propertySchema = schema.properties?.[requiredKey];
+      const emptyRequiredString =
+        typeof requiredValue === 'string' &&
+        requiredValue.trim().length === 0 &&
+        (!propertySchema || !('allowEmpty' in propertySchema) || !propertySchema.allowEmpty);
+      if (requiredValue === undefined || requiredValue === null || emptyRequiredString) {
         issues.push({ path: `${path}.${requiredKey}`, message: 'required value is missing' });
       }
     }
 
     for (const [key, propertySchema] of Object.entries(schema.properties ?? {})) {
       if (record[key] !== undefined) {
+        if (
+          schema.required?.includes(key) &&
+          typeof record[key] === 'string' &&
+          record[key].trim().length === 0 &&
+          (!('allowEmpty' in propertySchema) || !propertySchema.allowEmpty)
+        ) {
+          continue;
+        }
         validateValue(record[key], propertySchema, `${path}.${key}`, issues);
       }
     }
