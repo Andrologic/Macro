@@ -9,7 +9,7 @@ interface ThemePreviewProps {
 
 export const ThemePreview: React.FC<ThemePreviewProps> = ({ colors, isActive }) => {
   return (
-    <div 
+    <div
       className={cn(
         "w-full aspect-[4/3] rounded-lg mb-2 overflow-hidden shadow-sm transition-opacity border border-border/10",
         isActive ? "ring-2 ring-primary ring-offset-1 ring-offset-background" : ""
@@ -21,7 +21,7 @@ export const ThemePreview: React.FC<ThemePreviewProps> = ({ colors, isActive }) 
     >
       <div className="flex h-full w-full">
         {/* Sidebar Preview */}
-        <div 
+        <div
           className="w-1/3 h-full flex flex-col p-2 gap-2 border-r"
           style={{
             backgroundColor: colors.muted,
@@ -29,17 +29,17 @@ export const ThemePreview: React.FC<ThemePreviewProps> = ({ colors, isActive }) 
           }}
         >
           {/* Logo / Brand */}
-          <div 
+          <div
             className="h-2 w-2/3 rounded-sm opacity-60"
             style={{ backgroundColor: colors.foreground }}
           />
           {/* Nav Item Active */}
-          <div 
+          <div
             className="h-2 w-full rounded-sm mt-1 opacity-80"
             style={{ backgroundColor: colors.primary }}
           />
            {/* Nav Item Inactive */}
-           <div 
+           <div
             className="h-2 w-3/4 rounded-sm opacity-40"
             style={{ backgroundColor: colors.mutedForeground }}
           />
@@ -48,15 +48,15 @@ export const ThemePreview: React.FC<ThemePreviewProps> = ({ colors, isActive }) 
         {/* Content Preview */}
         <div className="flex-1 flex flex-col">
           {/* Header Preview */}
-          <div 
+          <div
             className="h-6 w-full border-b flex items-center px-2"
             style={{
               backgroundColor: colors.card,
               borderColor: colors.border
             }}
           >
-             <div 
-                className="h-1.5 w-1/4 rounded-sm opacity-50" 
+             <div
+                className="h-1.5 w-1/4 rounded-sm opacity-50"
                 style={{ backgroundColor: colors.foreground }}
              />
           </div>
@@ -64,7 +64,7 @@ export const ThemePreview: React.FC<ThemePreviewProps> = ({ colors, isActive }) 
           {/* Main Body */}
           <div className="p-2 gap-2 flex flex-col">
             {/* Card Example */}
-            <div 
+            <div
               className="p-1.5 rounded-md border text-[var(--size-xxs)]"
               style={{
                 backgroundColor: colors.card,
@@ -72,18 +72,18 @@ export const ThemePreview: React.FC<ThemePreviewProps> = ({ colors, isActive }) 
                 color: colors.cardForeground
               }}
             >
-              <div 
+              <div
                 className="h-1 w-1/2 rounded-full mb-1 opacity-80"
                 style={{ backgroundColor: colors.primary }}
               />
-              <div 
+              <div
                 className="h-1 w-3/4 rounded-full opacity-40"
                  style={{ backgroundColor: colors.mutedForeground }}
               />
             </div>
 
             {/* Button Example */}
-            <div 
+            <div
                className="h-3 w-1/3 rounded-[2px] self-end mt-auto"
                style={{ backgroundColor: colors.primary }}
             />

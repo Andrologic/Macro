@@ -187,7 +187,7 @@ interface ModeRouterProps {
 
 /**
  * ModeRouter - Routes to the appropriate panel component based on current mode
- * 
+ *
  * PERFORMANCE OPTIMIZATIONS:
  * - Loads mode panels through a cached controlled async loader
  * - Keeps skeleton loading states without letting chunk failures crash the shell

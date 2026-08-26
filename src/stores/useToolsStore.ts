@@ -111,15 +111,15 @@ interface ToolsStore {
   // Internal Tools
   internalTools: Record<string, Tool>;
   chatToolStates: Record<string, boolean>;
-  
+
   // MCP Servers
   mcpServers: MCPServer[];
-  
+
   // Settings state
   isLoading: boolean;
   lastError: string | null;
   saving: boolean;
-  
+
   // Actions
   loadSettings: () => Promise<void>;
   toggleTool: (toolId: string) => Promise<void>;
@@ -239,7 +239,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     try {
       const currentTools = get().internalTools;
       const tool = currentTools[toolId];
-      
+
       if (tool) {
         if (tool.config?.locked === true) {
           set({ saving: false });
@@ -271,7 +271,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
           },
         });
       }
-      
+
       set({ saving: false });
     } catch (error) {
       set({
@@ -287,7 +287,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     try {
       const currentServers = get().mcpServers;
       const server = currentServers.find((s) => s.id === serverId);
-      
+
       if (server) {
         const nextServers = currentServers.map((s) => {
           if (s.id !== serverId) return s;
@@ -309,7 +309,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
         set({ mcpServers: nextServers });
       }
-      
+
       set({ saving: false });
     } catch (error) {
       const message = toServiceError(error).message;
@@ -461,7 +461,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       const toolsToSave = tools || Object.fromEntries(
         Object.entries(state.internalTools).map(([id, t]) => [id, isToolEnabledState(t)])
       );
-      
+
       const serversToSave = servers
         ? Object.fromEntries(
             state.mcpServers.map((server) => [

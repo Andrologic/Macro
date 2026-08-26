@@ -47,7 +47,7 @@ interface CodeViewerProps {
 
 /**
  * CodeViewer - Displays code with syntax highlighting
- * 
+ *
  * PERFORMANCE OPTIMIZATION:
  * - Uses React.lazy() to defer loading CodeMirror until needed
  * - Shows skeleton UI while CodeMirror loads

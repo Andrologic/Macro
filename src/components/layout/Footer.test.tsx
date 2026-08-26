@@ -271,6 +271,18 @@ const flushAsyncWork = async () => {
   await new Promise((resolve) => setTimeout(resolve, 100));
 };
 
+const waitForText = async (container: HTMLDivElement, text: string) => {
+  const deadline = Date.now() + 2_000;
+  while (!(container.textContent ?? '').includes(text)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for footer text: ${text}`);
+    }
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+};
+
 const findButtonByIcon = (container: HTMLDivElement, iconName: string): HTMLButtonElement | null =>
   (container.querySelector(`[data-icon="${iconName}"]`)?.closest('button') as HTMLButtonElement | null) ?? null;
 
@@ -636,10 +648,9 @@ describe('Footer', () => {
     root = createRoot(container);
 
     root.render(<Footer />);
-    await flushAsyncWork();
+    await waitForText(container, 'feature-b');
 
     expect(container.textContent ?? '').toContain('Web');
-    expect(container.textContent ?? '').toContain('feature-b');
     expect(container.textContent ?? '').not.toContain('Aucun projet');
 
     act(() => findButtonByIcon(container!, 'refresh-cw')?.click());
@@ -693,7 +704,7 @@ describe('Footer', () => {
     expect(folderButton?.textContent).toContain('Sélectionner un dossier Git');
 
     act(() => folderButton?.click());
-    await flushAsyncWork();
+    await waitForText(container, 'feature/sandbox');
 
     expect(openFolderMock).toHaveBeenCalledWith({
       directory: true,
@@ -701,7 +712,6 @@ describe('Footer', () => {
       title: 'Sélectionner un dossier Git',
     });
     expect(container.textContent ?? '').toContain('sandbox');
-    expect(container.textContent ?? '').toContain('feature/sandbox');
     expect(findButtonByIcon(container, 'arrow-down')?.textContent?.trim()).toBe('2');
     expect(findButtonByIcon(container, 'arrow-up')?.textContent?.trim()).toBe('0');
 
@@ -966,9 +976,8 @@ describe('Footer', () => {
     act(() => {
       findButtonByIcon(container!, 'arrow-down')?.click();
     });
-    await flushAsyncWork();
+    await waitForText(container!, 'local changes');
 
-    expect(container?.textContent ?? '').toContain('local changes');
     expect(findButtonByText(container!, 'Stash, then merge')).toBeNull();
     expect(container?.textContent ?? '').toContain('Stash, then rebase');
 

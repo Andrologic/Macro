@@ -823,7 +823,7 @@ interface ProviderStore {
   ) => void;
   cycleProvider: () => void;
   cycleModel: () => void;
-  
+
   // Provider Config CRUD
   resolveProviderApiKey: (providerId: string, options?: { forceRefresh?: boolean }) => Promise<string | undefined>;
   updateProviderConfig: (id: string, updates: Partial<ProviderConfig>) => Promise<void>;
@@ -1150,7 +1150,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   loadProviderConfigs: async () => {
     const hydrationVersion = providerConfigMutationVersion;
     set({ isLoading: true, lastError: null });
-    
+
     try {
       if (ipcIsTauriAvailable()) {
         const currentProviderConfigs = get().providerConfigs;
@@ -1192,7 +1192,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               ? get().selectedReasoningEffort
               : null,
         });
-        
+
         const providers: AIProvider[] = providerConfigs.map((config) =>
           toAIProvider(config, get().connectionStatus[config.id])
         );
@@ -3326,7 +3326,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   testConnection: async (providerId: string) => {
     const { providerConfigs, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
-    
+
     if (!config) {
       return { success: false, message: 'Provider not found', status: 'unknown' };
     }

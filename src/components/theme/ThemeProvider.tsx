@@ -95,7 +95,7 @@ const loadThemeFromCache = (themeId: string): Theme | null => {
   try {
     const cached = themeCache.get(`${THEME_CACHE_KEY}-${themeId}`);
     if (!cached) return null;
-    
+
     // Check version
     if (cached.version !== THEME_CACHE_VERSION) {
       return null;
