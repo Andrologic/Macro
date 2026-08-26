@@ -160,6 +160,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         query: {
           type: "string",
+          minLength: 1,
           description: "The search query to look up",
         },
       },
@@ -171,6 +172,7 @@ export const MACRO_TOOL_REGISTRY = [
     properties: {
       url: {
         type: "string",
+        minLength: 1,
         description: "URL to fetch and read",
       },
     },
@@ -486,6 +488,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         file: {
           type: "string",
+          minLength: 1,
           description: "File name/path/source to read (example: hotas.pr0).",
         },
         extract_text: {
@@ -572,7 +575,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to read." },
+        path: { type: "string", minLength: 1, description: "Path of the file to read." },
         project_id: {
           type: "string",
           description:
@@ -602,7 +605,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to write." },
+        path: { type: "string", minLength: 1, description: "Path of the file to write." },
         project_id: {
           type: "string",
           description:
@@ -628,13 +631,13 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to edit." },
+        path: { type: "string", minLength: 1, description: "Path of the file to edit." },
         project_id: {
           type: "string",
           description:
             "Optional project identifier when you want to force which project to use.",
         },
-        old_text: { type: "string", description: "Exact text to replace." },
+        old_text: { type: "string", minLength: 1, description: "Exact text to replace." },
         new_text: { type: "string", description: "Replacement text." },
         replace_all: {
           type: "boolean",
@@ -656,7 +659,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to delete." },
+        path: { type: "string", minLength: 1, description: "Path of the file to delete." },
         project_id: {
           type: "string",
           description:
@@ -684,6 +687,7 @@ export const MACRO_TOOL_REGISTRY = [
         },
         patch_text: {
           type: "string",
+          minLength: 1,
           description:
             "Patch text in Macro apply_patch format with add/update/delete file sections.",
         },
@@ -706,7 +710,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        pattern: { type: "string", description: "Glob pattern." },
+        pattern: { type: "string", minLength: 1, description: "Glob pattern." },
         project_id: {
           type: "string",
           description:
@@ -735,7 +739,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        query: { type: "string", description: "Text or regex to search for." },
+        query: { type: "string", minLength: 1, description: "Text or regex to search for." },
         project_id: {
           type: "string",
           description:
@@ -779,6 +783,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         pattern: {
           type: "string",
+          minLength: 1,
           description:
             `Structural ast-grep pattern up to ${TOOL_OUTPUT_LIMITS.ast.maxPatternBytes} bytes, for example console.log($$$ARGS) or const $NAME = ($$$ARGS) => $BODY.`,
         },

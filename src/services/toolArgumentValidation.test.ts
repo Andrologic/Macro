@@ -58,4 +58,20 @@ describe('tool argument validation', () => {
       { path: '$.citation_id', message: 'expected at least 1 character(s)' },
     ]);
   });
+
+  it('rejects empty required queries, URLs, paths, and search patterns', () => {
+    for (const [toolName, args] of [
+      ['web_search', { query: '' }],
+      ['web_fetch', { url: '' }],
+      ['read', { path: '' }],
+      ['write', { path: '', content: '' }],
+      ['edit', { path: '', old_text: '', new_text: '' }],
+      ['glob', { pattern: '' }],
+      ['grep', { query: '' }],
+    ] as const) {
+      expect(
+        validateToolArguments(args, requireMacroToolRegistryEntry(toolName).parameters),
+      ).not.toEqual([]);
+    }
+  });
 });

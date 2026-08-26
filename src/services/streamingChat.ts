@@ -336,6 +336,9 @@ interface ChatCompletionProviderMessageItem {
 export interface ToolResultResolution {
   kind: 'result';
   result: string;
+  isError?: boolean;
+  errorKind?: ToolResult['error_kind'];
+  toString?: () => string;
 }
 
 export interface ToolInterruptResolution {
@@ -3333,6 +3336,9 @@ const streamChatViaNativeToolCallingProvider = async (
             streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
           } else if (customResult?.kind === 'result') {
             customToolResult = customResult.result;
+            if (customResult.isError) {
+              toolErrorKind = customResult.errorKind ?? 'execution';
+            }
           }
           if (showToolTraces) {
             streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
@@ -3424,21 +3430,25 @@ const streamChatViaNativeToolCallingProvider = async (
 
                 if (isWorkspaceReadError) {
                   toolResult = `Error executing tool read_file: ${workspaceResult}`;
+                  toolErrorKind = 'execution';
                 } else {
                   toolResult = workspaceResult;
                 }
               } else {
                 toolResult = 'Error executing tool read_file: workspace read returned no content.';
+                toolErrorKind = 'execution';
               }
             }
 
             if (!toolResult.trim()) {
               if (workspaceReadAttempted) {
                 toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
+                toolErrorKind = 'execution';
               } else if (workspaceMode) {
                 toolResult =
                   `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
                   ' Use the read tool directly with an explicit path.';
+                toolErrorKind = 'permission';
               } else {
                 const contextMatch = fileToolContext.find((file) => {
                   const title = normalizeMatch(file.title);
@@ -3458,6 +3468,7 @@ const streamChatViaNativeToolCallingProvider = async (
                   toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
                 } else if (!contextMatch) {
                   toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                  toolErrorKind = 'execution';
                 } else {
                   const label = contextMatch.path || contextMatch.title || contextMatch.source;
                   const content = (contextMatch.content || contextMatch.snippet || '').trim();
@@ -3485,6 +3496,7 @@ const streamChatViaNativeToolCallingProvider = async (
             toolResult = customToolResult;
           } else if (toolName === 'mark_source_passage') {
             toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
+            toolErrorKind = 'execution';
           } else if (toolName === 'read_sources') {
             toolResult = customToolResult || 'No source passages available.';
           } else if (toolName === 'edit_source_passage') {
@@ -3493,6 +3505,7 @@ const streamChatViaNativeToolCallingProvider = async (
             toolResult = customToolResult;
           } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
             toolResult = `Unsupported tool: ${toolName}`;
+            toolErrorKind = 'execution';
           }
 
           onToolResult?.(toolName, toolResult);
@@ -4297,6 +4310,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
             } else if (customResult?.kind === 'result') {
               customToolResult = customResult.result;
+              if (customResult.isError) {
+                toolErrorKind = customResult.errorKind ?? 'execution';
+              }
             }
             if (showToolTraces) {
               streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
@@ -4392,11 +4408,13 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
                   if (isWorkspaceReadError) {
                     toolResult = `Error executing tool read_file: ${workspaceResult}`;
+                    toolErrorKind = 'execution';
                   } else {
                     toolResult = workspaceResult;
                   }
                 } else {
                   toolResult = 'Error executing tool read_file: workspace read returned no content.';
+                  toolErrorKind = 'execution';
                 }
               }
 
@@ -4404,10 +4422,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 // We already have authoritative workspace output; do not fall back to context snippets.
               } else if (workspaceReadAttempted) {
                 toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
+                toolErrorKind = 'execution';
               } else if (workspaceMode) {
                 toolResult =
                   `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
                   ` Use the read tool directly with an explicit path.`;
+                toolErrorKind = 'permission';
               } else {
                 const match = fileToolContext.find((f) => {
                   const title = normalizeMatch(f.title);
@@ -4427,6 +4447,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                   toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
                 } else if (!match) {
                   toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                  toolErrorKind = 'execution';
                 } else {
                   const label = match.path || match.title || match.source;
                   const content = (match.content || match.snippet || '').trim();
@@ -4453,6 +4474,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               toolResult = customToolResult;
             } else if (toolName === 'mark_source_passage') {
               toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
+              toolErrorKind = 'execution';
             } else if (toolName === 'read_sources') {
               toolResult = customToolResult || 'No source passages available.';
             } else if (toolName === 'edit_source_passage') {
@@ -4461,6 +4483,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               toolResult = customToolResult;
             } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
               toolResult = `Unsupported tool: ${toolName}`;
+              toolErrorKind = 'execution';
             }
 
             onToolResult?.(toolName, toolResult);
@@ -4549,6 +4572,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             })
           );
 
+          currentMessages = await maybeCompactFollowUpMessages(options, {
+            reason: 'tool_results',
+            messages: currentMessages,
+            turnCount,
+            toolResultCount: toolResults.length,
+          });
           if (hasToolErrors) {
             currentMessages.push({
               role: 'system',
@@ -4565,13 +4594,6 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 'Do not invent code symbols, handlers, routes, or data absent from those outputs.',
             });
           }
-
-          currentMessages = await maybeCompactFollowUpMessages(options, {
-            reason: 'tool_results',
-            messages: currentMessages,
-            turnCount,
-            toolResultCount: toolResults.length,
-          });
         }
       }
 
