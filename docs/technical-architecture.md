@@ -370,6 +370,8 @@ dossier de journaux de la plateforme, notamment
 et conserve les sept fichiers les plus récents, avec une limite de 20 Mio par
 jour. Les diagnostics navigateur globaux ne conservent que leur catégorie ;
 leurs messages et piles sont retirés avant l'écriture native.
+La limite de taille utilise un verrou interprocessus et rejette un événement
+complet quand il ne tient plus dans le budget quotidien.
 
 ---
 

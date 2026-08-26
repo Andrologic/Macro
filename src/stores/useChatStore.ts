@@ -5790,14 +5790,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return resolution;
     }
 
-    const isError = [
+    const errorPatterns = [
       /^Error executing/i,
       /^Missing\s+/i,
       /^No match found/i,
       /^File not found/i,
       /^Cannot\s+/i,
       /^Tool .+ (?:is not available|is disabled)/i,
-    ].some((pattern) => pattern.test(resolution.trim()));
+      /^Tool execution aborted/i,
+      /^[a-z][a-z0-9_]* is disabled/i,
+    ];
+    const isError = resolution
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .some((line) => errorPatterns.some((pattern) => pattern.test(line)));
 
     return isError
       ? {

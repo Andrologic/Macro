@@ -8,6 +8,7 @@ export type JsonSchema =
       description?: string;
       enum?: string[];
       minLength?: number;
+      allowEmpty?: boolean;
       items?: JsonSchema;
       additionalProperties?: JsonSchema | boolean;
     }
@@ -21,6 +22,7 @@ export type JsonSchema =
       description?: string;
       enum?: string[];
       minLength?: number;
+      allowEmpty?: boolean;
     }
   | {
       description?: string;
@@ -611,7 +613,11 @@ export const MACRO_TOOL_REGISTRY = [
           description:
             "Optional project identifier when you want to force which project to use.",
         },
-        content: { type: "string", description: "Final file content." },
+        content: {
+          type: "string",
+          allowEmpty: true,
+          description: "Final file content.",
+        },
         create_dirs: {
           type: "boolean",
           description: "Create missing parent directories.",
@@ -638,7 +644,11 @@ export const MACRO_TOOL_REGISTRY = [
             "Optional project identifier when you want to force which project to use.",
         },
         old_text: { type: "string", minLength: 1, description: "Exact text to replace." },
-        new_text: { type: "string", description: "Replacement text." },
+        new_text: {
+          type: "string",
+          allowEmpty: true,
+          description: "Replacement text.",
+        },
         replace_all: {
           type: "boolean",
           description:
@@ -1680,6 +1690,30 @@ export interface FunctionToolShape {
   overridesBuiltInTool?: true;
 }
 
+const toProviderJsonSchema = (schema: JsonSchema): JsonSchema => {
+  if (!('type' in schema) || !schema.type) return { ...schema };
+  if (schema.type === "object") {
+    const { allowEmpty: _allowEmpty, ...providerSchema } = schema;
+    return {
+      ...providerSchema,
+      properties: Object.fromEntries(
+        Object.entries(schema.properties ?? {}).map(([key, value]) => [
+          key,
+          toProviderJsonSchema(value),
+        ]),
+      ),
+      ...(schema.additionalProperties && typeof schema.additionalProperties === "object"
+        ? { additionalProperties: toProviderJsonSchema(schema.additionalProperties) }
+        : {}),
+    };
+  }
+  if (schema.type === "array") {
+    return { ...schema, items: toProviderJsonSchema(schema.items) };
+  }
+  const { allowEmpty: _allowEmpty, ...providerSchema } = schema;
+  return providerSchema;
+};
+
 export const toFunctionToolShape = (
   entry: MacroToolRegistryEntry,
 ): FunctionToolShape => ({
@@ -1687,7 +1721,7 @@ export const toFunctionToolShape = (
   function: {
     name: entry.id,
     description: entry.description,
-    parameters: entry.parameters,
+    parameters: toProviderJsonSchema(entry.parameters),
   },
 });
 
