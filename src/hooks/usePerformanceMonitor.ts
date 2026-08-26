@@ -10,11 +10,11 @@ interface PerformanceMetrics {
   timeToFirstByte: number;
   domContentLoaded: number;
   loadComplete: number;
-  
+
   // React render timing
   firstRender: number;
   interactive: number;
-  
+
   // Custom marks
   [key: string]: number;
 }
@@ -51,7 +51,7 @@ const getNavigationTiming = (): Partial<PerformanceMetrics> => {
   }
 
   const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
-  
+
   if (!navigation) {
     return {};
   }
@@ -124,12 +124,12 @@ export function usePerformanceMonitor() {
 
     const time = performance.now() - startTimeRef.current;
     marksRef.current.set(name, time);
-    
+
     // Also create a performance mark for DevTools
     if (typeof performance !== 'undefined' && performance.mark) {
       performance.mark(`${name}-start`);
     }
-    
+
     devLogger.log(`[Performance] ${name}: ${time.toFixed(2)}ms`);
   }, []);
 
@@ -167,7 +167,7 @@ export function usePerformanceMonitor() {
 
     const navigationTiming = getNavigationTiming();
     const customMarks: Record<string, number> = {};
-    
+
     marksRef.current.forEach((value, key) => {
       customMarks[key] = value;
     });
@@ -204,7 +204,7 @@ export function usePerformanceMonitor() {
     }
 
     const metrics = getMetrics();
-    
+
     console.group('📊 Performance Metrics');
     console.table(metrics);
     console.groupEnd();
@@ -310,7 +310,7 @@ export function useComponentPerformance(componentName: string) {
 
     renderCountRef.current += 1;
     const renderTime = performance.now() - renderStartRef.current;
-    
+
     if (renderCountRef.current === 1) {
       devLogger.log(`[ComponentPerformance] ${componentName} first render: ${renderTime.toFixed(2)}ms`);
     } else if (renderCountRef.current % 10 === 0) {

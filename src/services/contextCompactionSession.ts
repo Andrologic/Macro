@@ -197,4 +197,3 @@ export const clearLatestRunningSessionCompactionEvent = (params: {
   const nextEvents = existing.filter((_, index) => index !== targetIndex);
   return nextEvents.length > 0 ? nextEvents : undefined;
 };
-

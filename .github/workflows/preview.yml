@@ -165,7 +165,7 @@ jobs:
           - name: Linux x64
             key: linux
             runner: ubuntu-22.04
-            args: --bundles appimage,deb,rpm
+            args: --verbose --bundles appimage,deb,rpm
             artifact_name: preview-linux
             artifact_paths: |
               src-tauri/target/release/bundle/appimage/*.AppImage
@@ -206,7 +206,17 @@ jobs:
         if: matrix.key == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+          sudo apt-get install -y \
+            gdk-pixbuf2.0-bin \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            libgtk-3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            patchelf \
+            rpm
 
       - name: Install frontend dependencies from lockfile
         run: bun install --frozen-lockfile
@@ -260,6 +270,7 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          NO_STRIP: ${{ matrix.key == 'linux' && 'true' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -271,6 +282,8 @@ jobs:
       - name: Verify macOS bundle and notarization
         if: matrix.key == 'macos'
         env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           APP_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle -maxdepth 3 -name '*.app' -type d | head -n 1)"
@@ -283,6 +296,12 @@ jobs:
           test "$SIGNED_TEAM_ID" = "$APPLE_TEAM_ID"
           spctl --assess --type execute "$APP_PATH"
           xcrun stapler validate "$APP_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
           xcrun stapler validate "$DMG_PATH"
 
       - name: Verify unsigned Windows installer

@@ -108,6 +108,60 @@ export function validateWorkflowDocument(document, filePath) {
     if (document.jobs.build?.needs !== 'validate') {
       fail('release build matrix must wait for the validation job.');
     }
+    const validationSteps = document.jobs.validate?.steps || [];
+    const checkoutIndex = validationSteps.findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@')
+    ));
+    const annotatedTagFetchIndex = validationSteps.findIndex((step) => (
+      typeof step?.run === 'string'
+      && step.run.includes('git fetch --force --no-tags origin')
+      && step.run.includes('refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}')
+    ));
+    if (checkoutIndex === -1 || annotatedTagFetchIndex <= checkoutIndex) {
+      fail('release validation must explicitly fetch the annotated tag object after checkout.');
+    }
+
+    const finalizationSteps = document.jobs['draft-release']?.steps || [];
+    const finalizationCheckoutIndex = finalizationSteps.findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@')
+    ));
+    const finalizationBunIndex = finalizationSteps.findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('oven-sh/setup-bun@')
+    ));
+    const updaterManifestIndex = finalizationSteps.findIndex((step) => (
+      typeof step?.run === 'string' && step.run.includes('dev/release/updater-manifest.mjs')
+    ));
+    if (
+      finalizationCheckoutIndex === -1
+      || finalizationBunIndex <= finalizationCheckoutIndex
+      || updaterManifestIndex <= finalizationBunIndex
+    ) {
+      fail('release finalization must check out the tagged sources and set up Bun before generating the updater manifest.');
+    }
+  }
+
+  if (filePath.endsWith('release.yml') || filePath.endsWith('preview.yml')) {
+    const buildJob = document.jobs.build;
+    const linuxBuild = buildJob?.strategy?.matrix?.include?.find((entry) => entry?.key === 'linux');
+    if (typeof linuxBuild?.args !== 'string' || !linuxBuild.args.includes('--verbose')) {
+      fail('Linux package builds must keep verbose Tauri output so linuxdeploy failures remain diagnosable.');
+    }
+
+    const bundleStep = buildJob?.steps?.find((step) => (
+      step?.name === 'Build desktop bundles' || step?.name === 'Build preview bundles'
+    ));
+    if (bundleStep?.env?.NO_STRIP !== "${{ matrix.key == 'linux' && 'true' || '' }}") {
+      fail('Linux package builds must disable linuxdeploy stripping for embedded sidecars.');
+    }
+
+    const macVerification = buildJob?.steps?.find((step) => step?.name === 'Verify macOS bundle and notarization');
+    const macVerificationScript = typeof macVerification?.run === 'string' ? macVerification.run : '';
+    const dmgSubmitIndex = macVerificationScript.indexOf('xcrun notarytool submit "$DMG_PATH"');
+    const dmgStapleIndex = macVerificationScript.indexOf('xcrun stapler staple "$DMG_PATH"');
+    const dmgValidateIndex = macVerificationScript.indexOf('xcrun stapler validate "$DMG_PATH"');
+    if (dmgSubmitIndex === -1 || dmgStapleIndex <= dmgSubmitIndex || dmgValidateIndex <= dmgStapleIndex) {
+      fail('macOS package verification must notarize, staple, and then validate the DMG.');
+    }
   }
 
   return errors;

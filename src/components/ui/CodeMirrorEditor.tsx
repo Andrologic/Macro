@@ -78,7 +78,7 @@ const buildLineHighlightExtension = (
 
 /**
  * CodeMirrorEditor - Heavy code editor component
- * 
+ *
  * PERFORMANCE:
  * - Loaded lazily via CodeViewer wrapper
  * - Contains all CodeMirror dependencies (~500KB+)
