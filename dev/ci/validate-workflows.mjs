@@ -162,6 +162,57 @@ export function validateWorkflowDocument(document, filePath) {
     if (dmgSubmitIndex === -1 || dmgStapleIndex <= dmgSubmitIndex || dmgValidateIndex <= dmgStapleIndex) {
       fail('macOS package verification must notarize, staple, and then validate the DMG.');
     }
+
+    const windowsArmBuild = buildJob?.strategy?.matrix?.include?.find((entry) => (
+      entry?.key === 'windows' && entry?.arch === 'arm64'
+    ));
+    if (
+      windowsArmBuild?.runner !== 'windows-11-vs2026-arm'
+      || typeof windowsArmBuild?.args !== 'string'
+      || !windowsArmBuild.args.includes('--target aarch64-pc-windows-msvc')
+      || !String(windowsArmBuild?.artifact_paths ?? '').includes('aarch64-pc-windows-msvc')
+    ) {
+      fail('Windows releases must build native ARM64 NSIS artifacts on the pinned ARM runner.');
+    }
+
+    const windowsVerification = buildJob?.steps?.find((step) => step?.name === 'Verify unsigned Windows installer');
+    const windowsVerificationScript = typeof windowsVerification?.run === 'string' ? windowsVerification.run : '';
+    if (!windowsVerificationScript.includes('Get-PeMachine') || !windowsVerificationScript.includes('EXPECTED_PE_MACHINE')) {
+      fail('Windows package verification must check the PE architecture of the app and AI sidecar.');
+    }
+  }
+
+  if (filePath.endsWith('publish-update-channel.yml')) {
+    if (document.on?.workflow_dispatch?.inputs?.tag?.required !== true) {
+      fail('stable channel publication must support a required manual tag input.');
+    }
+    const publishScript = (document.jobs.publish?.steps || [])
+      .map((step) => typeof step?.run === 'string' ? step.run : '')
+      .join('\n');
+    if (!publishScript.includes('dev/release/publish-channel-branch.mjs')) {
+      fail('stable channel publication must use the shared channel branch publisher.');
+    }
+    if (!publishScript.includes('--asset-root channel-input') || !publishScript.includes('--checksums channel-input/SHA256SUMS.txt')) {
+      fail('stable channel publication must verify downloaded updater assets and checksums before advancing pointers.');
+    }
+    if (publishScript.includes('git rm -rf .')) {
+      fail('channel publication must not remove an already-empty orphan worktree.');
+    }
+  }
+
+  if (filePath.endsWith('preview.yml')) {
+    const publishScript = (document.jobs.publish?.steps || [])
+      .map((step) => typeof step?.run === 'string' ? step.run : '')
+      .join('\n');
+    if (!publishScript.includes('dev/release/publish-channel-branch.mjs')) {
+      fail('preview channel publication must use the shared channel branch publisher.');
+    }
+    if (!publishScript.includes('--asset-root release-assets') || !publishScript.includes('--checksums release-assets/SHA256SUMS.txt')) {
+      fail('preview publication must verify updater assets and checksums before uploading them.');
+    }
+    if (publishScript.includes('git rm -rf .')) {
+      fail('channel publication must not remove an already-empty orphan worktree.');
+    }
   }
 
   return errors;

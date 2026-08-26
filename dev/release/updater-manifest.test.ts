@@ -45,6 +45,10 @@ describe('updater manifest', () => {
         signature: 'signature-windows-x86_64',
         url: 'https://github.com/Andrologic/Macro/releases/download/v0.2.0/Macro_0.2.0_windows_x86_64.bundle',
       });
+      expect(manifest.platforms['windows-aarch64']).toEqual({
+        signature: 'signature-windows-aarch64',
+        url: 'https://github.com/Andrologic/Macro/releases/download/v0.2.0/Macro_0.2.0_windows_aarch64.bundle',
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

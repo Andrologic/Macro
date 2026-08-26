@@ -35,9 +35,9 @@ bun run version:bump minor
 bun run version:bump major
 ```
 
-The release workflow rejects any version that is not strict `x.y.z`. The
-current `0.1.0` version is eligible for an official release once its matching
-`v0.1.0` tag is created.
+The release workflow rejects any version that is not strict `x.y.z`. Version
+`0.1.1` is the first supported public release. The earlier `0.1.0` build remains
+an internal updater-test source and is not a supported distribution.
 
 ## GitHub Release Workflow
 
@@ -60,6 +60,8 @@ The draft contains:
 - `Macro_<version>_macOS_universal.app.tar.gz` and its `.sig` file
 - `Macro_<version>_Windows_x64_setup.exe`
 - `Macro_<version>_Windows_x64_setup.exe.sig`
+- `Macro_<version>_Windows_ARM64_setup.exe`
+- `Macro_<version>_Windows_ARM64_setup.exe.sig`
 - `Macro_<version>_Linux_x64.AppImage`
 - `Macro_<version>_Linux_x64.AppImage.sig`
 - `Macro_<version>_Linux_x64.deb`
@@ -72,16 +74,19 @@ Review the draft release in GitHub before publishing it manually.
 
 ## Tauri updater
 
-Macro checks the published stable release at startup. It downloads a signed
-update in the background, then waits for the user to restart the app. The
-updater endpoint is:
+Macro checks the selected update channel at startup. It downloads a signed
+update in the background, then waits for the user to restart the app. Tauri
+replaces `{{target}}` with the channel-prefixed native target, such as
+`stable-windows-x86_64` or `stable-windows-aarch64`. The endpoint is:
 
 ```text
-https://github.com/Andrologic/Macro/releases/latest/download/latest.json
+https://raw.githubusercontent.com/Andrologic/Macro/updates/channels/{{target}}.json
 ```
 
-The draft release is not visible at this endpoint. Publish it only after
-checking `latest.json`, every `.sig` file, the tag-pinned URLs, and
+The release workflow attaches `latest.json` to the draft as the complete source
+manifest. Publishing the draft triggers the stable-channel workflow, which
+creates the five per-target pointers on the orphan `updates` branch. Publish
+only after checking `latest.json`, every `.sig` file, the tag-pinned URLs, and
 `SHA256SUMS.txt`.
 
 Tauri uses a separate signing key for updater artifacts. Generate it once on a
@@ -131,17 +136,19 @@ bun run release:updater:verify -- \
   --checksums release-assets/SHA256SUMS.txt
 ```
 
-After publishing, validate the public endpoint without downloading the
-bundles:
+After publishing, validate the complete release manifest without downloading
+the bundles:
 
 ```bash
 bun run release:updater:verify -- \
   --manifest https://github.com/Andrologic/Macro/releases/latest/download/latest.json
 ```
 
-The release workflow generates `latest.json` from the four required targets:
-`windows-x86_64`, `linux-x86_64`, `darwin-x86_64`, and `darwin-aarch64`. The two
-macOS targets point to the same universal `.app.tar.gz` archive.
+The release workflow generates `latest.json` from five required targets:
+`windows-x86_64`, `windows-aarch64`, `linux-x86_64`, `darwin-x86_64`, and
+`darwin-aarch64`. The two macOS targets point to the same universal
+`.app.tar.gz` archive. Windows x64 and Windows ARM64 use separate native NSIS
+installers and updater signatures.
 
 ### End-to-end updater test
 
@@ -151,24 +158,33 @@ can start from a real installed version rather than a development server.
 1. Leave the new GitHub release as a draft and download all its assets.
 2. Run `release:updater:verify` against the downloaded `latest.json`, updater
    bundles, signatures, and `SHA256SUMS.txt`.
-3. Install and open the previous stable Macro version on the test machine.
-4. Publish the draft without announcing it. Draft releases are intentionally
+3. On native Windows on ARM, install the ARM64 NSIS package from the draft.
+   Confirm that Macro launches and that a minimal Macro AI request exercises the
+   bundled ARM64 sidecar without falling back to x64 emulation.
+4. Install and open the previous stable Macro version on the x64 test machine.
+5. Publish the draft without announcing it. Draft releases are intentionally
    invisible to the updater, so the network path cannot be tested earlier.
-5. Restart the old app. Confirm one automatic check occurs, the footer reports
+6. Restart the old app. Confirm one automatic check occurs, the footer reports
    download progress, and the app remains open after the update becomes ready.
-6. First test the normal restart path with no active work. Confirm the new
+7. First test the normal restart path with no active work. Confirm the new
    version launches and its release-note dialog appears once.
-7. Restore the old VM snapshot and repeat with a streaming conversation and an
+8. Restore the old VM snapshot and repeat with a streaming conversation and an
    active Implement command. Confirm `Wait` is focused, both activities are
    listed, and only `Restart anyway` proceeds without cancelling them.
-8. Restart the updated app again. Confirm the release-note dialog does not open
+9. Restart the updated app again. Confirm the release-note dialog does not open
    a second time and the footer reports that Macro is current.
-9. Run `release:updater:verify` against the public `/releases/latest/` endpoint.
+10. On the ARM64 installation, confirm that Tauri selects
+    `stable-windows-aarch64.json` and that the update check reads the expected
+    version without a release-JSON error.
+11. Verify all five public `stable-*.json` files on the `updates` branch, then
+   run `release:updater:verify` against the public `/releases/latest/` manifest.
 
-For `v0.1.0`, no previous stable build contains the updater. Existing RC users
-must install `v0.1.0` manually. The first production upgrade path can therefore
-be proven either with a throwaway lower-version build made from the same updater
-source in a disposable worktree, or with the real `v0.1.0` to `v0.1.1` update.
+Version `v0.1.1` is the first supported public release. Use the internal
+`v0.1.0` build only to prove the real `v0.1.0` to `v0.1.1` updater path on a
+disposable x64 test machine. Test Windows ARM64 with a native `v0.1.1` install,
+then prove its first automatic update with the next signed Preview or stable
+build. No compatibility repair for unofficial `v0.1.0` installations is
+required.
 
 ## Build Outputs
 
@@ -223,8 +239,10 @@ tampered automatic updates. `SHA256SUMS.txt` covers the initial installer and
 all other release assets.
 
 The release matrix verifies the signed universal macOS bundle and its expected
-Apple Team ID, verifies that the Windows NSIS installer exists and remains
-unsigned as documented, and inspects AppImage/deb/rpm contents.
+Apple Team ID. On native Windows x64 and ARM64 runners, it verifies the PE
+architecture of Macro and its AI sidecar, then checks that each NSIS installer
+exists and remains unsigned as documented. It also inspects AppImage/deb/rpm
+contents.
 The macOS verification checks the Copilot runtime, manifest, license, and the
 absence of `macro-headless`.
 
@@ -241,7 +259,7 @@ workflow advances `preview-*.json` after it uploads every signed updater asset.
 Switching from Preview to Stable may offer an older stable version; the client
 asks for confirmation and enables Tauri's signed downgrade path for that check.
 
-Scheduled previews start only after the public stable `v0.1.0` release exists.
+Scheduled previews start only after the public stable `v0.1.1` release exists.
 They build `develop` once per night when its commit changed. Use the manual
 Preview workflow with an `x.y.z-rc.n` version for a release candidate. Configure
 the `preview` GitHub environment with the same Tauri updater and Apple signing
@@ -291,28 +309,39 @@ committing it and keep the release dialog usable without media playback.
 7. Review the cheap validation job, then approve the protected `release`
    environment when the tag and version are correct.
 8. Wait for `.github/workflows/release.yml` to create the draft release.
-9. Run `bun run release:updater:check` and check the draft assets, signatures,
-   `latest.json`, notes, and checksums in GitHub.
-10. Publish the draft manually when it is ready for users.
-11. From an older installed version, verify that the published
-    `/releases/latest/download/latest.json` is reachable and that the updater
-    offers the new version before announcing the release.
+9. Download the draft assets and run `release:updater:verify` with the asset
+   directory and `SHA256SUMS.txt`. Install the ARM64 NSIS package on native
+   Windows on ARM, launch Macro, and exercise the bundled AI runtime.
+10. Publish the draft without announcing it. If the stable-channel workflow
+    does not run, relaunch it manually with the exact published tag.
+11. Verify that all five raw `stable-*.json` endpoints contain the expected
+    version, embedded signature, and tag-pinned asset URL.
+12. From the internal `v0.1.0` x64 installation, verify that Macro offers and
+    installs `v0.1.1`. Install the ARM64 package on native Windows on ARM and
+    verify launch, the bundled AI runtime, and update checking.
+13. Announce the release only after these checks pass. If native ARM64 validation
+    fails while the release is still a draft, leave the tag and draft immutable,
+    fix the defect in a higher patch version, and do not advertise ARM64 support.
 
 ## Recovering a faulty release
 
-If the problem is found while the release is still a draft, keep it unpublished,
-fix the source, recreate the tag from the corrected release commit, and let the
-workflow rebuild every asset. Never reuse a signature for changed content.
+If the problem is found while the release is still a draft, keep it unpublished.
+Release tags are immutable, so do not move or recreate the tag. Fix the source,
+bump to the next patch version, create a new annotated tag, and let the workflow
+rebuild every asset. Never reuse a signature for changed content.
 
 If the release has already been published:
 
-1. Immediately convert it back to a draft so `/releases/latest/` resolves to the
-   previous stable release for clients that have not downloaded the update.
-2. Fix the problem and publish a higher patch version signed with the same
+1. Revert the faulty `stable-*.json` update on the `updates` branch to the
+   previous supported manifests. For the first supported release, remove the
+   faulty stable pointers until a replacement exists.
+2. Mark the faulty GitHub release clearly and stop announcing it. Do not move
+   its immutable tag or replace its assets.
+3. Fix the problem and publish a higher patch version signed with the same
    updater key. Do not replace tag-pinned assets in place.
-3. Validate the new public `latest.json` and test the update from the previous
+4. Validate the new public channel manifests and test the update from the previous
    stable installation before announcing recovery.
-4. Provide the new installer for a manual repair if the faulty application can
+5. Provide the new installer for a manual repair if the faulty application can
    no longer start. An already installed higher version cannot automatically
    downgrade to the previous release.
 
