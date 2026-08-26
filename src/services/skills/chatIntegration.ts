@@ -7,6 +7,7 @@ import type {
 import { getServiceRuntimeCapabilities } from '../serviceRuntime';
 import { useSkillsStore } from '../../stores/useSkillsStore';
 import type { ToolResultResolution } from '../streamingChat';
+import { formatScriptResult } from './activation';
 
 type SkillToolArgs = Record<string, unknown>;
 
@@ -101,7 +102,7 @@ export const handleSkillToolCall = async (
     const scriptArgs = Array.isArray(args.args)
       ? args.args.filter((item): item is string => typeof item === 'string')
       : [];
-    const result = await useSkillsStore.getState().runSkillScript({
+    const result = await useSkillsStore.getState().runSkillScriptResult({
       skillId,
       scriptPath,
       args: scriptArgs,
@@ -114,9 +115,17 @@ export const handleSkillToolCall = async (
       allowWorkspace:
         args.allow_workspace === true || args.allowWorkspace === true,
     }, permissionSnapshot);
-    return /^(?:Skill scripts were not enabled|This skill is disabled|Scripts are disabled|This skill changed|Skill .+ is invalid)/.test(result)
-      ? skillToolError(result)
-      : result;
+    if (typeof result === 'string') return skillToolError(result);
+    const formatted = formatScriptResult(result);
+    return result.timedOut
+      ? {
+          kind: 'result',
+          result: formatted,
+          isError: true,
+          errorKind: 'execution',
+          toString: () => formatted,
+        }
+      : formatted;
   }
 
   return undefined;

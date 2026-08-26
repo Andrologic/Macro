@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { SkillPermissionSnapshot } from '../../types';
 import { handleSkillToolCall } from './chatIntegration';
+import { useSkillsStore } from '../../stores/useSkillsStore';
 
 const deniedSnapshot: SkillPermissionSnapshot = {
   conversationId: 'conversation',
@@ -33,5 +34,32 @@ describe('skill chat integration', () => {
 
     expect(activation).toMatchObject({ isError: true, errorKind: 'permission' });
     expect(script).toMatchObject({ isError: true, errorKind: 'permission' });
+  });
+
+  it('returns a structured execution failure when a skill script times out', async () => {
+    const original = useSkillsStore.getState().runSkillScriptResult;
+    useSkillsStore.setState({
+      runSkillScriptResult: async () => ({
+        skillId: 'sample',
+        scriptPath: 'run.ts',
+        stdout: '',
+        stderr: '',
+        exitCode: null,
+        timedOut: true,
+        truncated: false,
+      }),
+    });
+
+    try {
+      const result = await handleSkillToolCall(
+        'skill_run_script',
+        { skill_id: 'sample', script_path: 'run.ts' },
+        'conversation',
+        null,
+      );
+      expect(result).toMatchObject({ isError: true, errorKind: 'execution' });
+    } finally {
+      useSkillsStore.setState({ runSkillScriptResult: original });
+    }
   });
 });

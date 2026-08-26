@@ -1092,7 +1092,15 @@ export const registerChatToolsAndSourcesScenarios = (
       });
       const activateSkill = mock(async (_skillId: string, _conversationId?: string) => 'activated docs');
       const readSkillResource = mock(async (_skillId: string, _path: string) => 'resource content');
-      const runSkillScript = mock(async (_request: unknown, _snapshot?: unknown) => 'script result');
+      const runSkillScriptResult = mock(async (_request: unknown, _snapshot?: unknown) => ({
+        skillId: skill.id,
+        scriptPath: 'scripts/check.sh',
+        stdout: 'script result',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+        truncated: false,
+      }));
       useSkillsStore.setState({
         skills: [skill],
         settingsBySkillId: {
@@ -1108,7 +1116,7 @@ export const registerChatToolsAndSourcesScenarios = (
         },
         activateSkill,
         readSkillResource,
-        runSkillScript,
+        runSkillScriptResult,
       });
       useChatStore.setState({
         conversations: [
@@ -1166,7 +1174,7 @@ export const registerChatToolsAndSourcesScenarios = (
         { skill_id: 'project:project-1:docs', path: 'references/style.md' },
         'call-resource',
       )).resolves.toBe('resource content');
-      await expect(streamOptions.onToolCall(
+      const scriptResult = await streamOptions.onToolCall(
         'skill_run_script',
         {
           skill_id: 'project:project-1:docs',
@@ -1176,21 +1184,22 @@ export const registerChatToolsAndSourcesScenarios = (
           allow_workspace: true,
         },
         'call-script',
-      )).resolves.toBe('script result');
+      );
+      expect(String(scriptResult)).toContain('script result');
 
       expect(activateSkill).toHaveBeenCalledWith('project:project-1:docs', 'chat-conv');
       expect(readSkillResource).toHaveBeenCalledWith(
         'project:project-1:docs',
         'references/style.md',
       );
-      expect(runSkillScript.mock.calls[0]?.[0]).toEqual({
+      expect(runSkillScriptResult.mock.calls[0]?.[0]).toEqual({
         skillId: 'project:project-1:docs',
         scriptPath: 'scripts/check.sh',
         args: ['--check'],
         timeoutMs: 1_000,
         allowWorkspace: true,
       });
-      expect(runSkillScript.mock.calls[0]?.[1]).toMatchObject({
+      expect(runSkillScriptResult.mock.calls[0]?.[1]).toMatchObject({
         conversationId: 'chat-conv',
         skills: {
           [skill.id]: {
