@@ -7,6 +7,7 @@ export type JsonSchema =
       required?: string[];
       description?: string;
       enum?: string[];
+      minLength?: number;
       items?: JsonSchema;
       additionalProperties?: JsonSchema | boolean;
     }
@@ -19,6 +20,7 @@ export type JsonSchema =
       type: "string" | "number" | "boolean";
       description?: string;
       enum?: string[];
+      minLength?: number;
     }
   | {
       description?: string;
@@ -438,6 +440,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         citation_id: {
           type: "string",
+          minLength: 1,
           description: "ID of the source citation to modify.",
         },
         action: {

@@ -363,9 +363,11 @@ Macro vérifie aussi les identifiants, l'appariement des appels et résultats
 d'outils, ainsi que l'ordre des rôles avant chaque requête réseau.
 
 Le frontend transmet au backend des diagnostics structurés sans contenu de
-conversation, sans arguments d'outils et sans secrets. Le backend écrit
-`macro.log` dans le dossier de journaux de la plateforme, notamment
-`%LOCALAPPDATA%\com.macro.desktop\logs` sous Windows.
+conversation, sans arguments d'outils, sans message d'erreur provider brut et
+sans secrets. Le backend écrit des fichiers `macro.YYYY-MM-DD.log` dans le
+dossier de journaux de la plateforme, notamment
+`%LOCALAPPDATA%\com.macro.desktop\logs` sous Windows. La rotation est quotidienne
+et conserve les sept fichiers les plus récents.
 
 ---
 

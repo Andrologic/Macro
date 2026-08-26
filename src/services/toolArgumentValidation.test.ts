@@ -33,4 +33,29 @@ describe('tool argument validation', () => {
       },
     ]);
   });
+
+  it('allows empty required file content and replacement text', () => {
+    const writeIssues = validateToolArguments(
+      { path: 'empty.txt', content: '' },
+      requireMacroToolRegistryEntry('write').parameters,
+    );
+    const editIssues = validateToolArguments(
+      { path: 'file.txt', old_text: 'remove me', new_text: '' },
+      requireMacroToolRegistryEntry('edit').parameters,
+    );
+
+    expect(writeIssues).toEqual([]);
+    expect(editIssues).toEqual([]);
+  });
+
+  it('uses explicit minLength rules for identifiers that cannot be empty', () => {
+    const issues = validateToolArguments(
+      { citation_id: '', action: 'reclassify' },
+      requireMacroToolRegistryEntry('edit_source_passage').parameters,
+    );
+
+    expect(issues).toEqual([
+      { path: '$.citation_id', message: 'expected at least 1 character(s)' },
+    ]);
+  });
 });
