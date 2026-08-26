@@ -372,6 +372,8 @@ jour. Les diagnostics navigateur globaux ne conservent que leur catégorie ;
 leurs messages et piles sont retirés avant l'écriture native.
 La limite de taille utilise un verrou interprocessus et rejette un événement
 complet quand il ne tient plus dans le budget quotidien.
+Les échecs OAuth et fournisseur conservent leur détail pour l'interface, mais
+les journaux persistants n'enregistrent que le statut et la catégorie d'opération.
 
 ---
 
