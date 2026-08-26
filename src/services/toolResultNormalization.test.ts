@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'bun:test';
+import { normalizeLegacyToolExecutionResult } from './toolResultNormalization';
+
+describe('legacy tool result normalization', () => {
+  it('classifies only known legacy errors for their producing tool', () => {
+    const result = normalizeLegacyToolExecutionResult(
+      'read_file',
+      '[macro_scope_promotion] {"promoted_project_ids":["project"]}\nFile not found: missing.txt',
+    );
+    expect(result).toMatchObject({ isError: true, errorKind: 'execution' });
+  });
+
+  it('does not reinterpret successful terminal or MCP output as an error', () => {
+    expect(normalizeLegacyToolExecutionResult('terminal_run', 'Cannot reproduce the issue.')).toBe(
+      'Cannot reproduce the issue.',
+    );
+    expect(normalizeLegacyToolExecutionResult('mcp__docs__read', 'File not found: an example')).toBe(
+      'File not found: an example',
+    );
+  });
+
+  it('classifies controlled workspace mutation and Git failure formats', () => {
+    expect(normalizeLegacyToolExecutionResult('write', 'Cannot safely write file.txt')).toMatchObject({
+      isError: true,
+    });
+    expect(normalizeLegacyToolExecutionResult('git_commit', 'Error executing git tool: denied')).toMatchObject({
+      isError: true,
+    });
+    expect(normalizeLegacyToolExecutionResult('git_branch_list', 'Error executing git tool: denied')).toMatchObject({
+      isError: true,
+    });
+    expect(normalizeLegacyToolExecutionResult('git_get_tree', 'Error executing git_get_tree: denied')).toMatchObject({
+      isError: true,
+    });
+  });
+});

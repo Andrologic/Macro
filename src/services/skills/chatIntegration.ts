@@ -6,8 +6,18 @@ import type {
 } from '../../types';
 import { getServiceRuntimeCapabilities } from '../serviceRuntime';
 import { useSkillsStore } from '../../stores/useSkillsStore';
+import type { ToolResultResolution } from '../streamingChat';
+import { formatScriptResult } from './activation';
 
 type SkillToolArgs = Record<string, unknown>;
+
+const skillToolError = (result: string): ToolResultResolution => ({
+  kind: 'result',
+  result,
+  isError: true,
+  errorKind: 'permission',
+  toString: () => result,
+});
 
 const readStringArg = (
   args: SkillToolArgs,
@@ -52,14 +62,17 @@ export const handleSkillToolCall = async (
   conversationId: string,
   permissionSnapshot: SkillPermissionSnapshot | null =
     useSkillsStore.getState().getSkillPermissionSnapshot(conversationId),
-): Promise<string | undefined> => {
+): Promise<ToolResultResolution | string | undefined> => {
   if (normalizedToolName === 'skill_activate') {
     const skillId = readStringArg(args, 'skill_id', 'skillId');
     if (!skillId) return 'Missing skill_id for skill_activate.';
     if (!isSkillEnabledInSnapshot(permissionSnapshot, skillId)) {
-      return `Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`;
+      return skillToolError(`Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`);
     }
-    return useSkillsStore.getState().activateSkill(skillId, conversationId);
+    const result = await useSkillsStore.getState().activateSkill(skillId, conversationId);
+    return /^(?:Skill .+ is (?:disabled|invalid))/.test(result)
+      ? skillToolError(result)
+      : result;
   }
 
   if (normalizedToolName === 'skill_read_resource') {
@@ -69,9 +82,12 @@ export const handleSkillToolCall = async (
       return 'Missing skill_id or path for skill_read_resource.';
     }
     if (!isSkillEnabledInSnapshot(permissionSnapshot, skillId)) {
-      return `Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`;
+      return skillToolError(`Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`);
     }
-    return useSkillsStore.getState().readSkillResource(skillId, resourcePath);
+    const result = await useSkillsStore.getState().readSkillResource(skillId, resourcePath);
+    return /^Skill .+ is (?:disabled|invalid)/.test(result)
+      ? skillToolError(result)
+      : result;
   }
 
   if (normalizedToolName === 'skill_run_script') {
@@ -81,12 +97,12 @@ export const handleSkillToolCall = async (
       return 'Missing skill_id or script_path for skill_run_script.';
     }
     if (!isSkillScriptRunnableInSnapshot(permissionSnapshot, skillId)) {
-      return 'Skill scripts were not enabled when this turn started. Enable Scripts for this skill in Settings and retry on the next turn.';
+      return skillToolError('Skill scripts were not enabled when this turn started. Enable Scripts for this skill in Settings and retry on the next turn.');
     }
     const scriptArgs = Array.isArray(args.args)
       ? args.args.filter((item): item is string => typeof item === 'string')
       : [];
-    return useSkillsStore.getState().runSkillScript({
+    const result = await useSkillsStore.getState().runSkillScriptResult({
       skillId,
       scriptPath,
       args: scriptArgs,
@@ -99,6 +115,17 @@ export const handleSkillToolCall = async (
       allowWorkspace:
         args.allow_workspace === true || args.allowWorkspace === true,
     }, permissionSnapshot);
+    if (typeof result === 'string') return skillToolError(result);
+    const formatted = formatScriptResult(result);
+    return result.timedOut
+      ? {
+          kind: 'result',
+          result: formatted,
+          isError: true,
+          errorKind: 'execution',
+          toString: () => formatted,
+        }
+      : formatted;
   }
 
   return undefined;

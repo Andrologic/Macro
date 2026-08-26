@@ -7,6 +7,8 @@ export type JsonSchema =
       required?: string[];
       description?: string;
       enum?: string[];
+      minLength?: number;
+      allowEmpty?: boolean;
       items?: JsonSchema;
       additionalProperties?: JsonSchema | boolean;
     }
@@ -19,6 +21,8 @@ export type JsonSchema =
       type: "string" | "number" | "boolean";
       description?: string;
       enum?: string[];
+      minLength?: number;
+      allowEmpty?: boolean;
     }
   | {
       description?: string;
@@ -158,6 +162,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         query: {
           type: "string",
+          minLength: 1,
           description: "The search query to look up",
         },
       },
@@ -169,6 +174,7 @@ export const MACRO_TOOL_REGISTRY = [
     properties: {
       url: {
         type: "string",
+        minLength: 1,
         description: "URL to fetch and read",
       },
     },
@@ -438,6 +444,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         citation_id: {
           type: "string",
+          minLength: 1,
           description: "ID of the source citation to modify.",
         },
         action: {
@@ -483,6 +490,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         file: {
           type: "string",
+          minLength: 1,
           description: "File name/path/source to read (example: hotas.pr0).",
         },
         extract_text: {
@@ -569,7 +577,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to read." },
+        path: { type: "string", minLength: 1, description: "Path of the file to read." },
         project_id: {
           type: "string",
           description:
@@ -599,13 +607,17 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to write." },
+        path: { type: "string", minLength: 1, description: "Path of the file to write." },
         project_id: {
           type: "string",
           description:
             "Optional project identifier when you want to force which project to use.",
         },
-        content: { type: "string", description: "Final file content." },
+        content: {
+          type: "string",
+          allowEmpty: true,
+          description: "Final file content.",
+        },
         create_dirs: {
           type: "boolean",
           description: "Create missing parent directories.",
@@ -625,14 +637,18 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to edit." },
+        path: { type: "string", minLength: 1, description: "Path of the file to edit." },
         project_id: {
           type: "string",
           description:
             "Optional project identifier when you want to force which project to use.",
         },
-        old_text: { type: "string", description: "Exact text to replace." },
-        new_text: { type: "string", description: "Replacement text." },
+        old_text: { type: "string", minLength: 1, description: "Exact text to replace." },
+        new_text: {
+          type: "string",
+          allowEmpty: true,
+          description: "Replacement text.",
+        },
         replace_all: {
           type: "boolean",
           description:
@@ -653,7 +669,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path of the file to delete." },
+        path: { type: "string", minLength: 1, description: "Path of the file to delete." },
         project_id: {
           type: "string",
           description:
@@ -681,6 +697,7 @@ export const MACRO_TOOL_REGISTRY = [
         },
         patch_text: {
           type: "string",
+          minLength: 1,
           description:
             "Patch text in Macro apply_patch format with add/update/delete file sections.",
         },
@@ -703,7 +720,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        pattern: { type: "string", description: "Glob pattern." },
+        pattern: { type: "string", minLength: 1, description: "Glob pattern." },
         project_id: {
           type: "string",
           description:
@@ -732,7 +749,7 @@ export const MACRO_TOOL_REGISTRY = [
     {
       type: "object",
       properties: {
-        query: { type: "string", description: "Text or regex to search for." },
+        query: { type: "string", minLength: 1, description: "Text or regex to search for." },
         project_id: {
           type: "string",
           description:
@@ -776,6 +793,7 @@ export const MACRO_TOOL_REGISTRY = [
       properties: {
         pattern: {
           type: "string",
+          minLength: 1,
           description:
             `Structural ast-grep pattern up to ${TOOL_OUTPUT_LIMITS.ast.maxPatternBytes} bytes, for example console.log($$$ARGS) or const $NAME = ($$$ARGS) => $BODY.`,
         },
@@ -1672,6 +1690,30 @@ export interface FunctionToolShape {
   overridesBuiltInTool?: true;
 }
 
+const toProviderJsonSchema = (schema: JsonSchema): JsonSchema => {
+  if (!('type' in schema) || !schema.type) return { ...schema };
+  if (schema.type === "object") {
+    const { allowEmpty: _allowEmpty, ...providerSchema } = schema;
+    return {
+      ...providerSchema,
+      properties: Object.fromEntries(
+        Object.entries(schema.properties ?? {}).map(([key, value]) => [
+          key,
+          toProviderJsonSchema(value),
+        ]),
+      ),
+      ...(schema.additionalProperties && typeof schema.additionalProperties === "object"
+        ? { additionalProperties: toProviderJsonSchema(schema.additionalProperties) }
+        : {}),
+    };
+  }
+  if (schema.type === "array") {
+    return { ...schema, items: toProviderJsonSchema(schema.items) };
+  }
+  const { allowEmpty: _allowEmpty, ...providerSchema } = schema;
+  return providerSchema;
+};
+
 export const toFunctionToolShape = (
   entry: MacroToolRegistryEntry,
 ): FunctionToolShape => ({
@@ -1679,7 +1721,7 @@ export const toFunctionToolShape = (
   function: {
     name: entry.id,
     description: entry.description,
-    parameters: entry.parameters,
+    parameters: toProviderJsonSchema(entry.parameters),
   },
 });
 

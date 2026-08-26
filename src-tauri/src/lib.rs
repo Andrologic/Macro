@@ -70,7 +70,6 @@ struct WindowPositionPayload {
 }
 
 const FRONTEND_LOG_MESSAGE_LIMIT: usize = 8_000;
-const FRONTEND_LOG_SCOPE_LIMIT: usize = 120;
 
 fn truncate_for_frontend_log(value: &str, max_chars: usize) -> String {
     let mut truncated: String = value.chars().take(max_chars).collect();
@@ -88,6 +87,79 @@ fn normalize_frontend_log_level(level: &str) -> &'static str {
         "error" => "error",
         _ => "warn",
     }
+}
+
+fn normalize_frontend_log_scope(scope: &str) -> &'static str {
+    match scope.trim() {
+        "streaming_chat" => "streaming_chat",
+        "frontend" => "frontend",
+        _ => "unknown",
+    }
+}
+
+fn safe_diagnostic_token(value: Option<&serde_json::Value>, max_len: usize) -> Option<&str> {
+    let token = value?.as_str()?;
+    if token.is_empty()
+        || token.len() > max_len
+        || !token
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character))
+    {
+        return None;
+    }
+    Some(token)
+}
+
+fn sanitize_streaming_chat_diagnostic(message: &str) -> String {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str(message) else {
+        return "event=invalid_diagnostic".to_string();
+    };
+    let Some(event) = safe_diagnostic_token(fields.get("event"), 64) else {
+        return "event=invalid_diagnostic".to_string();
+    };
+    if event != "provider_request" && event != "provider_request_failed" {
+        return "event=invalid_diagnostic".to_string();
+    }
+
+    let mut output = vec![format!("event={event}")];
+    for key in ["request_id", "provider_type", "error_kind", "error_name"] {
+        if let Some(value) = safe_diagnostic_token(fields.get(key), 120) {
+            output.push(format!("{key}={value}"));
+        }
+    }
+    for key in ["turn", "message_count", "tool_count", "status"] {
+        if let Some(value) = fields.get(key).and_then(serde_json::Value::as_u64) {
+            output.push(format!("{key}={value}"));
+        }
+    }
+    if let Some(value) = fields
+        .get("has_tool_history")
+        .and_then(serde_json::Value::as_bool)
+    {
+        output.push(format!("has_tool_history={value}"));
+    }
+    output.join(" ")
+}
+
+fn sanitize_frontend_log_message(scope: &str, message: &str) -> String {
+    if scope == "streaming_chat" {
+        return sanitize_streaming_chat_diagnostic(message);
+    }
+
+    if scope == "frontend" {
+        let kind = message
+            .strip_prefix("[Frontend:")
+            .and_then(|rest| rest.split_once(']'))
+            .map(|(kind, _)| kind)
+            .filter(|kind| {
+                kind.chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+            })
+            .unwrap_or("unknown");
+        return format!("[Frontend:{kind}] details_redacted=true");
+    }
+
+    "frontend diagnostic redacted".to_string()
 }
 
 // Command to show the main window explicitly from frontend
@@ -108,8 +180,8 @@ async fn show_main_window(window: tauri::WebviewWindow) -> Result<(), String> {
 #[tauri::command]
 async fn frontend_log(level: String, scope: String, message: String) -> Result<(), String> {
     let normalized_level = normalize_frontend_log_level(&level);
-    let normalized_scope = truncate_for_frontend_log(scope.trim(), FRONTEND_LOG_SCOPE_LIMIT);
-    let normalized_message = truncate_for_frontend_log(message.trim(), FRONTEND_LOG_MESSAGE_LIMIT);
+    let normalized_scope = normalize_frontend_log_scope(&scope);
+    let normalized_message = sanitize_frontend_log_message(&normalized_scope, &message);
 
     match normalized_level {
         "debug" => tracing::debug!(
@@ -737,7 +809,8 @@ pub fn run() {
 #[cfg(test)]
 mod frontend_log_tests {
     use super::{
-        normalize_frontend_log_level, truncate_for_frontend_log, FRONTEND_LOG_MESSAGE_LIMIT,
+        normalize_frontend_log_level, normalize_frontend_log_scope, sanitize_frontend_log_message,
+        truncate_for_frontend_log, FRONTEND_LOG_MESSAGE_LIMIT,
     };
 
     #[test]
@@ -756,6 +829,37 @@ mod frontend_log_tests {
 
         assert_eq!(truncated.chars().count(), FRONTEND_LOG_MESSAGE_LIMIT + 3);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn frontend_log_redacts_raw_browser_diagnostics() {
+        let sanitized = sanitize_frontend_log_message(
+            "frontend",
+            "[Frontend:unhandledrejection] reason=secret user content",
+        );
+
+        assert_eq!(
+            sanitized,
+            "[Frontend:unhandledrejection] details_redacted=true"
+        );
+        assert!(!sanitized.contains("secret"));
+    }
+
+    #[test]
+    fn frontend_log_keeps_allowlisted_streaming_diagnostics() {
+        let message = r#"{"event":"provider_request_failed","status":400,"message":"secret"}"#;
+        let sanitized = sanitize_frontend_log_message("streaming_chat", message);
+        assert_eq!(sanitized, "event=provider_request_failed status=400");
+        assert!(!sanitized.contains("secret"));
+    }
+
+    #[test]
+    fn frontend_log_rejects_unknown_scopes_and_invalid_streaming_payloads() {
+        assert_eq!(normalize_frontend_log_scope("secret"), "unknown");
+        assert_eq!(
+            sanitize_frontend_log_message("streaming_chat", "raw secret"),
+            "event=invalid_diagnostic",
+        );
     }
 
     #[test]
