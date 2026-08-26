@@ -33,4 +33,33 @@ describe('GitHub workflow validation', () => {
 
     expect(errors.some((error) => error.includes('pull_request_target'))).toBe(true);
   });
+
+  test('requires release validation to fetch the annotated tag object', () => {
+    const errors = validateWorkflowDocument({
+      name: 'Release',
+      on: { push: { tags: ['v*'] } },
+      permissions: { contents: 'read' },
+      jobs: {
+        validate: {
+          'runs-on': 'ubuntu-latest',
+          'timeout-minutes': 10,
+          steps: [
+            {
+              run: 'git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"',
+            },
+            {
+              uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
+              with: { 'persist-credentials': false },
+            },
+          ],
+        },
+        build: {
+          needs: 'validate',
+          environment: 'release',
+        },
+      },
+    }, '.github/workflows/release.yml');
+
+    expect(errors.some((error) => error.includes('annotated tag object'))).toBe(true);
+  });
 });
