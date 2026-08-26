@@ -358,7 +358,7 @@ describe('copilot bridge tool registration', () => {
         expect.objectContaining({
           mode: 'Implement',
           tool_id: 'git_status',
-          workspace_path: '/tmp/macro-source',
+          workspace_path: path.resolve('/tmp/macro-source'),
         }),
       ]);
     } finally {
