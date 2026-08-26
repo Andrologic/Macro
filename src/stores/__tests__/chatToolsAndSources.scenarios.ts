@@ -343,7 +343,7 @@ export const registerChatToolsAndSourcesScenarios = (
         'chat-terminal-2',
       );
       useChatStore.getState().denyPendingToolApproval('chat-conv');
-      await expect(secondCommand).resolves.toBe('Tool terminal_run was denied by the user.');
+      expect(String(await secondCommand)).toBe('Tool terminal_run was denied by the user.');
       expect(terminalRunCommandFromChatMock).toHaveBeenCalledTimes(1);
     });
 

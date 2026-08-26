@@ -254,6 +254,8 @@ pub struct CopilotToolResultRequest {
     pub hidden_context: Option<String>,
     pub visible_content: Option<String>,
     pub interrupt: Option<bool>,
+    pub is_error: Option<bool>,
+    pub error_kind: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2223,6 +2225,8 @@ pub async fn submit_tool_result(
         "hidden_context": request.hidden_context,
         "visible_content": request.visible_content,
         "interrupt": request.interrupt.unwrap_or(false),
+        "is_error": request.is_error.unwrap_or(false),
+        "error_kind": request.error_kind,
     });
     let line = serde_json::to_string(&payload)
         .map_err(|error| format!("Failed to serialize Copilot tool result: {}", error))?;

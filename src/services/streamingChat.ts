@@ -2699,6 +2699,12 @@ const streamNativeTurnViaTauri = async (params: {
   const resources = getOrCreateActiveStreamResources(sessionId);
   const requestId = createStreamingRequestId();
   resources.tauriRequestId = requestId;
+  const allowedTools = new Set(params.allowedToolIds ?? []);
+  const toolSchemas = new Map<string, JsonSchema>();
+  for (const toolName of allowedTools) {
+    const entry = getMacroToolRegistryEntry(toolName);
+    if (entry) toolSchemas.set(toolName, entry.parameters);
+  }
 
   let fullContent = '';
 
@@ -2787,17 +2793,30 @@ const streamNativeTurnViaTauri = async (params: {
                 let hiddenContext: string | undefined;
                 let visibleContent: string | undefined;
                 let interrupt = false;
+                let isError = false;
+                let errorKind: ToolResult['error_kind'] | undefined;
 
-                if (toolName === 'question') {
-                  questionToolRequestCount += 1;
-                }
-
-                if (toolName === 'question' && questionToolRequestCount > 1) {
+                const schema = toolSchemas.get(toolName);
+                const validationIssues = schema ? validateToolArguments(args, schema) : [];
+                if (validationIssues.length > 0) {
+                  toolResult = formatToolArgumentValidationError(toolName, validationIssues);
+                  isError = true;
+                  errorKind = 'validation';
+                } else if (!allowedTools.has(toolName)) {
+                  toolResult = `Tool ${toolName} is disabled for the current mode.`;
+                  isError = true;
+                  errorKind = 'permission';
+                } else if (toolName === 'question' && questionToolRequestCount > 0) {
                   toolResult =
                     'Error executing tool question: only one question tool call is allowed per assistant turn.';
+                  isError = true;
+                  errorKind = 'execution';
                 } else if (!params.onToolCall) {
                   toolResult = `Tool ${toolName} is unavailable in this provider context.`;
+                  isError = true;
+                  errorKind = 'permission';
                 } else {
+                  if (toolName === 'question') questionToolRequestCount += 1;
                   const resolution = normalizeToolCallResolution(
                     await params.onToolCall(toolName, args, toolCallId)
                   );
@@ -2815,6 +2834,8 @@ const streamNativeTurnViaTauri = async (params: {
                     interrupt = true;
                   } else if (resolution?.kind === 'result') {
                     toolResult = resolution.result;
+                    isError = resolution.isError === true;
+                    errorKind = resolution.errorKind;
                   }
                 }
 
@@ -2825,6 +2846,8 @@ const streamNativeTurnViaTauri = async (params: {
                   hiddenContext,
                   visibleContent,
                   interrupt,
+                  isError,
+                  errorKind,
                 });
                 params.onLiveToolResult?.({
                   toolName,
@@ -2843,6 +2866,8 @@ const streamNativeTurnViaTauri = async (params: {
                   requestId,
                   toolCallId,
                   result: toolResult,
+                  isError: true,
+                  errorKind: 'execution',
                 }).catch(() => undefined);
                 params.onLiveToolResult?.({
                   toolName,

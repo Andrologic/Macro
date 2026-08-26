@@ -489,6 +489,17 @@ const TOOL_EXECUTION_ABORTED_RESULT: ToolCallResolution = {
   errorKind: "aborted",
   toString: () => "Tool execution aborted",
 };
+
+const toolFailure = (
+  result: string,
+  errorKind: "execution" | "permission" | "validation" = "execution",
+): ToolCallResolution => ({
+  kind: "result",
+  result,
+  isError: true,
+  errorKind,
+  toString: () => result,
+});
 let terminalToolExecutionCounter = 0;
 const createTerminalToolExecutionId = (): string => {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -5065,7 +5076,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const assistantTurnId = operation.turnId;
 
     if (!operation.allowedToolIds.includes(normalizedToolName)) {
-      return `Tool ${normalizedToolName} is not available for this turn.`;
+      return toolFailure(
+        `Tool ${normalizedToolName} is not available for this turn.`,
+        "permission",
+      );
     }
 
     if (
@@ -5074,7 +5088,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         operation.scopedTurnConfiguration,
       ).length === 0
     ) {
-      return `Tool ${normalizedToolName} is disabled for this turn's project scope.`;
+      return toolFailure(
+        `Tool ${normalizedToolName} is disabled for this turn's project scope.`,
+        "permission",
+      );
     }
 
     if (
@@ -5089,7 +5106,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "denied",
         );
       }
-      return IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE;
+      return toolFailure(IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE, "permission");
     }
 
     if (
@@ -5103,7 +5120,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
-      return `Tool ${normalizedToolName} is disabled for the current mode.`;
+      return toolFailure(
+        `Tool ${normalizedToolName} is disabled for the current mode.`,
+        "permission",
+      );
     }
 
     let executionContext = operation.executionContext;
@@ -5255,9 +5275,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
         }
         const denialPrefix = `Tool ${normalizedToolName} was denied by the user.`;
-        return resolution.reason?.trim()
-          ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
-          : denialPrefix;
+        return toolFailure(
+          resolution.reason?.trim()
+            ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
+            : denialPrefix,
+          "permission",
+        );
       }
 
       if (!isCurrentOperation()) {

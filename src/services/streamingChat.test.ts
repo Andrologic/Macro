@@ -112,6 +112,8 @@ const loadStreamingChat = async (
       hiddenContext?: string | null;
       visibleContent?: string | null;
       interrupt?: boolean;
+      isError?: boolean;
+      errorKind?: 'validation' | 'permission' | 'execution' | 'aborted';
     }) =>
       invokeImpl('ai_submit_tool_result', {
         request: {
@@ -121,6 +123,8 @@ const loadStreamingChat = async (
           hidden_context: params.hiddenContext ?? null,
           visible_content: params.visibleContent ?? null,
           interrupt: params.interrupt ?? false,
+          is_error: params.isError ?? false,
+          error_kind: params.errorKind ?? null,
         },
       }),
   };
@@ -2867,6 +2871,8 @@ describe('streamingChat tool rendering helpers', () => {
     const onToolCall = mock(async (toolName: string, args: Record<string, unknown>) => ({
       kind: 'result' as const,
       result: `${toolName}:${args.plan_id}`,
+      isError: true,
+      errorKind: 'execution' as const,
     }));
     const onComplete = mock((_result: unknown) => undefined);
 
@@ -2903,6 +2909,8 @@ describe('streamingChat tool rendering helpers', () => {
         hidden_context: null,
         visible_content: null,
         interrupt: false,
+        is_error: true,
+        error_kind: 'execution',
       },
     });
     expect(onComplete).toHaveBeenCalledWith(
