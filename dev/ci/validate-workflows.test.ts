@@ -62,4 +62,34 @@ describe('GitHub workflow validation', () => {
 
     expect(errors.some((error) => error.includes('annotated tag object'))).toBe(true);
   });
+
+  test('requires diagnosable Linux bundles and a stapled macOS disk image', () => {
+    const errors = validateWorkflowDocument({
+      name: 'Preview',
+      on: { workflow_dispatch: {} },
+      permissions: { contents: 'read' },
+      jobs: {
+        build: {
+          'runs-on': '${{ matrix.runner }}',
+          'timeout-minutes': 90,
+          strategy: {
+            matrix: {
+              include: [{ key: 'linux', args: '--bundles appimage,deb,rpm' }],
+            },
+          },
+          steps: [
+            { name: 'Build preview bundles', env: {} },
+            {
+              name: 'Verify macOS bundle and notarization',
+              run: 'xcrun stapler validate "$DMG_PATH"',
+            },
+          ],
+        },
+      },
+    }, '.github/workflows/preview.yml');
+
+    expect(errors.some((error) => error.includes('verbose Tauri output'))).toBe(true);
+    expect(errors.some((error) => error.includes('disable linuxdeploy stripping'))).toBe(true);
+    expect(errors.some((error) => error.includes('notarize, staple, and then validate'))).toBe(true);
+  });
 });

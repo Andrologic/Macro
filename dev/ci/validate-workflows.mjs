@@ -122,6 +122,30 @@ export function validateWorkflowDocument(document, filePath) {
     }
   }
 
+  if (filePath.endsWith('release.yml') || filePath.endsWith('preview.yml')) {
+    const buildJob = document.jobs.build;
+    const linuxBuild = buildJob?.strategy?.matrix?.include?.find((entry) => entry?.key === 'linux');
+    if (typeof linuxBuild?.args !== 'string' || !linuxBuild.args.includes('--verbose')) {
+      fail('Linux package builds must keep verbose Tauri output so linuxdeploy failures remain diagnosable.');
+    }
+
+    const bundleStep = buildJob?.steps?.find((step) => (
+      step?.name === 'Build desktop bundles' || step?.name === 'Build preview bundles'
+    ));
+    if (bundleStep?.env?.NO_STRIP !== "${{ matrix.key == 'linux' && 'true' || '' }}") {
+      fail('Linux package builds must disable linuxdeploy stripping for embedded sidecars.');
+    }
+
+    const macVerification = buildJob?.steps?.find((step) => step?.name === 'Verify macOS bundle and notarization');
+    const macVerificationScript = typeof macVerification?.run === 'string' ? macVerification.run : '';
+    const dmgSubmitIndex = macVerificationScript.indexOf('xcrun notarytool submit "$DMG_PATH"');
+    const dmgStapleIndex = macVerificationScript.indexOf('xcrun stapler staple "$DMG_PATH"');
+    const dmgValidateIndex = macVerificationScript.indexOf('xcrun stapler validate "$DMG_PATH"');
+    if (dmgSubmitIndex === -1 || dmgStapleIndex <= dmgSubmitIndex || dmgValidateIndex <= dmgStapleIndex) {
+      fail('macOS package verification must notarize, staple, and then validate the DMG.');
+    }
+  }
+
   return errors;
 }
 
