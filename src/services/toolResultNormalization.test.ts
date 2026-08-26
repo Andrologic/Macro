@@ -18,4 +18,13 @@ describe('legacy tool result normalization', () => {
       'File not found: an example',
     );
   });
+
+  it('classifies controlled workspace mutation and Git failure formats', () => {
+    expect(normalizeLegacyToolExecutionResult('write', 'Cannot safely write file.txt')).toMatchObject({
+      isError: true,
+    });
+    expect(normalizeLegacyToolExecutionResult('git_commit', 'Error executing git tool: denied')).toMatchObject({
+      isError: true,
+    });
+  });
 });

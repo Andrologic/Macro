@@ -31,7 +31,7 @@ describe('skill chat integration', () => {
       deniedSnapshot,
     );
 
-    expect(activation).toMatchObject({ isError: true, errorKind: 'execution' });
-    expect(script).toMatchObject({ isError: true, errorKind: 'execution' });
+    expect(activation).toMatchObject({ isError: true, errorKind: 'permission' });
+    expect(script).toMatchObject({ isError: true, errorKind: 'permission' });
   });
 });

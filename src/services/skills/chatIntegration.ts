@@ -14,7 +14,7 @@ const skillToolError = (result: string): ToolResultResolution => ({
   kind: 'result',
   result,
   isError: true,
-  errorKind: 'execution',
+  errorKind: 'permission',
   toString: () => result,
 });
 
@@ -68,7 +68,10 @@ export const handleSkillToolCall = async (
     if (!isSkillEnabledInSnapshot(permissionSnapshot, skillId)) {
       return skillToolError(`Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`);
     }
-    return useSkillsStore.getState().activateSkill(skillId, conversationId);
+    const result = await useSkillsStore.getState().activateSkill(skillId, conversationId);
+    return /^(?:Skill .+ is (?:disabled|invalid))/.test(result)
+      ? skillToolError(result)
+      : result;
   }
 
   if (normalizedToolName === 'skill_read_resource') {
@@ -80,7 +83,10 @@ export const handleSkillToolCall = async (
     if (!isSkillEnabledInSnapshot(permissionSnapshot, skillId)) {
       return skillToolError(`Skill ${skillId} was not enabled when this turn started. Enable it in Settings > Skills and retry on the next turn.`);
     }
-    return useSkillsStore.getState().readSkillResource(skillId, resourcePath);
+    const result = await useSkillsStore.getState().readSkillResource(skillId, resourcePath);
+    return /^Skill .+ is (?:disabled|invalid)/.test(result)
+      ? skillToolError(result)
+      : result;
   }
 
   if (normalizedToolName === 'skill_run_script') {
@@ -95,7 +101,7 @@ export const handleSkillToolCall = async (
     const scriptArgs = Array.isArray(args.args)
       ? args.args.filter((item): item is string => typeof item === 'string')
       : [];
-    return useSkillsStore.getState().runSkillScript({
+    const result = await useSkillsStore.getState().runSkillScript({
       skillId,
       scriptPath,
       args: scriptArgs,
@@ -108,6 +114,9 @@ export const handleSkillToolCall = async (
       allowWorkspace:
         args.allow_workspace === true || args.allowWorkspace === true,
     }, permissionSnapshot);
+    return /^(?:Skill scripts were not enabled|This skill is disabled|Scripts are disabled|This skill changed|Skill .+ is invalid)/.test(result)
+      ? skillToolError(result)
+      : result;
   }
 
   return undefined;
