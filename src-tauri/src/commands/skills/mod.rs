@@ -2908,7 +2908,7 @@ mod tests {
         #[cfg(windows)]
         let (slow_script_path, slow_script_content) = (
             "scripts/slow.cmd",
-            "@echo off\r\nping 127.0.0.1 -n 3 > nul\r\n",
+            "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep -Seconds 2\"\r\n",
         );
         #[cfg(not(windows))]
         let (slow_script_path, slow_script_content) = ("scripts/slow.sh", "sleep 2\n");
