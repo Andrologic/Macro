@@ -8,6 +8,7 @@ import {
   buildContextCompactionDecisionAudit,
   buildCompactedMessagesForRequest,
   compactProviderInputItemsForContext,
+  estimateBlockableTokensForStreamMessages,
   estimateConversationFootprint,
   invalidateCompactionFromMessage,
   isContextFootprintOverUsableBudget,
@@ -1149,8 +1150,8 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.marginTokens).toBeLessThan(0);
   });
 
-  it('estimates image data conservatively instead of as tiny placeholders', () => {
-    const base64Image = `data:image/png;base64,${'a'.repeat(6000)}`;
+  it('estimates decoded image context without counting the base64 transport as text', () => {
+    const base64Image = `data:image/png;base64,${'a'.repeat(900_000)}`;
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect this image.'),
     ];
@@ -1161,6 +1162,7 @@ describe('buildCompactedMessagesForRequest', () => {
           { type: 'text', text: 'Inspect this image.' },
           { type: 'image_url', image_url: { url: base64Image } },
         ],
+        image_metadata: [{ width: 1227, height: 433, mimeType: 'image/png' }],
       },
     ];
 
@@ -1171,11 +1173,123 @@ describe('buildCompactedMessagesForRequest', () => {
       citations: [],
       toolDefinitions: [],
       modelContextWindowTokens: 8000,
+      providerType: 'openai',
+      modelId: 'gpt-5.6',
       mode: 'blocking',
     });
 
-    expect(footprint.imagePlaceholderTokens).toBeGreaterThan(1000);
-    expect(footprint.visibleMessageTokens).toBeGreaterThan(1000);
+    expect(footprint.imagePlaceholderTokens).toBe(656);
+    expect(footprint.imageTransportBytes).toBe(675_000);
+    expect(footprint.imagesWithKnownDimensions).toBe(1);
+    expect(footprint.imageEstimateConfidence).toBe('model_formula');
+    expect(footprint.visibleMessageTokens).toBeGreaterThanOrEqual(656);
+    expect(footprint.visibleMessageTokens).toBeLessThan(750);
+    expect(footprint.totalEstimatedTokens).toBeLessThan(800);
+    expect(footprint.isHardStop).toBe(false);
+  });
+
+  it('does not count duplicated provider image data as base64 text', () => {
+    const base64Image = `data:image/png;base64,${'a'.repeat(900_000)}`;
+    const orderedMessages = [makeMessage('u1', 'user', 'Inspect this image.')];
+    const preparedMessages: StreamMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          { type: 'image_url', image_url: { url: base64Image } },
+        ],
+        provider_input_items: [
+          {
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'Inspect this image.' },
+              { type: 'input_image', image_url: base64Image },
+            ],
+          },
+        ],
+        image_metadata: [{ width: 1227, height: 433, mimeType: 'image/png' }],
+      },
+    ];
+
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages,
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 8000,
+      providerType: 'openai',
+      modelId: 'gpt-5.6',
+      mode: 'blocking',
+    });
+
+    expect(footprint.providerInputTokens).toBeGreaterThanOrEqual(656);
+    expect(footprint.providerInputTokens).toBeLessThan(750);
+    expect(footprint.imagePlaceholderTokens).toBe(656);
+    expect(footprint.imageCount).toBe(1);
+    expect(footprint.totalEstimatedTokens).toBeLessThan(800);
+    expect(footprint.isHardStop).toBe(false);
+  });
+
+  it('estimates a post-tool boundary from blockable text instead of image transport bytes', () => {
+    const base64Image = `data:image/png;base64,${'a'.repeat(900_000)}`;
+    const messages: StreamMessage[] = [
+      {
+        role: 'tool',
+        content: [
+          { type: 'text', text: 'Screenshot captured.' },
+          { type: 'image_url', image_url: { url: base64Image } },
+        ],
+        provider_input_items: [
+          {
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'Screenshot captured.' },
+              { type: 'input_image', image_url: base64Image },
+            ],
+          },
+        ],
+        image_metadata: [{ width: 1227, height: 433, mimeType: 'image/png' }],
+      },
+    ];
+
+    const estimate = estimateBlockableTokensForStreamMessages(messages, {
+      countProviderInputItems: true,
+      context: { providerType: 'openai', modelId: 'gpt-5.6' },
+    });
+
+    expect(estimate).toBeGreaterThan(0);
+    expect(estimate).toBeLessThan(100);
+  });
+
+  it('never turns an image-only estimate into a pre-provider hard stop', () => {
+    const base64Image = `data:image/png;base64,${'a'.repeat(900_000)}`;
+    const preparedMessages: StreamMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          { type: 'image_url', image_url: { url: base64Image } },
+        ],
+        image_metadata: [{ width: 1227, height: 433, mimeType: 'image/png' }],
+      },
+    ];
+    const footprint = estimateConversationFootprint({
+      systemMessage: 'You are Macro.',
+      preparedMessages,
+      orderedMessages: [makeMessage('u1', 'user', 'Inspect this image.')],
+      citations: [],
+      toolDefinitions: [],
+      modelContextWindowTokens: 500,
+      providerType: 'openai',
+      modelId: 'gpt-5.6',
+      mode: 'blocking',
+    });
+
+    expect(footprint.totalEstimatedTokens).toBeGreaterThan(500);
+    expect(footprint.imagePlaceholderTokens).toBe(656);
+    expect(footprint.hardStopEstimatedTokens).toBeLessThan(500);
+    expect(footprint.isHardStop).toBe(false);
   });
 
   it('uses a larger fallback window for OpenCode Go Kimi when model metadata is missing', () => {

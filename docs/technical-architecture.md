@@ -338,6 +338,18 @@ Exemples principaux :
 - `speech/transcriptEnhancement` pour la correction LLM facultative et bornée
   des transcriptions
 
+L'estimation du contexte multimodal conserve les dimensions et le type MIME des
+images dans une métadonnée interne ordonnée avec les parties image du message.
+Cette métadonnée n'est pas sérialisée vers le fournisseur. Le service
+`contextTokenEstimation` applique la formule documentée du modèle ou du
+fournisseur lorsque celle-ci est connue, puis utilise un repli fondé sur les
+dimensions. Le poids Base64 reste une mesure de transport séparée et n'est
+jamais compté comme du texte. Une estimation visuelle, même élevée ou
+incertaine, peut déclencher une compaction préventive, mais ne peut pas à elle
+seule produire un blocage définitif avant l'appel au fournisseur. Les erreurs
+réelles de dépassement restent prises en charge par la récupération de
+débordement du flux.
+
 ### 7.3 Contrats et DTO
 
 Les DTO frontend servent de couche de stabilisation entre :

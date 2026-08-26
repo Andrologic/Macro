@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ChatMessage } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
+import { fingerprintImageSource } from './contextTokenEstimation';
 import type {
   LiveStreamContextSnapshot,
   StreamCompletionResult,
@@ -190,6 +191,134 @@ describe('streamingChat Architect tool contracts', () => {
     expect(String(UPDATE_PLAN_TOOL.function.description)).toContain(
       'logical slug becomes immutable'
     );
+  });
+});
+
+describe('streamingChat context estimates', () => {
+  beforeEach(() => {
+    mock.restore();
+  });
+
+  it('counts image context without treating a chat-completion data URL as text', async () => {
+    const { estimateChatCompletionSerializedPayloadTokens } = await loadStreamingChat();
+    const dataUrl = `data:image/png;base64,${'a'.repeat(900_000)}`;
+
+    const tokens = estimateChatCompletionSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect this image.' },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+          image_metadata: [
+            { width: 1024, height: 1024 },
+            { width: 10_000, height: 10_000 },
+          ],
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-4.1',
+    });
+
+    expect(tokens).toBeGreaterThanOrEqual(765);
+    expect(tokens).toBeLessThan(850);
+  });
+
+  it('aligns image metadata with images that survive provider-item serialization', async () => {
+    const { estimateChatCompletionSerializedPayloadTokens } = await loadStreamingChat();
+    const removedDataUrl = `data:image/png;base64,${'a'.repeat(64)}`;
+    const retainedDataUrl = `data:image/png;base64,${'b'.repeat(64)}`;
+
+    const tokens = estimateChatCompletionSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'image_url', image_url: { url: removedDataUrl } },
+            { type: 'image_url', image_url: { url: retainedDataUrl } },
+          ],
+          image_metadata: [
+            {
+              width: 10_000,
+              height: 10_000,
+              sourceFingerprint: fingerprintImageSource(removedDataUrl),
+            },
+            {
+              width: 512,
+              height: 512,
+              sourceFingerprint: fingerprintImageSource(retainedDataUrl),
+            },
+          ],
+          provider_input_items: [
+            {
+              type: 'chat_completion_message',
+              role: 'assistant',
+              content: [
+                { type: 'image_url', image_url: { url: retainedDataUrl } },
+              ],
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: 'Inspect the retained image.',
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-4.1',
+    });
+
+    expect(tokens).toBeGreaterThanOrEqual(255);
+    expect(tokens).toBeLessThan(350);
+  });
+
+  it('does not embed image data URLs in the Copilot prompt estimate', async () => {
+    const { estimateCopilotSerializedPayloadTokens } = await loadStreamingChat();
+    const dataUrl = `data:image/png;base64,${'a'.repeat(900_000)}`;
+
+    const tokens = estimateCopilotSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect this image.' },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+          image_metadata: [
+            { width: 1024, height: 1024 },
+            { width: 10_000, height: 10_000 },
+          ],
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-5.6',
+    });
+
+    expect(tokens).toBeGreaterThanOrEqual(1229);
+    expect(tokens).toBeLessThan(1350);
+  });
+
+  it('does not count stale Copilot metadata when the prompt contains no image', async () => {
+    const { estimateCopilotSerializedPayloadTokens } = await loadStreamingChat();
+
+    const tokens = estimateCopilotSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'assistant',
+          content: 'Historical text-only answer.',
+          image_metadata: [{ width: 10_000, height: 10_000 }],
+        },
+        {
+          role: 'user',
+          content: 'Continue.',
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-5.6',
+    });
+
+    expect(tokens).toBeLessThan(100);
   });
 });
 

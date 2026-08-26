@@ -40,6 +40,12 @@ import type {
 import { devLogger } from '../utils/devLogger';
 import { useProviderStore } from '../stores/useProviderStore';
 import { formatConversationFilePage } from './conversationFileTool';
+import {
+  estimateImageContextTokens,
+  estimateStructuredContext,
+  estimateTextTokens,
+  type ImageContextMetadata,
+} from './contextTokenEstimation';
 
 interface ActiveStreamResources {
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
@@ -190,6 +196,7 @@ const getActiveStreamingSessionIds = (): string[] =>
 export interface StreamMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: StreamMessageContent;
+  image_metadata?: ImageContextMetadata[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   provider_input_items?: unknown[];
@@ -942,7 +949,22 @@ export const estimateChatCompletionSerializedPayloadTokens = (params: {
     modelId: params.modelId,
   });
   const serializedMessages = buildChatCompletionMessages(params.messages, profile);
-  return Math.max(1, Math.ceil(JSON.stringify(serializedMessages).length / 4));
+  const imageMetadata = params.messages.flatMap((message) => {
+    const serializedMessage = buildChatCompletionMessages([message], profile);
+    const serializedImageCount = estimateStructuredContext(serializedMessage).imageCount;
+    const metadata = message.image_metadata ?? [];
+    if (serializedImageCount === 0) return [];
+    return metadata.some((item) => item.sourceFingerprint)
+      ? metadata
+      : metadata.slice(0, serializedImageCount);
+  });
+  return Math.max(
+    1,
+    estimateStructuredContext(serializedMessages, {
+      imageMetadata,
+      context: params,
+    }).totalTokens
+  );
 };
 
 const streamContentToCopilotPromptText = (content: StreamMessageContent): string => {
@@ -956,7 +978,7 @@ const streamContentToCopilotPromptText = (content: StreamMessageContent): string
         return part.text || '';
       }
       if (part.type === 'image_url') {
-        return part.image_url?.url ? `[image:${part.image_url.url}]` : '[image]';
+        return '[image attachment]';
       }
       return '';
     })
@@ -1012,9 +1034,31 @@ const serializeCopilotConversationPrompt = (
 
 export const estimateCopilotSerializedPayloadTokens = (params: {
   messages: StreamMessage[];
+  providerType?: string;
+  providerId?: string;
+  baseUrl?: string;
+  modelId?: string;
 }): number => {
   const serialized = serializeCopilotConversationPrompt(params.messages);
-  return Math.max(1, Math.ceil(`${serialized.system}\n\n${serialized.prompt}`.length / 4));
+  const imageTokens = params.messages
+    .flatMap((message) => {
+      const imageCount = Array.isArray(message.content)
+        ? message.content.filter((part) => part.type === 'image_url').length
+        : 0;
+      return imageCount > 0
+        ? (message.image_metadata ?? []).slice(0, imageCount)
+        : [];
+    })
+    .reduce(
+      (total, metadata) =>
+        total +
+        estimateImageContextTokens({ metadata, context: params }).tokens,
+      0
+    );
+  return Math.max(
+    1,
+    estimateTextTokens(`${serialized.system}\n\n${serialized.prompt}`) + imageTokens
+  );
 };
 
 const buildAssistantChatCompletionProviderItem = (params: {
