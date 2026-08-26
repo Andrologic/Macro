@@ -348,6 +348,25 @@ Les DTO frontend servent de couche de stabilisation entre :
 
 Cette couche limite le couplage direct entre composants React et détails de sérialisation.
 
+### 7.4 Boucle d'outils et compatibilité des providers
+
+`streamingChat` valide les arguments d'un outil avec le schéma publié dans le
+registre avant d'appeler son exécuteur. Un échec de validation ou d'exécution
+reste un résultat d'outil associé au `tool_call_id`. Il ne devient jamais un
+message système ajouté au milieu de l'historique.
+
+Pour les API Chat Completions compatibles OpenAI, la sérialisation extrait les
+consignes système de l'historique et les place en tête. Le profil conservateur
+`single_leading` les fusionne en un seul message, ce qui couvre les serveurs
+stricts qui refusent plusieurs messages système ou un message système tardif.
+Macro vérifie aussi les identifiants, l'appariement des appels et résultats
+d'outils, ainsi que l'ordre des rôles avant chaque requête réseau.
+
+Le frontend transmet au backend des diagnostics structurés sans contenu de
+conversation, sans arguments d'outils et sans secrets. Le backend écrit
+`macro.log` dans le dossier de journaux de la plateforme, notamment
+`%LOCALAPPDATA%\com.macro.desktop\logs` sous Windows.
+
 ---
 
 ## 8. Runtime desktop et IPC
