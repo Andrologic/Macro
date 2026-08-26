@@ -43,7 +43,15 @@ describe('GitHub workflow validation', () => {
         validate: {
           'runs-on': 'ubuntu-latest',
           'timeout-minutes': 10,
-          steps: [],
+          steps: [
+            {
+              run: 'git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"',
+            },
+            {
+              uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
+              with: { 'persist-credentials': false },
+            },
+          ],
         },
         build: {
           needs: 'validate',
