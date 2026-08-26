@@ -1701,6 +1701,104 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('does not apply the restricted Macro schema validator to MCP tools', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async () => {
+      requestCount += 1;
+      const data =
+        requestCount === 1
+          ? '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_mcp","type":"function","function":{"name":"mcp__demo__count","arguments":"{\\"count\\":1}"}}]}}]}'
+          : '{"choices":[{"delta":{"content":"Done."}}]}';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${data}\n\ndata: [DONE]\n\n`));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const onToolCall = mock(
+      async (_toolName: string, _args: Record<string, unknown>) => 'counted',
+    );
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'custom',
+      providerType: 'openai',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Count.' }],
+      allowedToolIds: ['mcp__demo__count'],
+      mcpTools: [
+        {
+          id: 'mcp__demo__count',
+          serverId: 'demo',
+          name: 'count',
+          description: 'Count an integer.',
+          inputSchema: {
+            type: 'object',
+            properties: { count: { type: 'integer' } },
+            required: ['count'],
+          },
+        },
+      ],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(onToolCall.mock.calls[0]?.[1]).toEqual({ count: 1 });
+  });
+
+  it('validates non-streaming provider payloads before fetch', async () => {
+    const fetchMock = mock(async () => {
+      throw new Error('fetch must not run for an invalid payload');
+    });
+    const { sendChatNonStreaming } = await loadStreamingChat(fetchMock);
+
+    await expect(
+      sendChatNonStreaming({
+        providerId: 'custom',
+        providerType: 'openai',
+        baseUrl: 'https://example.invalid/v1',
+        modelId: 'model',
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              {
+                id: 'duplicate',
+                type: 'function',
+                function: { name: 'read', arguments: '{"path":"a"}' },
+              },
+              {
+                id: 'duplicate',
+                type: 'function',
+                function: { name: 'read', arguments: '{"path":"b"}' },
+              },
+            ],
+          },
+          { role: 'tool', content: 'a', tool_call_id: 'duplicate' },
+        ],
+        onComplete: () => undefined,
+        onError: () => undefined,
+      }),
+    ).rejects.toThrow('duplicate id duplicate');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('continues the active turn when a steering message arrives before completion', async () => {
     const encoder = new TextEncoder();
     const requestBodies: Array<{ messages?: Array<Record<string, unknown>> }> = [];

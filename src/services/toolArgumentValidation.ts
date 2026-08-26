@@ -28,11 +28,7 @@ const validateValue = (
     const record = value as Record<string, unknown>;
     for (const requiredKey of schema.required ?? []) {
       const requiredValue = record[requiredKey];
-      if (
-        requiredValue === undefined ||
-        requiredValue === null ||
-        (typeof requiredValue === 'string' && requiredValue.trim().length === 0)
-      ) {
+      if (requiredValue === undefined || requiredValue === null) {
         issues.push({ path: `${path}.${requiredKey}`, message: 'required value is missing' });
       }
     }
@@ -61,6 +57,14 @@ const validateValue = (
 
   if (schema.enum && typeof value === 'string' && !schema.enum.includes(value)) {
     issues.push({ path, message: `expected one of: ${schema.enum.join(', ')}` });
+  }
+  if (
+    schema.type === 'string' &&
+    typeof value === 'string' &&
+    schema.minLength !== undefined &&
+    value.length < schema.minLength
+  ) {
+    issues.push({ path, message: `expected at least ${schema.minLength} character(s)` });
   }
 };
 

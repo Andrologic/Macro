@@ -48,20 +48,27 @@ pub fn init_logging() {
 
     if let Some(log_dir) = platform_log_dir() {
         if fs::create_dir_all(&log_dir).is_ok() {
-            let file_appender = tracing_appender::rolling::never(log_dir, "macro.log");
-            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            let _ = FILE_LOG_GUARD.set(guard);
+            let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("macro")
+                .filename_suffix("log")
+                .max_log_files(7)
+                .build(log_dir);
+            if let Ok(file_appender) = file_appender {
+                let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+                let _ = FILE_LOG_GUARD.set(guard);
 
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(stderr_layer)
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_ansi(false)
-                        .with_writer(non_blocking),
-                )
-                .init();
-            return;
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(stderr_layer)
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_ansi(false)
+                            .with_writer(non_blocking),
+                    )
+                    .init();
+                return;
+            }
         }
     }
 

@@ -21,6 +21,7 @@ import {
 } from './providerProtocolProfiles';
 import {
   isMacroToolCopilotBuiltInOverride,
+  getMacroToolRegistryEntry,
   type JsonSchema,
   type MacroToolRegistryEntry,
   requireMacroToolRegistryEntry,
@@ -557,12 +558,6 @@ const deepCloneJsonValue = <T,>(value: T): T => {
   return JSON.parse(JSON.stringify(value)) as T;
 };
 
-const redactStreamingDiagnosticText = (value: string): string =>
-  value
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
-    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[redacted-api-key]')
-    .slice(0, 2_000);
-
 const stripThinkingBlocksForModel = (content: string): string =>
   content
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -960,6 +955,16 @@ const logStreamingDiagnostic = (
 ): void => {
   const message = JSON.stringify({ event, ...details });
   void tauriIpc.frontendLog({ level, scope: 'streaming_chat', message }).catch(() => undefined);
+};
+
+const classifyProviderDiagnosticCategory = (error: unknown): string => {
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  if (message.includes('system message must be at the beginning')) {
+    return 'system_message_order';
+  }
+  if (isContextOverflowMessage(message)) return 'context_overflow';
+  if (error instanceof ProviderRuntimeError) return error.kind;
+  return 'unknown';
 };
 
 const validateChatCompletionMessageSequence = (
@@ -2596,13 +2601,6 @@ const getFunctionToolName = (tool: unknown): string | null => {
   return typeof functionValue?.name === 'string' ? functionValue.name : null;
 };
 
-const getFunctionToolSchema = (tool: unknown): JsonSchema | null => {
-  if (!isRecord(tool) || !isRecord(tool.function)) return null;
-  return isRecord(tool.function.parameters)
-    ? (tool.function.parameters as JsonSchema)
-    : null;
-};
-
 const withCopilotBuiltInToolOverrides = (tools: unknown[]): unknown[] =>
   tools.map((tool) => {
     const toolName = getFunctionToolName(tool);
@@ -3009,10 +3007,9 @@ const streamChatViaNativeToolCallingProvider = async (
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
   const toolSchemas = new Map<string, JsonSchema>();
-  for (const tool of tools) {
-    const name = getFunctionToolName(tool);
-    const schema = getFunctionToolSchema(tool);
-    if (name && schema) toolSchemas.set(name, schema);
+  for (const toolName of allowedTools) {
+    const entry = getMacroToolRegistryEntry(toolName);
+    if (entry) toolSchemas.set(toolName, entry.parameters);
   }
   const streamAccumulator = createStreamAccumulator({
     onToken,
@@ -3765,10 +3762,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
   const toolSchemas = new Map<string, JsonSchema>();
-  for (const tool of tools) {
-    const name = getFunctionToolName(tool);
-    const schema = getFunctionToolSchema(tool);
-    if (name && schema) toolSchemas.set(name, schema);
+  for (const toolName of allowedTools) {
+    const entry = getMacroToolRegistryEntry(toolName);
+    if (entry) toolSchemas.set(toolName, entry.parameters);
   }
 
   const maxTurns = normalizeChatMaxTurns(options.maxTurns);
@@ -3813,7 +3809,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         applyToolsToChatCompletionsRequest(requestBody, tools, profile, requestMessages);
 
         try {
-          logStreamingDiagnostic('info', 'provider_request', {
+          logStreamingDiagnostic('debug', 'provider_request', {
             request_id: genericRequestId,
             provider_id: providerId,
             provider_type: providerType,
@@ -3847,11 +3843,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             provider_type: providerType,
             model_id: modelId,
             turn: turnCount,
-            error_kind: error instanceof ProviderRuntimeError ? error.kind : 'unknown',
+            error_kind: classifyProviderDiagnosticCategory(error),
             status: error instanceof ProviderRuntimeError ? error.status : undefined,
-            message: redactStreamingDiagnosticText(
-              error instanceof Error ? error.message : String(error),
-            ),
+            error_name: error instanceof Error ? error.name : 'UnknownError',
           });
           if (error instanceof Error && error.name === 'AbortError') {
             emitGenericTimeline('done');
@@ -4502,6 +4496,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
         // If we have tool results, make a follow-up request to get the final response
         if (toolResults.length > 0) {
+          const hasToolErrors = toolResults.some((result) => result.is_error);
+          const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
           if (providerType === '__legacy_workspace_fallback__') {
             const deterministicError = [
               'La lecture fichier ne provient pas du workspace actif (context snippet uniquement).',
@@ -4552,6 +4548,23 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               };
             })
           );
+
+          if (hasToolErrors) {
+            currentMessages.push({
+              role: 'system',
+              content:
+                'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
+                'State the exact failure and ask for corrected input when needed.',
+            });
+          }
+          if (hasFileReadResults) {
+            currentMessages.push({
+              role: 'system',
+              content:
+                'For file analysis tasks, use only the exact tool outputs provided in this conversation. ' +
+                'Do not invent code symbols, handlers, routes, or data absent from those outputs.',
+            });
+          }
 
           currentMessages = await maybeCompactFollowUpMessages(options, {
             reason: 'tool_results',
@@ -4748,6 +4761,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         reasoningTransportMode,
       });
       const requestMessages = buildChatCompletionMessages(messages, profile);
+      validateChatCompletionMessageSequence(requestMessages);
       const requestBody: Record<string, unknown> = {
         model: modelId,
         messages: requestMessages,
