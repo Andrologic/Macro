@@ -863,7 +863,16 @@ const streamChatMock = mock(async () => ({ usage: null }));
 const executeWorkspaceToolMock = mock(async () => undefined);
 const estimateChatCompletionSerializedPayloadTokensMock = mock(
   (params: { messages: unknown[] }) =>
-    Math.max(1, Math.ceil(JSON.stringify(params.messages).length / 4))
+    Math.max(
+      1,
+      Math.ceil(
+        JSON.stringify(params.messages, (_key, value) =>
+          typeof value === 'string' && value.startsWith('data:image/')
+            ? '[image attachment]'
+            : value
+        ).length / 4
+      )
+    )
 );
 const webSearchMock = mock(async (_query: string) => [
   {
