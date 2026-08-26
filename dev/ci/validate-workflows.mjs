@@ -108,6 +108,14 @@ export function validateWorkflowDocument(document, filePath) {
     if (document.jobs.build?.needs !== 'validate') {
       fail('release build matrix must wait for the validation job.');
     }
+    const fetchesAnnotatedTag = (document.jobs.validate?.steps || []).some((step) => (
+      typeof step?.run === 'string'
+      && step.run.includes('git fetch --force --no-tags origin')
+      && step.run.includes('refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}')
+    ));
+    if (!fetchesAnnotatedTag) {
+      fail('release validation must explicitly fetch the annotated tag object after checkout.');
+    }
   }
 
   return errors;
