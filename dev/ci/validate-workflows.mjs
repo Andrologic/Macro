@@ -108,6 +108,18 @@ export function validateWorkflowDocument(document, filePath) {
     if (document.jobs.build?.needs !== 'validate') {
       fail('release build matrix must wait for the validation job.');
     }
+    const validationSteps = document.jobs.validate?.steps || [];
+    const checkoutIndex = validationSteps.findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@')
+    ));
+    const annotatedTagFetchIndex = validationSteps.findIndex((step) => (
+      typeof step?.run === 'string'
+      && step.run.includes('git fetch --force --no-tags origin')
+      && step.run.includes('refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}')
+    ));
+    if (checkoutIndex === -1 || annotatedTagFetchIndex <= checkoutIndex) {
+      fail('release validation must explicitly fetch the annotated tag object after checkout.');
+    }
   }
 
   return errors;
