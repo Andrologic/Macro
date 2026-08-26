@@ -55,6 +55,7 @@ import {
   type StreamTimelinePhase,
   type ToolCallResolution,
 } from "../services/streamingChat";
+import { normalizeLegacyToolExecutionResult } from "../services/toolResultNormalization";
 import {
   buildExplicitSkillsInstruction,
   buildSkillCatalogInstruction,
@@ -481,7 +482,13 @@ const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
 const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
 const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
   "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
-const TOOL_EXECUTION_ABORTED_RESULT = "Tool execution aborted";
+const TOOL_EXECUTION_ABORTED_RESULT: ToolCallResolution = {
+  kind: "result",
+  result: "Tool execution aborted",
+  isError: true,
+  errorKind: "aborted",
+  toString: () => "Tool execution aborted",
+};
 let terminalToolExecutionCounter = 0;
 const createTerminalToolExecutionId = (): string => {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -5783,39 +5790,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
   };
 
-  const normalizeLegacyToolExecutionResult = (
-    resolution: ToolCallResolution | string | void,
-  ): ToolCallResolution | string | void => {
-    if (typeof resolution !== "string") {
-      return resolution;
-    }
-
-    const errorPatterns = [
-      /^Error executing/i,
-      /^Missing\s+/i,
-      /^No match found/i,
-      /^File not found/i,
-      /^Cannot\s+/i,
-      /^Tool .+ (?:is not available|is disabled)/i,
-      /^Tool execution aborted/i,
-      /^[a-z][a-z0-9_]* is disabled/i,
-    ];
-    const isError = resolution
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .some((line) => errorPatterns.some((pattern) => pattern.test(line)));
-
-    return isError
-      ? {
-          kind: "result",
-          result: resolution,
-          isError: true,
-          errorKind: "execution",
-          toString: () => resolution,
-        }
-      : resolution;
-  };
-
   const getThrownToolErrorMessage = (error: unknown): string => {
     if (error instanceof Error) return error.message;
     if (typeof error === "string") return error;
@@ -11028,7 +11002,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           toolCallId,
           resolution,
         );
-        return normalizeLegacyToolExecutionResult(preservedResolution);
+        return normalizeLegacyToolExecutionResult(
+          normalizeArchitectToolId(toolName),
+          preservedResolution,
+        );
       },
     });
     activeAssistantStreamPromisesByConversationId.set(

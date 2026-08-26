@@ -163,7 +163,6 @@ async fn fetch_remote_models(
         warn!(
             provider_id = %provider.id,
             status = status.as_u16(),
-            response_error = %extract_response_error(status.as_u16(), &body),
             "ChatGPT models endpoint returned non-success status"
         );
         return Err(extract_response_error(status.as_u16(), &body));
