@@ -1371,7 +1371,7 @@ export const registerChatToolsAndSourcesScenarios = (
         'call-source',
       );
 
-      expect(markResult).toBe(
+      expect(String(markResult)).toBe(
         'Error executing tool mark_source_passage: passage is not present in any read source content.',
       );
       expect(context.citationRecords.some((citation) => citation.scope === 'source')).toBe(false);

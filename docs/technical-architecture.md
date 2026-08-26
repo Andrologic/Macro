@@ -367,7 +367,9 @@ conversation, sans arguments d'outils, sans message d'erreur provider brut et
 sans secrets. Le backend écrit des fichiers `macro.YYYY-MM-DD.log` dans le
 dossier de journaux de la plateforme, notamment
 `%LOCALAPPDATA%\com.macro.desktop\logs` sous Windows. La rotation est quotidienne
-et conserve les sept fichiers les plus récents.
+et conserve les sept fichiers les plus récents, avec une limite de 20 Mio par
+jour. Les diagnostics navigateur globaux ne conservent que leur catégorie ;
+leurs messages et piles sont retirés avant l'écriture native.
 
 ---
 

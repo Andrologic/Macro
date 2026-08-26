@@ -90,6 +90,27 @@ fn normalize_frontend_log_level(level: &str) -> &'static str {
     }
 }
 
+fn sanitize_frontend_log_message(scope: &str, message: &str) -> String {
+    if scope == "streaming_chat" {
+        return truncate_for_frontend_log(message.trim(), FRONTEND_LOG_MESSAGE_LIMIT);
+    }
+
+    if scope == "frontend" {
+        let kind = message
+            .strip_prefix("[Frontend:")
+            .and_then(|rest| rest.split_once(']'))
+            .map(|(kind, _)| kind)
+            .filter(|kind| {
+                kind.chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+            })
+            .unwrap_or("unknown");
+        return format!("[Frontend:{kind}] details_redacted=true");
+    }
+
+    "frontend diagnostic redacted".to_string()
+}
+
 // Command to show the main window explicitly from frontend
 #[tauri::command]
 async fn show_main_window(window: tauri::WebviewWindow) -> Result<(), String> {
@@ -109,7 +130,7 @@ async fn show_main_window(window: tauri::WebviewWindow) -> Result<(), String> {
 async fn frontend_log(level: String, scope: String, message: String) -> Result<(), String> {
     let normalized_level = normalize_frontend_log_level(&level);
     let normalized_scope = truncate_for_frontend_log(scope.trim(), FRONTEND_LOG_SCOPE_LIMIT);
-    let normalized_message = truncate_for_frontend_log(message.trim(), FRONTEND_LOG_MESSAGE_LIMIT);
+    let normalized_message = sanitize_frontend_log_message(&normalized_scope, &message);
 
     match normalized_level {
         "debug" => tracing::debug!(
@@ -737,7 +758,8 @@ pub fn run() {
 #[cfg(test)]
 mod frontend_log_tests {
     use super::{
-        normalize_frontend_log_level, truncate_for_frontend_log, FRONTEND_LOG_MESSAGE_LIMIT,
+        normalize_frontend_log_level, sanitize_frontend_log_message, truncate_for_frontend_log,
+        FRONTEND_LOG_MESSAGE_LIMIT,
     };
 
     #[test]
@@ -756,6 +778,29 @@ mod frontend_log_tests {
 
         assert_eq!(truncated.chars().count(), FRONTEND_LOG_MESSAGE_LIMIT + 3);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn frontend_log_redacts_raw_browser_diagnostics() {
+        let sanitized = sanitize_frontend_log_message(
+            "frontend",
+            "[Frontend:unhandledrejection] reason=secret user content",
+        );
+
+        assert_eq!(
+            sanitized,
+            "[Frontend:unhandledrejection] details_redacted=true"
+        );
+        assert!(!sanitized.contains("secret"));
+    }
+
+    #[test]
+    fn frontend_log_keeps_allowlisted_streaming_diagnostics() {
+        let message = r#"{"event":"provider_request_failed","status":400}"#;
+        assert_eq!(
+            sanitize_frontend_log_message("streaming_chat", message),
+            message
+        );
     }
 
     #[test]

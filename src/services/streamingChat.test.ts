@@ -1574,6 +1574,9 @@ describe('streamingChat tool rendering helpers', () => {
         expect(request.reason).toBe('tool_results');
         expect(request.toolResultCount).toBe(1);
         expect(JSON.stringify(request.messages)).toContain('FILE: README.md');
+        expect(JSON.stringify(request.messages)).not.toContain(
+          'For file analysis tasks, use only the exact tool outputs',
+        );
         return {
           messages: [
             {
@@ -1613,13 +1616,15 @@ describe('streamingChat tool rendering helpers', () => {
     expect(requestBodies[1]?.messages).toEqual([
       {
         role: 'system',
-        content: '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+        content: expect.stringContaining(
+          'For file analysis tasks, use only the exact tool outputs',
+        ),
       },
-      {
-        role: 'user',
-        content: 'Continue.',
-      },
+      { role: 'user', content: 'Continue.' },
     ]);
+    expect(String(requestBodies[1]?.messages?.[0]?.content)).toContain(
+      '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+    );
   });
 
   it('returns invalid tool arguments to the model without sending a late system message', async () => {
@@ -1693,6 +1698,9 @@ describe('streamingChat tool rendering helpers', () => {
     const followUpMessages = requestBodies[1]?.messages ?? [];
     expect(followUpMessages.filter((message) => message.role === 'system')).toHaveLength(1);
     expect(followUpMessages[0]?.role).toBe('system');
+    expect(String(followUpMessages[0]?.content)).toContain(
+      'One or more tool calls failed',
+    );
     expect(followUpMessages.at(-1)).toEqual(
       expect.objectContaining({
         role: 'tool',
@@ -1759,6 +1767,64 @@ describe('streamingChat tool rendering helpers', () => {
 
     expect(onToolCall).toHaveBeenCalledTimes(1);
     expect(onToolCall.mock.calls[0]?.[1]).toEqual({ count: 1 });
+  });
+
+  it('marks a failed workspace-backed read_file result as an error', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(JSON.parse(init?.body ?? '{}'));
+      const data =
+        requestBodies.length === 1
+          ? '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_file","type":"function","function":{"name":"read_file","arguments":"{\\"file\\":\\"missing.txt\\"}"}}]}}]}'
+          : '{"choices":[{"delta":{"content":"The read failed."}}]}';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${data}\n\ndata: [DONE]\n\n`));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'custom',
+      providerType: 'openai',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Read the file.' }],
+      allowedToolIds: ['read_file', 'read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async () => ({
+        kind: 'result',
+        result: 'File not found: missing.txt',
+        isError: true,
+        errorKind: 'execution',
+      }),
+    });
+
+    const systemContent = requestBodies[1]?.messages
+      .filter((message) => message.role === 'system')
+      .map((message) => String(message.content))
+      .join('\n');
+    expect(systemContent).toContain('One or more tool calls failed');
+    expect(requestBodies[1]?.messages.at(-1)).toEqual(
+      expect.objectContaining({
+        role: 'tool',
+        content: expect.stringContaining('File not found: missing.txt'),
+      }),
+    );
   });
 
   it('validates non-streaming provider payloads before fetch', async () => {

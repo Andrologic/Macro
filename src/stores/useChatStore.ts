@@ -5783,6 +5783,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
     );
   };
 
+  const normalizeLegacyToolExecutionResult = (
+    resolution: ToolCallResolution | string | void,
+  ): ToolCallResolution | string | void => {
+    if (typeof resolution !== "string") {
+      return resolution;
+    }
+
+    const isError = [
+      /^Error executing/i,
+      /^Missing\s+/i,
+      /^No match found/i,
+      /^File not found/i,
+      /^Cannot\s+/i,
+      /^Tool .+ (?:is not available|is disabled)/i,
+    ].some((pattern) => pattern.test(resolution.trim()));
+
+    return isError
+      ? {
+          kind: "result",
+          result: resolution,
+          isError: true,
+          errorKind: "execution",
+          toString: () => resolution,
+        }
+      : resolution;
+  };
+
   const getThrownToolErrorMessage = (error: unknown): string => {
     if (error instanceof Error) return error.message;
     if (typeof error === "string") return error;
@@ -10989,12 +11016,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             error,
           );
         }
-        return preserveLargeToolResult(
+        const preservedResolution = await preserveLargeToolResult(
           operation,
           normalizeArchitectToolId(toolName),
           toolCallId,
           resolution,
         );
+        return normalizeLegacyToolExecutionResult(preservedResolution);
       },
     });
     activeAssistantStreamPromisesByConversationId.set(
