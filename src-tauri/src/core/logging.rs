@@ -1,20 +1,32 @@
-#[cfg(target_os = "macos")]
 use std::fs;
-#[cfg(target_os = "macos")]
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
-#[cfg(target_os = "macos")]
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-#[cfg(target_os = "macos")]
 static FILE_LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
-#[cfg(target_os = "macos")]
-fn macos_log_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Logs/com.macro.desktop"))
+fn platform_log_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+        return Some(PathBuf::from(local_app_data).join("com.macro.desktop/logs"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")?;
+        return Some(PathBuf::from(home).join("Library/Logs/com.macro.desktop"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+            return Some(PathBuf::from(state_home).join("macro/logs"));
+        }
+        let home = std::env::var_os("HOME")?;
+        Some(PathBuf::from(home).join(".local/state/macro/logs"))
+    }
 }
 
 pub fn init_logging() {
@@ -34,8 +46,7 @@ pub fn init_logging() {
     );
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
-    #[cfg(target_os = "macos")]
-    if let Some(log_dir) = macos_log_dir() {
+    if let Some(log_dir) = platform_log_dir() {
         if fs::create_dir_all(&log_dir).is_ok() {
             let file_appender = tracing_appender::rolling::never(log_dir, "macro.log");
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);

@@ -54,6 +54,7 @@ const loadStreamingChat = async (
   const tauriIpcMock = {
     ...actualTauriIpc,
     isTauriAvailable: () => options?.forceTauriAvailable ?? false,
+    frontendLog: async () => undefined,
     aiStreamChat: async (params: {
       requestId: string;
       providerId: string;
@@ -1346,6 +1347,46 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('coalesces every system instruction at the beginning for strict compatible servers', async () => {
+    const { __testables } = await loadStreamingChat();
+    const profile = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      providerId: 'andrologic',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'qwen3.5',
+    });
+    const payload = __testables.buildChatCompletionMessages(
+      [
+        { role: 'system', content: 'Base instruction.' },
+        { role: 'user', content: 'Run the tool.' },
+        { role: 'assistant', content: 'Working.' },
+        { role: 'system', content: 'Retry after a tool error.' },
+      ],
+      profile,
+    );
+
+    expect(payload).toEqual([
+      {
+        role: 'system',
+        content: 'Base instruction.\n\nRetry after a tool error.',
+      },
+      { role: 'user', content: 'Run the tool.' },
+      { role: 'assistant', content: 'Working.' },
+    ]);
+    expect(() => __testables.validateChatCompletionMessageSequence(payload)).not.toThrow();
+  });
+
+  it('rejects a non-leading system message before the provider request', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(() =>
+      __testables.validateChatCompletionMessageSequence([
+        { role: 'user', content: 'Hello' },
+        { role: 'system', content: 'Too late' },
+      ]),
+    ).toThrow('system message at index 1 is not leading');
+  });
+
   it('replays DeepSeek reasoning_content only when the history has tool calls', async () => {
     const { __testables } = await loadStreamingChat();
     const providerItem = __testables.buildAssistantChatCompletionProviderItem({
@@ -1579,6 +1620,85 @@ describe('streamingChat tool rendering helpers', () => {
         content: 'Continue.',
       },
     ]);
+  });
+
+  it('returns invalid tool arguments to the model without sending a late system message', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(init?.body ?? '{}') as {
+        messages: Array<Record<string, unknown>>;
+      };
+      requestBodies.push(body);
+
+      if (requestBodies.length === 1) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_edit","type":"function","function":{"name":"edit_source_passage","arguments":"{\\"action\\":\\"reclassify\\"}"}}]}}]}\n\n',
+                ),
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"I need a citation id."}}]}\n\n'),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const onToolCall = mock(async () => 'must not execute');
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'andrologic',
+      providerType: 'openai',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'qwen3.5',
+      messages: [
+        { role: 'system', content: 'You are Macro.' },
+        { role: 'user', content: 'Reclassify the source.' },
+      ],
+      allowedToolIds: ['edit_source_passage'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(requestBodies).toHaveLength(2);
+    const followUpMessages = requestBodies[1]?.messages ?? [];
+    expect(followUpMessages.filter((message) => message.role === 'system')).toHaveLength(1);
+    expect(followUpMessages[0]?.role).toBe('system');
+    expect(followUpMessages.at(-1)).toEqual(
+      expect.objectContaining({
+        role: 'tool',
+        content: expect.stringContaining('$.citation_id required value is missing'),
+      }),
+    );
   });
 
   it('continues the active turn when a steering message arrives before completion', async () => {
