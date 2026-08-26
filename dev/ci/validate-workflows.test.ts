@@ -33,4 +33,25 @@ describe('GitHub workflow validation', () => {
 
     expect(errors.some((error) => error.includes('pull_request_target'))).toBe(true);
   });
+
+  test('requires release validation to fetch the annotated tag object', () => {
+    const errors = validateWorkflowDocument({
+      name: 'Release',
+      on: { push: { tags: ['v*'] } },
+      permissions: { contents: 'read' },
+      jobs: {
+        validate: {
+          'runs-on': 'ubuntu-latest',
+          'timeout-minutes': 10,
+          steps: [],
+        },
+        build: {
+          needs: 'validate',
+          environment: 'release',
+        },
+      },
+    }, '.github/workflows/release.yml');
+
+    expect(errors.some((error) => error.includes('annotated tag object'))).toBe(true);
+  });
 });
