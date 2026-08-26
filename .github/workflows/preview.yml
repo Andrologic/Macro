@@ -67,13 +67,13 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease >/tmp/stable-release.json || {
-            echo "Preview publication remains disabled until stable v0.1.0 is published."
+          gh release view v0.1.1 --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease >/tmp/stable-release.json || {
+            echo "Preview publication remains disabled until stable v0.1.1 is published."
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           }
           if [[ "$(jq -r '.isDraft or .isPrerelease' /tmp/stable-release.json)" != "false" ]]; then
-            echo "::error::v0.1.0 must be a published stable release before previews can start."
+            echo "::error::v0.1.1 must be a published stable release before previews can start."
             exit 1
           fi
 
@@ -156,12 +156,30 @@ jobs:
               src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           - name: Windows x64
             key: windows
+            arch: x64
             runner: windows-latest
             args: --bundles nsis
-            artifact_name: preview-windows
+            artifact_name: preview-windows-x64
+            bundle_dir: src-tauri/target/release/bundle/nsis
+            main_binary: src-tauri/target/release/macro.exe
+            sidecar_binary: src-tauri/binaries/macro-ai-runtime-x86_64-pc-windows-msvc.exe
+            pe_machine: '0x8664'
             artifact_paths: |
               src-tauri/target/release/bundle/nsis/*.exe
               src-tauri/target/release/bundle/nsis/*.exe.sig
+          - name: Windows ARM64
+            key: windows
+            arch: arm64
+            runner: windows-11-vs2026-arm
+            args: --target aarch64-pc-windows-msvc --bundles nsis
+            artifact_name: preview-windows-arm64
+            bundle_dir: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis
+            main_binary: src-tauri/target/aarch64-pc-windows-msvc/release/macro.exe
+            sidecar_binary: src-tauri/binaries/macro-ai-runtime-aarch64-pc-windows-msvc.exe
+            pe_machine: '0xAA64'
+            artifact_paths: |
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           - name: Linux x64
             key: linux
             runner: ubuntu-22.04
@@ -307,8 +325,36 @@ jobs:
       - name: Verify unsigned Windows installer
         if: matrix.key == 'windows'
         shell: pwsh
+        env:
+          WINDOWS_BUNDLE_DIR: ${{ matrix.bundle_dir }}
+          MAIN_BINARY_PATH: ${{ matrix.main_binary }}
+          SIDECAR_BINARY_PATH: ${{ matrix.sidecar_binary }}
+          EXPECTED_PE_MACHINE: ${{ matrix.pe_machine }}
         run: |
-          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          function Get-PeMachine([string]$Path) {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              throw "PE binary is missing: $Path"
+            }
+            $stream = [System.IO.File]::OpenRead($Path)
+            try {
+              $reader = [System.IO.BinaryReader]::new($stream)
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadInt32()
+              $stream.Position = $peOffset + 4
+              return ('0x{0:X4}' -f $reader.ReadUInt16())
+            } finally {
+              $stream.Dispose()
+            }
+          }
+
+          foreach ($binary in @($env:MAIN_BINARY_PATH, $env:SIDECAR_BINARY_PATH)) {
+            $machine = Get-PeMachine $binary
+            if ($machine -ne $env:EXPECTED_PE_MACHINE) {
+              throw "$binary has PE machine $machine; expected $env:EXPECTED_PE_MACHINE."
+            }
+          }
+
+          $installer = Get-ChildItem -LiteralPath $env:WINDOWS_BUNDLE_DIR -Filter *.exe | Select-Object -First 1
           if (-not $installer) { throw 'Windows NSIS installer is missing.' }
           $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
           if ($signature.Status -ne 'NotSigned') {
@@ -370,22 +416,25 @@ jobs:
         run: |
           mkdir -p release-assets
           copy_asset() {
-            local pattern="$1"
-            local destination="$2"
+            local artifact_directory="$1"
+            local pattern="$2"
+            local destination="$3"
             local source
-            source="$(find downloaded-artifacts -type f -name "$pattern" | sort | head -n 1)"
-            test -n "$source" || { echo "::error::Missing preview asset matching ${pattern}"; exit 1; }
+            source="$(find "downloaded-artifacts/${artifact_directory}" -type f -name "$pattern" | sort | head -n 1)"
+            test -n "$source" || { echo "::error::Missing preview asset matching ${artifact_directory}/${pattern}"; exit 1; }
             cp "$source" "release-assets/${destination}"
           }
-          copy_asset '*.dmg' "Macro_${VERSION}_macOS_universal.dmg"
-          copy_asset '*.app.tar.gz' "Macro_${VERSION}_macOS_universal.app.tar.gz"
-          copy_asset '*.app.tar.gz.sig' "Macro_${VERSION}_macOS_universal.app.tar.gz.sig"
-          copy_asset '*.exe' "Macro_${VERSION}_Windows_x64_setup.exe"
-          copy_asset '*.exe.sig' "Macro_${VERSION}_Windows_x64_setup.exe.sig"
-          copy_asset '*.AppImage' "Macro_${VERSION}_Linux_x64.AppImage"
-          copy_asset '*.AppImage.sig' "Macro_${VERSION}_Linux_x64.AppImage.sig"
-          copy_asset '*.deb' "Macro_${VERSION}_Linux_x64.deb"
-          copy_asset '*.rpm' "Macro_${VERSION}_Linux_x64.rpm"
+          copy_asset preview-macos '*.dmg' "Macro_${VERSION}_macOS_universal.dmg"
+          copy_asset preview-macos '*.app.tar.gz' "Macro_${VERSION}_macOS_universal.app.tar.gz"
+          copy_asset preview-macos '*.app.tar.gz.sig' "Macro_${VERSION}_macOS_universal.app.tar.gz.sig"
+          copy_asset preview-windows-x64 '*.exe' "Macro_${VERSION}_Windows_x64_setup.exe"
+          copy_asset preview-windows-x64 '*.exe.sig' "Macro_${VERSION}_Windows_x64_setup.exe.sig"
+          copy_asset preview-windows-arm64 '*.exe' "Macro_${VERSION}_Windows_ARM64_setup.exe"
+          copy_asset preview-windows-arm64 '*.exe.sig' "Macro_${VERSION}_Windows_ARM64_setup.exe.sig"
+          copy_asset preview-linux '*.AppImage' "Macro_${VERSION}_Linux_x64.AppImage"
+          copy_asset preview-linux '*.AppImage.sig' "Macro_${VERSION}_Linux_x64.AppImage.sig"
+          copy_asset preview-linux '*.deb' "Macro_${VERSION}_Linux_x64.deb"
+          copy_asset preview-linux '*.rpm' "Macro_${VERSION}_Linux_x64.rpm"
 
       - name: Generate preview metadata
         env:
@@ -411,6 +460,7 @@ jobs:
             --pub-date "$PUB_DATE" \
             --output release-assets/latest.json \
             --artifact windows-x86_64 "release-assets/Macro_${VERSION}_Windows_x64_setup.exe" "release-assets/Macro_${VERSION}_Windows_x64_setup.exe.sig" "Macro_${VERSION}_Windows_x64_setup.exe" \
+            --artifact windows-aarch64 "release-assets/Macro_${VERSION}_Windows_ARM64_setup.exe" "release-assets/Macro_${VERSION}_Windows_ARM64_setup.exe.sig" "Macro_${VERSION}_Windows_ARM64_setup.exe" \
             --artifact linux-x86_64 "release-assets/Macro_${VERSION}_Linux_x64.AppImage" "release-assets/Macro_${VERSION}_Linux_x64.AppImage.sig" "Macro_${VERSION}_Linux_x64.AppImage" \
             --artifact darwin-x86_64 "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz" "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz.sig" "Macro_${VERSION}_macOS_universal.app.tar.gz" \
             --artifact darwin-aarch64 "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz" "release-assets/Macro_${VERSION}_macOS_universal.app.tar.gz.sig" "Macro_${VERSION}_macOS_universal.app.tar.gz"
@@ -419,11 +469,21 @@ jobs:
             --manifest release-assets/latest.json \
             --channel preview \
             --output channel-output
+          bun dev/release/verify-channel-manifests.mjs \
+            --directory channel-output \
+            --channel preview \
+            --version "$VERSION" \
+            --tag preview
 
           (
             cd release-assets
             find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
           )
+
+          bun dev/release/verify-updater.mjs \
+            --manifest release-assets/latest.json \
+            --asset-root release-assets \
+            --checksums release-assets/SHA256SUMS.txt
 
       - name: Create or update Preview release
         env:
@@ -446,21 +506,8 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           git clone --filter=blob:none "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" channel-repository
-          cd channel-repository
-          if git show-ref --verify --quiet refs/remotes/origin/updates; then
-            git switch --track origin/updates
-          else
-            git switch --orphan updates
-            git rm -rf .
-          fi
-          mkdir -p channels
-          cp ../channel-output/preview-*.json channels/
-          git add channels
-          if git diff --cached --quiet; then
-            echo "Preview channel already points to ${VERSION}."
-            exit 0
-          fi
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "chore(updates): advance preview to ${VERSION}"
-          git push origin HEAD:updates
+          bun dev/release/publish-channel-branch.mjs \
+            --repository channel-repository \
+            --manifests channel-output \
+            --channel preview \
+            --label "$VERSION"

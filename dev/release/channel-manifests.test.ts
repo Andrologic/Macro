@@ -14,6 +14,9 @@ describe('channel updater manifests', () => {
     expect(manifests['preview-windows-x86_64'].platforms).toEqual({
       'preview-windows-x86_64': platforms['windows-x86_64'],
     });
+    expect(manifests['preview-windows-aarch64'].platforms).toEqual({
+      'preview-windows-aarch64': platforms['windows-aarch64'],
+    });
   });
 
   test('rejects unsupported channels and incomplete manifests', () => {

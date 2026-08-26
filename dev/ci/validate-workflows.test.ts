@@ -122,4 +122,58 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('disable linuxdeploy stripping'))).toBe(true);
     expect(errors.some((error) => error.includes('notarize, staple, and then validate'))).toBe(true);
   });
+
+  test('requires a native Windows ARM64 build and PE verification', () => {
+    const errors = validateWorkflowDocument({
+      name: 'Preview',
+      on: { workflow_dispatch: {} },
+      permissions: { contents: 'read' },
+      jobs: {
+        build: {
+          'runs-on': '${{ matrix.runner }}',
+          'timeout-minutes': 90,
+          strategy: {
+            matrix: {
+              include: [
+                { key: 'linux', args: '--verbose --bundles appimage,deb,rpm' },
+                { key: 'windows', arch: 'x64', runner: 'windows-latest' },
+              ],
+            },
+          },
+          steps: [
+            { name: 'Build preview bundles', env: { NO_STRIP: "${{ matrix.key == 'linux' && 'true' || '' }}" } },
+            {
+              name: 'Verify macOS bundle and notarization',
+              run: 'xcrun notarytool submit "$DMG_PATH"\nxcrun stapler staple "$DMG_PATH"\nxcrun stapler validate "$DMG_PATH"',
+            },
+            { name: 'Verify unsigned Windows installer', run: 'Get-AuthenticodeSignature app.exe' },
+          ],
+        },
+        publish: { steps: [] },
+      },
+    }, '.github/workflows/preview.yml');
+
+    expect(errors.some((error) => error.includes('native ARM64 NSIS'))).toBe(true);
+    expect(errors.some((error) => error.includes('PE architecture'))).toBe(true);
+  });
+
+  test('requires channel workflows to use the shared publisher', () => {
+    const errors = validateWorkflowDocument({
+      name: 'Publish update channel',
+      on: { release: { types: ['published'] } },
+      permissions: { contents: 'read' },
+      jobs: {
+        publish: {
+          'runs-on': 'ubuntu-latest',
+          'timeout-minutes': 10,
+          steps: [{ run: 'git switch --orphan updates\ngit rm -rf .' }],
+        },
+      },
+    }, '.github/workflows/publish-update-channel.yml');
+
+    expect(errors.some((error) => error.includes('required manual tag'))).toBe(true);
+    expect(errors.some((error) => error.includes('shared channel branch publisher'))).toBe(true);
+    expect(errors.some((error) => error.includes('downloaded updater assets and checksums'))).toBe(true);
+    expect(errors.some((error) => error.includes('already-empty orphan worktree'))).toBe(true);
+  });
 });

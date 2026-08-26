@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 export const UPDATER_TARGETS = Object.freeze([
   'windows-x86_64',
+  'windows-aarch64',
   'linux-x86_64',
   'darwin-x86_64',
   'darwin-aarch64',
