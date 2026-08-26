@@ -1,6 +1,7 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import { createLinuxRuntimeWrapper } from './ai-runtime-linux-wrapper.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const entry = resolve(root, 'copilot-bridge', 'src', 'index.ts');
@@ -128,9 +129,13 @@ const runCommand = async (command, args) => {
 const buildTarget = async (buildTarget) => {
   const output = outputPath(buildTarget);
   const legacyOutput = legacyOutputPath(buildTarget);
+  const compiledOutput = buildTarget.tauriTriple.includes('unknown-linux')
+    ? `${output}.compiled`
+    : output;
 
   await mkdir(dirname(output), { recursive: true });
   await rm(output, { force: true });
+  await rm(compiledOutput, { force: true });
   await rm(legacyOutput, { force: true });
 
   await runCommand(bunExecutable, [
@@ -139,8 +144,16 @@ const buildTarget = async (buildTarget) => {
     '--compile',
     `--target=${buildTarget.bunTarget}`,
     '--outfile',
-    output,
+    compiledOutput,
   ]);
+
+  if (compiledOutput !== output) {
+    const runtime = await readFile(compiledOutput);
+    const { wrapper } = createLinuxRuntimeWrapper(runtime);
+    await writeFile(output, wrapper, { mode: 0o755 });
+    await chmod(output, 0o755);
+    await rm(compiledOutput, { force: true });
+  }
 
   console.log(`Built ${output} for ${buildTarget.tauriTriple} using ${buildTarget.bunTarget}.`);
   return output;
