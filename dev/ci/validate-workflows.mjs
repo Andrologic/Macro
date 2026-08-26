@@ -120,6 +120,24 @@ export function validateWorkflowDocument(document, filePath) {
     if (checkoutIndex === -1 || annotatedTagFetchIndex <= checkoutIndex) {
       fail('release validation must explicitly fetch the annotated tag object after checkout.');
     }
+
+    const finalizationSteps = document.jobs['draft-release']?.steps || [];
+    const finalizationCheckoutIndex = finalizationSteps.findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('actions/checkout@')
+    ));
+    const finalizationBunIndex = finalizationSteps.findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('oven-sh/setup-bun@')
+    ));
+    const updaterManifestIndex = finalizationSteps.findIndex((step) => (
+      typeof step?.run === 'string' && step.run.includes('dev/release/updater-manifest.mjs')
+    ));
+    if (
+      finalizationCheckoutIndex === -1
+      || finalizationBunIndex <= finalizationCheckoutIndex
+      || updaterManifestIndex <= finalizationBunIndex
+    ) {
+      fail('release finalization must check out the tagged sources and set up Bun before generating the updater manifest.');
+    }
   }
 
   if (filePath.endsWith('release.yml') || filePath.endsWith('preview.yml')) {

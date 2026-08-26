@@ -63,6 +63,36 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('annotated tag object'))).toBe(true);
   });
 
+  test('requires release finalization to check out scripts and install Bun', () => {
+    const errors = validateWorkflowDocument({
+      name: 'Release',
+      on: { push: { tags: ['v*'] } },
+      permissions: { contents: 'read' },
+      jobs: {
+        validate: {
+          steps: [
+            {
+              uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
+              with: { 'persist-credentials': false },
+            },
+            {
+              run: 'git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"',
+            },
+          ],
+        },
+        build: {
+          needs: 'validate',
+          environment: 'release',
+        },
+        'draft-release': {
+          steps: [{ run: 'bun dev/release/updater-manifest.mjs' }],
+        },
+      },
+    }, '.github/workflows/release.yml');
+
+    expect(errors.some((error) => error.includes('release finalization'))).toBe(true);
+  });
+
   test('requires diagnosable Linux bundles and a stapled macOS disk image', () => {
     const errors = validateWorkflowDocument({
       name: 'Preview',
