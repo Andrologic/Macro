@@ -21,6 +21,8 @@ export const normalizeLegacyToolExecutionResult = (
     glob: [/^Error executing glob:/i],
     grep: [/^Error executing grep:/i],
     git_status: [/^Error executing (?:git_status|git tool):/i],
+    git_branch_list: [/^Error executing (?:git_branch_list|git tool):/i],
+    git_get_tree: [/^Error executing (?:git_get_tree|git tool):/i],
     git_diff: [/^Error executing (?:git_diff|git tool):/i],
     git_log: [/^Error executing (?:git_log|git tool):/i],
     git_show: [/^Error executing (?:git_show|git tool):/i],

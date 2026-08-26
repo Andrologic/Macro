@@ -5181,7 +5181,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "denied",
         );
       }
-      return securityEvaluation.denialReason;
+      return toolFailure(
+        securityEvaluation.denialReason ?? `Tool ${normalizedToolName} was denied by policy.`,
+        "permission",
+      );
     }
 
     if (
@@ -5199,7 +5202,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "denied",
         );
       }
-      return GIT_STAGE_COMMIT_CHALLENGE_MESSAGE;
+      return toolFailure(GIT_STAGE_COMMIT_CHALLENGE_MESSAGE, "permission");
     }
 
     if (securityEvaluation.decision === "ask") {

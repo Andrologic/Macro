@@ -26,5 +26,11 @@ describe('legacy tool result normalization', () => {
     expect(normalizeLegacyToolExecutionResult('git_commit', 'Error executing git tool: denied')).toMatchObject({
       isError: true,
     });
+    expect(normalizeLegacyToolExecutionResult('git_branch_list', 'Error executing git tool: denied')).toMatchObject({
+      isError: true,
+    });
+    expect(normalizeLegacyToolExecutionResult('git_get_tree', 'Error executing git_get_tree: denied')).toMatchObject({
+      isError: true,
+    });
   });
 });
