@@ -2308,6 +2308,13 @@ describe('ChatZone', () => {
       requireRoot().render(<ChatZone />);
     });
 
+    expect(requireContainer().textContent).not.toContain('Task worktree is not ready yet.');
+    expect(requireContainer().textContent).toContain('Show details');
+    await act(async () => {
+      Array.from(requireContainer().querySelectorAll('button')).find(
+        (button) => button.textContent === 'Show details'
+      )?.click();
+    });
     expect(requireContainer().textContent).toContain('Task worktree is not ready yet.');
   });
 
