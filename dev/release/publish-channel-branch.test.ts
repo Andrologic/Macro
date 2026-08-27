@@ -7,8 +7,13 @@ import { publishChannelBranch } from './publish-channel-branch.mjs';
 
 const roots: string[] = [];
 
+const isolatedGitEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')),
+);
+
 const git = (cwd: string, ...args: string[]): string => execFileSync('git', args, {
   cwd,
+  env: isolatedGitEnvironment,
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'pipe'],
 }).trim();
