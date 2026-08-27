@@ -1,0 +1,11 @@
+{
+  "version": "0.1.1",
+  "notes": "## Automatic updates\n\n- Fixed the missing update-channel files that caused the \"Unable to check for updates\" error.\n- Macro now verifies signed update archives, checksums, immutable download URLs, and every platform manifest before publishing an update.\n- Update notes are kept during installation and shown once after Macro restarts.\n\n## Windows on ARM\n\n- Added a native Windows ARM64 installer.\n- The ARM64 package includes the native Macro AI runtime instead of relying on x64 emulation.\n\n## Context and images\n\n- Fixed image attachments being counted from their Base64 transport size, which could make Macro report a full context window far too early.\n- Macro now estimates visual tokens from the image dimensions and the selected model or provider formula. A duplicated image in the visible message and provider payload is counted only once.\n- Image estimates can still trigger preventive compaction, but they no longer cause a permanent pre-send block on their own.\n\n## Agent reliability\n\n- Tool failures are now reported as failures instead of successful-looking results, so agents can correct invalid arguments and recover from execution errors.\n- Database startup checks preserve the shipped migration version.\n",
+  "pub_date": "2026-08-27T12:44:13+02:00",
+  "platforms": {
+    "stable-darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScUVqZHp3NWNuc1JKUTFObjhQYkY4bE1rZkxqbVFYT1hlNlVYMno3VUdHdlUvWlROQ0k0TEtEalpqbkFObWhiUThPVEJScnV0R0tZRUNXQnZLUW83R2xQc2lra0lNWmdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODMwNDM3CWZpbGU6TWFjcm8uYXBwLnRhci5negpRYU01cmJEV0tuYlJjWFU5RXNMYmUxOW5JWkhTVTBKVzdRSys2UUQvQVRRbWNTR0tPV2VPS1JHMU1FbkJramhERFNZN29GVGZic2NoYmlCaXZYTXREQT09Cg==",
+      "url": "https://github.com/Andrologic/Macro/releases/download/v0.1.1/Macro_0.1.1_macOS_universal.app.tar.gz"
+    }
+  }
+}
