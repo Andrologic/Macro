@@ -1716,6 +1716,8 @@
     "form": {
       "namePlaceholder": "예를 들어 OpenAI, 로컬 미스트랄",
       "baseUrlLabel": "기본 URL",
+      "localEndpointLabel": "로컬 엔드포인트",
+      "localEndpointDescription": "이 기기에서 실행되는 공급자에 HTTP를 허용합니다. 원격 서비스에서는 이 옵션을 끄세요.",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "API 키",
       "apiKeyPlaceholder": "sk-...",

@@ -51,6 +51,18 @@ export const resolveArchiveViewSelection = (params: {
   return previousActive?.id ?? params.conversations.find((conversation) => !params.archivedIds.has(conversation.id))?.id ?? null;
 };
 
+export const applyArchiveViewSelection = async (
+  conversationId: string | null,
+  selectConversation: (conversationId: string) => Promise<boolean>,
+  clearSelectedConversation: () => void
+): Promise<boolean> => {
+  if (!conversationId) {
+    clearSelectedConversation();
+    return true;
+  }
+  return selectConversation(conversationId);
+};
+
 interface ConversationItemProps {
   conversation: Conversation;
   isCurrentConversation: boolean;
@@ -418,6 +430,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [isArchiveViewSwitching, setIsArchiveViewSwitching] = useState(false);
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
@@ -825,43 +838,58 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   }, [createConversation, exitMultiSelectMode, showArchived, t]);
 
   const handleToggleArchivedView = useCallback(async () => {
+    if (isArchiveViewSwitching) {
+      return;
+    }
+    setIsArchiveViewSwitching(true);
     exitMultiSelectMode();
-    if (!showArchived) {
-      if (selectedConversationId && !archivedIds.has(selectedConversationId)) {
-        previousActiveConversationIdRef.current = selectedConversationId;
+    try {
+      if (!showArchived) {
+        if (selectedConversationId && !archivedIds.has(selectedConversationId)) {
+          previousActiveConversationIdRef.current = selectedConversationId;
+        }
+        const archivedConversationId = resolveArchiveViewSelection({
+          enteringArchive: true,
+          conversations: chatConversations,
+          archivedIds,
+          previousActiveConversationId: previousActiveConversationIdRef.current,
+        });
+        if (
+          await applyArchiveViewSelection(
+            archivedConversationId,
+            selectConversation,
+            clearSelectedConversation
+          )
+        ) {
+          setShowArchived(true);
+        }
+        return;
       }
-      setShowArchived(true);
-      const archivedConversationId = resolveArchiveViewSelection({
-        enteringArchive: true,
+
+      const activeConversationId = resolveArchiveViewSelection({
+        enteringArchive: false,
         conversations: chatConversations,
         archivedIds,
         previousActiveConversationId: previousActiveConversationIdRef.current,
       });
-      if (archivedConversationId) {
-        await selectConversation(archivedConversationId);
-      } else {
-        clearSelectedConversation();
+      if (
+        await applyArchiveViewSelection(
+          activeConversationId,
+          selectConversation,
+          clearSelectedConversation
+        )
+      ) {
+        setShowArchived(false);
       }
-      return;
-    }
-
-    setShowArchived(false);
-    const activeConversationId = resolveArchiveViewSelection({
-      enteringArchive: false,
-      conversations: chatConversations,
-      archivedIds,
-      previousActiveConversationId: previousActiveConversationIdRef.current,
-    });
-    if (activeConversationId) {
-      await selectConversation(activeConversationId);
-    } else {
-      clearSelectedConversation();
+    } finally {
+      setIsArchiveViewSwitching(false);
     }
   }, [
     archivedIds,
     chatConversations,
     clearSelectedConversation,
     exitMultiSelectMode,
+    isArchiveViewSwitching,
     selectConversation,
     selectedConversationId,
     showArchived,
@@ -895,6 +923,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               label={t('chat.archives', 'Archives')}
               pressed={showArchived}
               onClick={() => void handleToggleArchivedView()}
+              isLoading={isArchiveViewSwitching}
               data-tour-id="chat-archive-toggle"
             />
             {!isMultiSelectMode && (

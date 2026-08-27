@@ -5,6 +5,7 @@ import { Button } from './Button';
 import { Input } from './Input';
 import { PanelHeaderIconButton } from './PanelHeaderIconButton';
 import { Switch } from './Switch';
+import focusStyles from '../../index.css' with { type: 'text' };
 
 describe('focus ring controls', () => {
   let container: HTMLDivElement;
@@ -39,5 +40,10 @@ describe('focus ring controls', () => {
       expect(control.className).not.toMatch(/focus-visible:ring/);
       expect(control.className).not.toMatch(/ring-offset/);
     });
+  });
+
+  it('uses a one-pixel offset and a two-pixel visible focus ring', () => {
+    expect(focusStyles).toContain('--tw-ring-offset-shadow: 0 0 0 1px rgb(var(--background));');
+    expect(focusStyles).toContain('--tw-ring-shadow: 0 0 0 3px rgb(var(--ring) / 0.65);');
   });
 });

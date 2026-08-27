@@ -8,6 +8,7 @@ import {
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
+import { Switch } from '../../../ui/Switch';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
@@ -751,7 +752,9 @@ export const ProvidersSettings: React.FC = () => {
                   setEditingProvider({
                     ...editingProvider,
                     providerType,
-                    isLocal: isLocalProviderType(providerType),
+                    isLocal: isLocalProviderType(providerType)
+                      ? true
+                      : editingProvider.isLocal,
                   });
                 }}
               >
@@ -790,6 +793,29 @@ export const ProvidersSettings: React.FC = () => {
                   placeholder={t('providers.form.baseUrlPlaceholder', 'https://api.openai.com/v1')}
                 />
                 {fieldErrors.baseUrl && <p id="provider-base-url-error" className="text-xs text-destructive">{fieldErrors.baseUrl}</p>}
+              </div>
+
+              <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-card/40 px-3 py-2.5">
+                <div className="min-w-0 space-y-0.5">
+                  <label htmlFor="provider-local-endpoint" className="text-sm font-medium">
+                    {t('providers.form.localEndpointLabel', 'Local endpoint')}
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      'providers.form.localEndpointDescription',
+                      'Allow HTTP for a provider running on this device. Leave this off for remote services.'
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  id="provider-local-endpoint"
+                  checked={editingProvider.isLocal}
+                  disabled={isLocalProviderType(editingProvider.providerType)}
+                  onCheckedChange={(isLocal) => {
+                    setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
+                    setEditingProvider({ ...editingProvider, isLocal });
+                  }}
+                />
               </div>
 
               <div className="space-y-1">

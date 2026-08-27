@@ -1737,6 +1737,8 @@
     "form": {
       "namePlaceholder": "par ex. OpenAI, Mistral local",
       "baseUrlLabel": "URL de base",
+      "localEndpointLabel": "Point de terminaison local",
+      "localEndpointDescription": "Autorise HTTP pour un fournisseur exécuté sur cet appareil. Laissez cette option désactivée pour les services distants.",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "Clé API",
       "apiKeyPlaceholder": "sk-...",

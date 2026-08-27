@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useChatStore } from '../../stores/useChatStore';
-import { ConversationArchive, resolveArchiveViewSelection } from './ConversationArchive';
+import {
+  applyArchiveViewSelection,
+  ConversationArchive,
+  resolveArchiveViewSelection,
+} from './ConversationArchive';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 
 const flushRender = async () => {
@@ -131,5 +135,19 @@ describe('ConversationArchive', () => {
       archivedIds,
       previousActiveConversationId: 'conversation-1',
     })).toBe('conversation-1');
+  });
+
+  it('does not validate an archive view switch when conversation selection fails', async () => {
+    let cleared = false;
+    const selected = await applyArchiveViewSelection(
+      'conversation-2',
+      async () => false,
+      () => {
+        cleared = true;
+      }
+    );
+
+    expect(selected).toBe(false);
+    expect(cleared).toBe(false);
   });
 });

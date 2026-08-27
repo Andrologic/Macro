@@ -1716,6 +1716,8 @@
     "form": {
       "namePlaceholder": "例えばOpenAI、ローカルミストラル",
       "baseUrlLabel": "ベースURL",
+      "localEndpointLabel": "ローカルエンドポイント",
+      "localEndpointDescription": "このデバイスで実行するプロバイダーに HTTP を許可します。リモートサービスではオフのままにしてください。",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "APIキー",
       "apiKeyPlaceholder": "スク...",

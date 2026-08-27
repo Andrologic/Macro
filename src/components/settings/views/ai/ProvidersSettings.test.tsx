@@ -158,11 +158,13 @@ const loadProvidersSettings = async () => {
     Switch: ({
       checked,
       onCheckedChange,
+      ...props
     }: {
       checked: boolean;
       onCheckedChange: (value: boolean) => void;
-    }) => (
+    } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'onChange'>) => (
       <input
+        {...props}
         type="checkbox"
         checked={checked}
         onChange={(event) => onCheckedChange(event.target.checked)}
@@ -381,7 +383,7 @@ describe('ProvidersSettings Copilot timeout', () => {
       );
     });
 
-    expect(container!.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container!.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
     const apiKeyInput = container!.querySelector('input[type="password"]') as HTMLInputElement;
 
     await act(async () => {
@@ -398,6 +400,46 @@ describe('ProvidersSettings Copilot timeout', () => {
       expect.objectContaining({ apiKey: 'new-api-key' })
     );
     expect(updateProviderConfigMock.mock.calls[0]?.[1]).not.toHaveProperty('isEnabled');
+  });
+
+  it('allows a generic provider running locally to use HTTP', async () => {
+    providerConfigsOverride = [];
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent?.includes('Add Provider')
+      )!);
+    });
+
+    const textInputs = container!.querySelectorAll<HTMLInputElement>('input:not([type="checkbox"]):not([type="password"])');
+    const nameInput = textInputs[0];
+    const baseUrlInput = textInputs[1];
+    const localEndpointSwitch = container!.querySelector<HTMLInputElement>(
+      '#provider-local-endpoint'
+    );
+
+    await act(async () => {
+      setInputValue(nameInput, 'Local gateway');
+      setInputValue(baseUrlInput, 'http://127.0.0.1:1234/v1');
+      click(localEndpointSwitch!);
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Save Provider'
+      )!);
+    });
+
+    expect(createProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Local gateway',
+        baseUrl: 'http://127.0.0.1:1234/v1',
+        isLocal: true,
+        providerType: 'openai',
+      })
+    );
   });
 
   it('uses an icon-only refresh action on Copilot provider cards', async () => {

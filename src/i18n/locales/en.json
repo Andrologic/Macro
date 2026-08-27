@@ -1738,6 +1738,8 @@
     "form": {
       "namePlaceholder": "e.g. OpenAI, Local Mistral",
       "baseUrlLabel": "Base URL",
+      "localEndpointLabel": "Local endpoint",
+      "localEndpointDescription": "Allow HTTP for a provider running on this device. Leave this off for remote services.",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "API Key",
       "apiKeyPlaceholder": "sk-...",

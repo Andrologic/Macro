@@ -101,7 +101,7 @@
     [tabindex]:not([tabindex='-1'])
   ):focus-visible {
     --tw-ring-offset-shadow: 0 0 0 1px rgb(var(--background));
-    --tw-ring-shadow: 0 0 0 2px rgb(var(--ring) / 0.65);
+    --tw-ring-shadow: 0 0 0 3px rgb(var(--ring) / 0.65);
     box-shadow:
       var(--tw-ring-offset-shadow),
       var(--tw-ring-shadow),

@@ -297,7 +297,9 @@ describe('ToolsView', () => {
 
     expect(upsertMcpServerMock).not.toHaveBeenCalled();
     expect(container?.textContent).toContain('Server name is required.');
-    expect(document.activeElement).toBe(container?.querySelector('input[aria-invalid="true"]'));
+    expect(document.activeElement).toBe(
+      container?.querySelector('input[aria-invalid="true"]') ?? null
+    );
   });
 
   it('keeps built-in tools configurable when the selected model lacks native tool calling', async () => {
