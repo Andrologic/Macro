@@ -31,7 +31,7 @@ const loadInvoke = async (): Promise<TauriInvoke | null> => {
   }
 
   if (!invokePromise) {
-    invokePromise = import("@tauri-apps/api/core")
+    invokePromise = import("./tauriRuntimeBridge")
       .then((module) => module.invoke)
       .catch(() => null);
   }

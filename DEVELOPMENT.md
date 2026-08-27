@@ -31,6 +31,7 @@ The repo uses:
 | --- | --- |
 | `bun run dev` | Start the Vite frontend dev server only. |
 | `bun run tauri:dev` | Run Macro as a desktop app in development mode. |
+| `bun run tauri:dev:browser` | Run the Tauri backend and expose its UI to a local browser for debugging. |
 | `bun run build` | Build the frontend for production. |
 | `bun run tauri:build` | Build the Tauri desktop app. |
 | `bun run tauri:build:dmg` | Build a native macOS DMG. |
@@ -66,6 +67,25 @@ Transport notes:
 - `desktop` is the default and requires the Tauri IPC runtime.
 - `remote` switches the frontend service layer to the remote provider.
 - Remote mode is intentionally minimal in the 0.1 line.
+
+## Browser UI with the Tauri runtime
+
+Use the browser runtime bridge when UI inspection or browser automation needs
+the real local database, workspace, terminal, Git, and AI command handlers:
+
+```bash
+bun run tauri:dev:browser
+```
+
+Then open `http://127.0.0.1:1422/`. Vite still provides hot module replacement,
+while Tauri runs as a hidden host and executes IPC commands for the browser.
+Backend events used by configuration, terminals, authentication, downloads, and
+streaming chat are relayed to the browser as well.
+
+This bridge is intentionally unavailable in production builds. It requires both
+the `browser-runtime-debug` Cargo feature and the debug-only environment flags,
+and its unauthenticated WebSocket server binds only to `127.0.0.1:1430`. Do not
+expose that port through a proxy or change it to a non-loopback address.
 
 ## Local Provider Configuration
 

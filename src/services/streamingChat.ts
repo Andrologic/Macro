@@ -6,7 +6,7 @@
  */
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from './tauriRuntimeBridge';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';

@@ -36,12 +36,62 @@ use serde::Serialize;
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
+#[cfg(feature = "browser-runtime-debug")]
+use tauri::Listener;
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
+#[cfg(feature = "browser-runtime-debug")]
+use tauri_remote_ui::{RemoteUi, RemoteUiConfig, RemoteUiExt};
 use tokio::sync::RwLock;
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
+
+#[cfg(feature = "browser-runtime-debug")]
+fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
+    const EVENTS: &[&str] = &[
+        "ai:auth-success",
+        "ai:auth-cancelled",
+        "ai:auth-error",
+        "ai:copilot-download-progress",
+        "ai:copilot-download-complete",
+        "ai:copilot-download-error",
+        "ai:copilot-auth-progress",
+        "ai:copilot-auth-complete",
+        "ai:copilot-auth-cancelled",
+        "ai:copilot-auth-error",
+        "ai:timeline",
+        "ai:stream",
+        "ai:tool-trace",
+        "ai:tool-request",
+        "ai:done",
+        "ai:error",
+        "config://changed",
+        "config://invalid",
+        "config://pending-sensitive-change",
+        "config://restart-required",
+        "fs:change",
+        "terminal:output",
+        "terminal:tab",
+        "terminal:closed",
+    ];
+
+    for event_name in EVENTS {
+        let app_handle = app.clone();
+        let relay_name = (*event_name).to_owned();
+        app.listen_any(*event_name, move |event| {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+                .unwrap_or_else(|_| serde_json::Value::String(event.payload().to_owned()));
+            let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>().inner().clone();
+            let event_name = relay_name.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = remote_ui.read().await.emit(&event_name, payload).await {
+                    tracing::warn!(%error, %event_name, "Failed to relay debug browser event");
+                }
+            });
+        });
+    }
+}
 
 fn shutdown_mcp_runtime(app_handle: &tauri::AppHandle) {
     let runtime = app_handle.state::<commands::mcp::McpRuntimeManager>();
@@ -328,14 +378,19 @@ pub fn run() {
     tracing::info!("Starting Macro application");
     tracing::info!("Configured workspace path: {:?}", config.workspace_path);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_store::Builder::default().build());
+
+    #[cfg(feature = "browser-runtime-debug")]
+    let builder = builder.plugin(tauri_remote_ui::init());
+
+    let app = builder
         .manage(AppQuitState::default())
         .manage(DbPool::default())
         .manage(AiState::default())
@@ -354,6 +409,23 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            #[cfg(feature = "browser-runtime-debug")]
+            if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+                install_browser_runtime_event_relays(app.handle());
+                let browser_bridge_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let bridge_config = RemoteUiConfig::default().set_port(Some(1430));
+                    match browser_bridge_handle.start_remote_ui(bridge_config).await {
+                        Ok(()) => tracing::info!(
+                            "Debug browser runtime bridge ready at http://127.0.0.1:1422"
+                        ),
+                        Err(error) => {
+                            tracing::error!("Failed to start debug browser runtime bridge: {error}")
+                        }
+                    }
+                });
+            }
+
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.get_webview_window("main") {

@@ -3,7 +3,7 @@
  * Type-safe wrapper around Tauri's invoke function
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isBrowserRuntimeBridgeEnabled } from "./tauriRuntimeBridge";
 import type { TaskCatalogDto } from "./contracts/dtos";
 import type {
   MCPCatalogDto,
@@ -4238,7 +4238,10 @@ export function isTauriAvailable(): boolean {
     } | null;
   };
 
-  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
+  return (
+    typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function' ||
+    isBrowserRuntimeBridgeEnabled()
+  );
 }
 
 export function isRemoteBackendAvailable(): boolean {
