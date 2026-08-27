@@ -100,12 +100,10 @@
     [role='menuitem'],
     [tabindex]:not([tabindex='-1'])
   ):focus-visible {
-    --tw-ring-offset-shadow: 0 0 0 1px rgb(var(--background));
-    --tw-ring-shadow: 0 0 0 3px rgb(var(--ring) / 0.65);
-    box-shadow:
-      var(--tw-ring-offset-shadow),
-      var(--tw-ring-shadow),
-      var(--tw-shadow, 0 0 #0000);
+    --tw-ring-offset-shadow: 0 0 #0000;
+    --tw-ring-shadow: 0 0 #0000;
+    outline: 2px solid rgb(var(--ring) / 0.65);
+    outline-offset: -2px;
   }
 
   /* Custom scrollbar */

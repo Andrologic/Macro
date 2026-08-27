@@ -42,8 +42,9 @@ describe('focus ring controls', () => {
     });
   });
 
-  it('uses a one-pixel offset and a two-pixel visible focus ring', () => {
-    expect(focusStyles).toContain('--tw-ring-offset-shadow: 0 0 0 1px rgb(var(--background));');
-    expect(focusStyles).toContain('--tw-ring-shadow: 0 0 0 3px rgb(var(--ring) / 0.65);');
+  it('keeps the focus indicator inside the control bounds', () => {
+    expect(focusStyles).toContain('outline: 2px solid rgb(var(--ring) / 0.65);');
+    expect(focusStyles).toContain('outline-offset: -2px;');
+    expect(focusStyles).not.toContain('--tw-ring-shadow: 0 0 0 3px');
   });
 });
