@@ -624,6 +624,8 @@
     "selectedCount": "{{count}} selected",
     "multiSelect": "Multi-select",
     "archivedView": "Archived view",
+    "archivedConversationReadOnly": "Esta conversación está archivada. Restáurala antes de enviar otro mensaje.",
+    "archivedConversationPlaceholder": "Restaura esta conversación para continuar.",
     "noArchivedResults": "No archived conversations match this search",
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
@@ -1167,6 +1169,7 @@
     "includedAutomatically": "Incluido",
     "noStandaloneProjectsForGroup": "Agrega al menos un proyecto independiente antes de crear un grupo aquí.",
     "createProjectGroup": "Crear grupo",
+    "createProjectGroupWithRepo": "Crear grupo y añadir repositorio",
     "createGroupAfterProjectFailed": "El proyecto se agregó, pero Macro no pudo crear el grupo: {{message}}",
     "subprojectName": "Nombre del proyecto",
     "firstSubprojectName": "Nombre del primer proyecto",
@@ -1561,6 +1564,8 @@
     "dependencyFlow": "Dependency Flow",
     "itemsCount": "{{count}} artículos",
     "noStrategyTitle": "Aún no se ha generado ninguna estrategia",
+    "selectPlanForStrategyTitle": "Selecciona un plan",
+    "selectPlanForStrategyDescription": "Selecciona un plan para ver o generar su estrategia.",
     "noStrategyDescription": "Habla del plan en el chat de Architect y luego usa Generar estrategia para crear este grafo.",
     "noBranchesMatchingFilters": "Ninguna branch coincide con los filtros actuales.",
     "planCompleted": "Plan completado",
@@ -1722,6 +1727,11 @@
       "clearApiKey": "Borrar clave guardada",
       "copilotResponseTimeoutLabel": "Copilot response timeout"
     },
+    "validation": {
+      "nameRequired": "El nombre del proveedor es obligatorio.",
+      "baseUrlRequired": "La URL base es obligatoria.",
+      "baseUrlInvalid": "Introduce una URL de proveedor válida."
+    },
     "authErrors": {
       "browser_open_failed": "No se pudo abrir su navegador para iniciar sesión en ChatGPT.",
       "callback_timeout": "Se agotó el tiempo de espera para iniciar sesión en ChatGPT.",
@@ -1840,6 +1850,9 @@
       "addServer": "Agregar servidor MCP",
       "stdioOnly": "Solo servidores stdio. Los valores sensibles de entorno se guardan de forma segura y se muestran enmascarados aquí.",
       "namePlaceholder": "Nombre del servidor",
+      "nameRequired": "El nombre del servidor es obligatorio.",
+      "commandRequired": "El comando es obligatorio para un servidor local.",
+      "urlRequired": "La URL es obligatoria para un servidor remoto.",
       "commandPlaceholder": "Comando, p. ej. npx",
       "argsPlaceholder": "Args, p. ej. -y @modelcontextprotocol/server-filesystem .",
       "envPlaceholder": "ENV_NAME=valor",
@@ -1996,6 +2009,7 @@
     "collectionDescription": "Gestiona los modelos por proveedor",
     "searchPlaceholder": "Buscar modelos...",
     "noProviders": "Todavía no hay providers configurados. Añade primero un provider.",
+    "noProvidersTitle": "Añade un proveedor antes de añadir modelos",
     "total": "total",
     "enabled": "habilitado",
     "providerSummary": "{{total}} total • {{enabled}} habilitado",
@@ -2099,6 +2113,7 @@
       "composerShortcutMode": "Compositor enfocado y modo de historial con atajos"
     },
     "searchPlaceholder": "Buscar atajos...",
+    "noMatching": "Ningún atajo coincide con tu búsqueda.",
     "resetAll": "Restablecer todo",
     "recordingHint": "Presiona tu atajo ahora... (Esc para cancelar)",
     "promptHistoryBehavior": "Comportamiento del historial de prompts",

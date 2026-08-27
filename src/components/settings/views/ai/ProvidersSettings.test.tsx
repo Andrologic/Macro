@@ -74,6 +74,10 @@ const loadProvidersSettings = async () => {
         return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? _key;
       },
     }),
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
   }));
 
   mock.module('../../../../stores/useProviderStore', () => ({
@@ -191,7 +195,9 @@ const loadProvidersSettings = async () => {
       },
     }),
     SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
-    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    SettingsSearchEmpty: ({ message }: { message?: React.ReactNode }) => (
+      <div>{message ?? 'No matching providers'}</div>
+    ),
   }));
 
   importCounter += 1;

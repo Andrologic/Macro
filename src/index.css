@@ -100,8 +100,8 @@
     [role='menuitem'],
     [tabindex]:not([tabindex='-1'])
   ):focus-visible {
-    --tw-ring-offset-shadow: 0 0 0 2px rgb(var(--background));
-    --tw-ring-shadow: 0 0 0 4px rgb(var(--ring) / 0.65);
+    --tw-ring-offset-shadow: 0 0 0 1px rgb(var(--background));
+    --tw-ring-shadow: 0 0 0 2px rgb(var(--ring) / 0.65);
     box-shadow:
       var(--tw-ring-offset-shadow),
       var(--tw-ring-shadow),
@@ -591,7 +591,7 @@
 
   /* Input styles */
   .input {
-    @apply w-full px-4 py-2.5 bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-transparent transition-all duration-200;
+    @apply w-full px-4 py-2.5 bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground transition-all duration-200;
   }
 
   /* Badge styles */

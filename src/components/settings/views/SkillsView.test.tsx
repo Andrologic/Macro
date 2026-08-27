@@ -70,7 +70,9 @@ const loadSkillsView = async () => {
         values.filter(Boolean).join(' ').toLowerCase().includes(settingsSearchQuery.toLowerCase()),
     }),
     SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
-    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    SettingsSearchEmpty: ({ message }: { message?: React.ReactNode }) => (
+      <div>{message ?? 'No matching skills'}</div>
+    ),
   }));
 
   mock.module('react-i18next', () => ({
@@ -87,6 +89,10 @@ const loadSkillsView = async () => {
         return template.replaceAll('{{count}}', String(options?.count ?? ''));
       },
     }),
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
   }));
 
   const storeState = {

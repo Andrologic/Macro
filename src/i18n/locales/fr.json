@@ -640,6 +640,8 @@
     "selectedCount": "{{count}} sélectionnées",
     "multiSelect": "Sélection multiple",
     "archivedView": "Vue archives",
+    "archivedConversationReadOnly": "Cette conversation est archivée. Restaurez-la avant d’envoyer un nouveau message.",
+    "archivedConversationPlaceholder": "Restaurez cette conversation pour continuer.",
     "noArchivedResults": "Aucune conversation archivée ne correspond à cette recherche",
     "noArchivedConversations": "Aucune conversation archivée pour le moment",
     "noActiveConversations": "Aucune conversation active",
@@ -1183,6 +1185,7 @@
     "includedAutomatically": "Inclus",
     "noStandaloneProjectsForGroup": "Ajoutez au moins un projet seul avant de créer un groupe ici.",
     "createProjectGroup": "Créer le groupe",
+    "createProjectGroupWithRepo": "Créer le groupe et ajouter le dépôt",
     "createGroupAfterProjectFailed": "Le projet a été ajouté, mais Macro n’a pas pu créer le groupe : {{message}}",
     "subprojectName": "Nom du projet",
     "firstSubprojectName": "Nom du premier projet",
@@ -1577,6 +1580,8 @@
     "dependencyFlow": "Flux de dépendances",
     "itemsCount": "{{count}} articles",
     "noStrategyTitle": "Aucune stratégie générée pour l'instant",
+    "selectPlanForStrategyTitle": "Sélectionnez un plan",
+    "selectPlanForStrategyDescription": "Sélectionnez un plan pour afficher ou générer sa stratégie.",
     "noStrategyDescription": "Discutez du plan dans le chat Architect, puis utilisez Générer la stratégie pour créer ce graphe.",
     "noBranchesMatchingFilters": "Aucune branche ne correspond aux filtres actuels.",
     "planCompleted": "Plan terminé",
@@ -1738,6 +1743,11 @@
       "clearApiKey": "Effacer la clé stockée",
       "copilotResponseTimeoutLabel": "Copilot response timeout"
     },
+    "validation": {
+      "nameRequired": "Le nom du fournisseur est obligatoire.",
+      "baseUrlRequired": "L’URL de base est obligatoire.",
+      "baseUrlInvalid": "Saisissez une URL de fournisseur valide."
+    },
     "authErrors": {
       "browser_open_failed": "Échec de l'ouverture de votre navigateur pour la connexion ChatGPT.",
       "callback_timeout": "Le délai d'attente pour la connexion à ChatGPT a expiré.",
@@ -1856,6 +1866,9 @@
       "addServer": "Ajouter un serveur MCP",
       "stdioOnly": "Serveurs stdio uniquement. Les valeurs sensibles d’environnement sont stockées de façon sécurisée et masquées ici.",
       "namePlaceholder": "Nom du serveur",
+      "nameRequired": "Le nom du serveur est obligatoire.",
+      "commandRequired": "La commande est obligatoire pour un serveur local.",
+      "urlRequired": "L’URL est obligatoire pour un serveur distant.",
       "commandPlaceholder": "Commande, ex. npx",
       "argsPlaceholder": "Arguments, ex. -y @modelcontextprotocol/server-filesystem .",
       "envPlaceholder": "NOM_ENV=valeur",
@@ -2009,6 +2022,7 @@
   },
   "models": {
     "noProviders": "Aucun provider configuré pour l'instant. Ajoutez d'abord un provider.",
+    "noProvidersTitle": "Ajoutez un fournisseur avant d’ajouter des modèles",
     "collectionTitle": "Modèles",
     "collectionDescription": "Gérez les modèles par fournisseur",
     "searchPlaceholder": "Rechercher des modèles...",
@@ -2113,6 +2127,7 @@
       "composerShortcutMode": "Compositeur focus et mode historique par raccourci"
     },
     "searchPlaceholder": "Rechercher des raccourcis...",
+    "noMatching": "Aucun raccourci ne correspond à votre recherche.",
     "collectionTitle": "Raccourcis",
     "collectionDescription": "Recherchez et personnalisez les raccourcis clavier",
     "resetAll": "Tout réinitialiser",

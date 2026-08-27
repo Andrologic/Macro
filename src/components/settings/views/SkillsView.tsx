@@ -415,7 +415,7 @@ export const SkillsView: React.FC = () => {
         {filteredSkills.length === 0 && (isLoading
           ? <p className="py-8 text-center text-sm text-muted-foreground">{t('skills.loading', 'Loading skills...')}</p>
           : query.trim()
-            ? <SettingsSearchEmpty />
+            ? <SettingsSearchEmpty message={t('skills.noneFound', 'No skills found.')} />
             : (
               <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
                 {t('skills.empty', 'No skills discovered')}

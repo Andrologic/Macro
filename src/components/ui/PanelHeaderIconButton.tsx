@@ -36,7 +36,6 @@ export const PanelHeaderIconButton = React.forwardRef<
       title={label}
       className={cn(
         'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
         unavailable
           ? 'cursor-not-allowed border-border bg-muted text-muted-foreground opacity-60'
           : pressed

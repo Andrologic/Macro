@@ -641,6 +641,8 @@
     "selectedCount": "{{count}} selected",
     "multiSelect": "Multi-select",
     "archivedView": "Archived view",
+    "archivedConversationReadOnly": "This conversation is archived. Restore it before sending another message.",
+    "archivedConversationPlaceholder": "Restore this conversation to continue.",
     "noArchivedResults": "No archived conversations match this search",
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
@@ -1184,6 +1186,7 @@
     "includedAutomatically": "Included",
     "noStandaloneProjectsForGroup": "Add at least one standalone project before creating a group here.",
     "createProjectGroup": "Create group",
+    "createProjectGroupWithRepo": "Create group and add repository",
     "createGroupAfterProjectFailed": "Project added, but Macro could not create the group: {{message}}",
     "subprojectName": "Project name",
     "firstSubprojectName": "First project name",
@@ -1578,6 +1581,8 @@
     "dependencyFlow": "Dependency Flow",
     "itemsCount": "{{count}} items",
     "noStrategyTitle": "No strategy generated yet",
+    "selectPlanForStrategyTitle": "Select a plan",
+    "selectPlanForStrategyDescription": "Select a plan to view or generate its strategy.",
     "noStrategyDescription": "Discuss the plan in Architect chat, then use Generate Strategy to create this graph.",
     "noBranchesMatchingFilters": "No branches match the current filters.",
     "planCompleted": "Plan completed",
@@ -1739,6 +1744,11 @@
       "clearApiKey": "Clear stored key",
       "copilotResponseTimeoutLabel": "Copilot response timeout"
     },
+    "validation": {
+      "nameRequired": "Provider name is required.",
+      "baseUrlRequired": "Base URL is required.",
+      "baseUrlInvalid": "Enter a valid provider URL."
+    },
     "authErrors": {
       "browser_open_failed": "Failed to open your browser for ChatGPT login.",
       "callback_timeout": "Timed out waiting for ChatGPT login.",
@@ -1857,6 +1867,9 @@
       "addServer": "Add MCP server",
       "stdioOnly": "Stdio servers only. Sensitive env values are stored securely and masked here.",
       "namePlaceholder": "Server name",
+      "nameRequired": "Server name is required.",
+      "commandRequired": "Command is required for a local server.",
+      "urlRequired": "URL is required for a remote server.",
       "commandPlaceholder": "Command, e.g. npx",
       "argsPlaceholder": "Args, e.g. -y @modelcontextprotocol/server-filesystem .",
       "envPlaceholder": "ENV_NAME=value",
@@ -2055,6 +2068,7 @@
   },
   "models": {
     "noProviders": "No providers configured yet. Add a provider first.",
+    "noProvidersTitle": "Add a provider before adding models",
     "collectionTitle": "Models",
     "collectionDescription": "Manage models by provider",
     "searchPlaceholder": "Search models...",
@@ -2159,6 +2173,7 @@
       "composerShortcutMode": "Composer focus and shortcut history mode"
     },
     "searchPlaceholder": "Search shortcuts...",
+    "noMatching": "No shortcuts match your search.",
     "collectionTitle": "Shortcuts",
     "collectionDescription": "Find and customize keyboard shortcuts",
     "resetAll": "Reset all",
