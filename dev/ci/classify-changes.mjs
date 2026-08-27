@@ -96,14 +96,17 @@ export function buildDiffArgs(base, head, mode = 'direct') {
     : ['diff', '--name-status', '-z', '--find-renames', base, head];
 }
 
-export function changedPaths(base, head, mode) {
+export function changedPaths(base, head, mode, options = {}) {
   const args = buildDiffArgs(base, head, mode);
   // An all-zero base means a newly created ref. Classify it conservatively by
   // returning no paths, which maps to configuration=true and runs every check.
   if (!args) {
     return [];
   }
-  return parseNameStatus(execFileSync('git', args, { encoding: 'utf8' }));
+  return parseNameStatus(execFileSync('git', args, {
+    encoding: 'utf8',
+    env: options.env,
+  }));
 }
 
 function argumentValue(name) {
