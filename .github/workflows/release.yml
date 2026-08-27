@@ -150,12 +150,30 @@ jobs:
               src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           - name: Windows x64
             key: windows
+            arch: x64
             runner: windows-latest
             args: --bundles nsis
-            artifact_name: release-windows
+            artifact_name: release-windows-x64
+            bundle_dir: src-tauri/target/release/bundle/nsis
+            main_binary: src-tauri/target/release/macro.exe
+            sidecar_binary: src-tauri/binaries/macro-ai-runtime-x86_64-pc-windows-msvc.exe
+            pe_machine: '0x8664'
             artifact_paths: |
               src-tauri/target/release/bundle/nsis/*.exe
               src-tauri/target/release/bundle/nsis/*.exe.sig
+          - name: Windows ARM64
+            key: windows
+            arch: arm64
+            runner: windows-11-vs2026-arm
+            args: --target aarch64-pc-windows-msvc --bundles nsis
+            artifact_name: release-windows-arm64
+            bundle_dir: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis
+            main_binary: src-tauri/target/aarch64-pc-windows-msvc/release/macro.exe
+            sidecar_binary: src-tauri/binaries/macro-ai-runtime-aarch64-pc-windows-msvc.exe
+            pe_machine: '0xAA64'
+            artifact_paths: |
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           - name: Linux x64
             key: linux
             runner: ubuntu-22.04
@@ -307,14 +325,42 @@ jobs:
       - name: Verify unsigned Windows installer
         if: matrix.key == 'windows'
         shell: pwsh
+        env:
+          WINDOWS_BUNDLE_DIR: ${{ matrix.bundle_dir }}
+          MAIN_BINARY_PATH: ${{ matrix.main_binary }}
+          SIDECAR_BINARY_PATH: ${{ matrix.sidecar_binary }}
+          EXPECTED_PE_MACHINE: ${{ matrix.pe_machine }}
         run: |
-          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          function Get-PeMachine([string]$Path) {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              throw "PE binary is missing: $Path"
+            }
+            $stream = [System.IO.File]::OpenRead($Path)
+            try {
+              $reader = [System.IO.BinaryReader]::new($stream)
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadInt32()
+              $stream.Position = $peOffset + 4
+              return ('0x{0:X4}' -f $reader.ReadUInt16())
+            } finally {
+              $stream.Dispose()
+            }
+          }
+
+          foreach ($binary in @($env:MAIN_BINARY_PATH, $env:SIDECAR_BINARY_PATH)) {
+            $machine = Get-PeMachine $binary
+            if ($machine -ne $env:EXPECTED_PE_MACHINE) {
+              throw "$binary has PE machine $machine; expected $env:EXPECTED_PE_MACHINE."
+            }
+          }
+
+          $installer = Get-ChildItem -LiteralPath $env:WINDOWS_BUNDLE_DIR -Filter *.exe | Select-Object -First 1
           if (-not $installer) { throw 'Windows NSIS installer is missing.' }
           $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
           if ($signature.Status -ne 'NotSigned') {
             throw "Windows installer was expected to be unsigned for this release channel, but its Authenticode status is $($signature.Status)."
           }
-          Write-Host 'Windows installer is intentionally not Authenticode-signed. Its Tauri updater artifact remains cryptographically signed.'
+          Write-Host "Windows ${{ matrix.arch }} binaries match $env:EXPECTED_PE_MACHINE. The installer is intentionally not Authenticode-signed; its updater artifact remains cryptographically signed."
 
       - name: Inspect Linux packages
         if: matrix.key == 'linux'
@@ -370,27 +416,30 @@ jobs:
           mkdir -p release-assets
 
           copy_asset() {
-            local pattern="$1"
-            local destination="$2"
+            local artifact_directory="$1"
+            local pattern="$2"
+            local destination="$3"
             local source
-            source="$(find downloaded-artifacts -type f -name "$pattern" | sort | head -n 1)"
+            source="$(find "downloaded-artifacts/${artifact_directory}" -type f -name "$pattern" | sort | head -n 1)"
             if [ -z "$source" ]; then
-              echo "::error::Missing release asset matching ${pattern}"
-              find downloaded-artifacts -type f | sort
+              echo "::error::Missing release asset matching ${artifact_directory}/${pattern}"
+              find "downloaded-artifacts/${artifact_directory}" -type f | sort
               exit 1
             fi
             cp "$source" "release-assets/${destination}"
           }
 
-          copy_asset '*.dmg' "Macro_${VERSION}_macOS_universal.dmg"
-          copy_asset '*.app.tar.gz' "Macro_${VERSION}_macOS_universal.app.tar.gz"
-          copy_asset '*.app.tar.gz.sig' "Macro_${VERSION}_macOS_universal.app.tar.gz.sig"
-          copy_asset '*.exe' "Macro_${VERSION}_Windows_x64_setup.exe"
-          copy_asset '*.exe.sig' "Macro_${VERSION}_Windows_x64_setup.exe.sig"
-          copy_asset '*.AppImage' "Macro_${VERSION}_Linux_x64.AppImage"
-          copy_asset '*.AppImage.sig' "Macro_${VERSION}_Linux_x64.AppImage.sig"
-          copy_asset '*.deb' "Macro_${VERSION}_Linux_x64.deb"
-          copy_asset '*.rpm' "Macro_${VERSION}_Linux_x64.rpm"
+          copy_asset release-macos '*.dmg' "Macro_${VERSION}_macOS_universal.dmg"
+          copy_asset release-macos '*.app.tar.gz' "Macro_${VERSION}_macOS_universal.app.tar.gz"
+          copy_asset release-macos '*.app.tar.gz.sig' "Macro_${VERSION}_macOS_universal.app.tar.gz.sig"
+          copy_asset release-windows-x64 '*.exe' "Macro_${VERSION}_Windows_x64_setup.exe"
+          copy_asset release-windows-x64 '*.exe.sig' "Macro_${VERSION}_Windows_x64_setup.exe.sig"
+          copy_asset release-windows-arm64 '*.exe' "Macro_${VERSION}_Windows_ARM64_setup.exe"
+          copy_asset release-windows-arm64 '*.exe.sig' "Macro_${VERSION}_Windows_ARM64_setup.exe.sig"
+          copy_asset release-linux '*.AppImage' "Macro_${VERSION}_Linux_x64.AppImage"
+          copy_asset release-linux '*.AppImage.sig' "Macro_${VERSION}_Linux_x64.AppImage.sig"
+          copy_asset release-linux '*.deb' "Macro_${VERSION}_Linux_x64.deb"
+          copy_asset release-linux '*.rpm' "Macro_${VERSION}_Linux_x64.rpm"
 
       - name: Write release notes
         env:
@@ -398,15 +447,20 @@ jobs:
           TAG: ${{ needs.validate.outputs.tag }}
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          GENERATED_NOTES="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="${TAG}" \
-            -f target_commitish="${GITHUB_SHA}" \
-            --jq '.body' || true)"
-
-          if [ -n "$GENERATED_NOTES" ]; then
-            printf '%s\n' "$GENERATED_NOTES" > updater-notes.md
+          CURATED_NOTES="dev/release/notes/${VERSION}.md"
+          if [ -s "$CURATED_NOTES" ]; then
+            cp "$CURATED_NOTES" updater-notes.md
           else
-            echo "No user-facing changes were provided for this release." > updater-notes.md
+            GENERATED_NOTES="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${TAG}" \
+              -f target_commitish="${GITHUB_SHA}" \
+              --jq '.body' || true)"
+
+            if [ -n "$GENERATED_NOTES" ]; then
+              printf '%s\n' "$GENERATED_NOTES" > updater-notes.md
+            else
+              echo "No user-facing changes were provided for this release." > updater-notes.md
+            fi
           fi
 
           {
@@ -414,6 +468,7 @@ jobs:
             echo
             echo "- macOS Apple Silicon + Intel: \`Macro_${VERSION}_macOS_universal.dmg\`"
             echo "- Windows x64 (not Authenticode-signed): \`Macro_${VERSION}_Windows_x64_setup.exe\`. Windows may display an \`Unknown publisher\` warning during the initial installation."
+            echo "- Windows ARM64 (not Authenticode-signed): \`Macro_${VERSION}_Windows_ARM64_setup.exe\`. Windows may display an \`Unknown publisher\` warning during the initial installation."
             echo "- Linux x64: \`Macro_${VERSION}_Linux_x64.AppImage\`, \`Macro_${VERSION}_Linux_x64.deb\`, or \`Macro_${VERSION}_Linux_x64.rpm\`"
             echo "- Automatic updates: \`latest.json\` and the signed updater archives are attached for installed Macro clients."
             echo "- Source code: GitHub automatically attaches source archives to this release."
@@ -421,8 +476,6 @@ jobs:
             echo "## Checksums"
             echo
             echo "Download \`SHA256SUMS.txt\` to verify release assets."
-            echo
-            echo "## Changes"
             echo
             cat updater-notes.md
           } > release-notes.md
@@ -444,6 +497,10 @@ jobs:
               "release-assets/Macro_${VERSION}_Windows_x64_setup.exe" \
               "release-assets/Macro_${VERSION}_Windows_x64_setup.exe.sig" \
               "Macro_${VERSION}_Windows_x64_setup.exe" \
+            --artifact windows-aarch64 \
+              "release-assets/Macro_${VERSION}_Windows_ARM64_setup.exe" \
+              "release-assets/Macro_${VERSION}_Windows_ARM64_setup.exe.sig" \
+              "Macro_${VERSION}_Windows_ARM64_setup.exe" \
             --artifact linux-x86_64 \
               "release-assets/Macro_${VERSION}_Linux_x64.AppImage" \
               "release-assets/Macro_${VERSION}_Linux_x64.AppImage.sig" \

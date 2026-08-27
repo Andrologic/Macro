@@ -31,6 +31,7 @@ import type {
   SkillPermissionSnapshot,
   SkillProjectRoot,
   SkillScriptRunRequest,
+  SkillScriptRunResult,
   SkillSettings,
   SkillTemplateCreateRequest,
 } from '../types';
@@ -162,6 +163,10 @@ interface SkillsStore {
     request: SkillScriptRunRequest,
     permissionSnapshot?: SkillPermissionSnapshot | null,
   ) => Promise<string>;
+  runSkillScriptResult: (
+    request: SkillScriptRunRequest,
+    permissionSnapshot?: SkillPermissionSnapshot | null,
+  ) => Promise<SkillScriptRunResult | string>;
 }
 
 export const useSkillsStore = create<SkillsStore>((set, get) => ({
@@ -546,7 +551,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     return response.content;
   },
 
-  runSkillScript: async (request, permissionSnapshot = null) => {
+  runSkillScriptResult: async (request, permissionSnapshot = null) => {
     if (!canRunSkillScriptFromSnapshot(permissionSnapshot, request.skillId)) {
       return 'Skill scripts were not enabled when this turn started. Enable Scripts for this skill in Settings and retry on the next turn.';
     }
@@ -567,11 +572,15 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     const workspacePath = useAppStore.getState().selectedProjectId
       ? useAppStore.getState().getProjectById(useAppStore.getState().selectedProjectId!)?.path
       : null;
-    const result = await services.runSkillScript({
+    return services.runSkillScript({
       ...request,
       projectRoots: getProjectRootsFromAppState(),
       workspacePath,
     });
-    return formatScriptResult(result);
+  },
+
+  runSkillScript: async (request, permissionSnapshot = null) => {
+    const result = await get().runSkillScriptResult(request, permissionSnapshot);
+    return typeof result === 'string' ? result : formatScriptResult(result);
   },
 }));

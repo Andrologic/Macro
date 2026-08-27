@@ -13,10 +13,11 @@ let onboardingState: OnboardingPreferenceState;
 let seenVersions: string[];
 let pendingUpdateNote: unknown;
 let onboardingListener: ((value: OnboardingPreferenceState) => void) | null;
+let currentAppVersion: string;
 const savePreferenceMock = mock(async (_key: string, _value: unknown) => undefined);
 
 mock.module('../../hooks/useAppVersion', () => ({
-  useAppVersion: () => '0.1.0',
+  useAppVersion: () => currentAppVersion,
 }));
 
 mock.module('react-i18next', () => ({
@@ -62,6 +63,7 @@ describe('ReleaseNotesModal', () => {
     };
     seenVersions = [];
     pendingUpdateNote = null;
+    currentAppVersion = '0.1.1';
     onboardingListener = null;
     savePreferenceMock.mockClear();
     container = document.createElement('div');
@@ -90,7 +92,9 @@ describe('ReleaseNotesModal', () => {
     const modal = document.querySelector('[data-testid="release-notes-modal"]');
     expect(modal).not.toBeNull();
     expect(modal?.textContent ?? '').toContain('Release notes');
-    expect(modal?.textContent ?? '').toContain('Macro 0.1.0');
+    expect(modal?.textContent ?? '').toContain('Macro 0.1.1');
+    expect(modal?.textContent ?? '').toContain('Mises à jour automatiques');
+    expect(modal?.textContent ?? '').toContain('Contexte et images');
     expect(modal?.textContent ?? '').not.toContain('Macro 0.1 est prêt');
     expect(modal?.textContent ?? '').not.toContain('Première version stable');
     expect(modal?.textContent ?? '').not.toContain(
@@ -106,20 +110,21 @@ describe('ReleaseNotesModal', () => {
     expect(document.querySelector('[data-testid="release-notes-modal"]')).toBeNull();
     expect(savePreferenceMock).toHaveBeenCalledWith(
       preferenceKeys.RELEASE_NOTES_SEEN_VERSIONS,
-      ['0.1.0'],
+      ['0.1.1'],
     );
   });
 
   it('does not show a note that has already been seen', async () => {
-    seenVersions = ['0.1.0'];
+    seenVersions = ['0.1.1'];
     await renderModal();
 
     expect(document.querySelector('[data-testid="release-notes-modal"]')).toBeNull();
   });
 
   it('shows release notes preserved by the updater and clears them after use', async () => {
+    currentAppVersion = '0.2.0';
     pendingUpdateNote = {
-      version: '0.1.0',
+      version: '0.2.0',
       content: '## Notes received from latest.json',
     };
     await renderModal();
@@ -164,7 +169,7 @@ describe('ReleaseNotesModal', () => {
     expect(document.querySelector('[data-testid="release-notes-modal"]')).toBeNull();
     expect(savePreferenceMock).toHaveBeenCalledWith(
       preferenceKeys.RELEASE_NOTES_SEEN_VERSIONS,
-      ['0.1.0'],
+      ['0.1.1'],
     );
   });
 });

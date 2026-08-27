@@ -219,6 +219,13 @@ describe('scoped MCP runtime', () => {
     })).rejects.toThrow('backend exploded');
   });
 
+  it('throws a typed error when the requested tool is absent from the frozen catalog', async () => {
+    await expect(callScopedMcpTool('mcp__missing__read', {}, [])).rejects.toMatchObject({
+      name: 'ScopedMcpToolReportedError',
+      code: 'MCP_TOOL_REPORTED_ERROR',
+    });
+  });
+
   it('cancels the backend operation when the abort signal fires mid-call', async () => {
     const connect = mock(async (received: MCPRuntimeSelector) => snapshotFor(received));
     const refreshCatalog = mock(async (key: MCPRuntimeKey) => catalogFor(key, ['slow']));

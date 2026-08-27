@@ -1309,9 +1309,11 @@ export const registerImplementPolicyScenarios = (
         .getState()
         .denyPendingToolApproval('implement-conv', 'Stay inside the workspace only.');
 
-      await expect(toolCallPromise).resolves.toBe(
+      const deniedResult = await toolCallPromise;
+      expect(String(deniedResult)).toBe(
         'Tool terminal_run was denied by the user. User reason: Stay inside the workspace only.'
       );
+      expect(deniedResult).toMatchObject({ isError: true, errorKind: 'permission' });
       expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
     });
 
@@ -1389,7 +1391,7 @@ export const registerImplementPolicyScenarios = (
       );
 
       useChatStore.getState().denyPendingToolApproval('implement-conv');
-      await expect(secondToolCall).resolves.toBe('Tool terminal_run was denied by the user.');
+      expect(String(await secondToolCall)).toBe('Tool terminal_run was denied by the user.');
       expect(terminalRunCommandFromChatMock).toHaveBeenCalledTimes(1);
     });
 
@@ -1446,8 +1448,8 @@ export const registerImplementPolicyScenarios = (
 
       useChatStore.getState().stopConversationStream('implement-conv');
 
-      await expect(toolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
-      await expect(queuedToolCallPromise).resolves.toBe('Tool terminal_run was denied by the user.');
+      expect(String(await toolCallPromise)).toBe('Tool terminal_run was denied by the user.');
+      expect(String(await queuedToolCallPromise)).toBe('Tool terminal_run was denied by the user.');
       expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
       expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
       expect(

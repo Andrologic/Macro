@@ -69,6 +69,37 @@ const checkpoint: ConversationCompactionState = {
   updatedAt: '2026-05-16T10:00:00.000Z',
 };
 
+const imageOnlyOverBudgetFootprint = () => {
+  const orderedMessages = [makeMessage('u1', 'user', 'Inspect this image.')];
+  return estimateConversationFootprint({
+    systemMessage: 'You are Macro.',
+    preparedMessages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,aaaa' },
+          },
+        ],
+        image_metadata: [{ width: 10_000, height: 10_000 }],
+      },
+    ],
+    orderedMessages,
+    citations: [],
+    toolDefinitions: [],
+    modelContextWindowTokens: 2_000,
+    outputLimitTokens: 100,
+    contextLimitSource: 'provider_metadata',
+    isContextLimitAuthoritative: true,
+    contextLimitConfidence: 'verified',
+    providerType: 'openai',
+    modelId: 'model-1',
+    mode: 'safety_prestream',
+  });
+};
+
 describe('evaluateContextCompaction', () => {
   it('compacts at the usable 120k threshold for a 128k model with 8k output reserve', () => {
     const fp = footprint({ context: 128_000, output: 8_000, serialized: 120_000 });
@@ -123,6 +154,21 @@ describe('evaluateContextCompaction', () => {
 
     expect(result.decision).toBe('manual_required');
     expect(result.reason).toBe('auto_compaction_disabled');
+  });
+
+  it('does not require manual compaction for image-only pressure after tools', () => {
+    const fp = imageOnlyOverBudgetFootprint();
+    const result = evaluateContextCompaction({
+      boundary: 'post_tool_batch',
+      footprint: fp,
+      budgetPolicy: { auto: false },
+      latestBoundaryPayloadTokens: 20,
+    });
+
+    expect(fp.totalEstimatedTokens).toBeGreaterThan(fp.usableContextTokens);
+    expect(fp.hardStopEstimatedTokens).toBeLessThan(fp.usableContextTokens);
+    expect(result.decision).toBe('send');
+    expect(result.reason).toBe('image_estimate_is_non_blocking');
   });
 
   it('reuses an existing checkpoint when projected payload is inside budget', () => {

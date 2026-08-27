@@ -297,5 +297,5 @@ export const callScopedMcpTool = async (
       options.signal?.removeEventListener('abort', cancelCurrentOperation);
     }
   }
-  return `MCP tool ${toolId} is not configured for this turn.`;
+  throw new ScopedMcpToolReportedError(`MCP tool ${toolId} is not configured for this turn.`);
 };

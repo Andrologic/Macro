@@ -21,6 +21,7 @@ import {
 } from './providerProtocolProfiles';
 import {
   isMacroToolCopilotBuiltInOverride,
+  getMacroToolRegistryEntry,
   type JsonSchema,
   type MacroToolRegistryEntry,
   requireMacroToolRegistryEntry,
@@ -40,6 +41,16 @@ import type {
 import { devLogger } from '../utils/devLogger';
 import { useProviderStore } from '../stores/useProviderStore';
 import { formatConversationFilePage } from './conversationFileTool';
+import {
+  estimateImageContextTokens,
+  estimateStructuredContext,
+  estimateTextTokens,
+  type ImageContextMetadata,
+} from './contextTokenEstimation';
+import {
+  formatToolArgumentValidationError,
+  validateToolArguments,
+} from './toolArgumentValidation';
 
 interface ActiveStreamResources {
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
@@ -190,6 +201,7 @@ const getActiveStreamingSessionIds = (): string[] =>
 export interface StreamMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: StreamMessageContent;
+  image_metadata?: ImageContextMetadata[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   provider_input_items?: unknown[];
@@ -216,6 +228,8 @@ export interface ToolResult {
   tool_call_id: string;
   content: string;
   tool_name?: string;
+  is_error: boolean;
+  error_kind?: 'validation' | 'execution' | 'permission' | 'aborted';
 }
 
 export interface StreamCompletionResult {
@@ -329,6 +343,9 @@ interface ChatCompletionProviderMessageItem {
 export interface ToolResultResolution {
   kind: 'result';
   result: string;
+  isError?: boolean;
+  errorKind?: ToolResult['error_kind'];
+  toString?: () => string;
 }
 
 export interface ToolInterruptResolution {
@@ -895,7 +912,17 @@ const buildChatCompletionMessages = (
   profile: ChatCompletionProviderProtocolProfile
 ): Array<Record<string, unknown>> => {
   const hasToolHistory = messages.some(streamMessageHasToolHistory);
-  const serializedMessages = messages.flatMap((message) => {
+  const systemContents = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => streamContentToCopilotPromptText(message.content).trim())
+    .filter(Boolean);
+  const systemMessages =
+    profile.systemMessagePolicy === 'single_leading' && systemContents.length > 0
+      ? [{ role: 'system', content: systemContents.join('\n\n') }]
+      : systemContents.map((content) => ({ role: 'system', content }));
+  const serializedMessages = messages
+    .filter((message) => message.role !== 'system')
+    .flatMap((message) => {
     const providerItems = getChatCompletionProviderItems(message.provider_input_items);
     if (providerItems.length > 0) {
       return providerItems
@@ -924,8 +951,89 @@ const buildChatCompletionMessages = (
       );
     }
     return [serialized];
-  });
-  return normalizeChatCompletionMessageSequence(serializedMessages, profile);
+    });
+  return normalizeChatCompletionMessageSequence(
+    [...systemMessages, ...serializedMessages],
+    profile,
+  );
+};
+
+const logStreamingDiagnostic = (
+  level: 'debug' | 'info' | 'warn' | 'error',
+  event: string,
+  details: Record<string, string | number | boolean | null | undefined>,
+): void => {
+  const message = JSON.stringify({ event, ...details });
+  void tauriIpc.frontendLog({ level, scope: 'streaming_chat', message }).catch(() => undefined);
+};
+
+const classifyProviderDiagnosticCategory = (error: unknown): string => {
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  if (message.includes('system message must be at the beginning')) {
+    return 'system_message_order';
+  }
+  if (isContextOverflowMessage(message)) return 'context_overflow';
+  if (error instanceof ProviderRuntimeError) return error.kind;
+  return 'unknown';
+};
+
+const validateChatCompletionMessageSequence = (
+  messages: Array<Record<string, unknown>>,
+): void => {
+  let sawNonSystem = false;
+  const pendingToolCalls = new Set<string>();
+
+  for (const [index, message] of messages.entries()) {
+    const role = message.role;
+    if (role === 'system') {
+      if (sawNonSystem) {
+        throw new ProviderRuntimeError(
+          `Invalid message sequence: system message at index ${index} is not leading.`,
+          { kind: 'invalid_tool_protocol', retryable: false },
+        );
+      }
+      continue;
+    }
+    sawNonSystem = true;
+
+    if (role === 'assistant' && Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        const id = isRecord(call) && typeof call.id === 'string' ? call.id.trim() : '';
+        const fn = isRecord(call) && isRecord(call.function) ? call.function : null;
+        const name = fn && typeof fn.name === 'string' ? fn.name.trim() : '';
+        if (!id || !name) {
+          throw new ProviderRuntimeError(
+            `Invalid tool call at message index ${index}: id and function name are required.`,
+            { kind: 'invalid_tool_protocol', retryable: false },
+          );
+        }
+        if (pendingToolCalls.has(id)) {
+          throw new ProviderRuntimeError(
+            `Invalid tool call at message index ${index}: duplicate id ${id}.`,
+            { kind: 'invalid_tool_protocol', retryable: false },
+          );
+        }
+        pendingToolCalls.add(id);
+      }
+    }
+
+    if (role === 'tool') {
+      const id = typeof message.tool_call_id === 'string' ? message.tool_call_id.trim() : '';
+      if (!id || !pendingToolCalls.delete(id)) {
+        throw new ProviderRuntimeError(
+          `Invalid tool result at message index ${index}: no matching assistant tool call.`,
+          { kind: 'invalid_tool_protocol', retryable: false },
+        );
+      }
+    }
+  }
+
+  if (pendingToolCalls.size > 0) {
+    throw new ProviderRuntimeError(
+      `Invalid message sequence: ${pendingToolCalls.size} tool call(s) have no result.`,
+      { kind: 'invalid_tool_protocol', retryable: false },
+    );
+  }
 };
 
 export const estimateChatCompletionSerializedPayloadTokens = (params: {
@@ -942,7 +1050,22 @@ export const estimateChatCompletionSerializedPayloadTokens = (params: {
     modelId: params.modelId,
   });
   const serializedMessages = buildChatCompletionMessages(params.messages, profile);
-  return Math.max(1, Math.ceil(JSON.stringify(serializedMessages).length / 4));
+  const imageMetadata = params.messages.flatMap((message) => {
+    const serializedMessage = buildChatCompletionMessages([message], profile);
+    const serializedImageCount = estimateStructuredContext(serializedMessage).imageCount;
+    const metadata = message.image_metadata ?? [];
+    if (serializedImageCount === 0) return [];
+    return metadata.some((item) => item.sourceFingerprint)
+      ? metadata
+      : metadata.slice(0, serializedImageCount);
+  });
+  return Math.max(
+    1,
+    estimateStructuredContext(serializedMessages, {
+      imageMetadata,
+      context: params,
+    }).totalTokens
+  );
 };
 
 const streamContentToCopilotPromptText = (content: StreamMessageContent): string => {
@@ -956,7 +1079,7 @@ const streamContentToCopilotPromptText = (content: StreamMessageContent): string
         return part.text || '';
       }
       if (part.type === 'image_url') {
-        return part.image_url?.url ? `[image:${part.image_url.url}]` : '[image]';
+        return '[image attachment]';
       }
       return '';
     })
@@ -1012,9 +1135,31 @@ const serializeCopilotConversationPrompt = (
 
 export const estimateCopilotSerializedPayloadTokens = (params: {
   messages: StreamMessage[];
+  providerType?: string;
+  providerId?: string;
+  baseUrl?: string;
+  modelId?: string;
 }): number => {
   const serialized = serializeCopilotConversationPrompt(params.messages);
-  return Math.max(1, Math.ceil(`${serialized.system}\n\n${serialized.prompt}`.length / 4));
+  const imageTokens = params.messages
+    .flatMap((message) => {
+      const imageCount = Array.isArray(message.content)
+        ? message.content.filter((part) => part.type === 'image_url').length
+        : 0;
+      return imageCount > 0
+        ? (message.image_metadata ?? []).slice(0, imageCount)
+        : [];
+    })
+    .reduce(
+      (total, metadata) =>
+        total +
+        estimateImageContextTokens({ metadata, context: params }).tokens,
+      0
+    );
+  return Math.max(
+    1,
+    estimateTextTokens(`${serialized.system}\n\n${serialized.prompt}`) + imageTokens
+  );
 };
 
 const buildAssistantChatCompletionProviderItem = (params: {
@@ -2491,6 +2636,7 @@ export const __testables = {
   shouldRequestProviderReasoning,
   stripThinkingBlocksForModel,
   summarizeProviderTextPresence,
+  validateChatCompletionMessageSequence,
 };
 
 const getFunctionToolName = (tool: unknown): string | null => {
@@ -2597,6 +2743,12 @@ const streamNativeTurnViaTauri = async (params: {
   const resources = getOrCreateActiveStreamResources(sessionId);
   const requestId = createStreamingRequestId();
   resources.tauriRequestId = requestId;
+  const allowedTools = new Set(params.allowedToolIds ?? []);
+  const toolSchemas = new Map<string, JsonSchema>();
+  for (const toolName of allowedTools) {
+    const entry = getMacroToolRegistryEntry(toolName);
+    if (entry) toolSchemas.set(toolName, entry.parameters);
+  }
 
   let fullContent = '';
 
@@ -2685,17 +2837,30 @@ const streamNativeTurnViaTauri = async (params: {
                 let hiddenContext: string | undefined;
                 let visibleContent: string | undefined;
                 let interrupt = false;
+                let isError = false;
+                let errorKind: ToolResult['error_kind'] | undefined;
 
-                if (toolName === 'question') {
-                  questionToolRequestCount += 1;
-                }
-
-                if (toolName === 'question' && questionToolRequestCount > 1) {
+                const schema = toolSchemas.get(toolName);
+                const validationIssues = schema ? validateToolArguments(args, schema) : [];
+                if (validationIssues.length > 0) {
+                  toolResult = formatToolArgumentValidationError(toolName, validationIssues);
+                  isError = true;
+                  errorKind = 'validation';
+                } else if (!allowedTools.has(toolName)) {
+                  toolResult = `Tool ${toolName} is disabled for the current mode.`;
+                  isError = true;
+                  errorKind = 'permission';
+                } else if (toolName === 'question' && questionToolRequestCount > 0) {
                   toolResult =
                     'Error executing tool question: only one question tool call is allowed per assistant turn.';
+                  isError = true;
+                  errorKind = 'execution';
                 } else if (!params.onToolCall) {
                   toolResult = `Tool ${toolName} is unavailable in this provider context.`;
+                  isError = true;
+                  errorKind = 'permission';
                 } else {
+                  if (toolName === 'question') questionToolRequestCount += 1;
                   const resolution = normalizeToolCallResolution(
                     await params.onToolCall(toolName, args, toolCallId)
                   );
@@ -2713,6 +2878,8 @@ const streamNativeTurnViaTauri = async (params: {
                     interrupt = true;
                   } else if (resolution?.kind === 'result') {
                     toolResult = resolution.result;
+                    isError = resolution.isError === true;
+                    errorKind = resolution.errorKind;
                   }
                 }
 
@@ -2723,6 +2890,8 @@ const streamNativeTurnViaTauri = async (params: {
                   hiddenContext,
                   visibleContent,
                   interrupt,
+                  isError,
+                  errorKind,
                 });
                 params.onLiveToolResult?.({
                   toolName,
@@ -2741,6 +2910,8 @@ const streamNativeTurnViaTauri = async (params: {
                   requestId,
                   toolCallId,
                   result: toolResult,
+                  isError: true,
+                  errorKind: 'execution',
                 }).catch(() => undefined);
                 params.onLiveToolResult?.({
                   toolName,
@@ -2907,6 +3078,11 @@ const streamChatViaNativeToolCallingProvider = async (
     skillToolIds: options.skillToolIds,
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
+  const toolSchemas = new Map<string, JsonSchema>();
+  for (const toolName of allowedTools) {
+    const entry = getMacroToolRegistryEntry(toolName);
+    if (entry) toolSchemas.set(toolName, entry.parameters);
+  }
   const streamAccumulator = createStreamAccumulator({
     onToken,
     onToolTracesUpdate,
@@ -3140,6 +3316,7 @@ const streamChatViaNativeToolCallingProvider = async (
         let toolResult = '';
         let customToolResult: string | undefined;
         let detail: string | undefined;
+        let toolErrorKind: ToolResult['error_kind'];
         streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
           execution_mode: 'sequential',
           batch_id: toolBatchId,
@@ -3153,6 +3330,8 @@ const streamChatViaNativeToolCallingProvider = async (
             tool_call_id: toolCall.id,
             content: toolResult,
             tool_name: toolName,
+            is_error: true,
+            error_kind: 'aborted',
           });
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           streamAccumulator.completeToolTrace(toolCall.id);
@@ -3168,9 +3347,31 @@ const streamChatViaNativeToolCallingProvider = async (
             order: toolIndex,
           });
 
+          const schema = toolSchemas.get(toolName);
+          const validationIssues = schema ? validateToolArguments(args, schema) : [];
+          if (validationIssues.length > 0) {
+            toolResult = formatToolArgumentValidationError(toolName, validationIssues);
+            onToolResult?.(toolName, toolResult);
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              content: toolResult,
+              tool_name: toolName,
+              is_error: true,
+              error_kind: 'validation',
+            });
+            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+            continue;
+          }
+
           if (!allowedTools.has(toolName)) {
             toolResult = `Tool ${toolName} is disabled for the current mode.`;
-            toolResults.push({ tool_call_id: toolCall.id, content: toolResult, tool_name: toolName });
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              content: toolResult,
+              tool_name: toolName,
+              is_error: true,
+              error_kind: 'permission',
+            });
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
             continue;
           }
@@ -3183,6 +3384,8 @@ const streamChatViaNativeToolCallingProvider = async (
               tool_call_id: toolCall.id,
               content: toolResult,
               tool_name: toolName,
+              is_error: true,
+              error_kind: 'validation',
             });
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
             continue;
@@ -3202,6 +3405,9 @@ const streamChatViaNativeToolCallingProvider = async (
             streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
           } else if (customResult?.kind === 'result') {
             customToolResult = customResult.result;
+            if (customResult.isError) {
+              toolErrorKind = customResult.errorKind ?? 'execution';
+            }
           }
           if (showToolTraces) {
             streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
@@ -3216,7 +3422,13 @@ const streamChatViaNativeToolCallingProvider = async (
             ) {
               toolResult = 'Web search is not configured for this provider.';
               onToolResult?.(toolName, toolResult);
-              toolResults.push({ tool_call_id: toolCall.id, content: toolResult, tool_name: toolName });
+              toolResults.push({
+                tool_call_id: toolCall.id,
+                content: toolResult,
+                tool_name: toolName,
+                is_error: true,
+                error_kind: 'execution',
+              });
               streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
             }
@@ -3233,7 +3445,13 @@ const streamChatViaNativeToolCallingProvider = async (
             if (!enableWebFetch) {
               toolResult = 'Web fetch is disabled for this provider.';
               onToolResult?.(toolName, toolResult);
-              toolResults.push({ tool_call_id: toolCall.id, content: toolResult, tool_name: toolName });
+              toolResults.push({
+                tool_call_id: toolCall.id,
+                content: toolResult,
+                tool_name: toolName,
+                is_error: true,
+                error_kind: 'permission',
+              });
               streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
             }
@@ -3281,21 +3499,25 @@ const streamChatViaNativeToolCallingProvider = async (
 
                 if (isWorkspaceReadError) {
                   toolResult = `Error executing tool read_file: ${workspaceResult}`;
+                  toolErrorKind = 'execution';
                 } else {
                   toolResult = workspaceResult;
                 }
               } else {
                 toolResult = 'Error executing tool read_file: workspace read returned no content.';
+                toolErrorKind = 'execution';
               }
             }
 
             if (!toolResult.trim()) {
               if (workspaceReadAttempted) {
                 toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
+                toolErrorKind = 'execution';
               } else if (workspaceMode) {
                 toolResult =
                   `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
                   ' Use the read tool directly with an explicit path.';
+                toolErrorKind = 'permission';
               } else {
                 const contextMatch = fileToolContext.find((file) => {
                   const title = normalizeMatch(file.title);
@@ -3315,6 +3537,7 @@ const streamChatViaNativeToolCallingProvider = async (
                   toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
                 } else if (!contextMatch) {
                   toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                  toolErrorKind = 'execution';
                 } else {
                   const label = contextMatch.path || contextMatch.title || contextMatch.source;
                   const content = (contextMatch.content || contextMatch.snippet || '').trim();
@@ -3342,6 +3565,7 @@ const streamChatViaNativeToolCallingProvider = async (
             toolResult = customToolResult;
           } else if (toolName === 'mark_source_passage') {
             toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
+            toolErrorKind = 'execution';
           } else if (toolName === 'read_sources') {
             toolResult = customToolResult || 'No source passages available.';
           } else if (toolName === 'edit_source_passage') {
@@ -3350,12 +3574,14 @@ const streamChatViaNativeToolCallingProvider = async (
             toolResult = customToolResult;
           } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
             toolResult = `Unsupported tool: ${toolName}`;
+            toolErrorKind = 'execution';
           }
 
           onToolResult?.(toolName, toolResult);
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
         } catch (error) {
           toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
+          toolErrorKind = 'execution';
           onToolResult?.(toolName, toolResult);
           streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
         } finally {
@@ -3366,6 +3592,8 @@ const streamChatViaNativeToolCallingProvider = async (
           tool_call_id: toolCall.id,
           content: toolResult,
           tool_name: toolName,
+          is_error: Boolean(toolErrorKind),
+          ...(toolErrorKind ? { error_kind: toolErrorKind } : {}),
         });
 
         if (interruptResolution) {
@@ -3384,16 +3612,7 @@ const streamChatViaNativeToolCallingProvider = async (
       }
 
       if (toolResults.length > 0) {
-        const hasToolErrors = toolResults.some((result) => {
-          const content = result.content.trim();
-          return (
-            /^Error executing/i.test(content) ||
-            /^Missing\s+/i.test(content) ||
-            /^No match found/i.test(content) ||
-            /^File not found/i.test(content) ||
-            /^Cannot\s+/i.test(content)
-          );
-        });
+        const hasToolErrors = toolResults.some((result) => result.is_error);
         const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
         const toolMessages = toolResults.map((result) => {
           const providerInputItem = buildFunctionCallOutputProviderInputItem(
@@ -3624,6 +3843,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     skillToolIds: options.skillToolIds,
     runnableSkillToolIds: options.runnableSkillToolIds,
   });
+  const toolSchemas = new Map<string, JsonSchema>();
+  for (const toolName of allowedTools) {
+    const entry = getMacroToolRegistryEntry(toolName);
+    if (entry) toolSchemas.set(toolName, entry.parameters);
+  }
 
   const maxTurns = normalizeChatMaxTurns(options.maxTurns);
   let turnCount = 0;
@@ -3656,6 +3880,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       while (!response) {
         const profile = getChatCompletionProfile();
         const requestMessages = buildChatCompletionMessages(currentMessages, profile);
+        validateChatCompletionMessageSequence(requestMessages);
         requestBody.messages = requestMessages;
         applyReasoningToChatCompletionsRequest(
           requestBody,
@@ -3666,6 +3891,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         applyToolsToChatCompletionsRequest(requestBody, tools, profile, requestMessages);
 
         try {
+          logStreamingDiagnostic('debug', 'provider_request', {
+            request_id: genericRequestId,
+            provider_id: providerId,
+            provider_type: providerType,
+            model_id: modelId,
+            turn: turnCount,
+            message_count: requestMessages.length,
+            tool_count: tools.length,
+            has_tool_history: chatCompletionMessagesHaveToolHistory(requestMessages),
+          });
           emitGenericTimeline('provider_request_sent');
           const candidateResponse = await fetchWithTimeout(
             `${baseUrl}/chat/completions`,
@@ -3684,6 +3919,16 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
           response = candidateResponse;
         } catch (error) {
+          logStreamingDiagnostic('error', 'provider_request_failed', {
+            request_id: genericRequestId,
+            provider_id: providerId,
+            provider_type: providerType,
+            model_id: modelId,
+            turn: turnCount,
+            error_kind: classifyProviderDiagnosticCategory(error),
+            status: error instanceof ProviderRuntimeError ? error.status : undefined,
+            error_name: error instanceof Error ? error.name : 'UnknownError',
+          });
           if (error instanceof Error && error.name === 'AbortError') {
             emitGenericTimeline('done');
             onComplete({
@@ -4044,6 +4289,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           let toolResult = '';
           let customToolResult: string | undefined;
           let detail: string | undefined;
+          let toolErrorKind: ToolResult['error_kind'];
           streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
             execution_mode: 'sequential',
             batch_id: toolBatchId,
@@ -4056,6 +4302,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             toolResults.push({
               tool_call_id: toolCall.id,
               content: toolResult,
+              tool_name: toolName,
+              is_error: true,
+              error_kind: 'aborted',
             });
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
             streamAccumulator.completeToolTrace(toolCall.id);
@@ -4071,11 +4320,30 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               order: toolIndex,
             });
 
+            const schema = toolSchemas.get(toolName);
+            const validationIssues = schema ? validateToolArguments(args, schema) : [];
+            if (validationIssues.length > 0) {
+              toolResult = formatToolArgumentValidationError(toolName, validationIssues);
+              onToolResult?.(toolName, toolResult);
+              toolResults.push({
+                tool_call_id: toolCall.id,
+                content: toolResult,
+                tool_name: toolName,
+                is_error: true,
+                error_kind: 'validation',
+              });
+              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
+              continue;
+            }
+
             if (!allowedTools.has(toolName)) {
               toolResult = `Tool ${toolName} is disabled for the current mode.`;
               toolResults.push({
                 tool_call_id: toolCall.id,
                 content: toolResult,
+                tool_name: toolName,
+                is_error: true,
+                error_kind: 'permission',
               });
               streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
@@ -4088,6 +4356,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               toolResults.push({
                 tool_call_id: toolCall.id,
                 content: toolResult,
+                tool_name: toolName,
+                is_error: true,
+                error_kind: 'validation',
               });
               streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
               continue;
@@ -4108,6 +4379,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
             } else if (customResult?.kind === 'result') {
               customToolResult = customResult.result;
+              if (customResult.isError) {
+                toolErrorKind = customResult.errorKind ?? 'execution';
+              }
             }
             if (showToolTraces) {
               streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
@@ -4125,6 +4399,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 toolResults.push({
                   tool_call_id: toolCall.id,
                   content: toolResult,
+                  tool_name: toolName,
+                  is_error: true,
+                  error_kind: 'execution',
                 });
                 streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
                 continue;
@@ -4148,6 +4425,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 toolResults.push({
                   tool_call_id: toolCall.id,
                   content: toolResult,
+                  tool_name: toolName,
+                  is_error: true,
+                  error_kind: 'permission',
                 });
                 streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
                 continue;
@@ -4197,11 +4477,13 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
                   if (isWorkspaceReadError) {
                     toolResult = `Error executing tool read_file: ${workspaceResult}`;
+                    toolErrorKind = 'execution';
                   } else {
                     toolResult = workspaceResult;
                   }
                 } else {
                   toolResult = 'Error executing tool read_file: workspace read returned no content.';
+                  toolErrorKind = 'execution';
                 }
               }
 
@@ -4209,10 +4491,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                 // We already have authoritative workspace output; do not fall back to context snippets.
               } else if (workspaceReadAttempted) {
                 toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
+                toolErrorKind = 'execution';
               } else if (workspaceMode) {
                 toolResult =
                   `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
                   ` Use the read tool directly with an explicit path.`;
+                toolErrorKind = 'permission';
               } else {
                 const match = fileToolContext.find((f) => {
                   const title = normalizeMatch(f.title);
@@ -4232,6 +4516,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
                   toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
                 } else if (!match) {
                   toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
+                  toolErrorKind = 'execution';
                 } else {
                   const label = match.path || match.title || match.source;
                   const content = (match.content || match.snippet || '').trim();
@@ -4258,6 +4543,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               toolResult = customToolResult;
             } else if (toolName === 'mark_source_passage') {
               toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
+              toolErrorKind = 'execution';
             } else if (toolName === 'read_sources') {
               toolResult = customToolResult || 'No source passages available.';
             } else if (toolName === 'edit_source_passage') {
@@ -4266,12 +4552,14 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
               toolResult = customToolResult;
             } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
               toolResult = `Unsupported tool: ${toolName}`;
+              toolErrorKind = 'execution';
             }
 
             onToolResult?.(toolName, toolResult);
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           } catch (e) {
             toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(e)}`;
+            toolErrorKind = 'execution';
             onToolResult?.(toolName, toolResult);
             streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
           } finally {
@@ -4281,6 +4569,9 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           toolResults.push({
             tool_call_id: toolCall.id,
             content: toolResult,
+            tool_name: toolName,
+            is_error: Boolean(toolErrorKind),
+            ...(toolErrorKind ? { error_kind: toolErrorKind } : {}),
           });
 
           if (interruptResolution) {
@@ -4297,16 +4588,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
         // If we have tool results, make a follow-up request to get the final response
         if (toolResults.length > 0) {
-          const hasToolErrors = toolResults.some((result) => {
-            const content = result.content.trim();
-            return (
-              /^Error executing/i.test(content) ||
-              /^Missing\s+/i.test(content) ||
-              /^No match found/i.test(content) ||
-              /^File not found/i.test(content) ||
-              /^Cannot\s+/i.test(content)
-            );
-          });
+          const hasToolErrors = toolResults.some((result) => result.is_error);
           const hasFileReadResults = toolResults.some((result) => /^FILE:\s+/m.test(result.content));
           if (providerType === '__legacy_workspace_fallback__') {
             const deterministicError = [
@@ -4359,34 +4641,28 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
             })
           );
 
-          const guardSystemMessages: StreamMessage[] = [];
-          if (hasToolErrors) {
-            guardSystemMessages.push({
-              role: 'system',
-              content:
-                'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
-                'State the exact failure and ask for a corrected path/context when needed.',
-            });
-          }
-          if (hasFileReadResults) {
-            guardSystemMessages.push({
-              role: 'system',
-              content:
-                'For file analysis tasks, use ONLY the exact tool outputs provided in this conversation. ' +
-                'Do not invent code symbols, structs, handlers, routes, or data not present in tool output. ' +
-                'If uncertain, say that the information is not present in the file content you received.',
-            });
-          }
-
-          if (guardSystemMessages.length > 0) {
-            currentMessages.push(...guardSystemMessages);
-          }
           currentMessages = await maybeCompactFollowUpMessages(options, {
             reason: 'tool_results',
             messages: currentMessages,
             turnCount,
             toolResultCount: toolResults.length,
           });
+          if (hasToolErrors) {
+            currentMessages.push({
+              role: 'system',
+              content:
+                'One or more tool calls failed. Do not fabricate file contents or command outputs. ' +
+                'State the exact failure and ask for corrected input when needed.',
+            });
+          }
+          if (hasFileReadResults) {
+            currentMessages.push({
+              role: 'system',
+              content:
+                'For file analysis tasks, use only the exact tool outputs provided in this conversation. ' +
+                'Do not invent code symbols, handlers, routes, or data absent from those outputs.',
+            });
+          }
         }
       }
 
@@ -4576,6 +4852,7 @@ export async function sendChatNonStreaming(options: Omit<StreamingChatOptions, '
         reasoningTransportMode,
       });
       const requestMessages = buildChatCompletionMessages(messages, profile);
+      validateChatCompletionMessageSequence(requestMessages);
       const requestBody: Record<string, unknown> = {
         model: modelId,
         messages: requestMessages,

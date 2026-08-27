@@ -14,6 +14,7 @@ export type ChatCompletionReasoningReplay =
   | 'reasoning_details';
 
 export type ChatCompletionToolCallIdPolicy = 'none' | 'claude' | 'mistral';
+export type ChatCompletionSystemMessagePolicy = 'single_leading' | 'multiple_leading';
 
 export interface ChatCompletionProviderProtocolProfile {
   requestReasoning: ChatCompletionRequestReasoning;
@@ -23,6 +24,7 @@ export interface ChatCompletionProviderProtocolProfile {
   toolCallIdPolicy: ChatCompletionToolCallIdPolicy;
   insertAssistantAfterToolBeforeUser: boolean;
   injectNoopToolWhenHistoryHasTools: boolean;
+  systemMessagePolicy: ChatCompletionSystemMessagePolicy;
 }
 
 export interface ChatCompletionProviderProtocolParams {
@@ -174,6 +176,10 @@ export const resolveChatCompletionProviderProtocolProfile = (
     toolCallIdPolicy: resolveToolCallIdPolicy(families),
     insertAssistantAfterToolBeforeUser: families.isMistralFamily,
     injectNoopToolWhenHistoryHasTools: families.isLiteLlmProxy,
+    // A single leading system message is accepted by strict OpenAI-compatible
+    // servers, including Qwen deployments. Keep this conservative default for
+    // custom endpoints whose message-order rules Macro cannot discover.
+    systemMessagePolicy: 'single_leading',
   };
 };
 

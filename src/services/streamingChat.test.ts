@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ChatMessage } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
+import { fingerprintImageSource } from './contextTokenEstimation';
 import type {
   LiveStreamContextSnapshot,
   StreamCompletionResult,
@@ -54,6 +55,7 @@ const loadStreamingChat = async (
   const tauriIpcMock = {
     ...actualTauriIpc,
     isTauriAvailable: () => options?.forceTauriAvailable ?? false,
+    frontendLog: async () => undefined,
     aiStreamChat: async (params: {
       requestId: string;
       providerId: string;
@@ -111,6 +113,8 @@ const loadStreamingChat = async (
       hiddenContext?: string | null;
       visibleContent?: string | null;
       interrupt?: boolean;
+      isError?: boolean;
+      errorKind?: 'validation' | 'permission' | 'execution' | 'aborted';
     }) =>
       invokeImpl('ai_submit_tool_result', {
         request: {
@@ -120,6 +124,8 @@ const loadStreamingChat = async (
           hidden_context: params.hiddenContext ?? null,
           visible_content: params.visibleContent ?? null,
           interrupt: params.interrupt ?? false,
+          is_error: params.isError ?? false,
+          error_kind: params.errorKind ?? null,
         },
       }),
   };
@@ -190,6 +196,134 @@ describe('streamingChat Architect tool contracts', () => {
     expect(String(UPDATE_PLAN_TOOL.function.description)).toContain(
       'logical slug becomes immutable'
     );
+  });
+});
+
+describe('streamingChat context estimates', () => {
+  beforeEach(() => {
+    mock.restore();
+  });
+
+  it('counts image context without treating a chat-completion data URL as text', async () => {
+    const { estimateChatCompletionSerializedPayloadTokens } = await loadStreamingChat();
+    const dataUrl = `data:image/png;base64,${'a'.repeat(900_000)}`;
+
+    const tokens = estimateChatCompletionSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect this image.' },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+          image_metadata: [
+            { width: 1024, height: 1024 },
+            { width: 10_000, height: 10_000 },
+          ],
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-4.1',
+    });
+
+    expect(tokens).toBeGreaterThanOrEqual(765);
+    expect(tokens).toBeLessThan(850);
+  });
+
+  it('aligns image metadata with images that survive provider-item serialization', async () => {
+    const { estimateChatCompletionSerializedPayloadTokens } = await loadStreamingChat();
+    const removedDataUrl = `data:image/png;base64,${'a'.repeat(64)}`;
+    const retainedDataUrl = `data:image/png;base64,${'b'.repeat(64)}`;
+
+    const tokens = estimateChatCompletionSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'image_url', image_url: { url: removedDataUrl } },
+            { type: 'image_url', image_url: { url: retainedDataUrl } },
+          ],
+          image_metadata: [
+            {
+              width: 10_000,
+              height: 10_000,
+              sourceFingerprint: fingerprintImageSource(removedDataUrl),
+            },
+            {
+              width: 512,
+              height: 512,
+              sourceFingerprint: fingerprintImageSource(retainedDataUrl),
+            },
+          ],
+          provider_input_items: [
+            {
+              type: 'chat_completion_message',
+              role: 'assistant',
+              content: [
+                { type: 'image_url', image_url: { url: retainedDataUrl } },
+              ],
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: 'Inspect the retained image.',
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-4.1',
+    });
+
+    expect(tokens).toBeGreaterThanOrEqual(255);
+    expect(tokens).toBeLessThan(350);
+  });
+
+  it('does not embed image data URLs in the Copilot prompt estimate', async () => {
+    const { estimateCopilotSerializedPayloadTokens } = await loadStreamingChat();
+    const dataUrl = `data:image/png;base64,${'a'.repeat(900_000)}`;
+
+    const tokens = estimateCopilotSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect this image.' },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+          image_metadata: [
+            { width: 1024, height: 1024 },
+            { width: 10_000, height: 10_000 },
+          ],
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-5.6',
+    });
+
+    expect(tokens).toBeGreaterThanOrEqual(1229);
+    expect(tokens).toBeLessThan(1350);
+  });
+
+  it('does not count stale Copilot metadata when the prompt contains no image', async () => {
+    const { estimateCopilotSerializedPayloadTokens } = await loadStreamingChat();
+
+    const tokens = estimateCopilotSerializedPayloadTokens({
+      messages: [
+        {
+          role: 'assistant',
+          content: 'Historical text-only answer.',
+          image_metadata: [{ width: 10_000, height: 10_000 }],
+        },
+        {
+          role: 'user',
+          content: 'Continue.',
+        },
+      ],
+      providerType: 'openai',
+      modelId: 'gpt-5.6',
+    });
+
+    expect(tokens).toBeLessThan(100);
   });
 });
 
@@ -1346,6 +1480,46 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('coalesces every system instruction at the beginning for strict compatible servers', async () => {
+    const { __testables } = await loadStreamingChat();
+    const profile = __testables.resolveChatCompletionProviderCapabilities({
+      providerType: 'openai',
+      providerId: 'andrologic',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'qwen3.5',
+    });
+    const payload = __testables.buildChatCompletionMessages(
+      [
+        { role: 'system', content: 'Base instruction.' },
+        { role: 'user', content: 'Run the tool.' },
+        { role: 'assistant', content: 'Working.' },
+        { role: 'system', content: 'Retry after a tool error.' },
+      ],
+      profile,
+    );
+
+    expect(payload).toEqual([
+      {
+        role: 'system',
+        content: 'Base instruction.\n\nRetry after a tool error.',
+      },
+      { role: 'user', content: 'Run the tool.' },
+      { role: 'assistant', content: 'Working.' },
+    ]);
+    expect(() => __testables.validateChatCompletionMessageSequence(payload)).not.toThrow();
+  });
+
+  it('rejects a non-leading system message before the provider request', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(() =>
+      __testables.validateChatCompletionMessageSequence([
+        { role: 'user', content: 'Hello' },
+        { role: 'system', content: 'Too late' },
+      ]),
+    ).toThrow('system message at index 1 is not leading');
+  });
+
   it('replays DeepSeek reasoning_content only when the history has tool calls', async () => {
     const { __testables } = await loadStreamingChat();
     const providerItem = __testables.buildAssistantChatCompletionProviderItem({
@@ -1533,6 +1707,9 @@ describe('streamingChat tool rendering helpers', () => {
         expect(request.reason).toBe('tool_results');
         expect(request.toolResultCount).toBe(1);
         expect(JSON.stringify(request.messages)).toContain('FILE: README.md');
+        expect(JSON.stringify(request.messages)).not.toContain(
+          'For file analysis tasks, use only the exact tool outputs',
+        );
         return {
           messages: [
             {
@@ -1572,13 +1749,253 @@ describe('streamingChat tool rendering helpers', () => {
     expect(requestBodies[1]?.messages).toEqual([
       {
         role: 'system',
-        content: '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+        content: expect.stringContaining(
+          'For file analysis tasks, use only the exact tool outputs',
+        ),
       },
-      {
-        role: 'user',
-        content: 'Continue.',
-      },
+      { role: 'user', content: 'Continue.' },
     ]);
+    expect(String(requestBodies[1]?.messages?.[0]?.content)).toContain(
+      '[COMPACTED CONVERSATION STATE]\nTool output summarized.',
+    );
+  });
+
+  it('returns invalid tool arguments to the model without sending a late system message', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(init?.body ?? '{}') as {
+        messages: Array<Record<string, unknown>>;
+      };
+      requestBodies.push(body);
+
+      if (requestBodies.length === 1) {
+        return {
+          ok: true,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_edit","type":"function","function":{"name":"edit_source_passage","arguments":"{\\"action\\":\\"reclassify\\"}"}}]}}]}\n\n',
+                ),
+              );
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+            },
+          }),
+          text: async () => '',
+          json: async () => ({}),
+        };
+      }
+
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"I need a citation id."}}]}\n\n'),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const onToolCall = mock(async () => 'must not execute');
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'andrologic',
+      providerType: 'openai',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'qwen3.5',
+      messages: [
+        { role: 'system', content: 'You are Macro.' },
+        { role: 'user', content: 'Reclassify the source.' },
+      ],
+      allowedToolIds: ['edit_source_passage'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(requestBodies).toHaveLength(2);
+    const followUpMessages = requestBodies[1]?.messages ?? [];
+    expect(followUpMessages.filter((message) => message.role === 'system')).toHaveLength(1);
+    expect(followUpMessages[0]?.role).toBe('system');
+    expect(String(followUpMessages[0]?.content)).toContain(
+      'One or more tool calls failed',
+    );
+    expect(followUpMessages.at(-1)).toEqual(
+      expect.objectContaining({
+        role: 'tool',
+        content: expect.stringContaining('$.citation_id required value is missing'),
+      }),
+    );
+  });
+
+  it('does not apply the restricted Macro schema validator to MCP tools', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async () => {
+      requestCount += 1;
+      const data =
+        requestCount === 1
+          ? '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_mcp","type":"function","function":{"name":"mcp__demo__count","arguments":"{\\"count\\":1}"}}]}}]}'
+          : '{"choices":[{"delta":{"content":"Done."}}]}';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${data}\n\ndata: [DONE]\n\n`));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const onToolCall = mock(
+      async (_toolName: string, _args: Record<string, unknown>) => 'counted',
+    );
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'custom',
+      providerType: 'openai',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Count.' }],
+      allowedToolIds: ['mcp__demo__count'],
+      mcpTools: [
+        {
+          id: 'mcp__demo__count',
+          serverId: 'demo',
+          name: 'count',
+          description: 'Count an integer.',
+          inputSchema: {
+            type: 'object',
+            properties: { count: { type: 'integer' } },
+            required: ['count'],
+          },
+        },
+      ],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall,
+    });
+
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(onToolCall.mock.calls[0]?.[1]).toEqual({ count: 1 });
+  });
+
+  it('marks a failed workspace-backed read_file result as an error', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(JSON.parse(init?.body ?? '{}'));
+      const data =
+        requestBodies.length === 1
+          ? '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_file","type":"function","function":{"name":"read_file","arguments":"{\\"file\\":\\"missing.txt\\"}"}}]}}]}'
+          : '{"choices":[{"delta":{"content":"The read failed."}}]}';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${data}\n\ndata: [DONE]\n\n`));
+            controller.close();
+          },
+        }),
+        text: async () => '',
+        json: async () => ({}),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+
+    await streamChat({
+      providerId: 'custom',
+      providerType: 'openai',
+      baseUrl: 'https://example.invalid/v1',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Read the file.' }],
+      allowedToolIds: ['read_file', 'read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete: () => undefined,
+      onError: (error: Error) => {
+        throw error;
+      },
+      onToolCall: async () => ({
+        kind: 'result',
+        result: 'File not found: missing.txt',
+        isError: true,
+        errorKind: 'execution',
+      }),
+    });
+
+    const systemContent = requestBodies[1]?.messages
+      .filter((message) => message.role === 'system')
+      .map((message) => String(message.content))
+      .join('\n');
+    expect(systemContent).toContain('One or more tool calls failed');
+    expect(requestBodies[1]?.messages.at(-1)).toEqual(
+      expect.objectContaining({
+        role: 'tool',
+        content: expect.stringContaining('File not found: missing.txt'),
+      }),
+    );
+  });
+
+  it('validates non-streaming provider payloads before fetch', async () => {
+    const fetchMock = mock(async () => {
+      throw new Error('fetch must not run for an invalid payload');
+    });
+    const { sendChatNonStreaming } = await loadStreamingChat(fetchMock);
+
+    await expect(
+      sendChatNonStreaming({
+        providerId: 'custom',
+        providerType: 'openai',
+        baseUrl: 'https://example.invalid/v1',
+        modelId: 'model',
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              {
+                id: 'duplicate',
+                type: 'function',
+                function: { name: 'read', arguments: '{"path":"a"}' },
+              },
+              {
+                id: 'duplicate',
+                type: 'function',
+                function: { name: 'read', arguments: '{"path":"b"}' },
+              },
+            ],
+          },
+          { role: 'tool', content: 'a', tool_call_id: 'duplicate' },
+        ],
+        onComplete: () => undefined,
+        onError: () => undefined,
+      }),
+    ).rejects.toThrow('duplicate id duplicate');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('continues the active turn when a steering message arrives before completion', async () => {
@@ -2583,6 +3000,8 @@ describe('streamingChat tool rendering helpers', () => {
     const onToolCall = mock(async (toolName: string, args: Record<string, unknown>) => ({
       kind: 'result' as const,
       result: `${toolName}:${args.plan_id}`,
+      isError: true,
+      errorKind: 'execution' as const,
     }));
     const onComplete = mock((_result: unknown) => undefined);
 
@@ -2619,6 +3038,8 @@ describe('streamingChat tool rendering helpers', () => {
         hidden_context: null,
         visible_content: null,
         interrupt: false,
+        is_error: true,
+        error_kind: 'execution',
       },
     });
     expect(onComplete).toHaveBeenCalledWith(

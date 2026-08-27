@@ -2163,6 +2163,8 @@ export async function aiSubmitToolResult(params: {
   hiddenContext?: string | null;
   visibleContent?: string | null;
   interrupt?: boolean;
+  isError?: boolean;
+  errorKind?: "validation" | "permission" | "execution" | "aborted";
 }): Promise<void> {
   return invoke("ai_submit_tool_result", {
     request: {
@@ -2172,6 +2174,8 @@ export async function aiSubmitToolResult(params: {
       hidden_context: params.hiddenContext ?? null,
       visible_content: params.visibleContent ?? null,
       interrupt: params.interrupt ?? false,
+      is_error: params.isError ?? false,
+      error_kind: params.errorKind ?? null,
     },
   });
 }

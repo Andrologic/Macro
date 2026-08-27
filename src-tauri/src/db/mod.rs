@@ -33,9 +33,12 @@ pub type DbResult<T> = Result<T, DbError>;
 const MIGRATION_001_VERSION: i64 = 1;
 const MIGRATION_001_NAME: &str = "001_initial";
 const MIGRATION_001_SQL: &str = include_str!("migrations/001_initial.sql");
-const MIGRATION_002_VERSION: i64 = 2;
-const MIGRATION_002_NAME: &str = "002_agent_runs";
-const MIGRATION_002_SQL: &str = include_str!("migrations/002_agent_runs.sql");
+// Version 2 was shipped as `002_disable_unconfigured_default_providers` before
+// that one-off migration was removed from the source tree. Existing databases
+// still carry its migration record, so agent runs must use the next version.
+const MIGRATION_003_VERSION: i64 = 3;
+const MIGRATION_003_NAME: &str = "003_agent_runs";
+const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -150,13 +153,13 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
 
     if !list_applied_migrations(connection)
         .await?
-        .contains(&MIGRATION_002_VERSION)
+        .contains(&MIGRATION_003_VERSION)
     {
         apply_migration(
             connection,
-            MIGRATION_002_VERSION,
-            MIGRATION_002_NAME.to_string(),
-            MIGRATION_002_SQL.to_string(),
+            MIGRATION_003_VERSION,
+            MIGRATION_003_NAME.to_string(),
+            MIGRATION_003_SQL.to_string(),
         )
         .await?;
     }
@@ -1701,12 +1704,12 @@ mod tests {
         assert_eq!(row.get::<String, _>("name"), "001_initial");
     }
 
-    async fn assert_migration_002_applied(pool: &sqlx::SqlitePool) {
-        let row = sqlx::query("SELECT name FROM schema_migrations WHERE version = 2")
+    async fn assert_agent_runs_migration_applied(pool: &sqlx::SqlitePool) {
+        let row = sqlx::query("SELECT name FROM schema_migrations WHERE version = 3")
             .fetch_one(pool)
             .await
-            .expect("migration 002 row");
-        assert_eq!(row.get::<String, _>("name"), "002_agent_runs");
+            .expect("migration 003 row");
+        assert_eq!(row.get::<String, _>("name"), "003_agent_runs");
     }
 
     async fn apply_baseline_in_transaction(pool: &sqlx::SqlitePool) {
@@ -1818,7 +1821,7 @@ mod tests {
         );
 
         assert_migration_001_applied(&pool).await;
-        assert_migration_002_applied(&pool).await;
+        assert_agent_runs_migration_applied(&pool).await;
     }
 
     #[tokio::test]
@@ -1832,11 +1835,20 @@ mod tests {
             .await
             .expect("baseline pool");
         apply_baseline_in_transaction(&pool).await;
+        sqlx::query(
+            r#"
+            INSERT INTO schema_migrations (version, name, applied_at)
+            VALUES (2, '002_disable_unconfigured_default_providers', '2026-08-10T00:00:00Z')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("stamp previously shipped migration 002");
         drop(pool);
 
         let migrated = create_pool(&db_path).await.expect("migrated pool");
         assert_migration_001_applied(&migrated).await;
-        assert_migration_002_applied(&migrated).await;
+        assert_agent_runs_migration_applied(&migrated).await;
         let table_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
         )
@@ -2200,7 +2212,7 @@ mod tests {
             .await
             .expect("recover migration metadata");
         assert_migration_001_applied(&recovered).await;
-        assert_migration_002_applied(&recovered).await;
+        assert_agent_runs_migration_applied(&recovered).await;
         let table_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
         )

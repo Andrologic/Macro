@@ -22,8 +22,14 @@ import {
   resolveModelContextLimits,
   resolveUsableContextTokens,
 } from './modelContextLimits';
+import {
+  estimateStructuredContext,
+  estimateTextTokens,
+  type ImageTokenEstimateConfidence,
+  type MultimodalTokenContext,
+  type StructuredContextTokenEstimate,
+} from './contextTokenEstimation';
 
-const CHARS_PER_TOKEN = 4;
 export const CONTEXT_COMPACTION_POLICY_VERSION = 3;
 const SOURCE_PASSAGE_VERSION = CONTEXT_COMPACTION_POLICY_VERSION;
 export const COMPACTED_CONVERSATION_STATE_MARKER =
@@ -84,6 +90,10 @@ export interface EstimateConversationFootprintParams {
   contextLimitConfidence?: ModelContextLimitConfidence;
   contextLimitWarning?: string;
   previousModelContextWindowTokens?: number | null;
+  providerType?: string | null;
+  providerId?: string | null;
+  baseUrl?: string | null;
+  modelId?: string | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   countProviderInputItems?: boolean;
   mode?: CompactionMode;
@@ -126,6 +136,8 @@ export interface MaybeCompactConversationParams {
   contextLimitWarning?: string;
   previousModelContextWindowTokens?: number | null;
   providerId?: string | null;
+  providerType?: string | null;
+  baseUrl?: string | null;
   modelId?: string | null;
   currentCompactionState?: ConversationCompactionState | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
@@ -232,131 +244,124 @@ const PROTECTED_TOOL_CONTEXT_PREFIXES = ['need_', 'strategy_', 'plan_', 'skill_'
 const normalizeWhitespace = (value: string): string =>
   value.replace(/\s+/g, ' ').trim();
 
-const estimateTokensForText = (value: string): number => {
-  const normalized = value.trim();
-  if (!normalized) return 0;
-  return Math.max(1, Math.ceil(normalized.length / CHARS_PER_TOKEN));
+const estimateTokensForText = estimateTextTokens;
+
+const emptyStructuredEstimate = (): StructuredContextTokenEstimate => ({
+  totalTokens: 0,
+  textTokens: 0,
+  imageTokens: 0,
+  imageCount: 0,
+  imagesWithKnownDimensions: 0,
+  imageTransportBytes: 0,
+  imageEstimateConfidence: 'unknown',
+  imageEstimateSources: [],
+});
+
+interface StreamMessageContextEstimate {
+  totalTokens: number;
+  blockableTokens: number;
+  imageTokens: number;
+  imageCount: number;
+  imagesWithKnownDimensions: number;
+  imageTransportBytes: number;
+  imageEstimateConfidence: ImageTokenEstimateConfidence;
+}
+
+const combineEstimateConfidence = (
+  estimates: StructuredContextTokenEstimate[]
+): ImageTokenEstimateConfidence => {
+  const withImages = estimates.filter((estimate) => estimate.imageCount > 0);
+  if (withImages.some((estimate) => estimate.imageEstimateConfidence === 'unknown')) {
+    return 'unknown';
+  }
+  if (withImages.some((estimate) => estimate.imageEstimateConfidence === 'fallback')) {
+    return 'fallback';
+  }
+  if (
+    withImages.some((estimate) => estimate.imageEstimateConfidence === 'provider_formula')
+  ) {
+    return 'provider_formula';
+  }
+  return withImages.length > 0 ? 'model_formula' : 'unknown';
 };
 
-const estimateImageTokensFromUrl = (url: string | undefined): number => {
-  const normalized = (url || '').trim();
-  if (!normalized) return 1100;
-
-  const dataUrlMatch = normalized.match(/^data:image\/[^;]+;base64,(.+)$/i);
-  if (dataUrlMatch?.[1]) {
-    const base64Chars = dataUrlMatch[1].replace(/\s+/g, '').length;
-    // Keep this conservative: serialized base64 often dominates provider payloads,
-    // and undercounting images is worse than compacting a turn early.
-    return Math.max(1100, Math.ceil(base64Chars / CHARS_PER_TOKEN));
-  }
-
-  if (/^https?:\/\//i.test(normalized)) {
-    return 1100 + estimateTokensForText(normalized);
-  }
-
-  return Math.max(1100, estimateTokensForText(normalized));
-};
-
-const estimateTokensForStreamContent = (content: StreamMessageContent): number => {
+const estimateStreamContentContext = (
+  content: StreamMessageContent,
+  imageMetadata: StreamMessage['image_metadata'] = [],
+  context: MultimodalTokenContext = {}
+): StructuredContextTokenEstimate => {
   if (typeof content === 'string') {
-    return estimateTokensForText(content);
+    const textTokens = estimateTokensForText(content);
+    return { ...emptyStructuredEstimate(), totalTokens: textTokens, textTokens };
   }
-
-  return content.reduce((total, part) => {
-    if (part.type === 'text') {
-      return total + estimateTokensForText(part.text || '');
-    }
-    if (part.type === 'image_url') {
-      return total + estimateImageTokensFromUrl(part.image_url?.url);
-    }
-    return total;
-  }, 0);
+  return estimateStructuredContext(content, { imageMetadata, context });
 };
 
-const estimateImageTokensInUnknownValue = (
-  value: unknown,
-  depth = 0
-): number => {
-  if (depth > 8 || value == null) return 0;
+const estimateTokensForStreamContent = (content: StreamMessageContent): number =>
+  estimateStreamContentContext(content).totalTokens;
 
-  if (typeof value === 'string') {
-    return /^data:image\/[^;]+;base64,/i.test(value) || /^https?:\/\//i.test(value)
-      ? estimateImageTokensFromUrl(value)
-      : 0;
-  }
-
-  if (Array.isArray(value)) {
-    return value.reduce(
-      (total, item) => total + estimateImageTokensInUnknownValue(item, depth + 1),
-      0
-    );
-  }
-
-  if (!isRecord(value)) return 0;
-
-  let total = 0;
-  for (const [key, child] of Object.entries(value)) {
-    const normalizedKey = key.toLowerCase();
-    if (
-      (normalizedKey.includes('image') ||
-        normalizedKey.includes('attachment') ||
-        normalizedKey.includes('url')) &&
-      typeof child === 'string'
-    ) {
-      total += estimateImageTokensFromUrl(child);
-      continue;
-    }
-    total += estimateImageTokensInUnknownValue(child, depth + 1);
-  }
-  return total;
-};
-
-const estimateProviderInputItemTokens = (item: unknown): number => {
-  const serializedTokens = estimateTokensForText(JSON.stringify(item));
-  const imageTokens = estimateImageTokensInUnknownValue(item);
-  return Math.max(serializedTokens, imageTokens);
-};
-
-const estimateTokensForProviderInputItems = (providerInputItems?: unknown[]): number => {
+const estimateProviderInputContext = (
+  providerInputItems?: unknown[],
+  imageMetadata: StreamMessage['image_metadata'] = [],
+  context: MultimodalTokenContext = {}
+): StructuredContextTokenEstimate => {
   if (!Array.isArray(providerInputItems) || providerInputItems.length === 0) {
-    return 0;
+    return emptyStructuredEstimate();
   }
 
-  return Math.max(
-    estimateTokensForText(JSON.stringify(providerInputItems)),
-    providerInputItems.reduce<number>(
-      (total, item) => total + estimateProviderInputItemTokens(item),
-      0
-    )
-  );
+  return estimateStructuredContext(providerInputItems, { imageMetadata, context });
 };
 
-const estimateTokensForStreamMessage = (
+const estimateStreamMessageContext = (
   message: StreamMessage,
-  options: { countProviderInputItems?: boolean } = {}
-): number =>
-  Math.max(
-    estimateTokensForStreamContent(message.content),
-    options.countProviderInputItems === false
-      ? 0
-      : estimateTokensForProviderInputItems(message.provider_input_items)
+  options: {
+    countProviderInputItems?: boolean;
+    context?: MultimodalTokenContext;
+  } = {}
+): StreamMessageContextEstimate => {
+  const context = options.context ?? {};
+  const content = estimateStreamContentContext(
+    message.content,
+    message.image_metadata,
+    context
   );
+  const provider =
+    options.countProviderInputItems === false
+      ? emptyStructuredEstimate()
+      : estimateProviderInputContext(
+          message.provider_input_items,
+          message.image_metadata,
+          context
+        );
+  return {
+    totalTokens: Math.max(content.totalTokens, provider.totalTokens),
+    blockableTokens: Math.max(content.textTokens, provider.textTokens),
+    imageTokens: Math.max(content.imageTokens, provider.imageTokens),
+    imageCount: Math.max(content.imageCount, provider.imageCount),
+    imagesWithKnownDimensions: Math.max(
+      content.imagesWithKnownDimensions,
+      provider.imagesWithKnownDimensions
+    ),
+    imageTransportBytes: Math.max(
+      content.imageTransportBytes,
+      provider.imageTransportBytes
+    ),
+    imageEstimateConfidence: combineEstimateConfidence([content, provider]),
+  };
+};
 
-const countImagePlaceholderTokens = (messages: StreamMessage[]): number =>
-  messages.reduce((total, message) => {
-    if (typeof message.content === 'string') return total;
-    return (
-      total +
-      message.content.reduce(
-        (sum, part) =>
-          sum +
-          (part.type === 'image_url'
-            ? estimateImageTokensFromUrl(part.image_url?.url)
-            : 0),
-        0
-      )
-    );
-  }, 0);
+export const estimateBlockableTokensForStreamMessages = (
+  messages: StreamMessage[],
+  options: {
+    countProviderInputItems?: boolean;
+    context?: MultimodalTokenContext;
+  } = {}
+): number =>
+  messages.reduce(
+    (total, message) =>
+      total + estimateStreamMessageContext(message, options).blockableTokens,
+    0
+  );
 
 const resolveThreshold = (
   usableRatio: number,
@@ -406,6 +411,21 @@ export const isContextFootprintOverUsableBudget = (
   footprint.isContextLimitAuthoritative === false
     ? false
     : footprint.isHardStop || footprint.usableContextRatio >= 1;
+
+export const isBlockableContextOverUsableBudget = (
+  footprint: Pick<
+    ContextFootprint,
+    | 'hardStopEstimatedTokens'
+    | 'totalEstimatedTokens'
+    | 'usableContextTokens'
+    | 'isContextLimitAuthoritative'
+  >
+): boolean => {
+  if (footprint.isContextLimitAuthoritative === false) return false;
+  const blockableTokens =
+    footprint.hardStopEstimatedTokens ?? footprint.totalEstimatedTokens;
+  return blockableTokens >= footprint.usableContextTokens;
+};
 
 const exceedsUsableContext = isContextFootprintOverUsableBudget;
 
@@ -727,6 +747,7 @@ const getCompactionBoundaryIndex = (
     preparedMessages?: StreamMessage[];
     retainedUserTurns?: number;
     retainedRecentTokenBudget?: number;
+    context?: MultimodalTokenContext;
   }
 ): number => {
   const { orderedMessages, preparedMessages } = params;
@@ -758,7 +779,9 @@ const getCompactionBoundaryIndex = (
       const orderedMessage = orderedMessages[index];
       const preparedMessage = preparedMessages[index];
       const tokenEstimate = preparedMessage
-        ? estimateTokensForStreamMessage(preparedMessage)
+        ? estimateStreamMessageContext(preparedMessage, {
+            context: params.context,
+          }).totalTokens
         : estimateTokensForText(
             `${orderedMessage?.content ?? ''}\n${orderedMessage?.hidden_context ?? ''}`
           );
@@ -993,7 +1016,8 @@ export const pruneToolContextBlocks = (
 export const compactProviderInputItemsForContext = (
   preparedMessages: StreamMessage[],
   orderedMessages: ChatMessage[],
-  pass: CompactionPass
+  pass: CompactionPass,
+  context: MultimodalTokenContext = {}
 ): { messages: StreamMessage[]; compactedMessageIds: string[] } => {
   const recentTurnStartIndex = getRecentUserTurnStartIndex(orderedMessages);
   const latestUserMessage = [...orderedMessages]
@@ -1014,8 +1038,16 @@ export const compactProviderInputItemsForContext = (
       pass === 'ultra' ||
       pass === 'forced' ||
       index < recentTurnStartIndex ||
-      estimateTokensForProviderInputItems(message.provider_input_items) >
-        estimateTokensForStreamContent(message.content) + 200;
+      estimateProviderInputContext(
+        message.provider_input_items,
+        message.image_metadata,
+        context
+      ).totalTokens >
+        estimateStreamContentContext(
+          message.content,
+          message.image_metadata,
+          context
+        ).totalTokens + 200;
 
     if (!shouldCompact) {
       return message;
@@ -1024,8 +1056,16 @@ export const compactProviderInputItemsForContext = (
     const compactedItems = message.provider_input_items
       .map((item) => compactProviderInputItem(item, pass, message.content))
       .filter((item): item is unknown => item !== null);
-    const before = estimateTokensForProviderInputItems(message.provider_input_items);
-    const after = estimateTokensForProviderInputItems(compactedItems);
+    const before = estimateProviderInputContext(
+      message.provider_input_items,
+      message.image_metadata,
+      context
+    ).totalTokens;
+    const after = estimateProviderInputContext(
+      compactedItems,
+      message.image_metadata,
+      context
+    ).totalTokens;
     if (compactedItems.length === 0 || after >= before) {
       compactedMessageIds.add(orderedMessage.id);
       return {
@@ -1054,6 +1094,7 @@ const runPreparedCompactionPass = (params: {
   shouldPrune: boolean;
   forcePrune?: boolean;
   mode: ContextCompactionKind;
+  context?: MultimodalTokenContext;
 }): PreparedCompactionPassResult => {
   const pruned =
     params.shouldPrune
@@ -1069,7 +1110,8 @@ const runPreparedCompactionPass = (params: {
       ? compactProviderInputItemsForContext(
           pruned.messages,
           params.orderedMessages,
-          params.pass
+          params.pass,
+          params.context
         )
       : { messages: pruned.messages, compactedMessageIds: [] };
 
@@ -1432,28 +1474,79 @@ export const estimateConversationFootprint = (
       : undefined;
   const modelContextWindowShrank = Boolean(previousModelContextWindowTokens);
   const countProviderInputItems = params.countProviderInputItems !== false;
+  const multimodalContext: MultimodalTokenContext = {
+    providerType: params.providerType,
+    providerId: params.providerId,
+    baseUrl: params.baseUrl,
+    modelId: params.modelId,
+  };
   const systemTokens = estimateTokensForText(params.systemMessage);
   const toolSchemaTokens = estimateTokensForText(
     JSON.stringify(params.toolDefinitions || [])
   );
-  const imagePlaceholderTokens = countImagePlaceholderTokens(params.preparedMessages);
-  const visibleMessageTokens = params.preparedMessages.reduce(
-    (total, message) => total + estimateTokensForStreamContent(message.content),
+  const contentEstimates = params.preparedMessages.map((message) =>
+    estimateStreamContentContext(
+      message.content,
+      message.image_metadata,
+      multimodalContext
+    )
+  );
+  const providerEstimates = params.preparedMessages.map((message) =>
+    countProviderInputItems
+      ? estimateProviderInputContext(
+          message.provider_input_items,
+          message.image_metadata,
+          multimodalContext
+        )
+      : emptyStructuredEstimate()
+  );
+  const messageEstimates = params.preparedMessages.map((message) =>
+    estimateStreamMessageContext(message, {
+      countProviderInputItems,
+      context: multimodalContext,
+    })
+  );
+  const imagePlaceholderTokens = messageEstimates.reduce(
+    (total, estimate) => total + estimate.imageTokens,
     0
   );
-  const providerInputTokens = params.preparedMessages.reduce(
-    (total, message) =>
-      total +
-      (countProviderInputItems
-        ? estimateTokensForProviderInputItems(message.provider_input_items)
-        : 0),
+  const visibleMessageTokens = contentEstimates.reduce(
+    (total, estimate) => total + estimate.totalTokens,
     0
   );
-  const totalPreparedTokens = params.preparedMessages.reduce(
-    (total, message) =>
-      total + estimateTokensForStreamMessage(message, { countProviderInputItems }),
+  const providerInputTokens = providerEstimates.reduce(
+    (total, estimate) => total + estimate.totalTokens,
     0
   );
+  const totalPreparedTokens = messageEstimates.reduce(
+    (total, estimate) => total + estimate.totalTokens,
+    0
+  );
+  const blockablePreparedTokens = messageEstimates.reduce(
+    (total, estimate) => total + estimate.blockableTokens,
+    0
+  );
+  const imageCount = messageEstimates.reduce(
+    (total, estimate) => total + estimate.imageCount,
+    0
+  );
+  const imagesWithKnownDimensions = messageEstimates.reduce(
+    (total, estimate) => total + estimate.imagesWithKnownDimensions,
+    0
+  );
+  const imageTransportBytes = messageEstimates.reduce(
+    (total, estimate) => total + estimate.imageTransportBytes,
+    0
+  );
+  const imageEstimateConfidence = (() => {
+    const confidences = messageEstimates
+      .filter((estimate) => estimate.imageCount > 0)
+      .map((estimate) => estimate.imageEstimateConfidence);
+    if (confidences.includes('unknown')) return 'unknown';
+    if (confidences.includes('fallback')) return 'fallback';
+    if (confidences.includes('provider_formula')) return 'provider_formula';
+    return confidences.length > 0 ? 'model_formula' : 'unknown';
+  })();
   const hasCompactedState = params.preparedMessages.some(
     (message) =>
       message.role === 'system' &&
@@ -1498,11 +1591,14 @@ export const estimateConversationFootprint = (
   const latestPreparedUserMessage = [...params.preparedMessages]
     .reverse()
     .find((message) => message.role === 'user');
-  const latestUserContextTokens = latestPreparedUserMessage
-    ? estimateTokensForStreamMessage(latestPreparedUserMessage, {
+  const latestUserEstimate = latestPreparedUserMessage
+    ? estimateStreamMessageContext(latestPreparedUserMessage, {
         countProviderInputItems,
+        context: multimodalContext,
       })
-    : 0;
+    : null;
+  const latestUserContextTokens = latestUserEstimate?.totalTokens ?? 0;
+  const latestUserBlockableTokens = latestUserEstimate?.blockableTokens ?? 0;
   let serializedPayloadTokens: number | undefined;
   try {
     const serializedEstimate = params.estimateSerializedPayloadTokens?.([
@@ -1521,6 +1617,17 @@ export const estimateConversationFootprint = (
   }
   const structuralEstimatedTokens =
     totalPreparedTokens + systemTokens + toolSchemaTokens + citationTokens;
+  const structuralBlockableTokens =
+    blockablePreparedTokens + systemTokens + toolSchemaTokens + citationTokens;
+  const serializedBlockableTokens =
+    serializedPayloadTokens === undefined
+      ? 0
+      : Math.max(0, serializedPayloadTokens - imagePlaceholderTokens) +
+        toolSchemaTokens;
+  const hardStopEstimatedTokens = Math.max(
+    structuralBlockableTokens,
+    serializedBlockableTokens
+  );
   const totalEstimatedTokens =
     serializedPayloadTokens === undefined
       ? structuralEstimatedTokens
@@ -1541,7 +1648,8 @@ export const estimateConversationFootprint = (
   const isContextLimitAuthoritative =
     params.isContextLimitAuthoritative !== false;
   const isHardStop =
-    isContextLimitAuthoritative && totalContextRatio >= budget.hardStopRatio;
+    isContextLimitAuthoritative &&
+    hardStopEstimatedTokens / params.modelContextWindowTokens >= budget.hardStopRatio;
   const resolvedThreshold = resolveThreshold(
     usableContextRatio,
     hiddenContextRatio,
@@ -1566,9 +1674,15 @@ export const estimateConversationFootprint = (
     systemTokens,
     toolSchemaTokens,
     imagePlaceholderTokens,
+    imageCount,
+    imagesWithKnownDimensions,
+    imageTransportBytes,
+    imageEstimateConfidence,
+    hardStopEstimatedTokens,
     citationTokens,
     summaryTokens,
     latestUserContextTokens,
+    latestUserBlockableTokens,
     modelContextWindowTokens: params.modelContextWindowTokens,
     inputLimitTokens: params.inputLimitTokens,
     outputLimitTokens: params.outputLimitTokens,
@@ -1606,7 +1720,9 @@ const buildCompactionState = async (params: {
   isContextLimitAuthoritative?: boolean;
   contextLimitConfidence?: ModelContextLimitConfidence;
   contextLimitWarning?: string;
+  providerType?: string | null;
   providerId?: string | null;
+  baseUrl?: string | null;
   modelId?: string | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   countProviderInputItems?: boolean;
@@ -1625,6 +1741,12 @@ const buildCompactionState = async (params: {
     preparedMessages: params.preparedMessages,
     retainedUserTurns: params.retainedUserTurns,
     retainedRecentTokenBudget: params.retainedRecentTokenBudget,
+    context: {
+      providerType: params.providerType,
+      providerId: params.providerId,
+      baseUrl: params.baseUrl,
+      modelId: params.modelId,
+    },
   });
   if (boundaryIndex < 0) return null;
 
@@ -1740,6 +1862,10 @@ const buildCompactionState = async (params: {
       isContextLimitAuthoritative: params.isContextLimitAuthoritative,
       contextLimitConfidence: params.contextLimitConfidence,
       contextLimitWarning: params.contextLimitWarning,
+      providerType: params.providerType,
+      providerId: params.providerId,
+      baseUrl: params.baseUrl,
+      modelId: params.modelId,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       countProviderInputItems: params.countProviderInputItems,
       budgetPolicy: params.budgetPolicy,
@@ -1810,11 +1936,15 @@ export const maybeCompactConversation = async (
     isContextLimitAuthoritative: params.isContextLimitAuthoritative,
     contextLimitConfidence: params.contextLimitConfidence,
     contextLimitWarning: params.contextLimitWarning,
-      previousModelContextWindowTokens: params.previousModelContextWindowTokens,
-      estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
-      countProviderInputItems: params.countProviderInputItems,
-      mode,
-      budgetPolicy: params.budgetPolicy,
+    previousModelContextWindowTokens: params.previousModelContextWindowTokens,
+    providerType: params.providerType,
+    providerId: params.providerId,
+    baseUrl: params.baseUrl,
+    modelId: params.modelId,
+    estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
+    countProviderInputItems: params.countProviderInputItems,
+    mode,
+    budgetPolicy: params.budgetPolicy,
   });
 
   const footprintBefore = estimateFootprint(params.preparedMessages, params.mode);
@@ -1822,9 +1952,14 @@ export const maybeCompactConversation = async (
     footprintBefore.usableContextTokens,
     params.budgetPolicy?.preserveRecentTokens
   );
+  const automaticCompactionAllowed = params.budgetPolicy?.auto !== false;
+  const explicitCompactionRequested =
+    params.mode === 'manual' || Boolean(params.forceCompaction);
   const shouldPrune =
     params.budgetPolicy?.prune !== false &&
-    (Boolean(activeTrigger) || Boolean(params.forcePrune));
+    (explicitCompactionRequested ||
+      Boolean(params.forcePrune) ||
+      (automaticCompactionAllowed && Boolean(activeTrigger)));
 
   const runPass = (pass: CompactionPass): PreparedCompactionPassResult =>
     runPreparedCompactionPass({
@@ -1834,6 +1969,12 @@ export const maybeCompactConversation = async (
       shouldPrune,
       forcePrune: params.forcePrune,
       mode: params.mode,
+      context: {
+        providerType: params.providerType,
+        providerId: params.providerId,
+        baseUrl: params.baseUrl,
+        modelId: params.modelId,
+      },
     });
 
   let compactionPass = resolveInitialCompactionPass(params.mode, params.forcePrune);
@@ -1888,6 +2029,12 @@ export const maybeCompactConversation = async (
         orderedMessages: params.orderedMessages,
         preparedMessages,
         retainedRecentTokenBudget,
+        context: {
+          providerType: params.providerType,
+          providerId: params.providerId,
+          baseUrl: params.baseUrl,
+          modelId: params.modelId,
+        },
       });
       const manualBoundaryMessageId =
         manualBoundaryIndex >= 0
@@ -1916,7 +2063,9 @@ export const maybeCompactConversation = async (
 
   let footprintAfter = estimateFootprint(messages.slice(1), 'after_compaction');
 
-  const compactionAllowed = Boolean(activeTrigger) || Boolean(params.forceCompaction);
+  const compactionAllowed =
+    explicitCompactionRequested ||
+    (automaticCompactionAllowed && Boolean(activeTrigger));
   const shouldCreateNewCompaction = shouldCreateCompactionCheckpoint({
     trigger: activeTrigger,
     forceCompaction: params.forceCompaction,
@@ -1960,7 +2109,9 @@ export const maybeCompactConversation = async (
       isContextLimitAuthoritative: params.isContextLimitAuthoritative,
       contextLimitConfidence: params.contextLimitConfidence,
       contextLimitWarning: params.contextLimitWarning,
+      providerType: params.providerType,
       providerId: params.providerId,
+      baseUrl: params.baseUrl,
       modelId: params.modelId,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       countProviderInputItems: params.countProviderInputItems,
@@ -2056,6 +2207,10 @@ export const maybeCompactConversation = async (
       isContextLimitAuthoritative: params.isContextLimitAuthoritative,
       contextLimitConfidence: params.contextLimitConfidence,
       contextLimitWarning: params.contextLimitWarning,
+      providerType: params.providerType,
+      providerId: params.providerId,
+      baseUrl: params.baseUrl,
+      modelId: params.modelId,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
       countProviderInputItems: params.countProviderInputItems,
       budgetPolicy: params.budgetPolicy,
