@@ -350,7 +350,7 @@ export const ToolsView: React.FC = () => {
           />
           {filteredTools.map((tool) => {
             const webSearchLockedByKey = tool.id === 'web_search' && !hasSelectedWebSearchKey;
-            const switchDisabled = webSearchLockedByKey || !nativeToolsSupported;
+            const switchDisabled = webSearchLockedByKey;
 
             return (
               <div
@@ -396,7 +396,7 @@ export const ToolsView: React.FC = () => {
                 </div>
 
                 <Switch
-                  checked={isToolEnabled(tool.id)}
+                  checked={webSearchLockedByKey ? false : isToolEnabled(tool.id)}
                   disabled={switchDisabled}
                   onCheckedChange={() => {
                     if (switchDisabled) return;
@@ -417,23 +417,13 @@ export const ToolsView: React.FC = () => {
                   </div>
                 )}
 
-                {!webSearchLockedByKey && !nativeToolsSupported && (
-                  <div className="pointer-events-none absolute -top-2 right-3 hidden group-hover:block z-10">
-                    <div className="rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md whitespace-nowrap">
-                      {t(
-                        'tools.needNativeToolSupportTooltip',
-                        'Select a model with native tool calling support to use this tool.'
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })}
 
           {filteredTools.length === 0 && (
             query.trim()
-              ? <SettingsSearchEmpty />
+              ? <SettingsSearchEmpty message={t('tools.noToolsFound', 'No tools found')} />
               : (
                 <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
                   {t('tools.noToolsFound', 'No tools found')}

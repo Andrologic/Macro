@@ -209,6 +209,9 @@ export const sanitizeNotificationCenterItems = (value: unknown): NotificationCen
       const item = toNotificationCenterItem(entry);
       return item ? [item] : [];
     })
+    .filter((item) => !`${item.title} ${item.description ?? ''}`.includes(
+      'Desktop transport requires Tauri IPC; use VITE_BACKEND_TRANSPORT=remote for web/mobile runtimes'
+    ))
     .map(normalizeLegacyNotificationCenterItem);
 
   return coalesceNotificationCenterItems(normalizedItems)

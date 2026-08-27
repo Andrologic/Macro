@@ -610,6 +610,20 @@ describe('Footer', () => {
     mock.restore();
   });
 
+  it('exposes the notification center relationship to assistive technology', async () => {
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await flushAsyncWork();
+
+    const button = container.querySelector<HTMLButtonElement>('[aria-controls="notification-center-popover"]');
+    expect(button?.getAttribute('aria-label')).toBe('Notifications');
+    expect(button?.getAttribute('title')).toBe('Notifications');
+  });
+
   it('uses the selected Implement task repository for the label and Git commands', async () => {
     appState.mode = 'Implement';
     appState.selectedTaskId = 'task-web';

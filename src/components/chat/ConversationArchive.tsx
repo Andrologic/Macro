@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
+import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
@@ -32,6 +33,23 @@ import { useVirtualList } from '../../hooks/useVirtualList';
 interface ConversationArchiveProps {
   className?: string;
 }
+
+export const resolveArchiveViewSelection = (params: {
+  enteringArchive: boolean;
+  conversations: Array<{ id: string }>;
+  archivedIds: ReadonlySet<string>;
+  previousActiveConversationId: string | null;
+}): string | null => {
+  if (params.enteringArchive) {
+    return params.conversations.find((conversation) => params.archivedIds.has(conversation.id))?.id ?? null;
+  }
+  const previousActive = params.previousActiveConversationId
+    ? params.conversations.find(
+        (conversation) => conversation.id === params.previousActiveConversationId && !params.archivedIds.has(conversation.id)
+      )
+    : null;
+  return previousActive?.id ?? params.conversations.find((conversation) => !params.archivedIds.has(conversation.id))?.id ?? null;
+};
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -403,13 +421,18 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+  const replaceSharedArchivedConversationIds = useConversationArchiveStore(
+    (state) => state.replaceArchivedConversationIds
+  );
+  const previousActiveConversationIdRef = useRef<string | null>(null);
   const archiveMutationVersionRef = useRef(0);
   const archivePersistenceRef = useRef<Promise<void>>(Promise.resolve());
   const archivedIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     archivedIdsRef.current = archivedIds;
-  }, [archivedIds]);
+    replaceSharedArchivedConversationIds(archivedIds);
+  }, [archivedIds, replaceSharedArchivedConversationIds]);
 
   const persistArchivedConversationIds = useCallback(
     async (nextArchivedIds: Set<string>): Promise<boolean> => {
@@ -674,6 +697,10 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               clearSelectedConversation();
             }
           }
+          if (!shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
+            previousActiveConversationIdRef.current = selectedConversationId;
+            setShowArchived(false);
+          }
           notify.success(
             shouldArchive
               ? normalizedIds.length === 1
@@ -797,10 +824,48 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     void createConversation(t('chat.newConversation', 'New Conversation'), null, null);
   }, [createConversation, exitMultiSelectMode, showArchived, t]);
 
-  const handleToggleArchivedView = useCallback(() => {
+  const handleToggleArchivedView = useCallback(async () => {
     exitMultiSelectMode();
-    setShowArchived((current) => !current);
-  }, [exitMultiSelectMode]);
+    if (!showArchived) {
+      if (selectedConversationId && !archivedIds.has(selectedConversationId)) {
+        previousActiveConversationIdRef.current = selectedConversationId;
+      }
+      setShowArchived(true);
+      const archivedConversationId = resolveArchiveViewSelection({
+        enteringArchive: true,
+        conversations: chatConversations,
+        archivedIds,
+        previousActiveConversationId: previousActiveConversationIdRef.current,
+      });
+      if (archivedConversationId) {
+        await selectConversation(archivedConversationId);
+      } else {
+        clearSelectedConversation();
+      }
+      return;
+    }
+
+    setShowArchived(false);
+    const activeConversationId = resolveArchiveViewSelection({
+      enteringArchive: false,
+      conversations: chatConversations,
+      archivedIds,
+      previousActiveConversationId: previousActiveConversationIdRef.current,
+    });
+    if (activeConversationId) {
+      await selectConversation(activeConversationId);
+    } else {
+      clearSelectedConversation();
+    }
+  }, [
+    archivedIds,
+    chatConversations,
+    clearSelectedConversation,
+    exitMultiSelectMode,
+    selectConversation,
+    selectedConversationId,
+    showArchived,
+  ]);
 
   const archiveButtonLabel = showArchived
     ? t('common.restore', 'Restore')
@@ -829,7 +894,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               icon="archive"
               label={t('chat.archives', 'Archives')}
               pressed={showArchived}
-              onClick={handleToggleArchivedView}
+              onClick={() => void handleToggleArchivedView()}
               data-tour-id="chat-archive-toggle"
             />
             {!isMultiSelectMode && (
@@ -867,24 +932,26 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                 <button
                   onClick={handleToggleSelectAll}
                   type="button"
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={visibleConversationIds.length === 0 || isBulkDeleting}
                   title={selectAllLabel}
                   aria-label={selectAllLabel}
                   aria-pressed={isAllVisibleSelected}
                 >
                   <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={14} />
+                  <span>{selectAllLabel}</span>
                 </button>
 
                 <button
                   onClick={handleBulkArchiveAction}
                   type="button"
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   title={archiveButtonLabel}
                   aria-label={archiveButtonLabel}
                 >
                   <Icon name={archiveButtonIcon} size={14} />
+                  <span>{archiveButtonLabel}</span>
                 </button>
                 <button
                   type="button"
@@ -893,20 +960,22 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                     setIsBulkDeleteOpen(true);
                   }}
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
                   title={deleteSelectedLabel}
                   aria-label={deleteSelectedLabel}
                 >
                   <Icon name="trash" size={14} />
+                  <span>{deleteSelectedLabel}</span>
                 </button>
                 <button
                   type="button"
                   onClick={exitMultiSelectMode}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   title={cancelSelectionLabel}
                   aria-label={cancelSelectionLabel}
                 >
                   <Icon name="x" size={14} />
+                  <span>{cancelSelectionLabel}</span>
                 </button>
               </div>
             </div>

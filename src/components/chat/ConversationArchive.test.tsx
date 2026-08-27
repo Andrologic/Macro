@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useChatStore } from '../../stores/useChatStore';
-import { ConversationArchive } from './ConversationArchive';
+import { ConversationArchive, resolveArchiveViewSelection } from './ConversationArchive';
+import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -53,6 +54,7 @@ describe('ConversationArchive', () => {
     container = null;
     root = null;
     useChatStore.setState(initialChatState, true);
+    useConversationArchiveStore.setState({ archivedConversationIds: new Set() });
   });
 
   it('keeps multi-select compact until the header button activates its toolbar', async () => {
@@ -112,5 +114,22 @@ describe('ConversationArchive', () => {
 
     expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
     expect(document.body.textContent).toContain('No archived conversations');
+  });
+
+  it('selects the first archived conversation and restores the previous active selection', () => {
+    const conversations = [{ id: 'conversation-1' }, { id: 'conversation-2' }];
+    const archivedIds = new Set(['conversation-2']);
+    expect(resolveArchiveViewSelection({
+      enteringArchive: true,
+      conversations,
+      archivedIds,
+      previousActiveConversationId: 'conversation-1',
+    })).toBe('conversation-2');
+    expect(resolveArchiveViewSelection({
+      enteringArchive: false,
+      conversations,
+      archivedIds,
+      previousActiveConversationId: 'conversation-1',
+    })).toBe('conversation-1');
   });
 });

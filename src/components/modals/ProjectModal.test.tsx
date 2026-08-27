@@ -231,7 +231,7 @@ describe('ProjectModal', () => {
     expect(document.body.textContent).toContain('C:/work/backend-api');
 
     await act(async () => {
-      findButton('Create project').click();
+      findButton('Create repository').click();
       await Promise.resolve();
     });
 
@@ -280,7 +280,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'c:/work/api/');
 
     await act(async () => {
-      findButton('Add existing project').click();
+      findButton('Add existing repository').click();
       await Promise.resolve();
     });
 
@@ -300,7 +300,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Add existing project').click();
+      findButton('Add existing repository').click();
       await Promise.resolve();
     });
     const cancel = findButton('Cancel');
@@ -326,7 +326,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
 
     await act(async () => {
-      findButton('Create project').click();
+      findButton('Create repository in group').click();
       await Promise.resolve();
     });
 
@@ -353,7 +353,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
 
     await act(async () => {
-      findButton('Create group').click();
+      findButton('Create group and add repository').click();
       await Promise.resolve();
     });
 
@@ -383,7 +383,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite', 'C:/work');
 
     await act(async () => {
-      findButton('Create group').click();
+      findButton('Create group and add repository').click();
       await Promise.resolve();
     });
 
@@ -392,7 +392,7 @@ describe('ProjectModal', () => {
 
     await changeInput('e.g. Mobile Suite', 'Suite');
     await act(async () => {
-      findButton('Create group').click();
+      findButton('Create group and add repository').click();
       await Promise.resolve();
     });
 
@@ -418,7 +418,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Add existing project').click();
+      findButton('Add existing repository').click();
       await Promise.resolve();
     });
 
@@ -469,7 +469,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Create group').click();
+      findButton('Create group and add repository').click();
       await Promise.resolve();
     });
     await act(async () => {
@@ -505,7 +505,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Add existing project').click();
+      findButton('Add existing repository').click();
       await Promise.resolve();
     });
 
@@ -543,7 +543,7 @@ describe('ProjectModal', () => {
     await changeInput('e.g. C:/dev/mobile-suite/backend', 'C:/work/app');
 
     await act(async () => {
-      findButton('Add existing project').click();
+      findButton('Add existing repository').click();
       await Promise.resolve();
     });
 

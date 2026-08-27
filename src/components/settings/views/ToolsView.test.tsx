@@ -280,6 +280,38 @@ describe('ToolsView', () => {
     expect(loadSettingsMock).toHaveBeenCalledTimes(1);
   });
 
+  it('shows MCP validation next to the first invalid field', async () => {
+    const { ToolsView } = await loadToolsView();
+    await act(async () => {
+      root?.render(<ToolsView />);
+      await Promise.resolve();
+    });
+
+    const addButton = Array.from(container?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === 'Add'
+    );
+    await act(async () => {
+      addButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(upsertMcpServerMock).not.toHaveBeenCalled();
+    expect(container?.textContent).toContain('Server name is required.');
+    expect(document.activeElement).toBe(container?.querySelector('input[aria-invalid="true"]'));
+  });
+
+  it('keeps built-in tools configurable when the selected model lacks native tool calling', async () => {
+    providerState = { selectedSupportsNativeToolCalling: () => false };
+    const { ToolsView } = await loadToolsView();
+    await act(async () => {
+      root?.render(<ToolsView />);
+      await Promise.resolve();
+    });
+
+    const webSearchSwitch = container?.querySelector<HTMLInputElement>('#web_search');
+    expect(webSearchSwitch?.disabled).toBe(false);
+  });
+
   it('saves stdio MCP server configuration from the settings form', async () => {
     const { ToolsView } = await loadToolsView();
 

@@ -547,13 +547,13 @@ describe('SkillsView', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
-    expect(container?.textContent).toContain('Create skill');
+    expect(document.body.textContent).toContain('Create skill');
 
-    const nameInput = Array.from(container?.querySelectorAll('input') ?? []).find(
+    const nameInput = Array.from(document.body.querySelectorAll('input')).find(
       (input) => (input as HTMLInputElement).value === 'new-skill',
     ) as HTMLInputElement | undefined;
-    const descriptionInput = container?.querySelector('textarea') as HTMLTextAreaElement | null;
-    const locationSelect = container?.querySelector(
+    const descriptionInput = document.body.querySelector('textarea') as HTMLTextAreaElement | null;
+    const locationSelect = document.body.querySelector(
       'select[aria-label="Location"]',
     ) as HTMLSelectElement | null;
     expect(nameInput).toBeTruthy();
@@ -576,7 +576,7 @@ describe('SkillsView', () => {
       await Promise.resolve();
     });
 
-    const dialogButtons = Array.from(container?.querySelectorAll('button') ?? []);
+    const dialogButtons = Array.from(document.body.querySelectorAll('button'));
     await act(async () => {
       dialogButtons.find((button) => button.textContent?.includes('Create'))
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

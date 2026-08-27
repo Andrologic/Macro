@@ -134,6 +134,7 @@
     "now": "jetzt",
     "restore": "Restore",
     "saved": "Saved",
+    "saveChanges": "Änderungen speichern",
     "discard": "Discard",
     "draft": "Draft",
     "minutes": "minutes",
@@ -466,6 +467,8 @@
     "selectProvider": "Wählen Sie einen Anbieter aus",
     "selectModel": "Wählen Sie ein Modell aus",
     "noProvidersConfigured": "Keine Anbieter konfiguriert",
+    "providerRestoreUnavailable": "Der zuvor in dieser Unterhaltung verwendete Provider oder das Modell ist nicht mehr verfügbar. Wähle einen anderen aus, um fortzufahren.",
+    "runtimeErrorFallback": "Macro konnte diese Aktion nicht abschließen. Prüfe die Details und versuche es erneut.",
     "noEnabledModels": "Keine aktivierten Modelle. Aktivieren Sie Modelle in den Einstellungen.",
     "selectProviderFirst": "Wählen Sie zunächst einen Anbieter aus",
     "agentTypeBuild": "Bauen",
@@ -780,6 +783,7 @@
     "invalid": "Ungültig",
     "unavailableStatus": "Nicht verfügbar",
     "details": "Details",
+    "technicalDetails": "Technische Details",
     "skillPath": "SKILL.md",
     "rootPath": "Root",
     "openFolder": "Open folder",
@@ -791,6 +795,7 @@
     "refreshThisSkill": "Refresh",
     "fixSkillMd": "Fix SKILL.md",
     "noDescription": "Keine Beschreibung",
+    "loadFailed": "Macro konnte die Skill-Konfiguration nicht laden.",
     "resourcesCount": "{{count}} Ressourcen",
     "scriptsCount": "{{count}} Scripts",
     "enabled": "Aktiviert",
@@ -1964,6 +1969,7 @@
       }
     }
   },
+  "prompts": { "title": "System-Prompts", "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.", "restoreAll": "Alle wiederherstellen", "saveFailed": "System-Prompts konnten nicht gespeichert werden." },
   "toast": {
     "languageChanged": "Sprache geändert zu {{language}}",
     "settingsSaved": "Einstellungen gespeichert",

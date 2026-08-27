@@ -36,6 +36,12 @@ let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
 const pendingRequests = new Map<number, PendingRequest>();
 const eventListeners = new Map<string, Set<EventCallback<unknown>>>();
 
+const browserRuntimeConnectionError = (code: string, technicalDetails?: string): Error =>
+  Object.assign(
+    new Error('Macro could not connect to the desktop runtime. It will retry automatically.'),
+    { code, technicalDetails },
+  );
+
 const scheduleReconnect = (): void => {
   if (eventListeners.size === 0 || reconnectTimer !== null) return;
   reconnectTimer = setTimeout(() => {
@@ -140,15 +146,15 @@ const connect = (): Promise<WebSocket> => {
       if (generation !== connectionGeneration) return;
       if (socket === bridgeSocket) socket = null;
       socketReady = null;
-      reject(new Error(`Impossible de joindre le runtime Tauri sur le port ${BRIDGE_PORT}.`));
-      rejectPendingRequests(new Error('La connexion au runtime Tauri a rencontré une erreur.'));
+      reject(browserRuntimeConnectionError('BROWSER_RUNTIME_UNAVAILABLE', `WebSocket port: ${BRIDGE_PORT}`));
+      rejectPendingRequests(browserRuntimeConnectionError('BROWSER_RUNTIME_CONNECTION_ERROR'));
       if (opened) scheduleReconnect();
     });
     bridgeSocket.addEventListener('close', () => {
       if (generation !== connectionGeneration) return;
       if (socket === bridgeSocket) socket = null;
       socketReady = null;
-      rejectPendingRequests(new Error('La connexion au runtime Tauri a été interrompue.'));
+      rejectPendingRequests(browserRuntimeConnectionError('BROWSER_RUNTIME_CONNECTION_CLOSED'));
       if (opened) scheduleReconnect();
     });
   });

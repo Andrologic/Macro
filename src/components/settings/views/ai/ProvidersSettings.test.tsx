@@ -7,6 +7,7 @@ const updateProviderConfigMock = mock(
   async (_providerId: string, _updates: Record<string, unknown>) => undefined
 );
 const updateProviderSettingsMock = mock(async () => undefined);
+const createProviderConfigMock = mock(async () => undefined);
 const testConnectionMock = mock(async () => ({ success: true, message: 'ok' }));
 
 type ProviderType = 'copilot' | 'openai';
@@ -107,7 +108,7 @@ const loadProvidersSettings = async () => {
       },
       updateProviderConfig: updateProviderConfigMock,
       updateProviderSettings: updateProviderSettingsMock,
-      createProviderConfig: mock(async () => undefined),
+      createProviderConfig: createProviderConfigMock,
       deleteProviderConfig: mock(async () => undefined),
       startChatGptAuth: mock(async () => undefined),
       startCopilotRuntimeDownload: mock(async () => undefined),
@@ -211,6 +212,7 @@ describe('ProvidersSettings Copilot timeout', () => {
   beforeEach(() => {
     updateProviderConfigMock.mockClear();
     updateProviderSettingsMock.mockClear();
+    createProviderConfigMock.mockClear();
     testConnectionMock.mockClear();
     providerType = 'copilot';
     copilotTimeoutMs = 2_700_000;
@@ -335,6 +337,31 @@ describe('ProvidersSettings Copilot timeout', () => {
     expect(container!.textContent).not.toContain('Configured providers');
     expect(container!.textContent).toContain('Providers to configure');
     expect(container!.textContent).not.toContain('Ready provider');
+  });
+
+  it('keeps an empty provider draft open and focuses inline validation', async () => {
+    providerConfigsOverride = [];
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent?.includes('Add Provider')
+      )!);
+    });
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Save Provider'
+      )!);
+    });
+
+    expect(createProviderConfigMock).not.toHaveBeenCalled();
+    expect(container!.textContent).toContain('Provider name is required.');
+    expect(document.activeElement).toBe(container!.querySelector('input[aria-invalid="true"]'));
   });
 
   it('saves an API key without rendering a provider enabled switch', async () => {

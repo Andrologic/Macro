@@ -155,6 +155,7 @@
     "now": "now",
     "restore": "Restore",
     "saved": "Saved",
+    "saveChanges": "Save Changes",
     "discard": "Discard",
     "draft": "Draft",
     "minutes": "minutes",
@@ -487,6 +488,8 @@
     "selectProvider": "Select a provider",
     "selectModel": "Select a model",
     "noProvidersConfigured": "No providers configured",
+    "providerRestoreUnavailable": "The provider or model previously used by this conversation is no longer available. Select another one to continue.",
+    "runtimeErrorFallback": "Macro could not complete this action. Review the details, then try again.",
     "noEnabledModels": "No enabled models. Enable models in Settings.",
     "selectProviderFirst": "Select a provider first",
     "agentTypeBuild": "Build",
@@ -801,6 +804,7 @@
     "invalid": "Invalid",
     "unavailableStatus": "Unavailable",
     "details": "Details",
+    "technicalDetails": "Technical details",
     "skillPath": "SKILL.md",
     "rootPath": "Root",
     "openFolder": "Open folder",
@@ -812,6 +816,7 @@
     "refreshThisSkill": "Refresh",
     "fixSkillMd": "Fix SKILL.md",
     "noDescription": "No description",
+    "loadFailed": "Macro could not load the skills configuration.",
     "resourcesCount": "{{count}} resources",
     "scriptsCount": "{{count}} scripts",
     "enabled": "Enabled",
@@ -2030,6 +2035,7 @@
       }
     }
   },
+  "prompts": { "title": "System Prompts", "description": "Customize the base mode prompts and the internal profile prompts used during plan, review, and repository audit flows.", "restoreAll": "Restore All", "saveFailed": "Unable to save system prompts." },
   "toast": {
     "languageChanged": "Language changed to {{language}}",
     "settingsSaved": "Settings saved",

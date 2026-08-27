@@ -138,6 +138,7 @@
     "now": "ahora",
     "restore": "Restore",
     "saved": "Saved",
+    "saveChanges": "Guardar cambios",
     "discard": "Discard",
     "draft": "Draft",
     "minutes": "minutes",
@@ -470,6 +471,8 @@
     "selectProvider": "Seleccione un proveedor",
     "selectModel": "Selecciona un modelo",
     "noProvidersConfigured": "No hay proveedores configurados",
+    "providerRestoreUnavailable": "El proveedor o modelo usado anteriormente en esta conversación ya no está disponible. Selecciona otro para continuar.",
+    "runtimeErrorFallback": "Macro no pudo completar esta acción. Revisa los detalles e inténtalo de nuevo.",
     "noEnabledModels": "No hay modelos habilitados. Habilite los modelos en Configuración.",
     "selectProviderFirst": "Seleccione un proveedor primero",
     "agentTypeBuild": "construir",
@@ -784,6 +787,7 @@
     "invalid": "No válida",
     "unavailableStatus": "No disponible",
     "details": "Detalles",
+    "technicalDetails": "Detalles técnicos",
     "skillPath": "SKILL.md",
     "rootPath": "Raíz",
     "openFolder": "Open folder",
@@ -795,6 +799,7 @@
     "refreshThisSkill": "Refresh",
     "fixSkillMd": "Fix SKILL.md",
     "noDescription": "Sin descripción",
+    "loadFailed": "Macro no pudo cargar la configuración de skills.",
     "resourcesCount": "{{count}} recursos",
     "scriptsCount": "{{count}} scripts",
     "enabled": "Activada",
@@ -1968,6 +1973,7 @@
       }
     }
   },
+  "prompts": { "title": "Prompts del sistema", "description": "Personaliza los prompts base de los modos y los perfiles internos usados durante la planificación, la revisión y la auditoría del repositorio.", "restoreAll": "Restaurar todo", "saveFailed": "No se pudieron guardar los prompts del sistema." },
   "toast": {
     "languageChanged": "Idioma cambiado a {{language}}",
     "settingsSaved": "Configuración guardada",
