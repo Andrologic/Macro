@@ -910,11 +910,11 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             className="px-3 py-2 border-b border-border"
             data-tour-id="chat-multiselect-toolbar"
           >
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <span className="min-w-24 flex-1 truncate text-xs font-medium text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="shrink-0 truncate text-xs font-medium text-muted-foreground">
                 {selectedCountLabel}
               </span>
-              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
+              <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
                 <button
                   onClick={handleToggleSelectAll}
                   type="button"
@@ -932,12 +932,12 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                   onClick={handleBulkArchiveAction}
                   type="button"
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   title={archiveButtonLabel}
                   aria-label={archiveButtonLabel}
                 >
                   <Icon name={archiveButtonIcon} size={14} />
-                  <span>{archiveButtonLabel}</span>
+                  <span className="sr-only">{archiveButtonLabel}</span>
                 </button>
                 <button
                   type="button"
@@ -946,22 +946,22 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                     setIsBulkDeleteOpen(true);
                   }}
                   disabled={selectedIds.size === 0 || isBulkDeleting}
-                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40 disabled:cursor-not-allowed"
                   title={deleteSelectedLabel}
                   aria-label={deleteSelectedLabel}
                 >
                   <Icon name="trash" size={14} />
-                  <span>{deleteSelectedLabel}</span>
+                  <span className="sr-only">{deleteSelectedLabel}</span>
                 </button>
                 <button
                   type="button"
                   onClick={exitMultiSelectMode}
-                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   title={cancelSelectionLabel}
                   aria-label={cancelSelectionLabel}
                 >
                   <Icon name="x" size={14} />
-                  <span>{cancelSelectionLabel}</span>
+                  <span className="sr-only">{cancelSelectionLabel}</span>
                 </button>
               </div>
             </div>

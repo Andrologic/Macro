@@ -92,6 +92,11 @@ describe('ConversationArchive', () => {
     expect(document.body.querySelector('[data-tour-id="chat-multiselect"]')).toBeNull();
     expect(toolbar?.textContent).toContain('0');
     expect(toolbar?.querySelectorAll('button')).toHaveLength(4);
+    expect(toolbar?.querySelector('[aria-label="Select all"] span')?.className).not.toContain('sr-only');
+    expect(toolbar?.querySelector('[aria-label="Archive"]')?.className).toContain('h-8 w-8');
+    expect(toolbar?.querySelector('[aria-label="Archive"] span')?.className).toContain('sr-only');
+    expect(toolbar?.querySelector('[aria-label="Delete"] span')?.className).toContain('sr-only');
+    expect(toolbar?.querySelector('[aria-label="Cancel"] span')?.className).toContain('sr-only');
   });
 
   it('shows the archive toggle in the header and switches to the archived view', async () => {
