@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { useConversationArchiveStore } from './stores/useConversationArchiveStore';
 
 type AppStoreState = {
   mode: 'Chat' | 'Architect' | 'Implement';
@@ -58,6 +59,9 @@ const createStoreHook = <T,>(getSnapshot: () => T) => {
 };
 
 const useAppStore = createStoreHook(() => appState);
+const hydrateArchivedConversationIdsMock = mock(async () => undefined);
+const hydrateArchivedConversationIds =
+  useConversationArchiveStore.getState().hydrateArchivedConversationIds;
 
 const registerAppMocks = () => {
   mock.restore();
@@ -173,6 +177,10 @@ describe('App layout containment', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    hydrateArchivedConversationIdsMock.mockClear();
+    useConversationArchiveStore.setState({
+      hydrateArchivedConversationIds: hydrateArchivedConversationIdsMock,
+    });
     appState = {
       mode: 'Chat',
       isLeftPanelOpen: true,
@@ -213,6 +221,7 @@ describe('App layout containment', () => {
     root = null;
     container?.remove();
     container = null;
+    useConversationArchiveStore.setState({ hydrateArchivedConversationIds });
     mock.restore();
   });
 
@@ -256,6 +265,23 @@ describe('App layout containment', () => {
     expect(centerPanelWrapper?.className).toContain('overflow-hidden');
     expect(rightPanelWrapper?.className).toContain('min-h-0');
     expect(rightPanelWrapper?.className).toContain('overflow-hidden');
+  });
+
+  it('hydrates archived conversations even when the left panel starts closed', async () => {
+    appState.isLeftPanelOpen = false;
+    const { default: App } = await loadApp();
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<App />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="panel-left"]')).toBeNull();
+    expect(hydrateArchivedConversationIdsMock).toHaveBeenCalledTimes(1);
   });
 
   it('renders the Architect project navigator with both panel resizers', async () => {
