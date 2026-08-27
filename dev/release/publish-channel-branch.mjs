@@ -9,10 +9,14 @@ import { UPDATE_CHANNELS } from './channel-manifests.mjs';
 const UPDATE_BRANCH = 'updates';
 const BOT_NAME = 'github-actions[bot]';
 const BOT_EMAIL = '41898282+github-actions[bot]@users.noreply.github.com';
+const ISOLATED_GIT_ENVIRONMENT = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')),
+);
 
 function runGit(repositoryDirectory, args, { allowExitCodes = [0] } = {}) {
   const result = spawnSync('git', args, {
     cwd: repositoryDirectory,
+    env: ISOLATED_GIT_ENVIRONMENT,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
