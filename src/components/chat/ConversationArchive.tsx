@@ -833,30 +833,24 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               data-tour-id="chat-archive-toggle"
             />
             {!isMultiSelectMode && (
-              <button
-                type="button"
+              <PanelHeaderIconButton
+                icon="list-todo"
+                label={t('chat.multiSelect', 'Multi-select')}
                 onClick={() => {
                   setSelectedIds(new Set());
                   setIsMultiSelectMode(true);
                 }}
                 disabled={filteredConversations.length === 0 || isBulkDeleting}
                 data-tour-id="chat-multiselect"
-                className="p-1 hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                title={t('chat.multiSelect', 'Multi-select')}
-                aria-label={t('chat.multiSelect', 'Multi-select')}
-              >
-                <Icon name="list-todo" size={16} className="text-muted-foreground" />
-              </button>
+              />
             )}
-            <button
+            <PanelHeaderIconButton
+              icon="plus"
+              label={t('chat.newChat', 'New Chat')}
               onClick={handleNewChat}
               disabled={isBulkDeleting}
               data-tour-id="chat-new-conversation"
-              className="p-1 hover:bg-accent rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title={t('chat.newChat', 'New Chat')}
-            >
-              <Icon name="plus" size={16} className="text-muted-foreground" />
-            </button>
+            />
           </div>
         </div>
 
