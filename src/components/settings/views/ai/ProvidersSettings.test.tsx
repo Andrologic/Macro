@@ -58,6 +58,15 @@ const setInputValue = (input: HTMLInputElement, value: string) => {
   input.dispatchEvent(new window.Event('input', { bubbles: true }));
 };
 
+const setSelectValue = (select: HTMLSelectElement, value: string) => {
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLSelectElement.prototype,
+    'value'
+  )?.set;
+  valueSetter?.call(select, value);
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+};
+
 const loadProvidersSettings = async () => {
   mock.restore();
 
@@ -361,6 +370,10 @@ describe('ProvidersSettings Copilot timeout', () => {
     });
     expect(container!.querySelector<HTMLInputElement>('[placeholder="https://api.openai.com/v1"]')?.value)
       .toBe('https://api.openai.com/v1');
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-name"]')).not.toBeNull();
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-type"]')).not.toBeNull();
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-base-url"]')).not.toBeNull();
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-api-key"]')).not.toBeNull();
     await act(async () => {
       click(Array.from(container!.querySelectorAll('button')).find(
         (button) => button.textContent === 'Save Provider'
@@ -407,6 +420,43 @@ describe('ProvidersSettings Copilot timeout', () => {
       expect.objectContaining({ apiKey: 'new-api-key' })
     );
     expect(updateProviderConfigMock.mock.calls[0]?.[1]).not.toHaveProperty('isEnabled');
+  });
+
+  it('resets the endpoint and local state when the provider type changes', async () => {
+    providerConfigsOverride = [];
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent?.includes('Add Provider')
+      )!);
+    });
+
+    const typeSelect = container!.querySelector<HTMLSelectElement>('select');
+    const baseUrlInput = container!.querySelector<HTMLInputElement>(
+      '[placeholder="https://api.openai.com/v1"]'
+    );
+    const localEndpointSwitch = container!.querySelector<HTMLInputElement>(
+      '#provider-local-endpoint'
+    );
+
+    await act(async () => {
+      setSelectValue(typeSelect!, 'ollama');
+    });
+    expect(baseUrlInput?.value).toBe('http://localhost:11434/v1');
+    expect(localEndpointSwitch?.checked).toBe(true);
+    expect(localEndpointSwitch?.disabled).toBe(true);
+
+    await act(async () => {
+      setSelectValue(typeSelect!, 'anthropic');
+    });
+    expect(baseUrlInput?.value).toBe('https://api.anthropic.com/v1');
+    expect(localEndpointSwitch?.checked).toBe(false);
+    expect(localEndpointSwitch?.disabled).toBe(false);
   });
 
   it('allows a generic provider running locally to use HTTP', async () => {

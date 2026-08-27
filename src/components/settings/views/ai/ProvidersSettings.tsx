@@ -95,6 +95,15 @@ const providerTypeOptions = [
 const isLocalProviderType = (providerType: string): boolean =>
   providerType === 'ollama' || providerType === 'lmstudio';
 
+const defaultBaseUrlByProviderType: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
+  ollama: 'http://localhost:11434/v1',
+  lmstudio: 'http://localhost:1234/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+};
+
 export const ProvidersSettings: React.FC = () => {
   const { t } = useTranslation();
   const {
@@ -725,8 +734,9 @@ export const ProvidersSettings: React.FC = () => {
 
         <div className="max-w-xl space-y-4">
           <div className="space-y-1">
-            <label className="text-sm font-medium">{t('common.name', 'Name')}</label>
+            <label htmlFor="provider-name" className="text-sm font-medium">{t('common.name', 'Name')}</label>
             <Input
+              id="provider-name"
               ref={nameInputRef}
               value={editingProvider.name}
               aria-invalid={Boolean(fieldErrors.name)}
@@ -742,8 +752,9 @@ export const ProvidersSettings: React.FC = () => {
 
           <div className="grid grid-cols-1 gap-4">
             <div className="space-y-1">
-              <label className="text-sm font-medium">{t('common.type', 'Type')}</label>
+              <label htmlFor="provider-type" className="text-sm font-medium">{t('common.type', 'Type')}</label>
               <select
+                id="provider-type"
                 className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
                 value={editingProvider.providerType}
                 disabled={isLinkedProviderType(editingProvider.providerType)}
@@ -752,10 +763,10 @@ export const ProvidersSettings: React.FC = () => {
                   setEditingProvider({
                     ...editingProvider,
                     providerType,
-                    isLocal: isLocalProviderType(providerType)
-                      ? true
-                      : editingProvider.isLocal,
+                    baseUrl: defaultBaseUrlByProviderType[providerType] ?? '',
+                    isLocal: isLocalProviderType(providerType),
                   });
+                  setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
                 }}
               >
                 {isLinkedProviderType(editingProvider.providerType) && (
@@ -778,10 +789,11 @@ export const ProvidersSettings: React.FC = () => {
           {showLinkedFields && (
             <>
               <div className="space-y-1">
-                <label className="text-sm font-medium">
+                <label htmlFor="provider-base-url" className="text-sm font-medium">
                   {t('providers.form.baseUrlLabel', 'Base URL')}
                 </label>
                 <Input
+                  id="provider-base-url"
                   ref={baseUrlInputRef}
                   value={editingProvider.baseUrl}
                   aria-invalid={Boolean(fieldErrors.baseUrl)}
@@ -819,12 +831,13 @@ export const ProvidersSettings: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <label className="text-sm font-medium">
+                <label htmlFor="provider-api-key" className="text-sm font-medium">
                   {t('providers.form.apiKeyLabel', 'API Key')}
                 </label>
                 <div className="space-y-2">
                   <div className="relative">
                     <Input
+                      id="provider-api-key"
                       ref={apiKeyInputRef}
                       type={showApiKey ? 'text' : 'password'}
                       value={editingProvider.apiKey}
