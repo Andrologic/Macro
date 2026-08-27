@@ -3,6 +3,17 @@
     "beforeDevCommand": "bun run build:ai-runtime && bun run dev:browser-runtime"
   },
   "app": {
+    "windows": [
+      {
+        "title": "Macro — hôte du runtime navigateur",
+        "width": 640,
+        "height": 420,
+        "decorations": true,
+        "transparent": false,
+        "visible": false,
+        "url": "browser-runtime-host.html"
+      }
+    ],
     "security": {
       "capabilities": [
         "default",

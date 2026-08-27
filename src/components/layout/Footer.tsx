@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open } from '../../services/tauriDialog';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';

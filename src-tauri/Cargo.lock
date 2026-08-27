@@ -6130,8 +6130,6 @@ dependencies = [
 [[package]]
 name = "tauri-remote-ui"
 version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e16e6d2571686643272902d9f41540c2dcf8577b5ea1ca3cd7327369fbd39aef"
 dependencies = [
  "futures",
  "http-body-util",

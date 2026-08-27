@@ -36,18 +36,23 @@ use serde::Serialize;
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
-#[cfg(feature = "browser-runtime-debug")]
+#[cfg(all(feature = "browser-runtime-debug", not(debug_assertions)))]
+compile_error!(
+    "La fonctionnalité browser-runtime-debug est strictement réservée aux builds debug."
+);
+
+#[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
 use tauri::Listener;
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
-#[cfg(feature = "browser-runtime-debug")]
+#[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
 use tauri_remote_ui::{RemoteUi, RemoteUiConfig, RemoteUiExt};
 use tokio::sync::RwLock;
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
 
-#[cfg(feature = "browser-runtime-debug")]
+#[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
 fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
     const EVENTS: &[&str] = &[
         "ai:auth-success",
@@ -387,7 +392,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::default().build());
 
-    #[cfg(feature = "browser-runtime-debug")]
+    #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
     let builder = builder.plugin(tauri_remote_ui::init());
 
     let app = builder
@@ -409,12 +414,18 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            #[cfg(feature = "browser-runtime-debug")]
+            #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+                let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
+                    "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
+                );
                 install_browser_runtime_event_relays(app.handle());
                 let browser_bridge_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let bridge_config = RemoteUiConfig::default().set_port(Some(1430));
+                    let bridge_config = RemoteUiConfig::default()
+                        .set_port(Some(1430))
+                        .set_websocket_origin("http://127.0.0.1:1422")
+                        .set_websocket_token(bridge_token);
                     match browser_bridge_handle.start_remote_ui(bridge_config).await {
                         Ok(()) => tracing::info!(
                             "Debug browser runtime bridge ready at http://127.0.0.1:1422"

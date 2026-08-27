@@ -11,7 +11,9 @@ import type {
 } from '@tauri-apps/api/event';
 
 const BRIDGE_PORT = 1430;
-const INVOKE_TIMEOUT_MS = 30_000;
+const INITIAL_RECONNECT_DELAY_MS = 500;
+const MAX_RECONNECT_DELAY_MS = 10_000;
+const INVOKE_TIMEOUT_MS = 10 * 60_000;
 
 type RpcResponse = {
   status: 'success' | 'error';
@@ -27,9 +29,23 @@ type PendingRequest = {
 let socket: WebSocket | null = null;
 let socketReady: Promise<WebSocket> | null = null;
 let nextRequestId = 0;
+let connectionGeneration = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
 
 const pendingRequests = new Map<number, PendingRequest>();
 const eventListeners = new Map<string, Set<EventCallback<unknown>>>();
+
+const scheduleReconnect = (): void => {
+  if (eventListeners.size === 0 || reconnectTimer !== null) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void connect().catch(() => {
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS);
+      scheduleReconnect();
+    });
+  }, reconnectDelayMs);
+};
 
 const rejectPendingRequests = (reason: unknown): void => {
   for (const request of pendingRequests.values()) {
@@ -89,22 +105,51 @@ const connect = (): Promise<WebSocket> => {
   if (socket?.readyState === WebSocket.OPEN) return Promise.resolve(socket);
   if (socketReady) return socketReady;
 
+  const generation = ++connectionGeneration;
   socketReady = new Promise<WebSocket>((resolve, reject) => {
-    const bridgeSocket = new WebSocket(`ws://127.0.0.1:${BRIDGE_PORT}/remote_ui_ws`);
+    let opened = false;
+    const token = import.meta.env.VITE_TAURI_BROWSER_BRIDGE_TOKEN;
+    if (!token) {
+      reject(new Error('Le jeton du runtime Tauri est absent. Relancez la commande de debug dédiée.'));
+      socketReady = null;
+      return;
+    }
+    const bridgeSocket = new WebSocket(
+      `ws://127.0.0.1:${BRIDGE_PORT}/remote_ui_ws?token=${encodeURIComponent(token)}`,
+    );
 
     bridgeSocket.addEventListener('open', () => {
+      if (generation !== connectionGeneration) {
+        bridgeSocket.close();
+        return;
+      }
+      opened = true;
       socket = bridgeSocket;
+      reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       bridgeSocket.send('version:1.1.0');
       resolve(bridgeSocket);
     });
-    bridgeSocket.addEventListener('message', handleMessage);
+    bridgeSocket.addEventListener('message', (message) => {
+      if (generation === connectionGeneration) handleMessage(message);
+    });
     bridgeSocket.addEventListener('error', () => {
+      if (generation !== connectionGeneration) return;
+      if (socket === bridgeSocket) socket = null;
+      socketReady = null;
       reject(new Error(`Impossible de joindre le runtime Tauri sur le port ${BRIDGE_PORT}.`));
+      rejectPendingRequests(new Error('La connexion au runtime Tauri a rencontré une erreur.'));
+      if (opened) scheduleReconnect();
     });
     bridgeSocket.addEventListener('close', () => {
+      if (generation !== connectionGeneration) return;
       if (socket === bridgeSocket) socket = null;
       socketReady = null;
       rejectPendingRequests(new Error('La connexion au runtime Tauri a été interrompue.'));
+      if (opened) scheduleReconnect();
     });
   });
 
@@ -115,6 +160,7 @@ export async function invokeBrowserRuntime<T>(
   command: string,
   args?: InvokeArgs,
   options?: InvokeOptions,
+  timeoutMs: number = INVOKE_TIMEOUT_MS,
 ): Promise<T> {
   const bridgeSocket = await connect();
   const id = ++nextRequestId;
@@ -122,15 +168,20 @@ export async function invokeBrowserRuntime<T>(
   return new Promise<T>((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error(`Le runtime Tauri n'a pas répondu à la commande « ${command} ».`));
-    }, INVOKE_TIMEOUT_MS);
-
+      reject(new Error(`Le runtime Tauri n'a pas répondu à la commande « ${command} » dans le délai maximal autorisé.`));
+    }, timeoutMs);
     pendingRequests.set(id, {
       resolve: (value) => resolve(value as T),
       reject,
       timeout,
     });
-    bridgeSocket.send(JSON.stringify({ id, cmd: command, args, option: options }));
+    try {
+      bridgeSocket.send(JSON.stringify({ id, cmd: command, args, option: options }));
+    } catch (error) {
+      pendingRequests.delete(id);
+      clearTimeout(timeout);
+      reject(error);
+    }
   });
 }
 
@@ -139,15 +190,23 @@ export async function listenBrowserRuntime<T>(
   handler: EventCallback<T>,
   _options?: Options,
 ): Promise<UnlistenFn> {
-  await connect();
   const name = String(eventName);
   const callbacks = eventListeners.get(name) ?? new Set<EventCallback<unknown>>();
   const callback = handler as EventCallback<unknown>;
   callbacks.add(callback);
   eventListeners.set(name, callbacks);
+  try {
+    await connect();
+  } catch {
+    scheduleReconnect();
+  }
 
   return () => {
     callbacks.delete(callback);
     if (callbacks.size === 0) eventListeners.delete(name);
+    if (eventListeners.size === 0 && reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
   };
 }

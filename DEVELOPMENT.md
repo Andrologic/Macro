@@ -82,10 +82,15 @@ while Tauri runs as a hidden host and executes IPC commands for the browser.
 Backend events used by configuration, terminals, authentication, downloads, and
 streaming chat are relayed to the browser as well.
 
-This bridge is intentionally unavailable in production builds. It requires both
-the `browser-runtime-debug` Cargo feature and the debug-only environment flags,
-and its unauthenticated WebSocket server binds only to `127.0.0.1:1430`. Do not
-expose that port through a proxy or change it to a non-loopback address.
+This bridge is intentionally unavailable in production builds: enabling its
+Cargo feature in a release build is a compile-time error. The dedicated launcher
+creates a new 256-bit token for every run and gives it to the Tauri host and Vite,
+which injects it into the local browser page. The token is therefore visible in
+that page's DevTools; it protects against unrelated browser origins, not against
+a hostile process already running on the machine. The WebSocket server also
+requires the exact `http://127.0.0.1:1422` browser origin and binds only to
+`127.0.0.1:1430`. Always use `bun run tauri:dev:browser`; do not expose either
+local port through a proxy.
 
 ## Local Provider Configuration
 

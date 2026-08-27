@@ -105,7 +105,7 @@ json-patch = "3"
 schemars = { version = "0.8", features = ["chrono"] }
 ts-rs = { version = "12", features = ["chrono-impl", "serde-compat"] }
 tauri-plugin-notification = "2.3.3"
-tauri-remote-ui = { version = "=1.1.0", optional = true }
+tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]

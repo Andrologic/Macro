@@ -4,7 +4,7 @@
  * Falls back to Brave Search API if Tavily is unavailable
  */
 
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { tauriFetch } from './tauriHttp';
 import { WebSearchResult } from '../stores/useCitationsStore';
 import { isTauriAvailable, webFetchExecute, webSearchExecute } from './tauriIpc';
 
