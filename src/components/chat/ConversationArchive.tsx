@@ -758,6 +758,11 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       const nextArchivedIds = removeConversationIdsFromSet(archivedIdsRef.current, idsToDelete);
       archivedIdsRef.current = nextArchivedIds;
       replaceSharedArchivedConversationIds(nextArchivedIds);
+      if (!(await persistArchivedConversationIds(nextArchivedIds))) {
+        throw new Error(
+          t('chat.archivePreferenceSaveFailed', 'Unable to save archived conversations.')
+        );
+      }
       setSelectedIds(new Set());
       setIsMultiSelectMode(false);
       setIsBulkDeleteOpen(false);

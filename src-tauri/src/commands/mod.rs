@@ -5418,12 +5418,23 @@ fn validate_ai_provider_fields(
         return Err(command_error("Provider type is required."));
     }
 
-    let linked_provider = matches!(provider_type.trim(), "chatgpt" | "copilot");
+    let provider_type = provider_type.trim();
+    let linked_provider = matches!(provider_type, "chatgpt" | "copilot");
     if base_url.trim().is_empty() {
         return if linked_provider {
             Ok(())
         } else {
             Err(command_error("Provider base URL is required."))
+        };
+    }
+
+    if provider_type == "copilot" {
+        return if base_url.trim() == "copilot://cli" {
+            Ok(())
+        } else {
+            Err(command_error(
+                "Copilot provider base URL must use the internal copilot://cli endpoint.",
+            ))
         };
     }
 
@@ -6206,6 +6217,14 @@ mod tests {
         )
         .is_ok());
         assert!(validate_ai_provider_fields("ChatGPT", "chatgpt", "", false).is_ok());
+        assert!(
+            validate_ai_provider_fields("GitHub Copilot", "copilot", "copilot://cli", false)
+                .is_ok()
+        );
+        assert!(
+            validate_ai_provider_fields("GitHub Copilot", "copilot", "copilot://other", false)
+                .is_err()
+        );
     }
 
     async fn execute_readonly_workspace_tool(

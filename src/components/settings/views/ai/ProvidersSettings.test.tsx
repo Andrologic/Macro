@@ -28,7 +28,7 @@ const makeProvider = (
 ) => ({
   id: providerType,
   name: providerType === 'copilot' ? 'GitHub Copilot' : 'OpenAI Compatible',
-  baseUrl: providerType === 'copilot' ? 'copilot://' : 'https://api.example.test/v1',
+  baseUrl: providerType === 'copilot' ? 'copilot://cli' : 'https://api.example.test/v1',
   apiKey: '',
   hasStoredApiKey: false,
   apiKeyLoaded: false,
@@ -267,6 +267,10 @@ describe('ProvidersSettings Copilot timeout', () => {
     expect(updateProviderSettingsMock).toHaveBeenCalledWith('copilot', {
       copilotSendTimeoutMs: 120_000,
     });
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      'copilot',
+      expect.objectContaining({ baseUrl: 'copilot://cli', providerType: 'copilot' })
+    );
   });
 
   it('does not show the timeout field for OpenAI-compatible providers', async () => {
