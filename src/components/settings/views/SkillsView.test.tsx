@@ -70,7 +70,9 @@ const loadSkillsView = async () => {
         values.filter(Boolean).join(' ').toLowerCase().includes(settingsSearchQuery.toLowerCase()),
     }),
     SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
-    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    SettingsSearchEmpty: ({ message }: { message?: React.ReactNode }) => (
+      <div>{message ?? 'No matching skills'}</div>
+    ),
   }));
 
   mock.module('react-i18next', () => ({
@@ -87,6 +89,10 @@ const loadSkillsView = async () => {
         return template.replaceAll('{{count}}', String(options?.count ?? ''));
       },
     }),
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
   }));
 
   const storeState = {
@@ -541,13 +547,13 @@ describe('SkillsView', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
     });
-    expect(container?.textContent).toContain('Create skill');
+    expect(document.body.textContent).toContain('Create skill');
 
-    const nameInput = Array.from(container?.querySelectorAll('input') ?? []).find(
+    const nameInput = Array.from(document.body.querySelectorAll('input')).find(
       (input) => (input as HTMLInputElement).value === 'new-skill',
     ) as HTMLInputElement | undefined;
-    const descriptionInput = container?.querySelector('textarea') as HTMLTextAreaElement | null;
-    const locationSelect = container?.querySelector(
+    const descriptionInput = document.body.querySelector('textarea') as HTMLTextAreaElement | null;
+    const locationSelect = document.body.querySelector(
       'select[aria-label="Location"]',
     ) as HTMLSelectElement | null;
     expect(nameInput).toBeTruthy();
@@ -570,7 +576,7 @@ describe('SkillsView', () => {
       await Promise.resolve();
     });
 
-    const dialogButtons = Array.from(container?.querySelectorAll('button') ?? []);
+    const dialogButtons = Array.from(document.body.querySelectorAll('button'));
     await act(async () => {
       dialogButtons.find((button) => button.textContent?.includes('Create'))
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

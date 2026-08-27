@@ -7,6 +7,7 @@ const updateProviderConfigMock = mock(
   async (_providerId: string, _updates: Record<string, unknown>) => undefined
 );
 const updateProviderSettingsMock = mock(async () => undefined);
+const createProviderConfigMock = mock(async () => undefined);
 const testConnectionMock = mock(async () => ({ success: true, message: 'ok' }));
 
 type ProviderType = 'copilot' | 'openai';
@@ -27,7 +28,7 @@ const makeProvider = (
 ) => ({
   id: providerType,
   name: providerType === 'copilot' ? 'GitHub Copilot' : 'OpenAI Compatible',
-  baseUrl: providerType === 'copilot' ? 'copilot://' : 'https://api.example.test/v1',
+  baseUrl: providerType === 'copilot' ? 'copilot://cli' : 'https://api.example.test/v1',
   apiKey: '',
   hasStoredApiKey: false,
   apiKeyLoaded: false,
@@ -57,6 +58,15 @@ const setInputValue = (input: HTMLInputElement, value: string) => {
   input.dispatchEvent(new window.Event('input', { bubbles: true }));
 };
 
+const setSelectValue = (select: HTMLSelectElement, value: string) => {
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLSelectElement.prototype,
+    'value'
+  )?.set;
+  valueSetter?.call(select, value);
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+};
+
 const loadProvidersSettings = async () => {
   mock.restore();
 
@@ -74,6 +84,10 @@ const loadProvidersSettings = async () => {
         return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? _key;
       },
     }),
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
   }));
 
   mock.module('../../../../stores/useProviderStore', () => ({
@@ -103,7 +117,7 @@ const loadProvidersSettings = async () => {
       },
       updateProviderConfig: updateProviderConfigMock,
       updateProviderSettings: updateProviderSettingsMock,
-      createProviderConfig: mock(async () => undefined),
+      createProviderConfig: createProviderConfigMock,
       deleteProviderConfig: mock(async () => undefined),
       startChatGptAuth: mock(async () => undefined),
       startCopilotRuntimeDownload: mock(async () => undefined),
@@ -153,11 +167,13 @@ const loadProvidersSettings = async () => {
     Switch: ({
       checked,
       onCheckedChange,
+      ...props
     }: {
       checked: boolean;
       onCheckedChange: (value: boolean) => void;
-    }) => (
+    } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'onChange'>) => (
       <input
+        {...props}
         type="checkbox"
         checked={checked}
         onChange={(event) => onCheckedChange(event.target.checked)}
@@ -191,7 +207,9 @@ const loadProvidersSettings = async () => {
       },
     }),
     SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
-    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    SettingsSearchEmpty: ({ message }: { message?: React.ReactNode }) => (
+      <div>{message ?? 'No matching providers'}</div>
+    ),
   }));
 
   importCounter += 1;
@@ -205,6 +223,7 @@ describe('ProvidersSettings Copilot timeout', () => {
   beforeEach(() => {
     updateProviderConfigMock.mockClear();
     updateProviderSettingsMock.mockClear();
+    createProviderConfigMock.mockClear();
     testConnectionMock.mockClear();
     providerType = 'copilot';
     copilotTimeoutMs = 2_700_000;
@@ -257,6 +276,10 @@ describe('ProvidersSettings Copilot timeout', () => {
     expect(updateProviderSettingsMock).toHaveBeenCalledWith('copilot', {
       copilotSendTimeoutMs: 120_000,
     });
+    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+      'copilot',
+      expect.objectContaining({ baseUrl: 'copilot://cli', providerType: 'copilot' })
+    );
   });
 
   it('does not show the timeout field for OpenAI-compatible providers', async () => {
@@ -331,6 +354,38 @@ describe('ProvidersSettings Copilot timeout', () => {
     expect(container!.textContent).not.toContain('Ready provider');
   });
 
+  it('keeps an empty provider draft open and focuses inline validation', async () => {
+    providerConfigsOverride = [];
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent?.includes('Add Provider')
+      )!);
+    });
+    expect(container!.querySelector<HTMLInputElement>('[placeholder="https://api.openai.com/v1"]')?.value)
+      .toBe('https://api.openai.com/v1');
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-name"]')).not.toBeNull();
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-type"]')).not.toBeNull();
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-base-url"]')).not.toBeNull();
+    expect(container!.querySelector<HTMLLabelElement>('label[for="provider-api-key"]')).not.toBeNull();
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Save Provider'
+      )!);
+    });
+
+    expect(createProviderConfigMock).not.toHaveBeenCalled();
+    expect(container!.textContent).toContain('Provider name is required.');
+    expect(container!.textContent).not.toContain('Base URL is required.');
+    expect(document.activeElement).toBe(container!.querySelector('input[aria-invalid="true"]'));
+  });
+
   it('saves an API key without rendering a provider enabled switch', async () => {
     providerType = 'openai';
     const { ProvidersSettings } = await loadProvidersSettings();
@@ -348,7 +403,7 @@ describe('ProvidersSettings Copilot timeout', () => {
       );
     });
 
-    expect(container!.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container!.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
     const apiKeyInput = container!.querySelector('input[type="password"]') as HTMLInputElement;
 
     await act(async () => {
@@ -365,6 +420,83 @@ describe('ProvidersSettings Copilot timeout', () => {
       expect.objectContaining({ apiKey: 'new-api-key' })
     );
     expect(updateProviderConfigMock.mock.calls[0]?.[1]).not.toHaveProperty('isEnabled');
+  });
+
+  it('resets the endpoint and local state when the provider type changes', async () => {
+    providerConfigsOverride = [];
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent?.includes('Add Provider')
+      )!);
+    });
+
+    const typeSelect = container!.querySelector<HTMLSelectElement>('select');
+    const baseUrlInput = container!.querySelector<HTMLInputElement>(
+      '[placeholder="https://api.openai.com/v1"]'
+    );
+    const localEndpointSwitch = container!.querySelector<HTMLInputElement>(
+      '#provider-local-endpoint'
+    );
+
+    await act(async () => {
+      setSelectValue(typeSelect!, 'ollama');
+    });
+    expect(baseUrlInput?.value).toBe('http://localhost:11434/v1');
+    expect(localEndpointSwitch?.checked).toBe(true);
+    expect(localEndpointSwitch?.disabled).toBe(true);
+
+    await act(async () => {
+      setSelectValue(typeSelect!, 'anthropic');
+    });
+    expect(baseUrlInput?.value).toBe('https://api.anthropic.com/v1');
+    expect(localEndpointSwitch?.checked).toBe(false);
+    expect(localEndpointSwitch?.disabled).toBe(false);
+  });
+
+  it('allows a generic provider running locally to use HTTP', async () => {
+    providerConfigsOverride = [];
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent?.includes('Add Provider')
+      )!);
+    });
+
+    const textInputs = container!.querySelectorAll<HTMLInputElement>('input:not([type="checkbox"]):not([type="password"])');
+    const nameInput = textInputs[0];
+    const baseUrlInput = textInputs[1];
+    const localEndpointSwitch = container!.querySelector<HTMLInputElement>(
+      '#provider-local-endpoint'
+    );
+
+    await act(async () => {
+      setInputValue(nameInput, 'Local gateway');
+      setInputValue(baseUrlInput, 'http://127.0.0.1:1234/v1');
+      click(localEndpointSwitch!);
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Save Provider'
+      )!);
+    });
+
+    expect(createProviderConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Local gateway',
+        baseUrl: 'http://127.0.0.1:1234/v1',
+        isLocal: true,
+        providerType: 'openai',
+      })
+    );
   });
 
   it('uses an icon-only refresh action on Copilot provider cards', async () => {

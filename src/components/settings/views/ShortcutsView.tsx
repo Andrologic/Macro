@@ -293,7 +293,11 @@ export const ShortcutsView: React.FC = () => {
       />
 
       <div className="space-y-6">
-        {filtered.length === 0 && <SettingsSearchEmpty />}
+        {filtered.length === 0 && (
+          <SettingsSearchEmpty
+            message={t('shortcuts.noMatching', 'No shortcuts match your search.')}
+          />
+        )}
         {(Object.keys(grouped) as ShortcutCategory[]).map((category) => {
           if (grouped[category].length === 0) return null;
           return (

@@ -134,6 +134,7 @@
     "now": "jetzt",
     "restore": "Restore",
     "saved": "Saved",
+    "saveChanges": "Änderungen speichern",
     "discard": "Discard",
     "draft": "Draft",
     "minutes": "minutes",
@@ -466,6 +467,8 @@
     "selectProvider": "Wählen Sie einen Anbieter aus",
     "selectModel": "Wählen Sie ein Modell aus",
     "noProvidersConfigured": "Keine Anbieter konfiguriert",
+    "providerRestoreUnavailable": "Der zuvor in dieser Unterhaltung verwendete Provider oder das Modell ist nicht mehr verfügbar. Wähle einen anderen aus, um fortzufahren.",
+    "runtimeErrorFallback": "Macro konnte diese Aktion nicht abschließen. Prüfe die Details und versuche es erneut.",
     "noEnabledModels": "Keine aktivierten Modelle. Aktivieren Sie Modelle in den Einstellungen.",
     "selectProviderFirst": "Wählen Sie zunächst einen Anbieter aus",
     "agentTypeBuild": "Bauen",
@@ -620,6 +623,8 @@
     "selectedCount": "{{count}} selected",
     "multiSelect": "Multi-select",
     "archivedView": "Archived view",
+    "archivedConversationReadOnly": "Diese Unterhaltung ist archiviert. Stelle sie wieder her, bevor du eine weitere Nachricht sendest.",
+    "archivedConversationPlaceholder": "Stelle diese Unterhaltung wieder her, um fortzufahren.",
     "noArchivedResults": "No archived conversations match this search",
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
@@ -778,6 +783,7 @@
     "invalid": "Ungültig",
     "unavailableStatus": "Nicht verfügbar",
     "details": "Details",
+    "technicalDetails": "Technische Details",
     "skillPath": "SKILL.md",
     "rootPath": "Root",
     "openFolder": "Open folder",
@@ -789,6 +795,7 @@
     "refreshThisSkill": "Refresh",
     "fixSkillMd": "Fix SKILL.md",
     "noDescription": "Keine Beschreibung",
+    "loadFailed": "Macro konnte die Skill-Konfiguration nicht laden.",
     "resourcesCount": "{{count}} Ressourcen",
     "scriptsCount": "{{count}} Scripts",
     "enabled": "Aktiviert",
@@ -1163,6 +1170,7 @@
     "includedAutomatically": "Enthalten",
     "noStandaloneProjectsForGroup": "Füge zuerst mindestens ein eigenständiges Projekt hinzu, bevor du hier eine Gruppe erstellst.",
     "createProjectGroup": "Gruppe erstellen",
+    "createProjectGroupWithRepo": "Gruppe erstellen und Repository hinzufügen",
     "createGroupAfterProjectFailed": "Projekt hinzugefügt, aber Macro konnte die Gruppe nicht erstellen: {{message}}",
     "subprojectName": "Projektname",
     "firstSubprojectName": "Name des ersten Projekts",
@@ -1557,6 +1565,8 @@
     "dependencyFlow": "Dependency Flow",
     "itemsCount": "{{count}} Artikel",
     "noStrategyTitle": "Noch keine Strategie generiert",
+    "selectPlanForStrategyTitle": "Plan auswählen",
+    "selectPlanForStrategyDescription": "Wähle einen Plan aus, um seine Strategie anzuzeigen oder zu generieren.",
     "noStrategyDescription": "Besprich den Plan im Architect-Chat und verwende dann Strategie generieren, um diesen Graphen zu erstellen.",
     "noBranchesMatchingFilters": "Keine Branch passt zu den aktuellen Filtern.",
     "planCompleted": "Plan abgeschlossen",
@@ -1707,6 +1717,8 @@
     "form": {
       "namePlaceholder": "z.B. OpenAI, lokaler Mistral",
       "baseUrlLabel": "Basis-URL",
+      "localEndpointLabel": "Lokaler Endpunkt",
+      "localEndpointDescription": "Erlaubt HTTP für einen Anbieter auf diesem Gerät. Für entfernte Dienste deaktiviert lassen.",
       "baseUrlPlaceholder": "https://api.openai.com/v1",
       "apiKeyLabel": "API-Schlüssel",
       "apiKeyPlaceholder": "sk-...",
@@ -1717,6 +1729,11 @@
       "replaceApiKey": "Ersetzen",
       "clearApiKey": "Gespeicherten Schlüssel löschen",
       "copilotResponseTimeoutLabel": "Copilot response timeout"
+    },
+    "validation": {
+      "nameRequired": "Der Providername ist erforderlich.",
+      "baseUrlRequired": "Die Basis-URL ist erforderlich.",
+      "baseUrlInvalid": "Gib eine gültige Provider-URL ein."
     },
     "authErrors": {
       "browser_open_failed": "Ihr Browser konnte für die ChatGPT-Anmeldung nicht geöffnet werden.",
@@ -1836,6 +1853,9 @@
       "addServer": "MCP-Server hinzufügen",
       "stdioOnly": "Nur stdio-Server. Sensible Umgebungswerte werden sicher gespeichert und hier maskiert.",
       "namePlaceholder": "Servername",
+      "nameRequired": "Der Servername ist erforderlich.",
+      "commandRequired": "Für einen lokalen Server ist ein Befehl erforderlich.",
+      "urlRequired": "Für einen Remote-Server ist eine URL erforderlich.",
       "commandPlaceholder": "Befehl, z. B. npx",
       "argsPlaceholder": "Argumente, z. B. -y @modelcontextprotocol/server-filesystem .",
       "envPlaceholder": "ENV_NAME=Wert",
@@ -1951,6 +1971,7 @@
       }
     }
   },
+  "prompts": { "title": "System-Prompts", "description": "Passe die Basis-Prompts der Modi und die internen Profile für Planung, Review und Repository-Audit an.", "restoreAll": "Alle wiederherstellen", "saveFailed": "System-Prompts konnten nicht gespeichert werden." },
   "toast": {
     "languageChanged": "Sprache geändert zu {{language}}",
     "settingsSaved": "Einstellungen gespeichert",
@@ -1992,6 +2013,7 @@
     "collectionDescription": "Modelle nach Anbieter verwalten",
     "searchPlaceholder": "Modelle suchen...",
     "noProviders": "Es sind noch keine Provider konfiguriert. Füge zuerst einen Provider hinzu.",
+    "noProvidersTitle": "Füge einen Provider hinzu, bevor du Modelle hinzufügst",
     "total": "insgesamt",
     "enabled": "aktiviert",
     "providerSummary": "{{total}} insgesamt • {{enabled}} aktiviert",
@@ -2095,6 +2117,7 @@
       "composerShortcutMode": "Composer-Fokus und Verlauf per Tastenkurzel"
     },
     "searchPlaceholder": "Suchverknüpfungen...",
+    "noMatching": "Keine Tastenkürzel entsprechen deiner Suche.",
     "resetAll": "Alles zurücksetzen",
     "recordingHint": "Drücken Sie jetzt Ihre Tastenkombination ... (Esc zum Abbrechen)",
     "promptHistoryBehavior": "Verhalten der Prompt-Historie",

@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
-import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
+import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
+import { PREF_KEYS, savePreference } from '../../services/preferences';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
@@ -15,7 +16,6 @@ import { TaskStatusIndicator } from '../tasks/TaskStatusIndicator';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
 import {
   areConversationIdSetsEqual,
-  canApplyArchivedConversationHydration,
   commitArchivedConversationMutation,
   filterConversationsByQuery,
   getArchiveViewConversations,
@@ -23,7 +23,6 @@ import {
   normalizeConversationIdList,
   partitionPinnedConversations,
   pruneConversationIdSet,
-  resolveArchivedConversationHydration,
   toggleAllConversationIds,
   toggleConversationIdInSet,
 } from './conversationArchiveState';
@@ -32,6 +31,35 @@ import { useVirtualList } from '../../hooks/useVirtualList';
 interface ConversationArchiveProps {
   className?: string;
 }
+
+export const resolveArchiveViewSelection = (params: {
+  enteringArchive: boolean;
+  conversations: Array<{ id: string }>;
+  archivedIds: ReadonlySet<string>;
+  previousActiveConversationId: string | null;
+}): string | null => {
+  if (params.enteringArchive) {
+    return params.conversations.find((conversation) => params.archivedIds.has(conversation.id))?.id ?? null;
+  }
+  const previousActive = params.previousActiveConversationId
+    ? params.conversations.find(
+        (conversation) => conversation.id === params.previousActiveConversationId && !params.archivedIds.has(conversation.id)
+      )
+    : null;
+  return previousActive?.id ?? params.conversations.find((conversation) => !params.archivedIds.has(conversation.id))?.id ?? null;
+};
+
+export const applyArchiveViewSelection = async (
+  conversationId: string | null,
+  selectConversation: (conversationId: string) => Promise<boolean>,
+  clearSelectedConversation: () => void
+): Promise<boolean> => {
+  if (!conversationId) {
+    clearSelectedConversation();
+    return true;
+  }
+  return selectConversation(conversationId);
+};
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -61,30 +89,6 @@ type ArchiveListRow =
       conversation: Conversation;
       isPinned: boolean;
     };
-
-const readArchivedConversationPreferenceCache = (): {
-  ids: string[];
-  hasCachedValue: boolean;
-} => {
-  if (typeof window === 'undefined') {
-    return { ids: [], hasCachedValue: false };
-  }
-
-  const cacheKey = `macro_${PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS}`;
-  const rawValue = window.localStorage.getItem(cacheKey);
-  if (rawValue === null) {
-    return { ids: [], hasCachedValue: false };
-  }
-
-  try {
-    return {
-      ids: normalizeConversationIdList(JSON.parse(rawValue)),
-      hasCachedValue: true,
-    };
-  } catch {
-    return { ids: [], hasCachedValue: true };
-  }
-};
 
 const removeConversationIdsFromSet = (
   current: ReadonlySet<string>,
@@ -391,24 +395,49 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   })));
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [archivedIds, setArchivedIds] = useState<Set<string>>(
-    () => new Set(readArchivedConversationPreferenceCache().ids)
+  const archivedIds = useConversationArchiveStore((state) => state.archivedConversationIds);
+  const hydrateArchivedConversationIds = useConversationArchiveStore(
+    (state) => state.hydrateArchivedConversationIds
   );
-  const [isArchivePersistenceReady, setIsArchivePersistenceReady] = useState(
-    () => readArchivedConversationPreferenceCache().hasCachedValue
+  const archiveHydrationError = useConversationArchiveStore(
+    (state) => state.archiveHydrationError
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [isArchiveViewSwitching, setIsArchiveViewSwitching] = useState(false);
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+  const replaceSharedArchivedConversationIds = useConversationArchiveStore(
+    (state) => state.replaceArchivedConversationIds
+  );
+  const previousActiveConversationIdRef = useRef<string | null>(null);
   const archiveMutationVersionRef = useRef(0);
   const archivePersistenceRef = useRef<Promise<void>>(Promise.resolve());
   const archivedIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    archivedIdsRef.current = archivedIds;
+    void hydrateArchivedConversationIds();
+  }, [hydrateArchivedConversationIds]);
+
+  useEffect(() => {
+    if (!archiveHydrationError) {
+      return;
+    }
+    notify.error(
+      t('chat.archivePreferenceLoadFailed', 'Unable to load archived conversations.'),
+      {
+        description:
+          archiveHydrationError instanceof Error
+            ? archiveHydrationError.message
+            : undefined,
+      }
+    );
+  }, [archiveHydrationError, t]);
+
+  useEffect(() => {
+    archivedIdsRef.current = new Set(archivedIds);
   }, [archivedIds]);
 
   const persistArchivedConversationIds = useCallback(
@@ -434,47 +463,6 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     [t]
   );
 
-  useEffect(() => {
-    if (isArchivePersistenceReady) {
-      return;
-    }
-
-    let cancelled = false;
-    const hydrationVersion = archiveMutationVersionRef.current;
-
-    void resolveArchivedConversationHydration(() =>
-      loadPreference<string[]>(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS)
-    ).then((result) => {
-        if (!result.ok) {
-          if (!cancelled) {
-            notify.error(
-              t('chat.archivePreferenceLoadFailed', 'Unable to load archived conversations.'),
-              { description: result.error instanceof Error ? result.error.message : undefined }
-            );
-          }
-          return;
-        }
-        if (
-          cancelled ||
-          !canApplyArchivedConversationHydration(
-            hydrationVersion,
-            archiveMutationVersionRef.current
-          )
-        ) {
-          return;
-        }
-
-        const hydratedIds = new Set(result.ids);
-        archivedIdsRef.current = hydratedIds;
-        setArchivedIds(hydratedIds);
-        setIsArchivePersistenceReady(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isArchivePersistenceReady, t]);
-
   const chatConversations = useMemo(
     () => getChatOnlyConversations(conversations),
     [conversations]
@@ -497,14 +485,12 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       const next = pruneConversationIdSet(current, chatConversationIds);
       return areConversationIdSetsEqual(current, next) ? current : next;
     });
-    setArchivedIds((current) => {
-      const next = pruneConversationIdSet(current, chatConversationIds);
-      if (!areConversationIdSetsEqual(current, next)) {
-        archivedIdsRef.current = next;
-      }
-      return areConversationIdSetsEqual(current, next) ? current : next;
-    });
-  }, [chatConversationIds]);
+    const nextArchivedIds = pruneConversationIdSet(archivedIdsRef.current, chatConversationIds);
+    if (!areConversationIdSetsEqual(archivedIdsRef.current, nextArchivedIds)) {
+      archivedIdsRef.current = nextArchivedIds;
+      replaceSharedArchivedConversationIds(nextArchivedIds);
+    }
+  }, [chatConversationIds, replaceSharedArchivedConversationIds]);
 
   const archiveSourceConversations = useMemo(
     () => getArchiveViewConversations(chatConversations, archivedIds, showArchived),
@@ -646,8 +632,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       }
 
       archivedIdsRef.current = nextArchivedIds;
-      setArchivedIds(nextArchivedIds);
-      setIsArchivePersistenceReady(true);
+      replaceSharedArchivedConversationIds(nextArchivedIds);
 
       setSelectedIds((current) => {
         const next = removeConversationIdsFromSet(current, idsToUpdate);
@@ -674,6 +659,10 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               clearSelectedConversation();
             }
           }
+          if (!shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
+            previousActiveConversationIdRef.current = selectedConversationId;
+            setShowArchived(false);
+          }
           notify.success(
             shouldArchive
               ? normalizedIds.length === 1
@@ -694,7 +683,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             archivedIdsRef.current === nextArchivedIds
           ) {
             archivedIdsRef.current = previousArchivedIds;
-            setArchivedIds(previousArchivedIds);
+            replaceSharedArchivedConversationIds(previousArchivedIds);
             if (archiveWriteCommitted) {
               await persistArchivedConversationIds(previousArchivedIds);
             }
@@ -710,6 +699,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     [
       chatConversations,
       persistArchivedConversationIds,
+      replaceSharedArchivedConversationIds,
       selectConversation,
       clearSelectedConversation,
       selectedConversationId,
@@ -734,11 +724,11 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     }
     const nextArchivedIds = removeConversationIdsFromSet(previousArchivedIds, idsToRemove);
     archivedIdsRef.current = nextArchivedIds;
-    setArchivedIds(nextArchivedIds);
+    replaceSharedArchivedConversationIds(nextArchivedIds);
     if (!(await persistArchivedConversationIds(nextArchivedIds))) {
       throw new Error('La conversation a été supprimée, mais le nettoyage de son archive a échoué.');
     }
-  }, [persistArchivedConversationIds]);
+  }, [persistArchivedConversationIds, replaceSharedArchivedConversationIds]);
 
   const handleToggleSelectAll = useCallback(() => {
     setSelectedIds((current) => toggleAllConversationIds(current, visibleConversationIds));
@@ -765,7 +755,14 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
     try {
       await deleteChatConversations(conversationIds);
-      setArchivedIds((current) => removeConversationIdsFromSet(current, idsToDelete));
+      const nextArchivedIds = removeConversationIdsFromSet(archivedIdsRef.current, idsToDelete);
+      archivedIdsRef.current = nextArchivedIds;
+      replaceSharedArchivedConversationIds(nextArchivedIds);
+      if (!(await persistArchivedConversationIds(nextArchivedIds))) {
+        throw new Error(
+          t('chat.archivePreferenceSaveFailed', 'Unable to save archived conversations.')
+        );
+      }
       setSelectedIds(new Set());
       setIsMultiSelectMode(false);
       setIsBulkDeleteOpen(false);
@@ -797,10 +794,63 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     void createConversation(t('chat.newConversation', 'New Conversation'), null, null);
   }, [createConversation, exitMultiSelectMode, showArchived, t]);
 
-  const handleToggleArchivedView = useCallback(() => {
+  const handleToggleArchivedView = useCallback(async () => {
+    if (isArchiveViewSwitching) {
+      return;
+    }
+    setIsArchiveViewSwitching(true);
     exitMultiSelectMode();
-    setShowArchived((current) => !current);
-  }, [exitMultiSelectMode]);
+    try {
+      if (!showArchived) {
+        if (selectedConversationId && !archivedIds.has(selectedConversationId)) {
+          previousActiveConversationIdRef.current = selectedConversationId;
+        }
+        const archivedConversationId = resolveArchiveViewSelection({
+          enteringArchive: true,
+          conversations: chatConversations,
+          archivedIds,
+          previousActiveConversationId: previousActiveConversationIdRef.current,
+        });
+        if (
+          await applyArchiveViewSelection(
+            archivedConversationId,
+            selectConversation,
+            clearSelectedConversation
+          )
+        ) {
+          setShowArchived(true);
+        }
+        return;
+      }
+
+      const activeConversationId = resolveArchiveViewSelection({
+        enteringArchive: false,
+        conversations: chatConversations,
+        archivedIds,
+        previousActiveConversationId: previousActiveConversationIdRef.current,
+      });
+      if (
+        await applyArchiveViewSelection(
+          activeConversationId,
+          selectConversation,
+          clearSelectedConversation
+        )
+      ) {
+        setShowArchived(false);
+      }
+    } finally {
+      setIsArchiveViewSwitching(false);
+    }
+  }, [
+    archivedIds,
+    chatConversations,
+    clearSelectedConversation,
+    exitMultiSelectMode,
+    isArchiveViewSwitching,
+    selectConversation,
+    selectedConversationId,
+    showArchived,
+  ]);
 
   const archiveButtonLabel = showArchived
     ? t('common.restore', 'Restore')
@@ -829,7 +879,8 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               icon="archive"
               label={t('chat.archives', 'Archives')}
               pressed={showArchived}
-              onClick={handleToggleArchivedView}
+              onClick={() => void handleToggleArchivedView()}
+              isLoading={isArchiveViewSwitching}
               data-tour-id="chat-archive-toggle"
             />
             {!isMultiSelectMode && (
@@ -859,21 +910,22 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             className="px-3 py-2 border-b border-border"
             data-tour-id="chat-multiselect-toolbar"
           >
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <span className="min-w-24 flex-1 truncate text-xs font-medium text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="shrink-0 truncate text-xs font-medium text-muted-foreground">
                 {selectedCountLabel}
               </span>
-              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
+              <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
                 <button
                   onClick={handleToggleSelectAll}
                   type="button"
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={visibleConversationIds.length === 0 || isBulkDeleting}
                   title={selectAllLabel}
                   aria-label={selectAllLabel}
                   aria-pressed={isAllVisibleSelected}
                 >
                   <Icon name={isAllVisibleSelected ? 'square' : 'check-square'} size={14} />
+                  <span>{selectAllLabel}</span>
                 </button>
 
                 <button
@@ -885,6 +937,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                   aria-label={archiveButtonLabel}
                 >
                   <Icon name={archiveButtonIcon} size={14} />
+                  <span className="sr-only">{archiveButtonLabel}</span>
                 </button>
                 <button
                   type="button"
@@ -898,6 +951,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                   aria-label={deleteSelectedLabel}
                 >
                   <Icon name="trash" size={14} />
+                  <span className="sr-only">{deleteSelectedLabel}</span>
                 </button>
                 <button
                   type="button"
@@ -907,6 +961,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                   aria-label={cancelSelectionLabel}
                 >
                   <Icon name="x" size={14} />
+                  <span className="sr-only">{cancelSelectionLabel}</span>
                 </button>
               </div>
             </div>

@@ -10,6 +10,7 @@ import { Footer } from "./components/layout/Footer";
 import { Toaster } from "./components/ui/Toaster";
 import { notify } from "./components/ui/toastService";
 import { useAppStore } from "./stores/useAppStore";
+import { useConversationArchiveStore } from "./stores/useConversationArchiveStore";
 import { Skeleton } from "./components/shared/Skeleton";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { getPlatformChromeState } from "./utils/desktopPlatform";
@@ -199,6 +200,10 @@ const App: React.FC = () => {
   const hasRightPanel = hasModePanel(mode, "right");
   const activeLeftPanelWidth = mode === "Architect" ? architectLeftPanelWidth : leftPanelWidth;
   const resizeActiveLeftPanel = mode === "Architect" ? setArchitectLeftPanelWidth : setLeftPanelWidth;
+
+  useEffect(() => {
+    void useConversationArchiveStore.getState().hydrateArchivedConversationIds();
+  }, [bootstrapRetryKey]);
 
   // Ref to track panels that were auto-collapsed during resize
   const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({

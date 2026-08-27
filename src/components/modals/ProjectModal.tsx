@@ -137,14 +137,14 @@ export const ProjectModal: React.FC = () => {
         ? t('project.detectingWslGit', 'Detecting WSL Git...')
         : t('project.saving', 'Saving...')
     : isCreatingNewGroup
-      ? t('project.createProjectGroup', 'Create group')
+      ? t('project.createProjectGroupWithRepo', 'Create group and add repository')
     : isAttachingToExistingGroup
       ? isCreatingNewRepo
-        ? t('project.createRepoInExistingGlobalProject', 'Create project')
-        : t('project.addExistingRepoToGlobalProject', 'Add project')
+        ? t('project.createRepoInExistingGlobalProject', 'Create repository in group')
+        : t('project.addExistingRepoToGlobalProject', 'Add repository to group')
       : isCreatingNewRepo
-        ? t('project.createNewRepo', 'Create project')
-        : t('project.addExistingRepo', 'Add existing project');
+        ? t('project.createNewRepo', 'Create repository')
+        : t('project.addExistingRepo', 'Add existing repository');
   const destinationSummary = isAttachingToExistingGroup
     ? targetGroup?.name || t('project.chooseGlobalProject', 'Choose a group')
     : isCreatingNewGroup

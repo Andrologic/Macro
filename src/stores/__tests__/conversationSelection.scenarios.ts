@@ -135,6 +135,7 @@ export const registerConversationSelectionScenarios = (
 
       expect(useChatStore.getState().selectedConversationId).toBeNull();
       expect(useChatStore.getState().selectedConversationIdsByMode.Chat).toBeNull();
+      expect(useChatStore.getState().restoreStatus).toBe('ready');
       expect(
         useChatStore.getState().selectedConversationIdsByMode.Architect,
       ).toBe('architect-selection-must-survive');

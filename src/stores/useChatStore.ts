@@ -13724,7 +13724,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearSelectedConversation: () => {
       const mode = useAppStore.getState().mode;
       clearConversationSelection(mode);
-      set({ activeContextKey: null, restoreStatus: "idle" });
+      set({ activeContextKey: null, restoreStatus: "ready" });
     },
 
     togglePinConversation: async (conversationId) => {

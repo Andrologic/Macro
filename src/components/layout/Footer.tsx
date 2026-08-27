@@ -2161,8 +2161,11 @@ export const Footer: React.FC = () => {
               type="button"
               size="sm"
               variant="ghost"
+              aria-label={t('notifications.centerTitle', 'Notifications')}
+              title={t('notifications.centerTitle', 'Notifications')}
               aria-haspopup="dialog"
               aria-expanded={isNotificationCenterOpen}
+              aria-controls="notification-center-popover"
               className={cn('relative h-6 w-6 px-0 text-[11px]', isNotificationCenterOpen && 'bg-accent text-foreground hover:bg-accent')}
               onClick={() => setNotificationCenterOpen(!isNotificationCenterOpen)}
               data-tour-id="notification-center"

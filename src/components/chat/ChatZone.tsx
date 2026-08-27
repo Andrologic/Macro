@@ -12,6 +12,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
+import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
+import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
+import { presentServiceError } from '../../services/degradedErrorPresentation';
 import type {
   ManualCompactionResult,
   ManualCompactionSkipReason,
@@ -1791,12 +1794,24 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isImplementComposerInKickoffMode =
     selectedTaskRequiresKickoff && currentMessages.length === 0;
   const isImplementTaskSelectionMissing = mode === 'Implement' && !selectedTask;
+  const isSelectedConversationArchived = useConversationArchiveStore((state) =>
+    mode === 'Chat' && selectedConversationId
+      ? state.archivedConversationIds.has(selectedConversationId)
+      : false
+  );
+  const isConversationArchiveHydrated = useConversationArchiveStore(
+    (state) => state.isArchiveHydrated
+  );
+  const isConversationArchivePending =
+    mode === 'Chat' && Boolean(selectedConversationId) && !isConversationArchiveHydrated;
   const isComposerDisabled =
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
     isSelectedTaskDependencyBlocked ||
+    isConversationArchivePending ||
+    isSelectedConversationArchived ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
   const selectedGlobalProject = useMemo(
@@ -3588,9 +3603,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             )}
 
             {composerError && (
-              <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-                {composerError}
-              </div>
+              <ActionableErrorCallout
+                className="mb-3"
+                compact
+                presentation={presentServiceError(composerError, {
+                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                    ? t(
+                        'chat.providerRestoreUnavailable',
+                        'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
+                      )
+                    : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
+                })}
+              />
             )}
 
             {showSkillNativeToolWarning && (
@@ -3600,6 +3624,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   {t(
                     'skills.nativeToolRequiredWarning',
                     'Skills require a native tool-calling model/provider.'
+                  )}
+                </span>
+              </div>
+            )}
+
+            {isSelectedConversationArchived && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                <Icon name="archive" size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {t(
+                    'chat.archivedConversationReadOnly',
+                    'This conversation is archived. Restore it before sending another message.'
                   )}
                 </span>
               </div>
@@ -3712,6 +3748,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                             ? missingArchitectPlanMessage
                           : isImplementTaskSelectionMissing
                             ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
+                          : isConversationArchivePending
+                            ? t('chat.loadingConversation', 'Restoring conversation...')
+                          : isSelectedConversationArchived
+                            ? t(
+                                'chat.archivedConversationPlaceholder',
+                                'Restore this conversation to continue.'
+                              )
                           : isSelectedTaskDependencyBlocked
                             ? t(
                                 'implement.taskBlockedComposerPlaceholder',

@@ -46,8 +46,8 @@ const resetStore = () => {
   };
 };
 
-mock.module('../../stores/useAppStore', () => ({
-  useAppStore: <T,>(selector: (state: AppStoreSnapshot) => T): T =>
+const mockedUseAppStore = Object.assign(
+  <T,>(selector: (state: AppStoreSnapshot) => T): T =>
     React.useSyncExternalStore(
       (listener) => {
         listeners.add(listener);
@@ -56,7 +56,10 @@ mock.module('../../stores/useAppStore', () => ({
       () => selector(storeSnapshot),
       () => selector(storeSnapshot)
     ),
-}));
+  { getState: () => storeSnapshot }
+);
+
+mock.module('../../stores/useAppStore', () => ({ useAppStore: mockedUseAppStore }));
 
 const testTranslations: Record<string, string> = {
   'onboarding.dialogLabel': 'Guide d onboarding',
@@ -448,6 +451,11 @@ describe('OnboardingGuide positioning', () => {
   });
 
   it('persists dismissed and completed onboarding state', async () => {
+    const origin = {
+      mode: storeSnapshot.mode,
+      isLeftPanelOpen: storeSnapshot.isLeftPanelOpen,
+      isRightPanelOpen: storeSnapshot.isRightPanelOpen,
+    };
     await renderGuideWithShell();
 
     act(() => {
@@ -463,6 +471,7 @@ describe('OnboardingGuide positioning', () => {
     }>(PREF_KEYS.ONBOARDING_STATE);
     expect(dismissed?.dismissedAt).toBeTruthy();
     expect(dismissed?.completedAt).toBeNull();
+    expect(storeSnapshot).toMatchObject(origin);
 
     act(() => {
       window.dispatchEvent(new Event('macro:start-onboarding'));
@@ -483,5 +492,6 @@ describe('OnboardingGuide positioning', () => {
     }>(PREF_KEYS.ONBOARDING_STATE);
     expect(completed?.completedAt).toBeTruthy();
     expect(completed?.dismissedAt).toBeNull();
+    expect(storeSnapshot).toMatchObject(origin);
   });
 });

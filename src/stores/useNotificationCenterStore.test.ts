@@ -398,4 +398,16 @@ describe('useNotificationCenterStore', () => {
       }),
     ]);
   });
+
+  it('drops the obsolete web transport setup notification', () => {
+    const items = notificationStore.sanitizeNotificationCenterItems([
+      createNotificationItem(1, {
+        id: 'legacy-browser-transport',
+        level: 'error',
+        title: 'Desktop transport requires Tauri IPC; use VITE_BACKEND_TRANSPORT=remote for web/mobile runtimes',
+      }),
+    ]);
+
+    expect(items).toEqual([]);
+  });
 });

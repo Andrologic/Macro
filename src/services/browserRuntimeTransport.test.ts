@@ -85,7 +85,7 @@ test('authentifie les invocations et rétablit la connexion des écouteurs', asy
   await new Promise((resolve) => setTimeout(resolve, 0));
   activeSocket.emit('close');
   await expect(interruptedInvocation).rejects.toThrow(
-    'La connexion au runtime Tauri a été interrompue.',
+    'Macro could not connect to the desktop runtime. It will retry automatically.',
   );
   await new Promise((resolve) => setTimeout(resolve, 650));
 

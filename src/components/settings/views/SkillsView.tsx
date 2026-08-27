@@ -14,9 +14,12 @@ import { SkillCard } from './SkillCard';
 import { SkillSourcesPanel } from './SkillSourcesPanel';
 import { Icon } from '../../ui/Icon';
 import { Input } from '../../ui/Input';
+import { Dialog } from '../../ui/Dialog';
 import { Textarea } from '../../ui/Textarea';
 import { notify } from '../../ui/toastService';
 import { cn } from '../../../utils/cn';
+import { ActionableErrorCallout } from '../../shared/ActionableErrorCallout';
+import { presentServiceError } from '../../../services/degradedErrorPresentation';
 import {
   SettingsCollectionHeader,
   SettingsSearchEmpty,
@@ -380,9 +383,13 @@ export const SkillsView: React.FC = () => {
       />
 
       {lastError && (
-        <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {lastError}
-        </div>
+        <ActionableErrorCallout
+          className="mb-4"
+          compact
+          presentation={presentServiceError(lastError, {
+            fallbackBody: t('skills.loadFailed', 'Macro could not load the skills configuration.'),
+          })}
+        />
       )}
 
       <div className="flex-1 space-y-3 overflow-y-auto pr-2">
@@ -415,7 +422,7 @@ export const SkillsView: React.FC = () => {
         {filteredSkills.length === 0 && (isLoading
           ? <p className="py-8 text-center text-sm text-muted-foreground">{t('skills.loading', 'Loading skills...')}</p>
           : query.trim()
-            ? <SettingsSearchEmpty />
+            ? <SettingsSearchEmpty message={t('skills.noneFound', 'No skills found.')} />
             : (
               <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
                 {t('skills.empty', 'No skills discovered')}
@@ -424,7 +431,15 @@ export const SkillsView: React.FC = () => {
       </div>
 
       {createDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-sm">
+        <Dialog
+          title={t('skills.createTitle', 'Create skill')}
+          onClose={() => {
+            setCreateDialogOpen(false);
+            resetCreateDialog();
+          }}
+          backdropClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          panelClassName="flex w-full justify-center"
+        >
           <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
@@ -514,7 +529,7 @@ export const SkillsView: React.FC = () => {
               </button>
             </div>
           </div>
-        </div>
+        </Dialog>
       )}
     </div>
   );
