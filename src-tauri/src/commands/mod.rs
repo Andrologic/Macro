@@ -5430,9 +5430,7 @@ fn validate_ai_provider_fields(
     let parsed = reqwest::Url::parse(base_url.trim())
         .map_err(|_| command_error("Provider base URL must be a valid URL."))?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(command_error(
-            "Provider base URL must use HTTP or HTTPS.",
-        ));
+        return Err(command_error("Provider base URL must use HTTP or HTTPS."));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(command_error(
@@ -5445,9 +5443,7 @@ fn validate_ai_provider_fields(
         ));
     }
     if !is_local && parsed.scheme() != "https" {
-        return Err(command_error(
-            "Remote provider base URLs must use HTTPS.",
-        ));
+        return Err(command_error("Remote provider base URLs must use HTTPS."));
     }
 
     Ok(())
@@ -6167,18 +6163,48 @@ mod tests {
 
     #[test]
     fn ai_provider_validation_rejects_empty_and_unsafe_endpoints() {
-        assert!(validate_ai_provider_fields("", "openai", "https://api.example.test", false).is_err());
+        assert!(
+            validate_ai_provider_fields("", "openai", "https://api.example.test", false).is_err()
+        );
         assert!(validate_ai_provider_fields("Example", "openai", "", false).is_err());
-        assert!(validate_ai_provider_fields("Example", "openai", "ftp://example.test", false).is_err());
-        assert!(validate_ai_provider_fields("Example", "openai", "http://example.test", false).is_err());
-        assert!(validate_ai_provider_fields("Example", "openai", "https://user:secret@example.test", false).is_err());
-        assert!(validate_ai_provider_fields("Example", "openai", "https://example.test?v=1", false).is_err());
+        assert!(
+            validate_ai_provider_fields("Example", "openai", "ftp://example.test", false).is_err()
+        );
+        assert!(
+            validate_ai_provider_fields("Example", "openai", "http://example.test", false).is_err()
+        );
+        assert!(validate_ai_provider_fields(
+            "Example",
+            "openai",
+            "https://user:secret@example.test",
+            false
+        )
+        .is_err());
+        assert!(validate_ai_provider_fields(
+            "Example",
+            "openai",
+            "https://example.test?v=1",
+            false
+        )
+        .is_err());
     }
 
     #[test]
     fn ai_provider_validation_accepts_remote_local_and_linked_providers() {
-        assert!(validate_ai_provider_fields("Example", "openai", "https://api.example.test/v1", false).is_ok());
-        assert!(validate_ai_provider_fields("Local", "openai-compatible", "http://127.0.0.1:11434/v1", true).is_ok());
+        assert!(validate_ai_provider_fields(
+            "Example",
+            "openai",
+            "https://api.example.test/v1",
+            false
+        )
+        .is_ok());
+        assert!(validate_ai_provider_fields(
+            "Local",
+            "openai-compatible",
+            "http://127.0.0.1:11434/v1",
+            true
+        )
+        .is_ok());
         assert!(validate_ai_provider_fields("ChatGPT", "chatgpt", "", false).is_ok());
     }
 
