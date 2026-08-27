@@ -82,16 +82,17 @@ All actions are pinned to immutable commits, checkouts do not persist credential
 
 The `Release` workflow is tag-only. A stable tag named exactly `v<package version>` must point to a commit contained in `origin/main`. Cheap metadata, lockfile, frontend, bundle, sidecar, and Rust checks complete before the release build matrix starts.
 
-The build matrix creates a signed and notarized universal macOS DMG, an intentionally Authenticode-unsigned Windows x64 NSIS installer, and Linux x64 AppImage, DEB, and RPM packages. Tauri signs every supported automatic-update artifact independently of platform code signing. The workflow verifies the documented signing state or package contents, refuses missing artifacts, and uploads short-lived build artifacts. The final job calculates SHA-256 sums and creates a draft GitHub release only. Publishing the draft is always a manual owner action.
+The build matrix creates a signed and notarized universal macOS DMG, intentionally Authenticode-unsigned Windows x64 and Windows ARM64 NSIS installers, and Linux x64 AppImage, DEB, and RPM packages. The two Windows jobs run on native architectures and verify the PE machine type of Macro and its AI sidecar. Tauri signs every supported automatic-update artifact independently of platform code signing. The workflow verifies the documented signing state or package contents, refuses missing artifacts, and uploads short-lived build artifacts. The final job calculates SHA-256 sums and creates a draft GitHub release only. Publishing the draft is always a manual owner action.
 ### Stable and Preview update channels
 
 The application reads channel manifests from the orphan `updates` branch. Each
 platform has a stable pointer and a preview pointer under `channels/`. The
 branch contains JSON manifests only. Installers remain GitHub Release assets.
 
-Publishing a stable release advances the stable pointers after the owner
-publishes the draft. The `Preview` workflow builds `develop` every night at
-02:17 UTC, but only after `v0.1.0` exists as a published stable release. It
+Publishing a stable release advances five stable pointers after the owner
+publishes the draft. The stable workflow can also be relaunched manually with
+the exact published tag. The `Preview` workflow builds `develop` every night at
+02:17 UTC, but only after `v0.1.1` exists as a published stable release. It
 skips scheduled builds when `develop` has not changed. A manual run can publish
 either a nightly or an explicit `x.y.z-rc.n` release candidate.
 

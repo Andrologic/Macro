@@ -126,6 +126,55 @@ describe('contextCompactionOrchestrator', () => {
     expect(result.errorMessage).toContain('manual');
   });
 
+  it('continues post-tool execution when only image estimates exceed the budget', async () => {
+    const messages = [
+      message('u1', 'user', 'Old request.'),
+      message('a1', 'assistant', 'Old answer.'),
+      message('u2', 'user', 'Second request.'),
+      message('a2', 'assistant', 'Second answer.'),
+      message('u3', 'user', 'Inspect this image.'),
+    ];
+    const preparedMessages = prepared(messages);
+    preparedMessages[preparedMessages.length - 1] = {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Inspect this image.' },
+        {
+          type: 'image_url',
+          image_url: { url: 'data:image/png;base64,aaaa' },
+        },
+      ],
+      image_metadata: [{ width: 10_000, height: 10_000 }],
+    };
+    const result = await runContextCompactionOrchestration({
+      ...baseParams(messages),
+      boundary: 'post_tool_batch',
+      budgetPolicy: { auto: false },
+      latestBoundaryPayloadTokens: 20,
+      preparedMessages,
+      buildForceCompaction: true,
+      forcePrune: true,
+      footprintFields: {
+        ...baseParams(messages).footprintFields,
+        modelContextWindowTokens: 2_000,
+        outputLimitTokens: 100,
+      },
+    });
+
+    expect(result.outcome).toBe('completed');
+    if (result.outcome !== 'completed') {
+      throw new Error('expected completed result');
+    }
+    expect(result.evaluation.decision).toBe('send');
+    expect(result.evaluation.reason).toBe('image_estimate_is_non_blocking');
+    expect(result.result.compactionState).toBeNull();
+    expect(result.result.messages).toEqual([
+      { role: 'system', content: 'You are Macro.' },
+      ...preparedMessages,
+    ]);
+    expect(result.shouldPersistCompaction).toBe(false);
+  });
+
   it('creates a checkpoint for forced manual compaction and reports persistence intent', async () => {
     const messages = [
       message('u1', 'user', 'old request '.repeat(400)),

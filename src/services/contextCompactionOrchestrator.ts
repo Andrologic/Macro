@@ -230,6 +230,7 @@ export const runContextCompactionOrchestration = async (params: {
   footprintFields: ContextLimitFootprintFields;
   providerId?: string | null;
   providerType?: string | null;
+  baseUrl?: string | null;
   modelId?: string | null;
   currentCompactionState?: ConversationCompactionState | null;
   budgetPolicy?: ContextBudgetPolicy | null;
@@ -255,6 +256,10 @@ export const runContextCompactionOrchestration = async (params: {
     toolDefinitions: params.toolDefinitions,
     ...params.footprintFields,
     previousModelContextWindowTokens: params.previousModelContextWindowTokens,
+    providerType: params.providerType,
+    providerId: params.providerId,
+    baseUrl: params.baseUrl,
+    modelId: params.modelId,
     estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
     countProviderInputItems: params.countProviderInputItems,
     mode: params.mode,
@@ -297,6 +302,10 @@ export const runContextCompactionOrchestration = async (params: {
     params.buildForceCompaction === true
       ? evaluation.decision === 'compact'
       : params.forceCompaction;
+  const shouldForcePrune =
+    params.buildForceCompaction === true
+      ? evaluation.decision === 'compact' && params.forcePrune === true
+      : params.forcePrune;
   const result = await buildCompactedMessagesForRequest({
     systemMessage: params.systemMessage,
     preparedMessages: params.preparedMessages,
@@ -305,7 +314,9 @@ export const runContextCompactionOrchestration = async (params: {
     toolDefinitions: params.toolDefinitions,
     ...params.footprintFields,
     previousModelContextWindowTokens: params.previousModelContextWindowTokens,
+    providerType: params.providerType,
     providerId: params.providerId,
+    baseUrl: params.baseUrl,
     modelId: params.modelId,
     currentCompactionState: params.currentCompactionState,
     estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
@@ -313,7 +324,7 @@ export const runContextCompactionOrchestration = async (params: {
     mode: params.mode,
     budgetPolicy,
     forceCompaction: shouldForceBuildCompaction,
-    forcePrune: params.forcePrune,
+    forcePrune: shouldForcePrune,
     onCompactionStarted: params.onCompactionStarted,
     generateSummary: params.generateSummary,
   });
@@ -346,6 +357,7 @@ export const consolidateCompletedAssistantTurnCompaction = async (params: {
   footprintFields: ContextLimitFootprintFields;
   providerId?: string | null;
   providerType?: string | null;
+  baseUrl?: string | null;
   modelId?: string | null;
   currentCompactionState?: ConversationCompactionState | null;
   budgetPolicy?: ContextBudgetPolicy | null;
@@ -378,6 +390,7 @@ export const consolidateCompletedAssistantTurnCompaction = async (params: {
       footprintFields: params.footprintFields,
       providerId: params.providerId ?? pending.providerId,
       providerType: params.providerType ?? pending.providerType,
+      baseUrl: params.baseUrl,
       modelId: params.modelId ?? pending.modelId,
       currentCompactionState: params.currentCompactionState ?? null,
       budgetPolicy: params.budgetPolicy,

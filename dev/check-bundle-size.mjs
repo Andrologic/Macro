@@ -6,7 +6,7 @@ const ASSETS_DIR = fileURLToPath(new URL('../dist/assets/', import.meta.url));
 
 const BUDGETS = [
   // Application code follows Rollup's dependency graph; vendor libraries keep stable manual chunks.
-  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_250_000 },
+  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_325_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 105_000 },
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 48_000 },

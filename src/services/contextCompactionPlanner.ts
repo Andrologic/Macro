@@ -7,6 +7,7 @@ import type {
 } from '../types';
 import {
   buildContextCompactionDecisionAudit,
+  isBlockableContextOverUsableBudget,
   isContextFootprintOverUsableBudget,
   type ContextBudgetPolicy,
 } from './contextCompaction';
@@ -149,20 +150,25 @@ export const evaluateContextCompaction = (params: {
   const autoCompactionEnabled = params.budgetPolicy?.auto !== false;
   const forceCompaction = Boolean(params.forceCompaction);
   const overUsableBudget = isContextFootprintOverUsableBudget(params.footprint);
+  const blockableOverUsableBudget = isBlockableContextOverUsableBudget(
+    params.footprint,
+  );
   const currentCompactionState = params.currentCompactionState ?? null;
   const latestBoundaryPayloadTokens =
     typeof params.latestBoundaryPayloadTokens === 'number' &&
     Number.isFinite(params.latestBoundaryPayloadTokens)
       ? params.latestBoundaryPayloadTokens
-      : params.footprint.latestUserContextTokens;
+      : params.footprint.latestUserBlockableTokens ??
+        params.footprint.latestUserContextTokens;
   const latestPayloadTooLarge =
     typeof latestBoundaryPayloadTokens === 'number' &&
-    latestBoundaryPayloadTokens >= params.footprint.usableContextTokens;
+    latestBoundaryPayloadTokens >= params.footprint.usableContextTokens &&
+    params.footprint.isHardStop;
 
   let decision: ContextCompactionPlannerDecision;
   let reason: string;
 
-  if (latestPayloadTooLarge && overUsableBudget) {
+  if (latestPayloadTooLarge && blockableOverUsableBudget) {
     decision = 'block';
     reason =
       params.boundary === 'post_tool_batch'
@@ -173,8 +179,13 @@ export const evaluateContextCompaction = (params: {
     reason = params.boundary === 'manual' ? 'manual_compaction_requested' : 'forced_compaction';
   } else if (overUsableBudget) {
     if (!autoCompactionEnabled) {
-      decision = 'manual_required';
-      reason = 'auto_compaction_disabled';
+      if (blockableOverUsableBudget) {
+        decision = 'manual_required';
+        reason = 'auto_compaction_disabled';
+      } else {
+        decision = 'send';
+        reason = 'image_estimate_is_non_blocking';
+      }
     } else {
       decision = 'compact';
       reason = params.footprint.reason;

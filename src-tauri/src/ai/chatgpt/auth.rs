@@ -64,7 +64,6 @@ pub async fn start_browser_auth(
                 request_id = %request_id_for_task,
                 provider_id = %provider_id_for_task,
                 code = %error.code,
-                message = %error.message,
                 "ChatGPT browser auth failed"
             );
             let _ = app_for_task.emit(
@@ -465,7 +464,6 @@ async fn handle_browser_callback(
         Ok(_) => info!("ChatGPT browser callback accepted"),
         Err(error) => warn!(
             code = %error.code,
-            message = %error.message,
             "ChatGPT browser callback rejected"
         ),
     }
@@ -560,7 +558,6 @@ async fn exchange_authorization_code(
         let body = response.text().await.unwrap_or_default();
         warn!(
             status = status.as_u16(),
-            response_error = %extract_response_error(status.as_u16(), &body),
             "ChatGPT authorization code exchange returned non-success status"
         );
         return Err(extract_response_error(status.as_u16(), &body));

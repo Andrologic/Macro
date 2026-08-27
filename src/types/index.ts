@@ -860,9 +860,19 @@ export interface ContextFootprint {
   systemTokens: number;
   toolSchemaTokens: number;
   imagePlaceholderTokens: number;
+  imageCount?: number;
+  imagesWithKnownDimensions?: number;
+  imageTransportBytes?: number;
+  imageEstimateConfidence?:
+    | 'model_formula'
+    | 'provider_formula'
+    | 'fallback'
+    | 'unknown';
+  hardStopEstimatedTokens?: number;
   citationTokens: number;
   summaryTokens?: number;
   latestUserContextTokens?: number;
+  latestUserBlockableTokens?: number;
   modelContextWindowTokens: number;
   inputLimitTokens?: number;
   outputLimitTokens?: number;

@@ -26,11 +26,148 @@ export const registerCompactionAndDiagnosticsScenarios = (
     sendChatNonStreamingMock,
     setSelectedProviderModelContext,
     streamChatMock,
+    useProviderStoreMock,
     waitForConversationDiagnostics,
     waitForStreamCallCount,
   } = context;
 
   describe('useChatStore compaction and diagnostics', () => {
+    it('does not compact on model switch when only image estimates exceed the smaller window', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = null;
+      providerState.modelsByProvider = {
+        'provider-1': [
+          {
+            id: 'large-model',
+            name: 'Large model',
+            isEnabled: true,
+            contextWindowTokens: 32_000,
+            outputLimitTokens: 2_000,
+          } as never,
+          {
+            id: 'small-model',
+            name: 'Small model',
+            isEnabled: true,
+            contextWindowTokens: 8_000,
+            outputLimitTokens: 1_000,
+          } as never,
+        ],
+      };
+      providerState.selectedProviderId = 'provider-1';
+      providerState.selectedModelId = 'large-model';
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initialize();
+      const messages = [
+        {
+          id: 'u1',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user' as const,
+          content: 'Remember this.',
+          timestamp: '2026-08-26T09:58:00.000Z',
+        },
+        {
+          id: 'a1',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'assistant' as const,
+          content: 'Remembered.',
+          timestamp: '2026-08-26T09:59:00.000Z',
+        },
+        {
+          id: 'u2',
+          task_id: '',
+          conversation_id: 'chat-conv',
+          role: 'user' as const,
+          content: 'Inspect these images.',
+          timestamp: '2026-08-26T10:00:00.000Z',
+        },
+      ];
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{ ...createConversation('chat-conv', ''), message_count: 3 }],
+        messages,
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        messageImagesByMessageId: {
+          u2: Array.from({ length: 4 }, (_, index) => ({
+            id: `image-${index + 1}`,
+            mimeType: 'image/png',
+            dataUrl: `data:image/png;base64,${'a'.repeat(index + 4)}`,
+            width: 10_000,
+            height: 10_000,
+            createdAt: '2026-08-26T10:00:00.000Z',
+          })),
+        },
+      }));
+      dbUpsertConversationCompactionStateMock.mockClear();
+      sendChatNonStreamingMock.mockClear();
+
+      useProviderStoreMock.setState({ selectedModelId: 'small-model' });
+      await flushAsyncWork();
+      await flushAsyncWork();
+
+      expect(dbUpsertConversationCompactionStateMock).not.toHaveBeenCalled();
+      expect(sendChatNonStreamingMock).not.toHaveBeenCalled();
+      expect(
+        useChatStore.getState().conversationCompactionStatusById['chat-conv'],
+      ).toBeUndefined();
+    });
+
+    it('propagates image dimensions without blocking when image estimates alone exceed the context', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = null;
+      setSelectedProviderModelContext();
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-conv', '')],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+      }));
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Inspecte cette image.',
+        images: Array.from({ length: 4 }, (_, index) =>
+          ({
+            id: `image-${index + 1}`,
+            mimeType: 'image/png',
+            dataUrl: `data:image/png;base64,${index === 0 ? 'a'.repeat(900_000) : 'a'}`,
+            width: 10_000,
+            height: 10_000,
+            createdAt: '2026-08-26T10:00:00.000Z',
+          })
+        ),
+      });
+      await waitForStreamCallCount(1);
+
+      const streamOptions = getLatestStreamOptions<{
+        messages: Array<{
+          role: string;
+          image_metadata?: Array<Record<string, unknown>>;
+        }>;
+      }>();
+      const imageMessage = streamOptions.messages.find(
+        (message) => message.role === 'user' && message.image_metadata?.length,
+      );
+
+      expect(imageMessage?.image_metadata).toHaveLength(4);
+      expect(imageMessage?.image_metadata).toEqual(
+        Array.from({ length: 4 }, () => ({
+          width: 10_000,
+          height: 10_000,
+          mimeType: 'image/png',
+          sourceFingerprint: expect.any(String),
+        })),
+      );
+      expect(useChatStore.getState().lastError).toBeNull();
+    });
+
     it('persists manual compaction pass and summary schema metadata', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';
@@ -1738,11 +1875,11 @@ export const registerCompactionAndDiagnosticsScenarios = (
         { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-2', providerType: 'anthropic' },
       ];
       providerState.modelsByProvider = {
-        'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000, outputLimitTokens: 4_000 } as never],
+        'provider-1': [{ id: 'gpt-5.6', name: 'GPT-5.6', isEnabled: true, contextWindowTokens: 32_000, outputLimitTokens: 4_000 } as never],
         'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000, outputLimitTokens: 4_000 } as never],
       };
       providerState.selectedProviderId = 'provider-1';
-      providerState.selectedModelId = 'model-1';
+      providerState.selectedModelId = 'gpt-5.6';
 
       streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
         const options = args[0] as {
@@ -1786,7 +1923,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
         source: 'live_stream',
         providerId: 'provider-1',
         providerType: 'openai',
-        modelId: 'model-1',
+        modelId: 'gpt-5.6',
       });
       expect(diagnostics?.footprintAfter?.modelContextWindowTokens).toBe(32_000);
     });
@@ -1908,11 +2045,11 @@ export const registerCompactionAndDiagnosticsScenarios = (
         { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-2', providerType: 'anthropic' },
       ];
       providerState.modelsByProvider = {
-        'provider-1': [{ id: 'model-1', name: 'Model 1', isEnabled: true, contextWindowTokens: 32_000, outputLimitTokens: 4_000 } as never],
+        'provider-1': [{ id: 'gpt-5.6', name: 'GPT-5.6', isEnabled: true, contextWindowTokens: 32_000, outputLimitTokens: 4_000 } as never],
         'provider-2': [{ id: 'model-2', name: 'Model 2', isEnabled: true, contextWindowTokens: 96_000, outputLimitTokens: 4_000 } as never],
       };
       providerState.selectedProviderId = 'provider-1';
-      providerState.selectedModelId = 'model-1';
+      providerState.selectedModelId = 'gpt-5.6';
       streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
         const options = args[0] as {
           onComplete?: (result: {
@@ -1940,6 +2077,14 @@ export const registerCompactionAndDiagnosticsScenarios = (
       await useChatStore.getState().sendMessage({
         conversationId: 'chat-conv',
         content: 'Termine puis mesure.',
+        images: Array.from({ length: 4 }, (_, index) => ({
+          id: `diagnostic-image-${index + 1}`,
+          mimeType: 'image/png',
+          dataUrl: `data:image/png;base64,${'a'.repeat(index + 4)}`,
+          width: 10_000,
+          height: 10_000,
+          createdAt: '2026-08-26T10:00:00.000Z',
+        })),
       });
 
       const diagnostics = await waitForConversationDiagnostics(useChatStore, 'chat-conv');
@@ -1947,9 +2092,15 @@ export const registerCompactionAndDiagnosticsScenarios = (
         source: 'full',
         providerId: 'provider-1',
         providerType: 'openai',
-        modelId: 'model-1',
+        modelId: 'gpt-5.6',
       });
       expect(diagnostics?.footprintAfter?.modelContextWindowTokens).toBe(32_000);
+      expect(diagnostics?.footprintAfter?.imageEstimateConfidence).toBe('model_formula');
+      expect(diagnostics?.footprintAfter?.totalEstimatedTokens).toBeGreaterThan(
+        diagnostics?.footprintAfter?.usableContextTokens ?? Number.POSITIVE_INFINITY,
+      );
+      expect(diagnostics?.footprintAfter?.isHardStop).toBe(false);
+      expect(diagnostics?.phase).not.toBe('needs_manual_compaction');
     });
 
   });

@@ -84,6 +84,11 @@ describe('macroToolRegistry', () => {
     expect(shape.overridesBuiltInTool).toBeUndefined();
   });
 
+  it('does not expose internal empty-string validation metadata to providers', () => {
+    const shape = toFunctionToolShape(requireMacroToolRegistryEntry('write'));
+    expect(JSON.stringify(shape.function.parameters)).not.toContain('allowEmpty');
+  });
+
   it('adds Copilot override metadata only for marked tool shapes', () => {
     const grepShape = toCopilotFunctionToolShape(requireMacroToolRegistryEntry('grep'));
     const webFetchShape = toCopilotFunctionToolShape(requireMacroToolRegistryEntry('web_fetch'));

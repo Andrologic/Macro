@@ -338,6 +338,18 @@ Exemples principaux :
 - `speech/transcriptEnhancement` pour la correction LLM facultative et bornée
   des transcriptions
 
+L'estimation du contexte multimodal conserve les dimensions et le type MIME des
+images dans une métadonnée interne ordonnée avec les parties image du message.
+Cette métadonnée n'est pas sérialisée vers le fournisseur. Le service
+`contextTokenEstimation` applique la formule documentée du modèle ou du
+fournisseur lorsque celle-ci est connue, puis utilise un repli fondé sur les
+dimensions. Le poids Base64 reste une mesure de transport séparée et n'est
+jamais compté comme du texte. Une estimation visuelle, même élevée ou
+incertaine, peut déclencher une compaction préventive, mais ne peut pas à elle
+seule produire un blocage définitif avant l'appel au fournisseur. Les erreurs
+réelles de dépassement restent prises en charge par la récupération de
+débordement du flux.
+
 ### 7.3 Contrats et DTO
 
 Les DTO frontend servent de couche de stabilisation entre :
@@ -347,6 +359,33 @@ Les DTO frontend servent de couche de stabilisation entre :
 - les transports backend
 
 Cette couche limite le couplage direct entre composants React et détails de sérialisation.
+
+### 7.4 Boucle d'outils et compatibilité des providers
+
+`streamingChat` valide les arguments d'un outil avec le schéma publié dans le
+registre avant d'appeler son exécuteur. Un échec de validation ou d'exécution
+reste un résultat d'outil associé au `tool_call_id`. Il ne devient jamais un
+message système ajouté au milieu de l'historique.
+
+Pour les API Chat Completions compatibles OpenAI, la sérialisation extrait les
+consignes système de l'historique et les place en tête. Le profil conservateur
+`single_leading` les fusionne en un seul message, ce qui couvre les serveurs
+stricts qui refusent plusieurs messages système ou un message système tardif.
+Macro vérifie aussi les identifiants, l'appariement des appels et résultats
+d'outils, ainsi que l'ordre des rôles avant chaque requête réseau.
+
+Le frontend transmet au backend des diagnostics structurés sans contenu de
+conversation, sans arguments d'outils, sans message d'erreur provider brut et
+sans secrets. Le backend écrit des fichiers `macro.YYYY-MM-DD.log` dans le
+dossier de journaux de la plateforme, notamment
+`%LOCALAPPDATA%\com.macro.desktop\logs` sous Windows. La rotation est quotidienne
+et conserve les sept fichiers les plus récents, avec une limite de 20 Mio par
+jour. Les diagnostics navigateur globaux ne conservent que leur catégorie ;
+leurs messages et piles sont retirés avant l'écriture native.
+La limite de taille utilise un verrou interprocessus et rejette un événement
+complet quand il ne tient plus dans le budget quotidien.
+Les échecs OAuth et fournisseur conservent leur détail pour l'interface, mais
+les journaux persistants n'enregistrent que le statut et la catégorie d'opération.
 
 ---
 

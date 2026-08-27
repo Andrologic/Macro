@@ -55,6 +55,7 @@ import {
   type StreamTimelinePhase,
   type ToolCallResolution,
 } from "../services/streamingChat";
+import { normalizeLegacyToolExecutionResult } from "../services/toolResultNormalization";
 import {
   buildExplicitSkillsInstruction,
   buildSkillCatalogInstruction,
@@ -245,7 +246,9 @@ import {
   buildManualCompactionRequiredErrorMessage,
   buildCompactedMessagesForRequest,
   COMPACTED_CONVERSATION_STATE_MARKER,
+  estimateBlockableTokensForStreamMessages,
   estimateConversationFootprint,
+  isBlockableContextOverUsableBudget,
   isContextFootprintOverUsableBudget,
   type ContextBudgetPolicy,
   type ContextCompactionDecision,
@@ -253,6 +256,7 @@ import {
   type MaybeCompactConversationResult,
   type SummaryGenerationInput,
 } from "../services/contextCompaction";
+import { fingerprintImageSource } from "../services/contextTokenEstimation";
 import {
   buildCompactionDecisionAuditMetadata,
   consolidateCompletedAssistantTurnCompaction,
@@ -439,6 +443,11 @@ const normalizeMessagesForProviderContext = (
   return messages.map((message) => ({
     role: message.role,
     content: message.content,
+    ...(Array.isArray(message.content) &&
+    message.content.some((part) => part.type === "image_url") &&
+    message.image_metadata
+      ? { image_metadata: message.image_metadata.map((metadata) => ({ ...metadata })) }
+      : {}),
     ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
     ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
   }));
@@ -454,6 +463,10 @@ const estimateSerializedPayloadTokensForProvider = (params: {
   if (params.providerType === "copilot") {
     return estimateCopilotSerializedPayloadTokens({
       messages: normalizeMessagesForProviderContext("copilot", params.messages),
+      providerType: params.providerType ?? undefined,
+      providerId: params.providerId ?? undefined,
+      baseUrl: params.baseUrl ?? undefined,
+      modelId: params.modelId,
     });
   }
 
@@ -481,7 +494,24 @@ const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
 const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
 const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
   "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
-const TOOL_EXECUTION_ABORTED_RESULT = "Tool execution aborted";
+const TOOL_EXECUTION_ABORTED_RESULT: ToolCallResolution = {
+  kind: "result",
+  result: "Tool execution aborted",
+  isError: true,
+  errorKind: "aborted",
+  toString: () => "Tool execution aborted",
+};
+
+const toolFailure = (
+  result: string,
+  errorKind: "execution" | "permission" | "validation" = "execution",
+): ToolCallResolution => ({
+  kind: "result",
+  result,
+  isError: true,
+  errorKind,
+  toString: () => result,
+});
 let terminalToolExecutionCounter = 0;
 const createTerminalToolExecutionId = (): string => {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -3844,6 +3874,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           currentCompactionState?.modelContextWindowTokens,
         providerId: params.providerId,
         providerType: params.providerConfig.providerType,
+        baseUrl: params.providerConfig.baseUrl,
         modelId: params.modelId,
         currentCompactionState,
         budgetPolicy,
@@ -4168,6 +4199,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         citations: preparedRequest.citations,
         toolDefinitions,
         ...footprintFields,
+        providerType: nextProvider.providerType,
+        providerId: params.nextProviderId,
+        baseUrl: nextProvider.baseUrl,
+        modelId: params.nextModelId,
         estimateSerializedPayloadTokens: (messages) =>
           estimateSerializedPayloadTokensForProvider({
             messages,
@@ -4182,7 +4217,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         mode: "model_switch",
         budgetPolicy,
       });
-      if (!isContextFootprintOverUsableBudget(footprint)) {
+      if (!isBlockableContextOverUsableBudget(footprint)) {
         return;
       }
 
@@ -5058,7 +5093,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const assistantTurnId = operation.turnId;
 
     if (!operation.allowedToolIds.includes(normalizedToolName)) {
-      return `Tool ${normalizedToolName} is not available for this turn.`;
+      return toolFailure(
+        `Tool ${normalizedToolName} is not available for this turn.`,
+        "permission",
+      );
     }
 
     if (
@@ -5067,7 +5105,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         operation.scopedTurnConfiguration,
       ).length === 0
     ) {
-      return `Tool ${normalizedToolName} is disabled for this turn's project scope.`;
+      return toolFailure(
+        `Tool ${normalizedToolName} is disabled for this turn's project scope.`,
+        "permission",
+      );
     }
 
     if (
@@ -5082,7 +5123,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "denied",
         );
       }
-      return IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE;
+      return toolFailure(IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE, "permission");
     }
 
     if (
@@ -5096,7 +5137,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
-      return `Tool ${normalizedToolName} is disabled for the current mode.`;
+      return toolFailure(
+        `Tool ${normalizedToolName} is disabled for the current mode.`,
+        "permission",
+      );
     }
 
     let executionContext = operation.executionContext;
@@ -5154,7 +5198,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "denied",
         );
       }
-      return securityEvaluation.denialReason;
+      return toolFailure(
+        securityEvaluation.denialReason ?? `Tool ${normalizedToolName} was denied by policy.`,
+        "permission",
+      );
     }
 
     if (
@@ -5172,7 +5219,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "denied",
         );
       }
-      return GIT_STAGE_COMMIT_CHALLENGE_MESSAGE;
+      return toolFailure(GIT_STAGE_COMMIT_CHALLENGE_MESSAGE, "permission");
     }
 
     if (securityEvaluation.decision === "ask") {
@@ -5248,9 +5295,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           );
         }
         const denialPrefix = `Tool ${normalizedToolName} was denied by the user.`;
-        return resolution.reason?.trim()
-          ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
-          : denialPrefix;
+        return toolFailure(
+          resolution.reason?.trim()
+            ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
+            : denialPrefix,
+          "permission",
+        );
       }
 
       if (!isCurrentOperation()) {
@@ -5855,7 +5905,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         )
       : message.content,
     provider_input_items: cloneProviderInputItems(message.provider_input_items),
+    image_metadata: message.image_metadata?.map((metadata) => ({ ...metadata })),
   });
+
+  const getImageContextMetadata = (images: MessageImageAttachment[]) =>
+    images.map((image) => ({
+      width: image.width,
+      height: image.height,
+      mimeType: image.mimeType,
+      sourceFingerprint: fingerprintImageSource(image.dataUrl),
+    }));
 
   const cloneChatMessageForDiagnostics = (message: ChatMessage): ChatMessage => ({
     ...message,
@@ -6450,6 +6509,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ) {
         const images = messageImagesByMessageId[message.id] || [];
         if (images.length > 0) {
+          const imageMetadata = getImageContextMetadata(images);
           const content = [
             { type: "text" as const, text: messageContent },
             ...images.map((image) => ({
@@ -6463,6 +6523,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           return {
             role: "user" as const,
             content,
+            image_metadata: imageMetadata,
             ...(providerInputItemsByMessageId[message.id]
               ? {
                   provider_input_items:
@@ -6479,9 +6540,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? buildProviderInputItemsFromContent(message.role, messageContent)
           : undefined);
 
+      const storedImages = messageImagesByMessageId[message.id] || [];
       return {
         role: message.role as "user" | "assistant",
         content: messageContent,
+        ...(storedImages.length > 0
+          ? { image_metadata: getImageContextMetadata(storedImages) }
+          : {}),
         ...(providerInputItemsByMessageId[message.id]
           ? { provider_input_items: providerInputItemsByMessageId[message.id] }
           : {}),
@@ -7039,6 +7104,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       isContextLimitAuthoritative: payload.baseline.isContextLimitAuthoritative,
       contextLimitConfidence: payload.baseline.contextLimitConfidence,
       contextLimitWarning: payload.baseline.contextLimitWarning,
+      providerType: payload.baseline.providerType,
+      providerId: payload.baseline.providerId,
+      baseUrl: payload.baseline.baseUrl,
+      modelId: payload.baseline.modelId,
       estimateSerializedPayloadTokens,
       countProviderInputItems: shouldCountProviderInputItemsForContext(
         payload.baseline.providerType,
@@ -7052,7 +7121,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? "provider_error"
         : footprint.isHardStop
           ? "too_large"
-          : isContextFootprintOverUsableBudget(footprint)
+          : isBlockableContextOverUsableBudget(footprint)
             ? "needs_manual_compaction"
           : hasCompactedPayload
             ? "compacted"
@@ -8622,6 +8691,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       citations: preparedRequest.citations,
       toolDefinitions,
       ...footprintFields,
+      providerType: params.providerConfig.providerType,
+      providerId: params.providerId,
+      baseUrl: params.providerConfig.baseUrl,
+      modelId: params.modelId,
       estimateSerializedPayloadTokens,
       countProviderInputItems,
       mode: params.compactionMode ?? "blocking",
@@ -8666,7 +8739,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let needsSafetyPrestream =
       autoCompactionEnabled &&
       !params.compactionMode &&
-      isContextFootprintOverUsableBudget(initialFootprint);
+      isBlockableContextOverUsableBudget(initialFootprint);
     let compactedRequest: MaybeCompactConversationResult;
     if (needsSafetyPrestream) {
       markSafetyPrestreamCompacting(initialFootprint);
@@ -8680,7 +8753,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       needsSafetyPrestream =
         autoCompactionEnabled &&
         !params.compactionMode &&
-        isContextFootprintOverUsableBudget(compactedRequest.footprintAfter);
+        isBlockableContextOverUsableBudget(compactedRequest.footprintAfter);
       if (needsSafetyPrestream) {
         markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
         compactedRequest = await compactPreparedRequest({
@@ -8692,10 +8765,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (
       compactedRequest.decision === "hard_stop" ||
-      isContextFootprintOverUsableBudget(compactedRequest.footprintAfter)
+      isBlockableContextOverUsableBudget(compactedRequest.footprintAfter)
     ) {
       const latestUserContextTokens =
-        compactedRequest.footprintAfter.latestUserContextTokens ?? 0;
+        compactedRequest.footprintAfter.latestUserBlockableTokens ??
+        compactedRequest.footprintAfter.latestUserContextTokens ??
+        0;
       const latestRequestTooLarge =
         latestUserContextTokens > 0 &&
         latestUserContextTokens >= compactedRequest.footprintAfter.usableContextTokens;
@@ -9699,6 +9774,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         citations: preparedRequest.citations,
         toolDefinitions,
         ...footprintFields,
+        providerType: providerContext.providerType,
+        providerId: providerContext.providerId,
+        baseUrl: providerContext.baseUrl,
+        modelId: providerContext.modelId,
         currentCompactionState,
         estimateSerializedPayloadTokens,
         countProviderInputItems: shouldCountProviderInputItemsForContext(
@@ -9719,7 +9798,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? "provider_error"
           : result.footprintAfter.isHardStop
           ? "too_large"
-            : isContextFootprintOverUsableBudget(result.footprintAfter)
+            : isBlockableContextOverUsableBudget(result.footprintAfter)
               ? "needs_manual_compaction"
             : result.degraded
               ? "degraded"
@@ -10338,13 +10417,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
         citations: contextDiagnosticsBaseline.citations,
         toolDefinitions,
         ...footprintFields,
+        providerType: params.providerConfig.providerType,
+        providerId: params.selectedProviderId,
+        baseUrl: params.providerConfig.baseUrl,
+        modelId: params.selectedModelId,
         estimateSerializedPayloadTokens,
         countProviderInputItems,
         mode: "safety_prestream",
         budgetPolicy,
       });
-      const latestToolBatchTokens = Math.ceil(
-        JSON.stringify(preparedMessages.slice(-request.toolResultCount)).length / 4,
+      const latestToolBatchMessages =
+        request.toolResultCount > 0
+          ? preparedMessagesForContext.slice(-request.toolResultCount)
+          : [];
+      const latestToolBatchTokens = estimateBlockableTokensForStreamMessages(
+        latestToolBatchMessages,
+        {
+          countProviderInputItems,
+          context: {
+            providerType: params.providerConfig.providerType,
+            providerId: params.selectedProviderId,
+            baseUrl: params.providerConfig.baseUrl,
+            modelId: params.selectedModelId,
+          },
+        },
       );
       const previousStatus =
         get().conversationCompactionStatusById[params.conversationId] ?? null;
@@ -10365,6 +10461,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           footprintFields,
           providerId: params.selectedProviderId,
           providerType: params.providerConfig.providerType,
+          baseUrl: params.providerConfig.baseUrl,
           modelId: params.selectedModelId,
           estimateSerializedPayloadTokens,
           countProviderInputItems,
@@ -10437,7 +10534,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       if (
         result.decision === "hard_stop" ||
-        isContextFootprintOverUsableBudget(result.footprintAfter)
+        isBlockableContextOverUsableBudget(result.footprintAfter)
       ) {
         clearLatestRunningSessionCompactionEvent(
           params.conversationId,
@@ -10593,6 +10690,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         footprintFields,
         providerId: params.selectedProviderId,
         providerType: params.providerConfig.providerType,
+        baseUrl: params.providerConfig.baseUrl,
         modelId: params.selectedModelId,
         budgetPolicy,
         estimateSerializedPayloadTokens,
@@ -10989,11 +11087,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             error,
           );
         }
-        return preserveLargeToolResult(
+        const preservedResolution = await preserveLargeToolResult(
           operation,
           normalizeArchitectToolId(toolName),
           toolCallId,
           resolution,
+        );
+        return normalizeLegacyToolExecutionResult(
+          normalizeArchitectToolId(toolName),
+          preservedResolution,
         );
       },
     });
@@ -14436,6 +14538,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               })),
             ]
           : content,
+        ...(payload.images?.length
+          ? { image_metadata: getImageContextMetadata(payload.images) }
+          : {}),
       };
       const pending = pendingSteersByConversationId.get(payload.conversationId) ?? [];
       pending.push(steerMessage);

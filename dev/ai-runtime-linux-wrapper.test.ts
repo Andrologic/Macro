@@ -10,6 +10,8 @@ import {
   LINUX_RUNTIME_PAYLOAD_MARKER,
 } from './ai-runtime-linux-wrapper.mjs';
 
+const linuxOnlyTest = process.platform === 'win32' ? test.skip : test;
+
 describe('Linux AI runtime wrapper', () => {
   test('keeps the compiled runtime intact behind a shell launcher', () => {
     const runtime = Buffer.from('compiled Bun runtime\0with binary data\xff');
@@ -27,7 +29,7 @@ describe('Linux AI runtime wrapper', () => {
     );
   });
 
-  test('extracts and executes the embedded runtime', async () => {
+  linuxOnlyTest('extracts and executes the embedded runtime', async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), 'macro-ai-runtime-wrapper-'));
     const wrapperPath = join(temporaryDirectory, 'macro-ai-runtime');
     const runtime = Buffer.from('#!/bin/sh\nprintf \'runtime:%s\\n\' "$1"\n');
