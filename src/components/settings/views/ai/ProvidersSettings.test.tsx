@@ -359,6 +359,8 @@ describe('ProvidersSettings Copilot timeout', () => {
         (button) => button.textContent?.includes('Add Provider')
       )!);
     });
+    expect(container!.querySelector<HTMLInputElement>('[placeholder="https://api.openai.com/v1"]')?.value)
+      .toBe('https://api.openai.com/v1');
     await act(async () => {
       click(Array.from(container!.querySelectorAll('button')).find(
         (button) => button.textContent === 'Save Provider'
@@ -367,6 +369,7 @@ describe('ProvidersSettings Copilot timeout', () => {
 
     expect(createProviderConfigMock).not.toHaveBeenCalled();
     expect(container!.textContent).toContain('Provider name is required.');
+    expect(container!.textContent).not.toContain('Base URL is required.');
     expect(document.activeElement).toBe(container!.querySelector('input[aria-invalid="true"]'));
   });
 

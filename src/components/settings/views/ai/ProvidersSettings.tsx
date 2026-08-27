@@ -484,7 +484,7 @@ export const ProvidersSettings: React.FC = () => {
     setEditingProvider({
       id: '',
       name: '',
-      baseUrl: '',
+      baseUrl: 'https://api.openai.com/v1',
       apiKey: '',
       hasStoredApiKey: false,
       apiKeyLoaded: true,
