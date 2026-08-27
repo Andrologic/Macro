@@ -14,6 +14,64 @@ export interface PendingUpdateReleaseNote {
 type ReleaseNoteLocale = 'en' | 'fr';
 
 const RELEASE_NOTES: Record<string, Record<ReleaseNoteLocale, ReleaseNote>> = {
+  '0.1.1': {
+    en: {
+      version: '0.1.1',
+      eyebrow: 'Maintenance release',
+      title: 'Macro 0.1.1',
+      summary:
+        'Automatic updates, Windows ARM64 support, accurate image context estimates, and more reliable agents.',
+      content: `## Automatic updates
+
+- Fixed the missing update-channel files that caused the **Unable to check for updates** error.
+- Macro now verifies signed update archives, checksums, immutable download URLs, and every platform manifest before publishing an update.
+- Update notes are kept during installation and shown once after Macro restarts.
+
+## Windows on ARM
+
+- Added a native Windows ARM64 installer.
+- The ARM64 package includes the native Macro AI runtime instead of relying on x64 emulation.
+
+## Context and images
+
+- Fixed image attachments being counted from their Base64 transport size, which could make Macro report a full context window far too early.
+- Macro now estimates visual tokens from the image dimensions and the selected model or provider formula. A duplicated image in the visible message and provider payload is counted only once.
+- Image estimates can still trigger preventive compaction, but they no longer cause a permanent pre-send block on their own.
+
+## Agent reliability
+
+- Tool failures are now reported as failures instead of successful-looking results, so agents can correct invalid arguments and recover from execution errors.
+- Database startup checks preserve the shipped migration version.`,
+    },
+    fr: {
+      version: '0.1.1',
+      eyebrow: 'Version de maintenance',
+      title: 'Macro 0.1.1',
+      summary:
+        'Mises à jour automatiques, prise en charge de Windows ARM64, estimation correcte des images dans le contexte et agents plus fiables.',
+      content: `## Mises à jour automatiques
+
+- Correction de l’absence des fichiers de canal qui provoquait l’erreur **Impossible de rechercher des mises à jour**.
+- Macro vérifie désormais les archives signées, les sommes de contrôle, les URL de téléchargement immuables et le manifeste de chaque plateforme avant de publier une mise à jour.
+- Les notes de version sont conservées pendant l’installation, puis affichées une seule fois après le redémarrage de Macro.
+
+## Windows sur ARM
+
+- Ajout d’un installateur Windows ARM64 natif.
+- Le paquet ARM64 inclut le runtime IA natif de Macro et ne dépend pas de l’émulation x64.
+
+## Contexte et images
+
+- Correction des pièces jointes visuelles qui étaient comptées selon le poids de leur transport Base64. Macro pouvait alors considérer la fenêtre de contexte comme pleine beaucoup trop tôt.
+- Macro estime maintenant les tokens visuels à partir des dimensions de l’image et de la formule du modèle ou du fournisseur sélectionné. Une image présente dans le message visible et dans le payload du fournisseur n’est comptée qu’une fois.
+- L’estimation des images peut encore déclencher un compactage préventif, mais elle ne provoque plus à elle seule un blocage définitif avant l’envoi.
+
+## Fiabilité des agents
+
+- Les échecs d’outils sont maintenant signalés comme tels. Les agents peuvent ainsi corriger les arguments invalides et reprendre après une erreur d’exécution.
+- Les contrôles de démarrage de la base de données préservent la version de migration livrée.`,
+    },
+  },
   '0.1.0': {
     en: {
       version: '0.1.0',
@@ -95,12 +153,13 @@ export const resolveReleaseNote = (
   const bundledNote = getReleaseNote(version, language);
   const pendingNote = normalizePendingUpdateReleaseNote(pendingValue);
   if (!pendingNote || pendingNote.version !== version) return bundledNote;
+  if (bundledNote) return bundledNote;
 
   return {
     version,
-    eyebrow: bundledNote?.eyebrow ?? '',
-    title: bundledNote?.title ?? `Macro ${version}`,
-    summary: bundledNote?.summary ?? '',
+    eyebrow: '',
+    title: `Macro ${version}`,
+    summary: '',
     content: pendingNote.content,
   };
 };

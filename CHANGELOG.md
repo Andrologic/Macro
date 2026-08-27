@@ -6,6 +6,26 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.1
+
+### Added
+
+- Added native Windows ARM64 installers and a matching ARM64 AI runtime.
+- Added stable and preview update manifests for every supported platform.
+
+### Changed
+
+- Release publication now verifies signed updater archives, checksums, immutable asset URLs, and all five platform manifests before advancing an update channel.
+- Multimodal context estimation now uses image dimensions and model-specific or provider-specific visual token formulas instead of treating Base64 transport data as text.
+- Image-only pressure may trigger preventive compaction but cannot cause a permanent pre-provider block on its own.
+
+### Fixed
+
+- Fixed the missing update-channel files that caused Macro to report that it could not fetch a valid release JSON.
+- Fixed duplicate image representations in visible messages and provider payloads inflating context estimates.
+- Fixed tool failures that could be presented to agents as successful results, improving recovery after invalid arguments, unavailable tools, and native execution errors.
+- Preserved the shipped database migration version during startup checks.
+
 ## 0.1.0
 
 ### Added
