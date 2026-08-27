@@ -70,6 +70,11 @@ describe('ConversationArchive', () => {
 
     expect(multiSelectButton).not.toBeNull();
     expect(multiSelectButton?.parentElement).toBe(newConversationButton?.parentElement);
+    expect(multiSelectButton?.className).toContain('h-7 w-7');
+    expect(multiSelectButton?.className).toContain('border');
+    expect(newConversationButton?.className).toContain('h-7 w-7');
+    expect(newConversationButton?.className).toContain('border');
+    expect(newConversationButton?.getAttribute('aria-label')).toBe('New Chat');
     expect(document.body.querySelector('[data-tour-id="chat-multiselect-toolbar"]')).toBeNull();
 
     await act(async () => {
