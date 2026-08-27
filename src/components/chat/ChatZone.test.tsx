@@ -14,6 +14,7 @@ import {
 } from '../../test-utils/tauriRuntime';
 import { createStoreHookMock } from '../../test-utils/storeHookMock';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
+import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 import type { ComposerDraft } from '../../stores/useChatStore';
 import { registerArchitectScenarios } from './__tests__/architect.scenarios';
 import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
@@ -732,6 +733,11 @@ const buildProjectGroups = () => [
 
 const resetState = () => {
   useConversationGoalStore.setState({ goalsByConversationId: {} });
+  useConversationArchiveStore.setState({
+    archivedConversationIds: new Set(),
+    isArchiveHydrated: true,
+    archiveHydrationError: null,
+  });
   composerDraftsByContextKey = {};
   appState = {
     mode: 'Chat',
@@ -1086,6 +1092,24 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(requireContainer().textContent).not.toContain('Type your message');
+  });
+
+  it('keeps the composer locked until archived conversations are hydrated', async () => {
+    useConversationArchiveStore.setState({
+      archivedConversationIds: new Set(),
+      isArchiveHydrated: false,
+      archiveHydrationError: null,
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const composer = requireContainer().querySelector<HTMLTextAreaElement>(
+      '[data-testid="composer-editor"]'
+    );
+    expect(composer?.disabled).toBe(true);
+    expect(composer?.placeholder).toBe('Restoring conversation...');
   });
 
   it('does not render the legacy skills dropdown in the composer control row', async () => {

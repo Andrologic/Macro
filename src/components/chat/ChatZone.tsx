@@ -1799,12 +1799,18 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       ? state.archivedConversationIds.has(selectedConversationId)
       : false
   );
+  const isConversationArchiveHydrated = useConversationArchiveStore(
+    (state) => state.isArchiveHydrated
+  );
+  const isConversationArchivePending =
+    mode === 'Chat' && Boolean(selectedConversationId) && !isConversationArchiveHydrated;
   const isComposerDisabled =
     isConversationPending ||
     isModeProjectWorkspaceMissing ||
     isArchitectPlanSelectionMissing ||
     isImplementTaskSelectionMissing ||
     isSelectedTaskDependencyBlocked ||
+    isConversationArchivePending ||
     isSelectedConversationArchived ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
@@ -3742,6 +3748,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                             ? missingArchitectPlanMessage
                           : isImplementTaskSelectionMissing
                             ? t('implement.selectTaskToStart', 'Select a task to start implementation.')
+                          : isConversationArchivePending
+                            ? t('chat.loadingConversation', 'Restoring conversation...')
                           : isSelectedConversationArchived
                             ? t(
                                 'chat.archivedConversationPlaceholder',

@@ -23,5 +23,6 @@ describe('useConversationArchiveStore', () => {
         .getState()
         .archivedConversationIds.has('conversation-archived')
     ).toBe(true);
+    expect(useConversationArchiveStore.getState().isArchiveHydrated).toBe(true);
   });
 });

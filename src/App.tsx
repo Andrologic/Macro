@@ -203,7 +203,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     void useConversationArchiveStore.getState().hydrateArchivedConversationIds();
-  }, []);
+  }, [bootstrapRetryKey]);
 
   // Ref to track panels that were auto-collapsed during resize
   const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({
