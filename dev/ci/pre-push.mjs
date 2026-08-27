@@ -8,12 +8,15 @@ import { changedPaths, classifyPaths } from './classify-changes.mjs';
 import { profileForClassification } from './check-profiles.mjs';
 import { planFastLocalChecks } from './fast-local-checks.mjs';
 import { parsePrePushInput, strongestProfile, targetBaseForBranch } from './pre-push-policy.mjs';
+import { withoutGitRepositoryEnvironment } from '../git-environment.mjs';
 
 const ZERO_SHA = /^0+$/;
+const REPOSITORY_ENVIRONMENT = withoutGitRepositoryEnvironment(process.env);
 
 function git(args, options = {}) {
   return execFileSync('git', args, {
     cwd: options.cwd || process.cwd(),
+    env: REPOSITORY_ENVIRONMENT,
     encoding: 'utf8',
     stdio: options.stdio || ['ignore', 'pipe', 'pipe'],
   }).trim();
@@ -88,6 +91,7 @@ function writeMarker(path, key) {
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
+    env: REPOSITORY_ENVIRONMENT,
     stdio: options.quiet ? 'pipe' : 'inherit',
     encoding: options.quiet ? 'utf8' : undefined,
     windowsHide: true,
@@ -141,7 +145,7 @@ function main() {
     const target = targetBaseForBranch(branch, entry.remoteSha);
     const baseSha = resolveCommit(target.ref);
     const headSha = resolveCommit(entry.localSha);
-    const paths = changedPaths(baseSha, headSha, target.mode);
+    const paths = changedPaths(baseSha, headSha, target.mode, { env: REPOSITORY_ENVIRONMENT });
     const classification = classifyPaths(paths);
     const profile = profileForClassification(classification);
     profiles.push(profile);
