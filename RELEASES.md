@@ -276,9 +276,18 @@ sidecars with `lipo`, then Tauri embeds the packaged sidecar as
 Automatic updates preserve the Markdown notes from `latest.json` before
 installation. After the relaunch, the release-note dialog reads that local copy
 and removes it once the user closes the dialog. This avoids a source-code change
-for every updater release. `src/services/releaseNotes.ts` keeps the English and
-French `v0.1.0` note as a bootstrap fallback for installations that did not pass
-through the updater. Raw HTML is ignored.
+for every updater release. `src/services/releaseNotes.ts` keeps localized notes
+for releases that should show an offline fallback after a manual installation.
+Raw HTML is ignored.
+
+Place a reviewed user-facing note in `dev/release/notes/<version>.md` before a
+stable tag. The release workflow uses it for both the GitHub Release and
+`latest.json`, so the download page and the post-update modal describe the same
+changes. If the file is absent, the workflow falls back to GitHub's generated
+notes. Keep a localized bundled fallback in `src/services/releaseNotes.ts` when
+a first installation should also show the note offline. When that localized
+fallback exists, the post-update modal prefers it over the release's default
+English Markdown.
 
 Store release media under `public/release-notes/<version>/` so that images and
 videos remain available offline. Use root-relative paths in the Markdown:

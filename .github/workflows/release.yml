@@ -447,15 +447,20 @@ jobs:
           TAG: ${{ needs.validate.outputs.tag }}
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          GENERATED_NOTES="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="${TAG}" \
-            -f target_commitish="${GITHUB_SHA}" \
-            --jq '.body' || true)"
-
-          if [ -n "$GENERATED_NOTES" ]; then
-            printf '%s\n' "$GENERATED_NOTES" > updater-notes.md
+          CURATED_NOTES="dev/release/notes/${VERSION}.md"
+          if [ -s "$CURATED_NOTES" ]; then
+            cp "$CURATED_NOTES" updater-notes.md
           else
-            echo "No user-facing changes were provided for this release." > updater-notes.md
+            GENERATED_NOTES="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${TAG}" \
+              -f target_commitish="${GITHUB_SHA}" \
+              --jq '.body' || true)"
+
+            if [ -n "$GENERATED_NOTES" ]; then
+              printf '%s\n' "$GENERATED_NOTES" > updater-notes.md
+            else
+              echo "No user-facing changes were provided for this release." > updater-notes.md
+            fi
           fi
 
           {
@@ -471,8 +476,6 @@ jobs:
             echo "## Checksums"
             echo
             echo "Download \`SHA256SUMS.txt\` to verify release assets."
-            echo
-            echo "## Changes"
             echo
             cat updater-notes.md
           } > release-notes.md

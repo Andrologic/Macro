@@ -2,6 +2,11 @@
 
 Describe the change and the user-visible or developer-visible impact.
 
+## Release notes
+
+Write the short user-facing note this PR should contribute to the next release.
+Use `Not user-facing` only when that is genuinely the case.
+
 ## Checks
 
 - [ ] `bun run version:check`

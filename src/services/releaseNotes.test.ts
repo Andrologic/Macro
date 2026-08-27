@@ -8,8 +8,14 @@ import {
 } from './releaseNotes';
 
 describe('release notes', () => {
-  it('ships a bootstrap note for the first updater-capable version', () => {
+  it('ships bootstrap notes for supported public versions', () => {
     expect(getReleaseNote('0.1.0', 'en')).not.toBeNull();
+    expect(getReleaseNote('0.1.1', 'en')?.content).toContain('## Automatic updates');
+    expect(getReleaseNote('0.1.1', 'en')?.content).toContain('## Context and images');
+    expect(getReleaseNote('0.1.1', 'fr-FR')?.content).toContain(
+      '## Mises à jour automatiques',
+    );
+    expect(getReleaseNote('0.1.1', 'fr-FR')?.content).toContain('## Contexte et images');
   });
 
   it('selects French content and falls back to English for other locales', () => {
@@ -53,6 +59,16 @@ describe('release notes', () => {
       version: '0.2.0',
       content: 'stale',
     })).toBeNull();
+  });
+
+  it('prefers a bundled translation over updater notes for the same version', () => {
+    const note = resolveReleaseNote('0.1.1', 'fr-FR', {
+      version: '0.1.1',
+      content: '## Automatic updates',
+    });
+
+    expect(note?.content).toContain('## Mises à jour automatiques');
+    expect(note?.content).not.toContain('## Automatic updates');
   });
 
   it('rejects malformed pending updater notes', () => {
