@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '../services/tauriRuntimeBridge';
 import type { Project, Task, TaskExecutionTarget } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {

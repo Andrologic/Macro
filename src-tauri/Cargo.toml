@@ -31,6 +31,9 @@ path = "tests/process_containment.rs"
 name = "macro_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+browser-runtime-debug = ["dep:tauri-remote-ui"]
+
 [build-dependencies]
 tauri-build = { version = "=2.5.5", features = [] }
 
@@ -102,6 +105,7 @@ json-patch = "3"
 schemars = { version = "0.8", features = ["chrono"] }
 ts-rs = { version = "12", features = ["chrono-impl", "serde-compat"] }
 tauri-plugin-notification = "2.3.3"
+tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]

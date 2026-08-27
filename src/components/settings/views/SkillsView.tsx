@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open } from '../../../services/tauriDialog';
 import { useTranslation } from 'react-i18next';
 import { useSkillsStore } from '../../../stores/useSkillsStore';
 import { useProviderStore } from '../../../stores/useProviderStore';

@@ -1,3 +1,5 @@
+import { isBrowserRuntimeBridgeEnabled } from "./tauriRuntimeBridge";
+
 type StartupLogLevel = "debug" | "info" | "warn" | "error";
 
 type TauriInvoke = (
@@ -22,7 +24,8 @@ const isTauriAvailable = (): boolean => {
     } | null;
   };
 
-  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === "function";
+  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === "function"
+    || isBrowserRuntimeBridgeEnabled();
 };
 
 const loadInvoke = async (): Promise<TauriInvoke | null> => {
@@ -31,7 +34,7 @@ const loadInvoke = async (): Promise<TauriInvoke | null> => {
   }
 
   if (!invokePromise) {
-    invokePromise = import("@tauri-apps/api/core")
+    invokePromise = import("./tauriRuntimeBridge")
       .then((module) => module.invoke)
       .catch(() => null);
   }
