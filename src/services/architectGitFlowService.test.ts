@@ -47,6 +47,8 @@ const projectPaths = new Map<string, {
   name: string;
   mountName: string;
   path: string;
+  gitSetupState?: 'ready' | 'unborn' | 'not_git' | 'unknown';
+  directEdit?: boolean;
   gitFlowSettings?: ProjectGitFlowSettings;
 }>();
 let currentPlan: any = null;
@@ -405,8 +407,20 @@ let architectGitFlowService: ReturnType<typeof createArchitectGitFlowService>;
 describe('architectGitFlowService', () => {
   beforeEach(() => {
     projectPaths.clear();
-    projectPaths.set('web', { id: 'web', name: 'Web', mountName: 'web', path: '/repos/web' });
-    projectPaths.set('api', { id: 'api', name: 'API', mountName: 'api', path: '/repos/api' });
+    projectPaths.set('web', {
+      id: 'web',
+      name: 'Web',
+      mountName: 'web',
+      path: '/repos/web',
+      gitSetupState: 'ready',
+    });
+    projectPaths.set('api', {
+      id: 'api',
+      name: 'API',
+      mountName: 'api',
+      path: '/repos/api',
+      gitSetupState: 'ready',
+    });
     currentPlan = buildPlan();
     persistedPlanLifecycleSagas = '[]';
     failPlanLifecycleSave = null;
@@ -595,6 +609,66 @@ describe('architectGitFlowService', () => {
     expect(restoreArchitectPlanMock).toHaveBeenCalledTimes(1);
     const firstRestoreCallOrder = restoreArchitectPlanMock.mock.invocationCallOrder[0];
     expect(gitWorktreeInspectMock.mock.invocationCallOrder.every((order) => order < firstRestoreCallOrder)).toBe(true);
+  });
+
+  it('validates a direct-only plan without invoking Git', async () => {
+    projectPaths.set('web', {
+      ...projectPaths.get('web')!,
+      gitSetupState: 'not_git',
+      directEdit: true,
+    });
+    currentPlan = {
+      ...buildPlan(),
+      projectId: 'web',
+      projectIds: ['web'],
+      nodes: [{
+        ...buildPlan().nodes[0],
+        executionModesByProjectId: { web: 'direct' },
+      }],
+      predictedBranches: [],
+    };
+
+    const result = await architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'develop',
+      planId: 'plan-1',
+    });
+
+    expect(result.plan.status).toBe('validated');
+    expect(result.provision.repositories).toEqual([]);
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitBranchCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('provisions only the Git target of a mixed plan', async () => {
+    projectPaths.set('api', {
+      ...projectPaths.get('api')!,
+      gitSetupState: 'not_git',
+      directEdit: true,
+    });
+    currentPlan = {
+      ...buildPlan(),
+      nodes: [
+        {
+          ...buildPlan().nodes[0],
+          executionModesByProjectId: { web: 'git' },
+        },
+        {
+          ...buildPlan().nodes[1],
+          executionModesByProjectId: { api: 'direct' },
+        },
+      ],
+    };
+    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+
+    const result = await architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'develop',
+      planId: 'plan-1',
+    });
+
+    expect(result.provision.repositories.map(({ projectId }) => projectId)).toEqual(['web']);
+    expect(gitBranchListMock.mock.calls.every(([repoPath]) => repoPath === '/repos/web')).toBe(true);
+    expect(gitWorktreeCreateMock.mock.calls.every(([params]) => params.repoPath === '/repos/web')).toBe(true);
   });
 
   it('cancels the branch-qualified pending archive saga after a successful restore', async () => {

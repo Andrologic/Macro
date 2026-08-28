@@ -1166,6 +1166,8 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
   projectId: string;
   branchName: string;
   targetBranchName?: string | null;
+  executionMode?: 'git' | 'direct' | null;
+  checkpointId?: string | null;
   worktreeKey: string;
   repoPath?: string | null;
 }

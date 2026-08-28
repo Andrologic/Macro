@@ -105,6 +105,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
       {
         projectId: 'macro-api',
@@ -113,6 +115,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro API',
         workspacePath: 'C:/dev/macro-api',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
     ]);
     expect(context.workspacePathsByProjectId['macro-web']).toBe('projects/macro-web');
@@ -151,6 +155,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Solo App',
         workspacePath: '/repos/solo-app',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
     ]);
     expect(context.workspacePath).toBe('/repos/solo-app');
@@ -258,6 +264,30 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.projectId).toBeNull();
     expect(context.projectIds).toEqual([]);
     expect(context.workspacePath).toBeNull();
+  });
+
+  it('keeps a confirmed non-Git project read-only when direct editing is disabled', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const blockedProject = {
+      ...projects[0],
+      gitSetupState: 'not_git' as const,
+      directEdit: false,
+      isReadOnly: true,
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [blockedProject],
+      projectGroups: [],
+      selectedProjectId: blockedProject.id,
+    });
+
+    expect(context.actionableProjectIds).toEqual([]);
+    expect(context.contextProjectIds).toEqual([blockedProject.id]);
+    expect(context.projectMounts[0]).toMatchObject({
+      projectId: blockedProject.id,
+      isReadOnly: true,
+      executionMode: 'blocked',
+    });
   });
 
   it('prefers task worktrees for targeted projects in implement mode', async () => {
@@ -378,6 +408,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
       {
         projectId: 'macro-api',
@@ -386,6 +418,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro API',
         workspacePath: 'C:/dev/macro-api',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
     ]);
   });
@@ -451,6 +485,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
     ]);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
@@ -497,6 +533,8 @@ describe('resolveProjectExecutionContext', () => {
           displayName: 'Macro Web',
           workspacePath: 'projects/macro-web',
           isReadOnly: false,
+          executionMode: 'git',
+          executionModeReason: 'git_ready',
         },
         {
           projectId: 'macro-api',
@@ -505,6 +543,8 @@ describe('resolveProjectExecutionContext', () => {
           displayName: 'Macro API',
           workspacePath: 'C:/dev/macro-api',
           isReadOnly: false,
+          executionMode: 'git',
+          executionModeReason: 'git_ready',
         },
       ],
       focusedProjectId: 'macro-api',

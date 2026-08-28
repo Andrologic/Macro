@@ -126,6 +126,7 @@ import {
 } from '../services/mergeWorkflowRuntime';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 import { isStandaloneTaskKindCreatable } from '../services/standaloneTaskKinds';
+import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
 import { notify } from '../components/ui/toastService';
 import { devLogger } from '../utils/devLogger';
 
@@ -249,16 +250,30 @@ const getPrimaryExecutionTarget = (task: CatalogedImplementTask): TaskExecutionT
   return getExecutionTargets(task)[0] || null;
 };
 
-const isDirectEditTarget = (target: TaskExecutionTarget): boolean => {
-  if (target.executionMode) {
-    return target.executionMode === 'direct';
-  }
+const resolveExecutionTargetMode = (target: TaskExecutionTarget) => {
   const project = useAppStore.getState().getProjectById(target.projectId);
-  return project?.directEdit === true && project.gitSetupState === 'not_git';
+  return resolveProjectExecutionMode({ project, target });
+};
+
+const isDirectEditTarget = (target: TaskExecutionTarget): boolean =>
+  resolveExecutionTargetMode(target).mode === 'direct';
+
+const isGitExecutionTarget = (target: TaskExecutionTarget): boolean =>
+  resolveExecutionTargetMode(target).mode === 'git';
+
+const assertExecutionTargetRunnable = (target: TaskExecutionTarget): void => {
+  const resolution = resolveExecutionTargetMode(target);
+  if (resolution.mode === 'git' || resolution.mode === 'direct') {
+    return;
+  }
+  throw new Error(
+    resolution.mode === 'blocked'
+      ? 'This project cannot run implementation tasks until its project access settings are updated.'
+      : 'This task has inconsistent project execution metadata. Reopen the project settings before retrying.',
+  );
 };
 
 const isDirectEditTask = (task: CatalogedImplementTask): boolean => {
-  if (task.task_source !== 'standalone') return false;
   const targets = getExecutionTargets(task);
   if (targets.length === 0) return false;
   return targets.every(isDirectEditTarget);
@@ -1133,7 +1148,8 @@ const ensureTargetWorktreePath = async (
   branchWorktrees: Record<string, string>
 ): Promise<string> => {
   const directProject = useAppStore.getState().getProjectById(target.projectId);
-  if (isDirectEditTarget(target)) {
+  const targetMode = resolveExecutionTargetMode(target);
+  if (targetMode.mode === 'direct') {
     const projectPath = directProject?.path?.trim() || target.repoPath?.trim();
     if (!projectPath) {
       throw toServiceError(
@@ -1149,6 +1165,9 @@ const ensureTargetWorktreePath = async (
       checkpointId: target.checkpointId,
     });
     return projectPath;
+  }
+  if (targetMode.mode !== 'git') {
+    assertExecutionTargetRunnable(target);
   }
 
   const inspectedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
@@ -1352,9 +1371,29 @@ const assertStandaloneTaskKindCreatableForProjects = (
   projectIds: string[],
 ): void => {
   const appState = useAppStore.getState();
-  const unavailableProject = projectIds
-    .map((projectId) => appState.getProjectById(projectId))
-    .find((project) => project && !isStandaloneTaskKindCreatable(taskKind, project.gitFlowSettings));
+  const projects = projectIds.map((projectId) => appState.getProjectById(projectId));
+  for (const project of projects) {
+    const resolution = resolveProjectExecutionMode({ project });
+    if (resolution.mode !== 'git' && resolution.mode !== 'direct') {
+      throw new Error(
+        resolution.mode === 'blocked'
+          ? tTask(
+              'implement.errors.projectExecutionBlocked',
+              'Enable direct editing in the project settings before creating a task.',
+            )
+          : tTask(
+              'implement.errors.projectExecutionInvalid',
+              'The project execution metadata is inconsistent. Reopen the project settings before retrying.',
+            ),
+      );
+    }
+  }
+
+  const unavailableProject = projects.find((project) => {
+    if (!project) return false;
+    return resolveProjectExecutionMode({ project }).mode === 'git' &&
+      !isStandaloneTaskKindCreatable(taskKind, project.gitFlowSettings);
+  });
 
   if (!unavailableProject) return;
 
@@ -1650,6 +1689,7 @@ const ensureTaskExecutionTargetsReady = async (
       );
     }
 
+    assertExecutionTargetRunnable(target);
     const isDirectEdit = isDirectEditTarget(target);
     const setupCommand = isDirectEdit
       ? ''
@@ -2879,11 +2919,40 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const preferredTarget = getPreferredExecutionTarget(executionTask, appState.selectedProjectId);
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(executionTask);
     const branchName = primaryTarget?.branchName || executionTask.assigned_branch;
-    const knownWorktree = primaryTarget
-      ? task.draft && task.branch_name
-        ? await ensureTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
-        : await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
+    const targetMode = primaryTarget ? resolveExecutionTargetMode(primaryTarget) : null;
+    if (targetMode && targetMode.mode !== 'git' && targetMode.mode !== 'direct') {
+      if (requestId !== taskActivationRequestId) return;
+      const message = targetMode.mode === 'blocked'
+        ? tTask(
+            'implement.errors.projectExecutionBlocked',
+            'Enable direct editing in the project settings before opening this task.',
+          )
+        : tTask(
+            'implement.errors.projectExecutionInvalid',
+            'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
+          );
+      set({
+        activeBranchName: null,
+        activeRepositoryPath: null,
+        activeWorkspacePathOverridesByProjectId: {},
+        lastError: message,
+      });
+      await syncWorkspaceRoot(null);
+      return;
+    }
+
+    const shouldRestoreExecutionWorkspace =
+      task.draft || ['InProgress', 'AwaitingResponse', 'InReview'].includes(task.status);
+    let knownWorktree = primaryTarget
+      ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
+    if (!knownWorktree && primaryTarget && shouldRestoreExecutionWorkspace) {
+      knownWorktree = await ensureTargetWorktreePath(
+        executionTask,
+        primaryTarget,
+        get().branchWorktrees,
+      );
+    }
     if (requestId !== taskActivationRequestId) return;
     if (knownWorktree) {
       if (primaryTarget) {
@@ -3034,7 +3103,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const gitTargets = executionTargets.filter(isGitExecutionTarget);
       const directTargets = executionTargets.filter(isDirectEditTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
@@ -3309,7 +3379,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const gitTargets = executionTargets.filter(isGitExecutionTarget);
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
       await tauriIpc.workspaceArchiveManualFeature({
         taskId,
@@ -3468,7 +3539,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const gitTargets = executionTargets.filter(isGitExecutionTarget);
       const directTargets = executionTargets.filter(isDirectEditTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
@@ -3702,10 +3774,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       throw error;
     }
 
-    if (task.status === 'InProgress') {
-      return;
-    }
-
     if (task.status === 'AwaitingResponse') {
       await get().setTaskStatus(task.id, 'InProgress');
       return;
@@ -3725,6 +3793,29 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           'implement.errors.taskBlockedByDependencies',
           'Task is blocked by unresolved dependencies: {{reason}}',
           { reason }
+        ),
+      });
+      return;
+    }
+
+    const directProjectIds = new Set(
+      getExecutionTargets(task).filter(isDirectEditTarget).map((target) => target.projectId),
+    );
+    const conflictingDirectTask = directProjectIds.size > 0
+      ? get().tasks.find((candidate) =>
+          candidate.id !== task.id &&
+          ['InProgress', 'AwaitingResponse', 'InReview'].includes(candidate.status) &&
+          getExecutionTargets(candidate).some(
+            (target) => directProjectIds.has(target.projectId) && isDirectEditTarget(target),
+          ),
+        )
+      : null;
+    if (conflictingDirectTask) {
+      set({
+        lastError: tTask(
+          'implement.errors.directProjectTaskAlreadyActive',
+          'Another direct-edit task is already active for this project: {{task}}',
+          { task: conflictingDirectTask.title },
         ),
       });
       return;
@@ -4778,6 +4869,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           )
         );
       }
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const hasDirectTargets = executionTargets.some(isDirectEditTarget);
 
       let executionTargetsWithRepoPaths: Array<
         TaskExecutionTarget & { repoPath: string; worktreePath: string }
@@ -4792,7 +4885,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           },
           missingBaseBranchIssue: null,
         }));
-        executionTargetsWithRepoPaths = preparedTargets;
+        executionTargetsWithRepoPaths = preparedTargets.filter(isGitExecutionTarget);
       } catch (error) {
         if (error instanceof MissingTaskBaseBranchError) {
           set({
@@ -4937,7 +5030,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
       }
 
-      if (!allowWithoutCodeChanges && mergedRepositoryCount === 0) {
+      if (!allowWithoutCodeChanges && mergedRepositoryCount === 0 && !hasDirectTargets) {
         throw new Error(
           tTask(
             'implement.errors.noIntegratedChanges',
@@ -4995,13 +5088,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           const targetBranch = getTaskPlanStorageBranch(task);
           const plan = await getArchitectPlan(targetBranch, task.plan_id);
           if (!plan || plan.status === 'deleted') {
-            set({
-              lastError: tTask(
+            throw new Error(
+              tTask(
                 'implement.errors.unknownTaskPlan',
                 'Cannot update plan metadata for task {{taskId}}.',
                 { taskId: task.id }
-              ),
-            });
+              )
+            );
           } else {
             const nextPlanNodes = (plan.nodes || []).map((node) =>
               node.id === getTaskBusinessId(task)

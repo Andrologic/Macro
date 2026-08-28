@@ -29,6 +29,7 @@ import {
   truncateGrepLine,
 } from "../shared/toolOutputLimits";
 import { createCombinedAbortSignal } from "../utils/abortSignals";
+import { resolveProjectExecutionMode, type ProjectExecutionMode } from './projectExecutionMode';
 
 type ToolArgs = Record<string, unknown>;
 const isGitTool = (toolName: string): boolean => toolName.startsWith("git_");
@@ -1068,7 +1069,18 @@ interface ProjectWorkspaceCandidate {
   mountName: string;
   workspacePath: string | null;
   isReadOnly: boolean;
+  executionMode: ProjectExecutionMode;
+  executionModeReason: string;
 }
+
+const buildGitModeError = (candidate: ProjectWorkspaceCandidate): string => {
+  const nextStep = candidate.executionMode === 'direct'
+    ? 'This target uses direct editing. Use workspace file tools instead.'
+    : candidate.executionMode === 'blocked'
+      ? 'Initialize Git or enable direct editing in the project settings.'
+      : 'Reopen the project settings so Macro can refresh its Git state.';
+  return `Error executing git tool: project "${candidate.name}" is ${candidate.executionMode}. ${nextStep}`;
+};
 
 const slugifyProjectAlias = (value: string): string =>
   value
@@ -1081,16 +1093,33 @@ const getProjectWorkspaceCandidates = (
   options: ExecuteWorkspaceToolOptions,
 ): ProjectWorkspaceCandidate[] => {
   if (options.projectMounts?.length) {
-    return options.projectMounts.map((mount) => ({
-      id: mount.projectId,
-      name: mount.displayName,
-      mountName: mount.mountName,
-      workspacePath: normalizeWorkspacePath(
-        options.workspacePathsByProjectId?.[mount.projectId] ||
-          mount.workspacePath,
-      ),
-      isReadOnly: Boolean(mount.isReadOnly),
-    }));
+    const appState = useAppStore.getState();
+    const registeredProjects = getAllProjects({
+      standaloneProjects: appState.standaloneProjects ?? [],
+      projectGroups: appState.projectGroups,
+    });
+    return options.projectMounts.map((mount) => {
+      const fallbackResolution = mount.executionMode
+        ? null
+        : resolveProjectExecutionMode({
+            project: registeredProjects.find((project) => project.id === mount.projectId),
+          });
+      const executionMode = mount.executionMode ?? fallbackResolution?.mode ?? 'invalid';
+      return {
+        id: mount.projectId,
+        name: mount.displayName,
+        mountName: mount.mountName,
+        workspacePath: normalizeWorkspacePath(
+          options.workspacePathsByProjectId?.[mount.projectId] ||
+            mount.workspacePath,
+        ),
+        isReadOnly: Boolean(mount.isReadOnly) ||
+          (executionMode !== 'git' && executionMode !== 'direct'),
+        executionMode,
+        executionModeReason:
+          mount.executionModeReason ?? fallbackResolution?.reason ?? 'project_missing',
+      };
+    });
   }
 
   const appState = useAppStore.getState();
@@ -1101,15 +1130,21 @@ const getProjectWorkspaceCandidates = (
         projectGroups: appState.projectGroups,
       });
 
-  return projects.map((project) => ({
-    id: project.id,
-    name: project.name,
-    mountName: project.mountName,
-    workspacePath:
-      normalizeWorkspacePath(options.workspacePathsByProjectId?.[project.id]) ||
-      normalizeWorkspacePath(project.path),
-    isReadOnly: Boolean(project.isReadOnly),
-  }));
+  return projects.map((project) => {
+    const resolution = resolveProjectExecutionMode({ project });
+    return {
+      id: project.id,
+      name: project.name,
+      mountName: project.mountName,
+      workspacePath:
+        normalizeWorkspacePath(options.workspacePathsByProjectId?.[project.id]) ||
+        normalizeWorkspacePath(project.path),
+      isReadOnly: Boolean(project.isReadOnly) ||
+        (resolution.mode !== 'git' && resolution.mode !== 'direct'),
+      executionMode: resolution.mode,
+      executionModeReason: resolution.reason,
+    };
+  });
 };
 
 const getProjectAliases = (candidate: ProjectWorkspaceCandidate): string[] => {
@@ -1939,6 +1974,16 @@ export const executeWorkspaceTool = async (
     normalizeWorkspacePath(options.defaultWorkspacePath) ||
     normalizeWorkspacePath(options.workspacePath) ||
     normalizeWorkspacePath(getSelectedProjectRoot());
+  if (isGitTool(toolName)) {
+    const routedGitCandidate =
+      getProjectWorkspaceCandidate(effectiveProjectId, candidates) ||
+      getProjectWorkspaceCandidate(focusedProjectId, candidates) ||
+      candidates.find((candidate) => candidate.workspacePath === effectiveWorkspacePath) ||
+      null;
+    if (routedGitCandidate && routedGitCandidate.executionMode !== 'git') {
+      return buildGitModeError(routedGitCandidate);
+    }
+  }
   if (!virtualRootCandidate && isMutatingWorkspaceTool(toolName)) {
     const explicitlyScopedWorkspacePath =
       normalizeWorkspacePath(options.defaultWorkspacePath) ||
@@ -2497,7 +2542,6 @@ export const executeWorkspaceTool = async (
         if (!candidate || !workspacePath) {
           return "Error executing write: select a project with project_id or a mount-prefixed path before writing.";
         }
-
         const resolved = formatResolvedWorkspacePath(
           candidate,
           target.relativePath,
@@ -3463,6 +3507,9 @@ export const executeWorkspaceTool = async (
 
         if (!target.candidate?.workspacePath) {
           return "Error executing git tool: select a project with project_id or a mount-prefixed repo_path before running git commands.";
+        }
+        if (target.candidate.executionMode !== 'git') {
+          return buildGitModeError(target.candidate);
         }
 
         const resolved = formatResolvedWorkspacePath(

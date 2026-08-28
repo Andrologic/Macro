@@ -373,6 +373,9 @@
   },
   "errors": {
     "directTaskCompletionFailed": "La tâche en édition directe n’a pas pu être terminée.",
+    "directProjectTaskAlreadyActive": "Ce projet en édition directe possède déjà une tâche active.",
+    "projectExecutionBlocked": "Activez l'édition directe dans les réglages du projet avant de continuer.",
+    "projectExecutionInvalid": "Les métadonnées d'exécution de la tâche contredisent l'état actuel du projet. Rouvrez les réglages du projet avant de réessayer.",
     "unknownTask": "Tâche inconnue : {{taskId}}",
     "taskAlreadyCompleted": "La tâche est déjà terminée.",
     "taskBlockedByDependencies": "La tâche est bloquée par des dépendances non résolues : {{reason}}",

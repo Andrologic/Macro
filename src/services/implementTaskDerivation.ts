@@ -527,16 +527,26 @@ const buildExecutionTargets = (
         branch.projectId === projectId &&
         getPredictedBranchKey(branch, planSlug) === branchKey
     );
-    const branchName = predictedBranch?.name || normalizeBranchName(node.assignedBranch) || branchIntent.label;
+    const executionMode = node.executionModesByProjectId?.[projectId];
+    const branchName = executionMode === 'direct'
+      ? ''
+      : predictedBranch?.name || normalizeBranchName(node.assignedBranch) || branchIntent.label;
 
     return {
       projectId,
       branchName,
-      targetBranchName: targetBranchesByProjectId?.[projectId],
-      executionKind: 'worktree',
-      worktreeKey: toBranchWorktreeKey(projectId, branchName),
-      planBranchName: predictedBranch?.parentBranch || planBranchName || undefined,
-      predictedBranchId: predictedBranch?.id ?? null,
+      targetBranchName: executionMode === 'direct'
+        ? undefined
+        : targetBranchesByProjectId?.[projectId],
+      executionMode,
+      executionKind: executionMode === 'direct' ? 'repository_root' : 'worktree',
+      worktreeKey: executionMode === 'direct'
+        ? `direct:${projectId}:${node.id}`
+        : toBranchWorktreeKey(projectId, branchName),
+      planBranchName: executionMode === 'direct'
+        ? undefined
+        : predictedBranch?.parentBranch || planBranchName || undefined,
+      predictedBranchId: executionMode === 'direct' ? null : predictedBranch?.id ?? null,
     };
   });
 };

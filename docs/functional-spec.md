@@ -64,7 +64,7 @@ Macro n'a pas vocation à être :
 
 - un IDE générique centré sur l'écriture manuelle du code
 - un remplacement des plateformes classiques de gestion de dépôt
-- un simple chat generaliste sans workflow de développement
+- un simple chat généraliste sans workflow de développement
 - une interface publique pour les outils internes de debug de l'application
 
 Le périmètre fonctionnel public repose sur les modes `Architect`, `Implement` et `Chat`.
@@ -306,11 +306,11 @@ Le mode Implement doit supporter :
 
 Le mode Implement repose sur un démarrage manuel de l'exécution des tâches.
 
-Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord le projet, puis un type de tâche compatible avec son workflow Git. La fenêtre ne demande pas le contenu de la tâche : celui-ci est fourni ensuite dans la conversation. Le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Un projet mainline, sans branche de développement distincte de la branche principale, permet `Feature` et `Hotfix`, mais pas `Bugfix`. La disponibilité est recalculée lorsque le projet cible change et tout choix devenu incompatible est effacé. Le type `release` reste réservé aux plans Architect.
+Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord le projet, puis un type de tâche compatible avec son mode d'exécution. Pour une cible Git, le type sélectionné détermine le modèle de nom de branche et la branche cible : la branche de développement pour une `feature` ou un `bugfix`, et la branche principale pour un `hotfix`. Un projet mainline, sans branche de développement distincte de la branche principale, permet `Feature` et `Hotfix`, mais pas `Bugfix`. Pour une cible en édition directe, les trois types décrivent l'intention de la tâche sans créer de branche ni de worktree. Le type `release` reste réservé aux plans Architect.
 
-Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche d'édition directe peut être active par projet. Ces tâches utilisent le type `feature` interne, présenté comme `Édition directe`, et les outils Git ne sont pas exposés à l'agent.
+Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche d'édition directe peut être active par projet. Les outils Git ne sont pas exposés à l'agent pour cette cible.
 
-L'édition directe ne remplace pas le workflow planifié : un projet sans Git reste un contexte de lecture dans Architect et ne peut pas porter de plan exécutable. L'utilisateur peut initialiser Git ultérieurement pour retrouver les branches, les worktrees, le parallélisme et les plans Architect.
+Architect peut créer un plan direct, Git ou mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation, l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les cibles directes utilisent leur dossier source et leur point de restauration privé. L'utilisateur peut initialiser Git ultérieurement pour les nouvelles tâches, mais une cible déjà persistée en mode direct conserve ce mode jusqu'à la fin de la tâche.
 
 ### 7.3 Mode Chat
 
@@ -406,7 +406,7 @@ Exemples :
 
 Le footer doit exposer les informations et actions globales de statut.
 
-Le projet Git affiché et utilisé par les actions de synchronisation est strictement dérivé du travail actif. En mode Implement, la tâche sélectionnée fait autorité ; lorsqu'aucune tâche n'est sélectionnée, le projet explicitement manipulé dans le panneau sert de contexte. En mode Architect, le plan actif fait autorité : un plan mono-projet sélectionne directement son dépôt, tandis qu'un plan multi-projets exige un focus durable déjà présent dans sa portée ou une sélection manuelle bornée à cette portée. Lorsqu'aucun plan n'est sélectionné, le projet choisi dans le navigateur Architect sert de contexte Git. Lorsqu'aucun projet n'est enregistré, Architect permet aussi de choisir explicitement un dossier Git depuis le footer ; ce dossier temporaire expose le statut et les actions Git du code sans initialiser ni synchroniser de branche de métadonnées `@macro`. En mode Chat, la conversation active doit désigner un projet sans ambiguïté. Sans dépôt unique ou dossier explicitement choisi dans ce cas précis, le footer n'affiche aucun contexte et n'exécute aucune commande Git de repli. Toute sélection manuelle est invalidée lorsque l'identité ou la portée du contexte actif change.
+Le projet Git affiché et utilisé par les actions de synchronisation est strictement dérivé du travail actif. En mode Implement, la tâche sélectionnée fait autorité ; lorsqu'aucune tâche n'est sélectionnée, le projet explicitement manipulé dans le panneau sert de contexte. Une cible directe, bloquée ou invalide n'est jamais proposée au footer. En mode Architect, le plan actif fait autorité : un plan mono-projet Git sélectionne directement son dépôt, tandis qu'un plan multi-projets exige un focus durable déjà présent dans sa portée ou une sélection manuelle bornée à ses seules cibles Git. Lorsqu'aucun plan n'est sélectionné, le projet Git choisi dans le navigateur Architect sert de contexte. Lorsqu'aucun projet n'est enregistré, Architect permet aussi de choisir explicitement un dossier Git depuis le footer ; ce dossier temporaire expose le statut et les actions Git du code sans initialiser ni synchroniser de branche de métadonnées `@macro`. En mode Chat, la conversation active doit désigner un projet Git sans ambiguïté. Sans dépôt unique ou dossier explicitement choisi dans ce cas précis, le footer n'affiche aucun contexte et n'exécute aucune commande Git de repli. Toute sélection manuelle est invalidée lorsque l'identité ou la portée du contexte actif change.
 
 Les actions fetch, pull et push ciblent toujours la branche réellement checkoutée dans le worktree affiché. Le footer expose cette branche dans les libellés de survol, mais ne propose pas de branche distante arbitraire : un pull vers une autre branche aurait pour effet de l'intégrer dans le worktree courant et rendrait les compteurs de divergence trompeurs. Lors d'un pull du code, l'absence de branche distante `@macro` est un cas normal : la synchronisation des métadonnées est simplement ignorée pour le dépôt concerné, sans erreur, tandis que les autres dépôts continuent d'être synchronisés. Les icônes de synchronisation restent dans des cadres de taille fixe ; fetch tourne, pull progresse vers le bas et push vers le haut, sans modifier l'alignement vertical. Les animations sont neutralisées lorsque la réduction des mouvements est demandée par le système.
 
@@ -572,9 +572,9 @@ Un plan est considéré comme terminé lorsque :
 
 ### 11.6 Archivage du plan
 
-Les plans termines doivent être archives.
+Les plans terminés doivent être archivés.
 
-Les plans archives doivent rester accessibles pour :
+Les plans archivés doivent rester accessibles pour :
 - la lecture
 - l'audit
 - l'analyse rétrospective
@@ -594,7 +594,7 @@ L'utilisateur peut influencer le résultat par la conversation et les prompts, m
 ### 12.2 Objectifs de la stratégie
 
 La stratégie doit :
-- refleter l'intention utilisateur
+- refléter l'intention utilisateur
 - définir un ordre d'exécution réaliste
 - maximiser le parallélisme lorsque c'est sûr
 - exprimer le séquentiel par des dépendances explicites entre tâches
@@ -618,7 +618,7 @@ Cette structuration existe pour réduire le risque et améliorer la qualité des
 
 La plupart des tâches sont dérivées automatiquement d'un plan valide.
 
-Ces tâches heritent :
+Ces tâches héritent :
 - du contexte du plan
 - de l'ordre d'exécution
 - de la structure de branche
@@ -1152,11 +1152,11 @@ Les règles suivantes sont fondatrices :
 - Le développeur est le pilote ; l'IA est l'exécutant.
 - Le mode Architect est le cœur structurant du produit.
 - Le mode Implement est piloté par les tâches et orienté review-first.
-- Le mode Chat est léger et independant.
+- Le mode Chat est léger et indépendant.
 - Le multi-projet est une capacité de premier plan.
 - Un plan contient sa conversation et sa stratégie.
 - Plusieurs plans peuvent coexister en parallèle.
-- Les plans archives restent lisibles mais non modifiables.
+- Les plans archivés restent lisibles mais non modifiables.
 - La stratégie est générée par l'IA à partir de la conversation et du contexte du projet, après une demande explicite.
 - La validation d'un plan prépare automatiquement branches et worktrees.
 - Toute tâche complétée se termine par un commit.

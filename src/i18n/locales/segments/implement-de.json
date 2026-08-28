@@ -373,6 +373,9 @@
   },
   "errors": {
     "directTaskCompletionFailed": "Die Aufgabe im Direktbearbeitungsmodus konnte nicht abgeschlossen werden.",
+    "directProjectTaskAlreadyActive": "Dieses direkt bearbeitete Projekt hat bereits eine aktive Aufgabe.",
+    "projectExecutionBlocked": "Aktiviere die direkte Bearbeitung in den Projekteinstellungen, bevor du fortfährst.",
+    "projectExecutionInvalid": "Die Ausführungsmetadaten der Aufgabe widersprechen dem aktuellen Projektstatus. Öffne die Projekteinstellungen erneut und versuche es noch einmal.",
     "unknownTask": "Unbekannte Aufgabe: {{taskId}}",
     "taskAlreadyCompleted": "Die Aufgabe ist bereits abgeschlossen.",
     "taskBlockedByDependencies": "Aufgabe wird durch ungelöste Abhängigkeiten blockiert: {{reason}}",

@@ -192,10 +192,10 @@ const isGitActionableTarget = (
   appState: MacroSyncAppState,
   target: MetadataSyncTarget
 ): boolean => {
-  if (!target.projectId) return true;
+  if (!target.projectId) return false;
 
   const project = resolveProject(appState, target.projectId);
-  return !project || isProjectGitActionable(project);
+  return project ? isProjectGitActionable(project) : false;
 };
 
 const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<MetadataSyncTarget[]> => {

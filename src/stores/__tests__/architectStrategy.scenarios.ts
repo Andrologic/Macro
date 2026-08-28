@@ -191,6 +191,7 @@ export const registerArchitectStrategyScenarios = (
             dependencies: [],
             projectId: 'project-1',
             projectIds: ['project-1'],
+            executionModesByProjectId: { 'project-1': 'git' },
           },
         ],
       });
@@ -536,6 +537,7 @@ export const registerArchitectStrategyScenarios = (
             branchSlug: 'checkout-web',
             projectId: 'project-1',
             projectIds: ['project-1'],
+            executionModesByProjectId: { 'project-1': 'git' },
           },
           {
             id: 'task-api',
@@ -549,6 +551,7 @@ export const registerArchitectStrategyScenarios = (
             branchSlug: 'checkout-api',
             projectId: 'project-2',
             projectIds: ['project-2'],
+            executionModesByProjectId: { 'project-2': 'git' },
           },
         ],
         predictedBranches: [],

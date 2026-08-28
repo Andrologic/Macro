@@ -90,6 +90,8 @@ const projectGroups: ProjectGroup[] = [
         mountName: 'web',
         created_at: '2026-03-19T00:00:00.000Z',
         status: 'active',
+        gitSetupState: 'ready',
+        directEdit: false,
         metadata: {
           description: '',
           tags: [],
@@ -2647,8 +2649,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.strategyMutationPreview = null;
     const defaultProject = projectGroups[0]?.projects[0];
     if (defaultProject) {
-      delete defaultProject.directEdit;
-      delete defaultProject.gitSetupState;
+      defaultProject.directEdit = false;
+      defaultProject.gitSetupState = 'ready';
     }
     const { useSkillsStore } = await import('./useSkillsStore');
     useSkillsStore.setState({

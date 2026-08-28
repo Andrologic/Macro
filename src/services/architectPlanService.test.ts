@@ -951,7 +951,15 @@ describe('architectPlanService', () => {
         ['web', '/repos/web'],
         ['api', '/repos/api'],
       ]),
+      workspacePathByProjectId: new Map([
+        ['web', '/repos/web'],
+        ['api', '/repos/api'],
+      ]),
       gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['web', 'git'],
+        ['api', 'git'],
+      ]),
       hasRegisteredProjects: true,
     };
 
@@ -999,6 +1007,61 @@ describe('architectPlanService', () => {
     expect(listed.activePlanId).toBeNull();
   });
 
+  it('persists and reloads a direct-only plan from the project workspace', async () => {
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot,
+      filesByWorkspacePath,
+    });
+    await service.createArchitectPlan({
+      branchName,
+      planId: 'direct-plan',
+      projectIds: ['docs'],
+      nodes: [{
+        id: 'edit-docs',
+        title: 'Edit docs',
+        description: 'Update the guide',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs'],
+        executionModesByProjectId: { docs: 'direct' },
+      }],
+    });
+
+    expect(filesByWorkspacePath['/repos/docs']['branches/develop/plans/direct-plan/plan.json'])
+      .toContain('"docs": "direct"');
+
+    storage.clear();
+    const reloaded = await service.getArchitectPlan(branchName, 'direct-plan');
+
+    expect(reloaded?.projectIds).toEqual(['docs']);
+    expect(reloaded?.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
+  });
+
   it('removes orphaned planned metadata while preserving executed task history', async () => {
     const registrySnapshot: ValidProjectRegistrySnapshot = {
       selectedGroupId: null,
@@ -1011,7 +1074,9 @@ describe('architectPlanService', () => {
       validProjectIds: ['web'],
       validProjectIdSet: new Set(['web']),
       repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([['web', '/repos/web']]),
       gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['web', 'git']]),
       hasRegisteredProjects: true,
     };
     const filesByWorkspacePath: Record<string, Record<string, string>> = {

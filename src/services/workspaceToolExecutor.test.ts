@@ -9,6 +9,7 @@ type MockAppState = {
     name: string;
     mountName: string;
     path: string;
+    gitSetupState?: 'ready' | 'unborn' | 'not_git' | 'unknown';
   }>;
   projectGroups: Array<{
     id: string;
@@ -19,6 +20,7 @@ type MockAppState = {
       name: string;
       mountName: string;
       path: string;
+      gitSetupState?: 'ready' | 'unborn' | 'not_git' | 'unknown';
     }>;
   }>;
 };
@@ -38,12 +40,14 @@ const defaultAppState: MockAppState = {
           name: "API",
           mountName: "api",
           path: "C:/dev/macro-api",
+          gitSetupState: "ready",
         },
         {
           id: "web",
           name: "Web App",
           mountName: "web",
           path: "C:/dev/macro-web",
+          gitSetupState: "ready",
         },
       ],
     },
@@ -1063,6 +1067,119 @@ describe("workspaceToolExecutor helpers", () => {
       }),
     ]);
   });
+
+  it.each(['direct', 'blocked', 'invalid'] as const)(
+    'refuses Git tools before the backend for a %s target',
+    async (executionMode) => {
+      const backendCalls: Array<Record<string, unknown>> = [];
+      const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+        tauriModule: {
+          isTauriAvailable: () => true,
+          validateToolExecution: async () => ({ allowed: true }),
+          executeWorkspaceTool: async (params: Record<string, unknown>) => {
+            backendCalls.push(params);
+            return '{}';
+          },
+        },
+      } as Partial<MockAppState>);
+
+      const result = await executeWorkspaceTool(
+        'git_status',
+        { project_id: 'direct-project' },
+        'Implement',
+        {
+          projectId: 'direct-project',
+          projectMounts: [{
+            projectId: 'direct-project',
+            groupId: null,
+            mountName: 'direct',
+            displayName: 'Direct project',
+            workspacePath: 'C:/work/direct',
+            isReadOnly: executionMode !== 'direct',
+            executionMode,
+          }],
+        },
+      );
+
+      expect(result).toContain(`is ${executionMode}`);
+      expect(backendCalls).toEqual([]);
+    },
+  );
+
+  it('never defaults a mount with missing project metadata to Git', async () => {
+    const backendCalls: Array<Record<string, unknown>> = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      projectGroups: [],
+      standaloneProjects: [],
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async (params: Record<string, unknown>) => {
+          backendCalls.push(params);
+          return '{}';
+        },
+      },
+    } as Partial<MockAppState>);
+
+    const result = await executeWorkspaceTool(
+      'git_status',
+      { project_id: 'missing-project' },
+      'Implement',
+      {
+        projectId: 'missing-project',
+        projectMounts: [{
+          projectId: 'missing-project',
+          groupId: null,
+          mountName: 'missing',
+          displayName: 'Missing project',
+          workspacePath: 'C:/work/missing',
+          isReadOnly: false,
+        }],
+      },
+    );
+
+    expect(result).toContain('is invalid');
+    expect(backendCalls).toEqual([]);
+  });
+
+  it.each(['blocked', 'invalid'] as const)(
+    'refuses workspace mutations before the backend for a %s target',
+    async (executionMode) => {
+      const backendCalls: Array<Record<string, unknown>> = [];
+      const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+        tauriModule: {
+          isTauriAvailable: () => true,
+          validateToolExecution: async () => ({ allowed: true }),
+          executeWorkspaceTool: async (params: Record<string, unknown>) => {
+            backendCalls.push(params);
+            return '{}';
+          },
+        },
+      } as Partial<MockAppState>);
+
+      const result = await executeWorkspaceTool(
+        'write',
+        { path: 'src/new.ts', content: 'unsafe' },
+        'Implement',
+        {
+          projectId: 'blocked-project',
+          defaultWorkspacePath: 'C:/work/blocked',
+          projectMounts: [{
+            projectId: 'blocked-project',
+            groupId: null,
+            mountName: 'blocked',
+            displayName: 'Blocked project',
+            workspacePath: 'C:/work/blocked',
+            isReadOnly: true,
+            executionMode,
+          }],
+        },
+      );
+
+      expect(result).toContain('read-only');
+      expect(backendCalls).toEqual([]);
+    },
+  );
 
   it("keeps virtual git_log routing and cursor validation inside the selected backend workspace", async () => {
     let featureTip = "feature-tip-1";

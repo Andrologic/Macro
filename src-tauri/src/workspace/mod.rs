@@ -2062,6 +2062,11 @@ pub async fn create_manual_feature_draft(
     let existing_branch_name = existing_branch_name
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    if existing_branch_name.is_some() && !direct_edit_project_ids.is_empty() {
+        return Err(BackendError::Validation(
+            "Direct-edit tasks cannot reuse a Git branch or worktree.".to_string(),
+        ));
+    }
     let execution_targets = existing_branch_name
         .and_then(|branch_name| {
             let project_id = normalized_project_ids.first()?;
@@ -4100,7 +4105,7 @@ pub async fn update_project_access(
         }
         if !user_read_only
             && project.git_setup_state != PROJECT_GIT_SETUP_READY
-            && !(project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT && project.direct_edit)
+            && project.git_setup_state != PROJECT_GIT_SETUP_NOT_GIT
         {
             tracing::warn!(
                 action = "project_access_update_rejected",
@@ -4404,29 +4409,10 @@ fn collect_actionable_project_ids_from_state(state: &WorkspaceState) -> HashSet<
         .collect()
 }
 
-fn collect_git_actionable_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
-    state
-        .standalone_projects
-        .iter()
-        .chain(
-            state
-                .project_groups
-                .iter()
-                .flat_map(|group| group.projects.iter()),
-        )
-        .filter(|project| {
-            !project_is_read_only(project)
-                && !project.direct_edit
-                && project.git_setup_state == PROJECT_GIT_SETUP_READY
-        })
-        .map(|project| project.id.clone())
-        .collect()
-}
-
 fn collect_architect_context_project_ids_from_state(state: &WorkspaceState) -> HashSet<String> {
-    let git_actionable = collect_git_actionable_project_ids_from_state(state);
+    let actionable = collect_actionable_project_ids_from_state(state);
     collect_valid_project_ids_from_state(state)
-        .difference(&git_actionable)
+        .difference(&actionable)
         .cloned()
         .collect()
 }
@@ -4573,16 +4559,20 @@ fn build_manual_feature_execution_targets(
                 .iter()
                 .find(|project| project.id == *project_id)
                 .or_else(|| find_project_by_id(project_groups, project_id));
-            let branch_name = render_standalone_task_branch_name(
-                project.map(|project| &project.git_flow_settings),
-                feature_slug,
-                task_kind,
-            );
             let is_direct = project
                 .map(|project| {
                     project.direct_edit && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT
                 })
                 .unwrap_or(false);
+            let branch_name = if is_direct {
+                String::new()
+            } else {
+                render_standalone_task_branch_name(
+                    project.map(|project| &project.git_flow_settings),
+                    feature_slug,
+                    task_kind,
+                )
+            };
             let checkpoint_id = project.filter(|_| is_direct).map(|project| {
                 let resolved_path = resolve_project_path(workspace_path, &project.path);
                 let stable_path = resolved_path.canonicalize().unwrap_or(resolved_path);
@@ -4591,7 +4581,7 @@ fn build_manual_feature_execution_targets(
             WorkspaceTaskExecutionTargetDto {
                 project_id: project_id.clone(),
                 branch_name: branch_name.clone(),
-                target_branch_name: project.map(|project| {
+                target_branch_name: project.filter(|_| !is_direct).map(|project| {
                     if task_kind == "hotfix" {
                         project.git_flow_settings.main_branch.clone()
                     } else {
@@ -4600,7 +4590,15 @@ fn build_manual_feature_execution_targets(
                 }),
                 execution_mode: Some(if is_direct { "direct" } else { "git" }.to_string()),
                 checkpoint_id,
-                worktree_key: to_branch_worktree_key(project_id, &branch_name),
+                worktree_key: if is_direct {
+                    format!(
+                        "direct-{}-{}",
+                        normalized_project_id(task_id),
+                        normalized_project_id(project_id)
+                    )
+                } else {
+                    to_branch_worktree_key(project_id, &branch_name)
+                },
                 repo_path: project.map(|project| project.path.clone()),
             }
         })
@@ -4621,14 +4619,8 @@ fn validate_manual_task_kind_for_projects(
         let Some(project) = project else {
             continue;
         };
-        if project.direct_edit
-            && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT
-            && task_kind != "feature"
-        {
-            return Err(BackendError::Validation(format!(
-                "Direct-edit projects only support feature tasks for project {}.",
-                project.name
-            )));
+        if project.direct_edit && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT {
+            continue;
         }
         if task_kind != "bugfix" {
             continue;
@@ -4774,6 +4766,18 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
                             value.insert(
                                 "targetBranchName".to_string(),
                                 Value::String(target_branch_name.clone()),
+                            );
+                        }
+                        if let Some(execution_mode) = target.execution_mode.as_ref() {
+                            value.insert(
+                                "executionMode".to_string(),
+                                Value::String(execution_mode.clone()),
+                            );
+                        }
+                        if let Some(checkpoint_id) = target.checkpoint_id.as_ref() {
+                            value.insert(
+                                "checkpointId".to_string(),
+                                Value::String(checkpoint_id.clone()),
                             );
                         }
                         if let Some(repo_path) = target.repo_path.as_ref() {
@@ -6387,7 +6391,8 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
             manual_feature_targets_removed = repair_report.manual_feature_targets_removed,
             plan_nodes_removed = repair_report.plan_nodes_removed,
             predicted_branches_removed = repair_report.predicted_branches_removed,
-            git_flow_settings_auto_updated = repair_report.git_flow_settings_auto_updated
+            git_flow_settings_auto_updated = repair_report.git_flow_settings_auto_updated,
+            project_access_states_updated = repair_report.project_access_states_updated
         );
         if repair_report.has_destructive_repairs() {
             tracing::warn!(
@@ -6463,13 +6468,29 @@ fn sanitize_project_entry(
     if git_flow_settings != project.git_flow_settings {
         repair_report.git_flow_settings_auto_updated += 1;
     }
-    Some(normalize_project_access(
+    let previous_access = (
+        project.git_setup_state.clone(),
+        project.direct_edit,
+        project.is_read_only,
+        project.read_only_reason.clone(),
+    );
+    let normalized = normalize_project_access(
         ProjectDto {
             git_flow_settings,
             ..project
         },
         derive_git_setup_state(&git_detection),
-    ))
+    );
+    let normalized_access = (
+        normalized.git_setup_state.clone(),
+        normalized.direct_edit,
+        normalized.is_read_only,
+        normalized.read_only_reason.clone(),
+    );
+    if normalized_access != previous_access {
+        repair_report.project_access_states_updated += 1;
+    }
+    Some(normalized)
 }
 
 fn sanitize_workspace_state(
@@ -6543,7 +6564,6 @@ fn sanitize_workspace_state(
     state.project_groups = sanitized_groups;
     let _valid_project_ids = collect_valid_project_ids_from_state(&state);
     let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
-    let git_actionable_project_ids = collect_git_actionable_project_ids_from_state(&state);
     let read_only_project_ids = collect_read_only_project_ids_from_state(&state);
     let architect_context_project_ids = collect_architect_context_project_ids_from_state(&state);
 
@@ -6551,7 +6571,7 @@ fn sanitize_workspace_state(
         let original_project_ids = plan.project_ids.clone();
         let initial_project_ids = plan.project_ids.len();
         plan.project_ids
-            .retain(|project_id| git_actionable_project_ids.contains(project_id));
+            .retain(|project_id| actionable_project_ids.contains(project_id));
         let mut unique_project_ids = HashSet::new();
         plan.project_ids
             .retain(|project_id| unique_project_ids.insert(project_id.clone()));
@@ -6570,7 +6590,7 @@ fn sanitize_workspace_state(
 
         let (sanitized_tasks, removed_tasks, removed_targets) = sanitize_plan_tasks(
             &plan.tasks,
-            &git_actionable_project_ids,
+            &actionable_project_ids,
             &architect_context_project_ids,
         );
         if removed_tasks > 0 || removed_targets > 0 || sanitized_tasks.len() != plan.tasks.len() {
@@ -6620,7 +6640,7 @@ fn sanitize_workspace_state(
     state.plan_nodes.retain(|node| {
         node.project_id
             .as_ref()
-            .map(|project_id| git_actionable_project_ids.contains(project_id))
+            .map(|project_id| actionable_project_ids.contains(project_id))
             .unwrap_or(true)
     });
     repair_report.plan_nodes_removed =
@@ -6629,7 +6649,7 @@ fn sanitize_workspace_state(
     let initial_predicted_branch_count = state.predicted_branches.len();
     state
         .predicted_branches
-        .retain(|branch| git_actionable_project_ids.contains(&branch.project_id));
+        .retain(|branch| actionable_project_ids.contains(&branch.project_id));
     repair_report.predicted_branches_removed =
         initial_predicted_branch_count.saturating_sub(state.predicted_branches.len());
 
@@ -8400,6 +8420,30 @@ mod tests {
     }
 
     #[test]
+    fn direct_manual_target_has_no_branch_or_worktree_contract() {
+        let mut direct = make_project("project-direct", "apps/direct");
+        direct.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
+        direct.direct_edit = true;
+
+        let targets = build_manual_feature_execution_targets(
+            Path::new("."),
+            "task-direct",
+            &[direct.id.clone()],
+            "change-files",
+            "feature",
+            &[direct],
+            &[],
+        );
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].execution_mode.as_deref(), Some("direct"));
+        assert!(targets[0].branch_name.is_empty());
+        assert!(targets[0].target_branch_name.is_none());
+        assert!(targets[0].worktree_key.starts_with("direct-"));
+        assert!(targets[0].checkpoint_id.is_some());
+    }
+
+    #[test]
     fn manual_bugfix_requires_a_distinct_development_branch() {
         let mut mainline = make_project("project-mainline", "apps/mainline");
         mainline.git_flow_settings.base_branch = "main".to_string();
@@ -8433,7 +8477,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_edit_project_is_writable_but_not_architect_actionable() {
+    fn direct_edit_project_is_actionable_without_becoming_a_git_project() {
         let mut direct = make_project("project-direct", "apps/direct");
         direct.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
         direct.direct_edit = true;
@@ -8454,12 +8498,11 @@ mod tests {
 
         assert!(!direct.is_read_only);
         assert!(collect_actionable_project_ids_from_state(&state).contains(&direct.id));
-        assert!(!collect_git_actionable_project_ids_from_state(&state).contains(&direct.id));
-        assert!(collect_architect_context_project_ids_from_state(&state).contains(&direct.id));
+        assert!(!collect_architect_context_project_ids_from_state(&state).contains(&direct.id));
     }
 
     #[test]
-    fn direct_edit_project_only_accepts_feature_tasks() {
+    fn direct_edit_project_accepts_task_kinds_without_branch_validation() {
         let mut direct = make_project("project-direct", "apps/direct");
         direct.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
         direct.direct_edit = true;
@@ -8471,12 +8514,15 @@ mod tests {
             &[],
         )
         .expect("direct feature should be available");
-        let error =
-            validate_manual_task_kind_for_projects("hotfix", &[direct.id.clone()], &[direct], &[])
-                .expect_err("direct hotfix should be rejected");
-        assert!(
-            matches!(error, BackendError::Validation(message) if message.contains("only support feature"))
-        );
+        validate_manual_task_kind_for_projects(
+            "bugfix",
+            &[direct.id.clone()],
+            &[direct.clone()],
+            &[],
+        )
+        .expect("direct bugfix should not require branches");
+        validate_manual_task_kind_for_projects("hotfix", &[direct.id.clone()], &[direct], &[])
+            .expect("direct hotfix should not require branches");
     }
 
     #[test]
@@ -10107,6 +10153,8 @@ mod tests {
         let metadata_root = temp.path().join(".macro");
         let project_path = temp.path().join("direct-project");
         stdfs::create_dir_all(&project_path).expect("create direct project");
+        let marker_path = project_path.join("keep.txt");
+        stdfs::write(&marker_path, "unchanged").expect("seed project file");
         let mut direct = make_project("project-direct", project_path.to_string_lossy().as_ref());
         direct.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
         direct.direct_edit = true;
@@ -10154,25 +10202,41 @@ mod tests {
         assert_eq!(direct_target.execution_mode.as_deref(), Some("direct"));
         assert!(direct_target.checkpoint_id.is_some());
 
+        let catalog = list_tasks(temp.path(), &metadata_root)
+            .await
+            .expect("list direct task catalog");
+        assert_eq!(catalog.tasks[0]["execution_targets"][0]["executionMode"], "direct");
+        assert_eq!(
+            catalog.tasks[0]["execution_targets"][0]["checkpointId"],
+            direct_target.checkpoint_id.as_deref().expect("checkpoint id")
+        );
+        assert!(!project_path.join(".git").exists());
+        assert_eq!(
+            stdfs::read_to_string(&marker_path).expect("read unchanged project file"),
+            "unchanged"
+        );
+
         init_git_repo(&project_path, "develop", &["main"]);
-        let mut state = load_or_create_state(temp.path(), &metadata_root)
+        let state = load_or_create_state(temp.path(), &metadata_root)
             .await
             .expect("load direct project state");
         let project = state
             .standalone_projects
-            .iter_mut()
+            .iter()
             .find(|project| project.id == "project-direct")
             .expect("direct project");
-        project.git_setup_state = PROJECT_GIT_SETUP_READY.to_string();
-        project.direct_edit = false;
-        persist_sanitized_state(
-            temp.path(),
-            &metadata_root,
-            state,
-            "add_git_to_direct_project",
-        )
-        .await
-        .expect("persist project Git state");
+        assert_eq!(project.git_setup_state, PROJECT_GIT_SETUP_READY);
+        assert!(!project.direct_edit);
+        let rehydrated = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .expect("rehydrate detected Git state");
+        let rehydrated_project = rehydrated
+            .standalone_projects
+            .iter()
+            .find(|project| project.id == "project-direct")
+            .expect("rehydrated project");
+        assert_eq!(rehydrated_project.git_setup_state, PROJECT_GIT_SETUP_READY);
+        assert!(!rehydrated_project.direct_edit);
 
         let error = create_manual_feature_draft(
             temp.path(),

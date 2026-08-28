@@ -4,11 +4,10 @@ import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
   getProjectGroupByProjectId,
-  isProjectActionable,
-  isProjectReadOnly,
 } from './globalProjects';
 import { resolveCachedPreparedTaskWorktreePath } from './preparedTaskWorktrees';
 import { retargetTaskForExecution } from './projectIdentityReconciliation';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 export interface ExecutionTaskLike {
   id: string;
@@ -186,19 +185,20 @@ export const resolveProjectExecutionContext = (
       taskProjectIds[0] ||
       scopedProjectIds[0] ||
       null;
-  const actionableProjectIds = hasTaskScope
-    ? taskProjectIds.filter((scopedProjectId) =>
-        isProjectActionable(projectById.get(scopedProjectId) || null)
-      )
-    : scopedProjectIds.filter((scopedProjectId) =>
-        isProjectActionable(projectById.get(scopedProjectId) || null)
-      );
+  const resolveScopedMode = (scopedProjectId: string) => resolveProjectExecutionMode({
+    project: projectById.get(scopedProjectId),
+    target: executionTargets.find((target) => target.projectId === scopedProjectId),
+  });
+  const actionableProjectIds = (hasTaskScope ? taskProjectIds : scopedProjectIds).filter(
+    (scopedProjectId) => {
+      const mode = resolveScopedMode(scopedProjectId).mode;
+      return mode === 'git' || mode === 'direct';
+    },
+  );
   const actionableProjectIdSet = new Set(actionableProjectIds);
   const contextProjectIds = hasTaskScope
     ? taskContextProjectIds.filter((scopedProjectId) => !actionableProjectIdSet.has(scopedProjectId))
-    : scopedProjectIds.filter((scopedProjectId) =>
-        isProjectReadOnly(projectById.get(scopedProjectId) || null)
-      );
+    : scopedProjectIds.filter((scopedProjectId) => !actionableProjectIdSet.has(scopedProjectId));
 
   const projectId =
     cleanString(executionTarget?.projectId) ||
@@ -277,12 +277,22 @@ export const resolveProjectExecutionContext = (
           });
           return mounts;
         }, []);
-  const scopedProjectMounts = hasTaskScope
-    ? fallbackProjectMounts.map((mount) => ({
-        ...mount,
-        isReadOnly: contextProjectIds.includes(mount.projectId) || mount.isReadOnly,
-      }))
-    : fallbackProjectMounts;
+  const scopedProjectMounts = fallbackProjectMounts.map((mount) => {
+    const target = task?.execution_targets?.find((candidate) => candidate.projectId === mount.projectId);
+    const resolution = resolveProjectExecutionMode({
+      project: projectById.get(mount.projectId),
+      target,
+    });
+    return {
+      ...mount,
+      isReadOnly: hasTaskScope
+        ? contextProjectIds.includes(mount.projectId) || mount.isReadOnly ||
+          (resolution.mode !== 'git' && resolution.mode !== 'direct')
+        : mount.isReadOnly || (resolution.mode !== 'git' && resolution.mode !== 'direct'),
+      executionMode: resolution.mode,
+      executionModeReason: resolution.reason,
+    };
+  });
   const virtualRootEnabled = Boolean(inferredGroupId && fallbackProjectMounts.length > 0);
 
   return {

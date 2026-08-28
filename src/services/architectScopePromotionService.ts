@@ -11,6 +11,7 @@ import {
 } from './architectPlanService';
 import { provisionPlanBranches, type ProvisionPlanBranchesResult } from './architectGitFlowService';
 import { renderArchitectPlanIntegrationBranchName } from './architectPlanKinds';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 interface ArchitectScopePromotionAppState {
   projectGroups: ProjectGroup[];
@@ -159,14 +160,12 @@ export const createArchitectScopePromotionService = (
       if (!project) {
         throw new Error(`Cannot promote project ${projectId}: project is not registered.`);
       }
-      if (project.isReadOnly) {
-        throw new Error(`Cannot promote project ${project.name || projectId}: the project is read-only.`);
-      }
       if (!project.path?.trim()) {
         throw new Error(`Cannot promote project ${project.name || projectId}: repository path is missing.`);
       }
-      if (project.gitSetupState && project.gitSetupState !== 'ready') {
-        throw new Error(`Cannot promote project ${project.name || projectId}: Git is not ready for editable work.`);
+      const mode = resolveProjectExecutionMode({ project }).mode;
+      if (mode !== 'git' && mode !== 'direct') {
+        throw new Error(`Cannot promote project ${project.name || projectId}: enable direct editing or prepare Git first.`);
       }
     }
 
@@ -186,6 +185,17 @@ export const createArchitectScopePromotionService = (
         ...node,
         projectId: nodeProjectIds[0],
         projectIds: nodeProjectIds,
+        executionModesByProjectId: {
+          ...(node.executionModesByProjectId ?? {}),
+          ...Object.fromEntries(promotedProjectIds.map((projectId) => {
+            const project = appState.getProjectById(projectId) || findProjectInGroups(appState.projectGroups, projectId);
+            const mode = resolveProjectExecutionMode({ project }).mode;
+            if (mode !== 'git' && mode !== 'direct') {
+              throw new Error(`Cannot persist execution mode for project ${projectId}.`);
+            }
+            return [projectId, mode];
+          })),
+        },
       };
     });
 

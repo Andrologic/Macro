@@ -30,6 +30,7 @@ import type {
 } from './mergeWorkflowPersistence';
 import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 import { getTaskBusinessId, toPlanLocatorKey, toTaskRuntimeId } from './durableIdentity';
+import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 
 export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
 export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'empty';
@@ -119,9 +120,13 @@ const getUniqueTargetBranch = (
 };
 
 const buildPlanFinalizationExecutionTargets = (
-  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId'>
+  plan: Pick<
+    ArchitectPlanRecord,
+    'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId' | 'nodes'
+  >
 ): TaskExecutionTarget[] => {
   const projectIds = normalizeProjectIds(plan.projectIds, plan.projectId);
+  const executionModesByProjectId = getPlanExecutionModesByProjectId(plan.nodes);
 
   return projectIds.map((projectId) => {
     const targetBranchName = plan.targetBranchesByProjectId?.[projectId] || plan.targetBranch;
@@ -129,6 +134,7 @@ const buildPlanFinalizationExecutionTargets = (
       projectId,
       branchName: targetBranchName,
       targetBranchName,
+      executionMode: executionModesByProjectId[projectId],
       executionKind: 'repository_root',
       worktreeKey: `${PLAN_FINALIZATION_TASK_PREFIX}${plan.projectId || projectId}:${projectId}`,
     };
@@ -266,7 +272,12 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
         : normalizeBranchName(raw.assigned_branch || raw.branch_name);
     const projectIds = normalizeProjectIds(task.project_ids, task.project_id);
     const executionTargets = raw.execution_targets && raw.execution_targets.length > 0
-      ? raw.execution_targets
+      ? raw.execution_targets.map((target) => ({
+          ...target,
+          executionKind:
+            target.executionKind ??
+            (target.executionMode === 'direct' ? 'repository_root' : 'worktree'),
+        }))
       : isDraft || !assignedBranch
         ? []
         : buildFallbackExecutionTargets(projectIds, assignedBranch, raw.base_branch ?? null);

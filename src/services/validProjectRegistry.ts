@@ -1,11 +1,9 @@
 import type { Project, ProjectGroup } from '../types';
 import {
-  getScopedArchitectContextProjectIds,
-  getScopedGitActionableProjectIds,
   getScopedProjectIds,
-  isProjectGitActionable,
 } from './globalProjects';
 import { getRegisteredAppState } from './appStateRuntime';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 export interface ValidProjectRegistryAppState {
   standaloneProjects?: Project[];
@@ -25,7 +23,9 @@ export interface ValidProjectRegistrySnapshot {
   validProjectIds: string[];
   validProjectIdSet: Set<string>;
   repoPathByProjectId: Map<string, string>;
+  workspacePathByProjectId: Map<string, string>;
   gitFlowSettingsByProjectId: Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>;
+  executionModeByProjectId: Map<string, 'git' | 'direct'>;
   hasRegisteredProjects: boolean;
 }
 
@@ -40,7 +40,9 @@ const emptySnapshot = (): ValidProjectRegistrySnapshot => ({
   validProjectIds: [],
   validProjectIdSet: new Set<string>(),
   repoPathByProjectId: new Map<string, string>(),
+  workspacePathByProjectId: new Map<string, string>(),
   gitFlowSettingsByProjectId: new Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>(),
+  executionModeByProjectId: new Map<string, 'git' | 'direct'>(),
   hasRegisteredProjects: false,
 });
 
@@ -66,29 +68,36 @@ export const buildValidProjectRegistrySnapshot = (params: {
   const readOnlyProjectIds: string[] = [];
   const readOnlyProjectIdSet = new Set<string>();
   const repoPathByProjectId = new Map<string, string>();
+  const workspacePathByProjectId = new Map<string, string>();
   const gitFlowSettingsByProjectId = new Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>();
+  const executionModeByProjectId = new Map<string, 'git' | 'direct'>();
 
   for (const project of [
     ...(params.standaloneProjects ?? []),
     ...params.projectGroups.flatMap((group) => group.projects),
   ]) {
-      const projectId = typeof project.id === 'string' ? project.id.trim() : '';
-      const repoPath = normalizeProjectRegistryPath(project.path);
-      if (!projectId || isSyntheticProjectId(projectId) || !repoPath || validProjectIdSet.has(projectId)) {
-        continue;
-      }
-      validProjectIds.push(projectId);
-      validProjectIdSet.add(projectId);
-      gitFlowSettingsByProjectId.set(projectId, project.gitFlowSettings);
-      if (!isProjectGitActionable(project)) {
-        readOnlyProjectIds.push(projectId);
-        readOnlyProjectIdSet.add(projectId);
-        continue;
-      }
-      actionableProjectIds.push(projectId);
-      actionableProjectIdSet.add(projectId);
+    const projectId = typeof project.id === 'string' ? project.id.trim() : '';
+    const repoPath = normalizeProjectRegistryPath(project.path);
+    if (!projectId || isSyntheticProjectId(projectId) || !repoPath || validProjectIdSet.has(projectId)) {
+      continue;
+    }
+    validProjectIds.push(projectId);
+    validProjectIdSet.add(projectId);
+    workspacePathByProjectId.set(projectId, repoPath);
+    gitFlowSettingsByProjectId.set(projectId, project.gitFlowSettings);
+    const executionMode = resolveProjectExecutionMode({ project }).mode;
+    if (executionMode !== 'git' && executionMode !== 'direct') {
+      readOnlyProjectIds.push(projectId);
+      readOnlyProjectIdSet.add(projectId);
+      continue;
+    }
+    actionableProjectIds.push(projectId);
+    actionableProjectIdSet.add(projectId);
+    executionModeByProjectId.set(projectId, executionMode);
+    if (executionMode === 'git') {
       repoPathByProjectId.set(projectId, repoPath);
     }
+  }
 
   const scopedProjectIds = Array.from(
     new Set(
@@ -104,7 +113,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
   );
   const scopedActionableProjectIds = Array.from(
     new Set(
-      getScopedGitActionableProjectIds(
+      getScopedProjectIds(
         {
           standaloneProjects: params.standaloneProjects ?? [],
           projectGroups: params.projectGroups,
@@ -116,7 +125,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
   );
   const scopedReadOnlyProjectIds = Array.from(
     new Set(
-      getScopedArchitectContextProjectIds(
+      getScopedProjectIds(
         {
           standaloneProjects: params.standaloneProjects ?? [],
           projectGroups: params.projectGroups,
@@ -138,7 +147,9 @@ export const buildValidProjectRegistrySnapshot = (params: {
     validProjectIds,
     validProjectIdSet,
     repoPathByProjectId,
+    workspacePathByProjectId,
     gitFlowSettingsByProjectId,
+    executionModeByProjectId,
     hasRegisteredProjects: validProjectIds.length > 0,
   };
 };

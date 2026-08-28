@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { registerAppStateGetter } from './appStateRuntime';
 import { toServiceError } from './contracts/errors';
 import {
   createMacroSyncService,
@@ -125,6 +126,7 @@ const createAppState = (overrides?: {
           mountName: 'web',
           path: '/repos/web',
           directEdit: overrides?.directEditProjectId === 'web',
+          gitSetupState: overrides?.directEditProjectId === 'web' ? 'not_git' as const : 'ready' as const,
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -141,6 +143,7 @@ const createAppState = (overrides?: {
           mountName: 'api',
           path: '/repos/api',
           directEdit: overrides?.directEditProjectId === 'api',
+          gitSetupState: overrides?.directEditProjectId === 'api' ? 'not_git' as const : 'ready' as const,
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -182,6 +185,7 @@ const loadMacroSyncService = (overrides?: {
 
 describe('macroSyncService', () => {
   beforeEach(() => {
+    registerAppStateGetter(() => createAppState());
     setMetadataSyncStatusMock.mockReset();
 
     macroBranchEnsureMock.mockReset();
@@ -279,6 +283,26 @@ describe('macroSyncService', () => {
     expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
       '/repos/api',
     ]);
+  });
+
+  it('does not invoke Git when a target has no registered project metadata', async () => {
+    const service = createMacroSyncService({
+      tauriIpc: {
+        isTauriAvailable: () => true,
+        macroBranchEnsure: macroBranchEnsureMock,
+        macroBranchStatus: macroBranchStatusMock,
+        macroBranchCommitIfDirty: macroBranchCommitIfDirtyMock,
+        macroBranchPull: macroBranchPullMock,
+        macroBranchPush: macroBranchPushMock,
+      },
+      getAppState: () => createAppState(),
+      resolveTargets: async () => [{ repoPath: '/repos/missing', projectId: 'missing' }],
+      toServiceError,
+    });
+
+    await service.refreshMacroSyncStatus();
+
+    expect(macroBranchStatusMock).not.toHaveBeenCalled();
   });
 
   it('skips WSL repositories when syncing @macro metadata', async () => {

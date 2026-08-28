@@ -1529,15 +1529,16 @@ const getProjectMetadataScopes = (
 
   return targetProjectIds.flatMap((projectId) => {
     const repoPath = registrySnapshot.repoPathByProjectId.get(projectId) || null;
-    if (!repoPath) {
+    const workspacePath = registrySnapshot.workspacePathByProjectId.get(projectId) || null;
+    if (!workspacePath) {
       return [];
     }
     return [{
-      scopeKey: buildScopeKey('project', repoPath, projectId),
+      scopeKey: buildScopeKey(repoPath ? 'project' : 'workspace', workspacePath, projectId),
       projectId,
       repoPath,
-      workspacePath: repoPath,
-      source: 'project' as const,
+      workspacePath,
+      source: repoPath ? 'project' as const : 'workspace' as const,
     }];
   });
 };
@@ -1584,12 +1585,16 @@ const resolveMetadataScopes = async (projectIds?: string[], options?: {
   if (projectIds && projectIds.length > 0) {
     scopes.push(...getProjectMetadataScopes(resolvedRegistrySnapshot, projectIds));
   }
-  if (options?.includeAllKnown || scopes.length === 0) {
+  if (options?.includeAllKnown || ((!projectIds || projectIds.length === 0) && scopes.length === 0)) {
     scopes.push(...getProjectMetadataScopes(resolvedRegistrySnapshot));
   }
   if (options?.includeWorkspaceFallback !== false) {
     const workspaceScope = await getWorkspaceFallbackScope();
-    if (workspaceScope) {
+    const duplicatesDirectWorkspace = workspaceScope && scopes.some((scope) =>
+      scope.source === 'workspace' &&
+      normalizeRepoPath(scope.workspacePath) === normalizeRepoPath(workspaceScope.workspacePath)
+    );
+    if (workspaceScope && !duplicatesDirectWorkspace) {
       scopes.push(workspaceScope);
     }
   }

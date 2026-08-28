@@ -55,8 +55,11 @@ interface PendingMacroMetadataMutation {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
-interface MacroMetadataProject extends Pick<Project, 'isReadOnly' | 'gitSetupState' | 'directEdit'> {
-  path?: string | null;
+interface MacroMetadataProject extends Pick<
+  Project,
+  'id' | 'isReadOnly' | 'userReadOnly' | 'gitSetupState' | 'directEdit'
+> {
+  path: string;
 }
 
 interface MacroMetadataAppState {
@@ -106,12 +109,12 @@ const isWorkspaceGitActionable = async (
     try {
       return await resolver(workspacePath);
     } catch {
-      return true;
+      return false;
     }
   }
 
   const project = await resolveRegisteredProject(workspacePath);
-  return !project || isProjectGitActionable(project);
+  return project ? isProjectGitActionable(project) : false;
 };
 
 const normalizeLabel = (value?: string | null): string | null => {

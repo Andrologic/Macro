@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import type { ProjectGitFlowSettings, ProjectGitSetupState } from '../../types';
+import type { Project, ProjectGitFlowSettings } from '../../types';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
@@ -14,7 +14,7 @@ export interface TaskProjectFilterOption {
   taskCount: number;
   isReadOnly: boolean;
   directEdit?: boolean;
-  gitSetupState?: ProjectGitSetupState;
+  gitSetupState?: Project['gitSetupState'];
   gitFlowSettings?: ProjectGitFlowSettings;
 }
 

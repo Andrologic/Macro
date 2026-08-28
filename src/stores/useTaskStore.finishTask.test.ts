@@ -161,6 +161,8 @@ const appStoreState = {
     id: 'project-1',
     name: 'Project One',
     path: '/repos/web',
+    gitSetupState: 'ready' as const,
+    directEdit: false,
     gitFlowSettings: {
       baseBranch: 'develop',
       planBranchTemplate: 'plan/{slug}',

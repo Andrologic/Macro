@@ -10,6 +10,7 @@ const makeProject = (id: string, path: string, name = id) => ({
   name,
   mountName: id,
   path,
+  gitSetupState: 'ready' as const,
   created_at: '2026-03-14T00:00:00.000Z',
   status: 'active' as const,
   metadata: {
@@ -57,7 +58,7 @@ describe('validProjectRegistry', () => {
     expect(snapshot.hasRegisteredProjects).toBe(true);
   });
 
-  it('keeps direct-edit projects as Architect context without exposing a repository path', () => {
+  it('keeps direct-edit projects actionable without exposing a Git repository path', () => {
     const gitProject = makeProject('project-git', 'C:/dev/git');
     const directProject = {
       ...makeProject('project-direct', 'C:/dev/direct'),
@@ -76,9 +77,10 @@ describe('validProjectRegistry', () => {
     });
 
     expect(snapshot.scopedProjectIds).toEqual(['project-git', 'project-direct']);
-    expect(snapshot.actionableProjectIds).toEqual(['project-git']);
-    expect(snapshot.readOnlyProjectIds).toEqual(['project-direct']);
+    expect(snapshot.actionableProjectIds).toEqual(['project-git', 'project-direct']);
+    expect(snapshot.readOnlyProjectIds).toEqual([]);
     expect(snapshot.repoPathByProjectId.get('project-git')).toBe('C:/dev/git');
     expect(snapshot.repoPathByProjectId.has('project-direct')).toBe(false);
+    expect(snapshot.executionModeByProjectId.get('project-direct')).toBe('direct');
   });
 });

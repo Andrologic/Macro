@@ -839,6 +839,8 @@ pub struct ProjectRegistryRepairReportDto {
     pub plan_nodes_removed: usize,
     pub predicted_branches_removed: usize,
     pub git_flow_settings_auto_updated: usize,
+    #[serde(default)]
+    pub project_access_states_updated: usize,
 }
 
 impl ProjectRegistryRepairReportDto {
@@ -859,6 +861,7 @@ impl ProjectRegistryRepairReportDto {
             || self.plan_nodes_removed > 0
             || self.predicted_branches_removed > 0
             || self.git_flow_settings_auto_updated > 0
+            || self.project_access_states_updated > 0
     }
 
     pub fn has_destructive_repairs(&self) -> bool {
@@ -879,7 +882,7 @@ impl ProjectRegistryRepairReportDto {
 }
 
 fn default_project_git_setup_state() -> String {
-    "ready".to_string()
+    "unknown".to_string()
 }
 
 fn default_project_git_detection_setup_state() -> String {

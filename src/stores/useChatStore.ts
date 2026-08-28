@@ -94,6 +94,7 @@ import {
   isGitToolId,
   isToolAllowedForImplementAgent,
 } from "../services/toolModePolicy";
+import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
 import {
   MODE_PROMPT_KEYS_BY_MODE,
   loadPreference,
@@ -1735,22 +1736,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const filterToolIdsForImplementTask = (
     toolIds: string[],
     task: ImplementTask | undefined,
+    focusedProjectId?: string | null,
   ): string[] => {
     if (!isStandaloneImplementTask(task)) {
       return toolIds;
     }
-    const projectIds = Array.from(new Set([
+    const persistedTargets = task.execution_targets ?? [];
+    const legacyProjectIds = Array.from(new Set([
       ...(task.project_ids || []),
-      ...(task.execution_targets || []).map((target) => target.projectId),
       task.project_id,
     ].filter((projectId): projectId is string => Boolean(projectId))));
-    const usesDirectEditing = projectIds.length > 0 && projectIds.every((projectId) => {
-      const project = useAppStore.getState().getProjectById(projectId);
-      return Boolean(project?.directEdit && project.gitSetupState === 'not_git');
-    });
+    const resolutions = persistedTargets.length > 0
+      ? persistedTargets.map((target) => ({
+          projectId: target.projectId,
+          resolution: resolveProjectExecutionMode({
+            project: useAppStore.getState().getProjectById(target.projectId),
+            target,
+          }),
+        }))
+      : legacyProjectIds.map((projectId) => ({
+          projectId,
+          resolution: resolveProjectExecutionMode({
+            project: useAppStore.getState().getProjectById(projectId),
+          }),
+        }));
+    const focusedResolution = focusedProjectId
+      ? resolutions.find((candidate) => candidate.projectId === focusedProjectId)?.resolution
+      : null;
+    const gitToolsUnavailable = focusedResolution
+      ? focusedResolution.mode !== 'git'
+      : resolutions.length > 0 && resolutions.every(({ resolution }) => resolution.mode !== 'git');
     return toolIds.filter((toolId) =>
       !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId) &&
-      !(usesDirectEditing && isGitToolId(toolId))
+      !(gitToolsUnavailable && isGitToolId(toolId))
     );
   };
 
@@ -8573,6 +8591,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       taskAllowedToolIds = filterToolIdsForImplementTask(
         baseAllowedToolIds,
         taskForToolScope,
+        executionContext.focusedProjectId,
       );
     }
     const toolsState = useToolsStore.getState();
