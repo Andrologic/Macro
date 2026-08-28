@@ -833,6 +833,19 @@ const resolveStrategyForPlan = async (params: {
       contextProjectIds: contextPlanProjectIds,
       globalProjectIds: globalPlanProjectIds,
     });
+    const executionModesByProjectId = Object.fromEntries(
+      resolvedProjectIds.map((projectId) => {
+        const persistedMode = existingNodesForPatch
+          .find((existingNode) => existingNode.id === preferredId)
+          ?.executionModesByProjectId?.[projectId];
+        const mode = persistedMode ?? registrySnapshot.executionModeByProjectId.get(projectId);
+        if (!mode) {
+          throw new Error(`Project ${projectId} has no valid execution mode.`);
+        }
+        return [projectId, mode];
+      }),
+    );
+    const hasGitTarget = Object.values(executionModesByProjectId).includes('git');
     return {
       id:
         preferredId && preferredId.length > 0
@@ -841,24 +854,17 @@ const resolveStrategyForPlan = async (params: {
       title: node.title,
       description: node.description,
       type: node.type,
-      assignedBranch: node.assignedBranch,
-      branchType: node.branchType,
-      branchSlug: node.branchSlug,
+      ...(hasGitTarget
+        ? {
+            assignedBranch: node.assignedBranch,
+            branchType: node.branchType,
+            branchSlug: node.branchSlug,
+          }
+        : {}),
       status: node.status,
       projectId: resolvedProjectIds[0] || undefined,
       projectIds: resolvedProjectIds,
-      executionModesByProjectId: Object.fromEntries(
-        resolvedProjectIds.map((projectId) => {
-          const persistedMode = existingNodesForPatch
-            .find((existingNode) => existingNode.id === preferredId)
-            ?.executionModesByProjectId?.[projectId];
-          const mode = persistedMode ?? registrySnapshot.executionModeByProjectId.get(projectId);
-          if (!mode) {
-            throw new Error(`Project ${projectId} has no valid execution mode.`);
-          }
-          return [projectId, mode];
-        }),
-      ),
+      executionModesByProjectId,
       dependencies: [...node.dependencies],
       todos: clonePlanNodeTodos(node.todos),
       artifactContracts: normalizeArtifactContracts(node),

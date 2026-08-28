@@ -606,6 +606,49 @@ export const registerImplementPolicyScenarios = (
         .toContain('This is a direct-edit task.');
     });
 
+    it('hides Git tools for direct Architect tasks while keeping task tools', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      appState.mode = 'Implement';
+      appState.agentType = 'build';
+      appState.selectedTaskId = 'task-1';
+      localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+      Object.assign(projectGroups[0]?.projects[0] ?? {}, {
+        directEdit: true,
+        gitSetupState: 'not_git',
+      });
+      taskStoreState.tasks = [
+        createImplementTask({
+          status: 'InProgress',
+          execution_targets: [{
+            projectId: 'project-1',
+            executionMode: 'direct',
+            branchName: '',
+            worktreeKey: 'project-1::direct',
+          }],
+        }),
+      ];
+
+      const { useChatStore } = await loadChatStore();
+      setImplementStoreState(useChatStore, {
+        conversationId: 'implement-conv',
+        taskId: 'task-1',
+        title: 'Direct Architect task',
+      });
+      await useChatStore.getState().sendMessage({
+        conversationId: 'implement-conv',
+        content: 'Modifie directement la documentation.',
+        taskId: 'task-1',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ allowedToolIds: string[] }>();
+      expect(streamOptions.allowedToolIds).toContain('task_todo_get');
+      expect(streamOptions.allowedToolIds).toContain('write');
+      expect(streamOptions.allowedToolIds).not.toContain('git_status');
+      expect(streamOptions.allowedToolIds).not.toContain('git_diff');
+      expect(streamOptions.allowedToolIds).not.toContain('git_add');
+      expect(streamOptions.allowedToolIds).not.toContain('git_commit');
+    });
+
     it('keeps standalone Plan mode read-only without Architect task tools', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       appState.mode = 'Implement';

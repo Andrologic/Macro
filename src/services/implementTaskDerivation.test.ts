@@ -109,6 +109,8 @@ describe('deriveImplementTasksFromStrategy', () => {
       assigned_branch: '',
       branch_name: '',
     });
+    expect(result.nodes.find(({ id }) => id === 'task-direct')).not.toHaveProperty('assignedBranch');
+    expect(result.predictedBranches.map((branch) => branch.projectId)).toEqual(['web']);
   });
 
   it('preserves Failed even when an Architect dependency is unresolved', () => {

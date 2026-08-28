@@ -214,7 +214,12 @@ const toBranchTaskOrder = (
 
     for (const taskId of deduped) {
       const node = nodeById.get(taskId);
-      if (node && !node.branchType && !node.branchSlug) {
+      if (
+        node &&
+        node.executionModesByProjectId?.[branch.projectId] !== 'direct' &&
+        !node.branchType &&
+        !node.branchSlug
+      ) {
         node.assignedBranch = branchName;
       }
     }
@@ -233,6 +238,17 @@ const toBranchTaskOrder = (
   }
 
   for (const node of nodes) {
+    const projectIds = normalizeNodeProjectIds(node);
+    const directOnly = projectIds.length > 0 && projectIds.every(
+      (projectId) => node.executionModesByProjectId?.[projectId] === 'direct'
+    );
+    if (directOnly) {
+      delete node.assignedBranch;
+      delete node.branchType;
+      delete node.branchSlug;
+      orderByBranch.set(`direct::${node.id}`, [node.id]);
+      continue;
+    }
     const branchIntent = getPlanNodeBranchIntent(node);
     const branchKey = taskScoped
       ? getNodeBranchKey(node, planSlug)
@@ -321,7 +337,11 @@ const normalizePredictedBranches = (
     const projectIds = unique(
       taskIds.flatMap((taskId) => {
         const node = nodeById.get(taskId);
-        return node ? normalizeNodeProjectIds(node) : [];
+        return node
+          ? normalizeNodeProjectIds(node).filter(
+              (projectId) => node.executionModesByProjectId?.[projectId] !== 'direct'
+            )
+          : [];
       })
     );
     const firstNode = taskIds.map((taskId) => nodeById.get(taskId)).find(Boolean) || null;
@@ -411,12 +431,20 @@ export const normalizeStrategyDependencies = (
   const planSlug = options?.planSlug?.trim() || undefined;
   const clonedNodes: PlanNode[] = nodesInput.map((node) => {
     const projectIds = normalizeNodeProjectIds(node);
+    const directOnly = projectIds.length > 0 && projectIds.every(
+      (projectId) => node.executionModesByProjectId?.[projectId] === 'direct'
+    );
     const branchIntent = getPlanNodeBranchIntent(node);
+    const { assignedBranch: _assignedBranch, branchType: _branchType, branchSlug: _branchSlug, ...nodeWithoutBranch } = node;
     return {
-      ...node,
-      assignedBranch: normalizeBranchName(node.assignedBranch) || branchIntent.label,
-      branchType: branchIntent.branchType,
-      branchSlug: branchIntent.branchSlug,
+      ...(directOnly ? nodeWithoutBranch : node),
+      ...(!directOnly
+        ? {
+            assignedBranch: normalizeBranchName(node.assignedBranch) || branchIntent.label,
+            branchType: branchIntent.branchType,
+            branchSlug: branchIntent.branchSlug,
+          }
+        : {}),
       dependencies: [...node.dependencies],
       projectId: projectIds[0],
       projectIds,
@@ -454,6 +482,16 @@ export const normalizeStrategyDependencies = (
 
   const taskBranchIntents = resolvePlanNodeTaskBranchIntents(clonedNodes);
   clonedNodes.forEach((node) => {
+    const projectIds = normalizeNodeProjectIds(node);
+    if (
+      projectIds.length > 0 &&
+      projectIds.every((projectId) => node.executionModesByProjectId?.[projectId] === 'direct')
+    ) {
+      delete node.assignedBranch;
+      delete node.branchType;
+      delete node.branchSlug;
+      return;
+    }
     const branchIntent = taskBranchIntents.get(node.id) || getPlanNodeBranchIntent(node);
     node.assignedBranch = branchIntent.label;
     node.branchType = branchIntent.branchType;

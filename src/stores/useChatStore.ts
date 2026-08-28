@@ -1757,7 +1757,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     task: ImplementTask | undefined,
     focusedProjectId?: string | null,
   ): string[] => {
-    if (!isStandaloneImplementTask(task)) {
+    if (!task) {
       return toolIds;
     }
     const persistedTargets = task.execution_targets ?? [];
@@ -1786,7 +1786,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ? focusedResolution.mode !== 'git'
       : resolutions.length > 0 && resolutions.every(({ resolution }) => resolution.mode !== 'git');
     return toolIds.filter((toolId) =>
-      !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId) &&
+      !(isStandaloneImplementTask(task) && ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId)) &&
       !(gitToolsUnavailable && isGitToolId(toolId))
     );
   };
