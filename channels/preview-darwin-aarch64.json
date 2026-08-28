@@ -1,0 +1,11 @@
+{
+  "version": "0.1.2-nightly.20260828.6",
+  "notes": "Macro 0.1.2-nightly.20260828.6 is a validated nightly build from develop.\n\nWindows installers are not Authenticode-signed and may display an Unknown publisher warning.\n\n<!-- source-sha:a9fb44e1d78b84ec0a6691e3a972c72f6ddb5d2b -->\n",
+  "pub_date": "2026-08-28T10:38:22Z",
+  "platforms": {
+    "preview-darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVScUVqZHp3NWNuc1lmckVnd0JkRndXaGVxdDNwdUx2SFIyV09WQ3ZyUmEzMnFqMStZNlNoV1d6YVNKbmo3TlNERTB3S0xvRlVIaW9vUzFpRUhjU1NWMjI5RThZdnNtMXc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTE1Mzg4CWZpbGU6TWFjcm8uYXBwLnRhci5negp4Z0tIMHNDU05RQUM1T1licnhDY0FOL3ZoaUxYT2I2eXdWSEVLOVNwYzhJOEFDMS9OTittcHBiWFc2MDZqbkQ0bFo1UXgvM0RxMVh1cDVKZ05pZDZCZz09Cg==",
+      "url": "https://github.com/Andrologic/Macro/releases/download/preview/Macro_0.1.2-nightly.20260828.6_macOS_universal.app.tar.gz"
+    }
+  }
+}
