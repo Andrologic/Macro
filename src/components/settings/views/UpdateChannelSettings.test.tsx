@@ -129,7 +129,10 @@ describe('UpdateChannelSettings', () => {
   it('presents update channels as a compact segmented control', async () => {
     await renderSettings();
 
+    const legend = container.querySelector('legend');
     const choices = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+    expect(legend?.className).toContain('text-sm');
+    expect(legend?.className).toContain('text-foreground');
     expect(choices).toHaveLength(2);
     expect(choices[0]?.textContent).toContain('Stable');
     expect(choices[1]?.textContent).toContain('Preview');

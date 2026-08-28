@@ -134,7 +134,7 @@ export const UpdateChannelSettings: React.FC = () => {
   return (
     <div className="space-y-4">
       <fieldset className="min-w-0">
-        <legend className="text-xs font-medium text-muted-foreground">
+        <legend className="text-sm font-medium text-foreground">
           {t('settings.updateChannel.label', 'Update channel')}
         </legend>
         <div className="mt-2 grid grid-cols-2 gap-2" role="radiogroup">
