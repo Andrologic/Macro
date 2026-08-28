@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { installReactI18nextMock } from '../../test-utils/reactI18nextMock';
 
 type Project = {
   id: string;
@@ -308,23 +309,10 @@ const selectGitScope = async (container: HTMLDivElement, value: string) => {
   await flushAsyncWork();
 };
 
-const translateMock = (
-  key: string,
-  fallbackOrOptions?: string | { defaultValue?: string; [key: string]: unknown },
-  maybeOptions?: { defaultValue?: string; [key: string]: unknown }
-) => {
-  if (typeof fallbackOrOptions === 'string') return fallbackOrOptions;
-  return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
-};
-
 const loadFooter = async () => {
   mock.restore();
 
-  mock.module('react-i18next', () => ({
-    useTranslation: () => ({
-      t: translateMock,
-    }),
-  }));
+  installReactI18nextMock();
 
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: (options: { directory?: boolean; multiple?: boolean; title?: string }) =>
@@ -459,6 +447,10 @@ const loadFooter = async () => {
 
   mock.module('./NotificationCenterPopover', () => ({
     NotificationCenterPopover: () => null,
+  }));
+
+  mock.module('../updates/UpdateStatusButton', () => ({
+    UpdateStatusButton: () => null,
   }));
 
   importCounter += 1;
