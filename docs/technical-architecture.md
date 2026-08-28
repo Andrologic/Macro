@@ -821,11 +821,26 @@ fournit pas encore de `scopePath`, car Macro ne possède pas de sous-dossier
 actif fiable dans le contrat de conversation. Le comportement courant charge
 donc la racine de chaque projet sans inventer de répertoire courant.
 
-Le backend canonicalise la racine, le périmètre et chaque source. Il vérifie le
-confinement après résolution des liens symboliques, déduplique les chemins par
-projet et ignore la casse dans la clé canonique sous Windows. Les limites sont
+Le backend ouvre d'abord la racine avec `cap-std`, la canonicalise puis vérifie
+que le handle et le chemin canonique désignent le même dossier. Il abandonne si
+la racine change pendant cette préparation. Il canonicalise ensuite le périmètre
+et chaque source, puis ouvre chaque fichier relativement au handle validé. Le
+chemin ne peut donc pas sortir du projet entre le contrôle et la lecture. La
+déduplication reste propre à chaque projet et ignore la casse dans sa clé
+canonique sous Windows. Les limites sont
 de 16 fichiers et 64 Kio par chargement. Les plafonds natifs empêchent le
-frontend de demander plus de 32 fichiers ou 256 Kio.
+frontend de demander plus de 32 fichiers ou 256 Kio. Le backend ouvre chaque
+source une fois et borne la lecture au budget restant plus un octet. Cet octet
+sert uniquement à détecter un dépassement sans charger le reste du fichier. Un
+fichier rejeté consomme les budgets de fichiers inspectés et d'octets lus. La
+frontière IPC refuse plus de 32 projets avant de construire le tableau en
+mémoire. La commande parcourt au plus 256 dossiers par projet et conserve au
+plus 64 problèmes pendant la découverte, dont un signal de troncature.
+Les tailles des identifiants, noms et chemins sont contrôlées pendant la
+désérialisation. Le chargeur consomme tout projet excédentaire sans construire
+son objet. Il arrête aussi la construction de la chaîne d'ancêtres dès la limite
+de profondeur. Enfin, il compare l'identité de chaque handle de fichier à celle
+de la source canonique avant la lecture et abandonne la source si elle a changé.
 
 Le contexte du dernier message utilisateur encode chaque source comme une
 entrée JSON avec l'identité du projet, le chemin canonique, le chemin relatif,
@@ -835,8 +850,16 @@ Macro rappelle leur niveau de confiance sans reprendre leur contenu. Le texte
 enveloppe marque les entrées comme contexte de dépôt non fiable. Il interdit le
 remplacement des règles système, la modification de la politique Macro,
 l'augmentation des permissions et le transfert d'une règle à un autre projet.
-Les diagnostics de contexte conservent les métadonnées des sources chargées et
-le calcul de l'empreinte inclut leur contenu dans le dernier tour utilisateur.
+Si le backend renvoie une limite atteinte ou une erreur, l'enveloppe marque le
+chargement comme partiel et liste les projets et chemins concernés. Les
+diagnostics conservent ces problèmes avec les métadonnées des sources chargées.
+Le bloc sérialisé ne dépasse pas 512 Kio. En cas de dépassement, Macro omet
+toutes les entrées et signale un chargement partiel. Avant de sérialiser, Macro
+calcule une borne haute de l'encodage JSON, échappements compris. Le frontend ne
+construit donc jamais un bloc complet susceptible de dépasser cette limite. Le calcul de l'empreinte
+inclut le contenu envoyé dans le dernier tour utilisateur. Macro ne persiste pas
+ce bloc dans les éléments provider du message. Chaque tour le reconstruit depuis
+les fichiers présents et la portée projet courante.
 
 ---
 

@@ -45,6 +45,13 @@ export interface RepositoryInstructionDiagnosticSource {
   sizeBytes: number;
 }
 
+export interface RepositoryInstructionDiagnosticIssue {
+  projectId: string;
+  code: string;
+  sourcePath?: string | null;
+  message: string;
+}
+
 export type { ManualCompactionSkipReason };
 
 export interface ManualCompactionCompletedResult {
@@ -99,6 +106,7 @@ export interface ConversationContextDiagnostics {
   isHardStop: boolean;
   error?: string;
   repositoryInstructionSources?: RepositoryInstructionDiagnosticSource[];
+  repositoryInstructionIssues?: RepositoryInstructionDiagnosticIssue[];
   counts: {
     messages: number;
     visibleLines: number;
@@ -270,6 +278,7 @@ export const buildContextDiagnosticsFromFootprint = (params: {
   compactionState?: ConversationCompactionState | null;
   error?: string;
   repositoryInstructionSources?: RepositoryInstructionDiagnosticSource[];
+  repositoryInstructionIssues?: RepositoryInstructionDiagnosticIssue[];
 }): ConversationContextDiagnostics => {
   const footprint = params.footprintAfter ?? params.footprintBefore;
   const providerInputItems = params.preparedMessages.flatMap(
@@ -409,6 +418,9 @@ export const buildContextDiagnosticsFromFootprint = (params: {
     error: params.error,
     repositoryInstructionSources: params.repositoryInstructionSources?.map((source) => ({
       ...source,
+    })),
+    repositoryInstructionIssues: params.repositoryInstructionIssues?.map((issue) => ({
+      ...issue,
     })),
     counts,
     breakdown,

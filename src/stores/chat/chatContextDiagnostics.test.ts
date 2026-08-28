@@ -100,6 +100,14 @@ describe("chatContextDiagnostics", () => {
           sizeBytes: 120,
         },
       ],
+      repositoryInstructionIssues: [
+        {
+          projectId: "web",
+          code: "byte_limit_reached",
+          sourcePath: "C:/repos/web/src/AGENTS.md",
+          message: "Repository instruction byte limit reached: 65536.",
+        },
+      ],
     });
 
     expect(diagnostics.repositoryInstructionSources).toEqual([
@@ -110,6 +118,14 @@ describe("chatContextDiagnostics", () => {
         relativePath: "AGENTS.md",
         depth: 0,
         sizeBytes: 120,
+      },
+    ]);
+    expect(diagnostics.repositoryInstructionIssues).toEqual([
+      {
+        projectId: "web",
+        code: "byte_limit_reached",
+        sourcePath: "C:/repos/web/src/AGENTS.md",
+        message: "Repository instruction byte limit reached: 65536.",
       },
     ]);
   });

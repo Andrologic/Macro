@@ -540,12 +540,22 @@ les plus profonds sont appliqués après leurs parents. Macro borne le nombre de
 fichiers et leur taille totale, déduplique leurs chemins canoniques et refuse
 un lien symbolique qui sort du projet. Tant que Macro ne connaît pas de
 sous-dossier actif fiable, il charge uniquement le fichier situé à la racine.
+Macro borne aussi la lecture elle-même au budget restant. Si une limite ou une
+erreur empêche de charger une source, le contexte indique qu'il est partiel et
+identifie le projet concerné quand le problème n'est pas global. L'agent ne
+doit alors pas considérer les règles
+parentes chargées comme une hiérarchie complète. Les fichiers rejetés consomment
+les budgets d'inspection et de lecture. Macro borne aussi le nombre de projets,
+la profondeur parcourue, les problèmes renvoyés et le bloc sérialisé.
 
 Le contenu de `AGENTS.md` est fourni par le dépôt et reste non fiable. Il peut
 guider le travail dans ce dépôt, mais ne peut pas remplacer les règles système,
 modifier la politique de Macro, augmenter les permissions des outils ni
 autoriser une action. Chaque source chargée conserve le projet et le chemin du
-fichier dans les diagnostics de contexte.
+fichier dans les diagnostics de contexte. Les problèmes de chargement y sont
+également conservés. Le panneau de diagnostics permet d'inspecter les sources
+et les problèmes associés. Macro reconstruit ce contexte à chaque tour et ne le
+persiste pas dans l'historique du provider.
 
 Ce contrat ne couvre pas `CLAUDE.md`, les règles Cursor ni les imports de type
 `@fichier`.
