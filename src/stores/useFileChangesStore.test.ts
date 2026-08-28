@@ -1737,6 +1737,42 @@ describe('useFileChangesStore', () => {
     expect(gitCommitMock).toHaveBeenCalledTimes(2);
   });
 
+  it('does not read direct target files through Git when generating messages for a mixed task', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+    useFileChangesStore.setState((state) => ({
+      repositories: state.repositories.map((repository) =>
+        repository.id === repositoryIdB
+          ? { ...repository, executionMode: 'direct' as const }
+          : repository
+      ),
+    }));
+    gitReadFilePairMock.mockClear();
+    generateCommitMessagesMock.mockImplementation(async () => {
+      throw new Error('stop after building the generation input');
+    });
+
+    await expect(store.commitAllReadyTaskRepositories()).rejects.toThrow(
+      'stop after building the generation input',
+    );
+
+    expect(gitReadFilePairMock.mock.calls.map((call) => call[0].repoPath)).toEqual([
+      worktreeAPath,
+    ]);
+    const [input] = generateCommitMessagesMock.mock.calls[0] as unknown as [{
+      repositories: Array<{
+        repositoryId: string;
+        files: Array<{ path: string; summary: string }>;
+      }>;
+    }];
+    expect(input.repositories.find((repository) => repository.repositoryId === repositoryIdB)?.files)
+      .toEqual([{
+        path: 'README.md',
+        summary: '+ updated',
+      }]);
+  });
+
   it('retries when generated commit messages are structurally valid but not conventional', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();

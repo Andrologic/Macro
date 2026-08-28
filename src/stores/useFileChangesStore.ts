@@ -533,6 +533,15 @@ const buildSmartCommitMessageInput = async (
     repositories: await Promise.all(repositories.map(async (repository) => {
       const project = appState.getProjectById(repository.projectId);
       const files = await Promise.all(repository.stagedPaths.map(async (path) => {
+        if (repository.executionMode === 'direct') {
+          const change = repository.changes.find((candidate) => candidate.path === path);
+          return {
+            path,
+            summary: change
+              ? summarizeLineChanges(change.originalContent, change.modifiedContent)
+              : 'Direct workspace change.',
+          };
+        }
         try {
           const pair = await deps.tauri.gitReadFilePair({
             repoPath: repository.worktreePath,

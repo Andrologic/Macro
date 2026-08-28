@@ -558,7 +558,7 @@ export const registerImplementPolicyScenarios = (
             {
               projectId: 'project-1',
               executionMode: 'direct',
-              branchName: 'direct',
+              branchName: '',
               worktreeKey: 'project-1::direct',
             },
           ],

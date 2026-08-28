@@ -1159,7 +1159,7 @@ Les règles suivantes sont fondatrices :
 - Les plans archivés restent lisibles mais non modifiables.
 - La stratégie est générée par l'IA à partir de la conversation et du contexte du projet, après une demande explicite.
 - La validation d'un plan prépare automatiquement branches et worktrees.
-- Toute tâche complétée se termine par un commit.
+- Toute tâche Git complétée se termine par un commit. Une tâche en édition directe se termine par l'acceptation de son checkpoint, sans commit dans le projet utilisateur.
 - Une review humaine est obligatoire à la fin de chaque tâche.
 - Une tâche de finalisation synthétique converge depuis les feuilles de la stratégie et pilote l'intégration finale.
 - L'édition manuelle du code existe, mais comme mécanisme secondaire d'ajustement en review.

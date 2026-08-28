@@ -1809,11 +1809,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : []),
       ].filter((projectId): projectId is string => Boolean(projectId)),
     );
-    const hasExecutionTargets =
-      Array.isArray(executionTask.execution_targets) && executionTask.execution_targets.length > 0;
-    const hasBranch = Boolean(executionTask.branch_name?.trim());
+    const executionTargets = Array.isArray(executionTask.execution_targets)
+      ? executionTask.execution_targets
+      : [];
+    const hasExecutionTargets = executionTargets.length > 0;
+    const hasRequiredBranches = hasExecutionTargets
+      ? executionTargets.every((target) => {
+          const resolution = resolveProjectExecutionMode({
+            project: appState.getProjectById(target.projectId),
+            target,
+          });
+          return resolution.mode !== 'git' || Boolean(target.branchName?.trim());
+        })
+      : Boolean(executionTask.branch_name?.trim());
 
-    if (projectIds.size === 0 || !hasBranch) {
+    if (projectIds.size === 0 || !hasRequiredBranches) {
       throw buildSendError(
         "This standalone task is missing its execution target, repository, or branch. Reopen the task or recreate it so Macro can initialize the worktree before contacting the agent.",
       );
