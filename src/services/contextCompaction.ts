@@ -1069,6 +1069,43 @@ const isToolContextError = (body: string): boolean =>
     body.trim(),
   );
 
+const inspectProviderToolResults = (
+  items: unknown[],
+): { hasResult: boolean; hasProtectedResult: boolean } => {
+  const toolNamesByCallId = new Map<string, string>();
+  for (const item of items) {
+    if (!isRecord(item) || item.type !== 'function_call') continue;
+    if (typeof item.call_id !== 'string' || typeof item.name !== 'string') continue;
+    toolNamesByCallId.set(item.call_id, item.name);
+  }
+
+  let hasResult = false;
+  let hasProtectedResult = false;
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    if (item.type === 'function_call_output') {
+      hasResult = true;
+      const output =
+        typeof item.output === 'string'
+          ? item.output
+          : JSON.stringify(item.output ?? '');
+      const toolName =
+        typeof item.call_id === 'string'
+          ? toolNamesByCallId.get(item.call_id) ?? ''
+          : '';
+      hasProtectedResult ||= isToolContextError(output) || isProtectedToolContext(toolName);
+      continue;
+    }
+    if (item.type === 'chat_completion_message' && item.role === 'tool') {
+      hasResult = true;
+      const output = getProviderItemText(item);
+      const toolName = typeof item.tool_name === 'string' ? item.tool_name : '';
+      hasProtectedResult ||= isToolContextError(output) || isProtectedToolContext(toolName);
+    }
+  }
+  return { hasResult, hasProtectedResult };
+};
+
 const estimateMessageSuffixTokens = (messages: StreamMessage[]): number[] => {
   const suffixTokens = new Array<number>(messages.length).fill(0);
   let accumulated = 0;
@@ -1237,6 +1274,18 @@ export const compactProviderInputItemsForContext = (
     .reverse()
     .find((message) => message.role === 'user');
   const compactedMessageIds = new Set<string>();
+  const protectedProviderToolResultIndices = new Set<number>();
+  const lastProviderToolResultIndex = preparedMessages.reduce(
+    (lastIndex, message, index) => {
+      if (!Array.isArray(message.provider_input_items)) return lastIndex;
+      const inspection = inspectProviderToolResults(message.provider_input_items);
+      if (inspection.hasProtectedResult) {
+        protectedProviderToolResultIndices.add(index);
+      }
+      return inspection.hasResult ? index : lastIndex;
+    },
+    -1,
+  );
 
   const messages = preparedMessages.map((message, index) => {
     const orderedMessage = orderedMessages[index];
@@ -1244,6 +1293,12 @@ export const compactProviderInputItemsForContext = (
       return message;
     }
     if (latestUserMessage && orderedMessage.id === latestUserMessage.id) {
+      return message;
+    }
+    if (
+      index === lastProviderToolResultIndex ||
+      protectedProviderToolResultIndices.has(index)
+    ) {
       return message;
     }
 

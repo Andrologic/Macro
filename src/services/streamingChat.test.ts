@@ -2972,7 +2972,18 @@ describe('streamingChat tool rendering helpers', () => {
           payload: {
             request_id: requestId,
             output_text: text,
-            tool_calls: [],
+            tool_calls: firstRequest
+              ? [
+                  {
+                    id: 'call_truncated',
+                    type: 'function',
+                    function: {
+                      name: 'read',
+                      arguments: '{"path":"README.md"}',
+                    },
+                  },
+                ]
+              : [],
             completion_reason: firstRequest ? 'length' : 'completed',
           },
         });
@@ -2986,6 +2997,7 @@ describe('streamingChat tool rendering helpers', () => {
     });
     const streamed: string[] = [];
     const onComplete = mock((_result: unknown) => undefined);
+    const onToolCall = mock(async () => 'must not run');
 
     await streamChat({
       conversationId: 'conv-1',
@@ -2999,6 +3011,7 @@ describe('streamingChat tool rendering helpers', () => {
       enableWebFetch: false,
       onToken: (token: string) => streamed.push(token),
       onComplete,
+      onToolCall,
       onError: (error: Error) => {
         throw error;
       },
@@ -3008,12 +3021,21 @@ describe('streamingChat tool rendering helpers', () => {
     expect(requests[0]?.tools).toBeArray();
     expect(requests[1]?.tools).toEqual([]);
     expect(JSON.stringify(requests[1]?.messages)).toContain('Continue exactly where it stopped');
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain('call_truncated');
     expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(onToolCall).not.toHaveBeenCalled();
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({
         visibleContent: 'Alpha repeated phrase and omega',
         completionReason: 'length_recovered',
       }),
+    );
+    const finalResult = onComplete.mock.calls[0]?.[0] as {
+      providerInputItems?: unknown[];
+    };
+    expect(JSON.stringify(finalResult.providerInputItems)).toContain('"text":" and omega"');
+    expect(JSON.stringify(finalResult.providerInputItems)).not.toContain(
+      '"text":"repeated phrase and omega"',
     );
   });
 
@@ -3036,6 +3058,13 @@ describe('streamingChat tool rendering helpers', () => {
                 `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`,
               ),
             );
+            if (firstRequest) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_truncated', type: 'function', function: { name: 'read', arguments: '{"path":"README.md"}' } }] } }] })}\n\n`,
+                ),
+              );
+            }
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`,
@@ -3050,6 +3079,7 @@ describe('streamingChat tool rendering helpers', () => {
     const { streamChat } = await loadStreamingChat(fetchMock);
     const streamed: string[] = [];
     const onComplete = mock((_result: unknown) => undefined);
+    const onToolCall = mock(async () => 'must not run');
 
     await streamChat({
       providerId: 'openai-generic',
@@ -3063,6 +3093,7 @@ describe('streamingChat tool rendering helpers', () => {
       enableWebFetch: false,
       onToken: (token: string) => streamed.push(token),
       onComplete,
+      onToolCall,
       onError: (error: Error) => {
         throw error;
       },
@@ -3072,12 +3103,23 @@ describe('streamingChat tool rendering helpers', () => {
     expect(requestBodies[0]?.tools).toBeDefined();
     expect(requestBodies[1]?.tools).toBeUndefined();
     expect(JSON.stringify(requestBodies[1]?.messages)).toContain('Continue exactly where it stopped');
+    expect(JSON.stringify(requestBodies[1]?.messages)).not.toContain('call_truncated');
     expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(onToolCall).not.toHaveBeenCalled();
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({
         visibleContent: 'Alpha repeated phrase and omega',
         completionReason: 'length_recovered',
       }),
+    );
+    const finalResult = onComplete.mock.calls[0]?.[0] as {
+      providerInputItems?: unknown[];
+    };
+    expect(JSON.stringify(finalResult.providerInputItems)).toContain(
+      '"content":" and omega"',
+    );
+    expect(JSON.stringify(finalResult.providerInputItems)).not.toContain(
+      '"content":"repeated phrase and omega"',
     );
   });
 

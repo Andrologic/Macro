@@ -617,7 +617,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.providerInputTokens).toBeGreaterThan(0);
   });
 
-  it('keeps Responses function calls paired with compacted outputs', () => {
+  it('keeps the latest Responses function call output intact', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the file.'),
       makeMessage('a1', 'assistant', 'Tool exchange.'),
@@ -657,7 +657,45 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(items[0]?.call_id).toBe('call_read');
     expect(items[1]?.call_id).toBe('call_read');
     expect(String(items[1]?.output)).toContain('FILE: README.md');
-    expect(String(items[1]?.output).length).toBeLessThan(5_000);
+    expect(String(items[1]?.output)).toBe(`FILE: README.md\n${'large result\n'.repeat(500)}`);
+  });
+
+  it('keeps provider tool errors and skill resources intact', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the project.'),
+      makeMessage('a1', 'assistant', 'First tool exchange.'),
+      makeMessage('a2', 'assistant', 'Second tool exchange.'),
+      makeMessage('a3', 'assistant', 'Latest tool exchange.'),
+      makeMessage('u2', 'user', 'Continue.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    const cases = [
+      ['call_error', 'read', `Error executing tool read: ${'details '.repeat(500)}`],
+      ['call_skill', 'skill_read', `Skill resource: ${'instructions '.repeat(500)}`],
+      ['call_latest', 'read', `FILE: latest.ts\n${'source '.repeat(500)}`],
+    ] as const;
+    for (const [offset, [callId, toolName, output]] of cases.entries()) {
+      preparedMessages[offset + 1] = {
+        ...preparedMessages[offset + 1]!,
+        provider_input_items: [
+          { type: 'function_call', call_id: callId, name: toolName, arguments: '{}' },
+          { type: 'function_call_output', call_id: callId, output },
+        ],
+      };
+    }
+
+    const result = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+
+    for (const [offset, [, , output]] of cases.entries()) {
+      const items = result.messages[offset + 1]?.provider_input_items as Array<
+        Record<string, unknown>
+      >;
+      expect(items[1]?.output).toBe(output);
+    }
   });
 
   it('does not reintroduce pruned hidden context when measuring a compacted payload', () => {
