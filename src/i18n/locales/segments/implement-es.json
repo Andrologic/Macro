@@ -374,7 +374,9 @@
   "errors": {
     "directTaskCompletionFailed": "No se pudo completar la tarea de edición directa.",
     "directProjectTaskAlreadyActive": "Este proyecto de edición directa ya tiene una tarea activa.",
-    "projectExecutionBlocked": "Activa la edición directa en la configuración del proyecto antes de continuar.",
+    "projectExecutionBlocked": "Inicializa Git o activa la edición directa en la configuración del proyecto antes de continuar.",
+    "projectExecutionInitialCommitMissing": "Crea el commit inicial desde la configuración del proyecto antes de continuar.",
+    "projectExecutionReadOnly": "Cambia la configuración de acceso del proyecto antes de continuar.",
     "projectExecutionInvalid": "Los metadatos de ejecución de la tarea contradicen el estado actual del proyecto. Vuelve a abrir la configuración del proyecto antes de reintentarlo.",
     "unknownTask": "Tarea desconocida: {{taskId}}",
     "taskAlreadyCompleted": "La tarea ya está completada.",

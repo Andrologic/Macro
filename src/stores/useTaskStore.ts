@@ -126,7 +126,10 @@ import {
 } from '../services/mergeWorkflowRuntime';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 import { isStandaloneTaskKindCreatable } from '../services/standaloneTaskKinds';
-import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
+import {
+  resolveProjectExecutionMode,
+  type ResolvedProjectExecutionMode,
+} from '../services/projectExecutionMode';
 import { notify } from '../components/ui/toastService';
 import { devLogger } from '../utils/devLogger';
 
@@ -1366,6 +1369,33 @@ const taskMatchesAnyProjectId = (
 const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
 
+const formatProjectExecutionError = (
+  resolution: ResolvedProjectExecutionMode,
+): string => {
+  if (resolution.mode !== 'blocked') {
+    return tTask(
+      'implement.errors.projectExecutionInvalid',
+      'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
+    );
+  }
+  if (resolution.reason === 'initial_commit_missing') {
+    return tTask(
+      'implement.errors.projectExecutionInitialCommitMissing',
+      'Create the initial commit from the project settings before continuing.',
+    );
+  }
+  if (resolution.reason === 'project_read_only') {
+    return tTask(
+      'implement.errors.projectExecutionReadOnly',
+      'Change the project access setting before continuing.',
+    );
+  }
+  return tTask(
+    'implement.errors.projectExecutionBlocked',
+    'Initialize Git or enable direct editing in the project settings before continuing.',
+  );
+};
+
 const assertStandaloneTaskKindCreatableForProjects = (
   taskKind: StandaloneTaskKind,
   projectIds: string[],
@@ -1375,17 +1405,7 @@ const assertStandaloneTaskKindCreatableForProjects = (
   for (const project of projects) {
     const resolution = resolveProjectExecutionMode({ project });
     if (resolution.mode !== 'git' && resolution.mode !== 'direct') {
-      throw new Error(
-        resolution.mode === 'blocked'
-          ? tTask(
-              'implement.errors.projectExecutionBlocked',
-              'Enable direct editing in the project settings before creating a task.',
-            )
-          : tTask(
-              'implement.errors.projectExecutionInvalid',
-              'The project execution metadata is inconsistent. Reopen the project settings before retrying.',
-            ),
-      );
+      throw new Error(formatProjectExecutionError(resolution));
     }
   }
 
@@ -2922,15 +2942,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const targetMode = primaryTarget ? resolveExecutionTargetMode(primaryTarget) : null;
     if (targetMode && targetMode.mode !== 'git' && targetMode.mode !== 'direct') {
       if (requestId !== taskActivationRequestId) return;
-      const message = targetMode.mode === 'blocked'
-        ? tTask(
-            'implement.errors.projectExecutionBlocked',
-            'Enable direct editing in the project settings before opening this task.',
-          )
-        : tTask(
-            'implement.errors.projectExecutionInvalid',
-            'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
-          );
+      const message = formatProjectExecutionError(targetMode);
       set({
         activeBranchName: null,
         activeRepositoryPath: null,

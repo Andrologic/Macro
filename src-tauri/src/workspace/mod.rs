@@ -6373,9 +6373,13 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
         return Ok(None);
     };
 
+    let mut state = state;
+    let mut access_repair_report = ProjectRegistryRepairReportDto::default();
+    refresh_unknown_wsl_project_access(&mut state, &mut access_repair_report).await;
     let raw_state = state.clone();
-    let (mut sanitized_state, mut repair_report) = sanitize_workspace_state(workspace_path, state);
-    refresh_unknown_wsl_project_access(&mut sanitized_state, &mut repair_report).await;
+    let (sanitized_state, mut repair_report) = sanitize_workspace_state(workspace_path, state);
+    repair_report.project_access_states_updated +=
+        access_repair_report.project_access_states_updated;
     if repair_report.has_repairs() {
         tracing::warn!(
             action = "project_registry_state_sanitized",
@@ -7950,7 +7954,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_wsl_project_access_is_migrated_from_detection() {
+    fn detected_wsl_access_is_applied_before_task_sanitization() {
+        let temp = TempDir::new().expect("temp dir");
         let mut project = make_project("project-wsl", r"\\wsl.localhost\Ubuntu\home\oscar\repo");
         project.git_setup_state = PROJECT_GIT_SETUP_UNKNOWN.to_string();
         project.is_read_only = true;
@@ -7964,6 +7969,48 @@ mod tests {
         assert!(!project.is_read_only);
         assert_eq!(project.read_only_reason, None);
         assert_eq!(report.project_access_states_updated, 1);
+
+        let state = WorkspaceState {
+            standalone_projects: vec![project],
+            current_plan: Some(PlanDto {
+                id: "plan-wsl".to_string(),
+                description: "WSL plan".to_string(),
+                created_at: "2026-03-14T00:00:00.000Z".to_string(),
+                updated_at: "2026-03-14T00:00:00.000Z".to_string(),
+                status: "Validated".to_string(),
+                project_ids: vec!["project-wsl".to_string()],
+                context_project_ids: Vec::new(),
+                tasks: vec![json!({
+                    "id": "task-wsl",
+                    "project_id": "project-wsl",
+                    "project_ids": ["project-wsl"],
+                    "execution_targets": [{
+                        "projectId": "project-wsl",
+                        "executionMode": "git",
+                        "branchName": "feature/wsl"
+                    }]
+                })],
+                predicted_git_trees: HashMap::new(),
+            }),
+            plan_nodes: vec![metadata::PlanNodeDto {
+                id: "node-wsl".to_string(),
+                title: "WSL task".to_string(),
+                description: None,
+                node_type: "task".to_string(),
+                status: "pending".to_string(),
+                dependencies: Vec::new(),
+                assigned_branch: Some("feature/wsl".to_string()),
+                project_id: Some("project-wsl".to_string()),
+                estimated_time: None,
+            }],
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized, sanitize_report) = sanitize_workspace_state(temp.path(), state);
+
+        assert!(!sanitize_report.has_destructive_repairs());
+        assert_eq!(sanitized.current_plan.as_ref().unwrap().tasks.len(), 1);
+        assert_eq!(sanitized.plan_nodes.len(), 1);
     }
 
     #[tokio::test]

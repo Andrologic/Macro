@@ -374,7 +374,9 @@
   "errors": {
     "directTaskCompletionFailed": "直接編集タスクを完了できませんでした。",
     "directProjectTaskAlreadyActive": "この直接編集プロジェクトには、すでにアクティブなタスクがあります。",
-    "projectExecutionBlocked": "続行する前に、プロジェクト設定で直接編集を有効にしてください。",
+    "projectExecutionBlocked": "続行する前に、プロジェクト設定で Git を初期化するか、直接編集を有効にしてください。",
+    "projectExecutionInitialCommitMissing": "続行する前に、プロジェクト設定から最初のコミットを作成してください。",
+    "projectExecutionReadOnly": "続行する前に、プロジェクトのアクセス設定を変更してください。",
     "projectExecutionInvalid": "タスクの実行メタデータが現在のプロジェクト状態と矛盾しています。プロジェクト設定を開き直してから再試行してください。",
     "unknownTask": "不明なタスク:{{taskId}}",
     "taskAlreadyCompleted": "タスクはすでに完了しています。",

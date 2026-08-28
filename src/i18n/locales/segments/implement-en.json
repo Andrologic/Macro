@@ -374,7 +374,9 @@
   "errors": {
     "directTaskCompletionFailed": "The direct-edit task could not be completed.",
     "directProjectTaskAlreadyActive": "This direct-edit project already has an active task.",
-    "projectExecutionBlocked": "Enable direct editing in the project settings before continuing.",
+    "projectExecutionBlocked": "Initialize Git or enable direct editing in the project settings before continuing.",
+    "projectExecutionInitialCommitMissing": "Create the initial commit from the project settings before continuing.",
+    "projectExecutionReadOnly": "Change the project access setting before continuing.",
     "projectExecutionInvalid": "The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.",
     "unknownTask": "Unknown task: {{taskId}}",
     "taskAlreadyCompleted": "Task is already completed.",

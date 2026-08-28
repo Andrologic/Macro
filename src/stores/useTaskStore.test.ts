@@ -2698,6 +2698,30 @@ describe('useTaskStore task status transition guards', () => {
   });
 });
 
+describe('useTaskStore execution blocker messages', () => {
+  it('requires the initial commit instead of suggesting direct editing for an unborn repository', async () => {
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: false,
+      gitSetupState: 'unborn',
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    await expect(useTaskStore.getState().createManualFeatureDraft({
+      taskId: 'task-unborn',
+      conversationId: 'conversation-unborn',
+      groupId: 'group-1',
+      projectIds: ['project-1'],
+      contextProjectIds: [],
+      taskKind: 'feature',
+    })).rejects.toThrow('Create the initial commit');
+
+    expect(useTaskStore.getState().lastError).toContain('Create the initial commit');
+  });
+});
+
 describe('useTaskStore reopenTask and retryTask', () => {
   beforeEach(() => {
     workspaceUpdateStandaloneTaskStatusMock.mockClear();

@@ -815,6 +815,64 @@ describe('useFileChangesStore', () => {
     expect(restartedStore.getState().getRepository(directRepositoryId)?.commitState).toBe('committed');
   });
 
+  it('keeps a legacy checkpoint target direct after the project becomes Git-ready', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    const legacyTarget = tasksById['task-6'].execution_targets[0] as {
+      executionMode?: 'direct';
+    };
+    delete legacyTarget.executionMode;
+    const gitReviewSnapshotMock = mock(async () => {
+      throw new Error('Git review must not run for a checkpoint target');
+    });
+    const directReviewSnapshotMock = mock(async () => ({
+      branch: 'direct',
+      stagedPaths: [],
+      changes: [],
+      conflictedFiles: [],
+      mergeInProgress: false,
+      isClean: true,
+      hasAcceptedChanges: false,
+    }));
+    const legacyStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    try {
+      await legacyStore.getState().loadCurrentChanges();
+    } finally {
+      legacyTarget.executionMode = 'direct';
+    }
+
+    expect(legacyStore.getState().getRepository(directRepositoryId)?.executionMode).toBe('direct');
+    expect(directReviewSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(gitReviewSnapshotMock).not.toHaveBeenCalled();
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
+  });
+
   it('rehydrates prepared task worktree mappings before loading changes', async () => {
     Object.keys(taskStoreState.branchWorktrees).forEach((key) => {
       delete taskStoreState.branchWorktrees[key];

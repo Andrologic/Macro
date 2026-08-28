@@ -998,6 +998,54 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('opens task creation for a direct project without loading Git start points', async () => {
+    const invokedCommands: string[] = [];
+    installTauriRuntimeMock(mock(async (command) => {
+      invokedCommands.push(command);
+      return undefined;
+    }));
+    seedTasks([makeTask('task-1', 'Pending')]);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [{
+        id: 'group-1',
+        name: 'Project Group',
+        isOpen: true,
+        projects: [{
+          ...makeProject('project-direct', '/tmp/project-direct', 'Direct Project'),
+          directEdit: true,
+          gitSetupState: 'not_git',
+          isReadOnly: false,
+        }],
+      }] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>(
+        '[data-tour-id="implement-create-task"]',
+      )?.click();
+      await flushRender();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const directProjectButton = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') || [],
+    ).find((button) => button.textContent?.includes('Direct Project'));
+    await act(async () => {
+      directProjectButton?.click();
+      await flushRender();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(directProjectButton?.getAttribute('aria-pressed')).toBe('true');
+    expect(invokedCommands).not.toContain('git_task_start_points');
+  });
+
   it('creates and activates a task on the branch of a selected existing worktree', async () => {
     const gitTaskStartPoints = {
       worktrees: [{
