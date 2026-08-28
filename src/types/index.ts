@@ -23,7 +23,8 @@ export type ChatCompletionReason =
   | 'incomplete'
   | 'incomplete_recovered'
   | 'tool_turn_limit'
-  | 'post_tool_empty_fallback';
+  | 'post_tool_empty_fallback'
+  | (string & {});
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';

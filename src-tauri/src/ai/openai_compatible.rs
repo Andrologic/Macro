@@ -194,7 +194,7 @@ async fn stream_chat_inner(
     }
 
     if !saw_completion {
-        return Err("Provider stream ended before a completion marker was received.".to_string());
+        accumulator.completion_reason = Some("incomplete".to_string());
     }
     ensure_terminal_completion_reason(&mut accumulator.completion_reason, &accumulator.tool_calls);
 
@@ -478,7 +478,8 @@ fn normalize_finish_reason(finish_reason: &str) -> &str {
     match finish_reason {
         "length" | "max_tokens" | "max_output_tokens" => "length",
         "stop" | "tool_calls" | "function_call" => "completed",
-        _ => "incomplete",
+        "" => "incomplete",
+        other => other,
     }
 }
 
@@ -917,7 +918,7 @@ mod tests {
         assert_eq!(normalize_finish_reason("length"), "length");
         assert_eq!(normalize_finish_reason("max_output_tokens"), "length");
         assert_eq!(normalize_finish_reason("stop"), "completed");
-        assert_eq!(normalize_finish_reason("content_filter"), "incomplete");
+        assert_eq!(normalize_finish_reason("content_filter"), "content_filter");
     }
 
     #[test]

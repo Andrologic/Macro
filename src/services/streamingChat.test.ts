@@ -3226,6 +3226,59 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('preserves an unknown terminal reason without retrying it', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async () => {
+      requestCount += 1;
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"choices":[{"delta":{"content":"Filtered partial."}}]}\n\n',
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n',
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onComplete = mock((_result: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'openai-generic',
+      providerType: 'openai',
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Answer.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requestCount).toBe(1);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Filtered partial.',
+        completionReason: 'content_filter',
+      }),
+    );
+  });
+
   it('relays Copilot bridge tool requests to frontend tool handlers', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {

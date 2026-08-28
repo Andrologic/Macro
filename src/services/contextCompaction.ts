@@ -1405,7 +1405,16 @@ export const compactProviderInputItemsForContext = (
       message.image_metadata,
       context
     ).totalTokens;
+    const containsFunctionCall = message.provider_input_items.some(
+      (item) =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        (item as Record<string, unknown>).type === 'function_call',
+    );
     if (compactedItems.length === 0 || after >= before) {
+      if (containsFunctionCall) {
+        return message;
+      }
       compactedMessageIds.add(orderedMessage.id);
       return {
         ...message,

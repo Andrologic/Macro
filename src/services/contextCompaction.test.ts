@@ -692,6 +692,54 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(String(items[1]?.output)).toBe(`FILE: README.md\n${'large result\n'.repeat(500)}`);
   });
 
+  it('keeps older Responses function calls paired with their compacted outputs', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect both files.'),
+      makeMessage('a1', 'assistant', 'First call.'),
+      makeMessage('a2', 'assistant', 'First result.'),
+      makeMessage('a3', 'assistant', 'Second call.'),
+      makeMessage('a4', 'assistant', 'Second result.'),
+      makeMessage('u2', 'user', 'Continue.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      ...preparedMessages[1]!,
+      provider_input_items: [
+        { type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' },
+      ],
+    };
+    preparedMessages[2] = {
+      ...preparedMessages[2]!,
+      provider_input_items: [
+        { type: 'function_call_output', call_id: 'c1', output: 'first '.repeat(500) },
+      ],
+    };
+    preparedMessages[3] = {
+      ...preparedMessages[3]!,
+      provider_input_items: [
+        { type: 'function_call', call_id: 'c2', name: 'read', arguments: '{}' },
+      ],
+    };
+    preparedMessages[4] = {
+      ...preparedMessages[4]!,
+      provider_input_items: [
+        { type: 'function_call_output', call_id: 'c2', output: 'second '.repeat(500) },
+      ],
+    };
+
+    const result = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    const serialized = JSON.stringify(result.messages);
+
+    expect(serialized).toContain('"type":"function_call","call_id":"c1"');
+    expect(serialized).toContain('"type":"function_call_output","call_id":"c1"');
+    expect(serialized).toContain('"type":"function_call","call_id":"c2"');
+    expect(serialized).toContain('"type":"function_call_output","call_id":"c2"');
+  });
+
   it('keeps provider tool errors and skill resources intact', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect the project.'),

@@ -565,6 +565,7 @@ fn extract_incomplete_reason(value: &Value) -> &str {
         .and_then(Value::as_str);
     match reason {
         Some("max_output_tokens" | "max_tokens" | "length") => "length",
+        Some(reason) if !reason.trim().is_empty() => reason,
         _ => "incomplete",
     }
 }
@@ -1391,7 +1392,7 @@ mod tests {
             extract_incomplete_reason(&json!({
                 "response": { "incomplete_details": { "reason": "content_filter" } }
             })),
-            "incomplete"
+            "content_filter"
         );
     }
 }

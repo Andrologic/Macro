@@ -4201,16 +4201,17 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           const delta = choice.delta ?? {};
           const message = choice.message ?? {};
           if (typeof choice.finish_reason === 'string') {
+            const finishReason = choice.finish_reason.trim();
             turnCompletion.reason =
-              choice.finish_reason === 'length' ||
-              choice.finish_reason === 'max_tokens' ||
-              choice.finish_reason === 'max_output_tokens'
+              finishReason === 'length' ||
+              finishReason === 'max_tokens' ||
+              finishReason === 'max_output_tokens'
                 ? 'length'
-                : choice.finish_reason === 'stop' ||
-                    choice.finish_reason === 'tool_calls' ||
-                    choice.finish_reason === 'function_call'
+                : finishReason === 'stop' ||
+                    finishReason === 'tool_calls' ||
+                    finishReason === 'function_call'
                   ? 'completed'
-                  : 'incomplete';
+                  : finishReason || 'incomplete';
           }
           const reasoning = delta?.reasoning ?? delta?.reasoning_content;
           appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
