@@ -264,15 +264,30 @@ const isIncompleteCompletionReason = (
 
 const stripContinuationOverlap = (existing: string, continuation: string): string => {
   if (!existing || !continuation) return continuation;
-  if (existing.endsWith(continuation)) return '';
+  const prefixLengths = new Uint32Array(continuation.length);
+  for (let index = 1, matched = 0; index < continuation.length; index += 1) {
+    while (matched > 0 && continuation[index] !== continuation[matched]) {
+      matched = prefixLengths[matched - 1] ?? 0;
+    }
+    if (continuation[index] === continuation[matched]) {
+      matched += 1;
+    }
+    prefixLengths[index] = matched;
+  }
 
-  const maximumOverlap = Math.min(existing.length, continuation.length, 4096);
-  for (let overlap = maximumOverlap; overlap >= 8; overlap -= 1) {
-    if (existing.endsWith(continuation.slice(0, overlap))) {
-      return continuation.slice(overlap);
+  let overlap = 0;
+  for (let index = 0; index < existing.length; index += 1) {
+    while (overlap > 0 && existing[index] !== continuation[overlap]) {
+      overlap = prefixLengths[overlap - 1] ?? 0;
+    }
+    if (existing[index] === continuation[overlap]) {
+      overlap += 1;
+    }
+    if (overlap === continuation.length && index < existing.length - 1) {
+      overlap = prefixLengths[overlap - 1] ?? 0;
     }
   }
-  return continuation;
+  return continuation.slice(overlap);
 };
 
 export type StreamTimelinePhase =
@@ -3172,7 +3187,7 @@ const streamChatViaNativeToolCallingProvider = async (
             conversationId: options.conversationId,
             messages: currentMessages,
             tools: recoveringLengthThisTurn ? [] : tools,
-            allowedToolIds: options.allowedToolIds,
+            allowedToolIds: recoveringLengthThisTurn ? [] : options.allowedToolIds,
             workspacePath: options.workspacePath,
             defaultWorkspacePath: options.defaultWorkspacePath,
             projectMounts: options.projectMounts,

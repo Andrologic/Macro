@@ -2955,7 +2955,20 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
-  it('continues a native length-limited response once without duplicating overlap or tools', async () => {
+  it('strips short and large exact overlaps from a continuation', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(__testables.stripContinuationOverlap('hello', 'hello world')).toBe(' world');
+    const largeOverlap = 'a'.repeat(5_000);
+    expect(
+      __testables.stripContinuationOverlap(
+        `existing prefix ${largeOverlap}`,
+        `${largeOverlap}suffix`,
+      ),
+    ).toBe('suffix');
+  });
+
+  it('continues a Copilot length-limited response once without duplicating overlap or tools', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const requests: Array<Record<string, unknown>> = [];
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
@@ -3010,9 +3023,9 @@ describe('streamingChat tool rendering helpers', () => {
 
     await streamChat({
       conversationId: 'conv-1',
-      providerId: 'openai-local',
-      providerType: 'openai',
-      baseUrl: 'https://example.test',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
       modelId: 'gpt-test',
       messages: [{ role: 'user', content: 'Write a long answer.' }],
       allowedToolIds: ['read'],
@@ -3028,7 +3041,9 @@ describe('streamingChat tool rendering helpers', () => {
 
     expect(requests).toHaveLength(2);
     expect(requests[0]?.tools).toBeArray();
+    expect(requests[0]?.allowed_tool_ids).toEqual(['read']);
     expect(requests[1]?.tools).toEqual([]);
+    expect(requests[1]?.allowed_tool_ids).toEqual([]);
     expect(JSON.stringify(requests[1]?.messages)).toContain('Continue exactly where it stopped');
     expect(JSON.stringify(requests[1]?.messages)).not.toContain('call_truncated');
     expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
