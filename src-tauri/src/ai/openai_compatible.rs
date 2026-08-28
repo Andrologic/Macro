@@ -26,6 +26,7 @@ struct ChatCompletionAccumulator {
     reasoning_summary: String,
     tool_calls: Vec<AiToolCall>,
     is_reasoning: bool,
+    completion_reason: Option<String>,
 }
 
 pub async fn stream_chat(
@@ -221,7 +222,7 @@ async fn stream_chat_inner(
                 reasoning_summary: optional_text(accumulator.reasoning_summary),
                 tool_traces: None,
                 hidden_context: None,
-                completion_reason: None,
+                completion_reason: accumulator.completion_reason,
             },
         )
         .map_err(|error| error.to_string())?;
@@ -461,11 +462,19 @@ fn process_sse_event(
         }
     }
 
-    Ok(choice
-        .get("finish_reason")
-        .filter(|value| !value.is_null())
-        .is_some()
-        || is_terminal_sse_value(&value))
+    if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        accumulator.completion_reason = Some(normalize_finish_reason(finish_reason).to_string());
+    }
+
+    Ok(accumulator.completion_reason.is_some() || is_terminal_sse_value(&value))
+}
+
+fn normalize_finish_reason(finish_reason: &str) -> &str {
+    match finish_reason {
+        "length" | "max_tokens" | "max_output_tokens" => "length",
+        "stop" | "tool_calls" | "function_call" => "completed",
+        _ => "incomplete",
+    }
 }
 
 fn emit_first_token_timeline(
@@ -874,6 +883,14 @@ mod tests {
             &serde_json::from_str::<Value>(&extract_sse_data(&events[0]).expect("data"))
                 .expect("payload")
         ));
+    }
+
+    #[test]
+    fn finish_reasons_preserve_output_limit_exhaustion() {
+        assert_eq!(normalize_finish_reason("length"), "length");
+        assert_eq!(normalize_finish_reason("max_output_tokens"), "length");
+        assert_eq!(normalize_finish_reason("stop"), "completed");
+        assert_eq!(normalize_finish_reason("content_filter"), "incomplete");
     }
 
     #[test]

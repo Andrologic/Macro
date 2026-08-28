@@ -253,6 +253,28 @@ export interface LiveStreamContextSnapshot {
 
 export type StreamCompletionReason = ChatCompletionReason;
 
+const LENGTH_RECOVERY_PROMPT =
+  'The previous assistant output was cut off by the provider output limit. ' +
+  'Continue exactly where it stopped. Return only the missing continuation. ' +
+  'Do not repeat text and do not call tools.';
+
+const isIncompleteCompletionReason = (
+  reason: StreamCompletionReason | undefined,
+): reason is 'length' | 'incomplete' => reason === 'length' || reason === 'incomplete';
+
+const stripContinuationOverlap = (existing: string, continuation: string): string => {
+  if (!existing || !continuation) return continuation;
+  if (existing.endsWith(continuation)) return '';
+
+  const maximumOverlap = Math.min(existing.length, continuation.length, 4096);
+  for (let overlap = maximumOverlap; overlap >= 8; overlap -= 1) {
+    if (existing.endsWith(continuation.slice(0, overlap))) {
+      return continuation.slice(overlap);
+    }
+  }
+  return continuation;
+};
+
 export type StreamTimelinePhase =
   | 'send_requested'
   | 'messages_ready'
@@ -2635,6 +2657,7 @@ export const __testables = {
   shouldRetryMissingRequiredTool,
   shouldRequestProviderReasoning,
   stripThinkingBlocksForModel,
+  stripContinuationOverlap,
   summarizeProviderTextPresence,
   validateChatCompletionMessageSequence,
 };
@@ -3101,6 +3124,7 @@ const streamChatViaNativeToolCallingProvider = async (
     options.reasoningTransportMode === 'none' ? null : options.reasoningEffort;
   let didRetryWithoutReasoning = false;
   const rejectedReasoningEfforts = new Set<ReasoningEffort>();
+  let lengthRecoveryPending = false;
 
   const completeNativeStream = (completionReason?: StreamCompletionReason) => {
     onComplete({
@@ -3118,7 +3142,8 @@ const streamChatViaNativeToolCallingProvider = async (
         return;
       }
 
-      const shouldBufferTurnOutput = enforceGuidedToolRetry;
+      const recoveringLengthThisTurn = lengthRecoveryPending;
+      const shouldBufferTurnOutput = enforceGuidedToolRetry || recoveringLengthThisTurn;
       let streamedTurnContent = '';
       let turnResult: StreamingTurnResult;
       while (true) {
@@ -3131,7 +3156,7 @@ const streamChatViaNativeToolCallingProvider = async (
             reasoningEffort: currentReasoningEffort,
             conversationId: options.conversationId,
             messages: currentMessages,
-            tools,
+            tools: recoveringLengthThisTurn ? [] : tools,
             allowedToolIds: options.allowedToolIds,
             workspacePath: options.workspacePath,
             defaultWorkspacePath: options.defaultWorkspacePath,
@@ -3215,7 +3240,14 @@ const streamChatViaNativeToolCallingProvider = async (
 
       enforceGuidedToolRetry = false;
       if (shouldBufferTurnOutput && turnContent) {
-        streamAccumulator.appendProviderDelta(turnContent);
+        streamAccumulator.appendProviderDelta(
+          recoveringLengthThisTurn
+            ? stripContinuationOverlap(
+                streamAccumulator.buildResult().visibleContent,
+                turnContent,
+              )
+            : turnContent,
+        );
       } else {
         const missingTurnSuffix = getMissingChatGptVisibleTurnSuffix(
           streamedTurnContent,
@@ -3249,6 +3281,15 @@ const streamChatViaNativeToolCallingProvider = async (
       }
 
       if (validToolCalls.length === 0) {
+        if (turnResult.completionReason === 'length' && !recoveringLengthThisTurn) {
+          lengthRecoveryPending = true;
+          currentMessages.push({ role: 'system', content: LENGTH_RECOVERY_PROMPT });
+          continue;
+        }
+        if (isIncompleteCompletionReason(turnResult.completionReason)) {
+          completeNativeStream(turnResult.completionReason);
+          return;
+        }
         const pendingSteers = options.consumePendingSteers?.() ?? [];
         if (pendingSteers.length > 0) {
           currentMessages.push(...pendingSteers.map(cloneStreamMessage));
@@ -3299,8 +3340,16 @@ const streamChatViaNativeToolCallingProvider = async (
         ) {
           throw new Error('Reponse ChatGPT vide apres execution des outils.');
         }
-        completeNativeStream(turnResult.completionReason ?? 'completed');
+        completeNativeStream(
+          recoveringLengthThisTurn && !isIncompleteCompletionReason(turnResult.completionReason)
+            ? 'length_recovered'
+            : (turnResult.completionReason ?? 'completed'),
+        );
         return;
+      }
+
+      if (recoveringLengthThisTurn) {
+        throw new Error('Incomplete response recovery attempted to call a tool.');
       }
 
       const toolResults: ToolResult[] = [];
@@ -3858,6 +3907,8 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
   let consecutiveStreamRetryCount = 0;
   let emittedFirstProviderEvent = false;
   let emittedFirstToken = false;
+  let lengthRecoveryPending = false;
+  let terminalCompletionReason: StreamCompletionReason | undefined;
 
   const completeGenericStream = (completionReason?: StreamCompletionReason) => {
     onComplete({
@@ -3888,7 +3939,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           currentReasoningEffort,
           { enabled: providerReasoningEnabled }
         );
-        applyToolsToChatCompletionsRequest(requestBody, tools, profile, requestMessages);
+        applyToolsToChatCompletionsRequest(
+          requestBody,
+          lengthRecoveryPending ? [] : tools,
+          profile,
+          requestMessages,
+        );
 
         try {
           logStreamingDiagnostic('debug', 'provider_request', {
@@ -4022,8 +4078,12 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       let turnContent = ''; // The text generated *in this specific turn*
       let turnApiContent = '';
       let turnReasoningContent = '';
+      const turnCompletion = {
+        reason: undefined as StreamCompletionReason | undefined,
+      };
       const turnReasoningDetails: unknown[] = [];
-      const shouldBufferTurnOutput = enforceGuidedToolRetry;
+      const recoveringLengthThisTurn = lengthRecoveryPending;
+      const shouldBufferTurnOutput = enforceGuidedToolRetry || recoveringLengthThisTurn;
       const appendTurnChunk = (chunk: string) => {
         if (!chunk) return;
         turnContent += chunk;
@@ -4061,6 +4121,18 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           const choice = parsed.choices?.[0] ?? {};
           const delta = choice.delta ?? {};
           const message = choice.message ?? {};
+          if (typeof choice.finish_reason === 'string') {
+            turnCompletion.reason =
+              choice.finish_reason === 'length' ||
+              choice.finish_reason === 'max_tokens' ||
+              choice.finish_reason === 'max_output_tokens'
+                ? 'length'
+                : choice.finish_reason === 'stop' ||
+                    choice.finish_reason === 'tool_calls' ||
+                    choice.finish_reason === 'function_call'
+                  ? 'completed'
+                  : 'incomplete';
+          }
           const reasoning = delta?.reasoning ?? delta?.reasoning_content;
           appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
           appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
@@ -4207,7 +4279,14 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
       enforceGuidedToolRetry = false;
       if (shouldBufferTurnOutput && turnContent) {
-        streamAccumulator.appendProviderDelta(turnContent);
+        streamAccumulator.appendProviderDelta(
+          recoveringLengthThisTurn
+            ? stripContinuationOverlap(
+                streamAccumulator.buildResult().visibleContent,
+                turnContent,
+              )
+            : turnContent,
+        );
       }
       streamAccumulator.flushProviderDelta();
 
@@ -4236,6 +4315,15 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       }
 
       if (validToolCalls.length === 0) {
+        if (turnCompletion.reason === 'length' && !recoveringLengthThisTurn) {
+          lengthRecoveryPending = true;
+          currentMessages.push({ role: 'system', content: LENGTH_RECOVERY_PROMPT });
+          continue;
+        }
+        if (isIncompleteCompletionReason(turnCompletion.reason)) {
+          terminalCompletionReason = turnCompletion.reason;
+          break;
+        }
         if (
           shouldRetryArchitectPostToolResponse({
             mode: options.mode,
@@ -4674,7 +4762,15 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           turnCount += 1;
           continue;
         }
+        terminalCompletionReason =
+          recoveringLengthThisTurn && !isIncompleteCompletionReason(turnCompletion.reason)
+            ? 'length_recovered'
+            : turnCompletion.reason;
         break;
+      }
+
+      if (recoveringLengthThisTurn) {
+        throw new Error('Incomplete response recovery attempted to call a tool.');
       }
 
       turnCount++;
@@ -4686,7 +4782,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       }
     }
 
-    completeGenericStream();
+    completeGenericStream(terminalCompletionReason);
     emitGenericTimeline('done');
   } catch (error) {
     // Cleanup on error

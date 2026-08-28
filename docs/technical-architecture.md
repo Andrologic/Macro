@@ -890,6 +890,15 @@ Cette couche s'occupe de :
 - mettre à jour la conversation en cours
 - annuler un stream si nécessaire
 
+Les transports conservent la cause de fin fournie par le modèle. Une fin par
+limite de sortie devient `length`, y compris quand Responses la signale par
+`response.incomplete` avec `max_output_tokens`. `streamingChat` tente alors une
+seule continuation dans la session et le tour courants. Cette requête ne publie
+aucun outil, demande uniquement le suffixe manquant et retire un éventuel
+chevauchement textuel. Une seconde réponse incomplète reste persistée comme
+telle et place le tour en erreur au lieu de déclencher les effets d'une fin
+normale.
+
 ### 15.2 Couplage avec les plans
 
 En mode Architect, certaines actions conversationnelles déclenchent une sync metadata à la fin du stream.

@@ -231,6 +231,27 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(events).toContain("content:Final");
   });
 
+  test("an exhausted length recovery persists the partial response and ends in error", async () => {
+    const controls = makeControls();
+    const { runtime, events, getMessage } = makeRuntime();
+
+    await runtime.onComplete(
+      {
+        visibleContent: "Réponse encore coupée",
+        toolTraces: [],
+        completionReason: "length",
+      },
+      controls,
+    );
+
+    expect(getMessage().completion_reason).toBe("length");
+    expect(events).toContain("persist-final");
+    expect(events).toContain("stream-error:transcript:assistant-1");
+    expect(events).not.toContain("conversation:Réponse encore coupée");
+    expect(events).not.toContain("awaiting");
+    expect(controls.dispose).toHaveBeenCalledTimes(1);
+  });
+
   test("provider error before any token removes the empty placeholder", async () => {
     const controls = makeControls();
     const { runtime, events } = makeRuntime();

@@ -18,6 +18,9 @@ export type TaskStatus =
 export type MessageRole = 'user' | 'assistant';
 export type ChatCompletionReason =
   | 'completed'
+  | 'length'
+  | 'length_recovered'
+  | 'incomplete'
   | 'tool_turn_limit'
   | 'post_tool_empty_fallback';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';

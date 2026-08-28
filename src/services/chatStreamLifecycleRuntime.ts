@@ -299,6 +299,29 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext.modelId,
       );
 
+      if (
+        result.completionReason === "length" ||
+        result.completionReason === "incomplete"
+      ) {
+        adapters.clearLiveStreamContextEstimate(stream.conversationId);
+        await persistAssistantStreamResultAndConsolidate(result);
+        adapters.setStreamErrorState({
+          presentation: {
+            origin: "provider",
+            displayTarget: "transcript",
+            title: "Réponse incomplète",
+            message:
+              result.completionReason === "length"
+                ? "Le fournisseur a de nouveau atteint sa limite de sortie après la tentative de reprise."
+                : "Le fournisseur a interrompu la réponse avant sa fin.",
+            suggestedAction: "Relance la demande pour poursuivre la réponse.",
+          },
+          assistantMessageId: stream.assistantMessageId,
+        });
+        tokenControls.dispose();
+        return;
+      }
+
       maybeMarkTaskAwaitingResponse(result);
       adapters.updateConversationAfterCompletion(
         stream.conversationId,

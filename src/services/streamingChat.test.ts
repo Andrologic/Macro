@@ -2946,6 +2946,141 @@ describe('streamingChat tool rendering helpers', () => {
     );
   });
 
+  it('continues a native length-limited response once without duplicating overlap or tools', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const requests: Array<Record<string, unknown>> = [];
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command !== 'ai_stream_chat') return undefined;
+      const request = (payload as { request: Record<string, unknown> }).request;
+      requests.push(request);
+      const requestId = request.request_id as string;
+      const firstRequest = requests.length === 1;
+      queueMicrotask(() => {
+        const text = firstRequest
+          ? 'Alpha repeated phrase'
+          : 'repeated phrase and omega';
+        listeners.get('ai:stream')?.({
+          payload: { request_id: requestId, delta: text },
+        });
+        listeners.get('ai:done')?.({
+          payload: {
+            request_id: requestId,
+            output_text: text,
+            tool_calls: [],
+            completion_reason: firstRequest ? 'length' : 'completed',
+          },
+        });
+      });
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+    const streamed: string[] = [];
+    const onComplete = mock((_result: unknown) => undefined);
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'openai-local',
+      providerType: 'openai',
+      baseUrl: 'https://example.test',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Write a long answer.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: (token: string) => streamed.push(token),
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.tools).toBeArray();
+    expect(requests[1]?.tools).toEqual([]);
+    expect(JSON.stringify(requests[1]?.messages)).toContain('Continue exactly where it stopped');
+    expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Alpha repeated phrase and omega',
+        completionReason: 'length_recovered',
+      }),
+    );
+  });
+
+  it('continues a generic length-limited response once and preserves the recovery cause', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
+      const firstRequest = requestBodies.length === 1;
+      const text = firstRequest
+        ? 'Alpha repeated phrase'
+        : 'repeated phrase and omega';
+      const finishReason = firstRequest ? 'length' : 'stop';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`,
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const streamed: string[] = [];
+    const onComplete = mock((_result: unknown) => undefined);
+
+    await streamChat({
+      providerId: 'openai-generic',
+      providerType: 'openai',
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Write a long answer.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: (token: string) => streamed.push(token),
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]?.tools).toBeDefined();
+    expect(requestBodies[1]?.tools).toBeUndefined();
+    expect(JSON.stringify(requestBodies[1]?.messages)).toContain('Continue exactly where it stopped');
+    expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Alpha repeated phrase and omega',
+        completionReason: 'length_recovered',
+      }),
+    );
+  });
+
   it('relays Copilot bridge tool requests to frontend tool handlers', async () => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
