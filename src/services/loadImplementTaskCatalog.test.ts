@@ -54,6 +54,100 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
 });
 
 describe('createLoadImplementTaskCatalog', () => {
+  it('persists a Git mode snapshot for legacy plan targets only when the project is confirmed ready', async () => {
+    const legacyPlan = makePlan({
+      id: 'plan-legacy-git',
+      title: 'Legacy Git plan',
+      status: 'validated',
+      targetBranch: 'develop',
+      projectId: 'web',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'task-legacy-git',
+          title: 'Migrate legacy target',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'legacy-target',
+          projectId: 'web',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-legacy-git',
+          name: 'legacy-target',
+          color: '#3b82f6',
+          parentBranch: 'plan/legacy-git',
+          projectId: 'web',
+          taskIds: ['task-legacy-git'],
+          status: 'pending',
+        },
+      ],
+    });
+    const updates: Array<{
+      branchName: string;
+      planId: string;
+      nodes?: ArchitectPlanRecord['nodes'];
+      setActive?: boolean;
+    }> = [];
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'web',
+        standaloneProjects: [
+          {
+            id: 'web',
+            name: 'Web',
+            mountName: 'web',
+            path: '/repos/web',
+            created_at: '',
+            status: 'active',
+            gitSetupState: 'ready',
+            directEdit: false,
+            metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+          },
+        ],
+        projectGroups: [],
+      } as never),
+      listArchitectPlans: async () => ({
+        activePlanId: null,
+        plans: [toSummary(legacyPlan)],
+      }),
+      getArchitectPlan: async () => legacyPlan,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+      updateArchitectPlan: async (input) => {
+        updates.push(input);
+        return { ...legacyPlan, nodes: input.nodes || legacyPlan.nodes };
+      },
+    });
+
+    const catalog = await loadImplementTaskCatalog([]);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      branchName: 'develop',
+      planId: 'plan-legacy-git',
+      setActive: false,
+      nodes: [
+        expect.objectContaining({
+          id: 'task-legacy-git',
+          executionModesByProjectId: { web: 'git' },
+        }),
+      ],
+    });
+    expect(catalog.tasks.find((task) => task.node_id === 'task-legacy-git')?.execution_targets).toEqual([
+      expect.objectContaining({ projectId: 'web', executionMode: 'git' }),
+    ]);
+  });
+
   it('aggregates executable plans across every project and target branch', async () => {
     const webPlan = makePlan({
       id: 'plan-web',

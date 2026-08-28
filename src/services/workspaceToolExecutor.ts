@@ -1076,9 +1076,13 @@ interface ProjectWorkspaceCandidate {
 const buildGitModeError = (candidate: ProjectWorkspaceCandidate): string => {
   const nextStep = candidate.executionMode === 'direct'
     ? 'This target uses direct editing. Use workspace file tools instead.'
-    : candidate.executionMode === 'blocked'
-      ? 'Initialize Git or enable direct editing in the project settings.'
-      : 'Reopen the project settings so Macro can refresh its Git state.';
+    : candidate.executionModeReason === 'project_read_only'
+      ? 'The project is read-only. Change its access setting before using Git tools.'
+      : candidate.executionModeReason === 'initial_commit_missing'
+        ? 'Create the initial commit from the project settings before using Git tools.'
+        : candidate.executionMode === 'blocked'
+          ? 'Initialize Git or enable direct editing in the project settings.'
+          : 'Reopen the project settings so Macro can refresh its Git state.';
   return `Error executing git tool: project "${candidate.name}" is ${candidate.executionMode}. ${nextStep}`;
 };
 

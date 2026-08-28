@@ -55,6 +55,7 @@ const AUTO_DETECTED_BASE_BRANCH_NAMES: &[&str] = &["develop", "dev", "main", "ma
 const PROJECT_GIT_SETUP_READY: &str = "ready";
 const PROJECT_GIT_SETUP_NOT_GIT: &str = "not_git";
 const PROJECT_GIT_SETUP_UNBORN: &str = "unborn";
+const PROJECT_GIT_SETUP_UNKNOWN: &str = "unknown";
 const PROJECT_GIT_DETECTION_READY: &str = "ready";
 const PROJECT_GIT_DETECTION_NOT_GIT: &str = "not_git";
 const PROJECT_GIT_DETECTION_UNBORN: &str = "unborn";
@@ -6373,7 +6374,8 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
     };
 
     let raw_state = state.clone();
-    let (sanitized_state, repair_report) = sanitize_workspace_state(workspace_path, state);
+    let (mut sanitized_state, mut repair_report) = sanitize_workspace_state(workspace_path, state);
+    refresh_unknown_wsl_project_access(&mut sanitized_state, &mut repair_report).await;
     if repair_report.has_repairs() {
         tracing::warn!(
             action = "project_registry_state_sanitized",
@@ -6491,6 +6493,58 @@ fn sanitize_project_entry(
         repair_report.project_access_states_updated += 1;
     }
     Some(normalized)
+}
+
+async fn refresh_unknown_wsl_projects(
+    projects: &mut [ProjectDto],
+    repair_report: &mut ProjectRegistryRepairReportDto,
+) {
+    for project in projects.iter_mut() {
+        if project.git_setup_state != PROJECT_GIT_SETUP_UNKNOWN {
+            continue;
+        }
+        let Some(wsl_path) = parse_wsl_unc_path(&project.path) else {
+            continue;
+        };
+        let Ok(detection) = detect_wsl_project_git_flow(&wsl_path, None).await else {
+            continue;
+        };
+        apply_detected_project_access(project, derive_git_setup_state(&detection), repair_report);
+    }
+}
+
+fn apply_detected_project_access(
+    project: &mut ProjectDto,
+    git_setup_state: &str,
+    repair_report: &mut ProjectRegistryRepairReportDto,
+) {
+    let previous_access = (
+        project.git_setup_state.clone(),
+        project.direct_edit,
+        project.is_read_only,
+        project.read_only_reason.clone(),
+    );
+    let normalized = normalize_project_access(project.clone(), git_setup_state);
+    let normalized_access = (
+        normalized.git_setup_state.clone(),
+        normalized.direct_edit,
+        normalized.is_read_only,
+        normalized.read_only_reason.clone(),
+    );
+    if normalized_access != previous_access {
+        repair_report.project_access_states_updated += 1;
+    }
+    *project = normalized;
+}
+
+async fn refresh_unknown_wsl_project_access(
+    state: &mut WorkspaceState,
+    repair_report: &mut ProjectRegistryRepairReportDto,
+) {
+    refresh_unknown_wsl_projects(&mut state.standalone_projects, repair_report).await;
+    for group in &mut state.project_groups {
+        refresh_unknown_wsl_projects(&mut group.projects, repair_report).await;
+    }
 }
 
 fn sanitize_workspace_state(
@@ -7893,6 +7947,23 @@ mod tests {
                 dependencies: Vec::new(),
             },
         }
+    }
+
+    #[test]
+    fn unknown_wsl_project_access_is_migrated_from_detection() {
+        let mut project = make_project("project-wsl", r"\\wsl.localhost\Ubuntu\home\oscar\repo");
+        project.git_setup_state = PROJECT_GIT_SETUP_UNKNOWN.to_string();
+        project.is_read_only = true;
+        project.read_only_reason = Some("missing_git".to_string());
+        let mut report = ProjectRegistryRepairReportDto::default();
+
+        apply_detected_project_access(&mut project, PROJECT_GIT_SETUP_READY, &mut report);
+
+        assert_eq!(project.git_setup_state, PROJECT_GIT_SETUP_READY);
+        assert!(!project.direct_edit);
+        assert!(!project.is_read_only);
+        assert_eq!(project.read_only_reason, None);
+        assert_eq!(report.project_access_states_updated, 1);
     }
 
     #[tokio::test]

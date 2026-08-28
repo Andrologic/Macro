@@ -1983,6 +1983,44 @@ describe('useTaskStore merge workflow review loading', () => {
     ).toBe('merged');
   });
 
+  it('does not inspect Git publication for a blocked standalone target', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-blocked',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'InProgress',
+      assigned_branch: 'feature/blocked',
+      branch_name: 'feature/blocked',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/blocked',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/blocked',
+        repoPath: '/repos/web',
+      }],
+    });
+    appStoreState.getProjectById = () => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: false,
+      gitSetupState: 'unborn',
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+
+    await expect(useTaskStore.getState().deleteTask(task.id)).rejects.toThrow(
+      'cannot run implementation tasks',
+    );
+
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(workspaceDeleteManualFeatureMock).not.toHaveBeenCalled();
+  });
+
   it('loads merge review for only the Git target of a mixed task', async () => {
     appStoreState.projectGroups = [{
       id: 'group-1',

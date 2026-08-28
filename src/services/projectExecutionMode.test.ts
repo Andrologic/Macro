@@ -45,11 +45,11 @@ describe('resolveProjectExecutionMode', () => {
     })).toMatchObject({ mode: 'invalid', reason: 'target_mode_missing' });
   });
 
-  it('never migrates a legacy target to Git from the current project state', () => {
+  it('migrates a legacy target to Git only from a confirmed ready project', () => {
     expect(resolveProjectExecutionMode({
       project: project({ gitSetupState: 'ready' }),
       target: target(),
-    })).toMatchObject({ mode: 'invalid', reason: 'target_mode_missing' });
+    })).toMatchObject({ mode: 'git', reason: 'git_ready', source: 'legacy_migration' });
   });
 
   it('keeps an explicit direct target direct after the project gains Git', () => {

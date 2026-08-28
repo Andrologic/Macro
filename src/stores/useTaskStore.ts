@@ -1070,7 +1070,7 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
     return false;
   }
 
-  const executionTargets = getExecutionTargetsWithRepoPaths(task);
+  const executionTargets = getExecutionTargetsWithRepoPaths(task).filter(isGitExecutionTarget);
   for (const target of executionTargets) {
     try {
       const branches = await tauriIpc.gitBranchList(target.repoPath);

@@ -1106,6 +1106,43 @@ describe("workspaceToolExecutor helpers", () => {
     },
   );
 
+  it.each([
+    ['project_read_only', 'project is read-only'],
+    ['initial_commit_missing', 'Create the initial commit'],
+  ] as const)(
+    'explains the %s Git-tool blocker without calling the backend',
+    async (executionModeReason, expectedMessage) => {
+      const backendCalls: Array<Record<string, unknown>> = [];
+      const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+        tauriModule: {
+          isTauriAvailable: () => true,
+          validateToolExecution: async () => ({ allowed: true }),
+          executeWorkspaceTool: async (params: Record<string, unknown>) => {
+            backendCalls.push(params);
+            return '{}';
+          },
+        },
+      } as Partial<MockAppState>);
+
+      const result = await executeWorkspaceTool('git_status', {}, 'Implement', {
+        projectId: 'blocked-project',
+        projectMounts: [{
+          projectId: 'blocked-project',
+          groupId: null,
+          mountName: 'blocked',
+          displayName: 'Blocked project',
+          workspacePath: 'C:/work/blocked',
+          isReadOnly: true,
+          executionMode: 'blocked',
+          executionModeReason,
+        }],
+      });
+
+      expect(result).toContain(expectedMessage);
+      expect(backendCalls).toEqual([]);
+    },
+  );
+
   it('never defaults a mount with missing project metadata to Git', async () => {
     const backendCalls: Array<Record<string, unknown>> = [];
     const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({

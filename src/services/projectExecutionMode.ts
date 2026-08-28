@@ -105,6 +105,17 @@ export const resolveProjectExecutionMode = (params: {
     return { mode: 'git', reason: 'persisted_git_target', source: 'persisted_target' };
   }
 
+  if (
+    target &&
+    project.gitSetupState === 'ready' &&
+    !project.directEdit &&
+    !project.userReadOnly &&
+    !project.isReadOnly &&
+    (project.path?.trim() || target.repoPath?.trim())
+  ) {
+    return { mode: 'git', reason: 'git_ready', source: 'legacy_migration' };
+  }
+
   if (target) {
     return { mode: 'invalid', reason: 'target_mode_missing', source: 'legacy_migration' };
   }
