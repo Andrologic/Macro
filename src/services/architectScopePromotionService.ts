@@ -165,7 +165,7 @@ export const createArchitectScopePromotionService = (
       throw new Error(
         tPromotion(
           'implement.errors.architectPromotionOutsideContext',
-          'Cannot add {{projects}} because the selection is outside this task context.',
+          'Cannot add {{projects}} because those projects are outside this task context.',
           { projects: nonContextProjectIds.join(', ') },
         ),
       );
