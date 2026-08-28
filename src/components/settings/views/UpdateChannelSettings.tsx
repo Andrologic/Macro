@@ -1,3 +1,7 @@
+/* Hallmark · component: update channel settings · genre: modern-minimal · theme: Macro
+ * states: default · hover · focus · active · disabled · loading · error · success
+ * contrast: existing Macro theme tokens · pre-emit critique: P5 H5 E5 S5 R5 V5
+ */
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
@@ -11,8 +15,8 @@ import { useAppUpdateStore } from '../../../stores/useAppUpdateStore';
 import { Button } from '../../ui/Button';
 import { ConfirmPromptModal } from '../../ui/ConfirmPromptModal';
 import { Icon } from '../../ui/Icon';
-import { Select } from '../../ui/Select';
 import { notify } from '../../ui/toastService';
+import { cn } from '../../../utils/cn';
 
 const getProgress = (downloadedBytes: number, totalBytes: number | null): number | null =>
   totalBytes && totalBytes > 0
@@ -26,7 +30,6 @@ export const UpdateChannelSettings: React.FC = () => {
   const [pendingStableConfirmation, setPendingStableConfirmation] = useState(false);
   const [
     phase,
-    currentVersion,
     update,
     downloadedBytes,
     totalBytes,
@@ -38,7 +41,6 @@ export const UpdateChannelSettings: React.FC = () => {
     reset,
   ] = useAppUpdateStore(useShallow((state) => [
     state.phase,
-    state.currentVersion,
     state.availableUpdate,
     state.downloadedBytes,
     state.totalBytes,
@@ -105,51 +107,105 @@ export const UpdateChannelSettings: React.FC = () => {
   const checking = phase === 'checking';
   const downloading = phase === 'downloading';
   const busy = checkInProgress || checking || downloading || saving || phase === 'installing';
+  const hasStatus = checking || downloading || phase === 'ready' || phase === 'upToDate' || phase === 'error';
+  const channelOptions: Array<{
+    value: UpdateChannel;
+    label: string;
+    description: string;
+  }> = [
+    {
+      value: 'stable',
+      label: t('settings.updateChannel.stable', 'Stable'),
+      description: t(
+        'settings.updateChannel.stableDescription',
+        'Receive production releases only.',
+      ),
+    },
+    {
+      value: 'preview',
+      label: t('settings.updateChannel.preview', 'Preview'),
+      description: t(
+        'settings.updateChannel.previewDescription',
+        'Receive validated nightly and release candidate builds.',
+      ),
+    },
+  ];
 
   return (
-    <div className="space-y-5">
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-muted-foreground">
-            {t('settings.updateChannel.currentVersion', 'Current version')}
-          </div>
-          <div className="text-sm font-medium text-foreground">
-            {currentVersion ? `Macro v${currentVersion}` : t('common.loading', 'Loading…')}
-          </div>
+    <div className="space-y-4">
+      <fieldset className="min-w-0">
+        <legend className="text-sm font-medium text-foreground">
+          {t('settings.updateChannel.label', 'Update channel')}
+        </legend>
+        <div className="mt-2 grid grid-cols-2 gap-2" role="radiogroup">
+          {channelOptions.map((option) => {
+              const selected = channel === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  aria-label={`${option.label}. ${option.description}`}
+                  tabIndex={selected ? 0 : -1}
+                  disabled={busy}
+                  onClick={() => requestChannelChange(option.value)}
+                  onKeyDown={(event) => {
+                    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+                      return;
+                    }
+                    event.preventDefault();
+                    const currentIndex = channelOptions.findIndex(({ value }) => value === option.value);
+                    const moveBackward = event.key === 'ArrowLeft' || event.key === 'ArrowUp' || event.key === 'Home';
+                    const nextIndex = event.key === 'Home'
+                      ? 0
+                      : event.key === 'End'
+                        ? channelOptions.length - 1
+                        : (currentIndex + (moveBackward ? -1 : 1) + channelOptions.length) % channelOptions.length;
+                    const nextOption = channelOptions[nextIndex];
+                    const radioButtons = event.currentTarget.parentElement
+                      ?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+                    radioButtons?.[nextIndex]?.focus();
+                    if (nextOption) requestChannelChange(nextOption.value);
+                  }}
+                  className={cn(
+                    'flex h-11 min-w-0 items-center justify-center gap-2 rounded-lg border px-3 text-center transition-[border-color,background-color,color,transform] duration-150',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-card',
+                    'active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50',
+                    selected
+                      ? 'border-primary/50 bg-primary/[0.08] text-foreground'
+                      : 'border-border/60 bg-transparent text-muted-foreground hover:border-border hover:bg-accent/35 hover:text-foreground',
+                  )}
+                >
+                  <span className="truncate text-xs font-semibold">{option.label}</span>
+                  {saving && selected
+                    ? <Icon name="loader" size={12} className="shrink-0 motion-safe:animate-spin" />
+                    : selected ? <Icon name="check" size={12} className="shrink-0 text-primary" /> : null}
+                </button>
+              );
+          })}
         </div>
-        <div className="space-y-1">
-          <label htmlFor="update-channel" className="text-xs font-medium text-muted-foreground">
-            {t('settings.updateChannel.label', 'Update channel')}
-          </label>
-          <Select
-            id="update-channel"
-            value={channel}
-            disabled={busy}
-            onChange={(event) => requestChannelChange(event.target.value as UpdateChannel)}
-          >
-            <option value="stable">{t('settings.updateChannel.stable', 'Stable')}</option>
-            <option value="preview">{t('settings.updateChannel.preview', 'Preview')}</option>
-          </Select>
-        </div>
-      </div>
+      </fieldset>
 
-      <div className="border-t border-border/50 pt-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0 space-y-1">
+      <div className={cn(
+        'flex flex-col gap-3 border-t border-border/60 pt-4 lg:flex-row lg:items-center',
+        hasStatus ? 'lg:justify-between' : 'lg:justify-end',
+      )}>
+        {hasStatus ? (
+          <div className="min-w-0 space-y-0.5">
             {checking ? (
-              <p className="flex items-center gap-2 text-sm text-foreground">
-                <Icon name="refresh-cw" size={14} className="motion-safe:animate-spin" />
+              <p className="text-sm font-medium text-foreground">
                 {t('updates.checking', 'Checking for updates')}
               </p>
             ) : downloading ? (
-              <p className="text-sm text-foreground">
+              <p className="text-sm font-medium text-foreground">
                 {progress === null
                   ? t('updates.downloading', 'Downloading update')
                   : t('updates.downloadingProgress', 'Downloading update: {{progress}}%', { progress })}
               </p>
             ) : phase === 'ready' && update ? (
               <>
-                <p className="text-sm font-medium text-foreground">
+                <p className="break-words text-sm font-medium text-foreground">
                   {t('updates.readyVersion', 'Macro v{{version}} is ready', { version: update.version })}
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -157,7 +213,7 @@ export const UpdateChannelSettings: React.FC = () => {
                 </p>
               </>
             ) : phase === 'upToDate' ? (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm font-medium text-foreground">
                 {t('updates.upToDate', 'Macro is up to date')}
               </p>
             ) : phase === 'error' ? (
@@ -165,47 +221,49 @@ export const UpdateChannelSettings: React.FC = () => {
                 <p className="text-sm font-medium text-amber-400">
                   {t('updates.updateFailed', 'The update could not be completed')}
                 </p>
-                {error ? <p className="max-w-xl text-xs text-muted-foreground">{error}</p> : null}
+                {error ? <p className="max-w-xl break-words text-xs text-muted-foreground">{error}</p> : null}
               </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                {channel === 'preview'
-                  ? t('settings.updateChannel.previewDescription', 'Receive validated nightly and release candidate builds.')
-                  : t('settings.updateChannel.stableDescription', 'Receive production releases only.')}
-              </p>
-            )}
+            ) : null}
             {downloading ? (
-              <div className="mt-2 h-1.5 w-full max-w-md overflow-hidden rounded-full bg-muted">
+              <div className="mt-2 h-1.5 w-full max-w-md overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={progress ?? undefined} aria-valuemin={0} aria-valuemax={100}>
                 <div
-                  className="h-full rounded-full bg-primary transition-[width] duration-200 ease-out"
+                  className="h-full rounded-full bg-primary transition-[width] duration-200 ease-out motion-reduce:transition-none"
                   style={{ width: `${progress ?? 12}%` }}
                 />
               </div>
             ) : null}
           </div>
-          <div className="flex shrink-0 gap-2">
-            {(phase === 'ready' || (phase === 'error' && update)) ? (
-              <Button
-                type="button"
-                size="sm"
-                variant={phase === 'ready' ? 'primary' : 'ghost'}
-                onClick={phase === 'ready' ? openDetails : () => void redownload()}
-              >
-                {phase === 'ready'
-                  ? t('updates.installNow', 'Install now')
-                  : t('updates.downloadAgain', 'Download again')}
-              </Button>
-            ) : null}
+        ) : null}
+        <div className="flex shrink-0 items-center gap-2 lg:justify-end">
+          {(phase === 'ready' || (phase === 'error' && update)) ? (
             <Button
               type="button"
               size="sm"
-              variant="secondary"
-              disabled={busy || phase === 'ready'}
-              onClick={() => void check()}
+              variant={phase === 'ready' ? 'primary' : 'ghost'}
+              className={cn(
+                'h-9 whitespace-nowrap px-4 active:translate-y-px',
+                phase === 'error' && 'border border-border/70 bg-card hover:bg-accent',
+              )}
+              leftIcon={<Icon name={phase === 'ready' ? 'download' : 'rotate-ccw'} size={13} />}
+              onClick={phase === 'ready' ? openDetails : () => void redownload()}
             >
-              {t('updates.check', 'Check for updates')}
+              {phase === 'ready'
+                ? t('updates.installNow', 'Install now')
+                : t('updates.downloadAgain', 'Download again')}
             </Button>
-          </div>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-9 whitespace-nowrap border border-border/70 bg-transparent px-4 hover:bg-accent/50 active:translate-y-px"
+            disabled={busy || phase === 'ready'}
+            isLoading={checking || (checkInProgress && !downloading)}
+            leftIcon={<Icon name="refresh-cw" size={13} />}
+            onClick={() => void check()}
+          >
+            {t('updates.check', 'Check for updates')}
+          </Button>
         </div>
       </div>
 
