@@ -21,6 +21,7 @@ export type ChatCompletionReason =
   | 'length'
   | 'length_recovered'
   | 'incomplete'
+  | 'incomplete_recovered'
   | 'tool_turn_limit'
   | 'post_tool_empty_fallback';
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
