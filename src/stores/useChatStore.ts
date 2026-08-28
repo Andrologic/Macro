@@ -267,6 +267,7 @@ import {
   runContextCompactionOrchestration,
   type PendingToolBoundaryCompaction,
 } from "../services/contextCompactionOrchestrator";
+import { shouldProactivelyCompactContext } from "../services/contextCompactionPlanner";
 import {
   buildCompactionActivityStatus,
   getCompactionEventTrigger,
@@ -3882,6 +3883,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         currentCompactionState,
         budgetPolicy,
         forceCompaction: params.forceCompaction,
+        buildForceCompaction: true,
         forcePrune: params.forcePrune,
         estimateSerializedPayloadTokens,
         countProviderInputItems,
@@ -8742,7 +8744,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let needsSafetyPrestream =
       autoCompactionEnabled &&
       !params.compactionMode &&
-      isBlockableContextOverUsableBudget(initialFootprint);
+      shouldProactivelyCompactContext({
+        boundary: "pre_send",
+        footprint: initialFootprint,
+      });
     let compactedRequest: MaybeCompactConversationResult;
     if (needsSafetyPrestream) {
       markSafetyPrestreamCompacting(initialFootprint);
@@ -8756,7 +8761,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       needsSafetyPrestream =
         autoCompactionEnabled &&
         !params.compactionMode &&
-        isBlockableContextOverUsableBudget(compactedRequest.footprintAfter);
+        shouldProactivelyCompactContext({
+          boundary: "pre_send",
+          footprint: compactedRequest.footprintAfter,
+        });
       if (needsSafetyPrestream) {
         markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
         compactedRequest = await compactPreparedRequest({

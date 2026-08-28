@@ -128,6 +128,39 @@ describe('evaluateContextCompaction', () => {
     expect(result.shouldCreateOrRefreshCheckpoint).toBe(false);
   });
 
+  it('proactively compacts at blocking pressure before the usable budget is exhausted', () => {
+    const result = evaluateContextCompaction({
+      boundary: 'pre_send',
+      footprint: footprint({ context: 128_000, output: 8_000, serialized: 90_000 }),
+    });
+
+    expect(result.pressure.usableContextRatio).toBeCloseTo(0.75, 4);
+    expect(result.pressure.threshold).toBe('blocking');
+    expect(result.decision).toBe('compact');
+    expect(result.shouldCreateOrRefreshCheckpoint).toBe(true);
+  });
+
+  it('waits at background pressure before a normal send', () => {
+    const result = evaluateContextCompaction({
+      boundary: 'pre_send',
+      footprint: footprint({ context: 128_000, output: 8_000, serialized: 72_000 }),
+    });
+
+    expect(result.pressure.threshold).toBe('background');
+    expect(result.decision).toBe('send');
+  });
+
+  it('uses background pressure at a safe post-tool boundary', () => {
+    const result = evaluateContextCompaction({
+      boundary: 'post_tool_batch',
+      footprint: footprint({ context: 128_000, output: 8_000, serialized: 72_000 }),
+      latestBoundaryPayloadTokens: 10_000,
+    });
+
+    expect(result.pressure.threshold).toBe('background');
+    expect(result.decision).toBe('compact');
+  });
+
   it('does not auto-compact from a non-authoritative Macro fallback limit', () => {
     const result = evaluateContextCompaction({
       boundary: 'pre_send',
@@ -143,6 +176,17 @@ describe('evaluateContextCompaction', () => {
     expect(result.decision).toBe('send');
     expect(result.budget.source).toBe('macro_fallback');
     expect(result.budget.isAuthoritative).toBe(false);
+  });
+
+  it('keeps proactive pressure diagnostic when auto compaction is disabled', () => {
+    const result = evaluateContextCompaction({
+      boundary: 'pre_send',
+      footprint: footprint({ context: 128_000, output: 8_000, serialized: 90_000 }),
+      budgetPolicy: { auto: false },
+    });
+
+    expect(result.pressure.threshold).toBe('blocking');
+    expect(result.decision).toBe('send');
   });
 
   it('requires manual compaction when auto compaction is disabled', () => {

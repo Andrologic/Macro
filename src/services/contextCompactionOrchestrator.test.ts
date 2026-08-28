@@ -84,6 +84,37 @@ describe('contextCompactionOrchestrator', () => {
     expect(result.shouldPersistCompaction).toBe(false);
   });
 
+  it('creates a durable checkpoint from proactive pre-send pressure', async () => {
+    const messages = [
+      message('u1', 'user', 'old request '.repeat(400)),
+      message('a1', 'assistant', 'old answer '.repeat(400)),
+      message('u2', 'user', 'second request '.repeat(100)),
+      message('a2', 'assistant', 'second answer '.repeat(100)),
+      message('u3', 'user', 'new request'),
+    ];
+
+    const result = await runContextCompactionOrchestration({
+      ...baseParams(messages),
+      footprintFields: {
+        ...baseParams(messages).footprintFields,
+        modelContextWindowTokens: 5_000,
+        outputLimitTokens: 500,
+      },
+      estimateSerializedPayloadTokens: () => 3_500,
+      buildForceCompaction: true,
+      generateSummary: async () => 'Proactive compacted summary.',
+    });
+
+    expect(result.outcome).toBe('completed');
+    if (result.outcome !== 'completed') {
+      throw new Error('expected completed result');
+    }
+    expect(result.evaluation.decision).toBe('compact');
+    expect(result.preflightFootprint.isHardStop).toBe(false);
+    expect(result.result.compactionState?.summaryText).toContain('Proactive');
+    expect(result.shouldPersistCompaction).toBe(true);
+  });
+
   it('blocks when the latest boundary payload cannot fit alone', async () => {
     const messages = [message('u1', 'user', 'x'.repeat(20_000))];
 

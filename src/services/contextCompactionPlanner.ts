@@ -133,6 +133,31 @@ const buildPressureSnapshot = (
   reason: footprint.reason,
 });
 
+export const shouldProactivelyCompactContext = (params: {
+  boundary: ContextCompactionBoundary;
+  footprint: ContextFootprint;
+}): boolean => {
+  if (params.footprint.isContextLimitAuthoritative === false) {
+    return false;
+  }
+  if (
+    params.boundary !== 'pre_send' &&
+    params.boundary !== 'post_tool_batch'
+  ) {
+    return false;
+  }
+  if (params.footprint.threshold === 'degraded') {
+    return true;
+  }
+  if (params.footprint.threshold === 'blocking') {
+    return true;
+  }
+  return (
+    params.boundary === 'post_tool_batch' &&
+    params.footprint.threshold === 'background'
+  );
+};
+
 export const evaluateContextCompaction = (params: {
   boundary: ContextCompactionBoundary;
   footprint: ContextFootprint;
@@ -150,6 +175,10 @@ export const evaluateContextCompaction = (params: {
   const autoCompactionEnabled = params.budgetPolicy?.auto !== false;
   const forceCompaction = Boolean(params.forceCompaction);
   const overUsableBudget = isContextFootprintOverUsableBudget(params.footprint);
+  const proactiveCompactionRequired = shouldProactivelyCompactContext({
+    boundary: params.boundary,
+    footprint: params.footprint,
+  });
   const blockableOverUsableBudget = isBlockableContextOverUsableBudget(
     params.footprint,
   );
@@ -190,6 +219,9 @@ export const evaluateContextCompaction = (params: {
       decision = 'compact';
       reason = params.footprint.reason;
     }
+  } else if (autoCompactionEnabled && proactiveCompactionRequired) {
+    decision = 'compact';
+    reason = params.footprint.reason;
   } else if (currentCompactionState) {
     decision = 'reuse_checkpoint';
     reason = 'checkpoint_valid_for_projected_payload';
