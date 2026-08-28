@@ -235,7 +235,10 @@ import {
   resolveProjectExecutionContext,
   type ProjectExecutionContext,
 } from "../services/projectExecutionContext";
-import { getPlanExecutionModesByProjectId } from "../services/planExecutionModes";
+import {
+  getPlanExecutionModesByProjectId,
+  resolvePlanProjectExecutionMode,
+} from "../services/planExecutionModes";
 import {
   buildQuestionnaireResponseArtifacts,
   buildQuestionnaireResponseProviderInputItems,
@@ -1784,6 +1787,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
       !(isStandaloneImplementTask(task) && ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId)) &&
       !(gitToolsUnavailable && isGitToolId(toolId))
     );
+  };
+
+  const filterToolIdsForArchitectPlan = (
+    toolIds: string[],
+    executionContext: ProjectExecutionContext,
+  ): string[] => {
+    const appState = useAppStore.getState();
+    const planProjectIds = new Set<string>();
+    for (const node of appState.planNodes ?? []) {
+      for (const projectId of node.projectIds ?? []) {
+        if (projectId) planProjectIds.add(projectId);
+      }
+      if (node.projectId) planProjectIds.add(node.projectId);
+      for (const projectId of Object.keys(node.executionModesByProjectId ?? {})) {
+        planProjectIds.add(projectId);
+      }
+    }
+    if (planProjectIds.size === 0 && executionContext.focusedProjectId) {
+      planProjectIds.add(executionContext.focusedProjectId);
+    }
+    const projectIds = Array.from(planProjectIds);
+    const gitToolsUnavailable = projectIds.length > 0 && projectIds.every((projectId) =>
+      resolvePlanProjectExecutionMode({
+        projectId,
+        nodes: appState.planNodes,
+        project: appState.getProjectById(projectId),
+      }) !== 'git'
+    );
+    return gitToolsUnavailable
+      ? toolIds.filter((toolId) => !isGitToolId(toolId))
+      : toolIds;
   };
 
   const formatStandaloneArchitectToolUnavailable = (toolName: string): string =>
@@ -8647,6 +8681,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       taskAllowedToolIds = filterToolIdsForImplementTask(
         baseAllowedToolIds,
         taskForToolScope,
+      );
+    } else if (params.modeAtSend === "Architect") {
+      taskAllowedToolIds = filterToolIdsForArchitectPlan(
+        baseAllowedToolIds,
+        executionContext,
       );
     }
     const toolsState = useToolsStore.getState();
