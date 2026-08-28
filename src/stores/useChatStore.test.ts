@@ -4,6 +4,7 @@ import type {
   AppMode,
   Conversation,
   MCPServer,
+  PlanNode,
   ProjectGroup,
   SkillManifest,
 } from '../types';
@@ -113,6 +114,7 @@ const appState = {
   activeThemeId: 'macro-dark',
   codeOverflowMode: 'wrap' as const,
   activeArchitectPlanId: null as string | null,
+  planNodes: [] as PlanNode[],
   activePlanContext: null as {
     id?: string;
     targetBranch: string;
@@ -203,6 +205,7 @@ const appState = {
       }
 
       appState.activeArchitectPlanId = plan.id;
+      appState.planNodes = plan.nodes;
       appState.activePlanContext = {
         id: plan.id,
         targetBranch: options?.targetBranch ?? plan.targetBranch,
@@ -2117,6 +2120,7 @@ const activateArchitectPlanForTest = (
   const plan = createScenarioPlan('started', overrides);
   architectPlans.set(plan.id, plan);
   appState.activeArchitectPlanId = plan.id;
+  appState.planNodes = plan.nodes;
   appState.activePlanContext = {
     id: plan.id,
     targetBranch: plan.targetBranch,
@@ -2635,6 +2639,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.activeThemeId = 'macro-dark';
     appState.codeOverflowMode = 'wrap';
     appState.activeArchitectPlanId = null;
+    appState.planNodes = [];
     appState.activePlanContext = null;
     appState.architectPlanSwitch = {
       requestId: 0,

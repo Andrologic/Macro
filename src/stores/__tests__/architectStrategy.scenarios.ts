@@ -20,6 +20,7 @@ export const registerArchitectStrategyScenarios = (
     createTranscriptEntry,
     expectArchitectSelection,
     getArchitectPlanMock,
+    getLatestStreamOptions,
     loadChatStore,
     providerState,
     projectGroups,
@@ -916,6 +917,45 @@ export const registerArchitectStrategyScenarios = (
       expect(String(streamOptions.messages[0]?.content)).toContain(
         'Custom PLAN_EXPLORER prompt for tests.'
       );
+    });
+
+    it('describes a direct-only Architect plan without Git workflow instructions', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      const { useChatStore } = await loadChatStore();
+      activateArchitectPlanForTest({
+        conversationId: 'plan-conv',
+        nodes: [{
+          id: 'direct-node',
+          title: 'Edit docs',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+          executionModesByProjectId: { 'project-1': 'direct' },
+        }],
+      });
+      useChatStore.setState({
+        conversations: [createConversation('plan-conv')],
+        messages: [],
+        selectedConversationId: 'plan-conv',
+        selectedConversationIdsByMode: { Architect: 'plan-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'plan-conv',
+        content: 'Structure cette modification directe.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ messages: Array<{ content: string }> }>();
+      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
     });
 
     it('removes strategy mutation tools from Architect turns after plan validation', async () => {

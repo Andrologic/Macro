@@ -602,6 +602,8 @@ export const registerImplementPolicyScenarios = (
       expect(streamOptions.allowedToolIds).not.toContain('git_diff');
       expect(streamOptions.allowedToolIds).not.toContain('git_add');
       expect(streamOptions.allowedToolIds).not.toContain('git_commit');
+      expect(String(getLatestStreamOptions<{ messages: Array<{ content: string }> }>().messages[0]?.content))
+        .toContain('This is a direct-edit task.');
     });
 
     it('keeps standalone Plan mode read-only without Architect task tools', async () => {

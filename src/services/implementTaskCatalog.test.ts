@@ -40,6 +40,7 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
   dependencies: overrides.dependencies ?? [],
   estimated_changes: overrides.estimated_changes ?? [],
   code_diff: overrides.code_diff,
+  execution_targets: overrides.execution_targets,
 });
 
 describe('buildImplementTaskCatalog', () => {
@@ -518,6 +519,28 @@ describe('buildImplementTaskCatalog', () => {
 });
 
 describe('deriveFallbackImplementTasks', () => {
+  it('preserves an empty branch for a persisted direct target', () => {
+    const [task] = deriveFallbackImplementTasks([makeTask({
+      id: 'direct-task',
+      title: 'Edit directly',
+      project_id: 'docs',
+      execution_targets: [{
+        projectId: 'docs',
+        executionMode: 'direct',
+        branchName: '',
+        worktreeKey: 'docs::direct',
+      }],
+    })]);
+
+    expect(task.assigned_branch).toBe('');
+    expect(task.branch_name).toBe('');
+    expect(task.execution_targets[0]).toMatchObject({
+      executionMode: 'direct',
+      branchName: '',
+      executionKind: 'repository_root',
+    });
+  });
+
   it('recomputes dependency blocking for standalone tasks', () => {
     const tasks = deriveFallbackImplementTasks([
       makeTask({

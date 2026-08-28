@@ -531,8 +531,23 @@ const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
   "Plan mode is read-only. Do not edit files, update todos, run mutating terminal commands, stage, commit, checkout, merge, reset, stash, or claim changes were made. Use tools to inspect the repo, ask blocking questions when needed, then end with a concrete implementation plan. If the user asks you to implement while still in Plan, produce an implementation plan instead of applying it.";
 const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
   "The previous assistant turn used Plan mode. Execute the latest plan unless the user changed direction.";
-const STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION =
-  "This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. In Build mode, use workspace and git tools against the selected task repository/worktree. The agent terminal remains independent from that workspace. In Plan mode, inspect only and return a concrete plan.";
+const buildStandaloneImplementSystemInstruction = (task: ImplementTask): string => {
+  const appState = useAppStore.getState();
+  const resolutions = (task.execution_targets ?? []).map((target) =>
+    resolveProjectExecutionMode({
+      project: appState.getProjectById(target.projectId),
+      target,
+    }).mode
+  );
+  const hasGitTarget = resolutions.includes('git');
+  const hasDirectTarget = resolutions.includes('direct');
+  const executionInstruction = hasDirectTarget && hasGitTarget
+    ? 'This task mixes Git and direct targets. Use Git tools only for Git targets. Edit direct targets in their project directory without branch, worktree, commit, merge, or other Git operations.'
+    : hasDirectTarget
+      ? 'This is a direct-edit task. Work in the project directory without branch, worktree, commit, merge, or other Git operations.'
+      : 'In Build mode, use workspace and Git tools against the selected task repository or worktree.';
+  return `This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. ${executionInstruction} The agent terminal remains independent from that workspace. In Plan mode, inspect only and return a concrete plan.`;
+};
 const ARCHITECT_TASK_ONLY_TOOL_IDS = new Set([
   "task_todo_get",
   "task_todo_update",
@@ -6749,7 +6764,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (appMode === "Implement" && isStandaloneImplementTask(implementContextTask)) {
-      systemInstructions.push(STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION);
+      systemInstructions.push(buildStandaloneImplementSystemInstruction(implementContextTask));
     }
 
     if (allowedToolIds.includes("terminal_run")) {
@@ -6828,11 +6843,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
-      systemInstructions.push(
-        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each project's Git workflow profile and merge into the plan integration branch.",
+      const architectExecutionModes = Object.values(
+        getPlanExecutionModesByProjectId(useAppStore.getState().planNodes),
       );
+      const hasDirectArchitectTarget = architectExecutionModes.includes('direct');
+      const hasGitArchitectTarget = architectExecutionModes.includes('git');
+      if (hasDirectArchitectTarget && hasGitArchitectTarget) {
+        systemInstructions.push(
+          "This plan mixes Git and direct targets. Propose branch slugs only for Git targets. Direct targets run in their project directory without branches, worktrees, commits, or merges. Preserve each project's execution mode when defining nodes and dependencies.",
+        );
+      } else if (hasDirectArchitectTarget) {
+        systemInstructions.push(
+          "This is a direct-only plan. Do not propose branches, worktrees, commits, merges, or other Git operations. Each node runs in its project directory and Macro finalizes the work by accepting its direct checkpoint.",
+        );
+      } else {
+        systemInstructions.push(
+          "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each project's Git workflow profile and merge into the plan integration branch.",
+        );
+      }
       systemInstructions.push(
-        "Each executable plan node owns its own work branch. Express sequential work with `dependencies`, never by reusing a `featureSlug`; duplicate pending slugs are normalized into unique task slugs. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.",
+        "Express sequential work with `dependencies`. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself. Macro adds a synthetic finalization task after the terminal strategy nodes and finalizes each target according to its persisted execution mode.",
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {

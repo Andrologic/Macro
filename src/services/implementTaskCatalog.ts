@@ -266,10 +266,13 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       merge_workflow_summary?: MergeWorkflowSummary | null;
     };
     const isDraft = raw.draft === true;
+    const hasPersistedExecutionTargets = Boolean(raw.execution_targets?.length);
+    const persistedBranchName = raw.assigned_branch || raw.branch_name || '';
     const assignedBranch =
-      isDraft && !(raw.assigned_branch || raw.branch_name)
+      (isDraft && !persistedBranchName) ||
+      (!persistedBranchName && hasPersistedExecutionTargets)
         ? ''
-        : normalizeBranchName(raw.assigned_branch || raw.branch_name);
+        : normalizeBranchName(persistedBranchName);
     const projectIds = normalizeProjectIds(task.project_ids, task.project_id);
     const executionTargets = raw.execution_targets && raw.execution_targets.length > 0
       ? raw.execution_targets.map((target) => ({
