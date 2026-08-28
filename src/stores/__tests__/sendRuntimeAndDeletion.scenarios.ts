@@ -24,6 +24,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
     deleteConversationsMock,
     deleteConversationToolboxStateMock,
     deleteMessagesAfterMock,
+    dbUpsertConversationCompactionStateMock,
     emitTaskStoreUpdate,
     executeWorkspaceToolMock,
     flushAsyncWork,
@@ -31,7 +32,9 @@ export const registerSendRuntimeAndDeletionScenarios = (
     listMessagesMock,
     loadChatStore,
     providerState,
+    queueSendChatNonStreamingImplementation,
     savePreferenceForTest,
+    setSelectedProviderModelContext,
     streamChatMock,
     syncArchitectPlanChatFromConversationMock,
     taskStoreState,
@@ -431,6 +434,118 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(
         useChatStore.getState().conversationRuntimeById['chat-conv']?.phase,
       ).toBe('streaming');
+
+      releaseSecondStreamRef.current?.();
+      await secondSend;
+      updateMessageMock.mockImplementation(async () => undefined);
+    });
+
+    it('does not consolidate an older synthetic checkpoint from a newer turn snapshot', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      setSelectedProviderModelContext();
+      const releaseFirstPersistenceRef: { current: (() => void) | null } = {
+        current: null,
+      };
+      const releaseSecondStreamRef: { current: (() => void) | null } = {
+        current: null,
+      };
+      let createdSyntheticCheckpoint = false;
+      queueSendChatNonStreamingImplementation(async () => {
+        createdSyntheticCheckpoint = true;
+        return JSON.stringify({
+          currentObjective: 'Finish the current tool-assisted answer.',
+          userInstructions: [],
+          decisions: [],
+          openQuestions: [],
+          activeFiles: [],
+          toolFacts: [],
+          remainingWork: ['Answer from the latest tool result.'],
+          summary: 'Older turns compacted at the tool boundary.',
+        });
+      });
+      updateMessageMock.mockImplementation(async (_id, content) => {
+        if (content === 'First completed response') {
+          await new Promise<void>((resolve) => {
+            releaseFirstPersistenceRef.current = resolve;
+          });
+        }
+      });
+      streamChatMock
+        .mockImplementationOnce((async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as {
+            onBeforeFollowUpRequest?: (request: {
+              reason: 'tool_results';
+              messages: Array<{ role: 'system' | 'user' | 'assistant' | 'tool'; content: string }>;
+              turnCount: number;
+              toolResultCount: number;
+            }) => Promise<
+              Array<{
+                role: 'system' | 'user' | 'assistant' | 'tool';
+                content: string;
+              }>
+            >;
+            onComplete?: (result: {
+              visibleContent: string;
+              toolTraces: unknown[];
+              completionReason: 'completed';
+            }) => void;
+          };
+          await options.onBeforeFollowUpRequest?.({
+            reason: 'tool_results',
+            messages: [
+              { role: 'system', content: 'You are Macro.' },
+              { role: 'user', content: `Old request ${'context '.repeat(12_000)}` },
+              { role: 'assistant', content: `Old answer ${'detail '.repeat(12_000)}` },
+              { role: 'tool', content: 'FILE: current.ts\nconst current = true;' },
+            ],
+            turnCount: 1,
+            toolResultCount: 1,
+          });
+          options.onComplete?.({
+            visibleContent: 'First completed response',
+            toolTraces: [],
+            completionReason: 'completed',
+          });
+        }) as unknown as typeof streamChatMock)
+        .mockImplementationOnce((async () =>
+          new Promise<void>((resolve) => {
+            releaseSecondStreamRef.current = resolve;
+          })) as unknown as typeof streamChatMock);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [createConversation('chat-conv', '')],
+        messages: [],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        isLoading: false,
+        isStreaming: false,
+        sendState: 'idle',
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'First request',
+      });
+      await flushAsyncWork();
+      expect(createdSyntheticCheckpoint).toBe(true);
+      expect(dbUpsertConversationCompactionStateMock).not.toHaveBeenCalled();
+
+      const secondSend = useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Second request',
+      });
+      await flushAsyncWork();
+      releaseFirstPersistenceRef.current?.();
+      await flushAsyncWork();
+
+      expect(dbUpsertConversationCompactionStateMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().sendState).toBe('streaming');
 
       releaseSecondStreamRef.current?.();
       await secondSend;

@@ -231,6 +231,45 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(events).toContain("content:Final");
   });
 
+  test("keeps completion ownership until tool-boundary consolidation finishes", async () => {
+    const controls = makeControls();
+    const releaseConsolidationRef: { current: (() => void) | null } = {
+      current: null,
+    };
+    const { runtime, events } = makeRuntime({
+      overrides: {
+        consolidatePendingToolBoundaryCompactionAfterPersistence: mock(async () => {
+          events.push("consolidate-start");
+          await new Promise<void>((resolve) => {
+            releaseConsolidationRef.current = resolve;
+          });
+          events.push("consolidate-end");
+        }),
+      },
+    });
+
+    await runtime.onComplete(
+      {
+        visibleContent: "Final",
+        toolTraces: [],
+      },
+      controls,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events).toContain("consolidate-start");
+    expect(events).not.toContain("clear-persistence-ownership");
+
+    releaseConsolidationRef.current?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events.indexOf("consolidate-end")).toBeLessThan(
+      events.indexOf("clear-persistence-ownership"),
+    );
+  });
+
   test("an exhausted length recovery persists the partial response and ends in error", async () => {
     const controls = makeControls();
     const { runtime, events, getMessage } = makeRuntime();

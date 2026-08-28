@@ -10720,6 +10720,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!pending) {
         return;
       }
+      const stillOwnsCompletionConsolidation = (): boolean => {
+        const owner = completionPersistenceOwnersByConversationId.get(
+          params.conversationId,
+        );
+        return (
+          !deletedConversationIds.has(params.conversationId) &&
+          latestConversationSessionIdByConversationId.get(
+            params.conversationId,
+          ) === params.sessionId &&
+          owner?.sessionId === params.sessionId &&
+          owner.turnId === streamTurnId &&
+          owner.assistantMessageId === params.assistantMessage.id
+        );
+      };
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
 
       const { footprintFields } = getSelectedModelContext(
         params.selectedProviderId,
@@ -10727,6 +10744,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.providerConfig.providerType,
       );
       const budgetPolicy = await loadContextBudgetPolicy();
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
       const preparedRequest = await prepareMessagesForRequest(
         params.conversationId,
         params.allowedToolIds,
@@ -10738,6 +10758,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.executionContext,
         params.riskLevel,
       );
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
       const toolDefinitions = getToolDefinitionsForIds(
         params.allowedToolIds,
         params.mcpTools,
@@ -10786,6 +10809,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             input,
           ),
       });
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
 
       if (consolidation.outcome === "consolidated") {
         if (

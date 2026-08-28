@@ -184,15 +184,14 @@ export const createChatStreamLifecycleRuntime = (params: {
       );
     } catch (error) {
       handleCompletionPersistenceFailure(error);
+      adapters.clearCompletionPersistenceOwnership({
+        conversationId: stream.conversationId,
+        sessionId: stream.sessionId,
+        turnId: stream.turnId,
+        assistantMessageId: stream.assistantMessageId,
+      });
       return false;
     }
-
-    adapters.clearCompletionPersistenceOwnership({
-      conversationId: stream.conversationId,
-      sessionId: stream.sessionId,
-      turnId: stream.turnId,
-      assistantMessageId: stream.assistantMessageId,
-    });
 
     try {
       await adapters.consolidatePendingToolBoundaryCompactionAfterPersistence();
@@ -200,6 +199,13 @@ export const createChatStreamLifecycleRuntime = (params: {
       adapters.info(
         `Tool-boundary compaction consolidation failed after stream persistence: ${toServiceError(error).message}`,
       );
+    } finally {
+      adapters.clearCompletionPersistenceOwnership({
+        conversationId: stream.conversationId,
+        sessionId: stream.sessionId,
+        turnId: stream.turnId,
+        assistantMessageId: stream.assistantMessageId,
+      });
     }
     return true;
   };
