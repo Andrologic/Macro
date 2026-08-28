@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ChatCompletionReason,
   ContextCompactionKind,
   ContextFootprint,
   ConversationCompactionState,
@@ -13,6 +14,7 @@ import {
   buildManualCompactionRequiredErrorMessage,
   estimateConversationFootprint,
   type ContextBudgetPolicy,
+  type ContextToolPruningReport,
   type MaybeCompactConversationResult,
   type SummaryGenerationInput,
 } from './contextCompaction';
@@ -32,6 +34,52 @@ export type CompactionEventStatus =
   | 'blocked'
   | 'degraded'
   | 'skipped';
+
+export const buildAppliedCompactionAuditDetails = (params: {
+  result: MaybeCompactConversationResult;
+  previousCheckpoint?: ConversationCompactionState | null;
+  syntheticBoundary?: boolean;
+}): {
+  compactionMethod: string;
+  pruning: ContextToolPruningReport;
+  checkpointDecision: 'created' | 'refreshed' | 'reused' | 'transient' | 'none';
+  checkpointInvalidated: boolean;
+  promptCacheCompatibility: 'preserved' | 'rebuilt' | 'not_applicable';
+} => {
+  const state = params.result.compactionState;
+  const checkpointWasRebuilt = Boolean(
+    state &&
+      (!params.previousCheckpoint ||
+        state.updatedAt !== params.previousCheckpoint.updatedAt ||
+        state.fingerprint !== params.previousCheckpoint.fingerprint),
+  );
+  const checkpointDecision = params.syntheticBoundary && state
+    ? 'transient'
+    : !state
+      ? 'none'
+      : params.previousCheckpoint
+        ? checkpointWasRebuilt
+          ? 'refreshed'
+          : 'reused'
+        : 'created';
+  const compactionMethod = state
+    ? `summary_${state.compactionPass ?? 'normal'}_${state.summarySource ?? 'unknown'}`
+    : params.result.pruning.elements.length > 0
+      ? params.result.pruning.method
+      : 'none';
+  const rebuilt = Boolean(state) && checkpointWasRebuilt;
+  return {
+    compactionMethod,
+    pruning: params.result.pruning,
+    checkpointDecision,
+    checkpointInvalidated:
+      Boolean(params.previousCheckpoint) &&
+      (!state || state.fingerprint !== params.previousCheckpoint?.fingerprint),
+    promptCacheCompatibility: rebuilt
+      ? 'rebuilt'
+      : params.result.pruning.promptCacheCompatibility ?? 'not_applicable',
+  };
+};
 
 export const getCompactionBoundaryForMode = (
   mode: ContextCompactionKind,
@@ -81,6 +129,12 @@ export const buildCompactionDecisionAuditMetadata = (params: {
   budgetPolicy?: ContextBudgetPolicy | null;
   reason?: string | null;
   result?: string | null;
+  completionReason?: ChatCompletionReason | null;
+  compactionMethod?: string | null;
+  pruning?: ContextToolPruningReport | null;
+  checkpointDecision?: string | null;
+  checkpointInvalidated?: boolean | null;
+  promptCacheCompatibility?: 'preserved' | 'rebuilt' | 'not_applicable' | null;
 }): Record<string, unknown> => {
   const audit = buildContextCompactionDecisionAudit({
     providerId: params.providerId,
@@ -119,6 +173,25 @@ export const buildCompactionDecisionAuditMetadata = (params: {
       audit.outputLimitTokens ?? params.footprintFields?.outputLimitTokens ?? null,
     tokensBefore: params.footprintBefore?.totalEstimatedTokens ?? null,
     tokensAfter: params.footprintAfter?.totalEstimatedTokens ?? null,
+    completionReason: params.completionReason ?? null,
+    compactionMethod: params.compactionMethod ?? null,
+    prunedElements: params.pruning?.elements ?? [],
+    estimatedTokensGained:
+      params.footprintBefore && params.footprintAfter
+        ? Math.max(
+            0,
+            params.footprintBefore.totalEstimatedTokens -
+              params.footprintAfter.totalEstimatedTokens,
+          )
+        : null,
+    pruningEstimatedTokensGained:
+      params.pruning?.estimatedTokensSaved ?? null,
+    checkpointDecision: params.checkpointDecision ?? null,
+    checkpointInvalidated: params.checkpointInvalidated ?? null,
+    promptCacheCompatibility:
+      params.promptCacheCompatibility ??
+      params.pruning?.promptCacheCompatibility ??
+      'not_applicable',
   };
 };
 
@@ -185,6 +258,7 @@ export interface PendingToolBoundaryCompaction {
   footprintBefore: ContextFootprint;
   footprintAfter: ContextFootprint;
   messages: StreamMessage[];
+  pruning: ContextToolPruningReport;
 }
 
 export type ToolBoundaryCompactionConsolidationResult =
@@ -361,6 +435,7 @@ export const consolidateCompletedAssistantTurnCompaction = async (params: {
   providerType?: string | null;
   baseUrl?: string | null;
   modelId?: string | null;
+  projectIdentity?: string | null;
   currentCompactionState?: ConversationCompactionState | null;
   budgetPolicy?: ContextBudgetPolicy | null;
   estimateSerializedPayloadTokens?: (
@@ -394,6 +469,7 @@ export const consolidateCompletedAssistantTurnCompaction = async (params: {
       providerType: params.providerType ?? pending.providerType,
       baseUrl: params.baseUrl,
       modelId: params.modelId ?? pending.modelId,
+      projectIdentity: params.projectIdentity,
       currentCompactionState: params.currentCompactionState ?? null,
       budgetPolicy: params.budgetPolicy,
       estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,

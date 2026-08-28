@@ -4,6 +4,7 @@ import type { ChatMessage } from '../types';
 import type { StreamMessage } from './streamingChat';
 import { estimateConversationFootprint } from './contextCompaction';
 import {
+  buildAppliedCompactionAuditDetails,
   buildCompactionDecisionAuditMetadata,
   consolidateCompletedAssistantTurnCompaction,
   getCompactionBoundaryForMode,
@@ -254,11 +255,62 @@ describe('contextCompactionOrchestrator', () => {
       footprint: result.preflightFootprint,
       footprintFields: baseParams(messages).footprintFields,
       result: 'send',
+      completionReason: 'length_recovered',
+      compactionMethod: 'none',
+      checkpointDecision: 'none',
+      checkpointInvalidated: false,
     });
 
     expect(getCompactionBoundaryForMode('manual')).toBe('manual');
     expect(metadata.formula).toBe('128k context - 8k output reserve = 120k usable');
     expect(metadata.contextLimitSource).toBe('provider_metadata');
+    expect(metadata.completionReason).toBe('length_recovered');
+    expect(metadata.compactionMethod).toBe('none');
+    expect(metadata.estimatedTokensGained).toBeNull();
+    expect(metadata.checkpointDecision).toBe('none');
+    expect(metadata.checkpointInvalidated).toBe(false);
+    expect(metadata.promptCacheCompatibility).toBe('not_applicable');
+  });
+
+  it('audits the applied method, pruning gains, checkpoint refresh, and cache rebuild', async () => {
+    const messages = [
+      message('u1', 'user', 'old request '.repeat(400)),
+      message('a1', 'assistant', 'old answer '.repeat(400)),
+      message('u2', 'user', 'second request '.repeat(100)),
+      message('a2', 'assistant', 'second answer '.repeat(100)),
+      message('u3', 'user', 'new request'),
+    ];
+    const result = await runContextCompactionOrchestration({
+      ...baseParams(messages),
+      boundary: 'manual',
+      mode: 'manual',
+      footprintFields: {
+        ...baseParams(messages).footprintFields,
+        modelContextWindowTokens: 5_000,
+        outputLimitTokens: 500,
+      },
+      forceCompaction: true,
+      generateSummary: async () => 'Audited summary.',
+    });
+    if (result.outcome !== 'completed') {
+      throw new Error('expected completed result');
+    }
+    const details = buildAppliedCompactionAuditDetails({
+      result: result.result,
+    });
+    const metadata = buildCompactionDecisionAuditMetadata({
+      footprintBefore: result.result.footprintBefore,
+      footprintAfter: result.result.footprintAfter,
+      ...details,
+    });
+
+    expect(metadata.compactionMethod).toBe('summary_normal_model');
+    expect(metadata.checkpointDecision).toBe('created');
+    expect(metadata.checkpointInvalidated).toBe(false);
+    expect(metadata.promptCacheCompatibility).toBe('rebuilt');
+    expect(metadata.prunedElements).toEqual([]);
+    expect(metadata.pruningEstimatedTokensGained).toBe(0);
+    expect(metadata.estimatedTokensGained).toBeGreaterThanOrEqual(0);
   });
 
   it('skips post-tool consolidation when there is no pending synthetic checkpoint', async () => {
@@ -305,6 +357,13 @@ describe('contextCompactionOrchestrator', () => {
         footprintBefore: footprintFor(messages),
         footprintAfter: footprintFor(messages),
         messages: prepared(messages),
+        pruning: {
+          method: 'deterministic_superseded_tool_results',
+          elements: [],
+          estimatedTokensSaved: 0,
+          cacheBoundaryMessageId: null,
+          promptCacheCompatibility: 'rebuilt',
+        },
       },
       ...baseParams(messages),
       toolDefinitions: [],
@@ -355,6 +414,7 @@ describe('contextCompactionOrchestrator', () => {
         footprintBefore: syntheticRun.result.footprintBefore,
         footprintAfter: syntheticRun.result.footprintAfter,
         messages: syntheticRun.result.messages,
+        pruning: syntheticRun.result.pruning,
       },
       ...baseParams(messages),
       toolDefinitions: [],

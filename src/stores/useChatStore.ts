@@ -260,6 +260,7 @@ import {
 } from "../services/contextCompaction";
 import { fingerprintImageSource } from "../services/contextTokenEstimation";
 import {
+  buildAppliedCompactionAuditDetails,
   buildCompactionDecisionAuditMetadata,
   consolidateCompletedAssistantTurnCompaction,
   getCompactionBoundaryForMode,
@@ -3823,6 +3824,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const currentCompactionState = await getConversationCompactionState(
       params.conversationId,
     );
+    const completionReason = [...params.orderedMessages]
+      .reverse()
+      .find((message) => message.role === "assistant")
+      ?.completion_reason ?? null;
     if (isTransientCompactionStatus(previousCompactionStatus)) {
       const persistedStatus = currentCompactionState
         ? resolveCompactionStatusFromState(currentCompactionState)
@@ -4023,6 +4028,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const { result } = orchestration;
+    const appliedAuditDetails = buildAppliedCompactionAuditDetails({
+      result,
+      previousCheckpoint: currentCompactionState,
+    });
     if (result.manualSkip) {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
@@ -4048,6 +4057,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: result.manualSkip.reason,
           result: "manual_compaction_skipped",
+          completionReason,
+          ...appliedAuditDetails,
         }),
       });
       return result;
@@ -4089,6 +4100,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: result.usedExistingCompaction
             ? "used_existing_compaction"
             : "created_or_refreshed_compaction",
+          completionReason,
+          ...appliedAuditDetails,
         }),
       });
     } else if (orchestration.hasCompaction) {
@@ -8847,6 +8860,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: autoCompactionBlocked
             ? "auto_compaction_disabled"
             : "context_too_large",
+          completionReason:
+            [...preparedRequest.orderedMessages]
+              .reverse()
+              .find((message) => message.role === "assistant")
+              ?.completion_reason ?? null,
+          ...buildAppliedCompactionAuditDetails({
+            result: compactedRequest,
+          }),
         }),
       });
       throw buildSendError(
@@ -10501,6 +10522,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           providerType: params.providerConfig.providerType,
           baseUrl: params.providerConfig.baseUrl,
           modelId: params.selectedModelId,
+          projectIdentity: params.executionContext.focusedProjectId
+            ? `project:${params.executionContext.focusedProjectId}`
+            : params.executionContext.groupId
+              ? `group:${params.executionContext.groupId}`
+              : `conversation:${params.conversationId}`,
           estimateSerializedPayloadTokens,
           countProviderInputItems,
           budgetPolicy,
@@ -10607,6 +10633,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             budgetPolicy,
             reason: result.footprintAfter.reason,
             result: "tool_boundary_context_too_large",
+            ...buildAppliedCompactionAuditDetails({
+              result,
+              syntheticBoundary: true,
+            }),
           }),
         });
         throw buildSendError(buildContextTooLargeErrorMessage(result.footprintAfter));
@@ -10625,6 +10655,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             footprintBefore: result.footprintBefore,
             footprintAfter: result.footprintAfter,
             messages: result.messages.map(cloneStreamMessage),
+            pruning: result.pruning,
           };
         }
         completeLatestSessionCompactionEvent(
@@ -10666,6 +10697,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: result.footprintAfter.reason,
           result: "tool_boundary_compaction",
+          ...buildAppliedCompactionAuditDetails({
+            result,
+            syntheticBoundary: true,
+          }),
         }),
       });
 
@@ -10730,6 +10765,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerType: params.providerConfig.providerType,
         baseUrl: params.providerConfig.baseUrl,
         modelId: params.selectedModelId,
+        projectIdentity: params.executionContext.focusedProjectId
+          ? `project:${params.executionContext.focusedProjectId}`
+          : params.executionContext.groupId
+            ? `group:${params.executionContext.groupId}`
+            : `conversation:${params.conversationId}`,
         budgetPolicy,
         estimateSerializedPayloadTokens,
         countProviderInputItems,
@@ -10779,6 +10819,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
             budgetPolicy,
             reason: consolidation.result.footprintAfter.reason,
             result: "tool_boundary_consolidation",
+            completionReason:
+              [...preparedRequest.orderedMessages]
+                .reverse()
+                .find((message) => message.role === "assistant")
+                ?.completion_reason ?? null,
+            ...buildAppliedCompactionAuditDetails({
+              result: {
+                ...consolidation.result,
+                pruning:
+                  consolidation.result.pruning.elements.length > 0
+                    ? consolidation.result.pruning
+                    : pending.pruning,
+              },
+              previousCheckpoint: pending.compactionState,
+            }),
           }),
         });
         return;

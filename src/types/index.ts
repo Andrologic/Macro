@@ -922,6 +922,20 @@ export interface ContextCompactionDecisionAudit {
   contextLimitWarning?: string | null;
   autoCompactionEnabled?: boolean | null;
   formula?: string | null;
+  completionReason?: ChatCompletionReason | null;
+  compactionMethod?: string | null;
+  prunedElements?: Array<{
+    messageId: string;
+    toolName: string;
+    target: string;
+    reason: string;
+    estimatedTokensSaved: number;
+  }>;
+  estimatedTokensGained?: number | null;
+  pruningEstimatedTokensGained?: number | null;
+  checkpointDecision?: string | null;
+  checkpointInvalidated?: boolean | null;
+  promptCacheCompatibility?: string | null;
 }
 
 export type ContextCompactionKind =
