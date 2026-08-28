@@ -30,7 +30,6 @@ export const UpdateChannelSettings: React.FC = () => {
   const [pendingStableConfirmation, setPendingStableConfirmation] = useState(false);
   const [
     phase,
-    currentVersion,
     update,
     downloadedBytes,
     totalBytes,
@@ -42,7 +41,6 @@ export const UpdateChannelSettings: React.FC = () => {
     reset,
   ] = useAppUpdateStore(useShallow((state) => [
     state.phase,
-    state.currentVersion,
     state.availableUpdate,
     state.downloadedBytes,
     state.totalBytes,
@@ -109,20 +107,7 @@ export const UpdateChannelSettings: React.FC = () => {
   const checking = phase === 'checking';
   const downloading = phase === 'downloading';
   const busy = checkInProgress || checking || downloading || saving || phase === 'installing';
-  const statusIcon = checking
-    ? 'refresh-cw'
-    : downloading
-      ? 'download'
-      : phase === 'ready' || phase === 'upToDate'
-        ? 'check-circle'
-        : phase === 'error'
-          ? 'alert-circle'
-          : 'download';
-  const statusIconClassName = phase === 'error'
-    ? 'text-amber-400'
-    : phase === 'ready' || phase === 'upToDate'
-      ? 'text-primary'
-      : 'text-muted-foreground';
+  const hasStatus = checking || downloading || phase === 'ready' || phase === 'upToDate' || phase === 'error';
   const channelOptions: Array<{
     value: UpdateChannel;
     label: string;
@@ -148,25 +133,12 @@ export const UpdateChannelSettings: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      <div className="grid items-end gap-4 lg:grid-cols-[minmax(11rem,0.55fr)_minmax(0,1.45fr)] lg:gap-6">
-        <div className="min-w-0 space-y-1">
-          <div className="text-xs font-medium text-muted-foreground">
-            {t('settings.updateChannel.currentVersion', 'Current version')}
-          </div>
-          <div className="truncate font-mono text-base font-semibold tabular-nums text-foreground">
-            {currentVersion ? `Macro v${currentVersion}` : t('common.loading', 'Loading…')}
-          </div>
-        </div>
-
-        <fieldset className="min-w-0">
-          <legend className="text-xs font-medium text-muted-foreground">
-            {t('settings.updateChannel.label', 'Update channel')}
-          </legend>
-          <div
-            className="mt-2 grid grid-cols-2 rounded-lg border border-border/60 bg-muted/20 p-1"
-            role="radiogroup"
-          >
-            {channelOptions.map((option) => {
+      <fieldset className="min-w-0">
+        <legend className="text-xs font-medium text-muted-foreground">
+          {t('settings.updateChannel.label', 'Update channel')}
+        </legend>
+        <div className="mt-2 grid grid-cols-2 gap-2" role="radiogroup">
+          {channelOptions.map((option) => {
               const selected = channel === option.value;
               return (
                 <button
@@ -197,12 +169,12 @@ export const UpdateChannelSettings: React.FC = () => {
                     if (nextOption) requestChannelChange(nextOption.value);
                   }}
                   className={cn(
-                    'flex h-10 min-w-0 items-center justify-center gap-2 rounded-md px-3 text-center transition-[background-color,color,transform] duration-150',
+                    'flex h-11 min-w-0 items-center justify-center gap-2 rounded-lg border px-3 text-center transition-[border-color,background-color,color,transform] duration-150',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-card',
                     'active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50',
                     selected
-                      ? 'bg-background text-foreground ring-1 ring-inset ring-border/70'
-                      : 'text-muted-foreground hover:bg-accent/35 hover:text-foreground',
+                      ? 'border-primary/50 bg-primary/[0.08] text-foreground'
+                      : 'border-border/60 bg-transparent text-muted-foreground hover:border-border hover:bg-accent/35 hover:text-foreground',
                   )}
                 >
                   <span className="truncate text-xs font-semibold">{option.label}</span>
@@ -211,18 +183,15 @@ export const UpdateChannelSettings: React.FC = () => {
                     : selected ? <Icon name="check" size={12} className="shrink-0 text-primary" /> : null}
                 </button>
               );
-            })}
-          </div>
-        </fieldset>
-      </div>
+          })}
+        </div>
+      </fieldset>
 
-      <div className="flex flex-col gap-3 border-t border-border/60 pt-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-center gap-3">
-          <Icon
-            name={statusIcon}
-            size={16}
-            className={cn('shrink-0', statusIconClassName, checking && 'motion-safe:animate-spin')}
-          />
+      <div className={cn(
+        'flex flex-col gap-3 border-t border-border/60 pt-4 lg:flex-row lg:items-center',
+        hasStatus ? 'lg:justify-between' : 'lg:justify-end',
+      )}>
+        {hasStatus ? (
           <div className="min-w-0 space-y-0.5">
             {checking ? (
               <p className="text-sm font-medium text-foreground">
@@ -254,13 +223,7 @@ export const UpdateChannelSettings: React.FC = () => {
                 </p>
                 {error ? <p className="max-w-xl break-words text-xs text-muted-foreground">{error}</p> : null}
               </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                {channel === 'preview'
-                  ? t('settings.updateChannel.previewDescription', 'Receive validated nightly and release candidate builds.')
-                  : t('settings.updateChannel.stableDescription', 'Receive production releases only.')}
-              </p>
-            )}
+            ) : null}
             {downloading ? (
               <div className="mt-2 h-1.5 w-full max-w-md overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={progress ?? undefined} aria-valuemin={0} aria-valuemax={100}>
                 <div
@@ -270,7 +233,7 @@ export const UpdateChannelSettings: React.FC = () => {
               </div>
             ) : null}
           </div>
-        </div>
+        ) : null}
         <div className="flex shrink-0 items-center gap-2 lg:justify-end">
           {(phase === 'ready' || (phase === 'error' && update)) ? (
             <Button

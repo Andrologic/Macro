@@ -141,12 +141,13 @@ describe('UpdateChannelSettings', () => {
     expect(container.querySelector('select')).toBeNull();
   });
 
-  it('keeps the ready update and its actions visually grouped', async () => {
+  it('keeps only the ready update and its actions below the channel control', async () => {
     await renderSettings();
 
-    expect(container.textContent).toContain('Macro v0.1.1');
+    expect(container.textContent).not.toContain('Current version');
+    expect(container.textContent).not.toContain('Macro v0.1.1');
     expect(container.textContent).toContain('Macro v0.1.2-nightly.20260828.6 is ready');
-    expect(container.querySelector('[data-icon="check-circle"]')).not.toBeNull();
+    expect(container.querySelector('[data-icon="check-circle"]')).toBeNull();
     expect(buttonByText('Install now')).toBeDefined();
     expect(buttonByText('Check for updates')?.disabled).toBe(true);
 
