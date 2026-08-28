@@ -3846,6 +3846,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.providerConfig.providerType,
     );
     const budgetPolicy = await loadContextBudgetPolicy();
+    const conversation = get().conversations.find(
+      (candidate) => candidate.id === params.conversationId,
+    );
+    const projectIdentity = conversation?.project_id
+      ? `project:${conversation.project_id}`
+      : conversation?.group_id
+        ? `group:${conversation.group_id}`
+        : conversation?.task_id
+          ? `task:${conversation.task_id}`
+          : `conversation:${params.conversationId}`;
     const preparedMessagesForContext = normalizeMessagesForProviderContext(
       params.providerConfig.providerType,
       params.preparedMessages,
@@ -3880,6 +3890,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerType: params.providerConfig.providerType,
         baseUrl: params.providerConfig.baseUrl,
         modelId: params.modelId,
+        projectIdentity,
         currentCompactionState,
         budgetPolicy,
         forceCompaction: params.forceCompaction,

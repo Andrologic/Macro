@@ -181,7 +181,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.threshold).toBe('blocking');
   });
 
-  it('prunes old large tool contexts while preserving recent and protected tool output during normal pruning', () => {
+  it('prunes a superseded read while preserving the newest result and protected tool output', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect old files.'),
       makeMessage('a1', 'assistant', 'Old result.', {
@@ -189,9 +189,10 @@ describe('buildCompactedMessagesForRequest', () => {
           `<tool_context tool="read" detail="src/old.ts">\n${'old line\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u2', 'user', 'Check plan state.'),
-      makeMessage('a2', 'assistant', 'Protected result.', {
+      makeMessage('a2', 'assistant', 'Protected and refreshed results.', {
         hidden_context:
-          `<tool_context tool="plan_get" detail="plan-1">\n${'plan detail\n'.repeat(300)}\n</tool_context>`,
+          `<tool_context tool="plan_get" detail="plan-1">\n${'plan detail\n'.repeat(300)}\n</tool_context>\n` +
+          `<tool_context tool="read" detail="src/old.ts">\n${'new line\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u3', 'user', 'Continue.'),
     ];
@@ -205,6 +206,14 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.prunedMessageIds).toEqual(['a1']);
     expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
     expect(String(result.messages[3]?.content)).toContain('plan detail');
+    expect(String(result.messages[3]?.content)).toContain('new line');
+    expect(result.pruning.elements).toEqual([
+      expect.objectContaining({
+        messageId: 'a1',
+        reason: 'superseded',
+        target: 'src/old.ts',
+      }),
+    ]);
   });
 
   it('preserves activated skill context during normal pruning', () => {
@@ -220,7 +229,10 @@ describe('buildCompactedMessagesForRequest', () => {
           `<tool_context tool="read" detail="src/old.ts">\n${'old line\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u3', 'user', 'Recent turn.'),
-      makeMessage('a3', 'assistant', 'Recent answer.'),
+      makeMessage('a3', 'assistant', 'Recent answer.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/old.ts">\n${'new line\n'.repeat(300)}\n</tool_context>`,
+      }),
       makeMessage('u4', 'user', 'Continue with that skill.'),
     ];
 
@@ -235,7 +247,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(String(result.messages[3]?.content)).toContain('[pruned tool context]');
   });
 
-  it('limits protected tool output during forced pruning', () => {
+  it('never prunes active plan output during forced pruning', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect plan state.'),
       makeMessage('a1', 'assistant', 'Protected result.', {
@@ -253,8 +265,73 @@ describe('buildCompactedMessagesForRequest', () => {
       { force: true },
     );
 
+    expect(result.prunedMessageIds).toEqual([]);
+    expect(String(result.messages[1]?.content)).toContain('plan detail');
+  });
+
+  it('scopes superseded reads by project, canonical path, and selector', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect both projects.'),
+      makeMessage('a1', 'assistant', 'First reads.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/../src/app.ts">\nFILE: src/../src/app.ts\nPROJECT_ID: api\nLINES: 1-10\nTOTAL_LINES: 100\n${'old api\n'.repeat(100)}\n</tool_context>\n` +
+          `<tool_context tool="read" detail="src/app.ts">\nFILE: src/app.ts\nPROJECT_ID: web\nLINES: 1-10\nTOTAL_LINES: 100\n${'web result\n'.repeat(100)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Read a different page.'),
+      makeMessage('a2', 'assistant', 'Second page.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\nFILE: src/app.ts\nPROJECT_ID: api\nLINES: 11-20\nTOTAL_LINES: 100\n${'api page two\n'.repeat(100)}\n</tool_context>`,
+      }),
+      makeMessage('u3', 'user', 'Refresh the first page.'),
+      makeMessage('a3', 'assistant', 'Fresh first page.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\nFILE: src/app.ts\nPROJECT_ID: api\nLINES: 1-10\nTOTAL_LINES: 100\n${'new api\n'.repeat(100)}\n</tool_context>`,
+      }),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true, cacheWillBeRebuilt: true },
+    );
+
     expect(result.prunedMessageIds).toEqual(['a1']);
     expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
+    expect(String(result.messages[1]?.content)).toContain('web result');
+    expect(String(result.messages[3]?.content)).toContain('api page two');
+    expect(String(result.messages[5]?.content)).toContain('new api');
+    expect(result.pruning.estimatedTokensSaved).toBeGreaterThan(0);
+  });
+
+  it('preserves errors and a warm cached prefix', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Read a file.'),
+      makeMessage('a1', 'assistant', 'Old read.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\n${'old result\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Retry another file.'),
+      makeMessage('a2', 'assistant', 'Failed read.', {
+        hidden_context:
+          '<tool_context tool="read" detail="src/error.ts">\nError reading file: denied\n</tool_context>',
+      }),
+      makeMessage('u3', 'user', 'Refresh the first file.'),
+      makeMessage('a3', 'assistant', 'Fresh read.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\n${'fresh result\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u4', 'user', 'Use those results. '.repeat(4_000)),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true, cacheWarmSuffixTokens: 100 },
+    );
+
+    expect(result.prunedMessageIds).toEqual([]);
+    expect(String(result.messages[3]?.content)).toContain('Error reading file');
+    expect(result.pruning.promptCacheCompatibility).toBe('preserved');
   });
 
   it('compacts provider input items instead of relying on visible content trimming', () => {

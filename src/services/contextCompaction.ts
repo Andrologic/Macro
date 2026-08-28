@@ -30,7 +30,7 @@ import {
   type StructuredContextTokenEstimate,
 } from './contextTokenEstimation';
 
-export const CONTEXT_COMPACTION_POLICY_VERSION = 3;
+export const CONTEXT_COMPACTION_POLICY_VERSION = 4;
 const SOURCE_PASSAGE_VERSION = CONTEXT_COMPACTION_POLICY_VERSION;
 export const COMPACTED_CONVERSATION_STATE_MARKER =
   '[COMPACTED CONVERSATION STATE]';
@@ -50,6 +50,23 @@ export type ContextCompactionDecision = 'send' | 'retry_after_compaction' | 'har
 interface PreparedCompactionPassResult {
   messages: StreamMessage[];
   prunedMessageIds: string[];
+  pruning: ContextToolPruningReport;
+}
+
+export interface ContextToolPrunedElement {
+  messageId: string;
+  toolName: string;
+  target: string;
+  reason: 'superseded';
+  estimatedTokensSaved: number;
+}
+
+export interface ContextToolPruningReport {
+  method: 'deterministic_superseded_tool_results';
+  elements: ContextToolPrunedElement[];
+  estimatedTokensSaved: number;
+  cacheBoundaryMessageId: string | null;
+  promptCacheCompatibility: 'preserved' | 'rebuilt';
 }
 
 interface CompactionThresholds {
@@ -139,6 +156,7 @@ export interface MaybeCompactConversationParams {
   providerType?: string | null;
   baseUrl?: string | null;
   modelId?: string | null;
+  projectIdentity?: string | null;
   currentCompactionState?: ConversationCompactionState | null;
   estimateSerializedPayloadTokens?: (messages: StreamMessage[]) => number | null | undefined;
   countProviderInputItems?: boolean;
@@ -158,6 +176,7 @@ export interface MaybeCompactConversationResult {
   usedExistingCompaction: boolean;
   degraded: boolean;
   decision: ContextCompactionDecision;
+  pruning: ContextToolPruningReport;
   manualSkip?: ManualCompactionSkipDetails;
 }
 
@@ -950,24 +969,179 @@ hash: ${hash}
 </tool_context>`;
 };
 
+const SUPERSEDED_TOOL_CONTEXT_NOTICE = '[superseded tool context]';
+const PROMPT_CACHE_WARM_SUFFIX_TOKENS = 8_000;
+
+const normalizeToolReadPath = (value: string): string => {
+  const slashNormalized = value.trim().replace(/\\/g, '/');
+  const prefix = slashNormalized.match(/^[A-Za-z]:/)?.[0] ?? '';
+  const absolute = slashNormalized.startsWith('/') || Boolean(prefix);
+  const pathWithoutPrefix = prefix
+    ? slashNormalized.slice(prefix.length)
+    : slashNormalized;
+  const segments: string[] = [];
+  for (const segment of pathWithoutPrefix.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (segments.length > 0 && segments[segments.length - 1] !== '..') {
+        segments.pop();
+      } else if (!absolute) {
+        segments.push(segment);
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+  const root = prefix ? `${prefix.toLowerCase()}/` : absolute ? '/' : '';
+  return `${root}${segments.join('/')}` || root || '.';
+};
+
+const readHeaderValue = (body: string, name: string): string | null => {
+  const match = body.match(new RegExp(`^${name}:\\s*(.+)$`, 'mi'));
+  return match?.[1]?.trim() || null;
+};
+
+const buildReadSupersedeIdentity = (params: {
+  attrs: Record<string, string>;
+  body: string;
+  projectIdentity?: string | null;
+}): { baseKey: string; exactKey: string; target: string; isFullRead: boolean } | null => {
+  const rawPath = readHeaderValue(params.body, 'FILE') ?? params.attrs.detail;
+  if (!rawPath || rawPath.includes('://')) return null;
+  const target = normalizeToolReadPath(rawPath);
+  const projectIdentity =
+    readHeaderValue(params.body, 'PROJECT_ID') ??
+    params.projectIdentity?.trim() ??
+    'unscoped';
+  const lineRange = readHeaderValue(params.body, 'LINES');
+  const totalLines = Number(readHeaderValue(params.body, 'TOTAL_LINES'));
+  const rangeMatch = lineRange?.match(/^(\d+)\s*-\s*(\d+)$/);
+  const startLine = rangeMatch ? Number(rangeMatch[1]) : null;
+  const endLine = rangeMatch ? Number(rangeMatch[2]) : null;
+  const isFullRead =
+    startLine === null ||
+    endLine === null ||
+    (startLine === 1 && Number.isFinite(totalLines) && endLine >= totalLines);
+  const selector = isFullRead ? '' : `${startLine}-${endLine}`;
+  const baseKey = `${projectIdentity}\u0000${target}`;
+  return {
+    baseKey,
+    exactKey: `${baseKey}\u0000${selector}`,
+    target,
+    isFullRead,
+  };
+};
+
+const isToolContextError = (body: string): boolean =>
+  /^(?:error\b|tool error\b|failed\b|permission denied\b|invalid\b)/i.test(
+    body.trim(),
+  );
+
+const estimateMessageSuffixTokens = (messages: StreamMessage[]): number[] => {
+  const suffixTokens = new Array<number>(messages.length).fill(0);
+  let accumulated = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    suffixTokens[index] = accumulated;
+    accumulated += estimateStreamMessageContext(messages[index]!).totalTokens;
+  }
+  return suffixTokens;
+};
+
 export const pruneToolContextBlocks = (
   preparedMessages: StreamMessage[],
   orderedMessages: ChatMessage[],
   options: {
     force?: boolean;
     minBodyTokens?: number;
+    projectIdentity?: string | null;
+    cacheBoundaryMessageId?: string | null;
+    cacheWillBeRebuilt?: boolean;
+    cacheWarmSuffixTokens?: number;
   } = {}
-): { messages: StreamMessage[]; prunedMessageIds: string[] } => {
-  const recentTurnStartIndex = getRecentUserTurnStartIndex(orderedMessages);
+): {
+  messages: StreamMessage[];
+  prunedMessageIds: string[];
+  pruning: ContextToolPruningReport;
+} => {
   const prunedMessageIds = new Set<string>();
   const minBodyTokens = Math.max(1, options.minBodyTokens ?? 200);
+  const cacheBoundaryIndex = options.cacheBoundaryMessageId
+    ? orderedMessages.findIndex(
+        (message) => message.id === options.cacheBoundaryMessageId,
+      )
+    : -1;
+  const suffixTokens = estimateMessageSuffixTokens(preparedMessages);
+  const seenExactKeys = new Set<string>();
+  const seenFullReadBaseKeys = new Set<string>();
+  const supersededBlocks = new Set<string>();
+  const elements: ContextToolPrunedElement[] = [];
+
+  for (let index = preparedMessages.length - 1; index >= 0; index -= 1) {
+    const message = preparedMessages[index];
+    const orderedMessage = orderedMessages[index];
+    if (
+      !message ||
+      !orderedMessage ||
+      orderedMessage.role !== 'assistant' ||
+      index <= cacheBoundaryIndex ||
+      typeof message.content !== 'string'
+    ) {
+      continue;
+    }
+    for (const match of Array.from(message.content.matchAll(TOOL_CONTEXT_BLOCK_REGEX)).reverse()) {
+      const attrs = parseToolContextAttributes(match[1] || '');
+      const toolName = attrs.tool || 'tool';
+      const body = (match[2] || '').trim();
+      if (
+        toolName !== 'read' &&
+        toolName !== 'read_file'
+      ) {
+        continue;
+      }
+      if (!body || isProtectedToolContext(toolName) || isToolContextError(body)) {
+        continue;
+      }
+      const identity = buildReadSupersedeIdentity({
+        attrs,
+        body,
+        projectIdentity: options.projectIdentity,
+      });
+      if (!identity) continue;
+      const superseded =
+        seenExactKeys.has(identity.exactKey) ||
+        seenFullReadBaseKeys.has(identity.baseKey);
+      seenExactKeys.add(identity.exactKey);
+      if (identity.isFullRead) {
+        seenFullReadBaseKeys.add(identity.baseKey);
+      }
+      if (!superseded) continue;
+      const bodyTokens = estimateTokensForText(body);
+      if (!options.force && bodyTokens < minBodyTokens) continue;
+      const cacheCompatible =
+        options.cacheWillBeRebuilt === true ||
+        suffixTokens[index]! <=
+          (options.cacheWarmSuffixTokens ?? PROMPT_CACHE_WARM_SUFFIX_TOKENS);
+      if (!cacheCompatible) continue;
+      const blockKey = `${index}:${match.index ?? -1}`;
+      supersededBlocks.add(blockKey);
+      const placeholderTokens = estimateTokensForText(
+        SUPERSEDED_TOOL_CONTEXT_NOTICE,
+      );
+      elements.push({
+        messageId: orderedMessage.id,
+        toolName,
+        target: identity.target,
+        reason: 'superseded',
+        estimatedTokensSaved: Math.max(0, bodyTokens - placeholderTokens),
+      });
+    }
+  }
 
   const messages = preparedMessages.map((message, index) => {
     const orderedMessage = orderedMessages[index];
     if (
       !orderedMessage ||
       orderedMessage.role !== 'assistant' ||
-      index >= recentTurnStartIndex ||
       typeof message.content !== 'string' ||
       !message.content.includes('<tool_context')
     ) {
@@ -977,17 +1151,13 @@ export const pruneToolContextBlocks = (
     let changed = false;
     const content = message.content.replace(
       TOOL_CONTEXT_BLOCK_REGEX,
-      (match, rawAttrs: string, rawBody: string) => {
+      (match, rawAttrs: string, rawBody: string, offset: number) => {
+        if (!supersededBlocks.has(`${index}:${offset}`)) {
+          return match;
+        }
         const attrs = parseToolContextAttributes(rawAttrs || '');
         const toolName = attrs.tool || 'tool';
         const body = (rawBody || '').trim();
-        if (!body || (isProtectedToolContext(toolName) && !options.force)) {
-          return match;
-        }
-        if (!options.force && estimateTokensForText(body) < minBodyTokens) {
-          return match;
-        }
-
         changed = true;
         return buildPrunedToolContextPlaceholder({
           attrs: rawAttrs,
@@ -1010,6 +1180,17 @@ export const pruneToolContextBlocks = (
   return {
     messages,
     prunedMessageIds: Array.from(prunedMessageIds),
+    pruning: {
+      method: 'deterministic_superseded_tool_results',
+      elements,
+      estimatedTokensSaved: elements.reduce(
+        (total, element) => total + element.estimatedTokensSaved,
+        0,
+      ),
+      cacheBoundaryMessageId: options.cacheBoundaryMessageId ?? null,
+      promptCacheCompatibility:
+        options.cacheWillBeRebuilt === true ? 'rebuilt' : 'preserved',
+    },
   };
 };
 
@@ -1095,6 +1276,9 @@ const runPreparedCompactionPass = (params: {
   forcePrune?: boolean;
   mode: ContextCompactionKind;
   context?: MultimodalTokenContext;
+  projectIdentity?: string | null;
+  cacheBoundaryMessageId?: string | null;
+  cacheWillBeRebuilt?: boolean;
 }): PreparedCompactionPassResult => {
   const pruned =
     params.shouldPrune
@@ -1103,8 +1287,22 @@ const runPreparedCompactionPass = (params: {
             params.forcePrune ||
             isAggressiveCompactionPass(params.pass) ||
             isAggressiveCompactionMode(params.mode),
+          projectIdentity: params.projectIdentity,
+          cacheBoundaryMessageId: params.cacheBoundaryMessageId,
+          cacheWillBeRebuilt: params.cacheWillBeRebuilt,
         })
-      : { messages: params.preparedMessages, prunedMessageIds: [] };
+      : {
+          messages: params.preparedMessages,
+          prunedMessageIds: [],
+          pruning: {
+            method: 'deterministic_superseded_tool_results',
+            elements: [],
+            estimatedTokensSaved: 0,
+            cacheBoundaryMessageId: params.cacheBoundaryMessageId ?? null,
+            promptCacheCompatibility:
+              params.cacheWillBeRebuilt === true ? 'rebuilt' : 'preserved',
+          } satisfies ContextToolPruningReport,
+        };
   const providerCompacted =
     params.shouldPrune
       ? compactProviderInputItemsForContext(
@@ -1121,6 +1319,7 @@ const runPreparedCompactionPass = (params: {
       pruned.prunedMessageIds,
       providerCompacted.compactedMessageIds
     ),
+    pruning: pruned.pruning,
   };
 };
 
@@ -1975,6 +2174,9 @@ export const maybeCompactConversation = async (
         baseUrl: params.baseUrl,
         modelId: params.modelId,
       },
+      projectIdentity: params.projectIdentity,
+      cacheBoundaryMessageId: params.currentCompactionState?.upToMessageId,
+      cacheWillBeRebuilt: explicitCompactionRequested,
     });
 
   let compactionPass = resolveInitialCompactionPass(params.mode, params.forcePrune);
@@ -2013,6 +2215,7 @@ export const maybeCompactConversation = async (
     usedExistingCompaction: Boolean(validCurrentState),
     degraded: false,
     decision: after.isHardStop ? 'hard_stop' : 'send',
+    pruning: pruned.pruning,
     manualSkip: {
       reason,
       userTurnCount,
@@ -2167,6 +2370,7 @@ export const maybeCompactConversation = async (
       usedExistingCompaction: false,
       degraded: false,
       decision: 'send',
+      pruning: pruned.pruning,
       manualSkip: {
         reason: 'not_beneficial',
         userTurnCount,
@@ -2299,6 +2503,7 @@ export const maybeCompactConversation = async (
     usedExistingCompaction,
     degraded,
     decision,
+    pruning: pruned.pruning,
   };
 };
 

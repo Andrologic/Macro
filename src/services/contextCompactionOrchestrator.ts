@@ -232,6 +232,7 @@ export const runContextCompactionOrchestration = async (params: {
   providerType?: string | null;
   baseUrl?: string | null;
   modelId?: string | null;
+  projectIdentity?: string | null;
   currentCompactionState?: ConversationCompactionState | null;
   budgetPolicy?: ContextBudgetPolicy | null;
   forceCompaction?: boolean;
@@ -318,6 +319,7 @@ export const runContextCompactionOrchestration = async (params: {
     providerId: params.providerId,
     baseUrl: params.baseUrl,
     modelId: params.modelId,
+    projectIdentity: params.projectIdentity,
     currentCompactionState: params.currentCompactionState,
     estimateSerializedPayloadTokens: params.estimateSerializedPayloadTokens,
     countProviderInputItems: params.countProviderInputItems,
