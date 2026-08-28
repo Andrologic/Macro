@@ -119,19 +119,17 @@ export const UpdateChannelSettings: React.FC = () => {
           ? 'alert-circle'
           : 'download';
   const statusIconClassName = phase === 'error'
-    ? 'border-amber-400/20 bg-amber-400/10 text-amber-400'
-    : phase === 'ready'
-      ? 'border-primary/25 bg-primary/10 text-primary'
-      : 'border-border/70 bg-card text-muted-foreground';
+    ? 'text-amber-400'
+    : phase === 'ready' || phase === 'upToDate'
+      ? 'text-primary'
+      : 'text-muted-foreground';
   const channelOptions: Array<{
     value: UpdateChannel;
-    icon: 'shield' | 'sparkles';
     label: string;
     description: string;
   }> = [
     {
       value: 'stable',
-      icon: 'shield',
       label: t('settings.updateChannel.stable', 'Stable'),
       description: t(
         'settings.updateChannel.stableDescription',
@@ -140,7 +138,6 @@ export const UpdateChannelSettings: React.FC = () => {
     },
     {
       value: 'preview',
-      icon: 'sparkles',
       label: t('settings.updateChannel.preview', 'Preview'),
       description: t(
         'settings.updateChannel.previewDescription',
@@ -151,11 +148,10 @@ export const UpdateChannelSettings: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-[minmax(12rem,0.62fr)_minmax(0,1.38fr)] lg:gap-5">
-        <div className="flex min-w-0 flex-col justify-center gap-2 border-b border-border/60 pb-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-5">
-          <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-            <Icon name="download" size={13} />
-            <span>{t('settings.updateChannel.currentVersion', 'Current version')}</span>
+      <div className="grid items-end gap-4 lg:grid-cols-[minmax(11rem,0.55fr)_minmax(0,1.45fr)] lg:gap-6">
+        <div className="min-w-0 space-y-1">
+          <div className="text-xs font-medium text-muted-foreground">
+            {t('settings.updateChannel.currentVersion', 'Current version')}
           </div>
           <div className="truncate font-mono text-base font-semibold tabular-nums text-foreground">
             {currentVersion ? `Macro v${currentVersion}` : t('common.loading', 'Loading…')}
@@ -166,17 +162,19 @@ export const UpdateChannelSettings: React.FC = () => {
           <legend className="text-xs font-medium text-muted-foreground">
             {t('settings.updateChannel.label', 'Update channel')}
           </legend>
-          <div className="mt-2 grid grid-cols-2 gap-2" role="radiogroup">
+          <div
+            className="mt-2 grid grid-cols-2 rounded-lg border border-border/60 bg-muted/20 p-1"
+            role="radiogroup"
+          >
             {channelOptions.map((option) => {
               const selected = channel === option.value;
-              const descriptionId = `update-channel-${option.value}-description`;
               return (
                 <button
                   key={option.value}
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  aria-describedby={descriptionId}
+                  aria-label={`${option.label}. ${option.description}`}
                   tabIndex={selected ? 0 : -1}
                   disabled={busy}
                   onClick={() => requestChannelChange(option.value)}
@@ -199,41 +197,18 @@ export const UpdateChannelSettings: React.FC = () => {
                     if (nextOption) requestChannelChange(nextOption.value);
                   }}
                   className={cn(
-                    'group flex min-h-[4.5rem] min-w-0 items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-[border-color,background-color,transform] duration-150',
+                    'flex h-10 min-w-0 items-center justify-center gap-2 rounded-md px-3 text-center transition-[background-color,color,transform] duration-150',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-card',
                     'active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50',
                     selected
-                      ? 'border-primary/50 bg-primary/[0.08]'
-                      : 'border-border/60 bg-transparent hover:border-border hover:bg-accent/35',
+                      ? 'bg-background text-foreground ring-1 ring-inset ring-border/70'
+                      : 'text-muted-foreground hover:bg-accent/35 hover:text-foreground',
                   )}
                 >
-                  <span className={cn(
-                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors duration-150',
-                    selected
-                      ? 'bg-primary/15 text-primary'
-                      : 'bg-muted/70 text-muted-foreground group-hover:text-foreground',
-                  )}>
-                    <Icon name={option.icon} size={14} />
-                  </span>
-                  <span className="min-w-0 flex-1 space-y-0.5">
-                    <span className="block text-xs font-semibold text-foreground">{option.label}</span>
-                    <span
-                      id={descriptionId}
-                      className="block text-[10px] leading-4 text-muted-foreground"
-                    >
-                      {option.description}
-                    </span>
-                  </span>
-                  <span className={cn(
-                    'flex h-4 w-4 shrink-0 items-center justify-center rounded-full border',
-                    selected
-                      ? 'border-primary bg-primary text-primary-foreground'
-                      : 'border-border bg-background',
-                  )}>
-                    {saving && selected
-                      ? <Icon name="loader" size={10} className="motion-safe:animate-spin" />
-                      : selected ? <Icon name="check" size={10} /> : null}
-                  </span>
+                  <span className="truncate text-xs font-semibold">{option.label}</span>
+                  {saving && selected
+                    ? <Icon name="loader" size={12} className="shrink-0 motion-safe:animate-spin" />
+                    : selected ? <Icon name="check" size={12} className="shrink-0 text-primary" /> : null}
                 </button>
               );
             })}
@@ -243,16 +218,11 @@ export const UpdateChannelSettings: React.FC = () => {
 
       <div className="flex flex-col gap-3 border-t border-border/60 pt-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <div className={cn(
-            'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border',
-            statusIconClassName,
-          )}>
-            <Icon
-              name={statusIcon}
-              size={15}
-              className={checking ? 'motion-safe:animate-spin' : undefined}
-            />
-          </div>
+          <Icon
+            name={statusIcon}
+            size={16}
+            className={cn('shrink-0', statusIconClassName, checking && 'motion-safe:animate-spin')}
+          />
           <div className="min-w-0 space-y-0.5">
             {checking ? (
               <p className="text-sm font-medium text-foreground">
@@ -308,7 +278,7 @@ export const UpdateChannelSettings: React.FC = () => {
               size="sm"
               variant={phase === 'ready' ? 'primary' : 'ghost'}
               className={cn(
-                'h-9 min-w-32 whitespace-nowrap px-4 active:translate-y-px',
+                'h-9 whitespace-nowrap px-4 active:translate-y-px',
                 phase === 'error' && 'border border-border/70 bg-card hover:bg-accent',
               )}
               leftIcon={<Icon name={phase === 'ready' ? 'download' : 'rotate-ccw'} size={13} />}
@@ -323,7 +293,7 @@ export const UpdateChannelSettings: React.FC = () => {
             type="button"
             size="sm"
             variant="ghost"
-            className="h-9 min-w-36 whitespace-nowrap border border-border/70 bg-transparent px-4 hover:bg-accent/50 active:translate-y-px"
+            className="h-9 whitespace-nowrap border border-border/70 bg-transparent px-4 hover:bg-accent/50 active:translate-y-px"
             disabled={busy || phase === 'ready'}
             isLoading={checking || (checkInProgress && !downloading)}
             leftIcon={<Icon name="refresh-cw" size={13} />}

@@ -126,7 +126,7 @@ describe('UpdateChannelSettings', () => {
       (button) => button.textContent?.trim() === text,
     );
 
-  it('presents update channels as descriptive visual choices', async () => {
+  it('presents update channels as a compact segmented control', async () => {
     await renderSettings();
 
     const choices = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
@@ -134,11 +134,10 @@ describe('UpdateChannelSettings', () => {
     expect(choices[0]?.textContent).toContain('Stable');
     expect(choices[1]?.textContent).toContain('Preview');
     expect(choices[1]?.getAttribute('aria-checked')).toBe('true');
-    expect(choices[1]?.getAttribute('aria-describedby')).toBe('update-channel-preview-description');
-    expect(choices[1]?.querySelector('#update-channel-preview-description')?.textContent)
-      .toContain('nightly and release candidate builds');
-    expect(choices[0]?.querySelector('#update-channel-stable-description')?.textContent)
-      .toContain('production releases only');
+    expect(choices[1]?.getAttribute('aria-label')).toContain('nightly and release candidate builds');
+    expect(choices[0]?.getAttribute('aria-label')).toContain('production releases only');
+    expect(container.querySelector('[data-icon="shield"]')).toBeNull();
+    expect(container.querySelector('[data-icon="sparkles"]')).toBeNull();
     expect(container.querySelector('select')).toBeNull();
   });
 
