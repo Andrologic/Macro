@@ -82,4 +82,35 @@ describe("chatContextDiagnostics", () => {
       ]),
     ).toBe(2);
   });
+
+  it("keeps loaded repository instruction sources inspectable", () => {
+    const diagnostics = buildContextDiagnosticsFromFootprint({
+      conversationId: "conv-1",
+      status: "ready",
+      orderedMessages: [],
+      preparedMessages: [],
+      citations: [],
+      repositoryInstructionSources: [
+        {
+          projectId: "web",
+          projectName: "Web app",
+          sourcePath: "C:/repos/web/AGENTS.md",
+          relativePath: "AGENTS.md",
+          depth: 0,
+          sizeBytes: 120,
+        },
+      ],
+    });
+
+    expect(diagnostics.repositoryInstructionSources).toEqual([
+      {
+        projectId: "web",
+        projectName: "Web app",
+        sourcePath: "C:/repos/web/AGENTS.md",
+        relativePath: "AGENTS.md",
+        depth: 0,
+        sizeBytes: 120,
+      },
+    ]);
+  });
 });

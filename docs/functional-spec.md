@@ -528,6 +528,28 @@ Macro doit permettre de changer explicitement de contexte de travail :
 
 Le changement de contexte doit restaurer l'état local utile autant que possible, notamment pour les conversations, plans et tâches liés au projet.
 
+### 10.5 Instructions de dépôt
+
+Quand une conversation possède une portée projet, Macro charge le fichier
+`AGENTS.md` applicable dans chaque projet concerné et l'ajoute au contexte de
+l'agent. Les instructions restent rattachées à leur projet. Une règle issue
+d'un dépôt ne s'applique jamais aux autres projets de la conversation.
+
+La découverte suit la racine du projet vers le périmètre actif. Les fichiers
+les plus profonds sont appliqués après leurs parents. Macro borne le nombre de
+fichiers et leur taille totale, déduplique leurs chemins canoniques et refuse
+un lien symbolique qui sort du projet. Tant que Macro ne connaît pas de
+sous-dossier actif fiable, il charge uniquement le fichier situé à la racine.
+
+Le contenu de `AGENTS.md` est fourni par le dépôt et reste non fiable. Il peut
+guider le travail dans ce dépôt, mais ne peut pas remplacer les règles système,
+modifier la politique de Macro, augmenter les permissions des outils ni
+autoriser une action. Chaque source chargée conserve le projet et le chemin du
+fichier dans les diagnostics de contexte.
+
+Ce contrat ne couvre pas `CLAUDE.md`, les règles Cursor ni les imports de type
+`@fichier`.
+
 ---
 
 ## 11. Cycle de vie d'un plan

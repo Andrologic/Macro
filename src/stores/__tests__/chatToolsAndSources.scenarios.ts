@@ -28,6 +28,7 @@ export const registerChatToolsAndSourcesScenarios = (
     installSkillActivationMock,
     loadChatStore,
     providerState,
+    repositoryInstructionsLoadMock,
     savePreferenceForTest,
     streamChatMock,
     terminalCreateSessionFromChatMock,
@@ -38,6 +39,87 @@ export const registerChatToolsAndSourcesScenarios = (
   } = context;
 
   describe('useChatStore Chat tools and sources', () => {
+    it('loads scoped AGENTS.md content below the system role', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = null;
+      repositoryInstructionsLoadMock.mockResolvedValueOnce({
+        sources: [
+          {
+            projectId: 'project-1',
+            projectName: 'Web',
+            sourcePath: '/repos/web/AGENTS.md',
+            relativePath: 'AGENTS.md',
+            depth: 0,
+            sizeBytes: 21,
+            content: 'Use repository rules.',
+          },
+        ],
+        issues: [],
+        totalBytes: 21,
+        fileLimit: 16,
+        byteLimit: 64 * 1024,
+      });
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [
+          {
+            id: 'chat-repository-instructions',
+            title: 'Repository instructions',
+            description: '',
+            scope_mode: 'Chat',
+            task_id: null,
+            group_id: 'group-1',
+            project_id: 'project-1',
+            last_message: '',
+            message_count: 0,
+            updated_at: '2026-08-28T00:00:00.000Z',
+            is_unread: false,
+          },
+        ],
+        messages: [],
+        selectedConversationId: 'chat-repository-instructions',
+        selectedConversationIdsByMode: { Chat: 'chat-repository-instructions' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-repository-instructions',
+        content: 'Inspect the project.',
+      });
+
+      expect(repositoryInstructionsLoadMock).toHaveBeenCalled();
+      const loadRequest = repositoryInstructionsLoadMock.mock.calls.at(-1)?.[0];
+      expect(loadRequest).toMatchObject({
+        projects: [
+          {
+            projectId: 'project-1',
+            projectName: 'Web',
+            scopePath: null,
+          },
+        ],
+        maxFiles: 16,
+        maxTotalBytes: 64 * 1024,
+      });
+      expect(loadRequest?.projects[0]?.rootPath).toBeTruthy();
+      const streamOptions = getLatestStreamOptions<{
+        messages: Array<{ role: string; content: unknown }>;
+      }>();
+      const systemMessage = String(streamOptions.messages[0]?.content ?? '');
+      const userMessage = String(streamOptions.messages.at(-1)?.content ?? '');
+      expect(systemMessage).not.toContain('[Repository instructions]');
+      expect(userMessage).toContain('[Repository instructions]');
+      expect(userMessage).toContain('Use repository rules.');
+      expect(userMessage).toContain('"project_id":"project-1"');
+    });
+
     it('uses the backend tool policy in Chat mode and keeps question available when enabled', async () => {
       context.tauriAvailable = true;
       providerState.selectedSupportsNativeToolCalling = () => true;

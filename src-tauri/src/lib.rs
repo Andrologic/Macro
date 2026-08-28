@@ -770,6 +770,7 @@ pub fn run() {
             commands::skills::skills_open_location,
             commands::skills::skills_read_resource,
             commands::skills::skills_run_script,
+            commands::repository_instructions::repository_instructions_load,
             commands::list_external_apps,
             commands::open_external_target,
             commands::terminal::terminal_list_tabs,

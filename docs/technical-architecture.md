@@ -805,6 +805,39 @@ Dans chaque mode qui expose l'outil, `toolSecurityPolicy` force chaque `terminal
 
 Le terminal manuel reste un sous-système distinct et peut conserver un rattachement à la tâche, au projet et au worktree pour la navigation de l'interface.
 
+### 13.7 Instructions `AGENTS.md` des dépôts
+
+`projectExecutionContext` reste la source de vérité de la portée projet. Le
+store de chat transmet ses `projectIds` et ses
+`workspacePathsByProjectId` à `repositoryInstructions`. Le service ne recrée
+pas la sélection Architect, Implement ou Chat. Un worktree d'exécution déjà
+résolu devient la racine de lecture du projet concerné.
+
+La commande Tauri `repository_instructions_load` effectue la découverte et la
+lecture. Son contrat accepte une racine et un `scopePath` optionnel par projet.
+Elle parcourt les dossiers de la racine vers ce périmètre, charge uniquement
+`AGENTS.md`, puis renvoie les sources dans leur ordre de priorité. Le store ne
+fournit pas encore de `scopePath`, car Macro ne possède pas de sous-dossier
+actif fiable dans le contrat de conversation. Le comportement courant charge
+donc la racine de chaque projet sans inventer de répertoire courant.
+
+Le backend canonicalise la racine, le périmètre et chaque source. Il vérifie le
+confinement après résolution des liens symboliques, déduplique les chemins par
+projet et ignore la casse dans la clé canonique sous Windows. Les limites sont
+de 16 fichiers et 64 Kio par chargement. Les plafonds natifs empêchent le
+frontend de demander plus de 32 fichiers ou 256 Kio.
+
+Le contexte du dernier message utilisateur encode chaque source comme une
+entrée JSON avec l'identité du projet, le chemin canonique, le chemin relatif,
+la profondeur et le contenu. Les instructions de dépôt restent donc sous le
+rôle système dans la hiérarchie du provider. Une règle système contrôlée par
+Macro rappelle leur niveau de confiance sans reprendre leur contenu. Le texte
+enveloppe marque les entrées comme contexte de dépôt non fiable. Il interdit le
+remplacement des règles système, la modification de la politique Macro,
+l'augmentation des permissions et le transfert d'une règle à un autre projet.
+Les diagnostics de contexte conservent les métadonnées des sources chargées et
+le calcul de l'empreinte inclut leur contenu dans le dernier tour utilisateur.
+
 ---
 
 ## 14. Skills
