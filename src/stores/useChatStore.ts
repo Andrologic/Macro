@@ -9630,6 +9630,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       if (result.manualSkip) {
+        setConversationCompactionStatus(conversationId, previousCompactionStatus);
         return buildSkippedManualCompactionResult(
           result,
           result.manualSkip.reason,
@@ -9637,6 +9638,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       if (!result.compactionState) {
+        setConversationCompactionStatus(conversationId, previousCompactionStatus);
         return buildSkippedManualCompactionResult(result, "not_enough_history");
       }
 
