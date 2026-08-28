@@ -193,6 +193,35 @@ describe('CreateImplementTaskDialog task type help', () => {
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   });
 
+  it('reveals Git task choices only after selecting a project', async () => {
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[project('develop', 'Develop project', 'develop', 'main')]}
+          initialProjectId={null}
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={() => undefined}
+        />
+      );
+    });
+
+    expect(container.textContent).not.toContain('Task type');
+    expect(container.textContent).not.toContain('Starting point');
+    expect(container.textContent).not.toContain('New work');
+    expect(container.textContent).not.toContain('Resume work');
+
+    const projectButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Develop project'),
+    );
+    await act(async () => projectButton?.click());
+
+    expect(container.textContent).toContain('Task type');
+    expect(container.textContent).toContain('Starting point');
+    expect(container.textContent).toContain('New work');
+    expect(container.textContent).toContain('Resume work');
+  });
+
   it('creates a Direct task on the current branch without a worktree start point', async () => {
     const onCreate = mock(() => undefined);
     await act(async () => {

@@ -949,6 +949,10 @@ describe('TaskQueue', () => {
     ).find((button) => button.textContent?.includes('Create task'));
     expect(dialog?.textContent ?? '').toContain('Target project');
     expect(dialog?.querySelector('textarea')).toBeNull();
+    expect(dialog?.textContent ?? '').not.toContain('Task type');
+    expect(dialog?.textContent ?? '').not.toContain('Starting point');
+    expect(dialog?.textContent ?? '').not.toContain('New work');
+    expect(dialog?.textContent ?? '').not.toContain('Resume work');
     expect(confirmButton?.disabled).toBe(true);
     expect(dialog?.querySelector('[aria-pressed="true"]')).toBeNull();
 

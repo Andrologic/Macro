@@ -483,7 +483,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           </div>
         </div>
 
-        {!isDirectEditProject && (
+        {selectedProject && !isDirectEditProject && (
         <fieldset className="space-y-2">
           <legend className="text-xs font-medium text-foreground">
             {t('implement.taskKindLabel', 'Task type')}
