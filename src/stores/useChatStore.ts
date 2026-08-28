@@ -8777,7 +8777,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       markSafetyPrestreamCompacting(initialFootprint);
       compactedRequest = await compactPreparedRequest({
         mode: "safety_prestream",
-        forceCompaction: true,
         forcePrune: true,
       });
     } else {
@@ -8793,7 +8792,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
         compactedRequest = await compactPreparedRequest({
           mode: "safety_prestream",
-          forceCompaction: true,
           forcePrune: true,
         });
       }

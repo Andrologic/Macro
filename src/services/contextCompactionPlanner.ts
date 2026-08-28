@@ -206,6 +206,9 @@ export const evaluateContextCompaction = (params: {
   } else if (params.boundary === 'manual' || forceCompaction) {
     decision = 'compact';
     reason = params.boundary === 'manual' ? 'manual_compaction_requested' : 'forced_compaction';
+  } else if (currentCompactionState) {
+    decision = 'reuse_checkpoint';
+    reason = 'checkpoint_available_for_projected_payload';
   } else if (overUsableBudget) {
     if (!autoCompactionEnabled) {
       if (blockableOverUsableBudget) {
@@ -222,9 +225,6 @@ export const evaluateContextCompaction = (params: {
   } else if (autoCompactionEnabled && proactiveCompactionRequired) {
     decision = 'compact';
     reason = params.footprint.reason;
-  } else if (currentCompactionState) {
-    decision = 'reuse_checkpoint';
-    reason = 'checkpoint_valid_for_projected_payload';
   } else {
     decision = 'send';
     reason = params.footprint.reason;

@@ -226,6 +226,17 @@ describe('evaluateContextCompaction', () => {
     expect(result.shouldReuseCheckpoint).toBe(true);
   });
 
+  it('applies an existing checkpoint before deciding whether the raw payload needs another compaction', () => {
+    const result = evaluateContextCompaction({
+      boundary: 'pre_send',
+      footprint: footprint({ context: 128_000, output: 8_000, serialized: 130_000 }),
+      currentCompactionState: checkpoint,
+    });
+
+    expect(result.decision).toBe('reuse_checkpoint');
+    expect(result.shouldReuseCheckpoint).toBe(true);
+  });
+
   it('blocks instead of looping when the latest boundary payload alone exceeds the usable budget', () => {
     const result = evaluateContextCompaction({
       boundary: 'post_tool_batch',

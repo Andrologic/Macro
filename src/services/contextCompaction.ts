@@ -654,7 +654,10 @@ const shouldCreateCompactionCheckpoint = (params: {
   Boolean(params.forceCompaction) ||
   params.trigger === 'manual' ||
   (isContextOverflowCompactionTrigger(params.trigger) &&
-    exceedsUsableContext(params.footprintAfterPruning));
+    (exceedsUsableContext(params.footprintAfterPruning) ||
+      (params.footprintAfterPruning.isContextLimitAuthoritative !== false &&
+        (params.footprintAfterPruning.threshold === 'blocking' ||
+          params.footprintAfterPruning.threshold === 'degraded'))));
 
 const shouldRefreshExistingCompactionCheckpoint = (params: {
   trigger: ContextCompactionTrigger | null;
@@ -662,7 +665,12 @@ const shouldRefreshExistingCompactionCheckpoint = (params: {
   footprintAfter: ContextFootprint;
 }): boolean =>
   Boolean(params.trigger) &&
-  (Boolean(params.forceCompaction) || exceedsUsableContext(params.footprintAfter));
+  (Boolean(params.forceCompaction) ||
+    exceedsUsableContext(params.footprintAfter) ||
+    (params.trigger === 'safety_prestream' &&
+      params.footprintAfter.isContextLimitAuthoritative !== false &&
+      (params.footprintAfter.threshold === 'blocking' ||
+        params.footprintAfter.threshold === 'degraded')));
 
 const mergeMessageIds = (...idGroups: string[][]): string[] =>
   Array.from(new Set(idGroups.flat()));
