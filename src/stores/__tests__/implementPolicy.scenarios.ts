@@ -649,6 +649,74 @@ export const registerImplementPolicyScenarios = (
       expect(streamOptions.allowedToolIds).not.toContain('git_commit');
     });
 
+    it('keeps Git tools for a mixed task while the direct project is focused', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      appState.mode = 'Implement';
+      appState.agentType = 'build';
+      appState.selectedProjectId = 'project-1';
+      appState.selectedTaskId = 'task-1';
+      localStorage.setItem('macro_toolRiskLevel', JSON.stringify('yolo'));
+      Object.assign(projectGroups[0]?.projects[0] ?? {}, {
+        directEdit: true,
+        gitSetupState: 'not_git',
+      });
+      projectGroups[0]?.projects.push({
+        id: 'project-2',
+        name: 'API',
+        path: '/repos/api',
+        mountName: 'api',
+        created_at: '2026-03-19T00:00:00.000Z',
+        status: 'active',
+        gitSetupState: 'ready',
+        directEdit: false,
+        metadata: {
+          description: '',
+          tags: [],
+          team_members: [],
+          api_contracts: [],
+          dependencies: [],
+        },
+      });
+      taskStoreState.tasks = [
+        createImplementTask({
+          status: 'InProgress',
+          project_ids: ['project-1', 'project-2'],
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              executionMode: 'direct',
+              branchName: '',
+              worktreeKey: 'project-1::direct',
+            },
+            {
+              projectId: 'project-2',
+              executionMode: 'git',
+              branchName: 'feature/mixed-api',
+              worktreeKey: 'mixed-api',
+            },
+          ],
+        }),
+      ];
+
+      const { useChatStore } = await loadChatStore();
+      setImplementStoreState(useChatStore, {
+        conversationId: 'implement-conv',
+        taskId: 'task-1',
+        title: 'Mixed Architect task',
+      });
+      await useChatStore.getState().sendMessage({
+        conversationId: 'implement-conv',
+        content: 'Traite chaque projet selon son mode.',
+        taskId: 'task-1',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ allowedToolIds: string[] }>();
+      expect(streamOptions.allowedToolIds).toContain('git_status');
+      expect(streamOptions.allowedToolIds).toContain('git_diff');
+      expect(streamOptions.allowedToolIds).toContain('git_add');
+      expect(streamOptions.allowedToolIds).toContain('git_commit');
+    });
+
     it('keeps standalone Plan mode read-only without Architect task tools', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       appState.mode = 'Implement';

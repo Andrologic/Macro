@@ -176,12 +176,19 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     bugfix: t('implement.taskKindBugfixHelp', 'Bugfix creates a branch from the configured development branch and merges it back into that branch.'),
     hotfix: t('implement.taskKindHotfixHelp', 'Hotfix creates a branch from the configured production branch and merges it back into that branch.'),
   };
+  const directTaskDescription = t(
+    'implement.taskKindDirectEditHelp',
+    'Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.',
+  );
   const getTaskKindDescription = (kind: StandaloneTaskKind): string => {
     if (!selectedProject) {
       return t(
         'implement.taskKindSelectProjectHelp',
         'Select a target project to see which task types are available.',
       );
+    }
+    if (isDirectEditProject) {
+      return directTaskDescription;
     }
     if (!creatableTaskKinds.includes(kind)) {
       return t(
@@ -519,10 +526,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           {visibleTaskKindOptions.map(({ kind }) => (
             <span key={kind} id={`implement-task-kind-${kind}-description`} className="sr-only">
               {isDirectEditProject
-                ? t(
-                    'implement.taskKindDirectEditHelp',
-                    'Macro edits the project folder directly without branches, worktrees, or Git commits.'
-                  )
+                ? directTaskDescription
                 : getTaskKindDescription(kind)}
             </span>
           ))}

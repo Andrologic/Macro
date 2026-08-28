@@ -1755,7 +1755,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const filterToolIdsForImplementTask = (
     toolIds: string[],
     task: ImplementTask | undefined,
-    focusedProjectId?: string | null,
   ): string[] => {
     if (!task) {
       return toolIds;
@@ -1779,12 +1778,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             project: useAppStore.getState().getProjectById(projectId),
           }),
         }));
-    const focusedResolution = focusedProjectId
-      ? resolutions.find((candidate) => candidate.projectId === focusedProjectId)?.resolution
-      : null;
-    const gitToolsUnavailable = focusedResolution
-      ? focusedResolution.mode !== 'git'
-      : resolutions.length > 0 && resolutions.every(({ resolution }) => resolution.mode !== 'git');
+    const gitToolsUnavailable = resolutions.length > 0 &&
+      resolutions.every(({ resolution }) => resolution.mode !== 'git');
     return toolIds.filter((toolId) =>
       !(isStandaloneImplementTask(task) && ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId)) &&
       !(gitToolsUnavailable && isGitToolId(toolId))
@@ -8652,7 +8647,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       taskAllowedToolIds = filterToolIdsForImplementTask(
         baseAllowedToolIds,
         taskForToolScope,
-        executionContext.focusedProjectId,
       );
     }
     const toolsState = useToolsStore.getState();

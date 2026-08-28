@@ -265,6 +265,20 @@ describe('CreateImplementTaskDialog task type help', () => {
     expect(findButton('Bugfix').getAttribute('aria-disabled')).toBe('false');
     expect(findButton('Hotfix').getAttribute('aria-disabled')).toBe('false');
     expect(container.textContent).not.toContain('Resume work');
+    const directHelp = 'Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.';
+    for (const label of ['Feature', 'Bugfix', 'Hotfix']) {
+      const button = findButton(label);
+      const descriptionId = button.getAttribute('aria-describedby');
+      expect(descriptionId).toBeTruthy();
+      expect(container.querySelector(`#${descriptionId}`)?.textContent).toBe(directHelp);
+    }
+    await act(async () => findButton('Feature').dispatchEvent(new MouseEvent('mouseover', {
+      bubbles: true,
+      clientX: 100,
+      clientY: 120,
+    })));
+    expect(document.body.querySelector<HTMLElement>('[role="tooltip"]')?.textContent).toBe(directHelp);
+    await act(async () => findButton('Feature').dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
 
     await act(async () => findButton('Hotfix').click());
     await act(async () => findButton('Create task').click());
