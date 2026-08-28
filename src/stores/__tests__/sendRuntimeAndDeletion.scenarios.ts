@@ -440,6 +440,58 @@ export const registerSendRuntimeAndDeletionScenarios = (
       updateMessageMock.mockImplementation(async () => undefined);
     });
 
+    it('marks an exhausted incomplete recovery as an error for its owning session', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        const options = (args[0] ?? {}) as {
+          onComplete?: (result: {
+            visibleContent: string;
+            toolTraces: unknown[];
+            completionReason: 'incomplete';
+          }) => void;
+        };
+        options.onComplete?.({
+          visibleContent: 'Persisted partial response',
+          toolTraces: [],
+          completionReason: 'incomplete',
+        });
+      }) as unknown as typeof streamChatMock);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [createConversation('chat-conv', '')],
+        messages: [],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        isLoading: false,
+        isStreaming: false,
+        sendState: 'idle',
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'First request',
+      });
+      await flushAsyncWork();
+
+      expect(useChatStore.getState().sendState).toBe('error');
+      expect(
+        useChatStore.getState().conversationRuntimeById['chat-conv'],
+      ).toEqual(
+        expect.objectContaining({
+          phase: 'error',
+          lastError: 'Le fournisseur a interrompu la réponse avant sa fin.',
+          lastErrorOrigin: 'provider',
+          lastErrorDisplayTarget: 'transcript',
+        }),
+      );
+    });
+
     it('does not consolidate an older synthetic checkpoint from a newer turn snapshot', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';

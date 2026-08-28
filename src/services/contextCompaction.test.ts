@@ -303,6 +303,38 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.pruning.estimatedTokensSaved).toBeGreaterThan(0);
   });
 
+  it('keeps distinct raw byte pages while pruning a refreshed page', () => {
+    const rawContext = (range: string, value: string) =>
+      `<tool_context tool="read_file" detail="notes.txt">\n` +
+      `FILE: notes.txt\nMODE: RAW_UTF8\nBYTES: ${range}\nTOTAL_BYTES: 80000\n` +
+      `${value.repeat(300)}\n</tool_context>`;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Read the first raw page.'),
+      makeMessage('a1', 'assistant', 'First page.', {
+        hidden_context: rawContext('0-40000', 'old first page\n'),
+      }),
+      makeMessage('u2', 'user', 'Read the second raw page.'),
+      makeMessage('a2', 'assistant', 'Second page.', {
+        hidden_context: rawContext('40000-80000', 'second page\n'),
+      }),
+      makeMessage('u3', 'user', 'Refresh the first raw page.'),
+      makeMessage('a3', 'assistant', 'Fresh first page.', {
+        hidden_context: rawContext('0-40000', 'new first page\n'),
+      }),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true, cacheWillBeRebuilt: true },
+    );
+
+    expect(result.prunedMessageIds).toEqual(['a1']);
+    expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
+    expect(String(result.messages[3]?.content)).toContain('second page');
+    expect(String(result.messages[5]?.content)).toContain('new first page');
+  });
+
   it('preserves errors and a warm cached prefix', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Read a file.'),

@@ -3951,6 +3951,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: toServiceError(error).message,
           result: "compaction_error",
+          completionReason,
         }),
       });
       throw error;
@@ -3987,6 +3988,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: orchestration.evaluation.reason,
           result: "latest_boundary_payload_too_large",
+          completionReason,
         }),
       });
       throw buildSendError(orchestration.errorMessage);
@@ -4029,6 +4031,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: "manual_compaction_required",
           result: "auto_compaction_disabled",
+          completionReason,
         }),
       });
       throw buildSendError(orchestration.errorMessage);
@@ -11208,23 +11211,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
           presentation,
           assistantMessageId,
         }) => {
-          const didMatch = updateConversationRuntimeIfSessionMatches(
-            params.conversationId,
-            params.sessionId,
-            () => ({
-              phase: "error",
-              sessionId: params.sessionId,
-              turnId: streamTurnId,
-              assistantMessageId,
-              abortController: null,
-              lastError: presentation.message,
-              lastErrorOrigin: presentation.origin,
-              lastErrorDisplayTarget: presentation.displayTarget,
-            }),
-          );
-          if (!didMatch) {
+          if (
+            deletedConversationIds.has(params.conversationId) ||
+            latestConversationSessionIdByConversationId.get(
+              params.conversationId,
+            ) !== params.sessionId
+          ) {
             return;
           }
+          setConversationRuntime(params.conversationId, {
+            phase: "error",
+            sessionId: params.sessionId,
+            turnId: streamTurnId,
+            assistantMessageId,
+            abortController: null,
+            lastError: presentation.message,
+            lastErrorOrigin: presentation.origin,
+            lastErrorDisplayTarget: presentation.displayTarget,
+          });
           set(
             presentation.displayTarget === "composer"
               ? { lastError: presentation.message, sendState: "error" }

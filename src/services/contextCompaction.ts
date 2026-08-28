@@ -1045,6 +1045,25 @@ const buildReadSupersedeIdentity = (params: {
     readHeaderValue(params.body, 'PROJECT_ID') ??
     params.projectIdentity?.trim() ??
     'unscoped';
+  const mode = readHeaderValue(params.body, 'MODE');
+  if (mode === 'RAW_UTF8') {
+    const byteRange = readHeaderValue(params.body, 'BYTES');
+    const totalBytes = Number(readHeaderValue(params.body, 'TOTAL_BYTES'));
+    const rangeMatch = byteRange?.match(/^(\d+)\s*-\s*(\d+)$/);
+    const startByte = rangeMatch ? Number(rangeMatch[1]) : null;
+    const endByte = rangeMatch ? Number(rangeMatch[2]) : null;
+    if (startByte === null || endByte === null) return null;
+    const isFullRead =
+      startByte === 0 && Number.isFinite(totalBytes) && endByte >= totalBytes;
+    const selector = isFullRead ? '' : `bytes:${startByte}-${endByte}`;
+    const baseKey = `${projectIdentity}\u0000${target}`;
+    return {
+      baseKey,
+      exactKey: `${baseKey}\u0000${selector}`,
+      target,
+      isFullRead,
+    };
+  }
   const lineRange = readHeaderValue(params.body, 'LINES');
   const totalLines = Number(readHeaderValue(params.body, 'TOTAL_LINES'));
   const rangeMatch = lineRange?.match(/^(\d+)\s*-\s*(\d+)$/);
@@ -1054,7 +1073,7 @@ const buildReadSupersedeIdentity = (params: {
     startLine === null ||
     endLine === null ||
     (startLine === 1 && Number.isFinite(totalLines) && endLine >= totalLines);
-  const selector = isFullRead ? '' : `${startLine}-${endLine}`;
+  const selector = isFullRead ? '' : `lines:${startLine}-${endLine}`;
   const baseKey = `${projectIdentity}\u0000${target}`;
   return {
     baseKey,
