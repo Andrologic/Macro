@@ -6791,8 +6791,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         executionContext.projectMounts
           .map((mount) => `${mount.mountName}=>${mount.displayName}`)
           .join(", ") || "none";
-      const executionTargetInstruction =
-        "Git operations must target exactly one project; there is no git repository at the virtual root. The agent terminal is independent from these project mounts.";
+      const scopedExecutionMounts = executionContext.projectMounts.filter((mount) =>
+        executionContext.projectIds.includes(mount.projectId)
+      );
+      const hasGitMount = scopedExecutionMounts.some((mount) => mount.executionMode === 'git');
+      const hasDirectMount = scopedExecutionMounts.some((mount) => mount.executionMode === 'direct');
+      const executionTargetInstruction = hasGitMount && hasDirectMount
+        ? "This context mixes Git and direct projects. Git operations must target exactly one Git project. Never use Git on a direct project. There is no repository at the virtual root. The agent terminal is independent from these project mounts."
+        : hasDirectMount
+          ? "This is a direct project context. Work in the project directory without Git operations. The agent terminal is independent from these project mounts."
+          : "Git operations must target exactly one project; there is no Git repository at the virtual root. The agent terminal is independent from these project mounts.";
       systemInstructions.push(
         `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. ${executionTargetInstruction}`,
       );
@@ -6843,9 +6851,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
-      const architectExecutionModes = Object.values(
+      const persistedArchitectExecutionModes = Object.values(
         getPlanExecutionModesByProjectId(useAppStore.getState().planNodes),
       );
+      const architectExecutionModes = persistedArchitectExecutionModes.length > 0
+        ? persistedArchitectExecutionModes
+        : executionContext.projectMounts
+          .filter((mount) => executionContext.projectIds.includes(mount.projectId))
+          .flatMap((mount) =>
+            mount.executionMode === 'git' || mount.executionMode === 'direct'
+              ? [mount.executionMode]
+              : []
+          );
       const hasDirectArchitectTarget = architectExecutionModes.includes('direct');
       const hasGitArchitectTarget = architectExecutionModes.includes('git');
       if (hasDirectArchitectTarget && hasGitArchitectTarget) {

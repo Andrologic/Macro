@@ -606,7 +606,9 @@ export const deriveImplementTasksFromStrategy = (params: {
     const branch = primaryTarget
       ? branchByProjectAndName.get(`${primaryTarget.projectId}::${branchKey}`) || null
       : null;
-    const branchName = primaryTarget?.branchName || normalizeBranchName(node.assignedBranch) || branchIntent.label;
+    const branchName = primaryTarget?.executionMode === 'direct'
+      ? ''
+      : primaryTarget?.branchName || normalizeBranchName(node.assignedBranch) || branchIntent.label;
     const branchTaskIndex = normalized.branchTaskOrder[branchKey]?.indexOf(node.id) ?? -1;
     const status = resolvePlanNodeTaskStatus(node);
     const projectIds = executionTargets.map((target) => target.projectId);

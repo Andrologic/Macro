@@ -226,13 +226,13 @@ export const resolveProjectExecutionContext = (
     null;
   const project = projectId ? projectById.get(projectId) || null : null;
 
-  const branchName = cleanString(
-    (projectId
-      ? executionTargets.find((target) => target.projectId === projectId)?.branchName
-      : null) ||
-      executionTarget?.branchName ||
-      task?.assigned_branch
-  );
+  const branchTarget = projectId
+    ? executionTargets.find((target) => target.projectId === projectId)
+    : executionTarget;
+  const branchResolution = projectId ? resolveScopedMode(projectId) : null;
+  const branchName = branchResolution?.mode === 'git'
+    ? cleanString(branchTarget?.branchName || executionTarget?.branchName || task?.assigned_branch)
+    : null;
 
   const canReuseActiveRepository =
     input.mode === 'Implement' &&

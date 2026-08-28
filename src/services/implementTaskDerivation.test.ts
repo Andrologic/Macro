@@ -105,6 +105,10 @@ describe('deriveImplementTasksFromStrategy', () => {
       branchName: '',
       worktreeKey: 'direct:docs:task-direct',
     });
+    expect(result.tasks.find(({ id }) => id === 'task-direct')).toMatchObject({
+      assigned_branch: '',
+      branch_name: '',
+    });
   });
 
   it('preserves Failed even when an Architect dependency is unresolved', () => {

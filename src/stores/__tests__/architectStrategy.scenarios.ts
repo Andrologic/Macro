@@ -958,6 +958,37 @@ export const registerArchitectStrategyScenarios = (
       expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
     });
 
+    it('uses the selected project mode before a direct Architect plan has nodes', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      Object.assign(projectGroups[0]?.projects[0] ?? {}, {
+        directEdit: true,
+        gitSetupState: 'not_git',
+      });
+      const { useChatStore } = await loadChatStore();
+      activateArchitectPlanForTest({ conversationId: 'plan-conv', nodes: [] });
+      useChatStore.setState({
+        conversations: [createConversation('plan-conv')],
+        messages: [],
+        selectedConversationId: 'plan-conv',
+        selectedConversationIdsByMode: { Architect: 'plan-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'plan-conv',
+        content: 'Prépare une stratégie directe.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ messages: Array<{ content: string }> }>();
+      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
+    });
+
     it('removes strategy mutation tools from Architect turns after plan validation', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
 

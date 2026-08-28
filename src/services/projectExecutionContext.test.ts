@@ -639,4 +639,33 @@ describe('resolveProjectExecutionContext', () => {
     ]);
     expect(context.actionableProjectIds).toEqual(['macro-web', 'macro-api']);
   });
+
+  it('does not expose a branch for a persisted direct Implement target', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects,
+      projectGroups,
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: 'macro-web',
+      selectedTaskId: 'direct-task',
+      tasks: [{
+        id: 'direct-task',
+        project_id: 'macro-web',
+        project_ids: ['macro-web'],
+        assigned_branch: 'work',
+        execution_targets: [{
+          projectId: 'macro-web',
+          executionMode: 'direct',
+          branchName: '',
+          worktreeKey: 'macro-web::direct',
+        }],
+      }],
+    });
+
+    expect(context.branchName).toBeNull();
+    expect(context.projectMounts).toEqual([
+      expect.objectContaining({ projectId: 'macro-web', executionMode: 'direct' }),
+    ]);
+  });
 });

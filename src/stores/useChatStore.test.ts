@@ -1942,7 +1942,7 @@ const registerUseChatStoreMocks = async () => {
       actionableProjectIds: ['project-1'],
       contextProjectIds: [],
       taskId: null,
-      branchName: 'develop',
+      branchName: projectGroups[0]?.projects[0]?.gitSetupState === 'not_git' ? null : 'develop',
       workspacePath: 'C:/repos/web',
       defaultWorkspacePath: 'C:/repos/web/.macro/worktrees/task-1',
       workspacePathsByProjectId: {
@@ -1957,6 +1957,11 @@ const registerUseChatStoreMocks = async () => {
           displayName: 'Web',
           workspacePath: 'C:/repos/web/.macro/worktrees/task-1',
           isReadOnly: false,
+          executionMode:
+            projectGroups[0]?.projects[0]?.gitSetupState === 'not_git' &&
+            projectGroups[0]?.projects[0]?.directEdit
+              ? 'direct'
+              : 'git',
         },
         {
           projectId: 'project-2',
@@ -1965,6 +1970,7 @@ const registerUseChatStoreMocks = async () => {
           displayName: 'API',
           workspacePath: 'C:/repos/api/.macro/worktrees/task-1',
           isReadOnly: true,
+          executionMode: 'git',
         },
       ],
     })),
