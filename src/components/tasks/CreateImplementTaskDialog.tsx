@@ -36,10 +36,10 @@ const TASK_KIND_OPTIONS: Array<{
   kind: StandaloneTaskKind;
   icon: 'sparkles' | 'tool' | 'zap' | 'git-commit';
 }> = [
+  { kind: 'direct', icon: 'git-commit' },
   { kind: 'feature', icon: 'sparkles' },
   { kind: 'bugfix', icon: 'tool' },
   { kind: 'hotfix', icon: 'zap' },
-  { kind: 'direct', icon: 'git-commit' },
 ];
 
 const TOOLTIP_OFFSET = 12;

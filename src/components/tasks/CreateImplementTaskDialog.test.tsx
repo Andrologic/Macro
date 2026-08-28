@@ -100,6 +100,11 @@ describe('CreateImplementTaskDialog task type help', () => {
       Direct: 'Work in the project folder without a dedicated branch or worktree. Accepted changes are committed to the current branch.',
     };
 
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>('[data-task-kind-available]'))
+        .map((button) => button.textContent?.trim())
+    ).toEqual(['Direct', 'Feature', 'Bugfix', 'Hotfix']);
+
     for (const [label, description] of Object.entries(expected)) {
       const button = Array.from(container.querySelectorAll('button')).find(
         (candidate) => candidate.textContent?.trim().startsWith(label)
