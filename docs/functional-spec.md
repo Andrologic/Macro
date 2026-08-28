@@ -298,7 +298,7 @@ Le mode Implement doit supporter :
 - le filtrage des tâches par projet et par autres critères pertinents
 - un résumé opérationnel par statut, utilisable comme filtre, à la place d'une progression globale ambiguë
 - la sélection explicite d'un projet modifiable lors de la création d'une tâche indépendante
-- la création d'une tâche indépendante typée `feature`, `bugfix`, `hotfix` ou `direct`, avec choix explicite du projet et du type
+- la création d'une tâche indépendante typée `feature`, `bugfix`, `hotfix` ou `direct`, avec choix explicite du projet et, pour un projet Git, du type
 - la prise en compte explicite des dépendances et de l'état de disponibilité d'une tâche
 - la consultation des artefacts hérités depuis les tâches parentes et la production d'artefacts pour les tâches dépendantes
 - une review en fin de tâche
@@ -310,7 +310,7 @@ Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord l
 
 Le type `direct` ne crée ni branche ni worktree. Sur un projet Git, Macro capture la branche et le commit courants lors de la création, puis travaille dans le dossier du projet. Le dossier doit être propre au départ. Pendant la revue, l'utilisateur valide les fichiers comme pour une autre tâche. Le commit est créé dans le dossier du projet sur la branche capturée, puis la tâche se termine sans merge ni suppression de branche. Macro bloque le commit si la branche courante a changé entre-temps.
 
-Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche `direct` peut être active par projet et les outils Git ne sont pas exposés à l'agent.
+Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, la création d'une tâche demande uniquement de sélectionner le projet : Macro choisit automatiquement le type `direct` et ne présente aucun choix de type ou de point de départ Git. Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche `direct` peut être active par projet et les outils Git ne sont pas exposés à l'agent.
 
 L'édition directe ne remplace pas le workflow planifié : un projet sans Git reste un contexte de lecture dans Architect et ne peut pas porter de plan exécutable. L'utilisateur peut initialiser Git ultérieurement pour retrouver les branches, les worktrees, le parallélisme et les plans Architect.
 

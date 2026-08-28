@@ -226,6 +226,47 @@ describe('CreateImplementTaskDialog task type help', () => {
     });
   });
 
+  it('creates directly for a project without Git without showing task choices', async () => {
+    const onCreate = mock(() => undefined);
+    const noGitProject: TaskProjectFilterOption = {
+      ...project('folder', 'Folder project', 'develop', 'main'),
+      directEdit: true,
+      gitSetupState: 'not_git',
+    };
+
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[noGitProject]}
+          initialProjectId="folder"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={onCreate}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const createButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Create task',
+    );
+    expect(container.textContent).not.toContain('Task type');
+    expect(container.textContent).not.toContain('Starting point');
+    expect(container.querySelector('[data-task-kind-available]')).toBeNull();
+    expect(createButton?.disabled).toBe(false);
+
+    await act(async () => createButton?.click());
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: 'folder',
+      taskKind: 'direct',
+      startPoint: {
+        kind: 'direct',
+        branchName: 'direct',
+        baseCommitHash: null,
+      },
+    });
+  });
+
   it('recomputes task type availability from the selected project workflow', async () => {
     const onCreate = mock(() => undefined);
     await act(async () => {

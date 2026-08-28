@@ -999,6 +999,84 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('creates directly for a selected project without Git', async () => {
+    const directProject = {
+      ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'),
+      directEdit: true,
+      gitSetupState: 'not_git' as const,
+    };
+    seedTasks([]);
+    const createConversation = mock(async () => ({ id: 'conversation-created' }));
+    const selectConversation = mock(async () => true);
+    const createManualFeatureDraft = mock(async () => undefined);
+    const activateTask = mock(async () => undefined);
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      createConversation: createConversation as never,
+      selectConversation: selectConversation as never,
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      createManualFeatureDraft: createManualFeatureDraft as never,
+      activateTask: activateTask as never,
+    });
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [{
+        id: 'group-folder',
+        name: 'Folder group',
+        isOpen: true,
+        projects: [directProject],
+      }] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>(
+        '[data-tour-id="implement-create-task"]'
+      )?.click();
+      await flushRender();
+    });
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const findDialogButton = (text: string) => Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []
+    ).find((button) => button.textContent?.includes(text));
+    await act(async () => {
+      findDialogButton('Folder project')?.click();
+      await flushRender();
+    });
+
+    const confirmButton = findDialogButton('Create task');
+    expect(dialog?.textContent).not.toContain('Task type');
+    expect(dialog?.textContent).not.toContain('Starting point');
+    expect(confirmButton?.disabled).toBe(false);
+
+    await act(async () => {
+      confirmButton?.click();
+      await flushRender();
+    });
+
+    expect(createManualFeatureDraft).toHaveBeenCalledWith({
+      taskId: expect.stringContaining('manual-feature-'),
+      conversationId: 'conversation-created',
+      groupId: 'group-folder',
+      projectIds: ['project-folder'],
+      contextProjectIds: [],
+      baseBranch: 'direct',
+      title: 'New direct task',
+      description: '',
+      taskKind: 'direct',
+      existingBranchName: 'direct',
+      baseCommitHash: null,
+    });
+    expect(activateTask).toHaveBeenCalledWith(expect.stringContaining('manual-feature-'));
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it('creates and activates a task on the branch of a selected existing worktree', async () => {
     const gitTaskStartPoints = {
       worktrees: [{

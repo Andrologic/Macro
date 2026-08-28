@@ -162,9 +162,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       : [],
     [isDirectEditProject, selectedProject],
   );
-  const visibleTaskKindOptions = isDirectEditProject
-    ? TASK_KIND_OPTIONS.filter(({ kind }) => kind === 'direct')
-    : TASK_KIND_OPTIONS;
+  const visibleTaskKindOptions = TASK_KIND_OPTIONS;
   const selectedTaskKindIsCreatable = selectedTaskKind
     ? creatableTaskKinds.includes(selectedTaskKind)
     : false;
@@ -485,11 +483,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           </div>
         </div>
 
+        {!isDirectEditProject && (
         <fieldset className="space-y-2">
           <legend className="text-xs font-medium text-foreground">
             {t('implement.taskKindLabel', 'Task type')}
           </legend>
-          <div className={cn('grid gap-2', isDirectEditProject ? 'grid-cols-1' : 'grid-cols-4')}>
+          <div className="grid grid-cols-4 gap-2">
             {visibleTaskKindOptions.map(({ kind, icon }) => {
               const selected = selectedTaskKind === kind;
               const label = kind === 'direct'
@@ -561,6 +560,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
             </p>
           )}
         </fieldset>
+        )}
 
         {!isDirectEditProject && selectedProject && selectedTaskKind !== 'direct' && (
           <fieldset className="space-y-2">
