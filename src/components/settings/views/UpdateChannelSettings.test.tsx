@@ -134,9 +134,11 @@ describe('UpdateChannelSettings', () => {
     expect(choices[0]?.textContent).toContain('Stable');
     expect(choices[1]?.textContent).toContain('Preview');
     expect(choices[1]?.getAttribute('aria-checked')).toBe('true');
-    expect(choices[1]?.getAttribute('aria-describedby')).toBe('update-channel-description');
-    expect(container.querySelector('#update-channel-description')?.textContent)
+    expect(choices[1]?.getAttribute('aria-describedby')).toBe('update-channel-preview-description');
+    expect(choices[1]?.querySelector('#update-channel-preview-description')?.textContent)
       .toContain('nightly and release candidate builds');
+    expect(choices[0]?.querySelector('#update-channel-stable-description')?.textContent)
+      .toContain('production releases only');
     expect(container.querySelector('select')).toBeNull();
   });
 
