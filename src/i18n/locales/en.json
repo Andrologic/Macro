@@ -63,6 +63,16 @@
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
     "failedSteps": "Failed steps"
   },
+  "shutdown": {
+    "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
+    "activeWorkMultiple": "{{count}} tasks are still running. Closing Macro will interrupt them.",
+    "closeTitle": "Close Macro?",
+    "closeAction": "Close Macro",
+    "keepWorking": "Keep working",
+    "closeFailed": "Macro could not close",
+    "closeFailedDescription": "Your work was kept. Try closing Macro again.",
+    "closing": "Macro is closing."
+  },
   "releaseNotes": {
     "dialogTitle": "Release notes",
     "shownOnce": "This note is shown once for each installed version.",
@@ -78,22 +88,31 @@
     "upToDate": "Macro is up to date",
     "check": "Check for updates",
     "checkFailed": "Unable to check for updates",
-    "prepareFailed": "Macro could not prepare the restart",
+    "prepareFailed": "Macro could not prepare to close",
+    "downloadFailed": "The update could not be downloaded",
+    "downloadAgain": "Download again",
     "installFailed": "The update could not be installed",
     "activeWorkTitle": "Agents are still running",
-    "activeWorkDescription_one": "{{count}} active task may lose its current output if Macro restarts now.",
-    "activeWorkDescription_other": "{{count}} active tasks may lose their current output if Macro restarts now.",
+    "activeWorkDescription_one": "{{count}} active task may lose its current output if Macro closes now.",
+    "activeWorkDescription_other": "{{count}} active tasks may lose their current output if Macro closes now.",
     "agentActivity": "Agent",
     "implementActivity": "Implement execution",
     "wait": "Wait",
-    "restartAnyway": "Restart anyway",
+    "restartAnyway": "Install anyway",
     "dialogTitle": "Macro update",
     "available": "Update available",
     "noNotes": "No release notes were provided for this version.",
     "downloadInProgress": "The signed update is downloading in the background.",
     "restartRequired": "Macro will reopen after the update is installed.",
     "later": "Later",
-    "restartAndUpdate": "Restart and update"
+    "restartAndUpdate": "Restart and update",
+    "readyForNextLaunch": "Update v{{version}} will be installed the next time Macro opens",
+    "readyVersion": "Macro v{{version}} is ready",
+    "installsNextLaunch": "It will be installed the next time Macro opens.",
+    "updateFailed": "The update could not be completed",
+    "details": "Details",
+    "retryInstall": "Retry installation",
+    "installNow": "Install now"
   },
   "markdown": {
     "video": "Video"
@@ -927,12 +946,14 @@
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
     },
+    "updates": "Updates",
     "language_region": "Language & Region",
     "language": "Language",
     "language_desc": "Select your preferred language interface",
     "application": "Application",
     "updateChannel": {
       "label": "Update channel",
+      "currentVersion": "Current version",
       "stable": "Stable",
       "preview": "Preview (nightly)",
       "stableDescription": "Receive production releases only.",

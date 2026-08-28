@@ -152,8 +152,8 @@ export function validateUpdaterConfiguration({
       errors.push(`plugins.updater.endpoints must include ${UPDATER_ENDPOINT}.`);
     }
 
-    if (updater.windows?.installMode !== 'passive') {
-      errors.push('plugins.updater.windows.installMode must be "passive".');
+    if (updater.windows?.installMode !== 'quiet') {
+      errors.push('plugins.updater.windows.installMode must be "quiet".');
     }
   }
 

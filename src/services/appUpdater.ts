@@ -1,5 +1,13 @@
 import { isTauriEnvironment } from '../utils/isTauriEnvironment';
-import { updaterTarget } from './tauriIpc';
+import i18n from '../i18n';
+import {
+  appUpdateCheckAndStage,
+  appUpdateDiscard,
+  appUpdateInstallNow,
+  appUpdateStatus,
+  updaterTarget,
+  type NativeAppUpdateSnapshotDto,
+} from './tauriIpc';
 import {
   loadUpdateChannel,
   shouldAllowChannelDowngrade,
@@ -12,6 +20,8 @@ export interface AppUpdateMetadata {
   version: string;
   date: string | null;
   notes: string;
+  activationAttempts: number;
+  activationError: string | null;
 }
 
 export interface AppUpdateCheckResult {
@@ -25,160 +35,132 @@ export type AppUpdateDownloadEvent =
   | { type: 'finished' };
 
 export interface AppUpdaterClient {
-  check: () => Promise<AppUpdateCheckResult>;
-  download: (onEvent: (event: AppUpdateDownloadEvent) => void) => Promise<void>;
+  status: () => Promise<AppUpdateCheckResult>;
+  checkAndDownload: (
+    onEvent: (event: AppUpdateDownloadEvent) => void,
+  ) => Promise<AppUpdateCheckResult>;
   installAndRelaunch: () => Promise<void>;
   reset: () => Promise<void>;
 }
 
-export type NativeDownloadEvent =
-  | { event: 'Started'; data: { contentLength?: number } }
-  | { event: 'Progress'; data: { chunkLength: number } }
-  | { event: 'Finished' };
-
-export type NativeUpdate = {
-  currentVersion: string;
-  version: string;
-  date?: string;
-  body?: string;
-  download: (onEvent?: (event: NativeDownloadEvent) => void) => Promise<void>;
-  install: () => Promise<void>;
-  close: () => Promise<void>;
-};
+type NativeDownloadEvent =
+  | { type: 'started'; contentLength?: number }
+  | { type: 'progress'; chunkLength: number }
+  | { type: 'finished' };
 
 export interface NativeUpdaterBindings {
-  getVersion: () => Promise<string>;
   getUpdaterTarget: () => Promise<string>;
-  check: (options?: {
-    timeout?: number;
-    target?: string;
-    allowDowngrades?: boolean;
-  }) => Promise<NativeUpdate | null>;
-  relaunch: () => Promise<void>;
+  status: () => Promise<NativeAppUpdateSnapshotDto>;
+  checkAndStage: (options: {
+    target: string;
+    allowDowngrades: boolean;
+  }) => Promise<NativeAppUpdateSnapshotDto>;
+  installNow: () => Promise<void>;
+  discard: () => Promise<void>;
+  listenForProgress: (
+    listener: (event: NativeDownloadEvent) => void,
+  ) => Promise<() => void>;
 }
 
 export type LoadNativeUpdaterBindings = () => Promise<NativeUpdaterBindings>;
 export type LoadUpdateChannel = () => Promise<UpdateChannel>;
 
-const CHECK_TIMEOUT_MS = 30_000;
-
 export const isAutomaticUpdaterEnabled = (): boolean =>
   import.meta.env.PROD && isTauriEnvironment();
 
-const closeUpdate = async (update: NativeUpdate | null): Promise<void> => {
-  if (!update) return;
-  try {
-    await update.close();
-  } catch (error) {
-    console.warn('Failed to release the native updater resource:', error);
-  }
+const loadNativeUpdaterBindings: LoadNativeUpdaterBindings = async () => {
+  const { listen } = await import('@tauri-apps/api/event');
+  return {
+    getUpdaterTarget: updaterTarget,
+    status: appUpdateStatus,
+    checkAndStage: appUpdateCheckAndStage,
+    installNow: appUpdateInstallNow,
+    discard: appUpdateDiscard,
+    listenForProgress: (listener) =>
+      listen<NativeDownloadEvent>('app-update://download-progress', (event) => {
+        listener(event.payload);
+      }),
+  };
 };
 
-const loadNativeUpdaterBindings: LoadNativeUpdaterBindings = async () => {
-  const [{ getVersion }, { check }, { relaunch }] = await Promise.all([
-    import('@tauri-apps/api/app'),
-    import('@tauri-apps/plugin-updater'),
-    import('@tauri-apps/plugin-process'),
-  ]);
-  return { getVersion, getUpdaterTarget: updaterTarget, check, relaunch };
-};
+const mapSnapshot = (snapshot: NativeAppUpdateSnapshotDto): AppUpdateCheckResult => ({
+  currentVersion: snapshot.currentVersion,
+  update: snapshot.update
+    ? {
+        currentVersion: snapshot.update.currentVersion,
+        version: snapshot.update.version,
+        date: snapshot.update.date,
+        notes: snapshot.update.notes,
+        activationAttempts: snapshot.update.activationAttempts,
+        activationError: snapshot.update.error,
+      }
+    : null,
+});
 
 export class TauriAppUpdaterClient implements AppUpdaterClient {
-  private pendingUpdate: NativeUpdate | null = null;
-  private installedAwaitingRelaunch = false;
-
   constructor(
     private readonly loadBindings: LoadNativeUpdaterBindings = loadNativeUpdaterBindings,
     private readonly loadChannel: LoadUpdateChannel = loadUpdateChannel,
   ) {}
 
-  async reset(): Promise<void> {
-    const previousUpdate = this.pendingUpdate;
-    this.pendingUpdate = null;
-    this.installedAwaitingRelaunch = false;
-    await closeUpdate(previousUpdate);
+  async status(): Promise<AppUpdateCheckResult> {
+    const bindings = await this.loadBindings();
+    return mapSnapshot(await bindings.status());
   }
 
-  async check(): Promise<AppUpdateCheckResult> {
-    await this.reset();
-    const { getVersion, getUpdaterTarget, check } = await this.loadBindings();
-    const currentVersion = await getVersion();
+  async checkAndDownload(
+    onEvent: (event: AppUpdateDownloadEvent) => void,
+  ): Promise<AppUpdateCheckResult> {
+    const bindings = await this.loadBindings();
+    const current = await bindings.status();
     const [channel, nativeTarget] = await Promise.all([
       this.loadChannel(),
-      getUpdaterTarget(),
+      bindings.getUpdaterTarget(),
     ]);
-    const update = await check({
-      timeout: CHECK_TIMEOUT_MS,
-      target: updaterTargetForChannel(channel, nativeTarget),
-      allowDowngrades: shouldAllowChannelDowngrade(channel, currentVersion),
-    }) as NativeUpdate | null;
-    this.pendingUpdate = update;
-
-    return {
-      currentVersion,
-      update: update
-        ? {
-            currentVersion: update.currentVersion || currentVersion,
-            version: update.version,
-            date: update.date ?? null,
-            notes: update.body ?? '',
-          }
-        : null,
-    };
-  }
-
-  async download(onEvent: (event: AppUpdateDownloadEvent) => void): Promise<void> {
-    const update = this.pendingUpdate;
-    if (!update) {
-      throw new Error('No update is available to download.');
-    }
-
-    await update.download((event) => {
-      switch (event.event) {
-        case 'Started':
-          onEvent({
-            type: 'started',
-            contentLength: event.data.contentLength ?? null,
-          });
-          break;
-        case 'Progress':
-          onEvent({ type: 'progress', chunkLength: event.data.chunkLength });
-          break;
-        case 'Finished':
-          onEvent({ type: 'finished' });
-          break;
+    const unlisten = await bindings.listenForProgress((event) => {
+      if (event.type === 'started') {
+        onEvent({ type: 'started', contentLength: event.contentLength ?? null });
+      } else if (event.type === 'progress') {
+        onEvent({ type: 'progress', chunkLength: event.chunkLength });
+      } else {
+        onEvent({ type: 'finished' });
       }
     });
+    try {
+      const snapshot = await bindings.checkAndStage({
+        target: updaterTargetForChannel(channel, nativeTarget),
+        allowDowngrades: shouldAllowChannelDowngrade(channel, current.currentVersion),
+      });
+      return mapSnapshot(snapshot);
+    } finally {
+      unlisten();
+    }
   }
 
   async installAndRelaunch(): Promise<void> {
-    if (this.installedAwaitingRelaunch) {
-      await this.relaunchInstalledUpdate();
-      return;
-    }
-
-    const update = this.pendingUpdate;
-    if (!update) {
-      throw new Error('No downloaded update is ready to install.');
-    }
-
-    await update.install();
-    this.pendingUpdate = null;
-    this.installedAwaitingRelaunch = true;
-    await closeUpdate(update);
-    await this.relaunchInstalledUpdate();
+    const bindings = await this.loadBindings();
+    await bindings.installNow();
   }
 
-  private async relaunchInstalledUpdate(): Promise<void> {
-    const { relaunch } = await this.loadBindings();
-    await relaunch();
-    this.installedAwaitingRelaunch = false;
+  async reset(): Promise<void> {
+    const bindings = await this.loadBindings();
+    await bindings.discard();
   }
 }
 
 export const appUpdaterClient: AppUpdaterClient = new TauriAppUpdaterClient();
 
-export const toAppUpdateErrorMessage = (error: unknown): string =>
-  error instanceof Error && error.message.trim().length > 0
-    ? error.message
-    : String(error || 'Unknown update error');
+export type AppUpdateErrorOperation = 'check' | 'download' | 'install';
+
+export const toAppUpdateErrorMessage = (
+  _error: unknown,
+  operation: AppUpdateErrorOperation,
+): string => {
+  if (operation === 'download') {
+    return i18n.t('updates.downloadFailed', 'The update could not be downloaded');
+  }
+  if (operation === 'install') {
+    return i18n.t('updates.installFailed', 'The update could not be installed');
+  }
+  return i18n.t('updates.checkFailed', 'Unable to check for updates');
+};

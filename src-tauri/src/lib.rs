@@ -1,4 +1,5 @@
 mod app_quit_state;
+mod app_updates;
 pub mod commands;
 pub mod config;
 pub mod core;
@@ -384,6 +385,13 @@ pub fn run() {
     tracing::info!("Configured workspace path: {:?}", config.workspace_path);
 
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
@@ -403,17 +411,10 @@ pub fn run() {
         .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
-        .on_window_event(|window, event| {
-            if window.label() != "main" {
-                return;
-            }
-
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let app_quit_state = window.state::<AppQuitState>();
-                app_quit_state.mark_quitting("main-window-close-requested");
-            }
-        })
         .setup(move |app| {
+            if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
+                tracing::error!(%error, "Failed to activate staged application update");
+            }
             #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
             if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
                 let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
@@ -606,6 +607,14 @@ pub fn run() {
             state_manager::state_delete_value,
             state_manager::state_clear,
             updater_target,
+            app_updates::app_update_status,
+            app_updates::app_update_check_and_stage,
+            app_updates::app_update_exit_after_clean_shutdown,
+            app_updates::app_exit_cleanly,
+            app_updates::app_update_discard,
+            app_updates::app_update_install_now,
+            app_updates::app_installer_close_request_pending,
+            app_updates::app_installer_close_respond,
             frontend_log,
             show_main_window,
             window_close,

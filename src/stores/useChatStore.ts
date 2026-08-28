@@ -37,6 +37,8 @@ import {
   WorkspaceFileReference,
 } from "../types";
 import { toServiceError } from "../services/contracts/errors";
+import { isAppShutdownGateActive } from "../services/appShutdownGate";
+import i18n from "../i18n";
 import {
   extractContextLimitTokensFromErrorLike,
   isContextOverflowErrorLike,
@@ -266,6 +268,7 @@ import {
   type PendingToolBoundaryCompaction,
 } from "../services/contextCompactionOrchestrator";
 import {
+  buildCompactionActivityStatus,
   getCompactionEventTrigger,
   isTransientCompactionStatus,
   resolveCompactionStatusFromState,
@@ -9536,6 +9539,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const compactConversationNow = async (
     conversationId: string,
   ): Promise<ManualCompactionResult> => {
+    if (isAppShutdownGateActive()) {
+      throw buildSendError(i18n.t("shutdown.closing", "Macro is closing. Try again after reopening it."));
+    }
     if (!conversationId) {
       throw buildSendError("Select a conversation before compacting.");
     }
@@ -9547,6 +9553,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationCompactionInProgress.add(conversationId);
     const previousCompactionStatus =
       get().conversationCompactionStatusById[conversationId] ?? null;
+    const admissionCompactionStatus = buildCompactionActivityStatus({
+      kind: "manual",
+      previous: previousCompactionStatus,
+    });
+    setConversationCompactionStatus(conversationId, admissionCompactionStatus);
 
     try {
       await ensureMessagesLoadedForConversation(conversationId);
@@ -9646,6 +9657,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set({ lastError: normalized.message });
       throw normalized;
     } finally {
+      if (
+        get().conversationCompactionStatusById[conversationId]
+        === admissionCompactionStatus
+      ) {
+        setConversationCompactionStatus(conversationId, previousCompactionStatus);
+      }
       conversationCompactionInProgress.delete(conversationId);
     }
   };
@@ -14568,6 +14585,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     sendMessage: async (payload) => {
+      if (isAppShutdownGateActive()) {
+        throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
+      }
       let {
         conversationId,
         content,

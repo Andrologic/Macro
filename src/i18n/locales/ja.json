@@ -41,6 +41,16 @@
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",
     "failedSteps": "失敗した手順"
   },
+  "shutdown": {
+    "activeWorkSingle": "実行中のタスクがあります。Macro を閉じると中断されます。",
+    "activeWorkMultiple": "{{count}} 件のタスクが実行中です。Macro を閉じると中断されます。",
+    "closeTitle": "Macro を閉じますか？",
+    "closeAction": "Macro を閉じる",
+    "keepWorking": "作業を続ける",
+    "closeFailed": "Macro を閉じられませんでした",
+    "closeFailedDescription": "作業内容は保持されています。もう一度 Macro を終了してください。",
+    "closing": "Macro を終了しています。"
+  },
   "releaseNotes": {
     "dialogTitle": "リリースノート",
     "shownOnce": "このノートは、インストールされたバージョンごとに一度だけ表示されます。",
@@ -56,22 +66,31 @@
     "upToDate": "Macro は最新です",
     "check": "更新を確認",
     "checkFailed": "更新を確認できませんでした",
-    "prepareFailed": "Macro は再起動を準備できませんでした",
+    "prepareFailed": "Macro を閉じる準備ができませんでした",
+    "downloadFailed": "アップデートをダウンロードできませんでした",
+    "downloadAgain": "もう一度ダウンロード",
     "installFailed": "更新をインストールできませんでした",
     "activeWorkTitle": "実行中のエージェントがあります",
-    "activeWorkDescription_one": "今すぐ再起動すると、{{count}} 件の実行中タスクの出力が失われる可能性があります。",
-    "activeWorkDescription_other": "今すぐ再起動すると、{{count}} 件の実行中タスクの出力が失われる可能性があります。",
+    "activeWorkDescription_one": "今すぐ閉じると、{{count}} 件の実行中タスクの出力が失われる可能性があります。",
+    "activeWorkDescription_other": "今すぐ閉じると、{{count}} 件の実行中タスクの出力が失われる可能性があります。",
     "agentActivity": "エージェント",
     "implementActivity": "Implement 実行",
     "wait": "待つ",
-    "restartAnyway": "それでも再起動",
+    "restartAnyway": "それでもインストール",
     "dialogTitle": "Macro の更新",
     "available": "更新があります",
     "noNotes": "このバージョンのリリースノートはありません。",
     "downloadInProgress": "署名済みの更新をバックグラウンドでダウンロードしています。",
     "restartRequired": "更新のインストール後に Macro が再起動します。",
     "later": "後で",
-    "restartAndUpdate": "再起動して更新"
+    "restartAndUpdate": "再起動して更新",
+    "readyForNextLaunch": "更新 v{{version}} は次回 Macro を開いたときにインストールされます",
+    "readyVersion": "Macro v{{version}} の準備ができました",
+    "installsNextLaunch": "次回 Macro を開いたときにインストールされます。",
+    "updateFailed": "更新を完了できませんでした",
+    "details": "詳細",
+    "retryInstall": "インストールを再試行",
+    "installNow": "今すぐインストール"
   },
   "markdown": {
     "video": "動画"
@@ -904,12 +923,14 @@
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
     },
+    "updates": "更新",
     "language_region": "言語と地域",
     "language": "言語",
     "language_desc": "好みの言語インターフェースを選択してください",
     "application": "アプリケーション",
     "updateChannel": {
       "label": "更新チャンネル",
+      "currentVersion": "現在のバージョン",
       "stable": "安定版",
       "preview": "プレビュー（Nightly）",
       "stableDescription": "製品版のみを受け取ります。",
