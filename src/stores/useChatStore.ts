@@ -235,6 +235,7 @@ import {
   resolveProjectExecutionContext,
   type ProjectExecutionContext,
 } from "../services/projectExecutionContext";
+import { getPlanExecutionModesByProjectId } from "../services/planExecutionModes";
 import {
   buildQuestionnaireResponseArtifacts,
   buildQuestionnaireResponseProviderInputItems,
@@ -1709,6 +1710,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       activeRepositoryPath: taskState.activeRepositoryPath,
       workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
       branchWorktrees: taskState.branchWorktrees,
+      architectExecutionModesByProjectId: appState.activeArchitectPlanId
+        ? getPlanExecutionModesByProjectId(appState.planNodes)
+        : undefined,
     });
   };
 

@@ -260,4 +260,30 @@ describe('resolveFooterGitContext', () => {
 
     expect(result.project).toBeNull();
   });
+
+  it('hides an active Architect plan target that persists direct mode after Git is added', () => {
+    const result = resolveFooterGitContext({
+      ...baseInput(),
+      mode: 'Architect',
+      standaloneProjects: [project('direct')],
+      projectGroups: [],
+      activeArchitectPlanId: 'plan-direct',
+      visibleArchitectPlans: [{
+        id: 'plan-direct',
+        slug: 'plan-direct',
+        title: 'Direct plan',
+        description: '',
+        status: 'in_progress',
+        targetBranch: 'develop',
+        projectId: 'direct',
+        projectIds: ['direct'],
+        createdAt: '',
+        updatedAt: '',
+        nodeCount: 1,
+      }],
+      activeArchitectPlanExecutionModesByProjectId: { direct: 'direct' },
+    });
+
+    expect(result).toMatchObject({ project: null, candidates: [], reason: 'missing_context' });
+  });
 });

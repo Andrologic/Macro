@@ -168,7 +168,7 @@ describe('architectScopePromotionService', () => {
       planId: 'plan-1',
       taskId: 'task-1',
       projectIds: ['web'],
-    })).rejects.toThrow('read-only');
+    })).rejects.toThrow('project access setting');
   });
 
   it('retries provisioning after the promoted scope was already persisted', async () => {

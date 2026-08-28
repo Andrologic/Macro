@@ -27,6 +27,7 @@ export interface ResolveFooterGitContextInput {
   durableFocusProjectId?: string | null;
   manualProjectId?: string | null;
   selectedFolder?: FooterGitFolder | null;
+  activeArchitectPlanExecutionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }
 
 export interface FooterGitContext {
@@ -52,11 +53,22 @@ const resolveCandidates = (
   projectIds: string[],
   projectsById: Map<string, Project>,
   task: Task | null,
+  architectExecutionModesByProjectId?: Record<string, 'git' | 'direct'>,
 ): FooterGitProject[] => projectIds.flatMap((projectId) => {
   const project = projectsById.get(projectId);
   const path = project?.path?.trim();
   const target = task?.execution_targets?.find((candidate) => candidate.projectId === projectId);
-  const resolution = resolveProjectExecutionMode({ project, target });
+  const persistedArchitectMode = architectExecutionModesByProjectId?.[projectId];
+  const resolution = resolveProjectExecutionMode({
+    project,
+    target: target ?? (persistedArchitectMode
+      ? {
+          projectId,
+          executionMode: persistedArchitectMode,
+          repoPath: path,
+        }
+      : undefined),
+  });
   return project && path && resolution.mode === 'git'
     ? [{ id: project.id, name: project.name, path, source: 'project' }]
     : [];
@@ -112,7 +124,14 @@ export const resolveFooterGitContext = (
     projectIds = [input.durableFocusProjectId];
   }
 
-  let candidates = resolveCandidates(projectIds, projectsById, taskContext);
+  let candidates = resolveCandidates(
+    projectIds,
+    projectsById,
+    taskContext,
+    input.mode === 'Architect'
+      ? input.activeArchitectPlanExecutionModesByProjectId
+      : undefined,
+  );
   if (
     input.mode === 'Architect' &&
     allProjects.length === 0 &&

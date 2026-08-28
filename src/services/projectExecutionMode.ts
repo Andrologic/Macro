@@ -61,13 +61,6 @@ export const resolveProjectExecutionMode = (params: {
     if (project.userReadOnly) {
       return { mode: 'blocked', reason: 'project_read_only', source: 'observed_project' };
     }
-    if (project.gitSetupState === 'unborn') {
-      return {
-        mode: 'invalid',
-        reason: 'contradictory_project_metadata',
-        source: 'persisted_target',
-      };
-    }
     return { mode: 'direct', reason: 'persisted_direct_target', source: 'persisted_target' };
   }
 

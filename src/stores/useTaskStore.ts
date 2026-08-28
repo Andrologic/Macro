@@ -258,6 +258,36 @@ const resolveExecutionTargetMode = (target: TaskExecutionTarget) => {
   return resolveProjectExecutionMode({ project, target });
 };
 
+const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
+  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const formatProjectExecutionError = (
+  resolution: ResolvedProjectExecutionMode,
+): string => {
+  if (resolution.mode !== 'blocked') {
+    return tTask(
+      'implement.errors.projectExecutionInvalid',
+      'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
+    );
+  }
+  if (resolution.reason === 'initial_commit_missing') {
+    return tTask(
+      'implement.errors.projectExecutionInitialCommitMissing',
+      'Create the initial commit from the project settings before continuing.',
+    );
+  }
+  if (resolution.reason === 'project_read_only') {
+    return tTask(
+      'implement.errors.projectExecutionReadOnly',
+      'Change the project access setting before continuing.',
+    );
+  }
+  return tTask(
+    'implement.errors.projectExecutionBlocked',
+    'Initialize Git or enable direct editing in the project settings before continuing.',
+  );
+};
+
 const isDirectEditTarget = (target: TaskExecutionTarget): boolean =>
   resolveExecutionTargetMode(target).mode === 'direct';
 
@@ -270,9 +300,7 @@ const assertExecutionTargetRunnable = (target: TaskExecutionTarget): void => {
     return;
   }
   throw new Error(
-    resolution.mode === 'blocked'
-      ? 'This project cannot run implementation tasks until its project access settings are updated.'
-      : 'This task has inconsistent project execution metadata. Reopen the project settings before retrying.',
+    formatProjectExecutionError(resolution),
   );
 };
 
@@ -1365,36 +1393,6 @@ const taskMatchesAnyProjectId = (
   task: CatalogedImplementTask,
   projectIds: string[]
 ): boolean => projectIds.some((projectId) => taskMatchesProjectId(task, projectId));
-
-const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
-  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
-
-const formatProjectExecutionError = (
-  resolution: ResolvedProjectExecutionMode,
-): string => {
-  if (resolution.mode !== 'blocked') {
-    return tTask(
-      'implement.errors.projectExecutionInvalid',
-      'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
-    );
-  }
-  if (resolution.reason === 'initial_commit_missing') {
-    return tTask(
-      'implement.errors.projectExecutionInitialCommitMissing',
-      'Create the initial commit from the project settings before continuing.',
-    );
-  }
-  if (resolution.reason === 'project_read_only') {
-    return tTask(
-      'implement.errors.projectExecutionReadOnly',
-      'Change the project access setting before continuing.',
-    );
-  }
-  return tTask(
-    'implement.errors.projectExecutionBlocked',
-    'Initialize Git or enable direct editing in the project settings before continuing.',
-  );
-};
 
 const assertStandaloneTaskKindCreatableForProjects = (
   taskKind: StandaloneTaskKind,

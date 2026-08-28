@@ -618,4 +618,25 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.contextProjectIds).toEqual([]);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
   });
+
+  it('keeps Architect mounts on their active-plan modes after a direct project gains Git', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Architect',
+      projects,
+      projectGroups,
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: 'macro-web',
+      architectExecutionModesByProjectId: {
+        'macro-web': 'direct',
+        'macro-api': 'git',
+      },
+    });
+
+    expect(context.projectMounts).toEqual([
+      expect.objectContaining({ projectId: 'macro-web', executionMode: 'direct' }),
+      expect.objectContaining({ projectId: 'macro-api', executionMode: 'git' }),
+    ]);
+    expect(context.actionableProjectIds).toEqual(['macro-web', 'macro-api']);
+  });
 });

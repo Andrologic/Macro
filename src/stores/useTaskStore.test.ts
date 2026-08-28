@@ -2012,7 +2012,7 @@ describe('useTaskStore merge workflow review loading', () => {
     useTaskStore.setState({ tasks: [task], lastError: null });
 
     await expect(useTaskStore.getState().deleteTask(task.id)).rejects.toThrow(
-      'cannot run implementation tasks',
+      'Create the initial commit',
     );
 
     expect(gitBranchListMock).not.toHaveBeenCalled();
@@ -2929,13 +2929,13 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
     });
   });
 
-  it('keeps a task in direct mode when the project gains Git before it returns to draft', async () => {
+  it('keeps a task in direct mode when Git is initialized without a commit before it returns to draft', async () => {
     appStoreState.getProjectById = (_projectId: string) => ({
       id: 'project-1',
       name: 'Project One',
       path: '/repos/web',
       directEdit: false,
-      gitSetupState: 'ready',
+      gitSetupState: 'unborn',
     });
     const { useTaskStore } = await loadIsolatedTaskStore();
     const refreshFromPlanMock = mock(async () => {

@@ -21,6 +21,7 @@ import { useCitationsStore } from '../../../stores/useCitationsStore';
 import { useSkillsStore } from '../../../stores/useSkillsStore';
 import { useTaskStore } from '../../../stores/useTaskStore';
 import { resolveProjectExecutionContext } from '../../../services/projectExecutionContext';
+import { getPlanExecutionModesByProjectId } from '../../../services/planExecutionModes';
 import { searchWorkspaceFiles } from '../../../services/workspaceFileSearch';
 import type { Citation } from '../../../stores/useCitationsStore';
 import type { ContextRefKind, Project, SkillManifest, WorkspaceFileReference } from '../../../types';
@@ -194,6 +195,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const selectedTaskId = useAppStore((state) => state.selectedTaskId);
   const activeArchitectPlanId = useAppStore((state) => state.activeArchitectPlanId);
+  const planNodes = useAppStore((state) => state.planNodes);
   const selectedConversationId = useChatStore((state) => state.selectedConversationId);
   const conversations = useChatStore((state) => state.conversations);
   const allSkills = useSkillsStore((state) => state.skills);
@@ -228,13 +230,18 @@ export const SlashContextMenuPlugin: React.FC = () => {
         activeRepositoryPath,
         workspacePathOverridesByProjectId: activeWorkspacePathOverridesByProjectId,
         branchWorktrees,
+        architectExecutionModesByProjectId: activeArchitectPlanId
+          ? getPlanExecutionModesByProjectId(planNodes)
+          : undefined,
       }),
     [
       activeRepositoryPath,
+      activeArchitectPlanId,
       activeWorkspacePathOverridesByProjectId,
       branchWorktrees,
       conversations,
       mode,
+      planNodes,
       projectGroups,
       selectedConversationId,
       selectedGroupId,

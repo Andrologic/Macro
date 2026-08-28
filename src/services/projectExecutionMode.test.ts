@@ -59,6 +59,13 @@ describe('resolveProjectExecutionMode', () => {
     });
   });
 
+  it('keeps a persisted direct target direct after Git is initialized without a commit', () => {
+    expect(resolveProjectExecutionMode({
+      project: project({ gitSetupState: 'unborn', directEdit: false }),
+      target: target('direct'),
+    })).toMatchObject({ mode: 'direct', reason: 'persisted_direct_target' });
+  });
+
   it('rejects an explicit Git target when the project is confirmed not Git', () => {
     expect(resolveProjectExecutionMode({
       project: project({ gitSetupState: 'not_git', directEdit: true }),

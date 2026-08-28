@@ -40,6 +40,7 @@ import {
   recordMacroMetadataMutation,
   type MacroMetadataMutationKind,
 } from './macroMetadataCoordinator';
+import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 import {
   SERVICE_ERROR_CODES,
   createPlanMetadataMissingError,
@@ -2985,6 +2986,7 @@ interface ArchitectPlanReplicaMutationTarget {
   scope: ArchitectMetadataScope;
   action: 'upsert' | 'remove' | 'index';
   plan: ArchitectPlanRecord | null;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   index: ArchitectPlanIndex;
   chatMessages?: ArchitectPlanChatMessage[];
   replacePlanDirectory?: boolean;
@@ -3024,7 +3026,13 @@ const isReplicaMutationPayload = (
         ? target.plan === null
         : !!target.plan && target.plan.id === entry.planId && target.plan.targetBranch === entry.branchName &&
           target.index.plans.some((summary) => summary.id === entry.planId)) &&
-    (target.chatMessages === undefined || (Array.isArray(target.chatMessages) && target.chatMessages.every((message) =>
+    (target.executionModesByProjectId === undefined || (
+      target.executionModesByProjectId !== null &&
+      typeof target.executionModesByProjectId === 'object' &&
+      Object.entries(target.executionModesByProjectId).every(([projectId, mode]) =>
+        projectId.length > 0 && (mode === 'git' || mode === 'direct')
+      )
+    )) && (target.chatMessages === undefined || (Array.isArray(target.chatMessages) && target.chatMessages.every((message) =>
       !!message && typeof message.id === 'string' && (message.role === 'user' || message.role === 'assistant') &&
       typeof message.content === 'string' && typeof message.createdAt === 'string'
     ))) && (target.replacePlanDirectory === undefined || typeof target.replacePlanDirectory === 'boolean') &&
@@ -3034,6 +3042,39 @@ const isReplicaMutationPayload = (
         typeof content === 'string'
       )));
   });
+};
+
+const getMutationTargetExecutionModes = (
+  target: ArchitectPlanReplicaMutationTarget,
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+): Record<string, 'git' | 'direct'> =>
+  target.executionModesByProjectId ??
+  (target.plan ? getPlanExecutionModes(target.plan, registrySnapshot) : {});
+
+const shouldCommitMutationTarget = (
+  target: ArchitectPlanReplicaMutationTarget,
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+): boolean => {
+  const modesByProjectId = getMutationTargetExecutionModes(target, registrySnapshot);
+  if (target.scope.projectId) {
+    return modesByProjectId[target.scope.projectId] === 'git';
+  }
+  return Object.values(modesByProjectId).some((mode) => mode === 'git');
+};
+
+const getPlanExecutionModes = (
+  plan: ArchitectPlanRecord,
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+): Record<string, 'git' | 'direct'> => {
+  const modes = getPlanExecutionModesByProjectId(plan.nodes);
+  for (const projectId of plan.projectIds ?? []) {
+    if (modes[projectId]) continue;
+    const observedMode = registrySnapshot?.executionModeByProjectId.get(projectId);
+    if (observedMode === 'git' || observedMode === 'direct') {
+      modes[projectId] = observedMode;
+    }
+  }
+  return modes;
 };
 
 const getReplicaMutationWorkspaceKey = (targets: ArchitectPlanReplicaMutationTarget[]): string => {
@@ -3155,7 +3196,14 @@ const recoverArchitectPlanReplicaMutationsUnlocked = async (
         }
         currentEntry = { ...currentEntry, phase: 'committing', updatedAt: new Date().toISOString() };
         await upsertArchitectPlanMutationJournal(currentEntry, deps.tauri);
-        await commitMetadataScopes(currentEntry.payload.targets.map((target) => target.scope), currentEntry.payload.commitMessage, { commit: true }, deps);
+        await commitMetadataScopes(
+          currentEntry.payload.targets
+            .filter((target) => shouldCommitMutationTarget(target, registrySnapshot))
+            .map((target) => target.scope),
+          currentEntry.payload.commitMessage,
+          { commit: true },
+          deps,
+        );
         await removeArchitectPlanMutationJournal(currentEntry.id, deps.tauri);
       } catch (error) {
         await upsertArchitectPlanMutationJournal({
@@ -3213,7 +3261,14 @@ const runArchitectPlanReplicaMutation = async (params: {
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
     currentEntry = { ...currentEntry, phase: 'committing', updatedAt: new Date().toISOString() };
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
-    await commitMetadataScopes(params.targets.map((target) => target.scope), params.commitMessage, { commit: true }, params.deps);
+    await commitMetadataScopes(
+      params.targets
+        .filter((target) => shouldCommitMutationTarget(target, params.registrySnapshot))
+        .map((target) => target.scope),
+      params.commitMessage,
+      { commit: true },
+      params.deps,
+    );
     await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri);
     } catch (error) {
       await upsertArchitectPlanMutationJournal({
@@ -3250,6 +3305,7 @@ const buildUpsertReplicaMutationTarget = async (params: {
     scope: params.scope,
     action: 'upsert',
     plan: params.plan,
+    executionModesByProjectId: getPlanExecutionModes(params.plan, params.registrySnapshot),
     chatMessages: params.chatMessages,
     replacePlanDirectory: params.replacePlanDirectory,
     extraFiles: params.extraFiles,
@@ -3270,6 +3326,7 @@ const buildRemoveReplicaMutationTarget = async (params: {
   scope: ArchitectMetadataScope;
   branchName: string;
   planId: string;
+  plan?: ArchitectPlanRecord;
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined;
 }): Promise<ArchitectPlanReplicaMutationTarget> => {
   const index = await readIndexAtScope(params.scope, params.branchName, params.registrySnapshot);
@@ -3281,6 +3338,9 @@ const buildRemoveReplicaMutationTarget = async (params: {
     scope: params.scope,
     action: 'remove',
     plan: null,
+    executionModesByProjectId: params.plan
+      ? getPlanExecutionModes(params.plan, params.registrySnapshot)
+      : {},
     index: {
       ...index,
       version: 3,
@@ -4495,11 +4555,23 @@ export const commitArchitectPlanMetadata = async (input: {
       throwPlanMetadataMissing(normalizedBranch, safeId);
     }
 
-    await commitMetadataScopes(
-      dedupeScopes([
+    const executionModesByProjectId = getPlanExecutionModes(
+      replicaSet.canonical.plan,
+      registrySnapshot,
+    );
+    const persistedModes = Object.values(executionModesByProjectId);
+    const metadataScopes = dedupeScopes([
         ...replicaSet.expectedScopes,
         ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
-      ]),
+      ]).filter((scope) => {
+        if (scope.projectId) {
+          return executionModesByProjectId[scope.projectId] === 'git';
+        }
+        return persistedModes.some((mode) => mode === 'git');
+      });
+
+    await commitMetadataScopes(
+      metadataScopes,
       input.commitMessage,
       { commit: true },
       deps
@@ -5032,7 +5104,13 @@ export const updateArchitectPlan = async (input: {
   if (!hasSemanticChange && !hasScopeChanges && shouldActivate) {
     const targets = await Promise.all(targetScopes.map(async (scope): Promise<ArchitectPlanReplicaMutationTarget> => {
       const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
-      return { scope, action: 'index', plan: null, index: { ...index, version: 3, activePlanId: safeId } };
+      return {
+        scope,
+        action: 'index',
+        plan: null,
+        executionModesByProjectId: getPlanExecutionModes(existing, registrySnapshot),
+        index: { ...index, version: 3, activePlanId: safeId },
+      };
     }));
     await runArchitectPlanReplicaMutation({
       branchName: normalizedBranch,
@@ -5072,6 +5150,7 @@ export const updateArchitectPlan = async (input: {
       scope,
       branchName: normalizedBranch,
       planId: next.id,
+      plan: next,
       registrySnapshot,
     }))),
   ];
@@ -5262,11 +5341,17 @@ export const setActiveArchitectPlan = async (
         if (!exists || index.activePlanId === safeId) {
           return null;
         }
-        return { scope, action: 'index', plan: null, index: {
-          ...index,
-          version: 3,
-          activePlanId: safeId,
-        } };
+        return {
+          scope,
+          action: 'index',
+          plan: null,
+          executionModesByProjectId: getPlanExecutionModes(replicaSet.canonical.plan, registrySnapshot),
+          index: {
+            ...index,
+            version: 3,
+            activePlanId: safeId,
+          },
+        };
       })
     )).filter((target): target is ArchitectPlanReplicaMutationTarget => target !== null);
     if (targets.length > 0) {
@@ -5304,7 +5389,11 @@ export const deleteArchitectPlan = async (input: {
 
     if (input.hardDelete) {
       const targets = await Promise.all(scopes.map((scope) => buildRemoveReplicaMutationTarget({
-        scope, branchName: normalizedBranch, planId: safeId, registrySnapshot,
+        scope,
+        branchName: normalizedBranch,
+        planId: safeId,
+        plan: replicaSet.canonical.plan,
+        registrySnapshot,
       })));
       await runArchitectPlanReplicaMutation({
         branchName: normalizedBranch, planId: safeId, operation: 'delete', targets, registrySnapshot, deps,

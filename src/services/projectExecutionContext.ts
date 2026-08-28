@@ -31,6 +31,7 @@ export interface ResolveProjectExecutionContextInput {
   activeRepositoryPath?: string | null;
   workspacePathOverridesByProjectId?: Record<string, string>;
   branchWorktrees?: Record<string, string>;
+  architectExecutionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }
 
 export interface ProjectExecutionContext {
@@ -185,9 +186,25 @@ export const resolveProjectExecutionContext = (
       taskProjectIds[0] ||
       scopedProjectIds[0] ||
       null;
+  const resolveTargetForProject = (scopedProjectId: string): TaskExecutionTarget | undefined => {
+    const taskTarget = executionTargets.find((target) => target.projectId === scopedProjectId);
+    if (taskTarget) return taskTarget;
+    const architectMode = input.mode === 'Architect'
+      ? input.architectExecutionModesByProjectId?.[scopedProjectId]
+      : undefined;
+    return architectMode
+      ? {
+          projectId: scopedProjectId,
+          executionMode: architectMode,
+          branchName: '',
+          worktreeKey: `architect:${scopedProjectId}`,
+          repoPath: projectById.get(scopedProjectId)?.path,
+        }
+      : undefined;
+  };
   const resolveScopedMode = (scopedProjectId: string) => resolveProjectExecutionMode({
     project: projectById.get(scopedProjectId),
-    target: executionTargets.find((target) => target.projectId === scopedProjectId),
+    target: resolveTargetForProject(scopedProjectId),
   });
   const actionableProjectIds = (hasTaskScope ? taskProjectIds : scopedProjectIds).filter(
     (scopedProjectId) => {
@@ -278,7 +295,7 @@ export const resolveProjectExecutionContext = (
           return mounts;
         }, []);
   const scopedProjectMounts = fallbackProjectMounts.map((mount) => {
-    const target = task?.execution_targets?.find((candidate) => candidate.projectId === mount.projectId);
+    const target = resolveTargetForProject(mount.projectId);
     const resolution = resolveProjectExecutionMode({
       project: projectById.get(mount.projectId),
       target,
