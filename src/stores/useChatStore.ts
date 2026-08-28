@@ -11039,7 +11039,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           presentation,
           assistantMessageId,
         }) => {
-          updateConversationRuntimeIfSessionMatches(
+          const didMatch = updateConversationRuntimeIfSessionMatches(
             params.conversationId,
             params.sessionId,
             () => ({
@@ -11053,6 +11053,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               lastErrorDisplayTarget: presentation.displayTarget,
             }),
           );
+          if (!didMatch) {
+            return;
+          }
           set(
             presentation.displayTarget === "composer"
               ? { lastError: presentation.message, sendState: "error" }

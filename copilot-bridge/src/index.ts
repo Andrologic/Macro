@@ -190,6 +190,7 @@ interface RelayToolResult {
 interface CopilotSessionEventState {
   finalContent: string;
   lastError: string | null;
+  completionReason: 'completed' | 'length' | 'incomplete' | null;
   streamedReasoning: string;
   completeReasoning: string;
   messageReasoning: string;
@@ -212,6 +213,7 @@ const emitJson = (payload: JsonRecord): void => {
 const createCopilotSessionEventState = (): CopilotSessionEventState => ({
   finalContent: '',
   lastError: null,
+  completionReason: null,
   streamedReasoning: '',
   completeReasoning: '',
   messageReasoning: '',
@@ -221,6 +223,26 @@ const createCopilotSessionEventState = (): CopilotSessionEventState => ({
 const optionalTrimmedText = (value?: string | null): string | undefined => {
   const trimmed = (value || '').trim();
   return trimmed || undefined;
+};
+
+const classifyCopilotWarningCompletionReason = (
+  data: Record<string, unknown>,
+): 'length' | 'incomplete' | null => {
+  const warningType = typeof data.warningType === 'string' ? data.warningType : '';
+  const message = typeof data.message === 'string' ? data.message : '';
+  const warning = `${warningType} ${message}`.trim();
+  if (!warning) return null;
+  if (
+    /(?:max(?:imum)?[_ -]?(?:output[_ -]?)?tokens?|output[_ -]?limit|token[_ -]?limit|truncat|cut off)/i.test(
+      warning,
+    )
+  ) {
+    return 'length';
+  }
+  if (/(?:incomplete|interrupted|terminated early)/i.test(warning)) {
+    return 'incomplete';
+  }
+  return null;
 };
 
 const appendCopilotReasoningDelta = (
@@ -385,11 +407,14 @@ const handleCopilotSessionEvent = (params: {
   if (event.type === 'session.error') {
     state.lastError =
       (typeof data.message === 'string' ? data.message : '') || 'GitHub Copilot session failed.';
+    state.completionReason = 'incomplete';
     return;
   }
 
   if (event.type === 'session.warning' && typeof data.message === 'string') {
     state.lastError = data.message;
+    state.completionReason =
+      classifyCopilotWarningCompletionReason(data) ?? state.completionReason;
   }
 };
 
@@ -1915,6 +1940,7 @@ const handleSend = async (): Promise<void> => {
           normalizeCopilotSendTimeoutMs(request.copilot_send_timeout_ms)
         );
         handleCopilotAssistantMessage(eventState, assistantMessage?.data, emitJson);
+        eventState.completionReason ??= 'completed';
       } finally {
         await session.disconnect();
       }
@@ -1934,6 +1960,7 @@ const handleSend = async (): Promise<void> => {
       reasoning_summary: getCopilotReasoningSummary(eventState),
       hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
       tool_traces: Array.from(toolTraces.values()),
+      completion_reason: eventState.completionReason ?? 'incomplete',
     });
   } finally {
     controlChannel.close();
@@ -1964,6 +1991,7 @@ const main = async (): Promise<void> => {
 export const __testables = {
   buildMacroTools,
   closeCopilotThinkingBlock,
+  classifyCopilotWarningCompletionReason,
   createCopilotSessionEventState,
   getCopilotReasoningSummary,
   frontendToolTimeoutMs,

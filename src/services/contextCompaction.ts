@@ -1071,8 +1071,13 @@ const isToolContextError = (body: string): boolean =>
 
 const inspectProviderToolResults = (
   items: unknown[],
-): { hasResult: boolean; hasProtectedResult: boolean } => {
+): {
+  hasResult: boolean;
+  hasProtectedResult: boolean;
+  resultCallIds: string[];
+} => {
   const toolNamesByCallId = new Map<string, string>();
+  const resultCallIds = new Set<string>();
   for (const item of items) {
     if (!isRecord(item) || item.type !== 'function_call') continue;
     if (typeof item.call_id !== 'string' || typeof item.name !== 'string') continue;
@@ -1085,6 +1090,9 @@ const inspectProviderToolResults = (
     if (!isRecord(item)) continue;
     if (item.type === 'function_call_output') {
       hasResult = true;
+      if (typeof item.call_id === 'string' && item.call_id.trim()) {
+        resultCallIds.add(item.call_id);
+      }
       const output =
         typeof item.output === 'string'
           ? item.output
@@ -1098,13 +1106,35 @@ const inspectProviderToolResults = (
     }
     if (item.type === 'chat_completion_message' && item.role === 'tool') {
       hasResult = true;
+      if (typeof item.tool_call_id === 'string' && item.tool_call_id.trim()) {
+        resultCallIds.add(item.tool_call_id);
+      }
       const output = getProviderItemText(item);
       const toolName = typeof item.tool_name === 'string' ? item.tool_name : '';
       hasProtectedResult ||= isToolContextError(output) || isProtectedToolContext(toolName);
     }
   }
-  return { hasResult, hasProtectedResult };
+  return {
+    hasResult,
+    hasProtectedResult,
+    resultCallIds: Array.from(resultCallIds),
+  };
 };
+
+const hasProviderToolCall = (items: unknown[], callIds: Set<string>): boolean =>
+  items.some((item) => {
+    if (!isRecord(item)) return false;
+    if (item.type === 'function_call') {
+      return typeof item.call_id === 'string' && callIds.has(item.call_id);
+    }
+    if (item.type !== 'chat_completion_message' || item.role !== 'assistant') {
+      return false;
+    }
+    return Array.isArray(item.tool_calls) && item.tool_calls.some((toolCall) => {
+      if (!isRecord(toolCall)) return false;
+      return typeof toolCall.id === 'string' && callIds.has(toolCall.id);
+    });
+  });
 
 const estimateMessageSuffixTokens = (messages: StreamMessage[]): number[] => {
   const suffixTokens = new Array<number>(messages.length).fill(0);
@@ -1275,10 +1305,13 @@ export const compactProviderInputItemsForContext = (
     .find((message) => message.role === 'user');
   const compactedMessageIds = new Set<string>();
   const protectedProviderToolResultIndices = new Set<number>();
-  const lastProviderToolResultIndex = preparedMessages.reduce(
-    (lastIndex, message, index) => {
-      if (!Array.isArray(message.provider_input_items)) return lastIndex;
-      const inspection = inspectProviderToolResults(message.provider_input_items);
+  const providerToolInspections = preparedMessages.map((message) =>
+    Array.isArray(message.provider_input_items)
+      ? inspectProviderToolResults(message.provider_input_items)
+      : { hasResult: false, hasProtectedResult: false, resultCallIds: [] },
+  );
+  const lastProviderToolResultIndex = providerToolInspections.reduce(
+    (lastIndex, inspection, index) => {
       if (inspection.hasProtectedResult) {
         protectedProviderToolResultIndices.add(index);
       }
@@ -1286,6 +1319,24 @@ export const compactProviderInputItemsForContext = (
     },
     -1,
   );
+  const protectedProviderToolCallIds = new Set<string>();
+  for (const [index, inspection] of providerToolInspections.entries()) {
+    if (
+      index === lastProviderToolResultIndex ||
+      protectedProviderToolResultIndices.has(index)
+    ) {
+      inspection.resultCallIds.forEach((callId) => protectedProviderToolCallIds.add(callId));
+    }
+  }
+  const protectedProviderToolCallIndices = new Set<number>();
+  for (const [index, message] of preparedMessages.entries()) {
+    if (
+      Array.isArray(message.provider_input_items) &&
+      hasProviderToolCall(message.provider_input_items, protectedProviderToolCallIds)
+    ) {
+      protectedProviderToolCallIndices.add(index);
+    }
+  }
 
   const messages = preparedMessages.map((message, index) => {
     const orderedMessage = orderedMessages[index];
@@ -1297,7 +1348,8 @@ export const compactProviderInputItemsForContext = (
     }
     if (
       index === lastProviderToolResultIndex ||
-      protectedProviderToolResultIndices.has(index)
+      protectedProviderToolResultIndices.has(index) ||
+      protectedProviderToolCallIndices.has(index)
     ) {
       return message;
     }

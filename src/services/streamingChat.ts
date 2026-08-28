@@ -2085,6 +2085,21 @@ interface StreamingTurnResult {
 const getValidToolCalls = (toolCalls: ToolCall[]): ToolCall[] =>
   toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
 
+const hasCompleteToolCallBatch = (toolCalls: ToolCall[]): boolean => {
+  const validToolCalls = getValidToolCalls(toolCalls);
+  if (validToolCalls.length === 0 || validToolCalls.length !== toolCalls.length) {
+    return false;
+  }
+  return validToolCalls.every((toolCall) => {
+    try {
+      JSON.parse(toolCall.function.arguments);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+};
+
 const normalizeToolArgumentsForLoopKey = (argumentsJson: string): string => {
   try {
     return JSON.stringify(JSON.parse(argumentsJson));
@@ -4136,7 +4151,13 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
 
       const processSseEvent = (rawEvent: string) => {
         const data = extractSseData(rawEvent);
-        if (!data || data === '[DONE]') {
+        if (!data) {
+          return;
+        }
+        if (data === '[DONE]') {
+          turnCompletion.reason ??= hasCompleteToolCallBatch(toolCalls)
+            ? 'completed'
+            : 'incomplete';
           return;
         }
 
@@ -4285,6 +4306,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       activeResources.reader = null;
       activeResources.stream = null;
       endThinking();
+      turnCompletion.reason ??= 'incomplete';
 
       // Handle tool calls if any
       const validToolCalls = getValidToolCalls(toolCalls);

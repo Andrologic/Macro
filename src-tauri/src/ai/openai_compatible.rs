@@ -196,6 +196,7 @@ async fn stream_chat_inner(
     if !saw_completion {
         return Err("Provider stream ended before a completion marker was received.".to_string());
     }
+    ensure_terminal_completion_reason(&mut accumulator.completion_reason, &accumulator.tool_calls);
 
     if accumulator.is_reasoning {
         emit_delta(
@@ -387,6 +388,10 @@ fn process_sse_event(
         return Ok(false);
     }
     if data == "[DONE]" {
+        ensure_terminal_completion_reason(
+            &mut accumulator.completion_reason,
+            &accumulator.tool_calls,
+        );
         return Ok(true);
     }
 
@@ -474,6 +479,28 @@ fn normalize_finish_reason(finish_reason: &str) -> &str {
         "length" | "max_tokens" | "max_output_tokens" => "length",
         "stop" | "tool_calls" | "function_call" => "completed",
         _ => "incomplete",
+    }
+}
+
+fn ensure_terminal_completion_reason(
+    completion_reason: &mut Option<String>,
+    tool_calls: &[AiToolCall],
+) {
+    if completion_reason.is_none() {
+        let has_complete_tool_batch = !tool_calls.is_empty()
+            && tool_calls.iter().all(|tool_call| {
+                !tool_call.id.trim().is_empty()
+                    && !tool_call.function.name.trim().is_empty()
+                    && serde_json::from_str::<Value>(&tool_call.function.arguments).is_ok()
+            });
+        *completion_reason = Some(
+            if has_complete_tool_batch {
+                "completed"
+            } else {
+                "incomplete"
+            }
+            .to_string(),
+        );
     }
 }
 
@@ -891,6 +918,17 @@ mod tests {
         assert_eq!(normalize_finish_reason("max_output_tokens"), "length");
         assert_eq!(normalize_finish_reason("stop"), "completed");
         assert_eq!(normalize_finish_reason("content_filter"), "incomplete");
+    }
+
+    #[test]
+    fn terminal_marker_without_finish_reason_is_incomplete() {
+        let mut completion_reason = None;
+        ensure_terminal_completion_reason(&mut completion_reason, &[]);
+        assert_eq!(completion_reason.as_deref(), Some("incomplete"));
+
+        let mut completed = Some("completed".to_string());
+        ensure_terminal_completion_reason(&mut completed, &[]);
+        assert_eq!(completed.as_deref(), Some("completed"));
     }
 
     #[test]

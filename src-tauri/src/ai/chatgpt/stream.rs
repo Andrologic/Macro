@@ -202,7 +202,7 @@ async fn stream_chat_inner(
                     reasoning_summary: optional_text(completion_accumulator.reasoning_summary),
                     tool_traces: None,
                     hidden_context: None,
-                    completion_reason: Some("completed".to_string()),
+                    completion_reason: Some("incomplete".to_string()),
                 },
             )
             .map_err(|error| error.to_string())?;

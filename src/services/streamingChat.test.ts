@@ -2012,6 +2012,9 @@ describe('streamingChat tool rendering helpers', () => {
             controller.enqueue(
               encoder.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`),
             );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'),
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -2516,6 +2519,9 @@ describe('streamingChat tool rendering helpers', () => {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"Final after tools."}}]}\n\n')
             );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -2549,7 +2555,7 @@ describe('streamingChat tool rendering helpers', () => {
     expect(onToolCall).toHaveBeenCalledTimes(4);
     expect(requestBodies[4]?.tools).toBeDefined();
     const finalResult = onComplete.mock.calls[0]?.[0];
-    expect(finalResult?.completionReason).toBeUndefined();
+    expect(finalResult?.completionReason).toBe('completed');
     expect(finalResult?.visibleContent).not.toContain('Limite de tours atteinte');
     expect(finalResult?.visibleContent).not.toContain('[Macro]');
     expect(finalResult?.visibleContent).toContain('Final after tools.');
@@ -2687,6 +2693,9 @@ describe('streamingChat tool rendering helpers', () => {
                 encoder.encode(
                   'data: {"choices":[{"delta":{"content":"Je peux t aider a choisir."}}]}\n\n'
                 )
+              );
+              controller.enqueue(
+                encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
               );
               controller.enqueue(encoder.encode('data: [DONE]\n\n'));
               controller.close();
@@ -3120,6 +3129,47 @@ describe('streamingChat tool rendering helpers', () => {
     );
     expect(JSON.stringify(finalResult.providerInputItems)).not.toContain(
       '"content":"repeated phrase and omega"',
+    );
+  });
+
+  it('marks a generic stream without a finish reason as incomplete', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = mock(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"content":"Partial answer."}}]}\n\n'),
+          );
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }),
+    }));
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onComplete = mock((_result: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'openai-generic',
+      providerType: 'openai',
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Answer.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Partial answer.',
+        completionReason: 'incomplete',
+      }),
     );
   });
 

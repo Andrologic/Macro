@@ -774,6 +774,18 @@ describe('buildCompactedMessagesForRequest', () => {
       ],
     };
 
+    const providerCompacted = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    expect(
+      JSON.stringify(providerCompacted.messages[1]?.provider_input_items),
+    ).toContain('"id":"call_read"');
+    expect(
+      JSON.stringify(providerCompacted.messages[2]?.provider_input_items),
+    ).toContain('"tool_call_id":"call_read"');
+
     const result = await buildCompactedMessagesForRequest({
       systemMessage: 'You are Macro.',
       preparedMessages,
@@ -788,7 +800,8 @@ describe('buildCompactedMessagesForRequest', () => {
     });
     const serializedMessages = JSON.stringify(result.messages);
 
-    expect(serializedMessages).toContain('Tool calls preserved as fact: read');
+    expect(serializedMessages).toContain('Current objective: answer from compacted provider history.');
+    expect(serializedMessages).not.toContain('call_read');
     expect(serializedMessages).not.toContain('"tool_calls"');
     expect(serializedMessages).not.toContain('native reasoning payload');
   });

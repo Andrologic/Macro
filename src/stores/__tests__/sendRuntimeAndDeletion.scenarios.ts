@@ -359,6 +359,84 @@ export const registerSendRuntimeAndDeletionScenarios = (
       updateMessageMock.mockImplementation(async () => undefined);
     });
 
+    it('does not let an older incomplete completion overwrite a newer streaming session', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const releaseFirstPersistenceRef: { current: (() => void) | null } = {
+        current: null,
+      };
+      const releaseSecondStreamRef: { current: (() => void) | null } = {
+        current: null,
+      };
+      updateMessageMock.mockImplementation(async (_id, content) => {
+        if (content === 'Partial response') {
+          await new Promise<void>((resolve) => {
+            releaseFirstPersistenceRef.current = resolve;
+          });
+        }
+      });
+      streamChatMock
+        .mockImplementationOnce((async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as {
+            onComplete?: (result: {
+              visibleContent: string;
+              toolTraces: unknown[];
+              completionReason: 'incomplete';
+            }) => void;
+          };
+          options.onComplete?.({
+            visibleContent: 'Partial response',
+            toolTraces: [],
+            completionReason: 'incomplete',
+          });
+        }) as unknown as typeof streamChatMock)
+        .mockImplementationOnce((async () =>
+          new Promise<void>((resolve) => {
+            releaseSecondStreamRef.current = resolve;
+          })) as unknown as typeof streamChatMock);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [createConversation('chat-conv', '')],
+        messages: [],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        isLoading: false,
+        isStreaming: false,
+        sendState: 'idle',
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'First request',
+      });
+      await flushAsyncWork();
+
+      const secondSend = useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Second request',
+      });
+      await flushAsyncWork();
+      expect(useChatStore.getState().sendState).toBe('streaming');
+
+      releaseFirstPersistenceRef.current?.();
+      await flushAsyncWork();
+
+      expect(useChatStore.getState().sendState).toBe('streaming');
+      expect(useChatStore.getState().lastError).toBeNull();
+      expect(
+        useChatStore.getState().conversationRuntimeById['chat-conv']?.phase,
+      ).toBe('streaming');
+
+      releaseSecondStreamRef.current?.();
+      await secondSend;
+      updateMessageMock.mockImplementation(async () => undefined);
+    });
+
     it('rejects concurrent sends while an Implement message is still preparing', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';
