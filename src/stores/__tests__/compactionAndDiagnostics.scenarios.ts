@@ -718,7 +718,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
       expect(
         useChatStore.getState().conversationCompactionStatusById['chat-conv'],
       ).toMatchObject({
-        phase: 'compacted',
+        phase: 'compacting',
         upToMessageId: 'a1',
         summaryText: 'Previous compacted summary.',
         kind: 'manual',
@@ -881,7 +881,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
 
       expect(
         useChatStore.getState().conversationCompactionStatusById['chat-conv'],
-      ).toBeUndefined();
+      ).toMatchObject({ phase: 'compacting' });
 
       await flushAsyncWork();
 
@@ -1003,7 +1003,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
       expect(
         useChatStore.getState().conversationCompactionStatusById['chat-conv'],
       ).toMatchObject({
-        phase: 'compacted',
+        phase: 'compacting',
         summaryText: 'Previous persisted compacted summary.',
       });
 

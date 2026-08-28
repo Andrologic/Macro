@@ -41,6 +41,16 @@
     "failedDescription": "Macro가 로컬 데이터를 초기화하지 못했습니다. 안전하게 다시 시도할 수 있습니다.",
     "failedSteps": "실패한 단계"
   },
+  "shutdown": {
+    "activeWorkSingle": "실행 중인 작업이 있습니다. Macro를 닫으면 작업이 중단됩니다.",
+    "activeWorkMultiple": "{{count}}개의 작업이 실행 중입니다. Macro를 닫으면 작업이 중단됩니다.",
+    "closeTitle": "Macro를 닫으시겠습니까?",
+    "closeAction": "Macro 닫기",
+    "keepWorking": "계속 작업",
+    "closeFailed": "Macro를 닫을 수 없습니다",
+    "closeFailedDescription": "작업 내용은 유지되었습니다. Macro를 다시 종료해 보세요.",
+    "closing": "Macro를 종료하고 있습니다."
+  },
   "releaseNotes": {
     "dialogTitle": "릴리스 노트",
     "shownOnce": "이 안내는 설치된 버전마다 한 번만 표시됩니다.",
@@ -56,22 +66,31 @@
     "upToDate": "Macro가 최신 상태입니다",
     "check": "업데이트 확인",
     "checkFailed": "업데이트를 확인할 수 없습니다",
-    "prepareFailed": "Macro가 다시 시작을 준비하지 못했습니다",
+    "prepareFailed": "Macro를 닫을 준비를 하지 못했습니다",
+    "downloadFailed": "업데이트를 다운로드할 수 없습니다",
+    "downloadAgain": "다시 다운로드",
     "installFailed": "업데이트를 설치할 수 없습니다",
     "activeWorkTitle": "실행 중인 에이전트가 있습니다",
-    "activeWorkDescription_one": "지금 Macro를 다시 시작하면 {{count}}개의 실행 중인 작업 출력이 손실될 수 있습니다.",
-    "activeWorkDescription_other": "지금 Macro를 다시 시작하면 {{count}}개의 실행 중인 작업 출력이 손실될 수 있습니다.",
+    "activeWorkDescription_one": "지금 Macro를 닫으면 {{count}}개의 실행 중인 작업 출력이 손실될 수 있습니다.",
+    "activeWorkDescription_other": "지금 Macro를 닫으면 {{count}}개의 실행 중인 작업 출력이 손실될 수 있습니다.",
     "agentActivity": "에이전트",
     "implementActivity": "Implement 실행",
     "wait": "기다리기",
-    "restartAnyway": "그래도 다시 시작",
+    "restartAnyway": "그래도 설치",
     "dialogTitle": "Macro 업데이트",
     "available": "업데이트 사용 가능",
     "noNotes": "이 버전의 릴리스 노트가 없습니다.",
     "downloadInProgress": "서명된 업데이트를 백그라운드에서 다운로드하고 있습니다.",
     "restartRequired": "업데이트 설치 후 Macro가 다시 열립니다.",
     "later": "나중에",
-    "restartAndUpdate": "다시 시작하고 업데이트"
+    "restartAndUpdate": "다시 시작하고 업데이트",
+    "readyForNextLaunch": "업데이트 v{{version}}은 다음에 Macro를 열 때 설치됩니다",
+    "readyVersion": "Macro v{{version}} 준비 완료",
+    "installsNextLaunch": "다음에 Macro를 열 때 설치됩니다.",
+    "updateFailed": "업데이트를 완료할 수 없습니다",
+    "details": "세부 정보",
+    "retryInstall": "설치 다시 시도",
+    "installNow": "지금 설치"
   },
   "markdown": {
     "video": "동영상"
@@ -904,12 +923,14 @@
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
     },
+    "updates": "업데이트",
     "language_region": "언어 및 지역",
     "language": "언어",
     "language_desc": "선호하는 언어 인터페이스를 선택하세요",
     "application": "애플리케이션",
     "updateChannel": {
       "label": "업데이트 채널",
+      "currentVersion": "현재 버전",
       "stable": "안정판",
       "preview": "미리 보기 (Nightly)",
       "stableDescription": "프로덕션 릴리스만 받습니다.",

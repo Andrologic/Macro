@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { selectRestartSafetySnapshot } from "./restartSafety";
+import {
+  hasUnapprovedRestartSafetyActivity,
+  selectRestartSafetySnapshot,
+  type RestartSafetySnapshot,
+} from "./restartSafety";
 
 describe("selectRestartSafetySnapshot", () => {
   it("collects active conversation runtimes and keeps their titles", () => {
@@ -171,5 +175,22 @@ describe("selectRestartSafetySnapshot", () => {
 
     expect(snapshot.hasActiveWork).toBe(false);
     expect(snapshot.activeWorkCount).toBe(0);
+  });
+});
+
+describe("hasUnapprovedRestartSafetyActivity", () => {
+  const snapshot = (...ids: string[]): RestartSafetySnapshot => ({
+    activeAgents: ids.map((id) => ({ id, kind: "agent", phase: "streaming", title: id })),
+    activeImplementations: [],
+    activeAgentCount: ids.length,
+    activeImplementationCount: 0,
+    activeWorkCount: ids.length,
+    hasActiveWork: ids.length > 0,
+  });
+
+  it("detects work that started after consent", () => {
+    expect(hasUnapprovedRestartSafetyActivity(snapshot("one"), snapshot("one", "two"))).toBe(true);
+    expect(hasUnapprovedRestartSafetyActivity(snapshot("one"), snapshot("one"))).toBe(false);
+    expect(hasUnapprovedRestartSafetyActivity(snapshot("one", "two"), snapshot("two"))).toBe(false);
   });
 });

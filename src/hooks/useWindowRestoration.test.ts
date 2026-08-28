@@ -8,7 +8,10 @@ let loadPersistedPreferenceMock: ReturnType<typeof mock>;
 let savePreferenceMock: ReturnType<typeof mock>;
 let showMainWindowMock: ReturnType<typeof mock>;
 let windowAvailableMonitorBoundsMock: ReturnType<typeof mock>;
-let windowCloseMock: ReturnType<typeof mock>;
+let appUpdateExitAfterCleanShutdownMock: ReturnType<typeof mock>;
+let appExitCleanlyMock: ReturnType<typeof mock>;
+let appInstallerCloseRespondMock: ReturnType<typeof mock>;
+let installerClosePending: boolean;
 let windowCurrentMonitorWorkAreaMock: ReturnType<typeof mock>;
 let windowMaximizeMock: ReturnType<typeof mock>;
 let windowIsMaximizedMock: ReturnType<typeof mock>;
@@ -56,7 +59,6 @@ const registerWindowRestorationMocks = async () => {
     isTauriEnvironment: () => true,
     showMainWindow: (...args: unknown[]) => showMainWindowMock(...args),
     windowAvailableMonitorBounds: (...args: unknown[]) => windowAvailableMonitorBoundsMock(...args),
-    windowClose: (...args: unknown[]) => windowCloseMock(...args),
     windowCurrentMonitorWorkArea: (...args: unknown[]) => windowCurrentMonitorWorkAreaMock(...args),
     windowIsMaximized: (...args: unknown[]) => windowIsMaximizedMock(...args),
     windowMaximize: (...args: unknown[]) => windowMaximizeMock(...args),
@@ -110,6 +112,17 @@ const registerWindowRestorationMocks = async () => {
       error: () => undefined,
       debug: () => undefined,
     },
+  }));
+
+  mock.module('../services/tauriIpc', () => ({
+    appExitCleanly: (...args: unknown[]) => appExitCleanlyMock(...args),
+    appInstallerCloseRequestPending: async () => installerClosePending,
+    appInstallerCloseRespond: (...args: unknown[]) => appInstallerCloseRespondMock(...args),
+    appUpdateExitAfterCleanShutdown: (...args: unknown[]) => appUpdateExitAfterCleanShutdownMock(...args),
+  }));
+  mock.module('../services/appShutdownGate', () => ({
+    beginAppShutdownGate: () => () => undefined,
+    isAppShutdownGateActive: () => false,
   }));
 };
 
@@ -192,7 +205,10 @@ describe('ensureWindowRestoredOnce', () => {
         size: { width: 1728, height: 1077 },
       },
     }]);
-    windowCloseMock = mock(async () => undefined);
+    appUpdateExitAfterCleanShutdownMock = mock(async () => undefined);
+    appExitCleanlyMock = mock(async () => undefined);
+    appInstallerCloseRespondMock = mock(async () => undefined);
+    installerClosePending = false;
     windowCurrentMonitorWorkAreaMock = mock(async () => ({
       x: 0,
       y: 40,
@@ -617,11 +633,54 @@ describe('ensureWindowRestoredOnce', () => {
 
     expect(savePreferenceMock.mock.calls).toHaveLength(5);
     expect(closeEvent.preventDefault).toHaveBeenCalledTimes(1);
-    expect(windowCloseMock.mock.calls).toHaveLength(1);
+    expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       root.unmount();
     });
+    container.remove();
+  });
+
+  it('prevents repeated close requests while a clean close is pending', async () => {
+    let finishCleanShutdown!: () => void;
+    appUpdateExitAfterCleanShutdownMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finishCleanShutdown = resolve; }),
+    );
+    const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
+
+    __resetWindowRestorationForTests();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    await delay(80);
+
+    const firstClose = createCloseRequestedEvent();
+    const secondClose = createCloseRequestedEvent();
+    const firstRequest = closeRequestedListener?.(firstClose);
+    await delay(10);
+    await closeRequestedListener?.(secondClose);
+
+    expect(firstClose.preventDefault).toHaveBeenCalledTimes(1);
+    expect(secondClose.preventDefault).toHaveBeenCalledTimes(1);
+
+    finishCleanShutdown();
+    await firstRequest;
+    await act(async () => { root.unmount(); });
+    container.remove();
+  });
+
+  it('acknowledges a manual installer request and exits through Tauri', async () => {
+    installerClosePending = true;
+    const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
+
+    __resetWindowRestorationForTests();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    await delay(80);
+    await closeRequestedListener?.(createCloseRequestedEvent());
+
+    expect(appInstallerCloseRespondMock).toHaveBeenCalledWith(true);
+    expect(appExitCleanlyMock).toHaveBeenCalledTimes(1);
+    expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(0);
+
+    await act(async () => { root.unmount(); });
     container.remove();
   });
 });

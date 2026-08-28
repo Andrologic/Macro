@@ -8,6 +8,7 @@ import {
   services,
 } from '../services';
 import { isPlanMetadataMissingError, toServiceError } from '../services/contracts/errors';
+import { isAppShutdownGateActive } from '../services/appShutdownGate';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
@@ -3918,6 +3919,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   runTaskCommands: async (taskId) => {
+    if (isAppShutdownGateActive()) {
+      set({ lastError: tTask('shutdown.closing', 'Macro is closing.') });
+      return null;
+    }
     if (!canUseTaskCommandRuntime()) {
       set({ lastError: getRemoteTaskActionUnavailableMessage() });
       return null;

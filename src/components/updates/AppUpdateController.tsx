@@ -16,7 +16,13 @@ export const AppUpdateController: React.FC<AppUpdateControllerProps> = ({ enable
     automaticCheckStarted = true;
 
     const timeout = setTimeout(() => {
-      void useAppUpdateStore.getState().checkForUpdates();
+      void (async () => {
+        await useAppUpdateStore.getState().initialize();
+        const phase = useAppUpdateStore.getState().phase;
+        if (phase === 'idle' || phase === 'upToDate') {
+          await useAppUpdateStore.getState().checkForUpdates({ explicit: false });
+        }
+      })();
     }, STARTUP_UPDATE_DELAY_MS);
 
     return () => clearTimeout(timeout);

@@ -76,6 +76,9 @@ const loadGeneralView = async () => {
   }));
 
   mock.module('../../../i18n', () => ({
+    default: {
+      t: (_key: string, fallback: string) => fallback,
+    },
     changeLanguage: async (_language: string) => undefined,
     resolveSupportedLanguage: (language: string) => language || 'en',
   }));

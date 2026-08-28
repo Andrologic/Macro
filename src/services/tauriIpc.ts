@@ -4222,6 +4222,62 @@ export async function updaterTarget(): Promise<string> {
   return invoke<string>("updater_target");
 }
 
+export interface NativeStagedUpdateDto {
+  currentVersion: string;
+  version: string;
+  date: string | null;
+  notes: string;
+  target: string;
+  sha256: string;
+  packageSize: number;
+  phase: 'staged' | 'activating' | 'failed';
+  activationAttempts: number;
+  error: string | null;
+}
+
+export interface NativeAppUpdateSnapshotDto {
+  currentVersion: string;
+  update: NativeStagedUpdateDto | null;
+}
+
+export async function appUpdateStatus(): Promise<NativeAppUpdateSnapshotDto> {
+  return invoke<NativeAppUpdateSnapshotDto>('app_update_status');
+}
+
+export async function appUpdateCheckAndStage(params: {
+  target: string;
+  allowDowngrades: boolean;
+}): Promise<NativeAppUpdateSnapshotDto> {
+  return invoke<NativeAppUpdateSnapshotDto>('app_update_check_and_stage', {
+    target: params.target,
+    allowDowngrades: params.allowDowngrades,
+  });
+}
+
+export async function appUpdateExitAfterCleanShutdown(): Promise<void> {
+  return invoke<void>('app_update_exit_after_clean_shutdown');
+}
+
+export async function appExitCleanly(): Promise<void> {
+  return invoke<void>('app_exit_cleanly');
+}
+
+export async function appUpdateDiscard(): Promise<void> {
+  return invoke<void>('app_update_discard');
+}
+
+export async function appUpdateInstallNow(): Promise<void> {
+  return invoke<void>('app_update_install_now');
+}
+
+export async function appInstallerCloseRequestPending(): Promise<boolean> {
+  return invoke<boolean>('app_installer_close_request_pending');
+}
+
+export async function appInstallerCloseRespond(accepted: boolean): Promise<void> {
+  return invoke<void>('app_installer_close_respond', { accepted });
+}
+
 // ============ Utility ============
 
 /**

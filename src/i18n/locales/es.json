@@ -46,6 +46,16 @@
     "failedDescription": "Macro no pudo inicializar los datos locales. Puedes volver a intentarlo de forma segura.",
     "failedSteps": "Pasos fallidos"
   },
+  "shutdown": {
+    "activeWorkSingle": "Hay una tarea en curso. Cerrar Macro la interrumpirá.",
+    "activeWorkMultiple": "Hay {{count}} tareas en curso. Cerrar Macro las interrumpirá.",
+    "closeTitle": "¿Cerrar Macro?",
+    "closeAction": "Cerrar Macro",
+    "keepWorking": "Seguir trabajando",
+    "closeFailed": "Macro no pudo cerrarse",
+    "closeFailedDescription": "Su trabajo se ha conservado. Intente cerrar Macro de nuevo.",
+    "closing": "Macro se está cerrando."
+  },
   "releaseNotes": {
     "dialogTitle": "Notas de la versión",
     "shownOnce": "Esta nota se muestra una sola vez por cada versión instalada.",
@@ -61,22 +71,31 @@
     "upToDate": "Macro está actualizado",
     "check": "Buscar actualizaciones",
     "checkFailed": "No se pudieron buscar actualizaciones",
-    "prepareFailed": "Macro no pudo preparar el reinicio",
+    "prepareFailed": "Macro no pudo prepararse para cerrar",
+    "downloadFailed": "La actualización no se ha podido descargar",
+    "downloadAgain": "Volver a descargar",
     "installFailed": "No se pudo instalar la actualización",
     "activeWorkTitle": "Todavía hay agentes activos",
-    "activeWorkDescription_one": "{{count}} tarea activa puede perder su salida actual si Macro se reinicia ahora.",
-    "activeWorkDescription_other": "{{count}} tareas activas pueden perder su salida actual si Macro se reinicia ahora.",
+    "activeWorkDescription_one": "{{count}} tarea activa puede perder su salida actual si Macro se cierra ahora.",
+    "activeWorkDescription_other": "{{count}} tareas activas pueden perder su salida actual si Macro se cierra ahora.",
     "agentActivity": "Agente",
     "implementActivity": "Ejecución de Implement",
     "wait": "Esperar",
-    "restartAnyway": "Reiniciar de todos modos",
+    "restartAnyway": "Instalar de todos modos",
     "dialogTitle": "Actualización de Macro",
     "available": "Actualización disponible",
     "noNotes": "No se proporcionaron notas para esta versión.",
     "downloadInProgress": "La actualización firmada se descarga en segundo plano.",
     "restartRequired": "Macro volverá a abrirse después de instalar la actualización.",
     "later": "Más tarde",
-    "restartAndUpdate": "Reiniciar y actualizar"
+    "restartAndUpdate": "Reiniciar y actualizar",
+    "readyForNextLaunch": "La actualización v{{version}} se instalará la próxima vez que se abra Macro",
+    "readyVersion": "Macro v{{version}} está listo",
+    "installsNextLaunch": "Se instalará la próxima vez que se abra Macro.",
+    "updateFailed": "No se pudo completar la actualización",
+    "details": "Detalles",
+    "retryInstall": "Reintentar instalación",
+    "installNow": "Instalar ahora"
   },
   "markdown": {
     "video": "Vídeo"
@@ -909,12 +928,14 @@
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
     },
+    "updates": "Actualizaciones",
     "language_region": "Idioma y región",
     "language": "Idioma",
     "language_desc": "Seleccione su interfaz de idioma preferido",
     "application": "Aplicación",
     "updateChannel": {
       "label": "Canal de actualizaciones",
+      "currentVersion": "Versión actual",
       "stable": "Estable",
       "preview": "Vista previa (nightly)",
       "stableDescription": "Recibir únicamente versiones de producción.",

@@ -13,11 +13,12 @@ import {
   PREF_KEYS,
 } from "../services/preferences";
 import { useAppStore } from "../stores/useAppStore";
+import { useChatStore } from "../stores/useChatStore";
+import { useTaskStore } from "../stores/useTaskStore";
 import {
   isTauriEnvironment,
   showMainWindow,
   windowAvailableMonitorBounds,
-  windowClose,
   windowCurrentMonitorWorkArea,
   windowIsMaximized,
   windowMaximize,
@@ -34,7 +35,8 @@ import {
   windowSetTheme,
 } from "../services/tauriWindow";
 import {
-  prepareWindowShutdown,
+  commitWindowShutdown,
+  prepareForPotentialShutdown,
   registerWindowStateFlushHandler,
 } from "../services/windowShutdown";
 import { getPlatformChromeState } from "../utils/desktopPlatform";
@@ -42,6 +44,20 @@ import { isPageShuttingDown } from "../utils/pageLifecycle";
 import { devLogger } from "../utils/devLogger";
 import { sanitizeWindowBounds, type MonitorBounds } from '../services/windowBounds';
 import { isProjectGitActionable } from '../services/globalProjects';
+import {
+  hasUnapprovedRestartSafetyActivity,
+  selectRestartSafetySnapshot,
+  type RestartSafetySnapshot,
+} from '../services/restartSafety';
+import { notify } from '../components/ui/toastService';
+import i18n from '../i18n';
+import {
+  appExitCleanly,
+  appInstallerCloseRequestPending,
+  appInstallerCloseRespond,
+  appUpdateExitAfterCleanShutdown,
+} from '../services/tauriIpc';
+import { beginAppShutdownGate } from '../services/appShutdownGate';
 
 type WindowApi = {
   setSize: (width: number, height: number) => Promise<void>;
@@ -72,6 +88,33 @@ const getSelectedProjectGroupWorkspacePaths = (): string[] => {
       .filter((project) => isProjectGitActionable(project))
       .map((project) => project.path)
       .filter((path) => path.trim().length > 0) ?? []
+  );
+};
+
+const getRestartSafetySnapshot = (): RestartSafetySnapshot => {
+  const chatState = useChatStore.getState();
+  const taskState = useTaskStore.getState();
+  return selectRestartSafetySnapshot({
+    conversations: chatState.conversations,
+    conversationRuntimeById: chatState.conversationRuntimeById,
+    conversationCompactionStatusById: chatState.conversationCompactionStatusById,
+    tasks: taskState.tasks,
+    taskCommandRuns: taskState.taskCommandRuns,
+  });
+};
+
+const confirmCloseWithActiveWork = async (activeWorkCount: number): Promise<boolean> => {
+  const { ask } = await import('@tauri-apps/plugin-dialog');
+  return ask(
+    activeWorkCount === 1
+      ? i18n.t('shutdown.activeWorkSingle', 'A task is still running. Closing Macro will interrupt it.')
+      : i18n.t('shutdown.activeWorkMultiple', '{{count}} tasks are still running. Closing Macro will interrupt them.', { count: activeWorkCount }),
+    {
+      title: i18n.t('shutdown.closeTitle', 'Close Macro?'),
+      kind: 'warning',
+      okLabel: i18n.t('shutdown.closeAction', 'Close Macro'),
+      cancelLabel: i18n.t('shutdown.keepWorking', 'Keep working'),
+    },
   );
 };
 
@@ -472,21 +515,66 @@ export function useWindowRestoration() {
     );
 
     void windowOnCloseRequested(async (event) => {
+      event.preventDefault();
       if (closeInProgressRef.current) {
         return;
       }
 
-      event.preventDefault();
       closeInProgressRef.current = true;
       clearPendingWindowStateSave();
-      await prepareWindowShutdown(
-        'window-close-requested',
-        getSelectedProjectGroupWorkspacePaths()
-      );
+      let installerRequestedClose = false;
+      let releaseShutdownGate: (() => void) | null = null;
       try {
-        await windowClose();
+        installerRequestedClose = await appInstallerCloseRequestPending();
+        const approvedSafety = getRestartSafetySnapshot();
+        if (approvedSafety.hasActiveWork) {
+          if (!(await confirmCloseWithActiveWork(approvedSafety.activeWorkCount))) {
+            if (installerRequestedClose) {
+              await appInstallerCloseRespond(false);
+            }
+            closeInProgressRef.current = false;
+            return;
+          }
+        }
+
+        releaseShutdownGate = beginAppShutdownGate();
+        const safetyAfterConsent = getRestartSafetySnapshot();
+        if (
+          hasUnapprovedRestartSafetyActivity(approvedSafety, safetyAfterConsent)
+          && !(await confirmCloseWithActiveWork(safetyAfterConsent.activeWorkCount))
+        ) {
+          if (installerRequestedClose) {
+            await appInstallerCloseRespond(false);
+          }
+          releaseShutdownGate();
+          releaseShutdownGate = null;
+          closeInProgressRef.current = false;
+          return;
+        }
+
+        await prepareForPotentialShutdown(
+          getSelectedProjectGroupWorkspacePaths(),
+        );
+        if (installerRequestedClose) {
+          await appInstallerCloseRespond(true);
+          await appExitCleanly();
+          commitWindowShutdown('window-close-requested');
+        } else {
+          await appUpdateExitAfterCleanShutdown();
+          commitWindowShutdown('window-close-requested');
+        }
       } catch (error) {
         console.error('Failed to close window after flushing its state:', error);
+        notify.error(i18n.t('shutdown.closeFailed', 'Macro could not close'), {
+          description: i18n.t(
+            'shutdown.closeFailedDescription',
+            'Your work was kept. Try closing Macro again.',
+          ),
+        });
+        if (installerRequestedClose) {
+          void appInstallerCloseRespond(false).catch(() => undefined);
+        }
+        releaseShutdownGate?.();
         closeInProgressRef.current = false;
       }
     })

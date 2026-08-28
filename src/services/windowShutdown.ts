@@ -28,17 +28,26 @@ export const registerWindowStateFlushHandler = (
 };
 
 export const flushWindowStateBeforeShutdown = async (
-  timeoutMs = 1_000,
+  timeoutMs = 5_000,
 ): Promise<void> => {
   const handler = windowStateFlushHandler;
   if (!handler) return;
+  await withShutdownTimeout(handler(), timeoutMs, 'window state');
+};
 
+const withShutdownTimeout = async <T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  operationName: string,
+): Promise<T> => {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
-    await Promise.race([
-      handler(),
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, timeoutMs);
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`Timed out while saving ${operationName}.`));
+        }, timeoutMs);
       }),
     ]);
   } finally {
@@ -48,22 +57,16 @@ export const flushWindowStateBeforeShutdown = async (
 
 export const prepareForPotentialShutdown = async (
   workspacePaths?: string[],
-  timeoutMs = 1_000,
+  timeoutMs = 5_000,
 ): Promise<void> => {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  try {
-    await Promise.all([
-      flushWindowStateBeforeShutdown(timeoutMs),
-      Promise.race([
-        flushMacroMetadataForShutdown(workspacePaths),
-        new Promise<void>((resolve) => {
-          timeout = setTimeout(resolve, timeoutMs);
-        }),
-      ]),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
+  await Promise.all([
+    flushWindowStateBeforeShutdown(timeoutMs),
+    withShutdownTimeout(
+      flushMacroMetadataForShutdown(workspacePaths),
+      timeoutMs,
+      'workspace data',
+    ),
+  ]);
 };
 
 const flushMacroMetadataForShutdown = async (workspacePaths?: string[]): Promise<void> => {
@@ -102,6 +105,12 @@ export const prepareWindowShutdown = async (
   reason: string,
   workspacePaths?: string[],
 ): Promise<void> => {
-  await flushWindowStateBeforeShutdown();
-  markWindowCloseShutdown(reason, workspacePaths);
+  await prepareForPotentialShutdown(workspacePaths);
+  commitWindowShutdown(reason);
+};
+
+export const commitWindowShutdown = (reason: string): void => {
+  if (isPageShuttingDown()) return;
+  devLogger.log(`Window shutdown requested: ${reason}`);
+  markPageShuttingDown(reason);
 };
