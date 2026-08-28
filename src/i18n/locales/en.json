@@ -721,6 +721,13 @@
       "none": "None",
       "compaction": "Compaction",
       "countSummary": "{{messages}} messages · {{sources}} sources",
+      "repositoryInstructions": "Repository instructions",
+      "repositoryInstructionIssue": {
+        "countLimit": "Some repository instruction files were omitted because the count limit was reached.",
+        "sizeLimit": "Some repository instructions were omitted because the size limit was reached.",
+        "outsideProject": "Macro rejected a repository instruction path outside the project.",
+        "loadFailure": "Macro could not load some repository instructions."
+      },
       "refresh": "Refresh",
       "source": {
         "userOverride": "User set",

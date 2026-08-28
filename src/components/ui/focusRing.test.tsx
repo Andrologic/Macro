@@ -49,7 +49,9 @@ describe('focus ring controls', () => {
   });
 
   it('suppresses the native outline on programmatically focused dialogs', () => {
-    const rules = [...focusStyles.matchAll(/:where\(([\s\S]*?)\):(focus(?:-visible)?)\s*\{/g)];
+    const rules = [
+      ...String(focusStyles).matchAll(/:where\(([\s\S]*?)\):(focus(?:-visible)?)\s*\{/g),
+    ];
     const focusRule = rules.find((match) => match[2] === 'focus')?.[1] ?? '';
     const focusVisibleRule = rules.find((match) => match[2] === 'focus-visible')?.[1] ?? '';
 

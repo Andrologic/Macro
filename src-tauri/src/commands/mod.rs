@@ -4,6 +4,7 @@ mod external_apps;
 pub mod fs;
 pub mod git;
 pub mod mcp;
+pub mod repository_instructions;
 pub mod skills;
 pub mod speech;
 pub mod terminal;

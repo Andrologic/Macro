@@ -1024,6 +1024,38 @@ export interface FsWriteResultDto {
   unix_mode?: number;
 }
 
+export interface RepositoryInstructionProjectInputDto {
+  projectId: string;
+  projectName: string;
+  rootPath: string;
+  scopePath?: string | null;
+}
+
+export interface RepositoryInstructionSourceDto {
+  projectId: string;
+  projectName: string;
+  sourcePath: string;
+  relativePath: string;
+  depth: number;
+  sizeBytes: number;
+  content: string;
+}
+
+export interface RepositoryInstructionIssueDto {
+  projectId: string;
+  code: string;
+  sourcePath?: string | null;
+  message: string;
+}
+
+export interface RepositoryInstructionLoadResultDto {
+  sources: RepositoryInstructionSourceDto[];
+  issues: RepositoryInstructionIssueDto[];
+  totalBytes: number;
+  fileLimit: number;
+  byteLimit: number;
+}
+
 export interface WorkspaceBootstrapDto {
   plan: Plan | null;
   standaloneProjects: Project[];
@@ -1750,6 +1782,20 @@ export async function dbFinalizeConversationReplay(params: {
 
 export async function fsReadFile(path: string): Promise<FsFileContentDto> {
   return invoke<FsFileContentDto>("fs_read_file", { path });
+}
+
+export async function repositoryInstructionsLoad(params: {
+  projects: RepositoryInstructionProjectInputDto[];
+  maxFiles?: number;
+  maxTotalBytes?: number;
+}): Promise<RepositoryInstructionLoadResultDto> {
+  return invoke<RepositoryInstructionLoadResultDto>("repository_instructions_load", {
+    input: {
+      projects: params.projects,
+      maxFiles: params.maxFiles ?? null,
+      maxTotalBytes: params.maxTotalBytes ?? null,
+    },
+  });
 }
 
 export async function fsReadFileWithOptions(params: {
