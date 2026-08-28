@@ -617,6 +617,49 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.providerInputTokens).toBeGreaterThan(0);
   });
 
+  it('keeps Responses function calls paired with compacted outputs', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the file.'),
+      makeMessage('a1', 'assistant', 'Tool exchange.'),
+      makeMessage('u2', 'user', 'Continue.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      ...preparedMessages[1]!,
+      provider_input_items: [
+        {
+          type: 'function_call',
+          call_id: 'call_read',
+          name: 'read',
+          arguments: '{"path":"README.md"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_read',
+          output: `FILE: README.md\n${'large result\n'.repeat(500)}`,
+        },
+      ],
+    };
+
+    const result = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    const items = result.messages[1]?.provider_input_items as Array<
+      Record<string, unknown>
+    >;
+
+    expect(items.map((item) => item.type)).toEqual([
+      'function_call',
+      'function_call_output',
+    ]);
+    expect(items[0]?.call_id).toBe('call_read');
+    expect(items[1]?.call_id).toBe('call_read');
+    expect(String(items[1]?.output)).toContain('FILE: README.md');
+    expect(String(items[1]?.output).length).toBeLessThan(5_000);
+  });
+
   it('does not reintroduce pruned hidden context when measuring a compacted payload', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect old files.'),

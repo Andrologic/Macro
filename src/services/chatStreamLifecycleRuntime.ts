@@ -175,7 +175,7 @@ export const createChatStreamLifecycleRuntime = (params: {
 
   const persistAssistantStreamResultAndConsolidate = async (
     result: StreamCompletionResult,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       await adapters.persistAssistantStreamResult(
         stream.conversationId,
@@ -184,7 +184,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       );
     } catch (error) {
       handleCompletionPersistenceFailure(error);
-      return;
+      return false;
     }
 
     adapters.clearCompletionPersistenceOwnership({
@@ -201,6 +201,7 @@ export const createChatStreamLifecycleRuntime = (params: {
         `Tool-boundary compaction consolidation failed after stream persistence: ${toServiceError(error).message}`,
       );
     }
+    return true;
   };
 
   const maybeMarkTaskAwaitingResponse = (
@@ -303,8 +304,16 @@ export const createChatStreamLifecycleRuntime = (params: {
         result.completionReason === "length" ||
         result.completionReason === "incomplete"
       ) {
+        adapters.updateConversationAfterCompletion(
+          stream.conversationId,
+          result.visibleContent,
+        );
         adapters.clearLiveStreamContextEstimate(stream.conversationId);
-        await persistAssistantStreamResultAndConsolidate(result);
+        const persisted = await persistAssistantStreamResultAndConsolidate(result);
+        if (!persisted) {
+          tokenControls.dispose();
+          return;
+        }
         adapters.setStreamErrorState({
           presentation: {
             origin: "provider",

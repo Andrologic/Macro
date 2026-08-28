@@ -247,8 +247,37 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(getMessage().completion_reason).toBe("length");
     expect(events).toContain("persist-final");
     expect(events).toContain("stream-error:transcript:assistant-1");
-    expect(events).not.toContain("conversation:Réponse encore coupée");
+    expect(events).toContain("conversation:Réponse encore coupée");
     expect(events).not.toContain("awaiting");
+    expect(controls.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test("an incomplete response keeps a persistence failure instead of replacing it with a provider error", async () => {
+    const controls = makeControls();
+    const persistenceErrors: string[] = [];
+    const { runtime, events } = makeRuntime({
+      overrides: {
+        persistAssistantStreamResult: mock(async () => {
+          throw new Error("SQLite unavailable");
+        }),
+        setCompletionPersistenceError: ({ message }) => {
+          persistenceErrors.push(message);
+        },
+      },
+    });
+
+    await runtime.onComplete(
+      {
+        visibleContent: "Réponse coupée non persistée",
+        toolTraces: [],
+        completionReason: "length",
+      },
+      controls,
+    );
+
+    expect(events).toContain("conversation:Réponse coupée non persistée");
+    expect(persistenceErrors).toEqual(["SQLite unavailable"]);
+    expect(events).not.toContain("stream-error:transcript:assistant-1");
     expect(controls.dispose).toHaveBeenCalledTimes(1);
   });
 

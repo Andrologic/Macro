@@ -429,6 +429,7 @@ describe('contextCompactionOrchestrator', () => {
     expect(result.result.compactionState?.upToMessageId.startsWith('stream-boundary-')).toBe(
       false,
     );
+    expect(result.result.compactionState?.summaryText).toBe('Real post-tool summary.');
     expect(result.shouldPersistCompaction).toBe(true);
   });
 });

@@ -477,13 +477,7 @@ export const consolidateCompletedAssistantTurnCompaction = async (params: {
       forceCompaction: true,
       buildForceCompaction: true,
       forcePrune: true,
-      generateSummary: async (input) => {
-        const reusableSummary = pending.compactionState.summaryText?.trim();
-        if (reusableSummary) {
-          return reusableSummary;
-        }
-        return (await params.generateSummary?.(input)) ?? null;
-      },
+      generateSummary: params.generateSummary,
     });
 
     if (orchestration.outcome === 'blocked') {

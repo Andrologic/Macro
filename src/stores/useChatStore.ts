@@ -10550,6 +10550,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ),
         });
       } catch (error) {
+        if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
+          return;
+        }
         clearLatestRunningSessionCompactionEvent(
           params.conversationId,
           "safety_prestream",
@@ -10582,6 +10585,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }),
         });
         throw error;
+      }
+      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
+        return;
       }
       if (orchestration.outcome === "blocked") {
         throw buildSendError(orchestration.errorMessage);

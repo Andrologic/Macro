@@ -753,12 +753,36 @@ const compactProviderInputItem = (
     };
   }
 
+  if (item.type === 'function_call') {
+    return deepCloneJsonValue(item);
+  }
+
+  if (item.type === 'function_call_output') {
+    if (typeof item.call_id !== 'string' || !item.call_id.trim()) {
+      return deepCloneJsonValue(item);
+    }
+    const output =
+      typeof item.output === 'string'
+        ? item.output
+        : JSON.stringify(item.output ?? '');
+    return {
+      type: 'function_call_output',
+      call_id: item.call_id,
+      output: truncateMiddle(normalizeWhitespace(output), targetChars),
+    };
+  }
+
   const serialized = JSON.stringify(item);
   if (serialized.length <= targetChars) return deepCloneJsonValue(item);
   return {
-    type: 'compacted_provider_item',
-    excerpt: truncateMiddle(normalizeWhitespace(serialized), targetChars),
-    hash: simpleHash(serialized),
+    type: 'message',
+    role: 'assistant',
+    content: [
+      {
+        type: 'output_text',
+        text: truncateMiddle(normalizeWhitespace(serialized), targetChars),
+      },
+    ],
   };
 };
 
