@@ -10205,10 +10205,16 @@ mod tests {
         let catalog = list_tasks(temp.path(), &metadata_root)
             .await
             .expect("list direct task catalog");
-        assert_eq!(catalog.tasks[0]["execution_targets"][0]["executionMode"], "direct");
+        assert_eq!(
+            catalog.tasks[0]["execution_targets"][0]["executionMode"],
+            "direct"
+        );
         assert_eq!(
             catalog.tasks[0]["execution_targets"][0]["checkpointId"],
-            direct_target.checkpoint_id.as_deref().expect("checkpoint id")
+            direct_target
+                .checkpoint_id
+                .as_deref()
+                .expect("checkpoint id")
         );
         assert!(!project_path.join(".git").exists());
         assert_eq!(
