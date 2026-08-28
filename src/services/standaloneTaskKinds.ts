@@ -5,6 +5,7 @@ export const STANDALONE_TASK_KINDS: readonly StandaloneTaskKind[] = [
   'feature',
   'bugfix',
   'hotfix',
+  'direct',
 ];
 
 export const getCreatableStandaloneTaskKinds = (
@@ -15,7 +16,7 @@ export const getCreatableStandaloneTaskKinds = (
   }
 
   return isMainlineGitWorkflow(settings)
-    ? ['feature', 'hotfix']
+    ? ['feature', 'hotfix', 'direct']
     : [...STANDALONE_TASK_KINDS];
 };
 

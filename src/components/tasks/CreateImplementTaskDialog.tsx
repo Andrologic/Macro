@@ -5,6 +5,7 @@ import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { getCreatableStandaloneTaskKinds } from '../../services/standaloneTaskKinds';
 import {
+  gitStatus,
   gitTaskStartPoints,
   type GitAvailableTaskBranchDto,
   type GitAvailableWorktreeDto,
@@ -25,6 +26,7 @@ interface CreateImplementTaskDialogProps {
     taskKind: StandaloneTaskKind;
     startPoint:
       | { kind: 'new' }
+      | { kind: 'direct'; branchName: string; baseCommitHash: string | null }
       | { kind: 'worktree'; worktree: GitAvailableWorktreeDto }
       | { kind: 'branch'; branch: GitAvailableTaskBranchDto };
   }) => void;
@@ -32,11 +34,12 @@ interface CreateImplementTaskDialogProps {
 
 const TASK_KIND_OPTIONS: Array<{
   kind: StandaloneTaskKind;
-  icon: 'sparkles' | 'tool' | 'zap';
+  icon: 'sparkles' | 'tool' | 'zap' | 'git-commit';
 }> = [
   { kind: 'feature', icon: 'sparkles' },
   { kind: 'bugfix', icon: 'tool' },
   { kind: 'hotfix', icon: 'zap' },
+  { kind: 'direct', icon: 'git-commit' },
 ];
 
 const TOOLTIP_OFFSET = 12;
@@ -116,6 +119,9 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const [isLoadingWorktrees, setIsLoadingWorktrees] = useState(false);
   const [startPointLoadFailed, setStartPointLoadFailed] = useState(false);
   const [startPointLoadRequest, setStartPointLoadRequest] = useState(0);
+  const [currentBranch, setCurrentBranch] = useState<string | null>(null);
+  const [currentHeadCommitHash, setCurrentHeadCommitHash] = useState<string | null>(null);
+  const [isCurrentRepositoryClean, setIsCurrentRepositoryClean] = useState<boolean | null>(null);
   const editableProjects = useMemo(
     () => projects.filter((project) => !project.isReadOnly),
     [projects],
@@ -151,13 +157,13 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const creatableTaskKinds = useMemo(
     () => selectedProject
       ? isDirectEditProject
-        ? ['feature'] as StandaloneTaskKind[]
+        ? ['direct'] as StandaloneTaskKind[]
         : getCreatableStandaloneTaskKinds(selectedProject.gitFlowSettings)
       : [],
     [isDirectEditProject, selectedProject],
   );
   const visibleTaskKindOptions = isDirectEditProject
-    ? TASK_KIND_OPTIONS.filter(({ kind }) => kind === 'feature')
+    ? TASK_KIND_OPTIONS.filter(({ kind }) => kind === 'direct')
     : TASK_KIND_OPTIONS;
   const selectedTaskKindIsCreatable = selectedTaskKind
     ? creatableTaskKinds.includes(selectedTaskKind)
@@ -165,12 +171,23 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const canCreate = Boolean(
     selectedProject &&
     selectedTaskKindIsCreatable &&
-    (workspaceChoice === 'new' || selectedWorktree || selectedBranch)
+    (selectedTaskKind === 'direct'
+      ? isDirectEditProject || Boolean(currentBranch && currentHeadCommitHash && isCurrentRepositoryClean)
+      : workspaceChoice === 'new' || selectedWorktree || selectedBranch)
   ) && !isCreating;
   const taskKindDescriptions: Record<StandaloneTaskKind, string> = {
     feature: t('implement.taskKindFeatureHelp', 'Feature creates a branch from the configured development branch and merges it back into that branch.'),
     bugfix: t('implement.taskKindBugfixHelp', 'Bugfix creates a branch from the configured development branch and merges it back into that branch.'),
     hotfix: t('implement.taskKindHotfixHelp', 'Hotfix creates a branch from the configured production branch and merges it back into that branch.'),
+    direct: isDirectEditProject
+      ? t(
+          'implement.taskKindDirectHelpNoGit',
+          'Work in the project folder without Git commits. Accepted changes stay in that folder.',
+        )
+      : t(
+          'implement.taskKindDirectHelp',
+          'Work in the project folder without a dedicated branch or worktree. Accepted changes are committed to the current branch.',
+        ),
   };
   const getTaskKindDescription = (kind: StandaloneTaskKind): string => {
     if (!selectedProject) {
@@ -333,8 +350,8 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   }, [tooltipAnchor, tooltipSize.height, tooltipSize.width]);
 
   useEffect(() => {
-    if (isDirectEditProject && selectedTaskKind !== 'feature') {
-      setSelectedTaskKind('feature');
+    if (isDirectEditProject && selectedTaskKind !== 'direct') {
+      setSelectedTaskKind('direct');
       return;
     }
     if (selectedTaskKind && !creatableTaskKinds.includes(selectedTaskKind)) {
@@ -349,20 +366,32 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     setStartPointQuery('');
     setWorktrees([]);
     setBranches([]);
+    setCurrentBranch(null);
+    setCurrentHeadCommitHash(null);
+    setIsCurrentRepositoryClean(null);
     setStartPointLoadFailed(false);
     if (!selectedProject || isDirectEditProject) return () => { cancelled = true; };
     setIsLoadingWorktrees(true);
-    void gitTaskStartPoints({ repoPath: selectedProject.path })
-      .then((startPoints) => {
+    void Promise.all([
+      gitTaskStartPoints({ repoPath: selectedProject.path }),
+      gitStatus(selectedProject.path),
+    ])
+      .then(([startPoints, status]) => {
         if (!cancelled) {
           setWorktrees(startPoints.worktrees);
           setBranches(startPoints.branches);
+          setCurrentBranch(status.branch && status.branch !== 'DETACHED' ? status.branch : null);
+          setCurrentHeadCommitHash(status.head_commit?.hash || null);
+          setIsCurrentRepositoryClean(status.is_clean);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setWorktrees([]);
           setBranches([]);
+          setCurrentBranch(null);
+          setCurrentHeadCommitHash(null);
+          setIsCurrentRepositoryClean(null);
           setStartPointLoadFailed(true);
         }
       })
@@ -378,7 +407,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       onClose={onClose}
       panelClassName={cn(
         'flex h-[min(46rem,calc(100vh-2rem))] w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-[max-width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
-        workspaceChoice === 'existing' && !isDirectEditProject && selectedProject
+        workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedTaskKind !== 'direct'
           ? 'max-w-5xl'
           : 'max-w-2xl'
       )}
@@ -460,11 +489,11 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <legend className="text-xs font-medium text-foreground">
             {t('implement.taskKindLabel', 'Task type')}
           </legend>
-          <div className={cn('grid gap-2', isDirectEditProject ? 'grid-cols-1' : 'grid-cols-3')}>
+          <div className={cn('grid gap-2', isDirectEditProject ? 'grid-cols-1' : 'grid-cols-4')}>
             {visibleTaskKindOptions.map(({ kind, icon }) => {
               const selected = selectedTaskKind === kind;
-              const label = isDirectEditProject
-                ? t('implement.taskKindDirectEdit', 'Direct edit')
+              const label = kind === 'direct'
+                ? t('implement.taskKindDirect', 'Direct')
                 : kind === 'feature'
                 ? t('implement.taskKindFeature', 'Feature')
                 : kind === 'bugfix'
@@ -520,17 +549,20 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           </div>
           {visibleTaskKindOptions.map(({ kind }) => (
             <span key={kind} id={`implement-task-kind-${kind}-description`} className="sr-only">
-              {isDirectEditProject
-                ? t(
-                    'implement.taskKindDirectEditHelp',
-                    'Macro edits the project folder directly without branches, worktrees, or Git commits.'
-                  )
-                : getTaskKindDescription(kind)}
+              {getTaskKindDescription(kind)}
             </span>
           ))}
+          {selectedTaskKind === 'direct' && !isDirectEditProject && isCurrentRepositoryClean === false && (
+            <p className="text-[11px] text-amber-500">
+              {t(
+                'implement.taskKindDirectDirtyHelp',
+                'Commit or stash the current changes before creating a Direct task.',
+              )}
+            </p>
+          )}
         </fieldset>
 
-        {!isDirectEditProject && selectedProject && (
+        {!isDirectEditProject && selectedProject && selectedTaskKind !== 'direct' && (
           <fieldset className="space-y-2">
             <legend className="text-xs font-medium text-foreground">
               {t('implement.taskWorkspaceLabel', 'Starting point')}
@@ -595,12 +627,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           aria-hidden={workspaceChoice !== 'existing'}
           className={cn(
             'min-h-0 shrink-0 overflow-hidden transition-[width,max-width,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
-            workspaceChoice === 'existing' && !isDirectEditProject && selectedProject
+            workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedTaskKind !== 'direct'
               ? 'w-[26rem] max-w-[44vw] opacity-100'
               : 'w-0 max-w-0 opacity-0'
           )}
         >
-          {workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && startPointPicker}
+          {workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedTaskKind !== 'direct' && startPointPicker}
         </div>
       </div>
 
@@ -630,7 +662,13 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
               onCreate({
                 projectId: selectedProjectId,
                 taskKind: selectedTaskKind,
-                startPoint: workspaceChoice === 'new'
+                startPoint: selectedTaskKind === 'direct'
+                  ? {
+                      kind: 'direct',
+                      branchName: isDirectEditProject ? 'direct' : currentBranch!,
+                      baseCommitHash: isDirectEditProject ? null : currentHeadCommitHash,
+                    }
+                  : workspaceChoice === 'new'
                   ? { kind: 'new' }
                   : selectedWorktree
                     ? { kind: 'worktree', worktree: selectedWorktree }

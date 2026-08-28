@@ -1166,6 +1166,10 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
   projectId: string;
   branchName: string;
   targetBranchName?: string | null;
+  executionMode?: 'git' | 'direct' | null;
+  executionKind?: 'worktree' | 'repository_root' | null;
+  checkpointId?: string | null;
+  baseCommitHash?: string | null;
   worktreeKey: string;
   repoPath?: string | null;
 }
@@ -1210,7 +1214,7 @@ export interface WorkspaceManualFeatureDto {
   description: string;
   status: string;
   featureSlug: string | null;
-  taskKind: 'feature' | 'bugfix' | 'hotfix' | null;
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | 'direct' | null;
   branchName: string | null;
   archivedAt: string | null;
   archiveReason: string | null;
@@ -3224,8 +3228,9 @@ export async function workspaceCreateManualFeatureDraft(params: {
   baseBranch?: string | null;
   title?: string | null;
   description?: string | null;
-  taskKind: 'feature' | 'bugfix' | 'hotfix';
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | 'direct';
   existingBranchName?: string | null;
+  baseCommitHash?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_create_manual_feature_draft",
@@ -3240,6 +3245,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
       description: params.description ?? null,
       taskKind: params.taskKind,
       existingBranchName: params.existingBranchName ?? null,
+      baseCommitHash: params.baseCommitHash ?? null,
     },
   );
 }
@@ -3250,7 +3256,7 @@ export async function workspaceFinalizeManualFeature(params: {
   title: string;
   description: string;
   featureSlug: string;
-  taskKind: 'feature' | 'bugfix' | 'hotfix';
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | 'direct';
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_finalize_manual_feature",

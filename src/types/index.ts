@@ -32,7 +32,7 @@ export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
 export type PlanNodeTodoStatus = 'pending' | 'in-progress' | 'done';
 export type PlanTaskArtifactContentType = 'markdown' | 'json' | 'text';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
-export type StandaloneTaskKind = 'feature' | 'bugfix' | 'hotfix';
+export type StandaloneTaskKind = 'feature' | 'bugfix' | 'hotfix' | 'direct';
 export type CompletionMergePolicy = 'merge_commit' | 'fast_forward';
 export type ProjectGitSetupState =
   | 'not_git'
@@ -201,6 +201,9 @@ export interface TaskExecutionTarget {
   // Git repository later without changing how an existing task must run.
   executionMode?: 'git' | 'direct';
   checkpointId?: string;
+  // Direct Git tasks remember the commit that was checked out at creation so
+  // the review can recognize a completed commit after an application restart.
+  baseCommitHash?: string;
   // `worktree` tasks run in dedicated task worktrees, while
   // `repository_root` targets operate directly in the parent repository.
   executionKind?: 'worktree' | 'repository_root';

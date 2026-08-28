@@ -15,6 +15,7 @@ const worktreeKeyA = toBranchWorktreeKey('project-a', 'feature/task-a');
 const worktreeKeyB = toBranchWorktreeKey('project-b', 'feature/task-b');
 const missingWorktreeKey = toBranchWorktreeKey('project-b', 'feature/task-a');
 const directWorktreeKey = toBranchWorktreeKey('project-a', 'direct');
+const directGitWorktreeKey = 'repository-root-project-a-direct';
 const directRepositoryId = `project-a::${directWorktreeKey}`;
 const repositoryIdA = `project-a::${worktreeKeyA}`;
 const repositoryIdB = `project-b::${worktreeKeyB}`;
@@ -38,6 +39,9 @@ const makeProject = (id: string, name: string, path: string) => ({
 });
 
 const initialOriginalFiles: Record<string, Record<string, string>> = {
+  [repoAPath]: {
+    'src/main.ts': 'const value = 1;',
+  },
   [worktreeAPath]: {
     'src/main.ts': 'const value = 1;\nconsole.log(value);',
     'src/deleted.ts': 'export const removed = true;\n',
@@ -51,6 +55,8 @@ let currentFiles: Record<string, Record<string, string | null>> = {};
 let stagedFiles: Record<string, Record<string, string | null>> = {};
 let pathsWithEmptyGitDiff = new Set<string>();
 let directProjectMode = false;
+let directGitBranch = 'develop';
+let directGitHeadHash = 'base-direct-hash';
 let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
   'task-1': 'InProgress',
   'task-2': 'InProgress',
@@ -192,16 +198,16 @@ const buildGitStatus = (repoPath: string) => {
   }
 
   return {
-    branch: 'develop',
-    head_commit: null,
-    staged_files: [],
-    unstaged_files: [],
-    untracked_files: [],
+    branch: directGitBranch,
+    head_commit: { hash: directGitHeadHash },
+    staged_files: staged,
+    unstaged_files: unstaged,
+    untracked_files: untracked,
     conflicted_files: [],
     conflictedFiles: [],
     merge_in_progress: false,
     mergeInProgress: false,
-    is_clean: true,
+    is_clean: changes.length === 0,
   };
 };
 
@@ -359,8 +365,18 @@ const gitAddMock = mock(async ({ repoPath, paths }: { repoPath: string; paths: s
   }
 });
 const commitRepository = async ({ repoPath }: { repoPath: string }) => {
+  if (repoPath === repoAPath) {
+    const nextContent = getIndexContent(repoPath, 'src/main.ts');
+    if (nextContent !== undefined) {
+      initialOriginalFiles[repoPath]['src/main.ts'] = nextContent;
+    }
+    currentFiles[repoPath] = {};
+    directGitHeadHash = 'direct-commit-hash';
+  }
   stagedFiles[repoPath] = {};
-  return repoPath === worktreeAPath ? 'hash-a' : 'hash-b';
+  return repoPath === repoAPath
+    ? 'direct-commit-hash'
+    : repoPath === worktreeAPath ? 'hash-a' : 'hash-b';
 };
 
 const buildGeneratedCommitMessages = async (input: {
@@ -503,6 +519,28 @@ const tasksById = {
       },
     ],
   },
+  'task-7': {
+    id: 'task-7',
+    title: 'Direct Git task',
+    description: 'Task on the current branch',
+    status: 'InProgress' as const,
+    task_source: 'standalone' as const,
+    project_id: 'project-a',
+    project_ids: ['project-a'],
+    assigned_branch: 'develop',
+    base_branch: 'develop',
+    execution_targets: [
+      {
+        projectId: 'project-a',
+        branchName: 'develop',
+        targetBranchName: 'develop',
+        executionMode: 'git' as const,
+        executionKind: 'repository_root' as const,
+        baseCommitHash: 'base-direct-hash',
+        worktreeKey: directGitWorktreeKey,
+      },
+    ],
+  },
 };
 
 type TestTask = Omit<(typeof tasksById)[keyof typeof tasksById], 'status'> & {
@@ -580,6 +618,9 @@ let useFileChangesStore: ReturnType<typeof createFileChangesStore>;
 describe('useFileChangesStore', () => {
   beforeEach(() => {
     currentFiles = {
+      [repoAPath]: {
+        'src/main.ts': 'const value = 2;',
+      },
       [worktreeAPath]: {
         'src/main.ts': 'const value = 2;\nconsole.log(value);',
       },
@@ -598,9 +639,13 @@ describe('useFileChangesStore', () => {
       'task-4': 'Pending',
       'task-5': 'InProgress',
       'task-6': 'InProgress',
+      'task-7': 'InProgress',
     };
     pathsWithEmptyGitDiff = new Set();
     directProjectMode = false;
+    directGitBranch = 'develop';
+    directGitHeadHash = 'base-direct-hash';
+    initialOriginalFiles[repoAPath]['src/main.ts'] = 'const value = 1;';
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;
     appStoreState.selectedTaskId = 'task-1';
@@ -806,6 +851,66 @@ describe('useFileChangesStore', () => {
     await restartedStore.getState().loadCurrentChanges();
 
     expect(restartedStore.getState().getRepository(directRepositoryId)?.commitState).toBe('committed');
+  });
+
+  it('commits a Direct Git task in the repository root and preserves the selected branch', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-7';
+    const repositoryId = `project-a::${directGitWorktreeKey}`;
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const repository = useFileChangesStore.getState().getRepository(repositoryId);
+    expect(repository?.worktreePath).toBe(repoAPath);
+    expect(repository?.executionKind).toBe('repository_root');
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+
+    const changeId = repository?.changes[0]?.id;
+    expect(changeId).toBeTruthy();
+    await useFileChangesStore.getState().stageChanges(repositoryId, [changeId!]);
+    expect(gitAddMock).toHaveBeenCalledWith({
+      repoPath: repoAPath,
+      paths: ['src/main.ts'],
+    });
+
+    directGitBranch = 'main';
+    await expect(
+      useFileChangesStore.getState().commitAllReadyTaskRepositories(),
+    ).rejects.toThrow('changed from develop to main');
+    expect(gitCommitMock).not.toHaveBeenCalled();
+
+    directGitBranch = 'develop';
+    const result = await useFileChangesStore.getState().commitAllReadyTaskRepositories();
+    expect(result.commits[0]?.hash).toBe('direct-commit-hash');
+    expect(gitCommitMock).toHaveBeenCalledWith({
+      repoPath: repoAPath,
+      message: expect.any(String),
+      stageAll: false,
+    });
+
+    const restartedStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+    await restartedStore.getState().loadCurrentChanges();
+    expect(restartedStore.getState().getRepository(repositoryId)?.commitState).toBe('committed');
   });
 
   it('rehydrates prepared task worktree mappings before loading changes', async () => {

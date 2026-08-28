@@ -47,4 +47,42 @@ describe('resolvePreparedTaskWorktreePath', () => {
     });
     expect(gitWorktreeInspect).not.toHaveBeenCalled();
   });
+
+  it('uses the repository root for a Direct Git target without inspecting a worktree', async () => {
+    const gitWorktreeInspect = mock(async () => ({
+      status: 'absent' as const,
+      taskId: 'root-target',
+      worktreePath: '',
+      branchName: 'develop',
+      isDirty: null,
+    }));
+    const directCheckpointEnsure = mock(async () => 'checkpoint-head');
+
+    const resolved = await resolvePreparedTaskWorktreePath({
+      taskId: 'task-direct-git',
+      target: {
+        projectId: 'project-git',
+        branchName: 'develop',
+        executionMode: 'git',
+        executionKind: 'repository_root',
+        baseCommitHash: 'abc123',
+        worktreeKey: 'root-target',
+      },
+      branchWorktrees: {},
+      getProjectById: () => ({
+        path: 'C:/projects/git',
+        directEdit: false,
+        gitSetupState: 'ready',
+      }),
+      tauri: {
+        isTauriAvailable: () => true,
+        gitWorktreeInspect,
+        directCheckpointEnsure,
+      },
+    });
+
+    expect(resolved).toBe('C:/projects/git');
+    expect(gitWorktreeInspect).not.toHaveBeenCalled();
+    expect(directCheckpointEnsure).not.toHaveBeenCalled();
+  });
 });

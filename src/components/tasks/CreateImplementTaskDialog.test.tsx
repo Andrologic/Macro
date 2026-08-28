@@ -7,6 +7,11 @@ let availableStartPoints = {
   worktrees: [] as Array<{ name: string; path: string; branchName: string; isDirty: boolean }>,
   branches: [] as Array<{ name: string; commit: string }>,
 };
+let currentStatus = {
+  branch: 'develop',
+  head_commit: { hash: '0123456789abcdef' },
+  is_clean: true,
+};
 
 mock.module('react-i18next', () => ({
   useTranslation: () => ({
@@ -22,6 +27,7 @@ mock.module('../ui/Dialog', () => ({
 
 mock.module('../../services/tauriIpc', () => ({
   gitTaskStartPoints: async () => availableStartPoints,
+  gitStatus: async () => currentStatus,
 }));
 
 import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
@@ -57,6 +63,11 @@ describe('CreateImplementTaskDialog task type help', () => {
 
   beforeEach(() => {
     availableStartPoints = { worktrees: [], branches: [] };
+    currentStatus = {
+      branch: 'develop',
+      head_commit: { hash: '0123456789abcdef' },
+      is_clean: true,
+    };
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 600 });
     container = document.createElement('div');
@@ -86,6 +97,7 @@ describe('CreateImplementTaskDialog task type help', () => {
       Feature: 'Feature creates a branch from the configured development branch and merges it back into that branch.',
       Bugfix: 'Bugfix creates a branch from the configured development branch and merges it back into that branch.',
       Hotfix: 'Hotfix creates a branch from the configured production branch and merges it back into that branch.',
+      Direct: 'Work in the project folder without a dedicated branch or worktree. Accepted changes are committed to the current branch.',
     };
 
     for (const [label, description] of Object.entries(expected)) {
@@ -174,6 +186,39 @@ describe('CreateImplementTaskDialog task type help', () => {
       buttons.Bugfix.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
     });
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  it('creates a Direct task on the current branch without a worktree start point', async () => {
+    const onCreate = mock(() => undefined);
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[project('develop', 'Develop project', 'develop', 'main')]}
+          initialProjectId="develop"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={onCreate}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+
+    const findButton = (label: string) => Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === label,
+    ) as HTMLButtonElement;
+    await act(async () => findButton('Direct').click());
+    expect(container.textContent).not.toContain('Starting point');
+    await act(async () => findButton('Create task').click());
+
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: 'develop',
+      taskKind: 'direct',
+      startPoint: {
+        kind: 'direct',
+        branchName: 'develop',
+        baseCommitHash: '0123456789abcdef',
+      },
+    });
   });
 
   it('recomputes task type availability from the selected project workflow', async () => {

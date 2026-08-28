@@ -2393,6 +2393,47 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
     expect(refreshFromPlanMock).toHaveBeenCalledTimes(1);
   });
 
+  it('finishes a Direct Git task without merging or cleaning its current branch', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => {
+      useTaskStore.setState({
+        tasks: [buildStandaloneTask({ status: 'Completed', task_kind: 'direct' })],
+      });
+    });
+    const runMergeWorkflowMock = mock(async () => undefined);
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        status: 'InReview',
+        task_kind: 'direct',
+        assigned_branch: 'develop',
+        branch_name: 'develop',
+        execution_targets: [{
+          projectId: 'project-1',
+          branchName: 'develop',
+          targetBranchName: 'develop',
+          executionMode: 'git',
+          executionKind: 'repository_root',
+          baseCommitHash: 'base-hash',
+          worktreeKey: 'repository-root-project-1',
+          repoPath: '/repos/web',
+        }],
+      })],
+      refreshFromPlan: refreshFromPlanMock,
+      runMergeWorkflow: runMergeWorkflowMock,
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(workspaceUpdateStandaloneTaskStatusMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      status: 'Completed',
+    });
+    expect(runMergeWorkflowMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+  });
+
   it('rejects direct-edit completion when persistence refuses the transition', async () => {
     appStoreState.getProjectById = (_projectId: string) => ({
       id: 'project-1',

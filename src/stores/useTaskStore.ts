@@ -257,12 +257,16 @@ const isDirectEditTarget = (target: TaskExecutionTarget): boolean => {
   return project?.directEdit === true && project.gitSetupState === 'not_git';
 };
 
-const isDirectEditTask = (task: CatalogedImplementTask): boolean => {
+const isDirectTask = (task: CatalogedImplementTask): boolean => {
   if (task.task_source !== 'standalone') return false;
+  if (task.task_kind === 'direct') return true;
   const targets = getExecutionTargets(task);
   if (targets.length === 0) return false;
   return targets.every(isDirectEditTarget);
 };
+
+const isRepositoryRootTarget = (target: TaskExecutionTarget): boolean =>
+  target.executionKind === 'repository_root';
 
 const DIRECT_DRAFT_REVERT_SAGA_TARGET = '@direct-draft-revert';
 
@@ -1051,7 +1055,7 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
     return false;
   }
 
-  if (isDirectEditTask(task)) {
+  if (isDirectTask(task)) {
     return false;
   }
 
@@ -1758,6 +1762,7 @@ interface TaskStore {
     description?: string | null;
     taskKind: import('../types').StandaloneTaskKind;
     existingBranchName?: string | null;
+    baseCommitHash?: string | null;
   }) => Promise<void>;
   finalizeManualFeatureDraft: (params: {
     taskId: string;
@@ -2945,6 +2950,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         description: params.description ?? null,
         taskKind: params.taskKind,
         existingBranchName: params.existingBranchName ?? null,
+        baseCommitHash: params.baseCommitHash ?? null,
       });
       draftCreated = true;
 
@@ -3034,7 +3040,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      const gitTargets = executionTargets.filter(
+        (target) => !isDirectEditTarget(target) && !isRepositoryRootTarget(target),
+      );
       const directTargets = executionTargets.filter(isDirectEditTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
@@ -3309,7 +3317,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      const gitTargets = executionTargets.filter(
+        (target) => !isDirectEditTarget(target) && !isRepositoryRootTarget(target),
+      );
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
       await tauriIpc.workspaceArchiveManualFeature({
         taskId,
@@ -3468,7 +3478,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      const gitTargets = executionTargets.filter(
+        (target) => !isDirectEditTarget(target) && !isRepositoryRootTarget(target),
+      );
       const directTargets = executionTargets.filter(isDirectEditTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
@@ -3507,6 +3519,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                   cleanupKind: 'direct' as const,
                   checkpointRemoved: false,
                   checkpointId: directCheckpointIds.get(target.worktreeKey),
+                };
+              }
+              if (isRepositoryRootTarget(target)) {
+                return {
+                  worktreeKey: target.worktreeKey,
+                  repoPath: target.repoPath,
+                  branchName: target.branchName,
+                  branchExisted: true,
+                  worktreeRemoved: true,
+                  branchRemoved: true,
+                  cleanupKind: 'git' as const,
                 };
               }
               return {
@@ -5119,7 +5142,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
   finishTask: async (taskId, options) => {
     const task = get().getTaskById(taskId);
-    if (task && isDirectEditTask(task)) {
+    if (task && isDirectTask(task)) {
       await get().setTaskStatus(taskId, 'Completed');
       if (get().getTaskById(taskId)?.status !== 'Completed') {
         throw new Error(
@@ -5134,7 +5157,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
   completeTask: async (taskId, options) => {
     const task = get().getTaskById(taskId);
-    if (task && isDirectEditTask(task)) {
+    if (task && isDirectTask(task)) {
       await get().setTaskStatus(taskId, 'Completed');
       if (get().getTaskById(taskId)?.status !== 'Completed') {
         throw new Error(

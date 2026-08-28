@@ -994,6 +994,7 @@ describe('TaskQueue', () => {
       description: '',
       taskKind: 'bugfix',
       existingBranchName: null,
+      baseCommitHash: null,
     });
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
@@ -1008,9 +1009,24 @@ describe('TaskQueue', () => {
       }],
       branches: [],
     };
-    installTauriRuntimeMock(mock(async (command) =>
-      command === 'git_task_start_points' ? gitTaskStartPoints : undefined
-    ));
+    installTauriRuntimeMock(mock(async (command) => {
+      if (command === 'git_task_start_points') {
+        return gitTaskStartPoints;
+      }
+      if (command === 'git_status') {
+        return {
+          branch: 'main',
+          head: 'abc123',
+          is_clean: true,
+          ahead: 0,
+          behind: 0,
+          staged: 0,
+          unstaged: 0,
+          untracked: 0,
+        };
+      }
+      return undefined;
+    }));
     seedTasks([makeTask('task-1', 'Pending')]);
     useAppStore.setState({ selectedProjectId: 'project-1' });
 
@@ -1074,6 +1090,7 @@ describe('TaskQueue', () => {
       description: '',
       taskKind: 'feature',
       existingBranchName: 'feature/from-editor',
+      baseCommitHash: null,
     });
     expect(activateTask).toHaveBeenCalledWith(expect.stringContaining('manual-feature-'));
     expect(selectConversation).toHaveBeenCalledWith('conversation-created');
