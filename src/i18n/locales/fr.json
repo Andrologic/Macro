@@ -720,6 +720,13 @@
       "none": "Aucun",
       "compaction": "Compaction",
       "countSummary": "{{messages}} messages · {{sources}} sources",
+      "repositoryInstructions": "Instructions du dépôt",
+      "repositoryInstructionIssue": {
+        "countLimit": "Certains fichiers d'instructions ont été omis, car la limite de nombre a été atteinte.",
+        "sizeLimit": "Certaines instructions ont été omises, car la limite de taille a été atteinte.",
+        "outsideProject": "Macro a refusé un chemin d'instructions situé hors du projet.",
+        "loadFailure": "Macro n'a pas pu charger certaines instructions du dépôt."
+      },
       "refresh": "Actualiser",
       "source": {
         "userOverride": "Défini par l'utilisateur",

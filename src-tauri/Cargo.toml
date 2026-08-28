@@ -72,6 +72,7 @@ ast-grep-language = "0.45.1"
 notify = "6"
 walkdir = "2"
 cap-std = "=4.0.3"
+same-file = "1"
 
 # AI
 # MCP dual-era runtime (plan Lots C/E): official Rust SDK, exact pin per plan §4.1.

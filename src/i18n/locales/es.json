@@ -704,6 +704,13 @@
       "none": "Ninguno",
       "compaction": "Compactación",
       "countSummary": "{{messages}} mensajes · {{sources}} fuentes",
+      "repositoryInstructions": "Instrucciones del repositorio",
+      "repositoryInstructionIssue": {
+        "countLimit": "Se omitieron algunos archivos de instrucciones porque se alcanzó el límite de cantidad.",
+        "sizeLimit": "Se omitieron algunas instrucciones porque se alcanzó el límite de tamaño.",
+        "outsideProject": "Macro rechazó una ruta de instrucciones situada fuera del proyecto.",
+        "loadFailure": "Macro no pudo cargar algunas instrucciones del repositorio."
+      },
       "refresh": "Actualizar",
       "source": {
         "userOverride": "Definido por usuario",

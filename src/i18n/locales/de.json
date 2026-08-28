@@ -700,6 +700,13 @@
       "none": "Keine",
       "compaction": "Komprimierung",
       "countSummary": "{{messages}} Nachrichten · {{sources}} Quellen",
+      "repositoryInstructions": "Repository-Anweisungen",
+      "repositoryInstructionIssue": {
+        "countLimit": "Einige Repository-Anweisungsdateien wurden wegen der Anzahlbegrenzung ausgelassen.",
+        "sizeLimit": "Einige Repository-Anweisungen wurden wegen der Größenbegrenzung ausgelassen.",
+        "outsideProject": "Macro hat einen Pfad für Repository-Anweisungen außerhalb des Projekts abgelehnt.",
+        "loadFailure": "Macro konnte einige Repository-Anweisungen nicht laden."
+      },
       "refresh": "Aktualisieren",
       "source": {
         "userOverride": "Vom Nutzer gesetzt",

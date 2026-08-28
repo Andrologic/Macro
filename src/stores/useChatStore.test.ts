@@ -8,6 +8,7 @@ import type {
   SkillManifest,
 } from '../types';
 import type { ScopedTurnConfiguration } from '../services/configurationClient';
+import type { RepositoryInstructionLoadResultDto } from '../services/tauriIpc';
 import {
   type ArchitectPlanRecord,
   type ArchitectPlanStatus,
@@ -897,6 +898,22 @@ const fsReadFileWithOptionsMock = mock(async (_params: {
   is_binary: false,
   size: 30,
   encoding: 'utf-8',
+}));
+const repositoryInstructionsLoadMock = mock(async (_params: {
+  projects: Array<{
+    projectId: string;
+    projectName: string;
+    rootPath: string;
+    scopePath?: string | null;
+  }>;
+  maxFiles?: number;
+  maxTotalBytes?: number;
+}): Promise<RepositoryInstructionLoadResultDto> => ({
+  sources: [],
+  issues: [],
+  totalBytes: 0,
+  fileLimit: 16,
+  byteLimit: 64 * 1024,
 }));
 const fsExistsMock = mock(async () => true);
 const fsWriteFileMock = mock(async (params: { path: string; content: string }) => ({
@@ -1853,6 +1870,7 @@ const registerUseChatStoreMocks = async () => {
     }),
     fsExists: fsExistsMock,
     fsReadFileWithOptions: fsReadFileWithOptionsMock,
+    repositoryInstructionsLoad: repositoryInstructionsLoadMock,
 	    fsWriteFile: fsWriteFileMock,
 	    fsDelete: fsDeleteMock,
 	    updateMessage: updateMessageMock,
@@ -2509,6 +2527,7 @@ const useChatStoreScenarioContext = {
   fetchWebPageMock,
   flushAsyncWork,
   fsReadFileWithOptionsMock,
+  repositoryInstructionsLoadMock,
   fsExistsMock,
   fsWriteFileMock,
   fsDeleteMock,
@@ -2741,6 +2760,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       is_binary: false,
       size: 30,
       encoding: 'utf-8',
+    }));
+    repositoryInstructionsLoadMock.mockClear();
+    repositoryInstructionsLoadMock.mockImplementation(async () => ({
+      sources: [],
+      issues: [],
+      totalBytes: 0,
+      fileLimit: 16,
+      byteLimit: 64 * 1024,
     }));
     fsExistsMock.mockClear();
     fsExistsMock.mockImplementation(async () => true);
