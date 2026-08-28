@@ -12,7 +12,7 @@ const appState = {
   metadataAutoPush: false,
   getProjectById: (projectId: string) =>
     projectId === 'project-1'
-      ? { id: 'project-1', path: '/repo/app' }
+      ? { id: 'project-1', path: '/repo/app', gitSetupState: 'ready' as const, directEdit: false }
       : undefined,
 };
 
@@ -96,6 +96,7 @@ describe('manualFeatureMetadataService', () => {
       execution_targets: [
         {
           projectId: 'project-1',
+          executionMode: 'git',
           branchName: 'bugfix/quick-export',
           targetBranchName: 'release/app',
           worktreeKey: 'project-1::feature/quick-export',
@@ -152,6 +153,7 @@ describe('manualFeatureMetadataService', () => {
       execution_targets: [
         {
           projectId: 'project-1',
+          executionMode: 'git',
           branchName: 'feature/quick-export',
           targetBranchName: 'release/app',
           worktreeKey: 'project-1::feature/quick-export',

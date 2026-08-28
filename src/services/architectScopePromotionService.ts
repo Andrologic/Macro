@@ -165,6 +165,9 @@ export const createArchitectScopePromotionService = (
       }
       const mode = resolveProjectExecutionMode({ project }).mode;
       if (mode !== 'git' && mode !== 'direct') {
+        if (project.userReadOnly || project.isReadOnly) {
+          throw new Error(`Cannot promote project ${project.name || projectId}: the project is read-only.`);
+        }
         throw new Error(`Cannot promote project ${project.name || projectId}: enable direct editing or prepare Git first.`);
       }
     }

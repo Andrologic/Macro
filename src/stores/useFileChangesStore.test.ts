@@ -391,12 +391,14 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-a',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: worktreeKeyA,
         planBranchName: 'plan/integration',
       },
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-b',
         worktreeKey: worktreeKeyB,
         planBranchName: 'plan/integration',
@@ -415,12 +417,14 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-a',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: worktreeKeyA,
         planBranchName: 'plan/integration',
       },
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-b',
         worktreeKey: worktreeKeyB,
         planBranchName: 'plan/integration',
@@ -439,6 +443,7 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: missingWorktreeKey,
         planBranchName: 'plan/integration',
@@ -457,6 +462,7 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: missingWorktreeKey,
         planBranchName: 'plan/integration',
@@ -476,6 +482,7 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-a',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         targetBranchName: 'release/project-a',
         worktreeKey: worktreeKeyA,
@@ -569,8 +576,8 @@ const appStoreState = {
       directEdit: directProjectMode,
       gitSetupState: directProjectMode ? 'not_git' as const : 'ready' as const,
     };
-    if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath };
-    if (projectId === 'project-c') return { id: 'project-c', name: 'Project C', path: repoCPath };
+    if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath, gitSetupState: 'ready' as const, directEdit: false };
+    if (projectId === 'project-c') return { id: 'project-c', name: 'Project C', path: repoCPath, gitSetupState: 'ready' as const, directEdit: false };
     return undefined;
   },
 };
