@@ -47,4 +47,14 @@ describe('focus ring controls', () => {
     expect(focusStyles).toContain('outline-offset: -2px;');
     expect(focusStyles).not.toContain('--tw-ring-shadow: 0 0 0 3px');
   });
+
+  it('suppresses the native outline on programmatically focused dialogs', () => {
+    const rules = [...focusStyles.matchAll(/:where\(([\s\S]*?)\):(focus(?:-visible)?)\s*\{/g)];
+    const focusRule = rules.find((match) => match[2] === 'focus')?.[1] ?? '';
+    const focusVisibleRule = rules.find((match) => match[2] === 'focus-visible')?.[1] ?? '';
+
+    expect(focusRule).toContain("[role='dialog'][tabindex='-1']");
+    expect(focusVisibleRule).toContain("[tabindex]:not([tabindex='-1'])");
+    expect(focusVisibleRule).not.toContain("[role='dialog'][tabindex='-1']");
+  });
 });
