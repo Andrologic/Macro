@@ -184,6 +184,7 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'project-lplr-app-1780237886690',
+              executionMode: 'git',
               branchName: 'feature/catalogue',
               worktreeKey: 'stale-worktree',
             },
@@ -223,6 +224,7 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'project-lplr-app-1780329499166',
+              executionMode: 'git',
               branchName: 'feature/catalogue',
               worktreeKey: 'branch-project-lplr-app-feature-catalogue',
               repoPath: '/repos/lplr-app',
@@ -305,11 +307,13 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'macro-api',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-api::feature/payments',
             },
             {
               projectId: 'macro-web',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-web::feature/payments',
             },
@@ -369,11 +373,13 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'macro-api',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-api::feature/payments',
             },
             {
               projectId: 'macro-web',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-web::feature/payments',
             },
@@ -409,7 +415,7 @@ describe('resolveProjectExecutionContext', () => {
         workspacePath: 'projects/macro-web',
         isReadOnly: false,
         executionMode: 'git',
-        executionModeReason: 'git_ready',
+        executionModeReason: 'persisted_git_target',
       },
       {
         projectId: 'macro-api',
@@ -419,7 +425,7 @@ describe('resolveProjectExecutionContext', () => {
         workspacePath: 'C:/dev/macro-api',
         isReadOnly: false,
         executionMode: 'git',
-        executionModeReason: 'git_ready',
+        executionModeReason: 'persisted_git_target',
       },
     ]);
   });
@@ -440,6 +446,7 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'macro-api',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-api::feature/payments',
             },

@@ -246,6 +246,27 @@ describe('architectToolRuntime strategy scope', () => {
     ]);
   });
 
+  it('uses the current Git mode for a new node after earlier direct execution', async () => {
+    const runtime = createRuntime(createPlan({
+      nodes: [{
+        id: 'old-direct-task',
+        title: 'Ancienne tâche directe',
+        description: '',
+        type: 'task',
+        status: 'completed',
+        dependencies: [],
+        projectId: 'mouillage-app',
+        projectIds: ['mouillage-app'],
+        executionModesByProjectId: { 'mouillage-app': 'direct' },
+      }],
+    }));
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]?.executionModesByProjectId)
+      .toEqual({ 'mouillage-app': 'git' });
+  });
+
   it('coerces generated artifact contracts to required handoffs', async () => {
     const runtime = createRuntime(createPlan());
     runtime.params.args.nodes = [

@@ -481,6 +481,7 @@ export const registerImplementPolicyScenarios = (
           execution_targets: [
             {
               projectId: 'project-1',
+              executionMode: 'git',
               branchName: 'feature/standalone-export',
               worktreeKey: 'standalone-export-web',
             },
@@ -556,6 +557,7 @@ export const registerImplementPolicyScenarios = (
           execution_targets: [
             {
               projectId: 'project-1',
+              executionMode: 'direct',
               branchName: 'direct',
               worktreeKey: 'project-1::direct',
             },
@@ -618,6 +620,7 @@ export const registerImplementPolicyScenarios = (
           execution_targets: [
             {
               projectId: 'project-1',
+              executionMode: 'git',
               branchName: 'feature/standalone-export',
               worktreeKey: 'standalone-export-web',
             },

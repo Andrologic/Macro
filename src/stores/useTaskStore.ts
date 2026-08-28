@@ -4495,9 +4495,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               )
             );
           }
+          executionTargets.forEach(assertExecutionTargetRunnable);
+          const gitExecutionTargets = executionTargets.filter(isGitExecutionTarget);
           nextRuntime = await buildTaskCompletionMergeWorkflowRuntime({
             task,
-            executionTargets,
+            executionTargets: gitExecutionTargets,
           });
         }
 

@@ -221,7 +221,7 @@ const appStoreState = {
           id: 'project-1',
           name: 'Project One',
           path: '/repos/web',
-          gitSetupState: 'ready' as const,
+          gitSetupState: 'ready' as 'ready' | 'unborn' | 'not_git' | 'unknown',
           directEdit: false,
         },
       ],
@@ -648,6 +648,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
       assigned_branch: 'feature/slow',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/slow',
         worktreeKey: 'project-1::feature/slow',
         executionKind: 'worktree',
@@ -659,6 +660,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
       assigned_branch: 'feature/fast',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/fast',
         worktreeKey: 'project-1::feature/fast',
         executionKind: 'worktree',
@@ -998,6 +1000,7 @@ describe('useTaskStore merge workflow review loading', () => {
       branch_name: 'direct',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'direct',
         branchName: 'direct',
         executionKind: 'worktree',
         worktreeKey: 'project-1::direct',
@@ -1066,6 +1069,7 @@ describe('useTaskStore merge workflow review loading', () => {
       conversation_id: 'conv-preflight',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/preflight',
         executionKind: 'worktree',
         worktreeKey: 'project-1::feature/preflight',
@@ -1188,6 +1192,7 @@ describe('useTaskStore merge workflow review loading', () => {
       branch_name: 'direct',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'direct',
         branchName: 'direct',
         worktreeKey: 'project-1::direct',
         repoPath: '/project/that/may/move',
@@ -1465,6 +1470,7 @@ describe('useTaskStore merge workflow review loading', () => {
       execution_targets: [
         {
           projectId: 'project-1',
+          executionMode: 'git',
           branchName: 'feature/git-retry-one',
           executionKind: 'worktree',
           worktreeKey: 'project-1::feature/git-retry-one',
@@ -1472,6 +1478,7 @@ describe('useTaskStore merge workflow review loading', () => {
         },
         {
           projectId: 'project-1',
+          executionMode: 'git',
           branchName: 'feature/git-retry-two',
           executionKind: 'worktree',
           worktreeKey: 'project-1::feature/git-retry-two',
@@ -1531,6 +1538,7 @@ describe('useTaskStore merge workflow review loading', () => {
       conversation_id: 'conv-branch-checkpoint',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/branch-checkpoint',
         executionKind: 'worktree',
         worktreeKey: 'project-1::feature/branch-checkpoint',
@@ -1606,6 +1614,7 @@ describe('useTaskStore merge workflow review loading', () => {
       conversation_id: 'conv-worktree-checkpoint',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/worktree-checkpoint',
         executionKind: 'worktree',
         worktreeKey: 'project-1::feature/worktree-checkpoint',
@@ -1972,6 +1981,76 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(
       useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.repositories[0]?.progressState
     ).toBe('merged');
+  });
+
+  it('loads merge review for only the Git target of a mixed task', async () => {
+    appStoreState.projectGroups = [{
+      id: 'group-1',
+      name: 'Group One',
+      isOpen: true,
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project One',
+          path: '/repos/web',
+          gitSetupState: 'ready',
+          directEdit: false,
+        },
+        {
+          id: 'direct-project',
+          name: 'Direct Project',
+          path: '/repos/direct',
+          gitSetupState: 'not_git',
+          directEdit: true,
+        },
+      ],
+    }];
+    appStoreState.getProjectById = (projectId: string) =>
+      appStoreState.projectGroups[0]?.projects.find((project) => project.id === projectId) ?? null;
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask({
+        project_ids: ['project-1', 'direct-project'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            planBranchName: 'plan/review-actions',
+            executionKind: 'worktree',
+            executionMode: 'git',
+            worktreeKey: 'project-1::feature/review-actions',
+            repoPath: '/repos/web',
+          },
+          {
+            projectId: 'direct-project',
+            branchName: '',
+            executionKind: 'repository_root',
+            executionMode: 'direct',
+            checkpointId: 'checkpoint-1',
+            worktreeKey: 'direct:direct-project:task-1',
+            repoPath: '/repos/direct',
+          },
+        ],
+      })],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+        'direct:direct-project:task-1': '/repos/direct',
+      },
+      mergeWorkflowRuntimeByTaskId: {},
+    });
+
+    const runtime = await useTaskStore.getState().loadMergeWorkflowReview('task-1', { force: true });
+
+    expect(runtime?.repositories).toHaveLength(1);
+    expect(runtime?.repositories[0]?.projectId).toBe('project-1');
+    const gitArguments = [
+      ...gitStatusMock.mock.calls,
+      ...gitDiffMock.mock.calls,
+      ...gitMergeCheckMock.mock.calls,
+      ...gitBranchListMock.mock.calls,
+    ].flat();
+    expect(gitArguments.some((argument) => JSON.stringify(argument).includes('/repos/direct')))
+      .toBe(false);
   });
 
   it('does not report a materialized merge complete when its plan metadata is missing', async () => {
@@ -2419,6 +2498,7 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
         status: 'InReview',
         execution_targets: [{
           projectId: 'project-1',
+          executionMode: 'direct',
           branchName: 'direct',
           worktreeKey: 'project-1::direct',
           executionKind: 'worktree',
@@ -2460,6 +2540,7 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
         status: 'InReview',
         execution_targets: [{
           projectId: 'project-1',
+          executionMode: 'direct',
           branchName: 'direct',
           worktreeKey: 'project-1::direct',
           executionKind: 'worktree',
@@ -2941,6 +3022,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
           execution_targets: [
             {
               projectId: 'project-1',
+              executionMode: 'git',
               branchName: 'feature/run-app',
               worktreeKey: 'project-1::feature/run-app',
               repoPath: '/repos/web',
@@ -3096,6 +3178,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
           execution_targets: [
             {
               projectId: 'project-1',
+              executionMode: 'git',
               branchName: 'feature/run-app',
               worktreeKey: 'project-1::feature/run-app',
               repoPath: '/repos/web',
@@ -3307,12 +3390,14 @@ describe('useTaskStore task command terminal lifecycle', () => {
         execution_targets: [
           {
             projectId: 'project-1',
+            executionMode: 'git',
             branchName: 'feature/run-app',
             worktreeKey: 'project-1::feature/run-app',
             repoPath: '/repos/web',
           },
           {
             projectId: 'project-2',
+            executionMode: 'git',
             branchName: 'feature/run-app',
             worktreeKey: 'project-2::feature/run-app',
             repoPath: '/repos/api',

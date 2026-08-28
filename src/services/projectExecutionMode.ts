@@ -11,6 +11,7 @@ export type ProjectExecutionModeReason =
   | 'initial_commit_missing'
   | 'project_read_only'
   | 'project_missing'
+  | 'target_mode_missing'
   | 'git_state_missing'
   | 'target_project_mismatch'
   | 'git_target_without_repository'
@@ -102,6 +103,10 @@ export const resolveProjectExecutionMode = (params: {
       };
     }
     return { mode: 'git', reason: 'persisted_git_target', source: 'persisted_target' };
+  }
+
+  if (target) {
+    return { mode: 'invalid', reason: 'target_mode_missing', source: 'legacy_migration' };
   }
 
   if (!project.gitSetupState || project.gitSetupState === 'unknown') {

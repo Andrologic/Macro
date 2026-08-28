@@ -63,7 +63,6 @@ import {
   getProjectGroupByProjectId,
 } from "./globalProjects";
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
-import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 
 const strategyMutationRepairAttempts = new Map<string, number>();
 
@@ -804,8 +803,6 @@ const resolveStrategyForPlan = async (params: {
     requestedPlanSlug && planService.isArchitectPlanSlugMutable(activePlan)
       ? normalizePlanSlugInput(requestedPlanSlug, activePlan.slug || activePlan.id)
       : activePlan.slug;
-  const persistedPlanModes = getPlanExecutionModesByProjectId(activePlan.nodes);
-
   const idBase = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const existingIdByTitle = new Map(
     existingNodesForPatch.map((node) => [node.title, node.id]),
@@ -855,8 +852,7 @@ const resolveStrategyForPlan = async (params: {
           const persistedMode = existingNodesForPatch
             .find((existingNode) => existingNode.id === preferredId)
             ?.executionModesByProjectId?.[projectId];
-          const mode = persistedMode ?? persistedPlanModes[projectId] ??
-            registrySnapshot.executionModeByProjectId.get(projectId);
+          const mode = persistedMode ?? registrySnapshot.executionModeByProjectId.get(projectId);
           if (!mode) {
             throw new Error(`Project ${projectId} has no valid execution mode.`);
           }

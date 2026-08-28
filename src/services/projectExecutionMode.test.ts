@@ -42,7 +42,14 @@ describe('resolveProjectExecutionMode', () => {
     expect(resolveProjectExecutionMode({
       project: project({ gitSetupState: 'not_git', directEdit: false, isReadOnly: true }),
       target: target(),
-    })).toMatchObject({ mode: 'blocked', reason: 'git_not_initialized' });
+    })).toMatchObject({ mode: 'invalid', reason: 'target_mode_missing' });
+  });
+
+  it('never migrates a legacy target to Git from the current project state', () => {
+    expect(resolveProjectExecutionMode({
+      project: project({ gitSetupState: 'ready' }),
+      target: target(),
+    })).toMatchObject({ mode: 'invalid', reason: 'target_mode_missing' });
   });
 
   it('keeps an explicit direct target direct after the project gains Git', () => {

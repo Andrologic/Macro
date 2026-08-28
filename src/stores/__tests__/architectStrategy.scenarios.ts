@@ -22,6 +22,7 @@ export const registerArchitectStrategyScenarios = (
     getArchitectPlanMock,
     loadChatStore,
     providerState,
+    projectGroups,
     savePreferenceForTest,
     sendArchitectMessageAndGetToolHandler,
     setArchitectStoreState,
@@ -516,6 +517,13 @@ export const registerArchitectStrategyScenarios = (
     });
 
     it('uses plan scope for unscoped strategy_update nodes and explicit scope for targeted nodes', async () => {
+      projectGroups[0]?.projects.push({
+        ...projectGroups[0].projects[0],
+        id: 'project-2',
+        name: 'API',
+        path: '/repos/api',
+        mountName: 'api',
+      });
       const activePlan = createPlan({
         id: 'plan-multi',
         slug: 'checkout',

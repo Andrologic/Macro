@@ -342,6 +342,7 @@ const buildArchitectTask = (overrides: Record<string, unknown> = {}) => ({
   execution_targets: [
     {
       projectId: 'project-1',
+      executionMode: 'git',
       branchName: 'feature/task-1',
       worktreeKey: 'repo-1',
       repoPath: '/repos/web',

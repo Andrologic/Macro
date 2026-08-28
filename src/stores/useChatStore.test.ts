@@ -2466,6 +2466,7 @@ const useChatStoreScenarioContext = {
   COMPACTED_STATE_MARKER,
   DEFAULT_PROVIDER_CONFIGS,
   appState,
+  projectGroups,
   appSettingValues,
   activateArchitectPlanForTest,
   architectPlanConversationSyncRecords,
@@ -2532,7 +2533,6 @@ const useChatStoreScenarioContext = {
   loadChatStore,
   importMessagesMock,
   providerState,
-  projectGroups,
   queueSendChatNonStreamingImplementation,
   registerUseChatStoreMocks,
   savePreferenceForTest,
@@ -2648,6 +2648,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
     const defaultProject = projectGroups[0]?.projects[0];
+    projectGroups[0]?.projects.splice(1);
     if (defaultProject) {
       defaultProject.directEdit = false;
       defaultProject.gitSetupState = 'ready';

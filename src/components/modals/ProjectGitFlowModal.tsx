@@ -156,21 +156,6 @@ export const ProjectGitFlowModal: React.FC = () => {
     return t('common.error', 'An error occurred');
   };
 
-  const continueProjectSetupFlow = (detection: ProjectGitFlowDetection) => {
-    const prompts = buildProjectSetupPrompts(resolvedProjectPath, detection);
-    if (prompts.length === 0) {
-      setProjectSetupFlow(null);
-      return;
-    }
-
-    setProjectSetupFlow({
-      detection,
-      prompts,
-      promptIndex: 0,
-      acceptedActions: [],
-    });
-  };
-
   const logProjectAccessEvent = (phase: string, payload: Record<string, unknown>) => {
     devLogger.info(
       JSON.stringify({
@@ -368,7 +353,32 @@ export const ProjectGitFlowModal: React.FC = () => {
     setIsAccessSaving(true);
     try {
       const detection = await services.previewProjectGitSetup({ path: project.path });
-      continueProjectSetupFlow(detection);
+      const prompts = buildProjectSetupPrompts(resolvedProjectPath, detection);
+      if (prompts.length === 0) {
+        setProjectSetupFlow(null);
+        const result = await updateProjectGitFlowWithSetup(
+          projectId,
+          resolveProjectGitFlowSettings(settings),
+          [],
+          detection.resolvedRepoRootPath ?? null,
+          detection.setupState,
+          detection.recommendedActionSequence,
+        );
+        if (result.detection.setupState === 'ready') {
+          notify.success(
+            t('projects.projectGitPrepared', 'Git is ready for {{projectName}}.', {
+              projectName: project.name,
+            })
+          );
+        }
+        return;
+      }
+      setProjectSetupFlow({
+        detection,
+        prompts,
+        promptIndex: 0,
+        acceptedActions: [],
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
       notify.error(message);
