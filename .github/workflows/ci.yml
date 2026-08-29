@@ -16,6 +16,7 @@ on:
       - main
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -28,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      reusable_validation: ${{ steps.reuse.outputs.reusable || 'false' }}
       documentation_only: ${{ steps.changes.outputs.documentation_only }}
       frontend: ${{ steps.changes.outputs.frontend }}
       native: ${{ steps.changes.outputs.native }}
@@ -43,8 +45,22 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - name: Find successful validation already run on main
+        id: reuse
+        if: github.event_name == 'push' && github.ref_name == 'develop'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node dev/ci/find-reusable-ci.mjs
+          --workflow ci.yml
+          --branch main
+          --event push
+          --sha "$GITHUB_SHA"
+          --github-output "$GITHUB_OUTPUT"
+
       - name: Classify changed paths
         id: changes
+        if: steps.reuse.outputs.reusable != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -81,7 +97,7 @@ jobs:
   linux:
     name: Linux validation
     needs: classify
-    if: needs.classify.outputs.linux == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.classify.outputs.reusable_validation != 'true' && needs.classify.outputs.linux == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -150,7 +166,7 @@ jobs:
   windows:
     name: Windows native check
     needs: classify
-    if: needs.classify.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: needs.classify.outputs.reusable_validation != 'true' && needs.classify.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: windows-latest
     timeout-minutes: 20
     steps:

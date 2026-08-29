@@ -98,15 +98,36 @@ export function validateWorkflowDocument(document, filePath) {
   }
 
   if (filePath.endsWith('ci.yml')) {
+    if (document.permissions?.actions !== 'read') {
+      fail('ordinary CI must keep actions: read permission to verify reusable results.');
+    }
     if (document.permissions?.contents !== 'read') {
       fail('ordinary CI must keep contents: read permissions.');
     }
     if (document.on?.push?.tags) {
       fail('ordinary CI must not run for tags.');
     }
+    const classificationSteps = document.jobs.classify?.steps || [];
+    const reuseStep = classificationSteps.find((step) => step?.name === 'Find successful validation already run on main');
+    const reuseScript = typeof reuseStep?.run === 'string' ? reuseStep.run : '';
+    if (
+      !reuseScript.includes('dev/ci/find-reusable-ci.mjs')
+      || !reuseScript.includes('--branch main')
+      || !reuseScript.includes('--sha "$GITHUB_SHA"')
+    ) {
+      fail('develop synchronization deduplication must verify an exact successful main CI run.');
+    }
+    for (const jobName of ['linux', 'windows']) {
+      if (!String(document.jobs[jobName]?.if ?? '').includes("reusable_validation != 'true'")) {
+        fail(`job "${jobName}" must run unless an exact main CI result is reusable.`);
+      }
+    }
   }
 
   if (filePath.endsWith('release.yml')) {
+    if (document.permissions?.actions !== 'read') {
+      fail('release validation must keep actions: read permission to verify reusable CI results.');
+    }
     const tags = document.on?.push?.tags;
     if (!Array.isArray(tags) || !tags.includes('v*')) {
       fail('release workflow must be triggered by v* tags.');
@@ -131,6 +152,22 @@ export function validateWorkflowDocument(document, filePath) {
     ));
     if (checkoutIndex === -1 || annotatedTagFetchIndex <= checkoutIndex) {
       fail('release validation must explicitly fetch the annotated tag object after checkout.');
+    }
+    const reuseIndex = validationSteps.findIndex((step) => (
+      step?.name === 'Find successful validation already run on main'
+      && typeof step?.run === 'string'
+      && step.run.includes('dev/ci/find-reusable-ci.mjs')
+      && step.run.includes('--branch main')
+      && step.run.includes('--sha "$GITHUB_SHA"')
+    ));
+    const fallbackIndex = validationSteps.findIndex((step) => (
+      step?.name === 'Run fallback release validation profile'
+      && step?.if === "steps.reuse.outputs.reusable != 'true'"
+      && typeof step?.run === 'string'
+      && step.run.includes('run-checks.mjs --profile native')
+    ));
+    if (reuseIndex === -1 || fallbackIndex <= reuseIndex) {
+      fail('release validation must run the full native fallback unless the exact main CI result is reusable.');
     }
 
     const finalizationSteps = document.jobs['draft-release']?.steps || [];
@@ -213,6 +250,26 @@ export function validateWorkflowDocument(document, filePath) {
   }
 
   if (filePath.endsWith('preview.yml')) {
+    if (document.permissions?.actions !== 'read') {
+      fail('preview validation must keep actions: read permission to verify reusable CI results.');
+    }
+    const validationSteps = document.jobs.validate?.steps || [];
+    const reuseIndex = validationSteps.findIndex((step) => (
+      step?.name === 'Find successful validation already run on develop'
+      && typeof step?.run === 'string'
+      && step.run.includes('dev/ci/find-reusable-ci.mjs')
+      && step.run.includes('--branch develop')
+      && step.run.includes('--sha "$SOURCE_SHA"')
+    ));
+    const fallbackIndex = validationSteps.findIndex((step) => (
+      step?.name === 'Run fallback validation profile'
+      && String(step?.if ?? '').includes("steps.reuse.outputs.reusable != 'true'")
+      && typeof step?.run === 'string'
+      && step.run.includes('run-checks.mjs --profile native')
+    ));
+    if (reuseIndex === -1 || fallbackIndex <= reuseIndex) {
+      fail('preview validation must run the full native fallback unless the exact develop CI result is reusable.');
+    }
     const publishScript = (document.jobs.publish?.steps || [])
       .map((step) => typeof step?.run === 'string' ? step.run : '')
       .join('\n');

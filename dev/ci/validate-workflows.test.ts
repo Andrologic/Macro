@@ -54,6 +54,40 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('approved Node.js 24 revision'))).toBe(true);
   });
 
+  test('requires exact-SHA reuse checks and safe CI fallbacks', () => {
+    const errors = validateWorkflowDocument({
+      name: 'CI',
+      on: {
+        pull_request: { branches: ['develop', 'main'] },
+        push: { branches: ['develop', 'main'] },
+      },
+      permissions: { actions: 'read', contents: 'read' },
+      jobs: {
+        classify: {
+          'runs-on': 'ubuntu-latest',
+          'timeout-minutes': 5,
+          steps: [{ name: 'Reuse some result', run: 'echo reusable=true' }],
+        },
+        linux: {
+          if: "needs.classify.outputs.linux == 'true'",
+          'runs-on': 'ubuntu-latest',
+          'timeout-minutes': 10,
+          steps: [],
+        },
+        windows: {
+          if: "needs.classify.outputs.windows == 'true'",
+          'runs-on': 'windows-latest',
+          'timeout-minutes': 10,
+          steps: [],
+        },
+      },
+    }, '.github/workflows/ci.yml');
+
+    expect(errors.some((error) => error.includes('exact successful main CI run'))).toBe(true);
+    expect(errors.some((error) => error.includes('job "linux" must run unless'))).toBe(true);
+    expect(errors.some((error) => error.includes('job "windows" must run unless'))).toBe(true);
+  });
+
   test('requires release validation to fetch the annotated tag object', () => {
     const errors = validateWorkflowDocument({
       name: 'Release',

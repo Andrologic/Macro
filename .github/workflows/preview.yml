@@ -19,6 +19,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -53,11 +54,6 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action
-        with:
-          toolchain: 1.95.0
 
       - name: Gate previews and derive version
         id: meta
@@ -116,28 +112,48 @@ jobs:
           echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
           echo "kind=${KIND}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore frontend dependency cache
+      - name: Find successful validation already run on develop
+        id: reuse
         if: steps.meta.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        run: >-
+          node dev/ci/find-reusable-ci.mjs
+          --workflow ci.yml
+          --branch develop
+          --event push
+          --sha "$SOURCE_SHA"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Restore frontend dependency cache
+        if: steps.meta.outputs.publish == 'true' && steps.reuse.outputs.reusable != 'true'
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: node_modules
           key: frontend-${{ runner.os }}-${{ runner.arch }}-bun-1.3.14-${{ hashFiles('package.json', 'bun.lock') }}
 
+      - name: Set up Rust for fallback validation
+        if: steps.meta.outputs.publish == 'true' && steps.reuse.outputs.reusable != 'true'
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action
+        with:
+          toolchain: 1.95.0
+
       - name: Restore Rust build cache
-        if: steps.meta.outputs.publish == 'true'
+        if: steps.meta.outputs.publish == 'true' && steps.reuse.outputs.reusable != 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri -> target
           shared-key: native-tests
 
       - name: Install Linux native dependencies
-        if: steps.meta.outputs.publish == 'true'
+        if: steps.meta.outputs.publish == 'true' && steps.reuse.outputs.reusable != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
 
-      - name: Run shared validation profile
-        if: steps.meta.outputs.publish == 'true'
+      - name: Run fallback validation profile
+        if: steps.meta.outputs.publish == 'true' && steps.reuse.outputs.reusable != 'true'
         run: bun dev/ci/run-checks.mjs --profile native
 
       - name: Validate generated preview version
