@@ -17,7 +17,7 @@ import {
   PredictedBranch,
 } from "../types";
 import { services } from "../services";
-import { toServiceError } from "../services/contracts/errors";
+import { MacroServiceError, toServiceError } from "../services/contracts/errors";
 import { devLogger } from "../utils/devLogger";
 import { clampUiZoomLevel } from "../utils/uiZoom";
 import {
@@ -1185,7 +1185,32 @@ const ensureAutoPlanForSelection = async (input: {
 };
 
 const POST_CREATE_HYDRATION_TIMEOUT_MS = 5_000;
+const PROJECT_CREATION_TIMEOUT_MS = 30_000;
 let postCreateHydrationGeneration = 0;
+let postCreateHydrationTail: Promise<void> = Promise.resolve();
+
+const createProjectCreationDeadline = (requestId: string) => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new MacroServiceError(
+        "PROJECT_CREATION_TIMEOUT",
+        `Project creation ${requestId} exceeded ${PROJECT_CREATION_TIMEOUT_MS} ms.`,
+        { requestId, timeoutMs: PROJECT_CREATION_TIMEOUT_MS },
+      ));
+    }, PROJECT_CREATION_TIMEOUT_MS);
+  });
+
+  return {
+    wait: <T>(operation: Promise<T>): Promise<T> => Promise.race([operation, timeout]),
+    dispose: () => {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+    },
+  };
+};
 
 const schedulePostCreateHydration = (input: {
   requestId: string;
@@ -1198,37 +1223,56 @@ const schedulePostCreateHydration = (input: {
   const generation = ++postCreateHydrationGeneration;
   const isCurrentHydration = (): boolean => {
     const state = useAppStore.getState();
-    return postCreateHydrationGeneration === generation &&
-      state.selectedGroupId === input.groupId &&
-      state.selectedProjectId === input.projectId;
+    const targetStillExists = input.projectId
+      ? Boolean(state.getProjectById(input.projectId))
+      : input.groupId
+        ? state.projectGroups.some((group) => group.id === input.groupId)
+        : true;
+    return postCreateHydrationGeneration === generation && targetStillExists;
   };
-  const hydration = (async () => {
+  let signalStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  const hydration = postCreateHydrationTail.catch(() => undefined).then(async () => {
+    signalStarted();
+    if (!isCurrentHydration()) {
+      return;
+    }
     await reconcileProjectRegistryDependencies({
       standaloneProjects: input.standaloneProjects,
       projectGroups: input.projectGroups,
       selectedGroupId: input.groupId,
       selectedProjectId: input.projectId,
     });
+    if (!isCurrentHydration()) {
+      return;
+    }
     const state = useAppStore.getState();
     if (state.projectSwitchPolicy === "resume_per_project" && input.groupId) {
       await restoreProjectContext(input.groupId, input.projectId);
+      if (!isCurrentHydration()) {
+        return;
+      }
     }
     await ensureAutoPlanForSelection({
       groupId: input.groupId,
       projectId: input.projectId,
       requestId: input.requestId,
     });
-  })();
+  });
+  postCreateHydrationTail = hydration.catch(() => undefined);
 
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(
-      () => reject(new Error(`Post-create hydration exceeded ${POST_CREATE_HYDRATION_TIMEOUT_MS} ms.`)),
-      POST_CREATE_HYDRATION_TIMEOUT_MS,
-    );
-  });
-
-  void Promise.race([hydration, timeout])
+  void started.then(() => {
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`Post-create hydration exceeded ${POST_CREATE_HYDRATION_TIMEOUT_MS} ms.`)),
+        POST_CREATE_HYDRATION_TIMEOUT_MS,
+      );
+    });
+    return Promise.race([hydration, timeout]);
+  })
     .then(() => {
       logProjectRegistryAction("succeeded", {
         action: `${input.action}_post_create_hydration`,
@@ -1712,6 +1756,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
+    postCreateHydrationGeneration += 1;
     const nextFocusProjectId = null;
     set({
       selectedGroupId: groupId,
@@ -1831,6 +1876,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       return;
     }
+
+    postCreateHydrationGeneration += 1;
 
     set({ isProjectSwitching: true, lastError: null });
 
@@ -3848,6 +3895,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   createProject: async (data: CreateProjectData) => {
     const requestId = data.requestId || createProjectAddRequestId();
+    const deadline = createProjectCreationDeadline(requestId);
     set({
       isLoading: true,
       lastError: null,
@@ -3870,11 +3918,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         path: data.path ?? null,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
-      const { project: newProject } = await services.createProject({
+      const { project: newProject } = await deadline.wait(services.createProject({
         ...data,
         gitFlowSettings,
         requestId,
-      });
+      }));
       logProjectRegistryAction("succeeded", {
         action: "create_project_backend",
         requestId,
@@ -3885,10 +3933,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       const state = get();
       if (state.selectedGroupId) {
-        await persistCurrentProjectContext(
+        await deadline.wait(persistCurrentProjectContext(
           state.selectedGroupId,
           state.selectedProjectId,
-        );
+        ));
+        if (get().projectAddOperation?.requestId !== requestId) {
+          return newProject;
+        }
       }
 	      const {
 	        standaloneProjects: syncedStandaloneProjects,
@@ -3896,7 +3947,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	        plan,
 	        planNodes,
 	        predictedBranches,
-	      } = await services.getAppBootstrap();
+	      } = await deadline.wait(services.getAppBootstrap());
+	      if (get().projectAddOperation?.requestId !== requestId) {
+	        return newProject;
+	      }
 	      const syncedRegistry = {
 	        standaloneProjects: syncedStandaloneProjects ?? [],
 	        projectGroups: syncedGroups,
@@ -4000,11 +4054,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         nextMacroEnabledProjects,
       );
 
-      await persistSessionContext({
+      await deadline.wait(persistSessionContext({
         selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
-      });
+      }));
+      if (get().projectAddOperation?.requestId !== requestId) {
+        return newProject;
+      }
 
       logProjectRegistryAction("succeeded", {
         action: "create_project",
@@ -4027,11 +4084,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       const current = get().projectAddOperation;
-      set({
-        isLoading: false,
-        lastError: current?.status === "cancelling" ? null : normalized.message,
-        projectAddOperation: current?.requestId === requestId ? null : current,
-      });
+      if (current?.requestId === requestId) {
+        set({
+          isLoading: false,
+          lastError: current.status === "cancelling" ? null : normalized.message,
+          projectAddOperation: null,
+        });
+      }
       logProjectRegistryAction("failed", {
         action: "create_project",
         requestId,
@@ -4040,11 +4099,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         error: normalized.message,
       });
       throw normalized;
+    } finally {
+      deadline.dispose();
     }
   },
 
   createProjectWithGitSetup: async (data) => {
     const requestId = data.requestId || createProjectAddRequestId();
+    const deadline = createProjectCreationDeadline(requestId);
     set({
       isLoading: true,
       lastError: null,
@@ -4068,11 +4130,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         gitSetupActions: data.gitSetupActions,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
-      const result = await services.createProjectWithGitSetup({
+      const result = await deadline.wait(services.createProjectWithGitSetup({
         ...data,
         gitFlowSettings,
         requestId,
-      });
+      }));
       const newProject = result.project;
       logProjectRegistryAction("succeeded", {
         action: "create_project_with_git_setup_backend",
@@ -4084,10 +4146,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       const state = get();
       if (state.selectedGroupId) {
-        await persistCurrentProjectContext(
+        await deadline.wait(persistCurrentProjectContext(
           state.selectedGroupId,
           state.selectedProjectId,
-        );
+        ));
+        if (get().projectAddOperation?.requestId !== requestId) {
+          return result;
+        }
       }
 	      const {
 	        standaloneProjects: syncedStandaloneProjects,
@@ -4095,7 +4160,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	        plan,
 	        planNodes,
 	        predictedBranches,
-	      } = await services.getAppBootstrap();
+	      } = await deadline.wait(services.getAppBootstrap());
+	      if (get().projectAddOperation?.requestId !== requestId) {
+	        return result;
+	      }
 	      const syncedRegistry = {
 	        standaloneProjects: syncedStandaloneProjects ?? [],
 	        projectGroups: syncedGroups,
@@ -4199,11 +4267,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         nextMacroEnabledProjects,
       );
 
-      await persistSessionContext({
+      await deadline.wait(persistSessionContext({
 	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
-      });
+      }));
+      if (get().projectAddOperation?.requestId !== requestId) {
+        return result;
+      }
 
       logProjectRegistryAction("succeeded", {
         action: "create_project_with_git_setup",
@@ -4226,11 +4297,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       const current = get().projectAddOperation;
-      set({
-        isLoading: false,
-        lastError: current?.status === "cancelling" ? null : normalized.message,
-        projectAddOperation: current?.requestId === requestId ? null : current,
-      });
+      if (current?.requestId === requestId) {
+        set({
+          isLoading: false,
+          lastError: current.status === "cancelling" ? null : normalized.message,
+          projectAddOperation: null,
+        });
+      }
       logProjectRegistryAction("failed", {
         action: "create_project_with_git_setup",
         requestId,
@@ -4242,11 +4315,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         details: normalized.details ?? null,
       });
       throw normalized;
+    } finally {
+      deadline.dispose();
     }
   },
 
   createNewProjectRepo: async (data) => {
     const requestId = data.requestId || createProjectAddRequestId();
+    const deadline = createProjectCreationDeadline(requestId);
     set({
       isLoading: true,
       lastError: null,
@@ -4270,11 +4346,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         folderName: data.folderName,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
       });
-      const result = await services.createNewProjectRepo({
+      const result = await deadline.wait(services.createNewProjectRepo({
         ...data,
         gitFlowSettings,
         requestId,
-      });
+      }));
       const newProject = result.project;
       logProjectRegistryAction("succeeded", {
         action: "create_new_project_repo_backend",
@@ -4286,10 +4362,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       const state = get();
       if (state.selectedGroupId) {
-        await persistCurrentProjectContext(
+        await deadline.wait(persistCurrentProjectContext(
           state.selectedGroupId,
           state.selectedProjectId,
-        );
+        ));
+        if (get().projectAddOperation?.requestId !== requestId) {
+          return result;
+        }
       }
 	      const {
 	        standaloneProjects: syncedStandaloneProjects,
@@ -4297,7 +4376,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	        plan,
 	        planNodes,
 	        predictedBranches,
-	      } = await services.getAppBootstrap();
+	      } = await deadline.wait(services.getAppBootstrap());
+	      if (get().projectAddOperation?.requestId !== requestId) {
+	        return result;
+	      }
 	      const syncedRegistry = {
 	        standaloneProjects: syncedStandaloneProjects ?? [],
 	        projectGroups: syncedGroups,
@@ -4401,11 +4483,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         nextMacroEnabledProjects,
       );
 
-      await persistSessionContext({
+      await deadline.wait(persistSessionContext({
 	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
-      });
+      }));
+      if (get().projectAddOperation?.requestId !== requestId) {
+        return result;
+      }
 
       logProjectRegistryAction("succeeded", {
         action: "create_new_project_repo",
@@ -4428,11 +4513,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       const normalized = toServiceError(error);
       const current = get().projectAddOperation;
-      set({
-        isLoading: false,
-        lastError: current?.status === "cancelling" ? null : normalized.message,
-        projectAddOperation: current?.requestId === requestId ? null : current,
-      });
+      if (current?.requestId === requestId) {
+        set({
+          isLoading: false,
+          lastError: current.status === "cancelling" ? null : normalized.message,
+          projectAddOperation: null,
+        });
+      }
       logProjectRegistryAction("failed", {
         action: "create_new_project_repo",
         requestId,
@@ -4444,6 +4531,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         details: normalized.details ?? null,
       });
       throw normalized;
+    } finally {
+      deadline.dispose();
     }
   },
 

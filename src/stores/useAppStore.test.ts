@@ -451,6 +451,7 @@ const upsertLocalProjectContextStateMock = mock(
 const getLocalProjectContextStateMock = mock(async (projectId: string) =>
   projectContexts.get(projectId) ?? null
 );
+const reconcileLocalProjectRegistryStateMock = mock(async () => undefined);
 const deleteLocalProjectContextStateMock = mock(async (projectId: string) => {
   projectContexts.delete(projectId);
 });
@@ -537,7 +538,7 @@ const registerUseAppStoreMocks = async () => {
     getLocalProjectContextState: getLocalProjectContextStateMock,
     getLocalSessionContextState: async () => sessionContext,
     getProjectSwitchPolicy: async () => projectSwitchPolicy,
-    reconcileLocalProjectRegistryState: async () => undefined,
+    reconcileLocalProjectRegistryState: reconcileLocalProjectRegistryStateMock,
     deleteLocalProjectContextState: deleteLocalProjectContextStateMock,
     setProjectSwitchPolicy: setProjectSwitchPolicyMock,
     upsertLocalProjectContextState: upsertLocalProjectContextStateMock,
@@ -691,6 +692,8 @@ describe('useAppStore architect plan resolution', () => {
     ensureProjectGroupPlanMock.mockClear();
     consolidateScopedBlankPlansMock.mockClear();
     upsertLocalProjectContextStateMock.mockClear();
+    reconcileLocalProjectRegistryStateMock.mockClear();
+    reconcileLocalProjectRegistryStateMock.mockImplementation(async () => undefined);
     deleteLocalProjectContextStateMock.mockClear();
     upsertLocalSessionContextStateMock.mockClear();
     chatStoreState.beginArchitectPlanSwitch.mockClear();
@@ -720,12 +723,27 @@ describe('useAppStore architect plan resolution', () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
     let resolveArchitectHydration!: (value: { activePlanId: null; plans: [] }) => void;
+    let signalArchitectHydrationStarted!: () => void;
+    let signalArchitectHydrationFinished!: () => void;
+    const architectHydrationStarted = new Promise<void>((resolve) => {
+      signalArchitectHydrationStarted = resolve;
+    });
+    const architectHydrationFinished = new Promise<void>((resolve) => {
+      signalArchitectHydrationFinished = resolve;
+    });
     const pendingArchitectHydration = new Promise<{ activePlanId: null; plans: [] }>(
       (resolve) => {
         resolveArchitectHydration = resolve;
       }
     );
-    listArchitectPlansMock.mockImplementationOnce(() => pendingArchitectHydration);
+    listArchitectPlansMock.mockImplementationOnce(async () => {
+      signalArchitectHydrationStarted();
+      try {
+        return await pendingArchitectHydration;
+      } finally {
+        signalArchitectHydrationFinished();
+      }
+    });
     const { useAppStore } = await loadIsolatedUseAppStore();
 
     const created = await useAppStore.getState().createProject({
@@ -741,17 +759,37 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().standaloneProjects.map((project: ProjectRecord) => project.id)).toContain(
       'project-fast'
     );
-    await flushAsyncWork();
+    await architectHydrationStarted;
     expect(listArchitectPlansMock).toHaveBeenCalled();
     resolveArchitectHydration({ activePlanId: null, plans: [] });
-    await flushAsyncWork();
+    await architectHydrationFinished;
   });
 
   it('keeps a created project when post-create Architect hydration fails', async () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
-    listArchitectPlansMock.mockRejectedValueOnce(new Error('architect index unavailable'));
+    let signalHydrationFailed!: () => void;
+    const hydrationFailed = new Promise<void>((resolve) => {
+      signalHydrationFailed = resolve;
+    });
+    listArchitectPlansMock.mockImplementationOnce(async () => {
+      try {
+        throw new Error('architect index unavailable');
+      } finally {
+        signalHydrationFailed();
+      }
+    });
     const { useAppStore } = await loadIsolatedUseAppStore();
+    let unsubscribe = () => undefined;
+    const hydrationErrorStored = new Promise<void>((resolve) => {
+      unsubscribe = useAppStore.subscribe((state: {
+        architectPlanCatalogStatus: string;
+      }) => {
+        if (state.architectPlanCatalogStatus === 'error') {
+          resolve();
+        }
+      });
+    });
 
     const created = await useAppStore.getState().createProject({
       name: 'Durable',
@@ -760,7 +798,9 @@ describe('useAppStore architect plan resolution', () => {
       path: '/repos/durable',
       requestId: 'project-add-durable',
     });
-    await flushAsyncWork();
+    await hydrationFailed;
+    await hydrationErrorStored;
+    unsubscribe();
 
     expect(created.id).toBe('project-durable');
     expect(useAppStore.getState().standaloneProjects.map((project: ProjectRecord) => project.id)).toContain(
@@ -773,40 +813,43 @@ describe('useAppStore architect plan resolution', () => {
     );
   });
 
-  it('ignores a late post-create hydration failure after a newer project succeeds', async () => {
+  it('applies a newer hydration after an older reconciliation resumes late', async () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
-    let rejectFirstHydration!: (error: Error) => void;
+    let releaseFirstReconciliation!: () => void;
     let signalFirstStarted!: () => void;
-    let signalFirstRejected!: () => void;
-    let signalSecondFinished!: () => void;
     const firstStarted = new Promise<void>((resolve) => {
       signalFirstStarted = resolve;
     });
-    const firstRejected = new Promise<void>((resolve) => {
-      signalFirstRejected = resolve;
+    const firstReconciliation = new Promise<void>((resolve) => {
+      releaseFirstReconciliation = resolve;
     });
-    const secondFinished = new Promise<void>((resolve) => {
-      signalSecondFinished = resolve;
-    });
-    const firstHydration = new Promise<void>((_resolve, reject) => {
-      rejectFirstHydration = reject;
-    });
-    listArchitectPlansMock
+    let useAppStoreForReconciliation!: Awaited<ReturnType<typeof loadIsolatedUseAppStore>>['useAppStore'];
+    reconcileLocalProjectRegistryStateMock
       .mockImplementationOnce(async () => {
         signalFirstStarted();
-        try {
-          await firstHydration;
-          return { activePlanId: null, plans: [] };
-        } finally {
-          signalFirstRejected();
-        }
+        await firstReconciliation;
+        useAppStoreForReconciliation.setState({ selectedProjectId: 'project-first' });
       })
       .mockImplementationOnce(async () => {
-        signalSecondFinished();
-        return { activePlanId: null, plans: [] };
+        useAppStoreForReconciliation.setState({ selectedProjectId: 'project-second' });
       });
     const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStoreForReconciliation = useAppStore;
+    let unsubscribe = () => undefined;
+    const secondCatalogReady = new Promise<void>((resolve) => {
+      unsubscribe = useAppStore.subscribe((state: {
+        selectedProjectId: string | null;
+        architectPlanCatalogStatus: string;
+      }) => {
+        if (
+          state.selectedProjectId === 'project-second' &&
+          state.architectPlanCatalogStatus === 'ready'
+        ) {
+          resolve();
+        }
+      });
+    });
 
     await useAppStore.getState().createProject({
       name: 'First',
@@ -823,16 +866,86 @@ describe('useAppStore architect plan resolution', () => {
       path: '/repos/second',
       requestId: 'project-add-second',
     });
-    await secondFinished;
+    expect(useAppStore.getState().selectedProjectId).toBe('project-second');
 
-    rejectFirstHydration(new Error('stale architect index failure'));
-    await firstRejected;
-    await Promise.resolve();
-    await Promise.resolve();
+    releaseFirstReconciliation();
+    await secondCatalogReady;
+    unsubscribe();
 
     expect(useAppStore.getState().selectedProjectId).toBe('project-second');
     expect(useAppStore.getState().architectPlanCatalogStatus).toBe('ready');
     expect(useAppStore.getState().architectPlanCatalogError).toBeNull();
+  });
+
+  it('bounds an obsolete project creation without disturbing the newer success', async () => {
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [];
+    let resolveFirstCreation!: (value: { project: ProjectRecord }) => void;
+    const firstCreation = new Promise<{ project: ProjectRecord }>((resolve) => {
+      resolveFirstCreation = resolve;
+    });
+    createProjectMock
+      .mockImplementationOnce(() => firstCreation)
+      .mockImplementationOnce(async (data: { name: string; path?: string }) => {
+        const project: ProjectRecord = {
+          id: 'project-second',
+          name: data.name,
+          path: data.path ?? '/repos/second',
+          gitFlowSettings: { baseBranch: 'develop' },
+        };
+        bootstrapStandaloneProjects = [project];
+        return { project };
+      });
+
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    let nextTimerId = 0;
+    const timers = new Map<number, { callback: () => void; delay: number }>();
+    globalThis.setTimeout = ((callback: TimerHandler, delay?: number) => {
+      const id = ++nextTimerId;
+      timers.set(id, { callback: callback as () => void, delay: delay ?? 0 });
+      return id;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle?: ReturnType<typeof setTimeout>) => {
+      timers.delete(Number(handle));
+    }) as typeof clearTimeout;
+
+    try {
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      const obsoleteCreation = useAppStore.getState().createProject({
+        name: 'First', description: '', groupId: null, path: '/repos/first', requestId: 'request-first',
+      });
+      await Promise.resolve();
+      const newerProject = await useAppStore.getState().createProject({
+        name: 'Second', description: '', groupId: null, path: '/repos/second', requestId: 'request-second',
+      });
+
+      const firstDeadline = Array.from(timers.values()).find(({ delay }) => delay === 30_000);
+      expect(firstDeadline).toBeDefined();
+      firstDeadline?.callback();
+      await expect(obsoleteCreation).rejects.toMatchObject({
+        code: 'PROJECT_CREATION_TIMEOUT',
+        details: expect.objectContaining({ requestId: 'request-first' }),
+      });
+
+      resolveFirstCreation({
+        project: {
+          id: 'project-first', name: 'First', path: '/repos/first', gitFlowSettings: { baseBranch: 'develop' },
+        },
+      });
+      await Promise.resolve();
+
+      expect(newerProject.id).toBe('project-second');
+      expect(useAppStore.getState().selectedProjectId).toBe('project-second');
+      expect(useAppStore.getState().standaloneProjects.map((project: ProjectRecord) => project.id)).toEqual([
+        'project-second',
+      ]);
+      expect(useAppStore.getState().projectAddOperation).toBeNull();
+      expect(useAppStore.getState().lastError).toBeNull();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
   });
 
   it('selects a recovered standalone project on initialize when no remembered selection is valid', async () => {

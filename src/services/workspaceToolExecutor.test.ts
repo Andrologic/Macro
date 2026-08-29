@@ -548,6 +548,25 @@ describe("workspaceToolExecutor helpers", () => {
     };
     expect(resolveToolWorkspaceRouting("read", { path: "/repo2/a.ts" }, options).projectId).toBe("repo2");
     expect(resolveToolWorkspaceRouting("read", { path: "/repo-extra/a.ts" }, options).projectId).toBeNull();
+    expect(resolveToolWorkspaceRouting("read", { path: "/repo/../outside/a.ts" }, options).projectId).toBeNull();
+  });
+
+  it("matches Windows UNC roots case-insensitively after component normalization", async () => {
+    const { resolveToolWorkspaceRouting } = await loadWorkspaceToolExecutor();
+    const routing = resolveToolWorkspaceRouting("read", {
+      path: "\\\\SERVER\\Share\\Repo\\src\\value.ts",
+    }, {
+      workspacePathsByProjectId: { repo: "\\\\server\\share\\repo" },
+      projectMounts: [{
+        projectId: "repo",
+        mountName: "repo",
+        displayName: "Repo",
+        workspacePath: "\\\\server\\share\\repo",
+      }],
+    });
+
+    expect(routing.projectId).toBe("repo");
+    expect(routing.args).toEqual({ path: "\\\\SERVER\\Share\\Repo\\src\\value.ts" });
   });
 
   it("rejects a patch that targets the same Windows file through a case alias", async () => {
@@ -560,6 +579,39 @@ describe("workspaceToolExecutor helpers", () => {
     ].join("\n") }, "Implement", {
       virtualRootEnabled: true,
       projectMounts: [{ projectId: "web", mountName: "web", displayName: "Web", workspacePath: "C:/repo" }],
+    });
+    expect(result).toContain("aliases already-targeted");
+  });
+
+  it("rejects a patch that targets the same file through dot-segment aliases", async () => {
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: { isTauriAvailable: () => true, validateToolExecution: async () => ({ allowed: true }) },
+    } as Partial<MockAppState>);
+    const result = await executeWorkspaceTool("apply_patch", { patch_text: [
+      "*** Begin Patch", "*** Add File: web/src/../App.tsx", "+one",
+      "*** Add File: web/App.tsx", "+two", "*** End Patch",
+    ].join("\n") }, "Implement", {
+      virtualRootEnabled: true,
+      projectMounts: [{ projectId: "web", mountName: "web", displayName: "Web", workspacePath: "/repo" }],
+    });
+    expect(result).toContain("aliases already-targeted");
+  });
+
+  it("rejects UNC patch targets that differ only by case", async () => {
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: { isTauriAvailable: () => true, validateToolExecution: async () => ({ allowed: true }) },
+    } as Partial<MockAppState>);
+    const result = await executeWorkspaceTool("apply_patch", { patch_text: [
+      "*** Begin Patch", "*** Add File: web/src/App.tsx", "+one",
+      "*** Add File: web/SRC/app.tsx", "+two", "*** End Patch",
+    ].join("\n") }, "Implement", {
+      virtualRootEnabled: true,
+      projectMounts: [{
+        projectId: "web",
+        mountName: "web",
+        displayName: "Web",
+        workspacePath: "\\\\server\\share\\repo",
+      }],
     });
     expect(result).toContain("aliases already-targeted");
   });

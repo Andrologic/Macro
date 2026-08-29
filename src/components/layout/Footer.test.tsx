@@ -271,9 +271,10 @@ const getProjectById = (projectId: string): Project | undefined =>
   appState.projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId);
 
 const flushAsyncWork = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 };
 
 const waitForText = async (container: HTMLDivElement, text: string) => {
@@ -683,8 +684,12 @@ describe('Footer', () => {
     document.body.appendChild(container);
     root = createRoot(container);
 
-    root.render(<Footer />);
-    await waitForText(container, 'main-a');
+    await act(async () => {
+      root?.render(<Footer />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent ?? '').toContain('main-a');
     gitStatusMock.mockClear();
     footerContentRenderProbe.mockClear();
 
@@ -711,14 +716,17 @@ describe('Footer', () => {
     document.body.appendChild(container);
     root = createRoot(container);
 
-    root.render(<Footer />);
-    await waitForText(container, 'feature-b');
+    await act(async () => {
+      root?.render(<Footer />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent ?? '').toContain('feature-b');
     gitStatusMock.mockClear();
     footerContentRenderProbe.mockClear();
 
     appState.selectedProjectId = 'project-c';
     flushSync(() => root?.render(<Footer />));
-    await flushAsyncWork();
 
     expect(container.textContent ?? '').toContain('Web');
     expect(footerContentRenderProbe).toHaveBeenCalledTimes(0);
