@@ -7,6 +7,7 @@ describe('classifyPaths', () => {
       documentation_only: true,
       frontend: false,
       native: false,
+      sidecar: false,
       configuration: false,
       linux: false,
       windows: false,
@@ -34,8 +35,23 @@ describe('classifyPaths', () => {
   test('runs Linux and Windows validation for Rust changes', () => {
     const result = classifyPaths(['src-tauri/src/main.rs']);
     expect(result.native).toBe(true);
+    expect(result.sidecar).toBe(false);
     expect(result.linux).toBe(true);
     expect(result.windows).toBe(true);
+  });
+
+  test('identifies sidecar changes without broadening unrelated native changes', () => {
+    for (const path of [
+      'copilot-bridge/src/index.ts',
+      'dev/build-ai-runtime.mjs',
+      'dev/ai-runtime-linux-wrapper.mjs',
+    ]) {
+      const result = classifyPaths([path]);
+      expect(result.native).toBe(true);
+      expect(result.sidecar).toBe(true);
+      expect(result.linux).toBe(true);
+      expect(result.windows).toBe(true);
+    }
   });
 
   test('treats workflows and manifests conservatively', () => {

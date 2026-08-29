@@ -34,6 +34,26 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('pull_request_target'))).toBe(true);
   });
 
+  test('rejects approved actions that still target Node.js 20', () => {
+    const errors = validateWorkflowDocument({
+      name: 'Outdated runtime',
+      on: { push: { branches: ['develop'] } },
+      permissions: { contents: 'read' },
+      jobs: {
+        validate: {
+          'runs-on': 'ubuntu-latest',
+          'timeout-minutes': 10,
+          steps: [{
+            uses: 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
+            with: { 'persist-credentials': false },
+          }],
+        },
+      },
+    }, '.github/workflows/outdated.yml');
+
+    expect(errors.some((error) => error.includes('approved Node.js 24 revision'))).toBe(true);
+  });
+
   test('requires release validation to fetch the annotated tag object', () => {
     const errors = validateWorkflowDocument({
       name: 'Release',

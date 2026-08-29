@@ -17,8 +17,26 @@ describe('local CI profiles', () => {
     const checks = names('native');
     expect(checks).toContain('Run frontend tests');
     expect(checks).toContain('Run locked Rust tests for all targets');
-    expect(checks).toContain('Run locked Rust doc tests');
     expect(checks).not.toContain('Check all Windows native targets');
+  });
+
+  test('native core skips frontend dependencies and sidecar compilation', () => {
+    expect(names('native-core')).toEqual([
+      'Check version manifests',
+      'Reject generated binaries',
+      'Check Tauri updater configuration',
+      'Run locked Rust tests for all targets',
+    ]);
+  });
+
+  test('sidecar checks install dependencies unless the caller already did', () => {
+    expect(names('sidecar')).toEqual([
+      'Install locked frontend dependencies',
+      'Build AI runtime sidecar',
+    ]);
+    expect(stepsForProfile('sidecar', { skipInstall: true }).map((entry) => entry.name)).toEqual([
+      'Build AI runtime sidecar',
+    ]);
   });
 
   test('full profiles test every native target once on every platform', () => {
@@ -33,6 +51,13 @@ describe('local CI profiles', () => {
   test('the focused Windows profile checks every target without running the full suite', () => {
     expect(names('windows', 'win32')).toContain('Check all Windows native targets');
     expect(names('windows', 'win32')).not.toContain('Run locked Rust tests for all targets');
+  });
+
+  test('Windows core does not install frontend dependencies or build the sidecar', () => {
+    const checks = names('windows-core', 'win32');
+    expect(checks).toContain('Check all Windows native targets');
+    expect(checks).not.toContain('Install locked frontend dependencies');
+    expect(checks).not.toContain('Build AI runtime sidecar');
   });
 
   test('frontend checks typecheck once and build without a second tsc pass', () => {

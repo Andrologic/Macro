@@ -6,6 +6,11 @@ import { pathToFileURL } from 'node:url';
 import { parse } from 'yaml';
 
 const PINNED_ACTION = /^[^@\s]+@[0-9a-f]{40}$/i;
+const APPROVED_NODE24_ACTIONS = new Map([
+  ['actions/cache', 'caa296126883cff596d87d8935842f9db880ef25'],
+  ['actions/checkout', 'fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09'],
+  ['actions/setup-node', 'a0853c24544627f65ddf259abe73b1d18a591444'],
+]);
 
 const entries = (value) => value && typeof value === 'object' ? Object.entries(value) : [];
 
@@ -78,6 +83,13 @@ export function validateWorkflowDocument(document, filePath) {
       }
       if (!PINNED_ACTION.test(action)) {
         fail(`job "${jobName}" step ${index + 1} must pin action "${action}" to a full commit SHA.`);
+      }
+      const separatorIndex = action.lastIndexOf('@');
+      const actionName = action.slice(0, separatorIndex);
+      const actionSha = action.slice(separatorIndex + 1);
+      const approvedNode24Sha = APPROVED_NODE24_ACTIONS.get(actionName);
+      if (approvedNode24Sha && actionSha !== approvedNode24Sha) {
+        fail(`job "${jobName}" step ${index + 1} must use the approved Node.js 24 revision of "${actionName}".`);
       }
       if (action.startsWith('actions/checkout@') && workflowStep.with?.['persist-credentials'] !== false) {
         fail(`job "${jobName}" checkout step must set persist-credentials: false.`);
