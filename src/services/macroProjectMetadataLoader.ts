@@ -78,7 +78,6 @@ interface MacroProjectMetadataLoaderDeps {
 }
 
 export interface LoadMacroProjectMetadataForSelectionParams {
-  requestId?: string;
   scopedProjectIds: string[];
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
@@ -277,7 +276,6 @@ export const loadMacroProjectMetadataForSelection = async (
         try {
           const index = await deps.listArchitectPlans(branchName, true, true, {
             scopedProjectIdsHint: params.scopedProjectIds,
-            requestId: params.requestId,
           });
           return {
             branchName,

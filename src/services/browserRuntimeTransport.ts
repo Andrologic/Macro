@@ -22,11 +22,8 @@ type RpcResponse = {
 };
 
 type PendingRequest = {
-  command: string;
   reject: (reason?: unknown) => void;
-  requestId: string | null;
   resolve: (value: unknown) => void;
-  startedAt: number;
   timeout: ReturnType<typeof setTimeout>;
 };
 
@@ -40,34 +37,6 @@ let terminalDisconnectError: Error | null = null;
 
 const pendingRequests = new Map<number, PendingRequest>();
 const eventListeners = new Map<string, Set<EventCallback<unknown>>>();
-
-const readCorrelatedRequestId = (args?: InvokeArgs): string | null => {
-  if (!args || typeof args !== 'object') return null;
-  const record = args as Record<string, unknown>;
-  const nestedRequest = record.request;
-  const requestId = record.requestId ?? (
-    nestedRequest && typeof nestedRequest === 'object'
-      ? (nestedRequest as Record<string, unknown>).requestId
-      : null
-  );
-  return typeof requestId === 'string' && requestId.trim() ? requestId : null;
-};
-
-const logRpcStage = (
-  stage: 'started' | 'succeeded' | 'failed',
-  request: Pick<PendingRequest, 'command' | 'requestId' | 'startedAt'> & { bridgeRequestId: number },
-  error?: unknown,
-): void => {
-  console.info(JSON.stringify({
-    event: `browser_runtime_rpc_${stage}`,
-    at: new Date().toISOString(),
-    command: request.command,
-    requestId: request.requestId,
-    bridgeRequestId: request.bridgeRequestId,
-    durationMs: Math.round(performance.now() - request.startedAt),
-    ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
-  }));
-};
 
 const browserRuntimeConnectionError = (code: string, technicalDetails?: string): Error =>
   Object.assign(
@@ -126,14 +95,11 @@ const handleMessage = (message: MessageEvent<string>): void => {
     try {
       const response = JSON.parse(String(envelope.payload ?? 'null')) as RpcResponse;
       if (response.status === 'success') {
-        logRpcStage('succeeded', { ...request, bridgeRequestId: envelope.id });
         request.resolve(response.payload);
       } else {
-        logRpcStage('failed', { ...request, bridgeRequestId: envelope.id }, response.payload);
         request.reject(response.payload);
       }
     } catch (error) {
-      logRpcStage('failed', { ...request, bridgeRequestId: envelope.id }, error);
       request.reject(error);
     }
     return;
@@ -225,25 +191,17 @@ export async function invokeBrowserRuntime<T>(
 ): Promise<T> {
   const bridgeSocket = await connect();
   const id = ++nextRequestId;
-  const startedAt = performance.now();
-  const requestId = readCorrelatedRequestId(args);
 
   return new Promise<T>((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
-      const error = new Error(`Le runtime Tauri n'a pas répondu à la commande « ${command} » dans le délai maximal autorisé.`);
-      logRpcStage('failed', { command, requestId, startedAt, bridgeRequestId: id }, error);
-      reject(error);
+      reject(new Error(`Le runtime Tauri n'a pas répondu à la commande « ${command} » dans le délai maximal autorisé.`));
     }, timeoutMs);
     pendingRequests.set(id, {
-      command,
       resolve: (value) => resolve(value as T),
       reject,
-      requestId,
-      startedAt,
       timeout,
     });
-    logRpcStage('started', { command, requestId, startedAt, bridgeRequestId: id });
     try {
       bridgeSocket.send(JSON.stringify({ id, cmd: command, args, option: options }));
     } catch (error) {

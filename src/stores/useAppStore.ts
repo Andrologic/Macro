@@ -1163,7 +1163,6 @@ const persistResolvedArchitectPlanContext = async (params: {
 const ensureAutoPlanForSelection = async (input: {
   groupId: string | null;
   projectId: string | null;
-  requestId?: string;
 }): Promise<void> => {
   if (!input.groupId && !input.projectId) {
     return;
@@ -1174,7 +1173,6 @@ const ensureAutoPlanForSelection = async (input: {
     hydrateActivePlan: appState.mode === "Architect",
     refreshTasks: true,
     reason: "auto_plan",
-    requestId: input.requestId,
   });
   const latest = useAppStore.getState();
   if (latest.architectPlanCatalogStatus === "error") {
@@ -1285,7 +1283,6 @@ const runPostCreateHydration = async (context: PostCreateHydrationContext): Prom
   await ensureAutoPlanForSelection({
     groupId: input.groupId,
     projectId: input.projectId,
-    requestId: input.requestId,
   });
 };
 
@@ -1537,7 +1534,6 @@ interface AppStore {
     refreshTasks?: boolean;
     includeArchivedInVisible?: boolean;
     reason?: "boot" | "project_switch" | "selector" | "auto_plan" | "manual";
-    requestId?: string;
   }) => Promise<MacroProjectMetadataLoadResult | null>;
   setActivePlanContext: (plan: ArchitectPlanContext | null) => void;
   openSettings: (tab?: SettingsTab) => void;
@@ -2233,7 +2229,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const localContext =
         await localProjectContext.getLocalProjectContextState(contextId);
       const result = await loadMacroProjectMetadataCatalog({
-        requestId: options.requestId,
         scopedProjectIds,
         selectedGroupId: state.selectedGroupId,
         selectedProjectId: state.selectedProjectId,
@@ -2304,7 +2299,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
           event: "architect_metadata_selection_loaded",
           at: new Date().toISOString(),
           reason: options.reason ?? "manual",
-          requestId: options.requestId ?? null,
           selectedGroupId: state.selectedGroupId,
           selectedProjectId: state.selectedProjectId,
           scopedProjectIds,
@@ -2331,7 +2325,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
           event: "architect_metadata_selection_load_failed",
           at: new Date().toISOString(),
           reason: options.reason ?? "manual",
-          requestId: options.requestId ?? null,
           error: normalized.message,
         }),
       );

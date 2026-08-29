@@ -510,33 +510,10 @@ pub async fn workspace_architect_list_plans(
     git_state: State<'_, GitState>,
     request: WorkspaceArchitectListPlansRequestDto,
 ) -> Result<WorkspaceArchitectPlanListDto> {
-    let trace_request_id = request
-        .request_id
-        .as_deref()
-        .unwrap_or("uncorrelated")
-        .to_string();
-    tracing::info!(
-        action = "architect_list_command_started",
-        request_id = %trace_request_id,
-        branch = %request.branch_name
-    );
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let result = workspace::architect::list_plans(&workspace_path, &metadata_root, request).await;
-    match &result {
-        Ok(list) => tracing::info!(
-            action = "architect_list_command_succeeded",
-            request_id = %trace_request_id,
-            plan_count = list.plans.len()
-        ),
-        Err(error) => tracing::warn!(
-            action = "architect_list_command_failed",
-            request_id = %trace_request_id,
-            error = %error
-        ),
-    }
-    result
+    workspace::architect::list_plans(&workspace_path, &metadata_root, request).await
 }
 
 #[tauri::command]
@@ -675,12 +652,6 @@ pub async fn workspace_create_project(
     direct_edit: Option<bool>,
     request_id: Option<String>,
 ) -> Result<ProjectDto> {
-    let trace_request_id = request_id.as_deref().unwrap_or("uncorrelated").to_string();
-    tracing::info!(
-        action = "project_create_command_started",
-        operation = "create_project",
-        request_id = %trace_request_id
-    );
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
@@ -695,28 +666,13 @@ pub async fn workspace_create_project(
         direct_edit: direct_edit.unwrap_or(false),
     };
 
-    let result = workspace::create_project_with_cancel(
+    workspace::create_project_with_cancel(
         &workspace_path,
         &metadata_root,
         request,
         operation.as_ref().map(ProjectOperationGuard::receiver),
     )
-    .await;
-    match &result {
-        Ok(project) => tracing::info!(
-            action = "project_create_command_succeeded",
-            operation = "create_project",
-            request_id = %trace_request_id,
-            project_id = %project.id
-        ),
-        Err(error) => tracing::warn!(
-            action = "project_create_command_failed",
-            operation = "create_project",
-            request_id = %trace_request_id,
-            error = %error
-        ),
-    }
-    result
+    .await
 }
 
 #[tauri::command]
@@ -737,12 +693,6 @@ pub async fn workspace_create_project_with_git_setup(
     expected_recommended_action_sequence: Vec<String>,
     request_id: Option<String>,
 ) -> Result<ProjectGitSetupCommitResultDto> {
-    let trace_request_id = request_id.as_deref().unwrap_or("uncorrelated").to_string();
-    tracing::info!(
-        action = "project_create_command_started",
-        operation = "create_project_with_git_setup",
-        request_id = %trace_request_id
-    );
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
@@ -757,7 +707,7 @@ pub async fn workspace_create_project_with_git_setup(
         direct_edit: false,
     };
 
-    let result = workspace::create_project_with_git_setup(
+    workspace::create_project_with_git_setup(
         &workspace_path,
         &metadata_root,
         request,
@@ -767,22 +717,7 @@ pub async fn workspace_create_project_with_git_setup(
         &expected_recommended_action_sequence,
         operation.as_ref().map(ProjectOperationGuard::receiver),
     )
-    .await;
-    match &result {
-        Ok(result) => tracing::info!(
-            action = "project_create_command_succeeded",
-            operation = "create_project_with_git_setup",
-            request_id = %trace_request_id,
-            project_id = %result.project.id
-        ),
-        Err(error) => tracing::warn!(
-            action = "project_create_command_failed",
-            operation = "create_project_with_git_setup",
-            request_id = %trace_request_id,
-            error = %error
-        ),
-    }
-    result
+    .await
 }
 
 #[tauri::command]
@@ -799,12 +734,6 @@ pub async fn workspace_create_new_project_repo(
     git_flow_settings: Option<ProjectGitFlowSettingsDto>,
     request_id: Option<String>,
 ) -> Result<ProjectGitSetupCommitResultDto> {
-    let trace_request_id = request_id.as_deref().unwrap_or("uncorrelated").to_string();
-    tracing::info!(
-        action = "project_create_command_started",
-        operation = "create_new_project_repo",
-        request_id = %trace_request_id
-    );
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
@@ -818,28 +747,13 @@ pub async fn workspace_create_new_project_repo(
         git_flow_settings,
     };
 
-    let result = workspace::create_new_project_repo_with_cancel(
+    workspace::create_new_project_repo_with_cancel(
         &workspace_path,
         &metadata_root,
         request,
         operation.as_ref().map(ProjectOperationGuard::receiver),
     )
-    .await;
-    match &result {
-        Ok(result) => tracing::info!(
-            action = "project_create_command_succeeded",
-            operation = "create_new_project_repo",
-            request_id = %trace_request_id,
-            project_id = %result.project.id
-        ),
-        Err(error) => tracing::warn!(
-            action = "project_create_command_failed",
-            operation = "create_new_project_repo",
-            request_id = %trace_request_id,
-            error = %error
-        ),
-    }
-    result
+    .await
 }
 
 #[tauri::command]
