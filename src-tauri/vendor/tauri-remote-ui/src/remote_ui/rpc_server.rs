@@ -103,9 +103,39 @@ impl RemoteUiExt for AppHandle {
 type WindowLabel = String;
 
 const VERSION_PREFIX: &str = "version:";
+const SESSION_REPLACED_CLOSE_CODE: u16 = 4009;
+const SESSION_REPLACED_CLOSE_REASON: &str = "session_replaced";
+
+fn session_replaced_close_message() -> Message {
+    Message::Close(Some(hyper_tungstenite::tungstenite::protocol::CloseFrame {
+        code: SESSION_REPLACED_CLOSE_CODE.into(),
+        reason: SESSION_REPLACED_CLOSE_REASON.into(),
+    }))
+}
 
 /// WebSocket sink handle for a single connection (sending side).
 pub(crate) type WsSink = Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>;
+
+fn replace_current_handle<T>(
+    handles: &mut HashMap<WindowLabel, Arc<T>>,
+    window_label: &str,
+    handle: Arc<T>,
+) -> Option<Arc<T>> {
+    handles.insert(window_label.to_owned(), handle)
+}
+
+fn remove_handle_if_current<T>(
+    handles: &mut HashMap<WindowLabel, Arc<T>>,
+    window_label: &str,
+    handle: &Arc<T>,
+) {
+    if handles
+        .get(window_label)
+        .is_some_and(|current| Arc::ptr_eq(current, handle))
+    {
+        handles.remove(window_label);
+    }
+}
 
 /// The main Remote UI RPC server struct.
 ///
@@ -314,9 +344,12 @@ impl RpcServer {
     }
 
     /// Set the WebSocket handle for a given window label.
-    pub(crate) fn set_ws_handle(&mut self, window_label: &str, ws_handle: WsSink) {
-        self.ws_window_handle
-            .insert(window_label.to_owned(), ws_handle);
+    pub(crate) fn set_ws_handle(
+        &mut self,
+        window_label: &str,
+        ws_handle: WsSink,
+    ) -> Option<WsSink> {
+        replace_current_handle(&mut self.ws_window_handle, window_label, ws_handle)
     }
 
     /// Get the WebSocket handle for a given window label, if present.
@@ -325,13 +358,7 @@ impl RpcServer {
     }
 
     pub(crate) fn remove_ws_handle_if_current(&mut self, window_label: &str, ws_handle: &WsSink) {
-        if self
-            .ws_window_handle
-            .get(window_label)
-            .is_some_and(|current| Arc::ptr_eq(current, ws_handle))
-        {
-            self.ws_window_handle.remove(window_label);
-        }
+        remove_handle_if_current(&mut self.ws_window_handle, window_label, ws_handle);
     }
 }
 
@@ -615,7 +642,16 @@ fn websocket_credentials_match(
 
 #[cfg(test)]
 mod tests {
-    use super::{confined_asset_path, websocket_credentials_match};
+    use super::{
+        confined_asset_path, remove_handle_if_current, replace_current_handle,
+        session_replaced_close_message, websocket_credentials_match, SESSION_REPLACED_CLOSE_CODE,
+        SESSION_REPLACED_CLOSE_REASON,
+    };
+    use hyper_tungstenite::tungstenite::{accept, client, Message};
+    use std::collections::HashMap;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -664,6 +700,65 @@ mod tests {
 
         std::fs::remove_dir_all(&root).expect("temporary asset root must be removed");
     }
+
+    #[test]
+    fn second_real_client_receives_ownership_without_reconnect_eviction_loop() {
+        let first_owner = Arc::new("first");
+        let second_owner = Arc::new("second");
+        let mut registry = HashMap::new();
+        assert!(replace_current_handle(&mut registry, "main", first_owner.clone()).is_none());
+        let replaced = replace_current_handle(&mut registry, "main", second_owner.clone())
+            .expect("second client must replace the first registry owner");
+        assert!(Arc::ptr_eq(&replaced, &first_owner));
+        remove_handle_if_current(&mut registry, "main", &first_owner);
+        assert!(Arc::ptr_eq(
+            registry
+                .get("main")
+                .expect("new owner must remain registered"),
+            &second_owner,
+        ));
+        remove_handle_if_current(&mut registry, "main", &second_owner);
+        assert!(!registry.contains_key("main"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test websocket server");
+        let address = listener.local_addr().expect("read test websocket address");
+        let server = thread::spawn(move || {
+            let (first_stream, _) = listener.accept().expect("accept first client");
+            let mut first = accept(first_stream).expect("upgrade first client");
+            let (second_stream, _) = listener.accept().expect("accept second client");
+            let mut second = accept(second_stream).expect("upgrade second client");
+
+            first
+                .send(session_replaced_close_message())
+                .expect("close replaced client");
+            second
+                .send(Message::Text("session_owner".into()))
+                .expect("confirm new owner");
+        });
+
+        let url = format!("ws://{address}/remote_ui_ws");
+        let (mut first, _) = client(
+            url.as_str(),
+            TcpStream::connect(address).expect("connect first client"),
+        )
+        .expect("handshake first client");
+        let (mut second, _) = client(
+            url.as_str(),
+            TcpStream::connect(address).expect("connect second client"),
+        )
+        .expect("handshake second client");
+
+        let Message::Close(Some(close)) = first.read().expect("read terminal close") else {
+            panic!("first client must receive a close frame");
+        };
+        assert_eq!(u16::from(close.code), SESSION_REPLACED_CLOSE_CODE);
+        assert_eq!(close.reason, SESSION_REPLACED_CLOSE_REASON);
+        assert_eq!(
+            second.read().expect("read ownership confirmation"),
+            Message::Text("session_owner".into())
+        );
+        server.join().expect("join test websocket server");
+    }
 }
 
 /// Handle a WebSocket connection for remote UI RPC.
@@ -678,21 +773,25 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
             let (tx, mut rx) = ws_stream.split();
             let ws_sender = Arc::new(Mutex::new(tx));
             let primary_label;
-            // Replace any existing handle for the primary window with this new one.
-            {
+            // Transfer primary-session ownership to the newest browser client. The
+            // terminal close code tells the previous client not to reconnect.
+            let existing_handle = {
                 let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>();
                 let mut remote_ui_mut = remote_ui.write().await;
                 primary_label = remote_ui_mut.rpc_server.primary_window_label().to_owned();
-                if let Some(existing_handle) =
-                    remote_ui_mut.rpc_server.get_ws_handle(&primary_label)
-                {
-                    if let Err(err) = existing_handle.lock().await.close().await {
-                        log::warn!("Failed to close existing socket connection: {err}");
-                    }
-                }
                 remote_ui_mut
                     .rpc_server
-                    .set_ws_handle(&primary_label, ws_sender.clone());
+                    .set_ws_handle(&primary_label, ws_sender.clone())
+            };
+            if let Some(existing_handle) = existing_handle {
+                if let Err(err) = existing_handle
+                    .lock()
+                    .await
+                    .send(session_replaced_close_message())
+                    .await
+                {
+                    log::warn!("Failed to close existing socket connection: {err}");
+                }
             }
             let mut session_error = None;
             while let Some(message_stream) = rx.next().await {

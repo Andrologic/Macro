@@ -33,6 +33,48 @@ export const toAbsoluteApiUrl = (config: RemoteConfig, path: string): string => 
   return `${config.baseUrl}${config.apiPrefix}${normalizedPath}`;
 };
 
+const MAX_REMOTE_RESPONSE_BYTES = 1_048_576;
+
+const readRemoteResponseBody = async (response: Response): Promise<string> => {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_REMOTE_RESPONSE_BYTES) {
+    throw {
+      code: 'REMOTE_RESPONSE_TOO_LARGE',
+      message: `Remote response exceeded the ${MAX_REMOTE_RESPONSE_BYTES}-byte limit`,
+    };
+  }
+
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_REMOTE_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw {
+          code: 'REMOTE_RESPONSE_TOO_LARGE',
+          message: `Remote response exceeded the ${MAX_REMOTE_RESPONSE_BYTES}-byte limit`,
+        };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+};
+
 const extractPayload = <T>(payload: unknown, key?: string): T => {
   if (!key) {
     if (payload && typeof payload === 'object' && 'data' in payload) {
@@ -126,9 +168,19 @@ export const remoteRequest = async <T>(
     });
 
     const contentType = response.headers.get('content-type') ?? '';
-    const body = contentType.includes('application/json')
-      ? await response.json().catch(() => null)
-      : await response.text().catch(() => null);
+    const rawBody = await readRemoteResponseBody(response);
+    let body: unknown = rawBody;
+    if (contentType.includes('application/json')) {
+      try {
+        body = JSON.parse(rawBody || 'null');
+      } catch {
+        throw {
+          code: 'REMOTE_INVALID_RESPONSE',
+          message: 'Remote response declared JSON but contained invalid JSON',
+          details: { url },
+        };
+      }
+    }
 
     if (!response.ok) {
       const structured = readStructuredErrorBody(body);

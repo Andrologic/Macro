@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 
-type Listener = (event: { data?: string }) => void;
+type Listener = (event: { code?: number; data?: string; reason?: string }) => void;
 
 class FakeWebSocket {
   static readonly OPEN = 1;
@@ -38,12 +38,12 @@ class FakeWebSocket {
     this.sent.push(payload);
   }
 
-  close(): void {
+  close(code = 1000, reason = ''): void {
     this.readyState = 3;
-    this.emit('close');
+    this.emit('close', { code, reason });
   }
 
-  emit(name: string, event: { data?: string } = {}): void {
+  emit(name: string, event: { code?: number; data?: string; reason?: string } = {}): void {
     this.listeners.get(name)?.forEach((listener) => listener(event));
   }
 }
@@ -132,3 +132,43 @@ test('authentifie les invocations et rétablit la connexion des écouteurs', asy
   expect(FakeWebSocket.instances.length).toBe(connectionCount + 3);
   unlisten();
 }, 10_000);
+
+test('arrête définitivement la reconnexion quand un autre onglet prend la session', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nextTimerId = 0;
+  const scheduled = new Map<number, () => void>();
+  globalThis.setTimeout = ((callback: TimerHandler) => {
+    nextTimerId += 1;
+    scheduled.set(nextTimerId, callback as () => void);
+    return nextTimerId;
+  }) as typeof globalThis.setTimeout;
+  globalThis.clearTimeout = ((timerId: number | undefined) => {
+    if (timerId !== undefined) scheduled.delete(timerId);
+  }) as typeof globalThis.clearTimeout;
+
+  try {
+    const transport = await import('./browserRuntimeTransport');
+    const unlisten = await transport.listenBrowserRuntime('runtime:event', () => undefined);
+    const activeSocket = FakeWebSocket.instances.at(-1)!;
+    const connectionCount = FakeWebSocket.instances.length;
+
+    const interruptedInvocation = transport.invokeBrowserRuntime('state_get_snapshot');
+    await Promise.resolve();
+    activeSocket.emit('close', { code: 4009, reason: 'session_replaced' });
+
+    await expect(interruptedInvocation).rejects.toMatchObject({
+      code: 'BROWSER_RUNTIME_SESSION_REPLACED',
+    });
+    await expect(transport.invokeBrowserRuntime('git_status')).rejects.toMatchObject({
+      code: 'BROWSER_RUNTIME_SESSION_REPLACED',
+    });
+    expect(scheduled).toHaveLength(0);
+    for (const callback of scheduled.values()) callback();
+    expect(FakeWebSocket.instances).toHaveLength(connectionCount);
+    unlisten();
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});

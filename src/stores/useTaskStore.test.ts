@@ -626,6 +626,101 @@ describe('getPlanActivationCandidateTask', () => {
 });
 
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('keeps the newest refresh and selection when an older context resolves last', async () => {
+    const originalListTasks = services.listTasks;
+    const resolvers: Array<(catalog: Awaited<ReturnType<typeof services.listTasks>>) => void> = [];
+    services.listTasks = mock(
+      async () =>
+        await new Promise<Awaited<ReturnType<typeof services.listTasks>>>((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    appStoreState.selectedGroupId = 'group-a';
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-a';
+    appStoreState.setSelectedTask.mockImplementation((taskId: string | null) => {
+      appStoreState.selectedTaskId = taskId;
+    });
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      const staleRefresh = useTaskStore.getState().refreshFromPlan({
+        restoreSelection: true,
+        activateSelectedTask: false,
+      });
+      await flushPromises();
+
+      appStoreState.selectedGroupId = 'group-b';
+      appStoreState.selectedProjectId = 'project-b';
+      appStoreState.selectedTaskId = 'task-b';
+      const freshRefresh = useTaskStore.getState().refreshFromPlan({
+        restoreSelection: true,
+        activateSelectedTask: false,
+      });
+      await flushPromises();
+
+      resolvers[1]?.({
+        tasks: [buildTask({ id: 'task-b', project_id: 'project-b', project_ids: ['project-b'] })],
+        plans: [],
+        hasStandaloneTasks: false,
+        source: 'architect',
+      });
+      await freshRefresh;
+
+      resolvers[0]?.({
+        tasks: [buildTask({ id: 'task-a', project_id: 'project-a', project_ids: ['project-a'] })],
+        plans: [],
+        hasStandaloneTasks: false,
+        source: 'architect',
+      });
+      await staleRefresh;
+
+      expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['task-b']);
+      expect(appStoreState.selectedTaskId).toBe('task-b');
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+  });
+
+  it('does not restore a selection after the project context changes during refresh', async () => {
+    const originalListTasks = services.listTasks;
+    let resolveCatalog!: (catalog: Awaited<ReturnType<typeof services.listTasks>>) => void;
+    services.listTasks = mock(
+      async () =>
+        await new Promise<Awaited<ReturnType<typeof services.listTasks>>>((resolve) => {
+          resolveCatalog = resolve;
+        })
+    );
+    appStoreState.selectedGroupId = 'group-a';
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-a';
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      const refresh = useTaskStore.getState().refreshFromPlan({
+        restoreSelection: true,
+        activateSelectedTask: false,
+      });
+      await flushPromises();
+
+      appStoreState.selectedGroupId = 'group-b';
+      appStoreState.selectedProjectId = 'project-b';
+      appStoreState.selectedTaskId = 'task-b';
+      resolveCatalog({
+        tasks: [buildTask({ id: 'task-a', project_id: 'project-a', project_ids: ['project-a'] })],
+        plans: [],
+        hasStandaloneTasks: false,
+        source: 'architect',
+      });
+      await refresh;
+
+      expect(useTaskStore.getState().tasks).toEqual([]);
+      expect(appStoreState.selectedTaskId).toBe('task-b');
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+  });
+
   it('does not let a slow task activation restore its worktree after a newer selection', async () => {
     appStoreState.getProjectById = () => ({
       id: 'project-1',
@@ -734,6 +829,21 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     } finally {
       services.listTasks = originalListTasks;
     }
+  });
+});
+
+describe('useTaskStore manual feature creation ownership', () => {
+  it('allows only the owner to release an active creation', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    expect(useTaskStore.getState().reserveManualFeatureCreation('creation-a')).toBe(true);
+    expect(useTaskStore.getState().reserveManualFeatureCreation('creation-b')).toBe(false);
+
+    useTaskStore.getState().releaseManualFeatureCreation('creation-b');
+    expect(useTaskStore.getState().reserveManualFeatureCreation('creation-c')).toBe(false);
+
+    useTaskStore.getState().releaseManualFeatureCreation('creation-a');
+    expect(useTaskStore.getState().reserveManualFeatureCreation('creation-c')).toBe(true);
   });
 });
 

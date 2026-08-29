@@ -1854,6 +1854,8 @@ interface TaskStore {
   activeRepositoryPath: string | null;
   activeWorkspacePathOverridesByProjectId: Record<string, string>;
   taskCommandRuns: Record<string, TaskCommandRunState>;
+  reserveManualFeatureCreation: (operationId: string) => boolean;
+  releaseManualFeatureCreation: (operationId: string) => void;
   reservePlanWorktreeMutation: (planId: string) => boolean;
   releasePlanWorktreeMutation: (planId: string) => void;
   setTasks: (tasks: CatalogedImplementTask[]) => void;
@@ -2457,6 +2459,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   const activeMergeWorkflowRuns = new Map<string, Promise<void>>();
   const activeTaskOperations = new Map<string, TaskOperationKind>();
   const activePlanWorktreeMutations = new Set<string>();
+  let activeManualFeatureCreationId: string | null = null;
   const taskCommandRunCompletions = new Map<string, TaskCommandRunCompletion>();
   const taskCommandCancellationPromises = new Map<string, Promise<void>>();
   // Catalog loads and task activation await metadata/filesystem work. Keep their
@@ -2608,6 +2611,21 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   activeWorkspacePathOverridesByProjectId: {},
   taskCommandRuns: {},
 
+  reserveManualFeatureCreation: (operationId) => {
+    const safeOperationId = operationId.trim();
+    if (!safeOperationId || activeManualFeatureCreationId) {
+      return false;
+    }
+    activeManualFeatureCreationId = safeOperationId;
+    return true;
+  },
+
+  releaseManualFeatureCreation: (operationId) => {
+    if (activeManualFeatureCreationId === operationId.trim()) {
+      activeManualFeatureCreationId = null;
+    }
+  },
+
   reservePlanWorktreeMutation: (planId) => {
     const safePlanId = planId.trim();
     if (!safePlanId || activePlanWorktreeMutations.has(safePlanId)) {
@@ -2663,6 +2681,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
   refreshFromPlan: async (options) => {
     const requestId = ++refreshRequestId;
+    const appStateAtStart = useAppStore.getState();
+    const selectionContextKey = `${appStateAtStart.selectedGroupId ?? ''}::${appStateAtStart.selectedProjectId ?? ''}`;
+    const isCurrentRefresh = () => {
+      const currentAppState = useAppStore.getState();
+      return requestId === refreshRequestId &&
+        `${currentAppState.selectedGroupId ?? ''}::${currentAppState.selectedProjectId ?? ''}` === selectionContextKey;
+    };
     const restoreSelection = options?.restoreSelection !== false;
     const activateSelectedTask = options?.activateSelectedTask !== false;
     try {
@@ -2671,13 +2696,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
       await resumePlanLifecycleSagas();
-      if (requestId !== refreshRequestId) return;
+      if (!isCurrentRefresh()) return;
       const catalog = await services.listTasks();
-      if (requestId !== refreshRequestId) return;
+      if (!isCurrentRefresh()) return;
       const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
-      if (requestId !== refreshRequestId) return;
+      if (!isCurrentRefresh()) return;
       for (const pending of pendingLinkedTaskDeletions) {
-        if (requestId !== refreshRequestId) return;
+        if (!isCurrentRefresh()) return;
         const catalogTask = resolveTaskReference(catalog.tasks, pending.taskId);
         const taskStillExists = Boolean(catalogTask);
         if (pending.phase === 'draft_reverting' || pending.phase === 'draft_reverted') {
@@ -2845,7 +2870,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         };
       });
       const publishedStandaloneTasks = await buildStandalonePublicationMap(tasks);
-      if (requestId !== refreshRequestId) return;
+      if (!isCurrentRefresh()) return;
       set({
         tasks,
         planSummaries: catalog.plans,
@@ -2860,6 +2885,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       });
 
       if (restoreSelection) {
+        if (!isCurrentRefresh()) return;
         const { selectedGroupId, selectedProjectId, standaloneProjects, projectGroups } = useAppStore.getState();
         const scopedProjectIds = getScopedProjectIds(
           { standaloneProjects, projectGroups },
@@ -2876,7 +2902,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           try {
             const contextKey = selectedGroupId || selectedProjectId;
             const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
-            if (requestId !== refreshRequestId) return;
+            if (!isCurrentRefresh()) return;
             const candidateTaskId = context?.lastTaskId;
             if (candidateTaskId) {
               const candidateTask = resolveTaskReference(tasks, candidateTaskId);
@@ -2907,7 +2933,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         });
       }
       if (activateSelectedTask && selectedTaskAfterRestore) {
-        if (requestId === refreshRequestId) {
+        if (isCurrentRefresh()) {
           void get().activateTask(selectedTaskAfterRestore);
           void useChatStore.getState().ensureConversationForCurrentMode();
         }
@@ -2917,10 +2943,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         !selectedTaskAfterRestore &&
         (selectedTaskIdBeforeRefresh || tasks.length === 0)
       ) {
+        if (!isCurrentRefresh()) return;
         await useChatStore.getState().reapplySelectionForCurrentContext();
       }
     } catch (error) {
-      if (requestId !== refreshRequestId) return;
+      if (!isCurrentRefresh()) return;
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message, publishedStandaloneTasks: {} });
     }

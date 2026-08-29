@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Default, Clone)]
 struct StreamingCompletionAccumulator {
@@ -287,6 +288,10 @@ impl SseParser {
                 }
                 self.utf8_tail.extend_from_slice(&bytes[valid_up_to..]);
             }
+        }
+
+        if self.input.len() + self.event.len() + self.utf8_tail.len() > MAX_SSE_BUFFER_BYTES {
+            return Err("ChatGPT SSE buffer exceeded the 1048576-byte limit.".to_string());
         }
 
         Ok(())

@@ -2822,13 +2822,21 @@ const streamNativeTurnViaTauri = async (params: {
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
+    let nativeUnlisteners: UnlistenFn[] = [];
     let questionToolRequestCount = 0;
     let nativeToolRequestOrder = 0;
 
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTauriListeners(sessionId);
+      nativeUnlisteners.forEach((unlisten) => {
+        try {
+          unlisten();
+        } catch {
+          // Completion can race listener setup and cleanup.
+        }
+      });
+      nativeUnlisteners = [];
       const activeResources = activeStreamResourcesBySessionId.get(sessionId);
       if (activeResources && activeResources.tauriRequestId === requestId) {
         activeResources.tauriRequestId = null;
@@ -3041,7 +3049,9 @@ const streamNativeTurnViaTauri = async (params: {
           }),
         ]);
 
-        resources.tauriUnlisteners = unlisteners;
+        // These listeners belong to this request. Two requests may briefly share
+        // a session identifier while the previous conversation is stopping.
+        nativeUnlisteners = unlisteners;
         if (settled || params.signal?.aborted) {
           unlisteners.forEach((unlisten) => {
             try {
@@ -3050,7 +3060,7 @@ const streamNativeTurnViaTauri = async (params: {
               // Ignore listener cleanup errors during an abort race.
             }
           });
-          resources.tauriUnlisteners = [];
+          nativeUnlisteners = [];
           if (!settled) {
             signalHandler();
           }
@@ -3094,7 +3104,6 @@ const streamNativeTurnViaTauri = async (params: {
         const activeResources = activeStreamResourcesBySessionId.get(sessionId);
         if (activeResources && activeResources.tauriRequestId === requestId) {
           activeResources.tauriRequestId = null;
-          clearTauriListeners(sessionId);
         }
         finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
@@ -3790,13 +3799,6 @@ const streamChatViaNativeToolCallingProvider = async (
     onError(err);
   } finally {
     clearTauriListeners(options.sessionId);
-    const activeResources = activeStreamResourcesBySessionId.get(
-      getStreamSessionId(options.sessionId)
-    );
-    if (activeResources) {
-      activeResources.tauriRequestId = null;
-      pruneActiveStreamResources(options.sessionId);
-    }
   }
 };
 

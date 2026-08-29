@@ -1072,9 +1072,12 @@ describe('TaskQueue', () => {
 
     await act(async () => {
       confirmButton?.click();
+      confirmButton?.click();
       await flushRender();
     });
 
+    expect(createConversation).toHaveBeenCalledTimes(1);
+    expect(createManualFeatureDraft).toHaveBeenCalledTimes(1);
     expect(createManualFeatureDraft).toHaveBeenCalledWith({
       taskId: expect.stringContaining('manual-feature-'),
       conversationId: 'conversation-created',
