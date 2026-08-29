@@ -1807,6 +1807,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         planProjectIds.add(projectId);
       }
     }
+    for (const projectId of Object.keys(
+      appState.activePlanContext?.executionModesByProjectId ?? {},
+    )) {
+      planProjectIds.add(projectId);
+    }
     if (planProjectIds.size === 0 && executionContext.focusedProjectId) {
       planProjectIds.add(executionContext.focusedProjectId);
     }
@@ -1815,6 +1820,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       resolvePlanProjectExecutionMode({
         projectId,
         nodes: appState.planNodes,
+        executionModesByProjectId: appState.activePlanContext?.executionModesByProjectId,
         project: appState.getProjectById(projectId),
       }) !== 'git'
     );

@@ -5261,6 +5261,20 @@ export const updateArchitectPlan = async (input: {
     }
   }
 
+  const existingProjectIdSet = new Set(normalizeProjectIds(existing.projectIds, existing.projectId));
+  const nextExecutionModesByProjectId = Object.fromEntries(
+    Object.entries(existing.executionModesByProjectId ?? {}).filter(
+      ([projectId, mode]) => projectIds.includes(projectId) && (mode === 'git' || mode === 'direct'),
+    ),
+  ) as Record<string, 'git' | 'direct'>;
+  for (const projectId of projectIds) {
+    if (existingProjectIdSet.has(projectId) || nextExecutionModesByProjectId[projectId]) continue;
+    const observedMode = registrySnapshot?.executionModeByProjectId.get(projectId);
+    if (observedMode === 'git' || observedMode === 'direct') {
+      nextExecutionModesByProjectId[projectId] = observedMode;
+    }
+  }
+
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
     slug: requestedSlug,
@@ -5274,6 +5288,7 @@ export const updateArchitectPlan = async (input: {
     conversationId: input.conversationId !== undefined ? input.conversationId : existing.conversationId,
     status: input.status || existing.status,
     targetBranchesByProjectId: normalizedTargetBranchesByProjectId,
+    executionModesByProjectId: nextExecutionModesByProjectId,
     projectId: projectIds[0],
     projectIds,
     contextProjectIds,

@@ -588,6 +588,7 @@ const resolvePlanProjectRepoPathsFromAppState = (
     const executionMode = resolvePlanProjectExecutionMode({
       projectId,
       nodes: plan.nodes,
+      executionModesByProjectId: plan.executionModesByProjectId,
       project: project as Project | null | undefined,
     });
     if (executionMode === 'direct') {

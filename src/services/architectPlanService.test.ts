@@ -701,6 +701,73 @@ describe('architectPlanService', () => {
     expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
   });
 
+  it('snapshots the mode of a project added to an empty draft plan', async () => {
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/web': {},
+      '/repos/docs': {},
+    };
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'web',
+      scopedProjectIds: ['web', 'docs'],
+      actionableProjectIds: ['web', 'docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web', 'docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web', 'docs'],
+      validProjectIdSet: new Set(['web', 'docs']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([
+        ['web', '/repos/web'],
+        ['docs', '/repos/docs'],
+      ]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['web', 'git'],
+        ['docs', 'direct'],
+      ]),
+      hasRegisteredProjects: true,
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'expanded-direct-plan',
+      projectIds: ['web'],
+    });
+
+    const updated = await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      projectIds: ['web', 'docs'],
+      expectedProjectIds: ['web', 'docs'],
+    });
+    expect(updated.executionModesByProjectId).toEqual({ web: 'git', docs: 'direct' });
+
+    const gitSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      repoPathByProjectId: new Map([
+        ['web', '/repos/web'],
+        ['docs', '/repos/docs'],
+      ]),
+      executionModeByProjectId: new Map([
+        ['web', 'git'],
+        ['docs', 'git'],
+      ]),
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      registrySnapshot: gitSnapshot,
+      filesByWorkspacePath,
+    });
+
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.executionModesByProjectId).toEqual({ web: 'git', docs: 'direct' });
+  });
+
   it('persists read-only context project ids separately from actionable project ids', async () => {
     const created = await service.createArchitectPlan({
       branchName,

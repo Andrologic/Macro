@@ -640,6 +640,24 @@ describe('architectGitFlowService', () => {
     expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
   });
 
+  it('keeps empty persisted direct plan cleanup out of Git after the project gains Git', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      projectId: 'web',
+      projectIds: ['web'],
+      executionModesByProjectId: { web: 'direct' },
+      nodes: [],
+      predictedBranches: [],
+    };
+
+    const cleanup = await architectGitFlowService.cleanupPlanBranches(currentPlan);
+
+    expect(cleanup).toEqual([]);
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitBranchCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+  });
+
   it('provisions only the Git target of a mixed plan', async () => {
     projectPaths.set('api', {
       ...projectPaths.get('api')!,

@@ -119,6 +119,7 @@ const appState = {
     id?: string;
     targetBranch: string;
     status?: ArchitectPlanStatus;
+    executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   } | null,
   architectPlanSwitch: {
     requestId: 0,
@@ -209,6 +210,7 @@ const appState = {
       appState.activePlanContext = {
         id: plan.id,
         targetBranch: options?.targetBranch ?? plan.targetBranch,
+        executionModesByProjectId: plan.executionModesByProjectId,
       };
       appState.architectPlanSwitch = {
         requestId: appState.architectPlanSwitch.requestId + 1,
@@ -2130,6 +2132,7 @@ const activateArchitectPlanForTest = (
   appState.activePlanContext = {
     id: plan.id,
     targetBranch: plan.targetBranch,
+    executionModesByProjectId: plan.executionModesByProjectId,
   };
   return plan;
 };

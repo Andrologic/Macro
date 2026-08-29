@@ -994,6 +994,37 @@ export const registerArchitectStrategyScenarios = (
       expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
     });
 
+    it('filters Git tools from an empty persisted direct plan after the project gains Git', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      const { useChatStore } = await loadChatStore();
+      activateArchitectPlanForTest({
+        conversationId: 'plan-conv',
+        nodes: [],
+        executionModesByProjectId: { 'project-1': 'direct' },
+      });
+      useChatStore.setState({
+        conversations: [createConversation('plan-conv')],
+        messages: [],
+        selectedConversationId: 'plan-conv',
+        selectedConversationIdsByMode: { Architect: 'plan-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'plan-conv',
+        content: 'Continue ce plan direct.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ allowedToolIds: string[] }>();
+      expect(streamOptions.allowedToolIds).not.toContain('git_status');
+      expect(streamOptions.allowedToolIds).not.toContain('git_diff');
+    });
+
     it('keeps Git read tools for a mixed Architect plan while the direct project is focused', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       Object.assign(projectGroups[0]?.projects[0] ?? {}, {
