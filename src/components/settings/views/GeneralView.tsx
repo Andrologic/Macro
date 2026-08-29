@@ -278,6 +278,13 @@ export const GeneralView: React.FC = () => {
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section className="space-y-4">
+                <SettingsSectionHeader title={t('settings.updates', 'Updates')} />
+                <div className="rounded-xl border border-border/50 bg-card/40 p-4">
+                    <UpdateChannelSettings />
+                </div>
+            </section>
+
+            <section className="space-y-4">
                 <SettingsSectionHeader title={t('settings.language_region', 'Language & Region')} />
 
                 <div className="grid grid-cols-1 gap-6 bg-card/40 p-4 rounded-xl border border-border/50">
@@ -312,8 +319,6 @@ export const GeneralView: React.FC = () => {
                 <ToolSecuritySettingsSection />
 
                 <div className="space-y-4 bg-card/40 p-4 rounded-xl border border-border/50">
-                    <UpdateChannelSettings />
-                    <div className="border-t border-border/50" />
                     <div className="flex flex-col gap-3">
                         <div className="space-y-1">
                             <label htmlFor="chat-max-turns-enabled" className="text-sm font-medium text-foreground">

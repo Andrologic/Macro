@@ -368,6 +368,23 @@ describe('copilot bridge tool registration', () => {
 });
 
 describe('copilot bridge reasoning events', () => {
+  it('classifies output-limit warnings without treating unrelated warnings as truncation', async () => {
+    const { __testables } = await loadBridge();
+
+    expect(
+      __testables.classifyCopilotWarningCompletionReason({
+        warningType: 'max_output_tokens',
+        message: 'The response reached the output limit.',
+      }),
+    ).toBe('length');
+    expect(
+      __testables.classifyCopilotWarningCompletionReason({
+        warningType: 'mcp',
+        message: 'One optional MCP server is unavailable.',
+      }),
+    ).toBeNull();
+  });
+
   it('streams Copilot reasoning deltas inside a think block before response text', async () => {
     const { __testables } = await loadBridge();
     const state = __testables.createCopilotSessionEventState();

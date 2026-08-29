@@ -2,6 +2,7 @@ import type { ProjectGitFlowSettings, StandaloneTaskKind } from '../types';
 import { isMainlineGitWorkflow } from './architectGitNaming';
 
 export const STANDALONE_TASK_KINDS: readonly StandaloneTaskKind[] = [
+  'direct',
   'feature',
   'bugfix',
   'hotfix',
@@ -15,7 +16,7 @@ export const getCreatableStandaloneTaskKinds = (
   }
 
   return isMainlineGitWorkflow(settings)
-    ? ['feature', 'hotfix']
+    ? ['direct', 'feature', 'hotfix']
     : [...STANDALONE_TASK_KINDS];
 };
 

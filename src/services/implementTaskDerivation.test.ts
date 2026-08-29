@@ -18,6 +18,7 @@ const makeNode = (overrides: Partial<PlanNode> & Pick<PlanNode, 'id' | 'title'>)
   branchSlug: overrides.branchSlug,
   projectId: overrides.projectId ?? 'web',
   projectIds: overrides.projectIds ?? ['web'],
+  executionModesByProjectId: overrides.executionModesByProjectId,
 });
 
 const makeBranch = (
@@ -66,6 +67,50 @@ describe('deriveImplementTasksFromStrategy', () => {
     });
 
     expect(result.tasks.map((task) => task.status)).toEqual(['InProgress', 'Completed']);
+  });
+
+  it('keeps the execution mode of each target in a mixed plan', () => {
+    const result = deriveImplementTasksFromStrategy({
+      planId: 'plan-mixed',
+      planSlug: 'mixed',
+      targetBranchesByProjectId: { web: 'develop', docs: 'develop' },
+      nodes: [
+        makeNode({
+          id: 'task-git',
+          title: 'Git task',
+          projectId: 'web',
+          projectIds: ['web'],
+          executionModesByProjectId: { web: 'git' },
+        }),
+        makeNode({
+          id: 'task-direct',
+          title: 'Direct task',
+          projectId: 'docs',
+          projectIds: ['docs'],
+          executionModesByProjectId: { docs: 'direct' },
+        }),
+      ],
+      predictedBranches: [],
+    });
+
+    expect(result.tasks.find(({ id }) => id === 'task-git')?.execution_targets[0]).toMatchObject({
+      projectId: 'web',
+      executionMode: 'git',
+      executionKind: 'worktree',
+    });
+    expect(result.tasks.find(({ id }) => id === 'task-direct')?.execution_targets[0]).toMatchObject({
+      projectId: 'docs',
+      executionMode: 'direct',
+      executionKind: 'repository_root',
+      branchName: '',
+      worktreeKey: 'direct:docs:task-direct',
+    });
+    expect(result.tasks.find(({ id }) => id === 'task-direct')).toMatchObject({
+      assigned_branch: '',
+      branch_name: '',
+    });
+    expect(result.nodes.find(({ id }) => id === 'task-direct')).not.toHaveProperty('assignedBranch');
+    expect(result.predictedBranches.map((branch) => branch.projectId)).toEqual(['web']);
   });
 
   it('preserves Failed even when an Architect dependency is unresolved', () => {

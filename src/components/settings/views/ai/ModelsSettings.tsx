@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../../../stores/useProviderStore';
+import { useAppStore } from '../../../../stores/useAppStore';
+import { SettingsEmptyState } from '../../../shared/SettingsEmptyState';
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
@@ -111,6 +113,7 @@ const parseContextWindowInput = (value: string): number | null => {
 
 export const ModelsSettings: React.FC = () => {
   const { t } = useTranslation();
+  const setSettingsTab = useAppStore((state) => state.setSettingsTab);
   const { matches, query } = useSettingsSearch();
   const {
     providerConfigs,
@@ -452,10 +455,16 @@ export const ModelsSettings: React.FC = () => {
 
   if (providers.length === 0) {
     return (
-      <div className="text-center py-12 text-muted-foreground animate-in fade-in duration-300">
-        <Icon name="layers" size={32} className="mx-auto mb-3 opacity-50" />
-        <p>{t('models.noProviders', 'No providers configured yet. Add a provider first.')}</p>
-      </div>
+      <SettingsEmptyState
+        className="animate-in fade-in duration-300"
+        icon="layers"
+        title={t('models.noProvidersTitle', 'Add a provider before adding models')}
+        description={t('models.noProviders', 'Models must be connected to a configured provider.')}
+        action={<Button onClick={() => setSettingsTab('providers')}>
+          <Icon name="plus" size={14} className="mr-2" />
+          {t('providers.add', 'Add Provider')}
+        </Button>}
+      />
     );
   }
 
@@ -618,7 +627,11 @@ export const ModelsSettings: React.FC = () => {
         className="pt-2"
       />
 
-      {!hasSearchResults && <SettingsSearchEmpty />}
+      {!hasSearchResults && (
+        <SettingsSearchEmpty
+          message={t('models.noModelsFiltered', 'No models match the current filter.')}
+        />
+      )}
 
       {filteredProviderModels.length > 0 && (
         <Accordion

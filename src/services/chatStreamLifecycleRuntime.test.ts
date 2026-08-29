@@ -231,6 +231,95 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(events).toContain("content:Final");
   });
 
+  test("keeps completion ownership until tool-boundary consolidation finishes", async () => {
+    const controls = makeControls();
+    const releaseConsolidationRef: { current: (() => void) | null } = {
+      current: null,
+    };
+    const { runtime, events } = makeRuntime({
+      overrides: {
+        consolidatePendingToolBoundaryCompactionAfterPersistence: mock(async () => {
+          events.push("consolidate-start");
+          await new Promise<void>((resolve) => {
+            releaseConsolidationRef.current = resolve;
+          });
+          events.push("consolidate-end");
+        }),
+      },
+    });
+
+    await runtime.onComplete(
+      {
+        visibleContent: "Final",
+        toolTraces: [],
+      },
+      controls,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events).toContain("consolidate-start");
+    expect(events).not.toContain("clear-persistence-ownership");
+
+    releaseConsolidationRef.current?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(events.indexOf("consolidate-end")).toBeLessThan(
+      events.indexOf("clear-persistence-ownership"),
+    );
+  });
+
+  test("an exhausted length recovery persists the partial response and ends in error", async () => {
+    const controls = makeControls();
+    const { runtime, events, getMessage } = makeRuntime();
+
+    await runtime.onComplete(
+      {
+        visibleContent: "Réponse encore coupée",
+        toolTraces: [],
+        completionReason: "length",
+      },
+      controls,
+    );
+
+    expect(getMessage().completion_reason).toBe("length");
+    expect(events).toContain("persist-final");
+    expect(events).toContain("stream-error:transcript:assistant-1");
+    expect(events).toContain("conversation:Réponse encore coupée");
+    expect(events).not.toContain("awaiting");
+    expect(controls.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test("an incomplete response keeps a persistence failure instead of replacing it with a provider error", async () => {
+    const controls = makeControls();
+    const persistenceErrors: string[] = [];
+    const { runtime, events } = makeRuntime({
+      overrides: {
+        persistAssistantStreamResult: mock(async () => {
+          throw new Error("SQLite unavailable");
+        }),
+        setCompletionPersistenceError: ({ message }) => {
+          persistenceErrors.push(message);
+        },
+      },
+    });
+
+    await runtime.onComplete(
+      {
+        visibleContent: "Réponse coupée non persistée",
+        toolTraces: [],
+        completionReason: "length",
+      },
+      controls,
+    );
+
+    expect(events).toContain("conversation:Réponse coupée non persistée");
+    expect(persistenceErrors).toEqual(["SQLite unavailable"]);
+    expect(events).not.toContain("stream-error:transcript:assistant-1");
+    expect(controls.dispose).toHaveBeenCalledTimes(1);
+  });
+
   test("provider error before any token removes the empty placeholder", async () => {
     const controls = makeControls();
     const { runtime, events } = makeRuntime();

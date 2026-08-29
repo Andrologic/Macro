@@ -41,6 +41,10 @@ const loadModelsSettings = async () => {
     useTranslation: () => ({
       t: translate,
     }),
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
   }));
 
   mock.module('../../../../stores/useProviderStore', () => ({
@@ -146,7 +150,9 @@ const loadModelsSettings = async () => {
       },
     }),
     SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
-    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    SettingsSearchEmpty: ({ message }: { message?: React.ReactNode }) => (
+      <div>{message ?? 'No matching models'}</div>
+    ),
   }));
 
   importCounter += 1;
@@ -503,7 +509,7 @@ describe('ModelsSettings metadata model config', () => {
       await flush();
     });
 
-    expect(container!.textContent).toContain('No matching settings');
+    expect(container!.textContent).toContain('No models match the current filter.');
     expect(container!.textContent).toContain('Metadata generation');
   });
 });

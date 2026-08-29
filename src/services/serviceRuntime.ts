@@ -1,3 +1,5 @@
+import { isBrowserRuntimeBridgeEnabled } from './tauriRuntimeBridge';
+
 export type DataProvider = 'ipc';
 export type ServiceTransport = 'desktop' | 'remote';
 export type ServiceProviderName = DataProvider | 'remote';
@@ -144,7 +146,10 @@ const hasTauriIpcInvoke = (): boolean => {
     } | null;
   };
 
-  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
+  return (
+    typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function' ||
+    isBrowserRuntimeBridgeEnabled()
+  );
 };
 
 const readEnv = (

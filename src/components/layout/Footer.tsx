@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open } from '../../services/tauriDialog';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { notify } from '../ui/toastService';
@@ -21,6 +21,7 @@ import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
 import { resolveFooterGitContext } from '../../services/footerGitContext';
+import { getPlanExecutionModesByProjectId } from '../../services/planExecutionModes';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
 import { UpdateStatusButton } from '../updates/UpdateStatusButton';
 import {
@@ -708,7 +709,9 @@ export const Footer: React.FC = () => {
     projectGroups,
     selectedTaskId,
     activeArchitectPlanId,
+    activePlanContext,
     visibleArchitectPlans,
+    planNodes,
     metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy,
   } = useAppStore(useShallow((state) => ({
@@ -718,7 +721,9 @@ export const Footer: React.FC = () => {
     projectGroups: state.projectGroups,
     selectedTaskId: state.selectedTaskId,
     activeArchitectPlanId: state.activeArchitectPlanId,
+    activePlanContext: state.activePlanContext,
     visibleArchitectPlans: state.visibleArchitectPlans,
+    planNodes: state.planNodes,
     metadataMissingUpstreamPolicy: state.metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy: state.setMetadataMissingUpstreamPolicy,
   })));
@@ -776,7 +781,13 @@ export const Footer: React.FC = () => {
     durableFocusProjectId: selectedProjectId,
     manualProjectId: gitScopeProjectId,
     selectedFolder: canSelectFolder ? selectedFolder : null,
-  }), [activeArchitectPlanId, canSelectFolder, conversations, gitScopeProjectId, mode, projectGroups, selectedConversationId, selectedFolder, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
+    activeArchitectPlanExecutionModesByProjectId: activeArchitectPlanId
+      ? getPlanExecutionModesByProjectId(
+          planNodes,
+          activePlanContext?.executionModesByProjectId,
+        )
+      : undefined,
+  }), [activeArchitectPlanId, activePlanContext?.executionModesByProjectId, canSelectFolder, conversations, gitScopeProjectId, mode, planNodes, projectGroups, selectedConversationId, selectedFolder, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
   const focusProjects = gitContext.candidates;
   const focusedProject = gitContext.project;
   const scopeProjects = useMemo<ScopedProject[]>(
@@ -2161,8 +2172,11 @@ export const Footer: React.FC = () => {
               type="button"
               size="sm"
               variant="ghost"
+              aria-label={t('notifications.centerTitle', 'Notifications')}
+              title={t('notifications.centerTitle', 'Notifications')}
               aria-haspopup="dialog"
               aria-expanded={isNotificationCenterOpen}
+              aria-controls="notification-center-popover"
               className={cn('relative h-6 w-6 px-0 text-[11px]', isNotificationCenterOpen && 'bg-accent text-foreground hover:bg-accent')}
               onClick={() => setNotificationCenterOpen(!isNotificationCenterOpen)}
               data-tour-id="notification-center"

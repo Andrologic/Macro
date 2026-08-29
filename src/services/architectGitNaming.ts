@@ -542,6 +542,9 @@ export const renderStandaloneTaskBranchName = (params: {
   taskSlug: string;
   settings?: Partial<ProjectGitFlowSettings> | null;
 }): string => {
+  if (params.taskKind === 'direct') {
+    throw new Error('Direct tasks use the current branch and do not render a branch name.');
+  }
   if (params.taskKind === 'feature') {
     return toStandaloneFeatureBranchName(params.taskSlug, params.settings);
   }

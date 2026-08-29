@@ -5,12 +5,15 @@ import type { RestartSafetySnapshot } from '../../services/restartSafety';
 
 const closeDetailsMock = mock(() => undefined);
 const installAndRestartMock = mock(async () => true);
+const resetMock = mock(async () => undefined);
+const checkForUpdatesMock = mock(async () => 'ready' as const);
 const prepareForPotentialShutdownMock = mock(async () => undefined);
 const savePreferenceMock = mock(async () => undefined);
 const notifyErrorMock = mock(() => undefined);
 
 let restartSafetySnapshot: RestartSafetySnapshot;
 let updateState: Record<string, unknown>;
+let shutdownGateActive = false;
 
 const useAppUpdateStoreMock = Object.assign(
   (selector: (state: Record<string, unknown>) => unknown) => selector(updateState),
@@ -49,10 +52,29 @@ mock.module('../../stores/useTaskStore', () => ({
 
 mock.module('../../services/restartSafety', () => ({
   selectRestartSafetySnapshot: () => restartSafetySnapshot,
+  hasUnapprovedRestartSafetyActivity: (
+    approved: RestartSafetySnapshot,
+    current: RestartSafetySnapshot,
+  ) => {
+    const approvedKeys = new Set([
+      ...approved.activeAgents,
+      ...approved.activeImplementations,
+    ].map((activity) => `${activity.kind}:${activity.id}`));
+    return [...current.activeAgents, ...current.activeImplementations]
+      .some((activity) => !approvedKeys.has(`${activity.kind}:${activity.id}`));
+  },
 }));
 
 mock.module('../../services/windowShutdown', () => ({
   prepareForPotentialShutdown: prepareForPotentialShutdownMock,
+}));
+
+mock.module('../../services/appShutdownGate', () => ({
+  beginAppShutdownGate: () => {
+    shutdownGateActive = true;
+    return () => { shutdownGateActive = false; };
+  },
+  isAppShutdownGateActive: () => shutdownGateActive,
 }));
 
 mock.module('../../services/preferences', () => ({
@@ -85,6 +107,7 @@ describe('UpdateModal', () => {
 
   beforeEach(() => {
     restartSafetySnapshot = emptySafetySnapshot();
+    shutdownGateActive = false;
     updateState = {
       phase: 'ready',
       availableUpdate: {
@@ -98,9 +121,13 @@ describe('UpdateModal', () => {
       detailsOpen: true,
       closeDetails: closeDetailsMock,
       installAndRestart: installAndRestartMock,
+      reset: resetMock,
+      checkForUpdates: checkForUpdatesMock,
     };
     closeDetailsMock.mockClear();
     installAndRestartMock.mockClear();
+    resetMock.mockClear();
+    checkForUpdatesMock.mockClear();
     prepareForPotentialShutdownMock.mockClear();
     prepareForPotentialShutdownMock.mockImplementation(async () => undefined);
     savePreferenceMock.mockClear();
@@ -126,7 +153,7 @@ describe('UpdateModal', () => {
   it('prepares the application and installs when no work is active', async () => {
     await renderModal();
 
-    await act(async () => buttonByText('Restart and update')?.click());
+    await act(async () => buttonByText('Install now')?.click());
 
     expect(prepareForPotentialShutdownMock).toHaveBeenCalledTimes(1);
     expect(savePreferenceMock).toHaveBeenCalledWith('releaseNotesPendingUpdate', {
@@ -136,28 +163,16 @@ describe('UpdateModal', () => {
     expect(installAndRestartMock).toHaveBeenCalledTimes(1);
   });
 
-  it('checks for newly active work again after preparing the restart', async () => {
+  it('blocks new work before preparing the restart', async () => {
     prepareForPotentialShutdownMock.mockImplementationOnce(async () => {
-      restartSafetySnapshot = {
-        ...emptySafetySnapshot(),
-        activeAgents: [{
-          id: 'conversation-late',
-          kind: 'agent',
-          phase: 'preparing',
-          title: 'Late agent',
-        }],
-        activeAgentCount: 1,
-        activeWorkCount: 1,
-        hasActiveWork: true,
-      };
+      expect(shutdownGateActive).toBe(true);
     });
     await renderModal();
 
-    await act(async () => buttonByText('Restart and update')?.click());
+    await act(async () => buttonByText('Install now')?.click());
 
-    expect(document.body.textContent).toContain('Late agent');
-    expect(savePreferenceMock).not.toHaveBeenCalled();
-    expect(installAndRestartMock).not.toHaveBeenCalled();
+    expect(prepareForPotentialShutdownMock).toHaveBeenCalledTimes(1);
+    expect(installAndRestartMock).toHaveBeenCalledTimes(1);
   });
 
   it('warns about active agents and keeps waiting as the safe action', async () => {
@@ -175,7 +190,7 @@ describe('UpdateModal', () => {
     };
     await renderModal();
 
-    await act(async () => buttonByText('Restart and update')?.click());
+    await act(async () => buttonByText('Install now')?.click());
 
     expect(document.body.textContent).toContain('Agents are still running');
     expect(document.body.textContent).toContain('Release agent');
@@ -199,10 +214,23 @@ describe('UpdateModal', () => {
       hasActiveWork: true,
     };
     await renderModal();
-    await act(async () => buttonByText('Restart and update')?.click());
-    await act(async () => buttonByText('Restart anyway')?.click());
+    await act(async () => buttonByText('Install now')?.click());
+    await act(async () => buttonByText('Install anyway')?.click());
 
     expect(prepareForPotentialShutdownMock).toHaveBeenCalledTimes(1);
     expect(installAndRestartMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a failed staged package before downloading it again', async () => {
+    updateState.phase = 'error';
+    updateState.error = 'The update could not be installed';
+    updateState.errorOperation = 'install';
+    await renderModal();
+
+    await act(async () => buttonByText('Download again')?.click());
+
+    expect(resetMock).toHaveBeenCalledTimes(1);
+    expect(checkForUpdatesMock).toHaveBeenCalledWith({ explicit: true });
+    expect(installAndRestartMock).toHaveBeenCalledTimes(0);
   });
 });

@@ -27,6 +27,22 @@ export interface RestartSafetySnapshot {
   hasActiveWork: boolean;
 }
 
+const restartSafetyActivityKey = (activity: RestartSafetyActivity): string =>
+  `${activity.kind}:${activity.id}`;
+
+export const hasUnapprovedRestartSafetyActivity = (
+  approved: RestartSafetySnapshot,
+  current: RestartSafetySnapshot,
+): boolean => {
+  const approvedKeys = new Set([
+    ...approved.activeAgents.map(restartSafetyActivityKey),
+    ...approved.activeImplementations.map(restartSafetyActivityKey),
+  ]);
+  return [...current.activeAgents, ...current.activeImplementations].some(
+    (activity) => !approvedKeys.has(restartSafetyActivityKey(activity)),
+  );
+};
+
 export interface RestartSafetyTaskCommandRun {
   taskId: string;
   status: "running" | "cancelling";

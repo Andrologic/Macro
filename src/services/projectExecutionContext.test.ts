@@ -105,6 +105,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
       {
         projectId: 'macro-api',
@@ -113,6 +115,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro API',
         workspacePath: 'C:/dev/macro-api',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
     ]);
     expect(context.workspacePathsByProjectId['macro-web']).toBe('projects/macro-web');
@@ -151,12 +155,14 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Solo App',
         workspacePath: '/repos/solo-app',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
     ]);
     expect(context.workspacePath).toBe('/repos/solo-app');
   });
 
-  it('retargets a stale single-project task to the selected standalone project', async () => {
+  it('does not expose the selected project for a task with an orphaned persisted target', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const standaloneProject = {
       ...projects[0],
@@ -178,6 +184,7 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'project-lplr-app-1780237886690',
+              executionMode: 'git',
               branchName: 'feature/catalogue',
               worktreeKey: 'stale-worktree',
             },
@@ -189,10 +196,12 @@ describe('resolveProjectExecutionContext', () => {
       selectedTaskId: 'task-stale',
     });
 
-    expect(context.projectId).toBe('project-lplr-current');
-    expect(context.projectIds).toEqual(['project-lplr-current']);
-    expect(context.actionableProjectIds).toEqual(['project-lplr-current']);
-    expect(context.workspacePath).toBe('/repos/lplr-app');
+    expect(context.taskId).toBe('task-stale');
+    expect(context.projectId).toBeNull();
+    expect(context.projectIds).toEqual([]);
+    expect(context.actionableProjectIds).toEqual([]);
+    expect(context.projectMounts).toEqual([]);
+    expect(context.workspacePath).toBeNull();
   });
 
   it('prefers the current registry path over stale task repoPath snapshots', async () => {
@@ -217,6 +226,7 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'project-lplr-app-1780329499166',
+              executionMode: 'git',
               branchName: 'feature/catalogue',
               worktreeKey: 'branch-project-lplr-app-feature-catalogue',
               repoPath: '/repos/lplr-app',
@@ -260,6 +270,30 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.workspacePath).toBeNull();
   });
 
+  it('keeps a confirmed non-Git project read-only when direct editing is disabled', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const blockedProject = {
+      ...projects[0],
+      gitSetupState: 'not_git' as const,
+      directEdit: false,
+      isReadOnly: true,
+    };
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects: [blockedProject],
+      projectGroups: [],
+      selectedProjectId: blockedProject.id,
+    });
+
+    expect(context.actionableProjectIds).toEqual([]);
+    expect(context.contextProjectIds).toEqual([blockedProject.id]);
+    expect(context.projectMounts[0]).toMatchObject({
+      projectId: blockedProject.id,
+      isReadOnly: true,
+      executionMode: 'blocked',
+    });
+  });
+
   it('prefers task worktrees for targeted projects in implement mode', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const context = resolveProjectExecutionContext({
@@ -275,11 +309,13 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'macro-api',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-api::feature/payments',
             },
             {
               projectId: 'macro-web',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-web::feature/payments',
             },
@@ -339,11 +375,13 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'macro-api',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-api::feature/payments',
             },
             {
               projectId: 'macro-web',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-web::feature/payments',
             },
@@ -378,6 +416,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'persisted_git_target',
       },
       {
         projectId: 'macro-api',
@@ -386,6 +426,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro API',
         workspacePath: 'C:/dev/macro-api',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'persisted_git_target',
       },
     ]);
   });
@@ -406,6 +448,7 @@ describe('resolveProjectExecutionContext', () => {
           execution_targets: [
             {
               projectId: 'macro-api',
+              executionMode: 'git',
               branchName: 'feature/payments',
               worktreeKey: 'macro-api::feature/payments',
             },
@@ -451,6 +494,8 @@ describe('resolveProjectExecutionContext', () => {
         displayName: 'Macro Web',
         workspacePath: 'projects/macro-web',
         isReadOnly: false,
+        executionMode: 'git',
+        executionModeReason: 'git_ready',
       },
     ]);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
@@ -497,6 +542,8 @@ describe('resolveProjectExecutionContext', () => {
           displayName: 'Macro Web',
           workspacePath: 'projects/macro-web',
           isReadOnly: false,
+          executionMode: 'git',
+          executionModeReason: 'git_ready',
         },
         {
           projectId: 'macro-api',
@@ -505,6 +552,8 @@ describe('resolveProjectExecutionContext', () => {
           displayName: 'Macro API',
           workspacePath: 'C:/dev/macro-api',
           isReadOnly: false,
+          executionMode: 'git',
+          executionModeReason: 'git_ready',
         },
       ],
       focusedProjectId: 'macro-api',
@@ -570,5 +619,55 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.actionableProjectIds).toEqual(['macro-web', 'macro-api']);
     expect(context.contextProjectIds).toEqual([]);
     expect(context.defaultWorkspacePath).toBe('projects/macro-web');
+  });
+
+  it('keeps Architect mounts on their active-plan modes after a direct project gains Git', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Architect',
+      projects,
+      projectGroups,
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: 'macro-web',
+      architectExecutionModesByProjectId: {
+        'macro-web': 'direct',
+        'macro-api': 'git',
+      },
+    });
+
+    expect(context.projectMounts).toEqual([
+      expect.objectContaining({ projectId: 'macro-web', executionMode: 'direct' }),
+      expect.objectContaining({ projectId: 'macro-api', executionMode: 'git' }),
+    ]);
+    expect(context.actionableProjectIds).toEqual(['macro-web', 'macro-api']);
+  });
+
+  it('does not expose a branch for a persisted direct Implement target', async () => {
+    const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
+    const context = resolveProjectExecutionContext({
+      mode: 'Implement',
+      projects,
+      projectGroups,
+      selectedGroupId: 'macro-suite',
+      selectedProjectId: 'macro-web',
+      selectedTaskId: 'direct-task',
+      tasks: [{
+        id: 'direct-task',
+        project_id: 'macro-web',
+        project_ids: ['macro-web'],
+        assigned_branch: 'work',
+        execution_targets: [{
+          projectId: 'macro-web',
+          executionMode: 'direct',
+          branchName: '',
+          worktreeKey: 'macro-web::direct',
+        }],
+      }],
+    });
+
+    expect(context.branchName).toBeNull();
+    expect(context.projectMounts).toEqual([
+      expect.objectContaining({ projectId: 'macro-web', executionMode: 'direct' }),
+    ]);
   });
 });

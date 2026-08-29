@@ -894,6 +894,9 @@ describe('streamingChat tool rendering helpers', () => {
         body: new ReadableStream({
           start(controller) {
             controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n'));
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'),
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -944,6 +947,9 @@ describe('streamingChat tool rendering helpers', () => {
         body: new ReadableStream({
           start(controller) {
             controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n'));
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'),
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -1618,6 +1624,9 @@ describe('streamingChat tool rendering helpers', () => {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
             );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -1693,6 +1702,9 @@ describe('streamingChat tool rendering helpers', () => {
           start(controller) {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
             );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
@@ -1794,6 +1806,9 @@ describe('streamingChat tool rendering helpers', () => {
           start(controller) {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"I need a citation id."}}]}\n\n'),
+            );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'),
             );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
@@ -2012,6 +2027,9 @@ describe('streamingChat tool rendering helpers', () => {
             controller.enqueue(
               encoder.encode(`data: {"choices":[{"delta":{"content":"${content}"}}]}\n\n`),
             );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'),
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -2079,6 +2097,9 @@ describe('streamingChat tool rendering helpers', () => {
           start(controller) {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
+            );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
             );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
@@ -2300,6 +2321,9 @@ describe('streamingChat tool rendering helpers', () => {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"Done."}}]}\n\n')
             );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -2516,6 +2540,9 @@ describe('streamingChat tool rendering helpers', () => {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"Final after tools."}}]}\n\n')
             );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
           },
@@ -2549,7 +2576,7 @@ describe('streamingChat tool rendering helpers', () => {
     expect(onToolCall).toHaveBeenCalledTimes(4);
     expect(requestBodies[4]?.tools).toBeDefined();
     const finalResult = onComplete.mock.calls[0]?.[0];
-    expect(finalResult?.completionReason).toBeUndefined();
+    expect(finalResult?.completionReason).toBe('completed');
     expect(finalResult?.visibleContent).not.toContain('Limite de tours atteinte');
     expect(finalResult?.visibleContent).not.toContain('[Macro]');
     expect(finalResult?.visibleContent).toContain('Final after tools.');
@@ -2577,6 +2604,9 @@ describe('streamingChat tool rendering helpers', () => {
           start(controller) {
             controller.enqueue(
               encoder.encode('data: {"choices":[{"delta":{"content":"Recovered."}}]}\n\n')
+            );
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
             );
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
@@ -2687,6 +2717,9 @@ describe('streamingChat tool rendering helpers', () => {
                 encoder.encode(
                   'data: {"choices":[{"delta":{"content":"Je peux t aider a choisir."}}]}\n\n'
                 )
+              );
+              controller.enqueue(
+                encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
               );
               controller.enqueue(encoder.encode('data: [DONE]\n\n'));
               controller.close();
@@ -2943,6 +2976,306 @@ describe('streamingChat tool rendering helpers', () => {
       expect.objectContaining({
         visibleContent: '<think>Inspecting files.</think>\nDone.',
       })
+    );
+  });
+
+  it('strips short and large exact overlaps from a continuation', async () => {
+    const { __testables } = await loadStreamingChat();
+
+    expect(__testables.stripContinuationOverlap('hello', 'hello world')).toBe(' world');
+    const largeOverlap = 'a'.repeat(5_000);
+    expect(
+      __testables.stripContinuationOverlap(
+        `existing prefix ${largeOverlap}`,
+        `${largeOverlap}suffix`,
+      ),
+    ).toBe('suffix');
+    expect(
+      __testables.stripContinuationOverlap(
+        'The previous paragraph ends with a',
+        'and the next paragraph starts independently.',
+      ),
+    ).toBe('and the next paragraph starts independently.');
+  });
+
+  it('continues an incomplete Copilot response once without duplicating overlap or tools', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const requests: Array<Record<string, unknown>> = [];
+    const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
+      listeners.set(eventName, handler);
+      return () => {
+        listeners.delete(eventName);
+      };
+    });
+    const invokeMock = mock(async (command: string, payload?: unknown) => {
+      if (command !== 'ai_stream_chat') return undefined;
+      const request = (payload as { request: Record<string, unknown> }).request;
+      requests.push(request);
+      const requestId = request.request_id as string;
+      const firstRequest = requests.length === 1;
+      queueMicrotask(() => {
+        const text = firstRequest
+          ? 'Alpha repeated phrase'
+          : 'repeated phrase and omega';
+        listeners.get('ai:stream')?.({
+          payload: { request_id: requestId, delta: text },
+        });
+        listeners.get('ai:done')?.({
+          payload: {
+            request_id: requestId,
+            output_text: text,
+            tool_calls: firstRequest
+              ? [
+                  {
+                    id: 'call_truncated',
+                    type: 'function',
+                    function: {
+                      name: 'read',
+                      arguments: '{"path":"README.md"}',
+                    },
+                  },
+                ]
+              : [],
+            completion_reason: firstRequest ? 'incomplete' : 'completed',
+          },
+        });
+      });
+      return undefined;
+    });
+    const { streamChat } = await loadStreamingChat(undefined, {
+      invokeImpl: invokeMock,
+      listenImpl: listenMock,
+      forceTauriAvailable: true,
+    });
+    const streamed: string[] = [];
+    const onComplete = mock((_result: unknown) => undefined);
+    const onToolCall = mock(async () => 'must not run');
+
+    await streamChat({
+      conversationId: 'conv-1',
+      providerId: 'copilot',
+      providerType: 'copilot',
+      baseUrl: 'copilot://cli',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Write a long answer.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: (token: string) => streamed.push(token),
+      onComplete,
+      onToolCall,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.tools).toBeArray();
+    expect(requests[0]?.allowed_tool_ids).toEqual(['read']);
+    expect(requests[1]?.tools).toEqual([]);
+    expect(requests[1]?.allowed_tool_ids).toEqual([]);
+    expect(JSON.stringify(requests[1]?.messages)).toContain('Continue exactly where it stopped');
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain('call_truncated');
+    expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Alpha repeated phrase and omega',
+        completionReason: 'incomplete_recovered',
+      }),
+    );
+    const finalResult = onComplete.mock.calls[0]?.[0] as {
+      providerInputItems?: unknown[];
+    };
+    expect(JSON.stringify(finalResult.providerInputItems)).toContain('"text":" and omega"');
+    expect(JSON.stringify(finalResult.providerInputItems)).not.toContain(
+      '"text":"repeated phrase and omega"',
+    );
+  });
+
+  it('continues a generic length-limited response once and preserves the recovery cause', async () => {
+    const encoder = new TextEncoder();
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = mock(async (_url: string, init?: { body?: string }) => {
+      requestBodies.push(JSON.parse(typeof init?.body === 'string' ? init.body : '{}'));
+      const firstRequest = requestBodies.length === 1;
+      const text = firstRequest
+        ? 'Alpha repeated phrase'
+        : 'repeated phrase and omega';
+      const finishReason = firstRequest ? 'length' : 'stop';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`,
+              ),
+            );
+            if (firstRequest) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_truncated', type: 'function', function: { name: 'read', arguments: '{"path":"README.md"}' } }] } }] })}\n\n`,
+                ),
+              );
+            }
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`,
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const streamed: string[] = [];
+    const onComplete = mock((_result: unknown) => undefined);
+    const onToolCall = mock(async () => 'must not run');
+
+    await streamChat({
+      providerId: 'openai-generic',
+      providerType: 'openai',
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Write a long answer.' }],
+      allowedToolIds: ['read'],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: (token: string) => streamed.push(token),
+      onComplete,
+      onToolCall,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]?.tools).toBeDefined();
+    expect(requestBodies[1]?.tools).toBeUndefined();
+    expect(JSON.stringify(requestBodies[1]?.messages)).toContain('Continue exactly where it stopped');
+    expect(JSON.stringify(requestBodies[1]?.messages)).not.toContain('call_truncated');
+    expect(streamed.join('')).toBe('Alpha repeated phrase and omega');
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Alpha repeated phrase and omega',
+        completionReason: 'length_recovered',
+      }),
+    );
+    const finalResult = onComplete.mock.calls[0]?.[0] as {
+      providerInputItems?: unknown[];
+    };
+    expect(JSON.stringify(finalResult.providerInputItems)).toContain(
+      '"content":" and omega"',
+    );
+    expect(JSON.stringify(finalResult.providerInputItems)).not.toContain(
+      '"content":"repeated phrase and omega"',
+    );
+  });
+
+  it('stops after one generic incomplete recovery attempt', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async () => {
+      requestCount += 1;
+      const text = requestCount === 1 ? 'Partial answer.' : 'Still partial.';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`,
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onComplete = mock((_result: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'openai-generic',
+      providerType: 'openai',
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Answer.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requestCount).toBe(2);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Partial answer.Still partial.',
+        completionReason: 'incomplete',
+      }),
+    );
+  });
+
+  it('preserves an unknown terminal reason without retrying it', async () => {
+    const encoder = new TextEncoder();
+    let requestCount = 0;
+    const fetchMock = mock(async () => {
+      requestCount += 1;
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"choices":[{"delta":{"content":"Filtered partial."}}]}\n\n',
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n',
+              ),
+            );
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        }),
+      };
+    });
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onComplete = mock((_result: StreamCompletionResult) => undefined);
+
+    await streamChat({
+      providerId: 'openai-generic',
+      providerType: 'openai',
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      modelId: 'gpt-test',
+      messages: [{ role: 'user', content: 'Answer.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError: (error: Error) => {
+        throw error;
+      },
+    });
+
+    expect(requestCount).toBe(1);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        visibleContent: 'Filtered partial.',
+        completionReason: 'content_filter',
+      }),
     );
   });
 

@@ -85,4 +85,17 @@ describe('SettingsSearch', () => {
 
     expect((container?.querySelector('input') as HTMLInputElement).value).toBe('');
   });
+
+  it('renders the translated message supplied by the owning settings collection', async () => {
+    const { SettingsSearchEmpty } = await loadSearch();
+
+    await act(async () => {
+      root?.render(
+        <SettingsSearchEmpty message="Aucun raccourci ne correspond à votre recherche." />
+      );
+    });
+
+    expect(container?.textContent).toContain('Aucun raccourci ne correspond à votre recherche.');
+    expect(container?.querySelector('[data-empty-state="settings"]')).not.toBeNull();
+  });
 });

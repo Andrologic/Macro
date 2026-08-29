@@ -161,6 +161,8 @@ const appStoreState = {
     id: 'project-1',
     name: 'Project One',
     path: '/repos/web',
+    gitSetupState: 'ready' as const,
+    directEdit: false,
     gitFlowSettings: {
       baseBranch: 'develop',
       planBranchTemplate: 'plan/{slug}',
@@ -340,6 +342,7 @@ const buildArchitectTask = (overrides: Record<string, unknown> = {}) => ({
   execution_targets: [
     {
       projectId: 'project-1',
+      executionMode: 'git',
       branchName: 'feature/task-1',
       worktreeKey: 'repo-1',
       repoPath: '/repos/web',
@@ -774,6 +777,41 @@ describe('useTaskStore.finishTask', () => {
 
     expect(useTaskStore.getState().lastError).toContain('Direct status blocker');
     expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InReview');
+  });
+
+  it('does not treat sibling direct plan tasks as sharing a Git branch', async () => {
+    const directTarget = {
+      projectId: 'project-1',
+      branchName: '',
+      worktreeKey: 'project-1::direct',
+      repoPath: '/repos/web',
+      targetBranchName: '',
+      checkpointId: 'checkpoint-legacy-direct',
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [
+        buildArchitectTask({
+          execution_targets: [directTarget],
+          assigned_branch: '',
+          branch_name: '',
+        }),
+        buildArchitectTask({
+          id: 'task-2',
+          title: 'Task 2',
+          status: 'Pending',
+          execution_targets: [{ ...directTarget, worktreeKey: 'project-1::direct:task-2' }],
+          assigned_branch: '',
+          branch_name: '',
+        }),
+      ] as never[],
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(useTaskStore.getState().lastError).toBeNull();
+    expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
   });
 
   it('does not block legacy architect task completion when todos were never generated', async () => {

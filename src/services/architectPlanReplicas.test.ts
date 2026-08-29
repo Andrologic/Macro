@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { Project, ProjectGroup } from '../types';
+import { registerAppStateGetter } from './appStateRuntime';
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 type MockAppState = {
@@ -16,6 +17,8 @@ const makeProject = (id: string, name: string, mountName: string, path: string):
   path,
   created_at: '2026-03-15T00:00:00.000Z',
   status: 'active',
+  gitSetupState: 'ready',
+  directEdit: false,
   metadata: {
     description: '',
     tags: [],
@@ -332,6 +335,7 @@ const loadArchitectPlanService = async () => {
 
 describe('architectPlanService replicas', () => {
   beforeEach(() => {
+    registerAppStateGetter(() => appState);
     workspaceFiles.clear();
     appSettings.clear();
     commitSnapshots.length = 0;

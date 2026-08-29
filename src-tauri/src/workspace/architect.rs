@@ -601,14 +601,30 @@ async fn resolve_project_scopes(
     let git_state = GitState::new();
     let project_paths =
         collect_workspace_state_project_paths(&state, scoped_project_id_set.as_ref());
-    let resolved_project_scopes =
-        try_join_all(project_paths.into_iter().map(|(project_id, project_path)| {
+    let resolved_project_scopes = try_join_all(project_paths.into_iter().map(
+        |(project_id, project_path, git_setup_state)| {
             let git_state = git_state.clone();
             async move {
                 if parse_wsl_unc_path(&project_path).is_some() {
-                    return Ok::<_, BackendError>(None);
+                    return Ok::<_, BackendError>(Vec::new());
                 }
                 let resolved_repo_path = PathBuf::from(project_path);
+                let direct_metadata_root = resolved_repo_path.join(".macro");
+                let direct_scope = ArchitectRuntimeScope {
+                    scope_key: format!("direct:{}", resolved_repo_path.to_string_lossy()),
+                    project_id: Some(project_id.clone()),
+                    repo_path: None,
+                    workspace_path: Some(resolved_repo_path.clone()),
+                    metadata_root: direct_metadata_root.clone(),
+                    source: "project".to_string(),
+                };
+                if git_setup_state != "ready" {
+                    return Ok::<_, BackendError>(vec![direct_scope]);
+                }
+                let mut project_scopes = Vec::new();
+                if direct_metadata_root.exists() {
+                    project_scopes.push(direct_scope);
+                }
                 let metadata_root_result = tokio::task::spawn_blocking({
                     let git_state = git_state.clone();
                     let repo_path = resolved_repo_path.clone();
@@ -619,29 +635,23 @@ async fn resolve_project_scopes(
                     message: format!("Architect metadata root join error: {}", error),
                 })?;
                 let project_metadata_root = metadata_root_result?;
-                Ok::<_, BackendError>(Some((
-                    project_id,
-                    resolved_repo_path,
-                    project_metadata_root,
-                )))
+                project_scopes.push(ArchitectRuntimeScope {
+                    scope_key: format!("repo:{}", resolved_repo_path.to_string_lossy()),
+                    project_id: Some(project_id),
+                    repo_path: Some(resolved_repo_path.clone()),
+                    workspace_path: Some(resolved_repo_path),
+                    metadata_root: project_metadata_root,
+                    source: "project".to_string(),
+                });
+                Ok::<_, BackendError>(project_scopes)
             }
-        }))
-        .await?;
-    for (project_id, resolved_repo_path, project_metadata_root) in
-        resolved_project_scopes.into_iter().flatten()
-    {
-        let scope_key = format!("repo:{}", resolved_repo_path.to_string_lossy());
-        if !seen_scope_keys.insert(scope_key.clone()) {
-            continue;
+        },
+    ))
+    .await?;
+    for scope in resolved_project_scopes.into_iter().flatten() {
+        if seen_scope_keys.insert(scope.scope_key.clone()) {
+            scopes.push(scope);
         }
-        scopes.push(ArchitectRuntimeScope {
-            scope_key,
-            project_id: Some(project_id),
-            repo_path: Some(resolved_repo_path.clone()),
-            workspace_path: Some(resolved_repo_path),
-            metadata_root: project_metadata_root,
-            source: "project".to_string(),
-        });
     }
 
     Ok(scopes)
@@ -649,7 +659,7 @@ async fn resolve_project_scopes(
 
 fn collect_project_paths(
     projects: &[super::metadata::ProjectDto],
-    output: &mut Vec<(String, String)>,
+    output: &mut Vec<(String, String, String)>,
     scoped_project_id_set: Option<&HashSet<String>>,
 ) {
     for project in projects {
@@ -662,14 +672,18 @@ fn collect_project_paths(
         if project.path.trim().is_empty() {
             continue;
         }
-        output.push((project.id.clone(), project.path.clone()));
+        output.push((
+            project.id.clone(),
+            project.path.clone(),
+            project.git_setup_state.clone(),
+        ));
     }
 }
 
 fn collect_workspace_state_project_paths(
     state: &super::metadata::WorkspaceState,
     scoped_project_id_set: Option<&HashSet<String>>,
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, String)> {
     let mut project_paths = Vec::new();
     collect_project_paths(
         &state.standalone_projects,
@@ -744,6 +758,7 @@ fn summary_from_plan_record(
             deleted_at: plan.deleted_at,
             target_branch: plan.target_branch,
             target_branches_by_project_id: plan.target_branches_by_project_id,
+            execution_modes_by_project_id: plan.execution_modes_by_project_id,
             conversation_id: plan.conversation_id,
             project_id: plan.project_id,
             project_ids: plan.project_ids,
@@ -1222,6 +1237,7 @@ fn summary_to_blank_head(
             deleted_at: summary.deleted_at.clone(),
             target_branch: summary.target_branch.clone(),
             target_branches_by_project_id: summary.target_branches_by_project_id.clone(),
+            execution_modes_by_project_id: summary.execution_modes_by_project_id.clone(),
             conversation_id: None,
             project_id: summary.project_id.clone(),
             project_ids: summary.project_ids.clone(),
@@ -1719,8 +1735,16 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                ("project-solo".to_string(), "/repos/solo".to_string()),
-                ("project-grouped".to_string(), "/repos/grouped".to_string()),
+                (
+                    "project-solo".to_string(),
+                    "/repos/solo".to_string(),
+                    "ready".to_string(),
+                ),
+                (
+                    "project-grouped".to_string(),
+                    "/repos/grouped".to_string(),
+                    "ready".to_string(),
+                ),
             ]
         );
     }
@@ -1746,7 +1770,11 @@ mod tests {
 
         assert_eq!(
             paths,
-            vec![("project-solo".to_string(), "/repos/solo".to_string())]
+            vec![(
+                "project-solo".to_string(),
+                "/repos/solo".to_string(),
+                "ready".to_string(),
+            )]
         );
     }
 
@@ -1958,5 +1986,54 @@ mod tests {
 
         assert_eq!(transcript.message_count, 1);
         assert_eq!(transcript.messages[0].content, "Explain the plan");
+    }
+
+    #[tokio::test]
+    async fn lists_direct_project_plans_without_opening_a_git_repository() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let metadata_root = workspace.path().join("metadata");
+        std_fs::create_dir_all(&metadata_root).expect("create metadata root");
+        let project_path = workspace.path().join("docs");
+        std_fs::create_dir_all(&project_path).expect("create direct project");
+        let project_id = "project-docs";
+        let plan_id = "direct-draft";
+        let mut direct_project = project(
+            project_id,
+            project_path.to_str().expect("project path string"),
+        );
+        direct_project.git_setup_state = "not_git".to_string();
+        direct_project.direct_edit = true;
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![direct_project];
+        write_json(&metadata_root.join("workspace.json"), &state);
+
+        let direct_metadata_root = project_path.join(".macro");
+        write_json(
+            &architect_plan_index_path(&direct_metadata_root, "main"),
+            &ArchitectPlanIndexFile {
+                version: 3,
+                active_plan_id: Some(plan_id.to_string()),
+                plans: vec![plan_summary(plan_id, project_id)],
+                reserved_plan_slugs: Vec::new(),
+            },
+        );
+
+        let listed = list_plans(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectListPlansRequestDto {
+                branch_name: "main".to_string(),
+                include_deleted: false,
+                include_archived: false,
+                scoped_project_ids_hint: vec![project_id.to_string()],
+            },
+        )
+        .await
+        .expect("list direct plans");
+
+        assert_eq!(listed.active_plan_id.as_deref(), Some(plan_id));
+        assert_eq!(listed.plans.len(), 1);
+        assert_eq!(listed.plans[0].id, plan_id);
+        assert!(!project_path.join(".git").exists());
     }
 }

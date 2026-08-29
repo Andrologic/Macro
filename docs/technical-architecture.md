@@ -27,7 +27,7 @@ L'architecture repose sur quatre principes :
 - local-first par défaut
 - séparation stricte entre surface produit et détails d'implémentation
 - transport interchangeable entre backend desktop et backend distant
-- préservation d'un historique de travail auditable via la persistence locale et la branche metadata
+- préservation d'un historique de travail auditable via la persistance locale et la branche metadata
 
 Macro doit pouvoir fonctionner dans trois topologies techniques :
 
@@ -49,7 +49,7 @@ Elle est responsable de :
 - la visualisation des plans, tâches, diffs et états
 - la configuration des providers, outils et préférences
 
-Le frontend ne doit pas contenir la logique bas niveau du système de fichiers, de Git ou de la persistence native.
+Le frontend ne doit pas contenir la logique bas niveau du système de fichiers, de Git ou de la persistance native.
 
 ### 3.2 Couche état client
 
@@ -350,6 +350,30 @@ seule produire un blocage définitif avant l'appel au fournisseur. Les erreurs
 réelles de dépassement restent prises en charge par la récupération de
 débordement du flux.
 
+Le planificateur de compactage utilise les limites autoritatives du provider et
+le budget utilisable après réserve de sortie. À la frontière `pre_send`, il
+déclenche un entretien synchrone au seuil `blocking`, avant la saturation. À la
+frontière `post_tool_batch`, il peut aussi agir au seuil `background` pour
+absorber l'accumulation des résultats d'outils. Une limite de repli non
+autoritative reste diagnostique. Le planificateur ne lance pas de résumé
+spéculatif en arrière-plan.
+
+Avant un résumé, le passage d'élagage remplace seulement les anciennes lectures
+rendues obsolètes par une lecture plus récente de la même ressource. Sa clé
+combine l'identité du projet, le chemin normalisé et la plage de lecture. La
+frontière du checkpoint exclut les messages déjà résumés, et le suffixe chaud du
+cache de prompt reste intact lorsqu'aucune reconstruction du cache n'est prévue.
+Les erreurs, les plans actifs, les ressources de skill et la dernière lecture
+utile restent inchangés. Les éléments provider qui portent des appels et des
+résultats d'outils continuent de passer par la normalisation d'appariement du
+transport.
+
+Chaque événement de compactage enregistre la cause de fin du dernier tour connu,
+la méthode appliquée, les éléments élagués, les tokens estimés gagnés, la
+décision sur le checkpoint et l'effet attendu sur le cache de prompt. Les
+frontières synthétiques post-outils restent transitoires jusqu'à leur
+consolidation sur un identifiant de message durable.
+
 ### 7.3 Contrats et DTO
 
 Les DTO frontend servent de couche de stabilisation entre :
@@ -460,7 +484,7 @@ Le module `db` porte :
 - l'initialisation SQLite
 - les migrations
 - les modèles et repositories
-- les commandes de persistence de conversations, messages, providers et contextes locaux
+- les commandes de persistance de conversations, messages, providers et contextes locaux
 
 ### 9.4 `fs`
 
@@ -486,7 +510,7 @@ Le module `workspace` porte :
 
 - le bootstrap du workspace
 - la liste des groupes et projets
-- la persistence du fichier `workspace.json`
+- la persistance du fichier `workspace.json`
 - les opérations de création, import, renommage, archivage et fermeture de projets
 
 ### 9.7 `ai`
@@ -552,7 +576,7 @@ Elle stocke notamment :
 
 ### 10.2 Persistance locale frontend
 
-Le frontend utilise aussi de la persistence locale légère pour :
+Le frontend utilise aussi de la persistance locale légère pour :
 
 - certaines préférences
 - le fournisseur vocal actif, la langue et la durée maximale de dictée
@@ -687,7 +711,7 @@ Elle est synchronisée separatement du code métier.
 Le système doit pouvoir :
 
 - s'assurer de son existence
-- connaitre son état de divergence
+- connaître son état de divergence
 - committer les metadata si nécessaire
 - push et pull cette branche
 
@@ -701,13 +725,19 @@ Cette séparation permet :
 - d'exposer un état clair dans l'interface
 - de gérer les conflits metadata de façon explicite
 
-### 12.7 Exécution directe sans dépôt Git
+### 12.7 Exécution directe dans le dossier du projet
 
-Un projet `not_git` peut être marqué `directEdit`. Il est alors modifiable dans Implement, mais reste non actionnable dans Architect. Les tâches directes s'exécutent dans le chemin du projet, sans provisionnement de branche ou de worktree, et le filtre de capacités retire tous les outils Git du runtime agent.
+Le type de tâche `direct` utilise toujours `executionKind: repository_root`. Avec Git, il conserve `executionMode: git`, la branche courante et le hash du commit de départ. Cette combinaison réutilise la revue, l'index et le commit Git existants sans provisionner de worktree. La création exige un dossier propre. Le commit vérifie que la branche courante correspond encore à la branche capturée. La différence entre le commit de départ et le `HEAD` courant permet de retrouver l'état validé après un redémarrage. L'archivage, la suppression et le retour au brouillon ne suppriment jamais cette branche ni le dossier du projet.
+
+Le résolveur typé `projectExecutionMode` est la source de vérité commune. Il retourne `git`, `direct`, `blocked` ou `invalid` à partir de l'état observé du projet et du mode persisté de la cible. Un état observé `not_git` ne devient jamais Git par défaut. Une ancienne cible sans `executionMode` suit l'état confirmé du projet. Une cible persistée valide conserve son mode pendant sa tâche, y compris si le projet est ensuite initialisé en Git ou si l'édition directe est désactivée.
+
+Un projet `not_git` peut être marqué `directEdit`. Il est alors modifiable dans Implement et Architect. Les plans enregistrent `executionModesByProjectId` sur leurs nœuds. Un plan mixte provisionne les branches et les worktrees de ses seules cibles Git. Les cibles directes s'exécutent dans le chemin du projet, sans nom de branche ni worktree. Le filtre de capacités retire les outils Git lorsqu'aucune cible Git n'existe et les conserve pour un plan mixte. L'exécuteur vérifie ensuite le `project_id` et le mode de la cible avant tout appel backend.
+
+Les métadonnées d'un plan direct vivent dans `<projet>/.macro` grâce au scope FS `direct`. Ce scope ne résout jamais la branche `@macro`. Si le projet est initialisé en Git après la création du plan, les lectures, les écritures et le transcript de ce plan restent dans ce dossier. Les nouveaux plans Git utilisent le scope metadata habituel. La synchronisation de fin de stream copie toujours le transcript local, puis inspecte `@macro` uniquement pour les cibles dont le mode persisté vaut `git`.
 
 La revue repose sur un dépôt de point de restauration privé stocké dans les données applicatives de Macro. Son worktree pointe vers le dossier du projet, sans y créer de `.git`. Le premier démarrage capture une base ; les commandes natives de revue, validation, dévalidation, restauration et acceptation réutilisent ensuite le modèle de diff existant. Le dépôt privé exclut notamment `.git`, `.macro`, les dépendances, les sorties de build et les secrets usuels. L'identité du point de restauration combine l'identifiant de tâche et le chemin canonique du projet.
 
-Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`.
+Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`. Une cible `blocked` ou `invalid` ne reçoit aucun répertoire de travail et propose de vérifier les réglages du projet. Le runtime distant ne prépare pas ces tâches tant que son contrat d'exécution directe n'est pas pris en charge explicitement.
 
 ---
 
@@ -805,6 +835,62 @@ Dans chaque mode qui expose l'outil, `toolSecurityPolicy` force chaque `terminal
 
 Le terminal manuel reste un sous-système distinct et peut conserver un rattachement à la tâche, au projet et au worktree pour la navigation de l'interface.
 
+### 13.7 Instructions `AGENTS.md` des dépôts
+
+`projectExecutionContext` reste la source de vérité de la portée projet. Le
+store de chat transmet ses `projectIds` et ses
+`workspacePathsByProjectId` à `repositoryInstructions`. Le service ne recrée
+pas la sélection Architect, Implement ou Chat. Un worktree d'exécution déjà
+résolu devient la racine de lecture du projet concerné.
+
+La commande Tauri `repository_instructions_load` effectue la découverte et la
+lecture. Son contrat accepte une racine et un `scopePath` optionnel par projet.
+Elle parcourt les dossiers de la racine vers ce périmètre, charge uniquement
+`AGENTS.md`, puis renvoie les sources dans leur ordre de priorité. Le store ne
+fournit pas encore de `scopePath`, car Macro ne possède pas de sous-dossier
+actif fiable dans le contrat de conversation. Le comportement courant charge
+donc la racine de chaque projet sans inventer de répertoire courant.
+
+Le backend ouvre d'abord la racine avec `cap-std`, la canonicalise puis vérifie
+que le handle et le chemin canonique désignent le même dossier. Il abandonne si
+la racine change pendant cette préparation. Il canonicalise ensuite le périmètre
+et chaque source, puis ouvre chaque fichier relativement au handle validé. Le
+chemin ne peut donc pas sortir du projet entre le contrôle et la lecture. La
+déduplication reste propre à chaque projet et ignore la casse dans sa clé
+canonique sous Windows. Les limites sont
+de 16 fichiers et 64 Kio par chargement. Les plafonds natifs empêchent le
+frontend de demander plus de 32 fichiers ou 256 Kio. Le backend ouvre chaque
+source une fois et borne la lecture au budget restant plus un octet. Cet octet
+sert uniquement à détecter un dépassement sans charger le reste du fichier. Un
+fichier rejeté consomme les budgets de fichiers inspectés et d'octets lus. La
+frontière IPC refuse plus de 32 projets avant de construire le tableau en
+mémoire. La commande parcourt au plus 256 dossiers par projet et conserve au
+plus 64 problèmes pendant la découverte, dont un signal de troncature.
+Les tailles des identifiants, noms et chemins sont contrôlées pendant la
+désérialisation. Le chargeur consomme tout projet excédentaire sans construire
+son objet. Il arrête aussi la construction de la chaîne d'ancêtres dès la limite
+de profondeur. Enfin, il compare l'identité de chaque handle de fichier à celle
+de la source canonique avant la lecture et abandonne la source si elle a changé.
+
+Le contexte du dernier message utilisateur encode chaque source comme une
+entrée JSON avec l'identité du projet, le chemin canonique, le chemin relatif,
+la profondeur et le contenu. Les instructions de dépôt restent donc sous le
+rôle système dans la hiérarchie du provider. Une règle système contrôlée par
+Macro rappelle leur niveau de confiance sans reprendre leur contenu. Le texte
+enveloppe marque les entrées comme contexte de dépôt non fiable. Il interdit le
+remplacement des règles système, la modification de la politique Macro,
+l'augmentation des permissions et le transfert d'une règle à un autre projet.
+Si le backend renvoie une limite atteinte ou une erreur, l'enveloppe marque le
+chargement comme partiel et liste les projets et chemins concernés. Les
+diagnostics conservent ces problèmes avec les métadonnées des sources chargées.
+Le bloc sérialisé ne dépasse pas 512 Kio. En cas de dépassement, Macro omet
+toutes les entrées et signale un chargement partiel. Avant de sérialiser, Macro
+calcule une borne haute de l'encodage JSON, échappements compris. Le frontend ne
+construit donc jamais un bloc complet susceptible de dépasser cette limite. Le calcul de l'empreinte
+inclut le contenu envoyé dans le dernier tour utilisateur. Macro ne persiste pas
+ce bloc dans les éléments provider du message. Chaque tour le reconstruit depuis
+les fichiers présents et la portée projet courante.
+
 ---
 
 ## 14. Skills
@@ -889,6 +975,15 @@ Cette couche s'occupe de :
 - recevoir les tokens ou chunks
 - mettre à jour la conversation en cours
 - annuler un stream si nécessaire
+
+Les transports conservent la cause de fin fournie par le modèle. Une fin par
+limite de sortie devient `length`, y compris quand Responses la signale par
+`response.incomplete` avec `max_output_tokens`. `streamingChat` tente alors une
+seule continuation dans la session et le tour courants. Cette requête ne publie
+aucun outil, demande uniquement le suffixe manquant et retire un éventuel
+chevauchement textuel. Une seconde réponse incomplète reste persistée comme
+telle et place le tour en erreur au lieu de déclencher les effets d'une fin
+normale.
 
 ### 15.2 Couplage avec les plans
 
@@ -1018,7 +1113,7 @@ Le backend Rust charge une configuration runtime pour :
 
 Les préférences utilisateur sont réparties entre :
 
-- persistence locale frontend
+- persistance locale frontend
 - settings backend
 - configurations providers et modèles
 - configurations des fournisseurs vocaux

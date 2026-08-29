@@ -1,4 +1,4 @@
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { tauriFetch } from './tauriHttp';
 import type { ModelContextLimitSource, ReasoningTransportMode } from '../types';
 
 export const MODELS_DEV_URL = 'https://models.dev/api.json';

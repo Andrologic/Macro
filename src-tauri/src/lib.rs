@@ -1,4 +1,5 @@
 mod app_quit_state;
+mod app_updates;
 pub mod commands;
 pub mod config;
 pub mod core;
@@ -36,12 +37,67 @@ use serde::Serialize;
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use tauri::utils::config::Color;
+#[cfg(all(feature = "browser-runtime-debug", not(debug_assertions)))]
+compile_error!(
+    "La fonctionnalité browser-runtime-debug est strictement réservée aux builds debug."
+);
+
+#[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+use tauri::Listener;
 use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
+#[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+use tauri_remote_ui::{RemoteUi, RemoteUiConfig, RemoteUiExt};
 use tokio::sync::RwLock;
 
 pub type WorkspaceRoot = Arc<RwLock<std::path::PathBuf>>;
+
+#[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
+    const EVENTS: &[&str] = &[
+        "ai:auth-success",
+        "ai:auth-cancelled",
+        "ai:auth-error",
+        "ai:copilot-download-progress",
+        "ai:copilot-download-complete",
+        "ai:copilot-download-error",
+        "ai:copilot-auth-progress",
+        "ai:copilot-auth-complete",
+        "ai:copilot-auth-cancelled",
+        "ai:copilot-auth-error",
+        "ai:timeline",
+        "ai:stream",
+        "ai:tool-trace",
+        "ai:tool-request",
+        "ai:done",
+        "ai:error",
+        "config://changed",
+        "config://invalid",
+        "config://pending-sensitive-change",
+        "config://restart-required",
+        "fs:change",
+        "terminal:output",
+        "terminal:tab",
+        "terminal:closed",
+    ];
+
+    for event_name in EVENTS {
+        let app_handle = app.clone();
+        let relay_name = (*event_name).to_owned();
+        app.listen_any(*event_name, move |event| {
+            let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+                .unwrap_or_else(|_| serde_json::Value::String(event.payload().to_owned()));
+            let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>().inner().clone();
+            let event_name = relay_name.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = remote_ui.read().await.emit(&event_name, payload).await {
+                    tracing::warn!(%error, %event_name, "Failed to relay debug browser event");
+                }
+            });
+        });
+    }
+}
 
 fn shutdown_mcp_runtime(app_handle: &tauri::AppHandle) {
     let runtime = app_handle.state::<commands::mcp::McpRuntimeManager>();
@@ -328,14 +384,26 @@ pub fn run() {
     tracing::info!("Starting Macro application");
     tracing::info!("Configured workspace path: {:?}", config.workspace_path);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_store::Builder::default().build());
+
+    #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+    let builder = builder.plugin(tauri_remote_ui::init());
+
+    let app = builder
         .manage(AppQuitState::default())
         .manage(DbPool::default())
         .manage(AiState::default())
@@ -343,17 +411,33 @@ pub fn run() {
         .manage(commands::mcp::McpRuntimeManager::production())
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
-        .on_window_event(|window, event| {
-            if window.label() != "main" {
-                return;
+        .setup(move |app| {
+            if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
+                tracing::error!(%error, "Failed to activate staged application update");
+            }
+            #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+            if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+                let bridge_token = std::env::var("MACRO_TAURI_BROWSER_BRIDGE_TOKEN").expect(
+                    "MACRO_TAURI_BROWSER_BRIDGE_TOKEN doit être défini par le lanceur debug",
+                );
+                install_browser_runtime_event_relays(app.handle());
+                let browser_bridge_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let bridge_config = RemoteUiConfig::default()
+                        .set_port(Some(1430))
+                        .set_websocket_origin("http://127.0.0.1:1422")
+                        .set_websocket_token(bridge_token);
+                    match browser_bridge_handle.start_remote_ui(bridge_config).await {
+                        Ok(()) => tracing::info!(
+                            "Debug browser runtime bridge ready at http://127.0.0.1:1422"
+                        ),
+                        Err(error) => {
+                            tracing::error!("Failed to start debug browser runtime bridge: {error}")
+                        }
+                    }
+                });
             }
 
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let app_quit_state = window.state::<AppQuitState>();
-                app_quit_state.mark_quitting("main-window-close-requested");
-            }
-        })
-        .setup(move |app| {
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -523,6 +607,14 @@ pub fn run() {
             state_manager::state_delete_value,
             state_manager::state_clear,
             updater_target,
+            app_updates::app_update_status,
+            app_updates::app_update_check_and_stage,
+            app_updates::app_update_exit_after_clean_shutdown,
+            app_updates::app_exit_cleanly,
+            app_updates::app_update_discard,
+            app_updates::app_update_install_now,
+            app_updates::app_installer_close_request_pending,
+            app_updates::app_installer_close_respond,
             frontend_log,
             show_main_window,
             window_close,
@@ -678,6 +770,7 @@ pub fn run() {
             commands::skills::skills_open_location,
             commands::skills::skills_read_resource,
             commands::skills::skills_run_script,
+            commands::repository_instructions::repository_instructions_load,
             commands::list_external_apps,
             commands::open_external_target,
             commands::terminal::terminal_list_tabs,

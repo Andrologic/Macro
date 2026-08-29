@@ -81,10 +81,20 @@ const createPlan = (overrides: Partial<ArchitectPlanRecord> = {}): ArchitectPlan
   ...overrides,
 });
 
-const createRuntime = (plan: ArchitectPlanRecord) => {
+const createRuntime = (
+  plan: ArchitectPlanRecord,
+  options: { directProjectIds?: string[] } = {},
+) => {
   let appliedPlan = plan;
+  const directProjectIds = new Set(options.directProjectIds ?? []);
+  const runtimeProjectGroups = projectGroups.map((group) => ({
+    ...group,
+    projects: group.projects.map((project) => directProjectIds.has(project.id)
+      ? { ...project, gitSetupState: 'not_git' as const, directEdit: true }
+      : project),
+  }));
   const getProjectById = (projectId: string) =>
-    projectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId);
+    runtimeProjectGroups.flatMap((group) => group.projects).find((project) => project.id === projectId);
   const args: Record<string, unknown> = {
     plan_id: plan.id,
     nodes: [
@@ -112,7 +122,7 @@ const createRuntime = (plan: ArchitectPlanRecord) => {
         },
         selectedGroupId: 'other-suite',
         selectedProjectId: 'opencode',
-        projectGroups,
+        projectGroups: runtimeProjectGroups,
         getProjectById,
         activateArchitectPlan: async () => true,
         setStrategyMutationPreview: () => undefined,
@@ -183,7 +193,12 @@ const createRuntime = (plan: ArchitectPlanRecord) => {
             resolvedProjectIds,
             targetBranchesByProjectId: input.targetBranchesByProjectId || {},
             planNodes: input.candidateNodes,
-            predictedBranches: resolvedProjectIds.map((projectId) => ({
+            predictedBranches: resolvedProjectIds
+              .filter((projectId) => input.candidateNodes.some((node) =>
+                (node.projectIds || []).includes(projectId) &&
+                node.executionModesByProjectId?.[projectId] !== 'direct'
+              ))
+              .map((projectId) => ({
               id: `branch-${projectId}`,
               name: `feature/play-store-deployment/release`,
               color: '#3b82f6',
@@ -195,7 +210,7 @@ const createRuntime = (plan: ArchitectPlanRecord) => {
               status: 'pending' as const,
               branchType: 'feature' as const,
               branchSlug: 'release',
-            })),
+              })),
             frozenNodes: [],
             rewrittenPendingNodes: [],
             newNodes: input.candidateNodes.map((node) => ({ id: node.id, title: node.title })),
@@ -244,6 +259,58 @@ describe('architectToolRuntime strategy scope', () => {
     expect(runtime.getAppliedPlan().predictedBranches.map((branch) => branch.projectId)).toEqual([
       'mouillage-app',
     ]);
+  });
+
+  it('uses the current Git mode for a new node after earlier direct execution', async () => {
+    const runtime = createRuntime(createPlan({
+      nodes: [{
+        id: 'old-direct-task',
+        title: 'Ancienne tâche directe',
+        description: '',
+        type: 'task',
+        status: 'completed',
+        dependencies: [],
+        projectId: 'mouillage-app',
+        projectIds: ['mouillage-app'],
+        executionModesByProjectId: { 'mouillage-app': 'direct' },
+      }],
+    }));
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]?.executionModesByProjectId)
+      .toEqual({ 'mouillage-app': 'git' });
+  });
+
+  it('does not create branch metadata for a direct strategy target', async () => {
+    const runtime = createRuntime(createPlan(), {
+      directProjectIds: ['mouillage-app'],
+    });
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]).toMatchObject({
+      executionModesByProjectId: { 'mouillage-app': 'direct' },
+    });
+    expect(runtime.getAppliedPlan().nodes[0]).not.toHaveProperty('assignedBranch');
+    expect(runtime.getAppliedPlan().nodes[0]).not.toHaveProperty('branchType');
+    expect(runtime.getAppliedPlan().nodes[0]).not.toHaveProperty('branchSlug');
+    expect(runtime.getAppliedPlan().predictedBranches).toEqual([]);
+  });
+
+  it('keeps a persisted empty direct plan direct after the project gains Git', async () => {
+    const runtime = createRuntime(createPlan({
+      executionModesByProjectId: { 'mouillage-app': 'direct' },
+      nodes: [],
+    }));
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]).toMatchObject({
+      executionModesByProjectId: { 'mouillage-app': 'direct' },
+    });
+    expect(runtime.getAppliedPlan().nodes[0]).not.toHaveProperty('assignedBranch');
+    expect(runtime.getAppliedPlan().predictedBranches).toEqual([]);
   });
 
   it('coerces generated artifact contracts to required handoffs', async () => {

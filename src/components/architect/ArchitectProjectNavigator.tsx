@@ -25,7 +25,7 @@ import {
   getArchitectPlanPrimaryName,
   isCanonicalArchitectPlan,
 } from '../../services/architectPlanPresentation';
-import { isProjectGitActionable } from '../../services/globalProjects';
+import { isProjectPlanActionable } from '../../services/globalProjects';
 import { loadMacroProjectMetadataForSelection } from '../../services/macroProjectMetadataLoader';
 import { loadPreference, PREF_KEYS, savePreference } from '../../services/preferences';
 import { getPlanKindIconName } from '../../services/planKindPresentation';
@@ -284,7 +284,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     const detail: ArchitectPlanSelectorStateDetail = {
       status: error ? 'error' : isLoading ? 'loading' : 'ready',
       planCount: selectedPlans.length,
-      canCreate: Boolean(selectedScope?.projects.some(isProjectGitActionable)),
+      canCreate: Boolean(selectedScope?.projects.some(isProjectPlanActionable)),
       canSelect: selectedPlans.length > 0,
     };
     return registerArchitectPlanSelectorStatePublisher(detail);
@@ -489,7 +489,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     planKind: ArchitectPlanKind,
   ) => {
     if (creatingScopeId || isBusy) return;
-    const editableProjectIds = scope.projects.filter(isProjectGitActionable).map((project) => project.id);
+    const editableProjectIds = scope.projects.filter(isProjectPlanActionable).map((project) => project.id);
     const contextProjectIds = scope.projectIds.filter((projectId) => !editableProjectIds.includes(projectId));
     if (editableProjectIds.length === 0) {
       notify.warning(t('architect.projectNavigator.readOnlyScope', 'Ce projet est en lecture seule.'));
@@ -797,7 +797,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         >
           {createMenuPlanKinds.map((planKind) => {
             const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
-            const canCreatePlan = createMenuScope.projects.some(isProjectGitActionable);
+            const canCreatePlan = createMenuScope.projects.some(isProjectPlanActionable);
             return (
               <button
                 key={planKind}
@@ -967,7 +967,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               const showAll = expandedPlanLists.includes(scope.id);
               const visibleEntries = showAll ? scopeEntries : scopeEntries.slice(0, MAX_VISIBLE_PLANS_PER_SCOPE);
               const hiddenCount = scopeEntries.length - visibleEntries.length;
-              const canCreatePlan = scope.projects.some(isProjectGitActionable);
+              const canCreatePlan = scope.projects.some(isProjectPlanActionable);
               return (
                 <div
                   key={scope.id}

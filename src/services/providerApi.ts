@@ -4,7 +4,7 @@
  * Supports: OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, and any OpenAI-compatible API
  */
 
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { tauriFetch } from './tauriHttp';
 import { getPageLifecycleSignal, isPageShuttingDown } from '../utils/pageLifecycle';
 import { createCombinedAbortSignal } from '../utils/abortSignals';
 import { devLogger } from '../utils/devLogger';

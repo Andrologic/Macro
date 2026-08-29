@@ -1,6 +1,6 @@
 [package]
 name = "macro"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local-first desktop environment for agentic software work."
 authors = ["Andrologic"]
 license = "AGPL-3.0-or-later"
@@ -30,6 +30,9 @@ path = "tests/process_containment.rs"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "macro_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+browser-runtime-debug = ["dep:tauri-remote-ui"]
 
 [build-dependencies]
 tauri-build = { version = "=2.5.5", features = [] }
@@ -69,6 +72,7 @@ ast-grep-language = "0.45.1"
 notify = "6"
 walkdir = "2"
 cap-std = "=4.0.3"
+same-file = "1"
 
 # AI
 # MCP dual-era runtime (plan Lots C/E): official Rust SDK, exact pin per plan §4.1.
@@ -87,8 +91,11 @@ async-trait = "0.1"
 axum = "0.8"
 tower-http = { version = "0.6.8", features = ["cors"] }
 base64 = "0.22"
+minisign-verify = "0.2"
 sha2 = "0.10"
 subtle = "2"
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+tauri-plugin-single-instance = "2"
 flate2 = "1"
 tar = "0.4"
 urlencoding = "2"
@@ -102,6 +109,7 @@ json-patch = "3"
 schemars = { version = "0.8", features = ["chrono"] }
 ts-rs = { version = "12", features = ["chrono-impl", "serde-compat"] }
 tauri-plugin-notification = "2.3.3"
+tauri-remote-ui = { path = "vendor/tauri-remote-ui", optional = true }
 
 # Utils
 [dev-dependencies]

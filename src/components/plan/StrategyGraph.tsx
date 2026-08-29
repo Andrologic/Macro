@@ -648,8 +648,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   );
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const emptyStrategyDescription = t(
-    'architect.noStrategyDiscussionDescription',
-    'Discuss the plan with Architect, then generate the strategy when the scope is clear.'
+    activePlanContext
+      ? 'architect.noStrategyDiscussionDescription'
+      : 'architect.selectPlanForStrategyDescription',
+    activePlanContext
+      ? 'Discuss the plan with Architect, then generate the strategy when the scope is clear.'
+      : 'Select a plan to view or generate its strategy.'
   );
   const [isValidating, setIsValidating] = useState(false);
   const [isApplyingStrategyPreview, setIsApplyingStrategyPreview] = useState(false);
@@ -964,6 +968,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           id: activePlanContext.id,
           projectId: projectIds[0],
           projectIds,
+          executionModesByProjectId: activePlanContext.executionModesByProjectId,
         },
         preview: null,
       });
@@ -995,6 +1000,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         status: updatedPlan.status,
         targetBranch: updatedPlan.targetBranch,
         targetBranchesByProjectId: updatedPlan.targetBranchesByProjectId,
+        executionModesByProjectId: updatedPlan.executionModesByProjectId,
         hasMixedTargetBranches:
           Boolean(updatedPlan.targetBranchesByProjectId) &&
           new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,
@@ -1813,21 +1819,17 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           className={cn("h-full w-full bg-card border-l border-border flex flex-col", className)}
           data-tour-id="architect-strategy-panel"
         >
-          <div className="h-12 shrink-0 border-b border-border flex items-center justify-between px-4 bg-card z-10">
-            <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Icon name="strategy" size={16} className="text-primary" />
-              {t('architect.strategy', 'Strategy')}
-            </h1>
-            {planArtifactsButton}
-          </div>
           <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-6 text-center">
             <Icon name="strategy" size={48} className="text-muted-foreground/30 mb-4" />
             <h3 className="text-sm font-semibold text-foreground mb-1">
-              {t('architect.noStrategyTitle', 'No strategy generated yet')}
+              {activePlanContext
+                ? t('architect.noStrategyTitle', 'No strategy generated yet')
+                : t('architect.selectPlanForStrategyTitle', 'Select a plan')}
             </h3>
             <p className="text-xs text-muted-foreground max-w-[250px] mb-6">
               {emptyStrategyDescription}
             </p>
+            {planArtifactsButton}
           </div>
         </aside>
         {planArtifactsModal}

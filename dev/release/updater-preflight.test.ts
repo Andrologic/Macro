@@ -72,7 +72,7 @@ function fixture() {
         updater: {
           pubkey: publicKey,
           endpoints: [UPDATER_ENDPOINT],
-          windows: { installMode: 'passive' },
+          windows: { installMode: 'quiet' },
         },
       },
     },
@@ -123,7 +123,7 @@ describe('updater preflight', () => {
     expect(validateUpdaterConfiguration(config)).toEqual(expect.arrayContaining([
       'plugins.updater.pubkey still contains a placeholder.',
       `plugins.updater.endpoints must include ${UPDATER_ENDPOINT}.`,
-      'plugins.updater.windows.installMode must be "passive".',
+      'plugins.updater.windows.installMode must be "quiet".',
       expect.stringContaining('same major/minor version'),
     ]));
   });

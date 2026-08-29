@@ -238,6 +238,7 @@ pub struct WorkspaceArchitectPlanSummaryDto {
     pub deleted_at: Option<String>,
     pub target_branch: String,
     pub target_branches_by_project_id: Option<HashMap<String, String>>,
+    pub execution_modes_by_project_id: Option<HashMap<String, String>>,
     pub conversation_id: Option<String>,
     pub project_id: Option<String>,
     pub project_ids: Vec<String>,
@@ -272,6 +273,7 @@ pub struct WorkspaceArchitectPlanRecordDto {
     pub deleted_at: Option<String>,
     pub target_branch: String,
     pub target_branches_by_project_id: Option<HashMap<String, String>>,
+    pub execution_modes_by_project_id: Option<HashMap<String, String>>,
     pub conversation_id: Option<String>,
     pub project_id: Option<String>,
     pub project_ids: Vec<String>,
@@ -374,8 +376,12 @@ pub struct WorkspaceTaskExecutionTargetDto {
     pub target_branch_name: Option<String>,
     #[serde(default, rename = "executionMode")]
     pub execution_mode: Option<String>,
+    #[serde(default, rename = "executionKind")]
+    pub execution_kind: Option<String>,
     #[serde(default, rename = "checkpointId")]
     pub checkpoint_id: Option<String>,
+    #[serde(default, rename = "baseCommitHash")]
+    pub base_commit_hash: Option<String>,
     #[serde(rename = "worktreeKey")]
     pub worktree_key: String,
     #[serde(default, rename = "repoPath")]
@@ -839,6 +845,8 @@ pub struct ProjectRegistryRepairReportDto {
     pub plan_nodes_removed: usize,
     pub predicted_branches_removed: usize,
     pub git_flow_settings_auto_updated: usize,
+    #[serde(default)]
+    pub project_access_states_updated: usize,
 }
 
 impl ProjectRegistryRepairReportDto {
@@ -859,6 +867,7 @@ impl ProjectRegistryRepairReportDto {
             || self.plan_nodes_removed > 0
             || self.predicted_branches_removed > 0
             || self.git_flow_settings_auto_updated > 0
+            || self.project_access_states_updated > 0
     }
 
     pub fn has_destructive_repairs(&self) -> bool {
@@ -879,7 +888,7 @@ impl ProjectRegistryRepairReportDto {
 }
 
 fn default_project_git_setup_state() -> String {
-    "ready".to_string()
+    "unknown".to_string()
 }
 
 fn default_project_git_detection_setup_state() -> String {

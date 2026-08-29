@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { MCPServer, MCPTool } from '../../../types';
 import {
@@ -95,8 +95,16 @@ const MCPServerForm: React.FC<{
   onCancel: () => void;
   onChange: (draft: MCPServerDraft) => void;
   onSave: () => void;
-}> = ({ draft, editing, onCancel, onChange, onSave }) => {
+  errors: Partial<Record<'name' | 'endpoint' | 'form', string>>;
+}> = ({ draft, editing, onCancel, onChange, onSave, errors }) => {
   const { t } = useTranslation();
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const endpointInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (errors.name) nameInputRef.current?.focus();
+    else if (errors.endpoint) endpointInputRef.current?.focus();
+  }, [errors]);
 
   return (
     <div className="rounded-lg border border-border bg-card p-3">
@@ -127,11 +135,17 @@ const MCPServerForm: React.FC<{
       </div>
 
       <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(12rem,1fr)_minmax(12rem,1fr)]">
-        <Input
-          placeholder={t('tools.mcp.namePlaceholder', 'Server name')}
-          value={draft.name}
-          onChange={(event) => onChange({ ...draft, name: event.target.value })}
-        />
+        <div className="space-y-1">
+          <Input
+            ref={nameInputRef}
+            placeholder={t('tools.mcp.namePlaceholder', 'Server name')}
+            value={draft.name}
+            aria-invalid={Boolean(errors.name)}
+            aria-describedby={errors.name ? 'mcp-name-error' : undefined}
+            onChange={(event) => onChange({ ...draft, name: event.target.value })}
+          />
+          {errors.name && <p id="mcp-name-error" className="text-xs text-destructive">{errors.name}</p>}
+        </div>
         <select
           value={draft.transportType}
           onChange={(event) =>
@@ -150,11 +164,15 @@ const MCPServerForm: React.FC<{
         {draft.transportType === 'stdio' ? (
           <>
             <Input
+              ref={endpointInputRef}
               placeholder={t('tools.mcp.commandPlaceholder', 'Command, e.g. npx')}
               value={draft.command}
+              aria-invalid={Boolean(errors.endpoint)}
+              aria-describedby={errors.endpoint ? 'mcp-endpoint-error' : undefined}
               onChange={(event) => onChange({ ...draft, command: event.target.value })}
               className="font-mono md:col-span-2"
             />
+            {errors.endpoint && <p id="mcp-endpoint-error" className="text-xs text-destructive md:col-span-2">{errors.endpoint}</p>}
             <Input
               placeholder={t('tools.mcp.argsPlaceholder', 'Args, e.g. -y @modelcontextprotocol/server-filesystem .')}
               value={draft.args}
@@ -171,12 +189,16 @@ const MCPServerForm: React.FC<{
         ) : (
           <>
             <Input
+              ref={endpointInputRef}
               type="url"
               placeholder={t('tools.mcp.urlPlaceholder', 'https://example.com/mcp')}
               value={draft.url}
+              aria-invalid={Boolean(errors.endpoint)}
+              aria-describedby={errors.endpoint ? 'mcp-endpoint-error' : undefined}
               onChange={(event) => onChange({ ...draft, url: event.target.value })}
               className="font-mono md:col-span-2"
             />
+            {errors.endpoint && <p id="mcp-endpoint-error" className="text-xs text-destructive md:col-span-2">{errors.endpoint}</p>}
             <textarea
               placeholder={t(
                 'tools.mcp.headersPlaceholder',
@@ -269,6 +291,12 @@ const MCPServerForm: React.FC<{
           </>
         )}
       </div>
+
+      {errors.form && (
+        <div role="alert" className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {errors.form}
+        </div>
+      )}
 
       <div className="mt-3 flex items-center justify-between gap-3">
         <label className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -416,7 +444,13 @@ const MCPServerList: React.FC<{
   const { t } = useTranslation();
 
   if (servers.length === 0) {
-    if (searching) return <SettingsSearchEmpty />;
+    if (searching) {
+      return (
+        <SettingsSearchEmpty
+          message={t('tools.noCustomMcpServers', 'No custom MCP servers configured.')}
+        />
+      );
+    }
     return (
       <div className="py-8 text-center">
         <p className="text-muted-foreground">
@@ -459,6 +493,7 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
   const { t } = useTranslation();
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [draft, setDraft] = useState<MCPServerDraft>(emptyDraft);
+  const [validationErrors, setValidationErrors] = useState<Partial<Record<'name' | 'endpoint' | 'form', string>>>({});
 
   const filteredServers = useMemo(() => {
     return servers.filter((server) =>
@@ -474,11 +509,13 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
   }, [servers, searchQuery]);
 
   const resetDraft = () => {
+    setValidationErrors({});
     setEditingServerId(null);
     setDraft(emptyDraft());
   };
 
   const beginEditServer = (server: MCPServer) => {
+    setValidationErrors({});
     setEditingServerId(server.id);
     setDraft({
       name: server.name,
@@ -522,30 +559,32 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
     const url = draft.url.trim();
     const oauthClientId = draft.oauthClientId.trim();
     const oauthClientMetadataUrl = draft.oauthClientMetadataUrl.trim();
-    if (!name || (draft.transportType === 'stdio' ? !command : !url)) {
-      notify.error(
-        t('tools.mcp.validationFailed', 'A name and a valid transport endpoint are required.')
-      );
+    const nextErrors: Partial<Record<'name' | 'endpoint' | 'form', string>> = {};
+    if (!name) nextErrors.name = t('tools.mcp.nameRequired', 'Server name is required.');
+    if (draft.transportType === 'stdio' ? !command : !url) {
+      nextErrors.endpoint = draft.transportType === 'stdio'
+        ? t('tools.mcp.commandRequired', 'Command is required for a local server.')
+        : t('tools.mcp.urlRequired', 'URL is required for a remote server.');
+    }
+    if (nextErrors.name || nextErrors.endpoint) {
+      setValidationErrors(nextErrors);
       return;
     }
     if (draft.oauth && oauthClientId && oauthClientMetadataUrl) {
-      notify.error(
-        t(
+      setValidationErrors({ form: t(
           'tools.mcp.oauth.clientIdentityConflict',
           'Use either an OAuth client ID or a client metadata URL, not both.'
-        )
-      );
+        ) });
       return;
     }
     if (draft.oauthClientSecret && !oauthClientId) {
-      notify.error(
-        t(
+      setValidationErrors({ form: t(
           'tools.mcp.oauth.clientSecretNeedsId',
           'An OAuth client secret requires a pre-registered client ID.'
-        )
-      );
+        ) });
       return;
     }
+    setValidationErrors({});
 
     const existing = editingServerId
       ? servers.find((server) => server.id === editingServerId)
@@ -741,8 +780,12 @@ export const MCPServersPanel: React.FC<MCPServersPanelProps> = ({
         draft={draft}
         editing={Boolean(editingServerId)}
         onCancel={resetDraft}
-        onChange={setDraft}
+        onChange={(nextDraft) => {
+          setDraft(nextDraft);
+          setValidationErrors({});
+        }}
         onSave={() => void saveDraft()}
+        errors={validationErrors}
       />
       {servers.length > 0 && (
         <SettingsCollectionHeader

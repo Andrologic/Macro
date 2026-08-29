@@ -1,4 +1,4 @@
-import type { AppMode, Project, ProjectGroup } from '../types';
+import type { AppMode, PlanNode, Project, ProjectGroup } from '../types';
 import type { MetadataSyncRepositoryStatus } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
 import * as tauriIpc from './tauriIpc';
@@ -20,6 +20,7 @@ import {
   syncArchitectPlanChatFromConversation,
 } from './architectPlanService';
 import { isWslProjectPath } from './wslPaths';
+import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 
 type MacroSyncResult = tauriIpc.MacroBranchSyncDto & {
   repositories?: MetadataSyncRepositoryStatus[];
@@ -48,7 +49,11 @@ interface MacroSyncAppState {
   metadataAutoPush: boolean;
   metadataMissingUpstreamPolicy: 'ask' | 'ignore';
   activeArchitectPlanId: string | null;
-  activePlanContext: { targetBranch: string } | null;
+  activePlanContext: {
+    targetBranch: string;
+    executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  } | null;
+  planNodes: PlanNode[];
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   standaloneProjects?: Project[];
@@ -77,6 +82,7 @@ export interface MacroSyncServiceDependencies {
   getAppState: () => MacroSyncAppState;
   toServiceError: typeof toServiceError;
   resolveTargets?: (appState: MacroSyncAppState) => Promise<MetadataSyncTarget[]>;
+  syncArchitectPlanChat?: typeof syncArchitectPlanChatFromConversation;
 }
 
 export interface MacroSyncService {
@@ -192,10 +198,10 @@ const isGitActionableTarget = (
   appState: MacroSyncAppState,
   target: MetadataSyncTarget
 ): boolean => {
-  if (!target.projectId) return true;
+  if (!target.projectId) return false;
 
   const project = resolveProject(appState, target.projectId);
-  return !project || isProjectGitActionable(project);
+  return project ? isProjectGitActionable(project) : false;
 };
 
 const resolveMacroSyncTargets = async (appState: MacroSyncAppState): Promise<MetadataSyncTarget[]> => {
@@ -948,35 +954,46 @@ export const createMacroSyncService = (
     }
 
     return runWithMacroSyncLock(async () => {
-      const targets = await resolveTargets();
+      const appState = dependencies.getAppState();
+      if (appState.activeArchitectPlanId && appState.activePlanContext?.targetBranch) {
+        try {
+          await (dependencies.syncArchitectPlanChat ?? syncArchitectPlanChatFromConversation)({
+            branchName: resolveTargetBranch(appState.activePlanContext.targetBranch),
+            planId: appState.activeArchitectPlanId,
+            conversationId: params.conversationId,
+          });
+        } catch (error) {
+          console.warn(
+            JSON.stringify({
+              scope: 'macro_sync_service',
+              event: 'architect_plan_chat_sync_failed',
+              at: new Date().toISOString(),
+              planId: appState.activeArchitectPlanId,
+              conversationId: params.conversationId,
+              trigger: params.trigger,
+              error: dependencies.toServiceError(error).message,
+            })
+          );
+        }
+      }
+
+      const persistedModes = getPlanExecutionModesByProjectId(
+        appState.planNodes,
+        appState.activePlanContext?.executionModesByProjectId,
+      );
+      const hasPersistedModes = Object.keys(persistedModes).length > 0;
+      if (hasPersistedModes && !Object.values(persistedModes).includes('git')) {
+        return applyMacroSyncResult(createAggregateMacroResult([]), []);
+      }
+      const targets = (await resolveTargets()).filter((target) =>
+        !hasPersistedModes ||
+        (target.projectId !== null && persistedModes[target.projectId] === 'git')
+      );
       if (targets.length === 0) {
         return applyMacroSyncResult(createAggregateMacroResult([]), []);
       }
 
       try {
-        const appState = dependencies.getAppState();
-        if (appState.activeArchitectPlanId && appState.activePlanContext?.targetBranch) {
-          try {
-            await syncArchitectPlanChatFromConversation({
-              branchName: resolveTargetBranch(appState.activePlanContext.targetBranch),
-              planId: appState.activeArchitectPlanId,
-              conversationId: params.conversationId,
-            });
-          } catch (error) {
-            console.warn(
-              JSON.stringify({
-                scope: 'macro_sync_service',
-                event: 'architect_plan_chat_sync_failed',
-                at: new Date().toISOString(),
-                planId: appState.activeArchitectPlanId,
-                conversationId: params.conversationId,
-                trigger: params.trigger,
-                error: dependencies.toServiceError(error).message,
-              })
-            );
-          }
-        }
-
         for (const target of targets) {
           recordMacroMetadataMutation({
             workspacePath: target.repoPath,

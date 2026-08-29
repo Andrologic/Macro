@@ -135,6 +135,7 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
     <div
       ref={panelRef}
       role="dialog"
+      id="notification-center-popover"
       aria-modal={false}
       aria-label={t('notifications.centerTitle', 'Notifications')}
       style={{

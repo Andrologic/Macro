@@ -1,5 +1,6 @@
 import type { AppMode, Conversation, Project, ProjectGroup, Task } from '../types';
 import type { ArchitectPlanSummary } from './architectPlanService';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 export interface FooterGitProject {
   id: string;
@@ -26,6 +27,7 @@ export interface ResolveFooterGitContextInput {
   durableFocusProjectId?: string | null;
   manualProjectId?: string | null;
   selectedFolder?: FooterGitFolder | null;
+  activeArchitectPlanExecutionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }
 
 export interface FooterGitContext {
@@ -49,11 +51,25 @@ const getTaskProjectIds = (task: Task | null): string[] => {
 
 const resolveCandidates = (
   projectIds: string[],
-  projectsById: Map<string, Project>
+  projectsById: Map<string, Project>,
+  task: Task | null,
+  architectExecutionModesByProjectId?: Record<string, 'git' | 'direct'>,
 ): FooterGitProject[] => projectIds.flatMap((projectId) => {
   const project = projectsById.get(projectId);
   const path = project?.path?.trim();
-  return project && path
+  const target = task?.execution_targets?.find((candidate) => candidate.projectId === projectId);
+  const persistedArchitectMode = architectExecutionModesByProjectId?.[projectId];
+  const resolution = resolveProjectExecutionMode({
+    project,
+    target: target ?? (persistedArchitectMode
+      ? {
+          projectId,
+          executionMode: persistedArchitectMode,
+          repoPath: path,
+        }
+      : undefined),
+  });
+  return project && path && resolution.mode === 'git'
     ? [{ id: project.id, name: project.name, path, source: 'project' }]
     : [];
 });
@@ -70,9 +86,11 @@ export const resolveFooterGitContext = (
 
   let identity = 'none';
   let projectIds: string[] = [];
+  let taskContext: Task | null = null;
 
   if (input.mode === 'Implement') {
     const task = input.selectedTaskId ? tasksById.get(input.selectedTaskId) ?? null : null;
+    taskContext = task;
     identity = task ? task.id : 'none';
     projectIds = getTaskProjectIds(task);
   } else if (input.mode === 'Architect') {
@@ -90,6 +108,7 @@ export const resolveFooterGitContext = (
     identity = conversation ? conversation.id : 'none';
     if (conversation) {
       const linkedTask = conversation.task_id ? tasksById.get(conversation.task_id) ?? null : null;
+      taskContext = linkedTask;
       const linkedTaskProjectIds = getTaskProjectIds(linkedTask);
       projectIds = conversation.project_id
         ? uniqueStrings([conversation.project_id])
@@ -105,7 +124,14 @@ export const resolveFooterGitContext = (
     projectIds = [input.durableFocusProjectId];
   }
 
-  let candidates = resolveCandidates(projectIds, projectsById);
+  let candidates = resolveCandidates(
+    projectIds,
+    projectsById,
+    taskContext,
+    input.mode === 'Architect'
+      ? input.activeArchitectPlanExecutionModesByProjectId
+      : undefined,
+  );
   if (
     input.mode === 'Architect' &&
     allProjects.length === 0 &&

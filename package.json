@@ -1,6 +1,6 @@
 {
   "name": "macro",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local-first desktop environment for agentic software work.",
   "author": "Andrologic",
   "license": "AGPL-3.0-or-later",
@@ -29,6 +29,7 @@
   },
   "scripts": {
     "dev": "NODE_ENV=development bun ./dev/prepare-vite-dev.mjs && NODE_ENV=development bun node_modules/vite/bin/vite.js --host",
+    "dev:browser-runtime": "NODE_ENV=development VITE_TAURI_BROWSER_BRIDGE=1 bun ./dev/prepare-vite-dev.mjs && NODE_ENV=development VITE_TAURI_BROWSER_BRIDGE=1 bun node_modules/vite/bin/vite.js --host 127.0.0.1",
     "build:ai-runtime": "bun ./dev/build-ai-runtime.mjs",
     "config:generate": "cargo run --manifest-path src-tauri/Cargo.toml --example generate_config",
     "config:check": "cargo run --manifest-path src-tauri/Cargo.toml --example generate_config -- --check",
@@ -50,6 +51,7 @@
     "preview": "bun node_modules/vite/bin/vite.js preview",
     "tauri": "bun dev/tauri-cli.mjs",
     "tauri:dev": "bun dev/tauri-cli.mjs dev",
+    "tauri:dev:browser": "bun dev/launch-browser-runtime.mjs",
     "tauri:build": "bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json",
     "tauri:build:updater": "bun dev/tauri-cli.mjs build",
     "tauri:build:nsis": "bun dev/tauri-cli.mjs build --config src-tauri/tauri.local.conf.json --bundles nsis",
