@@ -1163,6 +1163,7 @@ const persistResolvedArchitectPlanContext = async (params: {
 const ensureAutoPlanForSelection = async (input: {
   groupId: string | null;
   projectId: string | null;
+  requestId?: string;
 }): Promise<void> => {
   if (!input.groupId && !input.projectId) {
     return;
@@ -1173,7 +1174,76 @@ const ensureAutoPlanForSelection = async (input: {
     hydrateActivePlan: appState.mode === "Architect",
     refreshTasks: true,
     reason: "auto_plan",
+    requestId: input.requestId,
   });
+  const latest = useAppStore.getState();
+  if (latest.architectPlanCatalogStatus === "error") {
+    throw new Error(
+      latest.architectPlanCatalogError || "Architect metadata hydration failed.",
+    );
+  }
+};
+
+const POST_CREATE_HYDRATION_TIMEOUT_MS = 5_000;
+
+const schedulePostCreateHydration = (input: {
+  requestId: string;
+  action: string;
+  standaloneProjects: Project[];
+  projectGroups: ProjectGroup[];
+  groupId: string | null;
+  projectId: string | null;
+}): void => {
+  const hydration = (async () => {
+    await reconcileProjectRegistryDependencies({
+      standaloneProjects: input.standaloneProjects,
+      projectGroups: input.projectGroups,
+      selectedGroupId: input.groupId,
+      selectedProjectId: input.projectId,
+    });
+    const state = useAppStore.getState();
+    if (state.projectSwitchPolicy === "resume_per_project" && input.groupId) {
+      await restoreProjectContext(input.groupId, input.projectId);
+    }
+    await ensureAutoPlanForSelection({
+      groupId: input.groupId,
+      projectId: input.projectId,
+      requestId: input.requestId,
+    });
+  })();
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(
+      () => reject(new Error(`Post-create hydration exceeded ${POST_CREATE_HYDRATION_TIMEOUT_MS} ms.`)),
+      POST_CREATE_HYDRATION_TIMEOUT_MS,
+    );
+  });
+
+  void Promise.race([hydration, timeout])
+    .then(() => {
+      logProjectRegistryAction("succeeded", {
+        action: `${input.action}_post_create_hydration`,
+        requestId: input.requestId,
+      });
+    })
+    .catch((error) => {
+      const normalized = toServiceError(error);
+      useAppStore.setState({
+        architectPlanCatalogStatus: "error",
+        architectPlanCatalogError: normalized.message,
+      });
+      logProjectRegistryAction("failed", {
+        action: `${input.action}_post_create_hydration`,
+        requestId: input.requestId,
+        error: normalized.message,
+      });
+    })
+    .finally(() => {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
+    });
 };
 
 const pruneLegacyPlaceholderWorkspaces = (groups: ProjectGroup[]): ProjectGroup[] => {
@@ -1358,6 +1428,7 @@ interface AppStore {
     refreshTasks?: boolean;
     includeArchivedInVisible?: boolean;
     reason?: "boot" | "project_switch" | "selector" | "auto_plan" | "manual";
+    requestId?: string;
   }) => Promise<MacroProjectMetadataLoadResult | null>;
   setActivePlanContext: (plan: ArchitectPlanContext | null) => void;
   openSettings: (tab?: SettingsTab) => void;
@@ -2037,6 +2108,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const localContext =
         await localProjectContext.getLocalProjectContextState(contextId);
       const result = await loadMacroProjectMetadataCatalog({
+        requestId: options.requestId,
         scopedProjectIds,
         selectedGroupId: state.selectedGroupId,
         selectedProjectId: state.selectedProjectId,
@@ -2120,6 +2192,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           event: "architect_metadata_selection_loaded",
           at: new Date().toISOString(),
           reason: options.reason ?? "manual",
+          requestId: options.requestId ?? null,
           selectedGroupId: state.selectedGroupId,
           selectedProjectId: state.selectedProjectId,
           scopedProjectIds,
@@ -2146,6 +2219,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           event: "architect_metadata_selection_load_failed",
           at: new Date().toISOString(),
           reason: options.reason ?? "manual",
+          requestId: options.requestId ?? null,
           error: normalized.message,
         }),
       );
@@ -3781,6 +3855,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         data.gitFlowSettings || getDefaultProjectGitFlowSettings();
       logProjectRegistryAction("started", {
         action: "create_project",
+        requestId,
         groupId: data.groupId,
         path: data.path ?? null,
         beforeCount: countProjectsInRegistry(previousState.projectGroups),
@@ -3789,6 +3864,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ...data,
         gitFlowSettings,
         requestId,
+      });
+      logProjectRegistryAction("succeeded", {
+        action: "create_project_backend",
+        requestId,
+        projectId: newProject.id,
       });
       if (get().projectAddOperation?.requestId !== requestId) {
         return newProject;
@@ -3911,38 +3991,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
       );
 
       await persistSessionContext({
-	        selectedGroupId: targetGroupId,
+        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
-      });
-	      await reconcileProjectRegistryDependencies({
-	        standaloneProjects: normalizedRegistry.standaloneProjects,
-	        projectGroups: normalizedRegistry.projectGroups,
-	        selectedGroupId: targetGroupId,
-        selectedProjectId: preferredFocusProjectId,
-      });
-
-	      const restoredGroupId = targetGroupId;
-      if (
-        get().projectSwitchPolicy === "resume_per_project" &&
-        restoredGroupId
-      ) {
-        await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
-      }
-
-      await ensureAutoPlanForSelection({
-	        groupId: restoredGroupId,
-        projectId: preferredFocusProjectId,
       });
 
       logProjectRegistryAction("succeeded", {
         action: "create_project",
-	        projectId: newProject.id,
-	        groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
+        requestId,
+        projectId: newProject.id,
+        groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
       set({ isLoading: false, lastError: null, projectAddOperation: null });
+      schedulePostCreateHydration({
+        requestId,
+        action: "create_project",
+        standaloneProjects: normalizedRegistry.standaloneProjects,
+        projectGroups: normalizedRegistry.projectGroups,
+        groupId: targetGroupId,
+        projectId: preferredFocusProjectId,
+      });
       return newProject;
     } catch (error) {
       const normalized = toServiceError(error);
@@ -3954,6 +4024,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       logProjectRegistryAction("failed", {
         action: "create_project",
+        requestId,
         groupId: data.groupId,
         path: data.path ?? null,
         error: normalized.message,
@@ -3981,6 +4052,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         data.gitFlowSettings || getDefaultProjectGitFlowSettings();
       logProjectRegistryAction("started", {
         action: "create_project_with_git_setup",
+        requestId,
         groupId: data.groupId,
         path: data.path ?? null,
         gitSetupActions: data.gitSetupActions,
@@ -3992,6 +4064,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         requestId,
       });
       const newProject = result.project;
+      logProjectRegistryAction("succeeded", {
+        action: "create_project_with_git_setup_backend",
+        requestId,
+        projectId: newProject.id,
+      });
       if (get().projectAddOperation?.requestId !== requestId) {
         return result;
       }
@@ -4117,34 +4194,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
       });
-	      await reconcileProjectRegistryDependencies({
-	        standaloneProjects: normalizedRegistry.standaloneProjects,
-	        projectGroups: normalizedRegistry.projectGroups,
-	        selectedGroupId: targetGroupId,
-        selectedProjectId: preferredFocusProjectId,
-      });
-
-	      const restoredGroupId = targetGroupId;
-      if (
-        get().projectSwitchPolicy === "resume_per_project" &&
-        restoredGroupId
-      ) {
-        await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
-      }
-
-      await ensureAutoPlanForSelection({
-        groupId: restoredGroupId,
-        projectId: preferredFocusProjectId,
-      });
 
       logProjectRegistryAction("succeeded", {
         action: "create_project_with_git_setup",
+        requestId,
         projectId: newProject.id,
         groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
       set({ isLoading: false, lastError: null, projectAddOperation: null });
+      schedulePostCreateHydration({
+        requestId,
+        action: "create_project_with_git_setup",
+        standaloneProjects: normalizedRegistry.standaloneProjects,
+        projectGroups: normalizedRegistry.projectGroups,
+        groupId: targetGroupId,
+        projectId: preferredFocusProjectId,
+      });
       return result;
     } catch (error) {
       const normalized = toServiceError(error);
@@ -4156,6 +4223,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       logProjectRegistryAction("failed", {
         action: "create_project_with_git_setup",
+        requestId,
         groupId: data.groupId,
         path: data.path ?? null,
         gitSetupActions: data.gitSetupActions,
@@ -4186,6 +4254,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         data.gitFlowSettings || getDefaultProjectGitFlowSettings();
       logProjectRegistryAction("started", {
         action: "create_new_project_repo",
+        requestId,
         groupId: data.groupId,
         parentPath: data.parentPath,
         folderName: data.folderName,
@@ -4197,6 +4266,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         requestId,
       });
       const newProject = result.project;
+      logProjectRegistryAction("succeeded", {
+        action: "create_new_project_repo_backend",
+        requestId,
+        projectId: newProject.id,
+      });
       if (get().projectAddOperation?.requestId !== requestId) {
         return result;
       }
@@ -4322,34 +4396,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
       });
-	      await reconcileProjectRegistryDependencies({
-	        standaloneProjects: normalizedRegistry.standaloneProjects,
-	        projectGroups: normalizedRegistry.projectGroups,
-	        selectedGroupId: targetGroupId,
-        selectedProjectId: preferredFocusProjectId,
-      });
-
-	      const restoredGroupId = targetGroupId;
-      if (
-        get().projectSwitchPolicy === "resume_per_project" &&
-        restoredGroupId
-      ) {
-        await restoreProjectContext(restoredGroupId, preferredFocusProjectId);
-      }
-
-      await ensureAutoPlanForSelection({
-        groupId: restoredGroupId,
-        projectId: preferredFocusProjectId,
-      });
 
       logProjectRegistryAction("succeeded", {
         action: "create_new_project_repo",
+        requestId,
         projectId: newProject.id,
         groupId: targetGroupId ?? normalizedRegistry.selectedGroupId,
         afterCount: countProjectsInRegistry(normalizedRegistry.projectGroups),
         repairApplied: normalizedRegistry.report.repaired,
       });
       set({ isLoading: false, lastError: null, projectAddOperation: null });
+      schedulePostCreateHydration({
+        requestId,
+        action: "create_new_project_repo",
+        standaloneProjects: normalizedRegistry.standaloneProjects,
+        projectGroups: normalizedRegistry.projectGroups,
+        groupId: targetGroupId,
+        projectId: preferredFocusProjectId,
+      });
       return result;
     } catch (error) {
       const normalized = toServiceError(error);
@@ -4361,6 +4425,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       });
       logProjectRegistryAction("failed", {
         action: "create_new_project_repo",
+        requestId,
         groupId: data.groupId,
         parentPath: data.parentPath,
         folderName: data.folderName,

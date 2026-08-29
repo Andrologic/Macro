@@ -2854,12 +2854,14 @@ export async function workspaceArchitectListPlans(params: {
   includeDeleted?: boolean;
   includeArchived?: boolean;
   scopedProjectIdsHint?: string[];
+  requestId?: string;
 }): Promise<WorkspaceArchitectPlanListDto> {
   const request = {
     branchName: params.branchName,
     includeDeleted: params.includeDeleted ?? false,
     includeArchived: params.includeArchived ?? false,
     scopedProjectIdsHint: params.scopedProjectIdsHint ?? [],
+    requestId: params.requestId ?? null,
   };
   if (!isTauriAvailable() && isRemoteBackendAvailable()) {
     const config = resolveRemoteConfig();

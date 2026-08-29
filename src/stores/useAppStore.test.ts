@@ -356,6 +356,16 @@ const getAppBootstrapMock = mock(async () => ({
   planNodes: bootstrapPlanNodes,
   predictedBranches: bootstrapPredictedBranches,
 }));
+const createProjectMock = mock(async (data: { name: string; path?: string }) => {
+  const project: ProjectRecord = {
+    id: `project-${data.name.toLowerCase()}`,
+    name: data.name,
+    path: data.path ?? `/repos/${data.name.toLowerCase()}`,
+    gitFlowSettings: { baseBranch: 'develop' },
+  };
+  bootstrapStandaloneProjects = [...bootstrapStandaloneProjects, project];
+  return { project };
+});
 const debugResetProjectMock = mock(async (data: { projectId: string }) => {
   bootstrapProjectGroups = bootstrapProjectGroups
     .map((group) => ({
@@ -496,6 +506,7 @@ const registerUseAppStoreMocks = async () => {
   mock.module('../services', () => ({
     services: {
       getAppBootstrap: getAppBootstrapMock,
+      createProject: createProjectMock,
       debugResetProject: debugResetProjectMock,
       removeProject: removeProjectMock,
     },
@@ -503,6 +514,7 @@ const registerUseAppStoreMocks = async () => {
   mock.module('../services/index.ts', () => ({
     services: {
       getAppBootstrap: getAppBootstrapMock,
+      createProject: createProjectMock,
       debugResetProject: debugResetProjectMock,
       removeProject: removeProjectMock,
     },
@@ -628,6 +640,17 @@ describe('useAppStore architect plan resolution', () => {
     setProjectSwitchPolicyMock.mockClear();
     persistActiveArchitectPlanMock.mockClear();
     getAppBootstrapMock.mockClear();
+    createProjectMock.mockClear();
+    createProjectMock.mockImplementation(async (data: { name: string; path?: string }) => {
+      const project: ProjectRecord = {
+        id: `project-${data.name.toLowerCase()}`,
+        name: data.name,
+        path: data.path ?? `/repos/${data.name.toLowerCase()}`,
+        gitFlowSettings: { baseBranch: 'develop' },
+      };
+      bootstrapStandaloneProjects = [...bootstrapStandaloneProjects, project];
+      return { project };
+    });
     getAppBootstrapMock.mockImplementation(async () => ({
       plan: bootstrapPlan,
       standaloneProjects: bootstrapStandaloneProjects,
@@ -691,6 +714,63 @@ describe('useAppStore architect plan resolution', () => {
 
     expect(useAppStore.getState().projectSwitchPolicy).toBe('reset_on_switch');
     expect(setProjectSwitchPolicyMock).toHaveBeenCalledWith('reset_on_switch');
+  });
+
+  it('resolves durable project creation before Architect hydration finishes', async () => {
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [];
+    let resolveArchitectHydration!: (value: { activePlanId: null; plans: [] }) => void;
+    const pendingArchitectHydration = new Promise<{ activePlanId: null; plans: [] }>(
+      (resolve) => {
+        resolveArchitectHydration = resolve;
+      }
+    );
+    listArchitectPlansMock.mockImplementationOnce(() => pendingArchitectHydration);
+    const { useAppStore } = await loadIsolatedUseAppStore();
+
+    const created = await useAppStore.getState().createProject({
+      name: 'Fast',
+      description: '',
+      groupId: null,
+      path: '/repos/fast',
+      requestId: 'project-add-fast',
+    });
+
+    expect(created.id).toBe('project-fast');
+    expect(useAppStore.getState().projectAddOperation).toBeNull();
+    expect(useAppStore.getState().standaloneProjects.map((project: ProjectRecord) => project.id)).toContain(
+      'project-fast'
+    );
+    await flushAsyncWork();
+    expect(listArchitectPlansMock).toHaveBeenCalled();
+    resolveArchitectHydration({ activePlanId: null, plans: [] });
+    await flushAsyncWork();
+  });
+
+  it('keeps a created project when post-create Architect hydration fails', async () => {
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [];
+    listArchitectPlansMock.mockRejectedValueOnce(new Error('architect index unavailable'));
+    const { useAppStore } = await loadIsolatedUseAppStore();
+
+    const created = await useAppStore.getState().createProject({
+      name: 'Durable',
+      description: '',
+      groupId: null,
+      path: '/repos/durable',
+      requestId: 'project-add-durable',
+    });
+    await flushAsyncWork();
+
+    expect(created.id).toBe('project-durable');
+    expect(useAppStore.getState().standaloneProjects.map((project: ProjectRecord) => project.id)).toContain(
+      'project-durable'
+    );
+    expect(useAppStore.getState().projectAddOperation).toBeNull();
+    expect(useAppStore.getState().architectPlanCatalogStatus).toBe('error');
+    expect(useAppStore.getState().architectPlanCatalogError).toContain(
+      'architect index unavailable'
+    );
   });
 
   it('selects a recovered standalone project on initialize when no remembered selection is valid', async () => {
