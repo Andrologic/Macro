@@ -1447,6 +1447,8 @@
     },
     "projectNavigator": {
       "title": "Proyectos",
+      "searchPlans": "Buscar planes...",
+      "noSearchResults": "Ningún plan coincide con esta búsqueda.",
       "projects": "Todos los proyectos",
       "pinned": "Fijados",
       "archived": "Archivados",

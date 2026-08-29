@@ -36,6 +36,7 @@ import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { PanelHeaderIconButton } from '../ui/PanelHeaderIconButton';
+import { SearchBar } from '../ui/SearchBar';
 import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
 import { PlanFormModal } from './PlanFormModal';
@@ -48,6 +49,7 @@ import {
 import {
   buildArchitectNavigatorPlanEntries,
   buildArchitectNavigatorScopes,
+  filterArchitectPlanEntriesByQuery,
   sanitizeArchitectNavigatorIds,
   toggleArchitectNavigatorScope,
   type ArchitectNavigatorPlanEntry,
@@ -121,6 +123,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [pinnedPlanIds, setPinnedPlanIds] = useState<string[]>([]);
   const [expandedPlanLists, setExpandedPlanLists] = useState<string[]>([]);
   const [showArchived, setShowArchived] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [creatingScopeId, setCreatingScopeId] = useState<string | null>(null);
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
@@ -160,7 +163,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     () => entries.filter((entry) => entry.plan.status === 'archived'),
     [entries],
   );
-  const entriesByScope = useMemo(() => {
+  const hasSearchQuery = searchQuery.trim().length > 0;
+  const searchedActiveEntries = useMemo(
+    () => filterArchitectPlanEntriesByQuery(activeEntries, searchQuery),
+    [activeEntries, searchQuery],
+  );
+  const searchedArchivedEntries = useMemo(
+    () => filterArchitectPlanEntriesByQuery(archivedEntries, searchQuery),
+    [archivedEntries, searchQuery],
+  );
+  const catalogEntriesByScope = useMemo(() => {
     const result = new Map<string, ArchitectNavigatorPlanEntry[]>();
     for (const entry of activeEntries) {
       const current = result.get(entry.scopeId) ?? [];
@@ -169,6 +181,21 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     }
     return result;
   }, [activeEntries]);
+  const entriesByScope = useMemo(() => {
+    const result = new Map<string, ArchitectNavigatorPlanEntry[]>();
+    for (const entry of searchedActiveEntries) {
+      const current = result.get(entry.scopeId) ?? [];
+      current.push(entry);
+      result.set(entry.scopeId, current);
+    }
+    return result;
+  }, [searchedActiveEntries]);
+  const displayedScopes = useMemo(
+    () => hasSearchQuery
+      ? scopes.filter((scope) => (entriesByScope.get(scope.id)?.length ?? 0) > 0)
+      : scopes,
+    [entriesByScope, hasSearchQuery, scopes],
+  );
   const pinnedEntries = useMemo(() => {
     const pinned = new Set(pinnedPlanIds);
     const countsByPlanId = new Map<string, number>();
@@ -280,7 +307,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [refreshPlans]);
 
   useEffect(() => {
-    const selectedPlans = selectedScope ? entriesByScope.get(selectedScope.id) ?? [] : [];
+    const selectedPlans = selectedScope ? catalogEntriesByScope.get(selectedScope.id) ?? [] : [];
     const detail: ArchitectPlanSelectorStateDetail = {
       status: error ? 'error' : isLoading ? 'loading' : 'ready',
       planCount: selectedPlans.length,
@@ -288,7 +315,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       canSelect: selectedPlans.length > 0,
     };
     return registerArchitectPlanSelectorStatePublisher(detail);
-  }, [entriesByScope, error, isLoading, selectedScope]);
+  }, [catalogEntriesByScope, error, isLoading, selectedScope]);
 
   const persistExpandedScopes = useCallback((next: string[]) => {
     setExpandedScopeIds(next);
@@ -904,6 +931,15 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         </div>
       </div>
 
+      <div className="shrink-0 border-b border-border px-3 py-2.5">
+        <SearchBar
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder={t('architect.projectNavigator.searchPlans', 'Rechercher des plans...')}
+          data-tour-id="architect-plan-search"
+        />
+      </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-2.5">
         {error && (
           <div className="mx-1 mb-2 rounded-md bg-red-500/10 px-2 py-1.5 text-[11px] text-red-400" role="alert">
@@ -911,7 +947,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </div>
         )}
 
-        {!showArchived && pinnedEntries.length > 0 && (
+        {hasSearchQuery && (showArchived ? searchedArchivedEntries : searchedActiveEntries).length === 0 && (
+          <div className="mx-2 mt-8 text-center">
+            <Icon name="search" size={20} className="mx-auto mb-2 text-muted-foreground/45" />
+            <p className="text-xs text-muted-foreground">
+              {t('architect.projectNavigator.noSearchResults', 'Aucun plan ne correspond à cette recherche.')}
+            </p>
+          </div>
+        )}
+
+        {!showArchived && !hasSearchQuery && pinnedEntries.length > 0 && (
           <section className="mb-3.5" aria-labelledby="architect-pinned-plans-title">
             <h3 id="architect-pinned-plans-title" className="px-1.5 pb-1.5 pt-0.5 text-[11px] font-medium text-muted-foreground">
               {t('architect.projectNavigator.pinned', 'Épinglés')}
@@ -920,16 +965,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           </section>
         )}
 
-        {!showArchived ? (
+        {!showArchived ? (!hasSearchQuery || searchedActiveEntries.length > 0) && (
           <section aria-labelledby="architect-projects-title">
           <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
             <div className="flex items-center gap-1.5">
               <h3 id="architect-projects-title" className="text-[11px] font-medium text-muted-foreground">
                 {t('architect.projectNavigator.projects', 'Tous les projets')}
               </h3>
-              {scopes.length > 0 && (
+              {displayedScopes.length > 0 && (
                 <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/70 px-1 text-[9px] tabular-nums text-muted-foreground">
-                  {scopes.length}
+                  {displayedScopes.length}
                 </span>
               )}
             </div>
@@ -960,11 +1005,11 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
           )}
 
           <div className="space-y-1">
-            {scopes.map((scope) => {
+            {displayedScopes.map((scope) => {
               const scopeEntries = entriesByScope.get(scope.id) ?? [];
-              const isExpanded = expandedScopeIds.includes(scope.id);
+              const isExpanded = hasSearchQuery || expandedScopeIds.includes(scope.id);
               const isSelected = scopeIsSelected(scope, selectedGroupId, selectedProjectId);
-              const showAll = expandedPlanLists.includes(scope.id);
+              const showAll = hasSearchQuery || expandedPlanLists.includes(scope.id);
               const visibleEntries = showAll ? scopeEntries : scopeEntries.slice(0, MAX_VISIBLE_PLANS_PER_SCOPE);
               const hiddenCount = scopeEntries.length - visibleEntries.length;
               const canCreatePlan = scope.projects.some(isProjectPlanActionable);
@@ -1094,16 +1139,16 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             <h3 id="architect-archived-plans-title" className="px-1.5 pb-1.5 pt-0.5 text-[11px] font-medium text-muted-foreground">
               {t('architect.projectNavigator.archivedPlans', 'Plans archivés')}
             </h3>
-            {archivedEntries.length > 0 ? (
-              <div className="space-y-0.5">{archivedEntries.map((entry) => renderPlanRow(entry, true))}</div>
-            ) : (
+            {searchedArchivedEntries.length > 0 ? (
+              <div className="space-y-0.5">{searchedArchivedEntries.map((entry) => renderPlanRow(entry, true))}</div>
+            ) : !hasSearchQuery ? (
               <div className="mx-2 mt-8 text-center">
                 <Icon name="archive" size={20} className="mx-auto mb-2 text-muted-foreground/45" />
                 <p className="text-xs text-muted-foreground">
                   {t('architect.projectNavigator.noArchivedPlans', 'Aucun plan archivé.')}
                 </p>
               </div>
-            )}
+            ) : null}
           </section>
         )}
       </div>

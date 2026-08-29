@@ -5,6 +5,8 @@ import {
 } from '../../services/architectPlanService';
 import type { ArchitectPlanCatalogBranch } from '../../services/macroProjectMetadataLoader';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
+import { getArchitectPlanDisplayName } from '../../services/architectPlanPresentation';
+import { matchesLocalSearchQuery } from '../../services/localModeSearch';
 
 export type ArchitectNavigatorScopeKind = 'group' | 'project';
 
@@ -129,6 +131,17 @@ export const buildArchitectNavigatorPlanEntries = (params: {
     .filter((entry): entry is ArchitectNavigatorPlanEntry => Boolean(entry))
     .sort((left, right) => compareUpdatedAtDesc(left.plan, right.plan));
 };
+
+export const filterArchitectPlanEntriesByQuery = (
+  entries: ArchitectNavigatorPlanEntry[],
+  searchQuery: string,
+): ArchitectNavigatorPlanEntry[] => entries.filter((entry) =>
+  matchesLocalSearchQuery(searchQuery, [
+    getArchitectPlanDisplayName(entry.plan),
+    entry.plan.title,
+    entry.plan.label,
+  ])
+);
 
 export const sanitizeArchitectNavigatorIds = (
   value: unknown,

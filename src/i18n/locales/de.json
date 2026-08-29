@@ -1443,6 +1443,8 @@
     },
     "projectNavigator": {
       "title": "Projekte",
+      "searchPlans": "Pläne suchen...",
+      "noSearchResults": "Kein Plan entspricht dieser Suche.",
       "projects": "Alle Projekte",
       "pinned": "Angeheftet",
       "archived": "Archiviert",

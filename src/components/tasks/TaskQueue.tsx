@@ -82,6 +82,8 @@ import { retargetTaskForProjectSelection } from '../../services/projectIdentityR
 import { isStandaloneTaskKindCreatable } from '../../services/standaloneTaskKinds';
 import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
 import { toServiceError } from '../../services/contracts/errors';
+import { SearchBar } from '../ui/SearchBar';
+import { filterTasksByQuery } from './taskQueueSearch';
 
 const ConfirmPromptModal = React.lazy(() =>
   import('../ui/ConfirmPromptModal').then((module) => ({
@@ -725,6 +727,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS_FILTER);
   const [statusFilter, setStatusFilter] = useState<TaskQueueStatusFilter>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [showCreateTaskDialog, setShowCreateTaskDialog] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
@@ -1580,41 +1583,46 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     return filteredTasks.filter((task) => !task.archived_at);
   }, [filteredTasks, showArchived]);
 
+  const searchedTasks = useMemo(
+    () => filterTasksByQuery(visibleTasks, searchQuery),
+    [searchQuery, visibleTasks],
+  );
+
   const draftTasks = useMemo(
-    () => visibleTasks.filter((task) => task.draft),
-    [visibleTasks]
+    () => searchedTasks.filter((task) => task.draft),
+    [searchedTasks]
   );
 
   const readyTasks = useMemo(() => {
-    return [...visibleTasks]
+    return [...searchedTasks]
       .filter((task) => !task.draft && !task.archived_at && !task.is_blocked && task.status !== 'Completed')
       .sort((a, b) => {
         const byStatus = readyStatusOrder[a.status] - readyStatusOrder[b.status];
         if (byStatus !== 0) return byStatus;
         return a.sequence_index - b.sequence_index;
       });
-  }, [visibleTasks]);
+  }, [searchedTasks]);
 
   const blockedTasks = useMemo(() => {
-    return [...visibleTasks]
+    return [...searchedTasks]
       .filter((task) => !task.draft && !task.archived_at && task.is_blocked)
       .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [visibleTasks]);
+  }, [searchedTasks]);
 
   const completedTasks = useMemo(() => {
-    return [...visibleTasks]
+    return [...searchedTasks]
       .filter((task) => !task.draft && !task.archived_at && task.status === 'Completed')
       .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [visibleTasks]);
+  }, [searchedTasks]);
 
   const archivedTasks = useMemo(() => {
-    return [...visibleTasks]
+    return [...searchedTasks]
       .filter((task) => Boolean(task.archived_at))
       .sort((a, b) => a.sequence_index - b.sequence_index);
-  }, [visibleTasks]);
+  }, [searchedTasks]);
   const multiRepoPresentationByTaskId = useMemo(() => {
     const map = new Map<string, MultiRepoTaskPresentation | null>();
-    visibleTasks.forEach((task) => {
+    searchedTasks.forEach((task) => {
       map.set(
         task.id,
         buildMultiRepoPresentation(
@@ -1624,7 +1632,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       );
     });
     return map;
-  }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, visibleTasks]);
+  }, [buildMultiRepoPresentation, liveReviewSummary, reviewCurrentTaskId, searchedTasks]);
   const taskListRows = useMemo<TaskListRow[]>(() => {
     const rows: TaskListRow[] = [];
 
@@ -2038,6 +2046,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         </div>
       </div>
 
+      <div className="border-b border-border px-3 py-2.5">
+        <SearchBar
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder={t('implement.searchTasks', 'Search tasks...')}
+          data-tour-id="implement-task-search"
+        />
+      </div>
+
       <div className="px-4 py-3 border-b border-border">
         <TaskProjectFilter
           projects={projectFilterOptions}
@@ -2110,18 +2127,24 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       )}
 
       <div ref={taskListRef} className="flex-1 overflow-y-auto">
-        {visibleTasks.length === 0 && (
+        {searchedTasks.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center px-2 text-center">
-            <Icon name="check-circle" size={32} className="text-muted-foreground/50 mb-3" />
+            <Icon
+              name={searchQuery.trim() ? 'search' : 'check-circle'}
+              size={32}
+              className="text-muted-foreground/50 mb-3"
+            />
             <p className="text-sm text-muted-foreground">
-              {projectFilter === ALL_PROJECTS_FILTER && statusFilter === 'all'
+              {searchQuery.trim()
+                ? t('implement.noSearchResults', 'No task matches this search.')
+                : projectFilter === ALL_PROJECTS_FILTER && statusFilter === 'all'
                 ? t('implement.noTasks', 'No tasks yet')
                 : t('implement.noTasksForFilter', 'No task matches this filter.')}
             </p>
           </div>
         )}
 
-        {visibleTasks.length > 0 && (
+        {searchedTasks.length > 0 && (
           <div className="p-2">
             <div className="relative" style={{ height: taskListTotalSize }}>
               {virtualTaskRows.map((virtualRow) => {

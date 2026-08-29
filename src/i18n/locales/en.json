@@ -1464,6 +1464,8 @@
     },
     "projectNavigator": {
       "title": "Projects",
+      "searchPlans": "Search plans...",
+      "noSearchResults": "No plan matches this search.",
       "projects": "All projects",
       "pinned": "Pinned",
       "archived": "Archived",

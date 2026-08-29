@@ -120,19 +120,29 @@ describe('conversationArchiveState', () => {
     ).toEqual(['archived-1']);
   });
 
-  it('filters conversations by query and keeps pinned partitioning', () => {
+  it('filters conversations by title without changing pinned partitioning', () => {
     const conversations = [
       createConversation({ id: '1', title: 'Release planning' }),
-      createConversation({ id: '2', title: 'Bug triage' }),
+      createConversation({ id: '2', title: 'Révision ciblée' }),
       createConversation({ id: '3', title: 'Customer notes' }),
     ];
 
-    const filtered = filterConversationsByQuery(conversations, 'bug');
+    const filtered = filterConversationsByQuery(conversations, 'REVISION');
     const partition = partitionPinnedConversations(filtered, new Set(['2']));
 
     expect(filtered.map((conversation) => conversation.id)).toEqual(['2']);
     expect(partition.pinnedConversations.map((conversation) => conversation.id)).toEqual(['2']);
     expect(partition.regularConversations).toHaveLength(0);
+  });
+
+  it('keeps every conversation for an empty query and returns none without a match', () => {
+    const conversations = [
+      createConversation({ id: '1', title: 'Release planning' }),
+      createConversation({ id: '2', title: 'Bug triage' }),
+    ];
+
+    expect(filterConversationsByQuery(conversations, '   ')).toEqual(conversations);
+    expect(filterConversationsByQuery(conversations, 'documentation')).toEqual([]);
   });
 
   it('toggles single and bulk selection safely', () => {

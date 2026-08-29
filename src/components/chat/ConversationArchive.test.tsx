@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useChatStore } from '../../stores/useChatStore';
@@ -154,5 +154,17 @@ describe('ConversationArchive', () => {
 
     expect(selected).toBe(false);
     expect(cleared).toBe(false);
+  });
+
+  it('selects a conversation search result with the existing list action', async () => {
+    const selectConversation = mock(async () => true);
+    const selected = await applyArchiveViewSelection(
+      'conversation-1',
+      selectConversation,
+      () => undefined,
+    );
+
+    expect(selected).toBe(true);
+    expect(selectConversation).toHaveBeenCalledWith('conversation-1');
   });
 });

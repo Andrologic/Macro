@@ -1442,6 +1442,8 @@
     },
     "projectNavigator": {
       "title": "프로젝트",
+      "searchPlans": "계획 검색...",
+      "noSearchResults": "검색과 일치하는 계획이 없습니다.",
       "projects": "모든 프로젝트",
       "pinned": "고정됨",
       "archived": "보관됨",

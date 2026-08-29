@@ -379,6 +379,14 @@ Exemples :
 - historique ou navigation de conversations en mode Chat
 - navigation directe dans les projets, groupes et plans en mode Architect
 
+Chaque panneau gauche propose une recherche locale propre à son mode. Implement
+recherche uniquement les tâches, Chat uniquement les conversations et Architect
+uniquement les plans. Le filtre s'applique dès la saisie, sans tenir compte de
+la casse ni des accents. Une requête vide restitue la liste courante. Les
+filtres, les archives et le tri déjà actifs restent appliqués aux résultats.
+Une recherche sans correspondance affiche un état vide explicite. Choisir un
+résultat déclenche la même sélection que dans la liste non filtrée.
+
 En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.
 
 En mode Chat, la sélection multiple reste compacte tant qu'elle n'est pas utilisée. Son déclencheur est un bouton à icône placé dans l'en-tête, immédiatement avant la création d'une conversation. Le bandeau indiquant le nombre de conversations sélectionnées et les actions groupées n'est rendu qu'après activation du mode ; il s'ouvre à zéro sélection et disparaît à l'annulation.
