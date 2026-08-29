@@ -123,6 +123,7 @@ export interface ReviewRepositoryState {
   executionKind?: 'worktree' | 'repository_root';
   checkpointId?: string;
   baseCommitHash?: string;
+  directSnapshotId?: string;
   restoreRevisions?: Record<string, string>;
   changes: FileChangeEntry[];
   stagedPaths: string[];
@@ -179,6 +180,7 @@ export interface FileDiffModalSession {
   isDirty: boolean;
   isSaving: boolean;
   isHydratingFullContext: boolean;
+  directSnapshotId?: string;
   restoreRevision?: string;
 }
 
@@ -1142,6 +1144,10 @@ const loadRepositoryState = async (params: {
         executionKind: target.executionKind,
         checkpointId: target.checkpointId,
         baseCommitHash: target.baseCommitHash,
+        directSnapshotId:
+          executionMode === 'direct'
+            ? (snapshot as tauriIpc.DirectReviewSnapshotDto).snapshotId
+            : undefined,
         restoreRevisions:
           executionMode === 'direct'
             ? (snapshot as tauriIpc.DirectReviewSnapshotDto).restoreRevisions
@@ -2021,6 +2027,7 @@ export const createFileChangesStore = (
       selectedDiffTarget: { repositoryId, changeId },
       diffModalSession: buildDiffModalSession(repositoryId, change, {
         isHydratingFullContext: change.requiresHydration && !change.tooLarge && !change.isBinary,
+        directSnapshotId: repository?.directSnapshotId,
         restoreRevision: repository?.restoreRevisions?.[change.path],
       }),
       isDiffModalOpen: true,
@@ -2094,10 +2101,18 @@ export const createFileChangesStore = (
       const paths = targetChanges.map((change) => change.path);
       if (repository.executionMode === 'direct') {
         const task = ensureReviewTask(deps);
+        const modalSnapshotId = affectsOpenModal && targetChanges.length === 1
+          ? get().diffModalSession?.directSnapshotId
+          : undefined;
+        const snapshotId = modalSnapshotId ?? repository.directSnapshotId;
+        if (!snapshotId) {
+          throw new Error('The direct-review snapshot is unavailable. Refresh the review.');
+        }
         await deps.tauri.directStagePaths!({
           taskId: task.id,
           projectPath: repository.worktreePath,
           checkpointId: repository.checkpointId,
+          snapshotId,
           paths,
         });
       } else {
@@ -2346,22 +2361,26 @@ export const createFileChangesStore = (
       const paths = targetChanges.map((change) => change.path);
       if (repository.executionMode === 'direct') {
         const task = ensureReviewTask(deps);
-        const expectedRevisions = { ...(repository.restoreRevisions ?? {}) };
-        const modalSession = get().diffModalSession;
-        if (
-          affectsOpenModal &&
-          modalSession?.restoreRevision &&
-          targetChanges.length === 1
-        ) {
-          expectedRevisions[targetChanges[0]!.path] = modalSession.restoreRevision;
+        const modalSnapshotId = affectsOpenModal && targetChanges.length === 1
+          ? get().diffModalSession?.directSnapshotId
+          : undefined;
+        const snapshotId = modalSnapshotId ?? repository.directSnapshotId;
+        if (!snapshotId) {
+          throw new Error('The direct-review snapshot is unavailable. Refresh the review.');
         }
-        await deps.tauri.directRestoreWorktreePaths!({
-          taskId: task.id,
-          projectPath: repository.worktreePath,
-          checkpointId: repository.checkpointId,
-          paths,
-          expectedRevisions,
-        });
+        const requestId = nextReviewRequestId('direct-restore');
+        try {
+          await deps.tauri.directRestoreWorktreePaths!({
+            taskId: task.id,
+            projectPath: repository.worktreePath,
+            checkpointId: repository.checkpointId,
+            snapshotId,
+            paths,
+            requestId,
+          });
+        } finally {
+          activeReviewRequestIds.delete(requestId);
+        }
       } else {
         await deps.tauri.gitRestorePaths({
           repoPath: repository.worktreePath,

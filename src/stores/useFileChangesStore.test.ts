@@ -787,6 +787,7 @@ describe('useFileChangesStore', () => {
       mergeInProgress: false,
       isClean: directAccepted,
       hasAcceptedChanges: directAccepted,
+      snapshotId: `snapshot-${directRestoreRevision}`,
       restoreRevisions: { 'src/main.ts': directRestoreRevision },
     }));
     const directStagePathsMock = mock(async () => {
@@ -854,8 +855,9 @@ describe('useFileChangesStore', () => {
       taskId: 'task-6',
       projectPath: repoAPath,
       checkpointId: 'task-6-0000000000000001',
+      snapshotId: 'snapshot-v1:test',
       paths: ['src/main.ts'],
-      expectedRevisions: { 'src/main.ts': 'v1:test' },
+      requestId: expect.stringContaining('direct-restore'),
     });
     directRestoreConflict = true;
     await expect(
@@ -874,6 +876,7 @@ describe('useFileChangesStore', () => {
       taskId: 'task-6',
       projectPath: repoAPath,
       checkpointId: 'task-6-0000000000000001',
+      snapshotId: 'snapshot-v1:newer-poll',
       paths: ['src/main.ts'],
     });
     expect(directAcceptChangesMock).toHaveBeenCalledWith({
@@ -993,6 +996,7 @@ describe('useFileChangesStore', () => {
       mergeInProgress: false,
       isClean: true,
       hasAcceptedChanges: false,
+      snapshotId: 'snapshot-direct-empty',
       restoreRevisions: {},
     }));
     const legacyStore = createFileChangesStore({
@@ -1449,6 +1453,7 @@ describe('useFileChangesStore', () => {
           mergeInProgress: false,
           isClean: false,
           hasAcceptedChanges: false,
+          snapshotId: 'snapshot-direct-a',
           restoreRevisions: { 'src/main.ts': 'v1:test' },
         })),
         directReviewFile: directReviewFileMock,
@@ -1523,6 +1528,7 @@ describe('useFileChangesStore', () => {
           mergeInProgress: false,
           isClean: false,
           hasAcceptedChanges: false,
+          snapshotId: 'snapshot-direct-b',
           restoreRevisions: { 'src/main.ts': 'v1:test' },
         })),
         directReviewFile: directReviewFileMock,
@@ -1599,6 +1605,7 @@ describe('useFileChangesStore', () => {
           mergeInProgress: false,
           isClean: false,
           hasAcceptedChanges: false,
+          snapshotId: 'snapshot-direct-c',
           restoreRevisions: { 'src/main.ts': 'v1:test' },
         })),
         directReviewFile: directReviewFileMock,

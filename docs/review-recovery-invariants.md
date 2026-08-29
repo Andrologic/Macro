@@ -11,7 +11,7 @@ Ce document fixe les invariants du chantier de récupération Git et de restaura
 | Identité du projet | Chemin canonique du projet validé par `WorkspaceRoot` | Le checkpoint doit enregistrer cette identité. Un déplacement explicite peut mettre à jour le chemin de travail seulement si l'identité persistée, la tâche et le checkpoint correspondent. |
 | Racine du projet | Répertoire canonique validé sous le workspace | Toute lecture ou mutation doit rester sous cette racine. Les liens symboliques, jonctions et points de réanalyse dans un parent sont refusés. |
 | Racine des checkpoints | Répertoire canonique `app_data/direct-checkpoints` | La racine et chaque enfant direct doivent être de vrais répertoires gérés. Aucun lien, jonction ou enfant externe n'est accepté. |
-| Révision de restauration | Révision renvoyée par la lecture de revue qui a préparé l'action | La restauration doit recevoir une révision pour chaque chemin et la comparer juste avant de publier la mutation. Une paire absente ou périmée annule toute l'opération. |
+| Révision de restauration | Registre backend lié à l'identifiant opaque du snapshot de revue | Le frontend ne peut fournir ni ajouter une révision. La validation et la restauration présentent l'identifiant du snapshot qui a préparé l'action. Le backend vérifie la tâche, le projet, le checkpoint, chaque chemin et sa révision juste avant la mutation. Une paire absente ou périmée annule toute l'opération. |
 | Révision Git de revue | Objet demandé par libgit2 et contexte stable de l'opération | Une récupération ne peut demander que l'objet manquant connu. Elle actualise l'ODB et relance l'opération une seule fois. |
 
 ## Invariants et scénarios de panne
@@ -38,7 +38,7 @@ Ce document fixe les invariants du chantier de récupération Git et de restaura
 1. Valider `taskId`, `checkpointId`, l'identité du projet et les racines canoniques.
 2. Prendre le verrou du checkpoint et le verrou du projet direct.
 3. Ouvrir le dépôt sans le créer, puis vérifier `HEAD`, tous les commits atteignables, leurs arbres, les blobs et l'index.
-4. Valider tous les chemins, les paires de blobs, les renommages, les limites et la carte complète des révisions attendues.
+4. Résoudre l'identifiant opaque du snapshot dans le registre backend, puis valider son propriétaire, tous les chemins, les paires de blobs, les renommages, les limites et la carte complète des révisions attendues.
 5. Relire chaque entrée du worktree par capacité et comparer sa révision attendue.
 6. Préparer les temporaires et sauvegardes dans les parents déjà validés.
 7. Vérifier l'annulation, puis publier les mutations.

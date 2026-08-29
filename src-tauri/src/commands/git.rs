@@ -65,6 +65,22 @@ struct GitReviewCancellationRegistry {
 static GIT_REVIEW_CANCELLATIONS: OnceLock<Mutex<GitReviewCancellationRegistry>> = OnceLock::new();
 const GIT_REVIEW_PRE_CANCEL_TTL: Duration = Duration::from_secs(60);
 const MAX_GIT_REVIEW_PRE_CANCELLED: usize = 256;
+const DIRECT_REVIEW_SNAPSHOT_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_DIRECT_REVIEW_SNAPSHOTS: usize = 256;
+const MAX_DIRECT_REVIEW_PATHS: usize = 4_096;
+const MAX_DIRECT_REVIEW_REVISION_BYTES: usize = 256 * 1024 * 1024;
+
+#[derive(Clone)]
+struct DirectReviewAuthorization {
+    task_id: String,
+    project_key: String,
+    checkpoint_id: String,
+    restore_revisions: HashMap<String, String>,
+    created_at: Instant,
+}
+
+static DIRECT_REVIEW_AUTHORIZATIONS: OnceLock<Mutex<HashMap<String, DirectReviewAuthorization>>> =
+    OnceLock::new();
 
 #[derive(Serialize)]
 pub struct GitStatusDto {
@@ -432,6 +448,7 @@ pub struct DirectReviewSnapshotDto {
     #[serde(flatten)]
     pub snapshot: GitReviewSnapshotDto,
     pub has_accepted_changes: bool,
+    pub snapshot_id: String,
     pub restore_revisions: HashMap<String, String>,
 }
 
@@ -7396,6 +7413,84 @@ fn direct_project_operation_lock_key(project_path: &Path) -> String {
     key
 }
 
+fn register_direct_review_authorization(
+    task_id: &str,
+    project_path: &Path,
+    checkpoint_id: &str,
+    restore_revisions: &HashMap<String, String>,
+) -> Result<String> {
+    let snapshot_id = uuid::Uuid::new_v4().simple().to_string();
+    let registry = DIRECT_REVIEW_AUTHORIZATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().map_err(|_| BackendError::Internal {
+        message: "Failed to lock direct review snapshot registry".to_string(),
+    })?;
+    registry.retain(|_, entry| entry.created_at.elapsed() <= DIRECT_REVIEW_SNAPSHOT_TTL);
+    while registry.len() >= MAX_DIRECT_REVIEW_SNAPSHOTS {
+        let Some(oldest) = registry
+            .iter()
+            .min_by_key(|(_, entry)| entry.created_at)
+            .map(|(id, _)| id.clone())
+        else {
+            break;
+        };
+        registry.remove(&oldest);
+    }
+    registry.insert(
+        snapshot_id.clone(),
+        DirectReviewAuthorization {
+            task_id: task_id.to_string(),
+            project_key: direct_project_operation_lock_key(project_path),
+            checkpoint_id: checkpoint_id.to_string(),
+            restore_revisions: restore_revisions.clone(),
+            created_at: Instant::now(),
+        },
+    );
+    Ok(snapshot_id)
+}
+
+fn resolve_direct_review_authorization(
+    snapshot_id: &str,
+    task_id: &str,
+    project_path: &Path,
+    checkpoint_id: &str,
+    paths: &[String],
+) -> Result<HashMap<String, String>> {
+    let registry = DIRECT_REVIEW_AUTHORIZATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().map_err(|_| BackendError::Internal {
+        message: "Failed to lock direct review snapshot registry".to_string(),
+    })?;
+    registry.retain(|_, entry| entry.created_at.elapsed() <= DIRECT_REVIEW_SNAPSHOT_TTL);
+    let authorization =
+        registry
+            .get(snapshot_id)
+            .ok_or_else(|| BackendError::RevisionConflict {
+                message: "The direct-review snapshot is absent or expired.".to_string(),
+            })?;
+    if authorization.task_id != task_id
+        || authorization.project_key != direct_project_operation_lock_key(project_path)
+        || authorization.checkpoint_id != checkpoint_id
+    {
+        return Err(BackendError::RevisionConflict {
+            message: "The direct-review snapshot belongs to another task or project.".to_string(),
+        });
+    }
+    paths
+        .iter()
+        .map(|path| {
+            authorization
+                .restore_revisions
+                .get(path)
+                .cloned()
+                .map(|revision| (path.clone(), revision))
+                .ok_or_else(|| BackendError::RevisionConflict {
+                    message: format!(
+                        "The direct-review snapshot does not authorize the selected path: {path}"
+                    ),
+                })
+        })
+        .collect()
+}
+
 fn with_direct_project_operation_lock<T, F>(project_path: &Path, operation: F) -> Result<T>
 where
     F: FnOnce() -> Result<T>,
@@ -7912,6 +8007,7 @@ fn verify_direct_checkpoint_blob(
     oid: Oid,
     operation: &str,
     cancellation: Option<&Arc<AtomicBool>>,
+    remaining_bytes: &mut usize,
 ) -> Result<()> {
     let odb = repo.odb().map_err(|error| {
         BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
@@ -7931,6 +8027,12 @@ fn verify_direct_checkpoint_blob(
             git_output: None,
         });
     }
+    if size > *remaining_bytes {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: "Direct checkpoint verification budget exceeded.".to_string(),
+        });
+    }
+    *remaining_bytes -= size;
     let mut hasher = Sha1::new();
     hasher.update(format!("blob {size}\0").as_bytes());
     let mut bytes_read_total = 0usize;
@@ -7976,6 +8078,7 @@ fn verify_direct_checkpoint_tree(
     visited_trees: &mut HashSet<Oid>,
     visited_blobs: &mut HashSet<Oid>,
     cancellation: Option<&Arc<AtomicBool>>,
+    remaining_bytes: &mut usize,
 ) -> Result<()> {
     if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
         return Err(BackendError::Git {
@@ -8016,6 +8119,7 @@ fn verify_direct_checkpoint_tree(
                 visited_trees,
                 visited_blobs,
                 cancellation,
+                remaining_bytes,
             )?,
             Some(git2::ObjectType::Blob) => {
                 if !visited_blobs.insert(entry.id()) {
@@ -8026,6 +8130,7 @@ fn verify_direct_checkpoint_tree(
                     entry.id(),
                     "direct_checkpoint_head_blob",
                     cancellation,
+                    remaining_bytes,
                 )?;
             }
             _ => {}
@@ -8064,6 +8169,7 @@ fn verify_direct_checkpoint_history_with_cancellation(
     let mut visited = HashSet::new();
     let mut visited_trees = HashSet::new();
     let mut visited_blobs = HashSet::new();
+    let mut remaining_bytes = MAX_DIRECT_REVIEW_REVISION_BYTES;
     while let Some(commit_id) = pending.pop() {
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return Err(BackendError::Git {
@@ -8086,6 +8192,7 @@ fn verify_direct_checkpoint_history_with_cancellation(
             &mut visited_trees,
             &mut visited_blobs,
             cancellation,
+            &mut remaining_bytes,
         )?;
         pending.extend(commit.parent_ids());
     }
@@ -8138,6 +8245,7 @@ fn verify_direct_checkpoint_index_with_cancellation(
         message: format!("Failed to refresh direct checkpoint index: {error}"),
     })?;
     reject_direct_checkpoint_gitlinks(repo, &index, "direct_checkpoint_index_gitlink")?;
+    let mut remaining_bytes = MAX_DIRECT_REVIEW_REVISION_BYTES;
     for entry in index.iter() {
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return Err(BackendError::Git {
@@ -8161,6 +8269,7 @@ fn verify_direct_checkpoint_index_with_cancellation(
             entry.id,
             "direct_checkpoint_index_blob",
             cancellation,
+            &mut remaining_bytes,
         )?;
     }
     Ok(())
@@ -8190,6 +8299,26 @@ fn ensure_direct_checkpoint_integrity(repo: &Repository) -> Result<()> {
     verify_direct_checkpoint_history(repo)
         .and_then(|_| verify_direct_checkpoint_index(repo))
         .map_err(|error| direct_checkpoint_corruption(repo, error, false))
+}
+
+fn ensure_direct_checkpoint_integrity_with_cancellation(
+    repo: &Repository,
+    cancellation: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+    verify_direct_checkpoint_history_with_cancellation(repo, cancellation)
+        .and_then(|_| verify_direct_checkpoint_index_with_cancellation(repo, cancellation))
+        .map_err(|error| {
+            if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                error
+            } else {
+                direct_checkpoint_corruption(repo, error, false)
+            }
+        })
 }
 
 fn direct_checkpoint_corruption(
@@ -8284,22 +8413,33 @@ fn ensure_direct_checkpoint_head(repo: &Repository) -> Result<String> {
     let retained_worktree = open_direct_restore_capability(&configured_worktree).map_err(|_| {
         direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_worktree")
     })?;
+    let mut remaining_bytes = MAX_DIRECT_REVIEW_REVISION_BYTES;
+    let mut prepared = Vec::new();
     for relative in files {
         if repo.status_should_ignore(&relative).unwrap_or(true) {
             continue;
         }
         let display_path = relative.to_string_lossy().replace('\\', "/");
-        stage_direct_path_from_capability(
-            repo,
-            &mut index,
-            &retained_worktree,
-            &relative,
-            &display_path,
-        )
-        .map_err(|_| {
-            direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_capture")
-        })?;
+        let expected_revision =
+            direct_worktree_revision(&retained_worktree, &relative, &display_path).map_err(
+                |_| direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_capture"),
+            )?;
+        prepared.push(
+            prepare_direct_stage_path(
+                &retained_worktree,
+                &relative,
+                &display_path,
+                &expected_revision,
+                &mut remaining_bytes,
+            )
+            .map_err(|_| {
+                direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_capture")
+            })?,
+        );
     }
+    apply_prepared_direct_stage_changes(repo, &mut index, prepared).map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_capture")
+    })?;
     reject_direct_checkpoint_gitlinks(repo, &index, "direct_checkpoint_init_gitlink")?;
     index.write().map_err(|_| {
         direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_index_write")
@@ -8785,8 +8925,14 @@ pub async fn direct_review_snapshot(
                 visible_paths.dedup();
                 let restore_paths =
                     expand_direct_rename_paths(repo, &visible_paths, DirectRenameAxis::Worktree)?;
+                if restore_paths.len() > MAX_DIRECT_REVIEW_PATHS {
+                    return Err(BackendError::FilesystemFileTooLarge {
+                        message: "Direct review contains too many changed paths.".to_string(),
+                    });
+                }
                 let restore_root = open_direct_restore_capability(validated)?;
                 let mut restore_revisions = HashMap::new();
+                let mut remaining_revision_bytes = MAX_DIRECT_REVIEW_REVISION_BYTES;
                 for path in restore_paths {
                     if git_review_is_cancelled(&operation_cancellation) {
                         return Err(BackendError::Git {
@@ -8799,7 +8945,13 @@ pub async fn direct_review_snapshot(
                     }
                     restore_revisions.insert(
                         path.clone(),
-                        direct_worktree_revision(&restore_root, &relative, &path)?,
+                        direct_worktree_revision_bounded(
+                            &restore_root,
+                            &relative,
+                            &path,
+                            operation_cancellation.as_ref(),
+                            &mut remaining_revision_bytes,
+                        )?,
                     );
                 }
                 let snapshot =
@@ -8823,9 +8975,16 @@ pub async fn direct_review_snapshot(
                     })?
                     .parent_count()
                     > 0;
+                let snapshot_id = register_direct_review_authorization(
+                    &task_id,
+                    validated,
+                    &direct_checkpoint_repo_id(repo),
+                    &restore_revisions,
+                )?;
                 Ok(DirectReviewSnapshotDto {
                     snapshot,
                     has_accepted_changes,
+                    snapshot_id,
                     restore_revisions,
                 })
             },
@@ -8883,16 +9042,34 @@ pub async fn direct_review_file(
     .map_err(to_join_error)?
 }
 
-fn stage_direct_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+enum PreparedDirectStageChange {
+    Remove {
+        relative: PathBuf,
+    },
+    Upsert {
+        relative: PathBuf,
+        bytes: Vec<u8>,
+        mode: u32,
+    },
+}
+
+fn stage_direct_paths_with_revisions(
+    repo: &Repository,
+    paths: &[String],
+    expected_revisions: &HashMap<String, String>,
+) -> Result<()> {
     ensure_direct_checkpoint_integrity(repo)?;
     let paths = expand_direct_rename_paths(repo, paths, DirectRenameAxis::Worktree)?;
+    if paths.len() > MAX_DIRECT_REVIEW_PATHS {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: "Direct validation contains too many changed paths.".to_string(),
+        });
+    }
     let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
         message: "Direct checkpoint has no worktree.".to_string(),
     })?;
-    let mut index = repo.index().map_err(|error| BackendError::Git {
-        message: format!("Failed to open direct checkpoint index: {}", error),
-    })?;
     let retained_worktree = open_direct_restore_capability(workdir)?;
+    let mut validated_paths = Vec::with_capacity(paths.len());
     for path in &paths {
         let relative = validate_repo_relative_file_path(path)?;
         reject_direct_checkpoint_excluded_path(&relative)?;
@@ -8901,13 +9078,98 @@ fn stage_direct_paths(repo: &Repository, paths: &[String]) -> Result<()> {
                 "Direct checkpoint path crosses a linked parent: {path}"
             )));
         }
-        stage_direct_path_from_capability(repo, &mut index, &retained_worktree, &relative, path)?;
+        let expected_revision =
+            expected_revisions
+                .get(path)
+                .ok_or_else(|| BackendError::RevisionConflict {
+                    message: format!(
+                        "The direct-review snapshot does not authorize the selected path: {path}"
+                    ),
+                })?;
+        validated_paths.push((path.clone(), relative, expected_revision.clone()));
     }
+    let mut remaining_bytes = MAX_DIRECT_REVIEW_REVISION_BYTES;
+    let prepared = validated_paths
+        .iter()
+        .map(|(path, relative, expected_revision)| {
+            prepare_direct_stage_path(
+                &retained_worktree,
+                relative,
+                path,
+                expected_revision,
+                &mut remaining_bytes,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut index = repo.index().map_err(|error| BackendError::Git {
+        message: format!("Failed to open direct checkpoint index: {}", error),
+    })?;
+    apply_prepared_direct_stage_changes(repo, &mut index, prepared)?;
     reject_direct_checkpoint_gitlinks(repo, &index, "direct_checkpoint_stage_gitlink")?;
     index.write().map_err(|error| BackendError::Git {
         message: format!("Failed to save direct change validation: {}", error),
     })?;
     Ok(())
+}
+
+fn apply_prepared_direct_stage_changes(
+    repo: &Repository,
+    index: &mut git2::Index,
+    prepared: Vec<PreparedDirectStageChange>,
+) -> Result<()> {
+    let odb = repo.odb()?;
+    for change in prepared {
+        match change {
+            PreparedDirectStageChange::Remove { relative } => {
+                let _ = index.remove_path(&relative);
+            }
+            PreparedDirectStageChange::Upsert {
+                relative,
+                bytes,
+                mode,
+            } => {
+                let oid = odb.write(git2::ObjectType::Blob, &bytes)?;
+                let entry = git2::IndexEntry {
+                    ctime: git2::IndexTime::new(0, 0),
+                    mtime: git2::IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode,
+                    uid: 0,
+                    gid: 0,
+                    file_size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+                    id: oid,
+                    flags: 0,
+                    flags_extended: 0,
+                    path: direct_checkpoint_index_path_bytes(&relative),
+                };
+                index.add(&entry).map_err(|_error| BackendError::Git {
+                    message: "Failed to validate a direct change.".to_string(),
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn stage_direct_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+    let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+        message: "Direct checkpoint has no worktree.".to_string(),
+    })?;
+    let root = open_direct_restore_capability(workdir)?;
+    let expanded = expand_direct_rename_paths(repo, paths, DirectRenameAxis::Worktree)?;
+    let revisions = expanded
+        .iter()
+        .map(|path| {
+            let relative = validate_repo_relative_file_path(path)?;
+            Ok((
+                path.clone(),
+                direct_worktree_revision(&root, &relative, path)?,
+            ))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    stage_direct_paths_with_revisions(repo, paths, &revisions)
 }
 
 #[derive(Clone, Copy)]
@@ -8948,13 +9210,13 @@ fn expand_direct_rename_paths(
     Ok(expanded)
 }
 
-fn stage_direct_path_from_capability(
-    repo: &Repository,
-    index: &mut git2::Index,
+fn prepare_direct_stage_path(
     worktree: &CapabilityDir,
     relative: &Path,
     display_path: &str,
-) -> Result<()> {
+    expected_revision: &str,
+    remaining_bytes: &mut usize,
+) -> Result<PreparedDirectStageChange> {
     let file_name = relative.file_name().ok_or_else(|| {
         BackendError::Validation(format!("Invalid direct checkpoint path: {display_path}"))
     })?;
@@ -8977,8 +9239,16 @@ fn stage_direct_path_from_capability(
                     )));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let _ = index.remove_path(relative);
-                    return Ok(());
+                    if expected_revision != "v1:absent" {
+                        return Err(BackendError::RevisionConflict {
+                            message: format!(
+                                "The direct-review file changed after the snapshot was loaded: {display_path}"
+                            ),
+                        });
+                    }
+                    return Ok(PreparedDirectStageChange::Remove {
+                        relative: relative.to_path_buf(),
+                    });
                 }
                 Err(error) => {
                     return Err(BackendError::Io {
@@ -8996,8 +9266,16 @@ fn stage_direct_path_from_capability(
     let metadata = match parent.symlink_metadata(file_name) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let _ = index.remove_path(relative);
-            return Ok(());
+            if expected_revision != "v1:absent" {
+                return Err(BackendError::RevisionConflict {
+                    message: format!(
+                        "The direct-review file changed after the snapshot was loaded: {display_path}"
+                    ),
+                });
+            }
+            return Ok(PreparedDirectStageChange::Remove {
+                relative: relative.to_path_buf(),
+            });
         }
         Err(error) => {
             return Err(BackendError::Io {
@@ -9006,86 +9284,107 @@ fn stage_direct_path_from_capability(
             });
         }
     };
-    let (mut source, size, mode): (Box<dyn std::io::Read>, usize, u32) =
-        if metadata.file_type().is_symlink() {
-            #[cfg(windows)]
-            {
-                return Err(BackendError::Validation(format!(
-                    "Validating a linked path is not supported safely on Windows: {display_path}"
-                )));
+    let (bytes, mode, actual_revision): (Vec<u8>, u32, String) = if metadata
+        .file_type()
+        .is_symlink()
+    {
+        #[cfg(windows)]
+        {
+            return Err(BackendError::Validation(format!(
+                "Validating a linked path is not supported safely on Windows: {display_path}"
+            )));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let target =
+                parent
+                    .read_link_contents(file_name)
+                    .map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to read direct linked path {display_path}: {error}"
+                        ),
+                        source: error,
+                    })?;
+            let bytes = target.as_os_str().as_bytes().to_vec();
+            if bytes.len() > *remaining_bytes {
+                return Err(BackendError::FilesystemFileTooLarge {
+                    message: "Direct validation revision budget exceeded.".to_string(),
+                });
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::ffi::OsStrExt;
-                let target =
-                    parent
-                        .read_link_contents(file_name)
-                        .map_err(|error| BackendError::Io {
-                            message: format!(
-                                "Failed to read direct linked path {display_path}: {error}"
-                            ),
-                            source: error,
-                        })?;
-                let bytes = target.as_os_str().as_bytes().to_vec();
-                let size = bytes.len();
-                (Box::new(std::io::Cursor::new(bytes)), size, 0o120000)
+            *remaining_bytes -= bytes.len();
+            let digest = Sha256::digest(&bytes).into();
+            let fingerprint = direct_restore_metadata_fingerprint(&metadata, digest, display_path)?;
+            let revision = direct_restore_revision_from_fingerprint(fingerprint);
+            (bytes, 0o120000, revision)
+        }
+    } else if metadata.is_file() {
+        let mut file = open_direct_regular_file_no_follow(&parent, file_name).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open direct change {display_path}: {error}"),
+                source: error,
             }
-        } else if metadata.is_file() {
-            let file = open_direct_regular_file_no_follow(&parent, file_name).map_err(|error| {
-                BackendError::Io {
-                    message: format!("Failed to open direct change {display_path}: {error}"),
-                    source: error,
-                }
-            })?;
-            let handle_metadata = file.metadata().map_err(|error| BackendError::Io {
-                message: format!("Failed to inspect direct change handle {display_path}: {error}"),
+        })?;
+        let handle_metadata = file.metadata().map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect direct change handle {display_path}: {error}"),
+            source: error,
+        })?;
+        let size = usize::try_from(handle_metadata.len()).map_err(|_| {
+            BackendError::Validation(format!(
+                "Direct change is too large to checkpoint: {display_path}"
+            ))
+        })?;
+        if size > *remaining_bytes {
+            return Err(BackendError::FilesystemFileTooLarge {
+                message: "Direct validation revision budget exceeded.".to_string(),
+            });
+        }
+        *remaining_bytes -= size;
+        let mut bytes = Vec::with_capacity(size);
+        file.read_to_end(&mut bytes)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to read direct change {display_path}: {error}"),
                 source: error,
             })?;
-            let size = usize::try_from(handle_metadata.len()).map_err(|_| {
-                BackendError::Validation(format!(
-                    "Direct change is too large to checkpoint: {display_path}"
-                ))
-            })?;
-            #[cfg(unix)]
-            let mode = {
-                use cap_std::fs::PermissionsExt;
-                if handle_metadata.permissions().mode() & 0o111 != 0 {
-                    0o100755
-                } else {
-                    0o100644
-                }
-            };
-            #[cfg(not(unix))]
-            let mode = 0o100644;
-            (Box::new(file), size, mode)
-        } else {
-            return Err(BackendError::Validation(format!(
-                "Unsupported direct checkpoint entry: {display_path}"
-            )));
+        if bytes.len() != size {
+            return Err(BackendError::RevisionConflict {
+                message: format!(
+                    "The direct-review file changed after the snapshot was loaded: {display_path}"
+                ),
+            });
+        }
+        #[cfg(unix)]
+        let mode = {
+            use cap_std::fs::PermissionsExt;
+            if handle_metadata.permissions().mode() & 0o111 != 0 {
+                0o100755
+            } else {
+                0o100644
+            }
         };
-    let odb = repo.odb()?;
-    let mut writer = odb.writer(size, git2::ObjectType::Blob)?;
-    std::io::copy(&mut source, &mut writer).map_err(|error| BackendError::Io {
-        message: format!("Failed to persist direct change {display_path}: {error}"),
-        source: error,
-    })?;
-    let oid = writer.finalize()?;
-    let entry = git2::IndexEntry {
-        ctime: git2::IndexTime::new(0, 0),
-        mtime: git2::IndexTime::new(0, 0),
-        dev: 0,
-        ino: 0,
-        mode,
-        uid: 0,
-        gid: 0,
-        file_size: u32::try_from(size).unwrap_or(u32::MAX),
-        id: oid,
-        flags: 0,
-        flags_extended: 0,
-        path: direct_checkpoint_index_path_bytes(relative),
+        #[cfg(not(unix))]
+        let mode = 0o100644;
+        let digest = Sha256::digest(&bytes).into();
+        let fingerprint =
+            direct_restore_metadata_fingerprint(&handle_metadata, digest, display_path)?;
+        let revision = direct_restore_revision_from_fingerprint(fingerprint);
+        (bytes, mode, revision)
+    } else {
+        return Err(BackendError::Validation(format!(
+            "Unsupported direct checkpoint entry: {display_path}"
+        )));
     };
-    index.add(&entry).map_err(|error| BackendError::Git {
-        message: format!("Failed to validate direct change {display_path}: {error}"),
+    if actual_revision != expected_revision {
+        return Err(BackendError::RevisionConflict {
+            message: format!(
+                "The direct-review file changed after the snapshot was loaded: {display_path}"
+            ),
+        });
+    }
+    Ok(PreparedDirectStageChange::Upsert {
+        relative: relative.to_path_buf(),
+        bytes,
+        mode,
     })
 }
 
@@ -9168,6 +9467,7 @@ pub async fn direct_stage_paths(
     task_id: String,
     project_path: String,
     checkpoint_id: Option<String>,
+    snapshot_id: String,
     paths: Vec<String>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
@@ -9179,7 +9479,18 @@ pub async fn direct_stage_paths(
             &project_path,
             checkpoint_id.as_deref(),
             false,
-            |repo, _| stage_direct_paths(repo, &paths),
+            |repo, validated| {
+                let expanded =
+                    expand_direct_rename_paths(repo, &paths, DirectRenameAxis::Worktree)?;
+                let revisions = resolve_direct_review_authorization(
+                    &snapshot_id,
+                    &task_id,
+                    validated,
+                    &direct_checkpoint_repo_id(repo),
+                    &expanded,
+                )?;
+                stage_direct_paths_with_revisions(repo, &paths, &revisions)
+            },
         )
     })
     .await
@@ -9995,6 +10306,20 @@ fn restore_direct_tracked_path(
                 .expect("write concurrent marker");
             marker.sync_all().expect("persist concurrent marker");
         }
+        let concurrent_file_name = OsStr::new("macro-test-concurrent-file-rollback.txt");
+        if parent.symlink_metadata(concurrent_file_name).is_ok() {
+            let mut options = CapabilityOpenOptions::new();
+            options.write(true).truncate(true);
+            let mut concurrent = parent
+                .open_with(concurrent_file_name, &options)
+                .expect("open concurrent rollback file");
+            concurrent
+                .write_all(b"concurrent file save\n")
+                .expect("write concurrent rollback file");
+            concurrent
+                .sync_all()
+                .expect("persist concurrent rollback file");
+        }
         return Err(BackendError::Validation(
             "Injected direct restore failure after backup.".to_string(),
         ));
@@ -10031,6 +10356,22 @@ fn direct_restore_entry_fingerprint(
     file_name: &OsStr,
     display_path: &str,
 ) -> Result<DirectRestoreFingerprint> {
+    let mut budget = usize::MAX;
+    direct_restore_entry_fingerprint_bounded(parent, file_name, display_path, None, &mut budget)
+}
+
+fn direct_restore_entry_fingerprint_bounded(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    display_path: &str,
+    cancellation: Option<&Arc<AtomicBool>>,
+    remaining_bytes: &mut usize,
+) -> Result<DirectRestoreFingerprint> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
     let metadata = parent
         .symlink_metadata(file_name)
         .map_err(|error| BackendError::Io {
@@ -10051,6 +10392,12 @@ fn direct_restore_entry_fingerprint(
                         ),
                         source: error,
                     })?;
+            if target.as_os_str().as_bytes().len() > *remaining_bytes {
+                return Err(BackendError::FilesystemFileTooLarge {
+                    message: "Direct review revision budget exceeded.".to_string(),
+                });
+            }
+            *remaining_bytes -= target.as_os_str().as_bytes().len();
             hasher.update(target.as_os_str().as_bytes());
         }
         #[cfg(windows)]
@@ -10064,8 +10411,30 @@ fn direct_restore_entry_fingerprint(
                 source: error,
             }
         })?;
+        let size = usize::try_from(
+            file.metadata()
+                .map_err(|error| BackendError::Io {
+                    message: format!("Failed to inspect preserved path {display_path}: {error}"),
+                    source: error,
+                })?
+                .len(),
+        )
+        .map_err(|_| BackendError::FilesystemFileTooLarge {
+            message: "Direct review file exceeds the supported size.".to_string(),
+        })?;
+        if size > *remaining_bytes {
+            return Err(BackendError::FilesystemFileTooLarge {
+                message: "Direct review revision budget exceeded.".to_string(),
+            });
+        }
+        *remaining_bytes -= size;
         let mut buffer = [0u8; 64 * 1024];
         loop {
+            if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                return Err(BackendError::Git {
+                    message: "Git review was cancelled.".to_string(),
+                });
+            }
             let bytes_read = file.read(&mut buffer).map_err(|error| BackendError::Io {
                 message: format!("Failed to inspect preserved path {display_path}: {error}"),
                 source: error,
@@ -10074,6 +10443,12 @@ fn direct_restore_entry_fingerprint(
                 break;
             }
             hasher.update(&buffer[..bytes_read]);
+            #[cfg(test)]
+            if display_path == "macro-test-cancel-revision.bin" {
+                if let Some(flag) = cancellation {
+                    flag.store(true, Ordering::Release);
+                }
+            }
         }
     } else {
         return Err(BackendError::Validation(format!(
@@ -10111,6 +10486,22 @@ fn direct_worktree_revision(
     relative: &Path,
     display_path: &str,
 ) -> Result<String> {
+    let mut budget = usize::MAX;
+    direct_worktree_revision_bounded(worktree, relative, display_path, None, &mut budget)
+}
+
+fn direct_worktree_revision_bounded(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    display_path: &str,
+    cancellation: Option<&Arc<AtomicBool>>,
+    remaining_bytes: &mut usize,
+) -> Result<String> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
     let file_name = relative.file_name().ok_or_else(|| {
         BackendError::Validation(format!("Invalid direct review path: {display_path}"))
     })?;
@@ -10149,8 +10540,14 @@ fn direct_worktree_revision(
         }
     }
     match parent.symlink_metadata(file_name) {
-        Ok(_) => direct_restore_entry_fingerprint(&parent, file_name, display_path)
-            .map(direct_restore_revision_from_fingerprint),
+        Ok(_) => direct_restore_entry_fingerprint_bounded(
+            &parent,
+            file_name,
+            display_path,
+            cancellation,
+            remaining_bytes,
+        )
+        .map(direct_restore_revision_from_fingerprint),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("v1:absent".to_string()),
         Err(error) => Err(BackendError::Io {
             message: format!("Failed to inspect direct review path: {error}"),
@@ -10285,36 +10682,57 @@ fn prepare_direct_untracked_removal(
 }
 
 fn rollback_direct_restore(entry: &DirectRestoreBackup) -> Result<()> {
-    let displaced_name =
-        move_direct_restore_entry_to_backup(&entry.parent, &entry.file_name, &entry.display_path)?;
-    if let Err(error) = restore_direct_restore_backup(
+    let current = match entry.parent.symlink_metadata(&entry.file_name) {
+        Ok(_) => Some(direct_restore_entry_fingerprint(
+            &entry.parent,
+            &entry.file_name,
+            &entry.display_path,
+        )?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect a direct restore rollback: {error}"),
+                source: error,
+            });
+        }
+    };
+    if current != entry.expected_fingerprint {
+        return Err(BackendError::RevisionConflict {
+            message: "A concurrent edit was preserved while the direct restore rolled back."
+                .to_string(),
+        });
+    }
+    let displaced_name = if current.is_some() {
+        move_direct_restore_entry_to_backup(&entry.parent, &entry.file_name, &entry.display_path)?
+    } else {
+        None
+    };
+    if let Some(displaced_name) = displaced_name.as_deref() {
+        if direct_restore_entry_fingerprint(&entry.parent, displaced_name, &entry.display_path)?
+            != entry.expected_fingerprint.expect("checked above")
+        {
+            restore_direct_restore_backup(
+                &entry.parent,
+                &entry.file_name,
+                Some(displaced_name),
+                &entry.absolute_parent,
+            )?;
+            return Err(BackendError::RevisionConflict {
+                message: "A concurrent edit was preserved while the direct restore rolled back."
+                    .to_string(),
+            });
+        }
+    }
+    restore_direct_restore_backup(
         &entry.parent,
         &entry.file_name,
         entry.backup_name.as_deref(),
         &entry.absolute_parent,
-    ) {
-        return Err(error);
+    )?;
+    if let Some(displaced_name) = displaced_name.as_deref() {
+        remove_direct_restore_entry(&entry.parent, displaced_name, &entry.display_path)?;
     }
-    let Some(displaced_name) = displaced_name else {
-        return Ok(());
-    };
-    let Some(expected_fingerprint) = entry.expected_fingerprint else {
-        return Err(BackendError::Validation(format!(
-            "Direct restore kept a concurrent change as '{}' while rolling back {}.",
-            displaced_name.to_string_lossy(),
-            entry.display_path,
-        )));
-    };
-    if direct_restore_entry_fingerprint(&entry.parent, &displaced_name, &entry.display_path)?
-        != expected_fingerprint
-    {
-        return Err(BackendError::Validation(format!(
-            "Direct restore kept a concurrent change as '{}' while rolling back {}.",
-            displaced_name.to_string_lossy(),
-            entry.display_path,
-        )));
-    }
-    remove_direct_restore_entry(&entry.parent, &displaced_name, &entry.display_path)
+    Ok(())
 }
 
 fn commit_direct_restore(entry: &DirectRestoreBackup) {
@@ -10353,7 +10771,7 @@ fn restore_direct_worktree_paths(
             ))
         })
         .collect::<Result<HashMap<_, _>>>()?;
-    restore_direct_worktree_paths_with_revisions(repo, validated, paths, &revisions)
+    restore_direct_worktree_paths_with_revisions(repo, validated, paths, &revisions, None)
 }
 
 fn restore_direct_worktree_paths_with_revisions(
@@ -10361,12 +10779,19 @@ fn restore_direct_worktree_paths_with_revisions(
     validated: &Path,
     paths: Vec<String>,
     expected_revisions: &HashMap<String, String>,
+    cancellation: Option<&Arc<AtomicBool>>,
 ) -> Result<()> {
-    ensure_direct_checkpoint_integrity(repo)?;
+    ensure_direct_checkpoint_integrity_with_cancellation(repo, cancellation)?;
     let paths = expand_direct_rename_paths(repo, &paths, DirectRenameAxis::Worktree)?;
+    if paths.len() > MAX_DIRECT_REVIEW_PATHS {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: "Direct restore contains too many changed paths.".to_string(),
+        });
+    }
     let mut index = repo.index()?;
     index.read(true)?;
     let restore_root = open_direct_restore_capability(validated)?;
+    let mut remaining_revision_bytes = MAX_DIRECT_REVIEW_REVISION_BYTES;
     let validated_paths = paths
         .into_iter()
         .map(|path| {
@@ -10384,7 +10809,13 @@ fn restore_direct_worktree_paths_with_revisions(
                     ),
                 }
             })?;
-            let actual_revision = direct_worktree_revision(&restore_root, &relative, &path)?;
+            let actual_revision = direct_worktree_revision_bounded(
+                &restore_root,
+                &relative,
+                &path,
+                cancellation,
+                &mut remaining_revision_bytes,
+            )?;
             if actual_revision != expected_revision {
                 return Err(BackendError::RevisionConflict {
                     message: format!(
@@ -10397,7 +10828,11 @@ fn restore_direct_worktree_paths_with_revisions(
         .collect::<Result<Vec<_>>>()?;
     let mut applied = Vec::new();
     for (path, relative, expected_revision) in validated_paths {
-        let result = if let Some(entry) = index.get_path(&relative, 0) {
+        let result = if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            })
+        } else if let Some(entry) = index.get_path(&relative, 0) {
             restore_direct_tracked_path(
                 repo,
                 &restore_root,
@@ -10437,6 +10872,23 @@ fn restore_direct_worktree_paths_with_revisions(
             }
         }
     }
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        let mut rollback_errors = Vec::new();
+        for backup in applied.iter().rev() {
+            if let Err(error) = rollback_direct_restore(backup) {
+                rollback_errors.push(error.to_string());
+            }
+        }
+        if !rollback_errors.is_empty() {
+            return Err(BackendError::Validation(
+                "Direct restore was cancelled and at least one concurrent edit prevented a complete rollback."
+                    .to_string(),
+            ));
+        }
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
     for backup in &applied {
         commit_direct_restore(backup);
     }
@@ -10450,11 +10902,14 @@ pub async fn direct_restore_worktree_paths(
     task_id: String,
     project_path: String,
     checkpoint_id: Option<String>,
+    snapshot_id: String,
     paths: Vec<String>,
-    expected_revisions: HashMap<String, String>,
+    request_id: String,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
+    let (cancellation, cancellation_guard) = register_git_review_cancellation(Some(&request_id))?;
     tokio::task::spawn_blocking(move || {
+        let _cancellation_guard = cancellation_guard;
         with_locked_direct_checkpoint(
             &app,
             &workspace,
@@ -10463,11 +10918,21 @@ pub async fn direct_restore_worktree_paths(
             checkpoint_id.as_deref(),
             false,
             |repo, validated| {
+                let expanded =
+                    expand_direct_rename_paths(repo, &paths, DirectRenameAxis::Worktree)?;
+                let expected_revisions = resolve_direct_review_authorization(
+                    &snapshot_id,
+                    &task_id,
+                    validated,
+                    &direct_checkpoint_repo_id(repo),
+                    &expanded,
+                )?;
                 restore_direct_worktree_paths_with_revisions(
                     repo,
                     validated,
                     paths,
                     &expected_revisions,
+                    cancellation.as_ref(),
                 )
             },
         )
@@ -14662,6 +15127,191 @@ mod tests {
     }
 
     #[test]
+    fn direct_stage_rejects_content_changed_after_the_snapshot() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let path = project_path.join("file.txt");
+        fs::write(&path, "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "reviewed\n").expect("reviewed file");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let revision = direct_worktree_revision(&root, Path::new("file.txt"), "file.txt")
+            .expect("snapshot revision");
+        let before = repo
+            .index()
+            .expect("index")
+            .get_path(Path::new("file.txt"), 0)
+            .expect("baseline entry")
+            .id;
+        fs::write(&path, "saved after review\n").expect("concurrent save");
+
+        let error = stage_direct_paths_with_revisions(
+            &repo,
+            &["file.txt".to_string()],
+            &HashMap::from([("file.txt".to_string(), revision)]),
+        )
+        .expect_err("stale review must not validate a concurrent save");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            repo.index()
+                .expect("index")
+                .get_path(Path::new("file.txt"), 0)
+                .expect("baseline entry")
+                .id,
+            before
+        );
+        assert_eq!(
+            fs::read_to_string(path).expect("file"),
+            "saved after review\n"
+        );
+    }
+
+    #[test]
+    fn direct_stage_prevalidates_every_path_before_writing_objects() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("a.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(project_path.join("a.txt"), "pending\n").expect("pending file");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let revision = direct_worktree_revision(&root, Path::new("a.txt"), "a.txt")
+            .expect("snapshot revision");
+        let count_objects = || {
+            let mut count = 0usize;
+            repo.odb()
+                .expect("odb")
+                .foreach(|_| {
+                    count += 1;
+                    true
+                })
+                .expect("walk odb");
+            count
+        };
+        let before = count_objects();
+
+        stage_direct_paths_with_revisions(
+            &repo,
+            &["a.txt".to_string(), "z/../../escape.txt".to_string()],
+            &HashMap::from([
+                ("a.txt".to_string(), revision),
+                ("z/../../escape.txt".to_string(), "v1:absent".to_string()),
+            ]),
+        )
+        .expect_err("invalid late path must reject the complete batch");
+
+        assert_eq!(count_objects(), before);
+    }
+
+    #[test]
+    fn direct_review_authorization_rejects_an_unknown_path_with_a_valid_revision() {
+        let temp = TempDir::new().expect("temp dir");
+        let revisions = HashMap::from([("reviewed.txt".to_string(), "v1:absent".to_string())]);
+        let snapshot_id = register_direct_review_authorization(
+            "task-1",
+            temp.path(),
+            "task-1-0000000000000001",
+            &revisions,
+        )
+        .expect("register snapshot");
+
+        let error = resolve_direct_review_authorization(
+            &snapshot_id,
+            "task-1",
+            temp.path(),
+            "task-1-0000000000000001",
+            &["unknown.txt".to_string()],
+        )
+        .expect_err("a caller-provided digest cannot authorize an unknown path");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+
+        let other_project = TempDir::new().expect("other project");
+        for (task_id, project_path, checkpoint_id) in [
+            ("task-2", temp.path(), "task-1-0000000000000001"),
+            ("task-1", other_project.path(), "task-1-0000000000000001"),
+            ("task-1", temp.path(), "task-1-0000000000000002"),
+        ] {
+            let error = resolve_direct_review_authorization(
+                &snapshot_id,
+                task_id,
+                project_path,
+                checkpoint_id,
+                &["reviewed.txt".to_string()],
+            )
+            .expect_err("snapshot identity must remain bound to its context");
+            assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        }
+    }
+
+    #[test]
+    fn direct_review_revision_hashing_is_bounded_and_cancellable_between_reads() {
+        let temp = TempDir::new().expect("temp dir");
+        let path = temp.path().join("macro-test-cancel-revision.bin");
+        fs::write(&path, vec![b'x'; 256 * 1024]).expect("large revision file");
+        let root = open_direct_restore_capability(temp.path()).expect("retain project");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let mut budget = MAX_DIRECT_REVIEW_REVISION_BYTES;
+
+        let error = direct_worktree_revision_bounded(
+            &root,
+            Path::new("macro-test-cancel-revision.bin"),
+            "macro-test-cancel-revision.bin",
+            Some(&cancellation),
+            &mut budget,
+        )
+        .expect_err("cancellation must interrupt revision hashing");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        let mut small_budget = 1usize;
+        let error = direct_worktree_revision_bounded(
+            &root,
+            Path::new("macro-test-cancel-revision.bin"),
+            "regular-file.bin",
+            None,
+            &mut small_budget,
+        )
+        .expect_err("revision hashing must enforce its byte budget");
+        assert!(matches!(error, BackendError::FilesystemFileTooLarge { .. }));
+    }
+
+    #[test]
+    fn direct_stage_rejects_a_path_batch_above_the_limit() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let paths = (0..=MAX_DIRECT_REVIEW_PATHS)
+            .map(|index| format!("file-{index}.txt"))
+            .collect::<Vec<_>>();
+
+        let error = stage_direct_paths_with_revisions(&repo, &paths, &HashMap::new())
+            .expect_err("oversized path batch must fail before capture");
+
+        assert!(matches!(error, BackendError::FilesystemFileTooLarge { .. }));
+    }
+
+    #[test]
+    fn pre_cancelled_direct_restore_does_not_mutate_the_worktree() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let path = project_path.join("file.txt");
+        fs::write(&path, "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "pending\n").expect("pending file");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let revision = direct_worktree_revision(&root, Path::new("file.txt"), "file.txt")
+            .expect("snapshot revision");
+        let cancellation = Arc::new(AtomicBool::new(true));
+
+        restore_direct_worktree_paths_with_revisions(
+            &repo,
+            &project_path,
+            vec!["file.txt".to_string()],
+            &HashMap::from([("file.txt".to_string(), revision)]),
+            Some(&cancellation),
+        )
+        .expect_err("pre-cancelled restore must stop before publication");
+
+        assert_eq!(fs::read_to_string(path).expect("file"), "pending\n");
+    }
+
+    #[test]
     fn direct_restore_never_overwrites_a_concurrent_save() {
         let (_temp, project_path, repo) = init_direct_checkpoint();
         let path = project_path.join("macro-test-concurrent-save.txt");
@@ -14708,6 +15358,7 @@ mod tests {
             &project_path,
             vec!["file.txt".to_string()],
             &revisions,
+            None,
         )
         .expect_err("a stale snapshot must not restore");
 
@@ -14737,6 +15388,7 @@ mod tests {
             &project_path,
             vec![name.to_string()],
             &revisions,
+            None,
         )
         .expect_err("a save between validation and backup must stop restore");
 
@@ -14774,6 +15426,7 @@ mod tests {
             &project_path,
             vec!["a.txt".to_string(), "b.txt".to_string()],
             &revisions,
+            None,
         )
         .expect_err("the stale second path must block the whole batch");
 
@@ -14800,6 +15453,7 @@ mod tests {
             &project_path,
             vec!["file.txt".to_string()],
             &HashMap::new(),
+            None,
         )
         .expect_err("missing revisions must fail closed");
 
@@ -14958,6 +15612,41 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .contains("macro-restore-backup")));
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_rollback_preserves_a_concurrent_file_save_at_its_path() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let concurrent_path = project_path.join("macro-test-concurrent-file-rollback.txt");
+        fs::write(&concurrent_path, "accepted a\n").expect("accepted a");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "accepted b\n",
+        )
+        .expect("accepted b");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&concurrent_path, "pending a\n").expect("pending a");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "pending b\n",
+        )
+        .expect("pending b");
+
+        restore_direct_worktree_paths(
+            &repo,
+            &project_path,
+            vec![
+                "macro-test-concurrent-file-rollback.txt".to_string(),
+                "macro-test-fail-after-backup.txt".to_string(),
+            ],
+        )
+        .expect_err("the second failure must preserve the concurrent file save");
+
+        assert_eq!(
+            fs::read_to_string(&concurrent_path).expect("concurrent file"),
+            "concurrent file save\n"
+        );
         assert!(!project_path.join(".git").exists());
     }
 

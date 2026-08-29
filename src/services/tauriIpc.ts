@@ -452,6 +452,7 @@ export interface GitReviewSnapshotDto {
 
 export interface DirectReviewSnapshotDto extends GitReviewSnapshotDto {
   hasAcceptedChanges: boolean;
+  snapshotId: string;
   restoreRevisions: Record<string, string>;
 }
 
@@ -2558,6 +2559,7 @@ export async function directStagePaths(params: {
   taskId: string;
   projectPath: string;
   checkpointId?: string;
+  snapshotId: string;
   paths: string[];
 }): Promise<void> {
   return invoke<void>('direct_stage_paths', params);
@@ -2576,8 +2578,9 @@ export async function directRestoreWorktreePaths(params: {
   taskId: string;
   projectPath: string;
   checkpointId?: string;
+  snapshotId: string;
   paths: string[];
-  expectedRevisions: Record<string, string>;
+  requestId: string;
 }): Promise<void> {
   return invoke<void>('direct_restore_worktree_paths', params);
 }
