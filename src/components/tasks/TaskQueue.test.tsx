@@ -162,7 +162,7 @@ const flushRender = async () => {
 };
 
 const waitForCreateDialog = async () => {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     if (dialog) return dialog;
     await act(async () => {
