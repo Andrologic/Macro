@@ -30,6 +30,7 @@ import type {
 } from './mergeWorkflowPersistence';
 import { summarizePersistedMergeWorkflowSession } from './mergeWorkflowPersistence';
 import { getTaskBusinessId, toPlanLocatorKey, toTaskRuntimeId } from './durableIdentity';
+import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 
 export type ImplementTaskSource = 'architect' | 'plan_finalization' | 'standalone';
 export type ImplementTaskCatalogSource = 'architect' | 'mixed' | 'fallback' | 'empty';
@@ -45,6 +46,7 @@ export interface ImplementTaskPlanSummary {
   storageBranch: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   hasMixedTargetBranches?: boolean;
   projectIds: string[];
   taskCount: number;
@@ -119,16 +121,26 @@ const getUniqueTargetBranch = (
 };
 
 const buildPlanFinalizationExecutionTargets = (
-  plan: Pick<ArchitectPlanRecord, 'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId'>
+  plan: Pick<
+    ArchitectPlanRecord,
+    'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId' |
+      'executionModesByProjectId' | 'nodes'
+  >
 ): TaskExecutionTarget[] => {
   const projectIds = normalizeProjectIds(plan.projectIds, plan.projectId);
+  const executionModesByProjectId = getPlanExecutionModesByProjectId(
+    plan.nodes,
+    plan.executionModesByProjectId,
+  );
 
   return projectIds.map((projectId) => {
     const targetBranchName = plan.targetBranchesByProjectId?.[projectId] || plan.targetBranch;
+    const executionMode = executionModesByProjectId[projectId];
     return {
       projectId,
-      branchName: targetBranchName,
-      targetBranchName,
+      branchName: executionMode === 'direct' ? '' : targetBranchName,
+      targetBranchName: executionMode === 'direct' ? '' : targetBranchName,
+      executionMode,
       executionKind: 'repository_root',
       worktreeKey: `${PLAN_FINALIZATION_TASK_PREFIX}${plan.projectId || projectId}:${projectId}`,
     };
@@ -157,8 +169,20 @@ const buildPlanFinalizationTask = (
   const blockedBy = blockedByTaskIds
     .map((taskId) => blockingTasks.find((task) => task.id === taskId)?.title)
     .filter((title): title is string => Boolean(title));
-  const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
-  const effectiveTargetBranch = getUniqueTargetBranch(targetBranchesByProjectId, plan.targetBranch);
+  const executionTargets = buildPlanFinalizationExecutionTargets(plan);
+  const gitProjectIds = new Set(
+    executionTargets
+      .filter((target) => target.executionMode !== 'direct')
+      .map((target) => target.projectId),
+  );
+  const targetBranchesByProjectId = Object.fromEntries(
+    Object.entries(getArchitectPlanTargetBranchesByProjectId(plan))
+      .filter(([targetProjectId]) => gitProjectIds.has(targetProjectId)),
+  );
+  const effectiveTargetBranch = getUniqueTargetBranch(
+    targetBranchesByProjectId,
+    gitProjectIds.size > 0 ? plan.targetBranch : null,
+  );
 
   const nodeId = buildPlanFinalizationTaskId(plan.id);
   return {
@@ -183,7 +207,7 @@ const buildPlanFinalizationTask = (
     is_ready: !isBlocked,
     needs_revalidation: false,
     sequence_index: sequenceIndex,
-    execution_targets: buildPlanFinalizationExecutionTargets(plan),
+    execution_targets: executionTargets,
     todos: [],
     task_source: 'plan_finalization',
     plan_title: plan.title,
@@ -191,7 +215,7 @@ const buildPlanFinalizationTask = (
     plan_storage_branch: plan.targetBranch,
     plan_target_branch: effectiveTargetBranch,
     plan_target_branches_by_project_id: targetBranchesByProjectId,
-    has_mixed_target_branches: planHasMixedTargetBranches(plan),
+    has_mixed_target_branches: new Set(Object.values(targetBranchesByProjectId)).size > 1,
     draft: false,
     standalone_kind: 'legacy',
     task_kind: null,
@@ -260,13 +284,21 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       merge_workflow_summary?: MergeWorkflowSummary | null;
     };
     const isDraft = raw.draft === true;
+    const hasPersistedExecutionTargets = Boolean(raw.execution_targets?.length);
+    const persistedBranchName = raw.assigned_branch || raw.branch_name || '';
     const assignedBranch =
-      isDraft && !(raw.assigned_branch || raw.branch_name)
+      (isDraft && !persistedBranchName) ||
+      (!persistedBranchName && hasPersistedExecutionTargets)
         ? ''
-        : normalizeBranchName(raw.assigned_branch || raw.branch_name);
+        : normalizeBranchName(persistedBranchName);
     const projectIds = normalizeProjectIds(task.project_ids, task.project_id);
     const executionTargets = raw.execution_targets && raw.execution_targets.length > 0
-      ? raw.execution_targets
+      ? raw.execution_targets.map((target) => ({
+          ...target,
+          executionKind:
+            target.executionKind ??
+            (target.executionMode === 'direct' ? 'repository_root' : 'worktree'),
+        }))
       : isDraft || !assignedBranch
         ? []
         : buildFallbackExecutionTargets(projectIds, assignedBranch, raw.base_branch ?? null);
@@ -520,6 +552,7 @@ export const buildImplementTaskCatalog = (params: {
         storageBranch: plan.targetBranch,
         targetBranch: getUniqueTargetBranch(getArchitectPlanTargetBranchesByProjectId(plan), plan.targetBranch) || '',
         targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
+        executionModesByProjectId: plan.executionModesByProjectId,
         hasMixedTargetBranches: planHasMixedTargetBranches(plan),
         projectIds: unique(
           [

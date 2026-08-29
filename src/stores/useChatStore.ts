@@ -94,6 +94,7 @@ import {
   isGitToolId,
   isToolAllowedForImplementAgent,
 } from "../services/toolModePolicy";
+import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
 import {
   MODE_PROMPT_KEYS_BY_MODE,
   loadPreference,
@@ -238,6 +239,10 @@ import {
   loadRepositoryInstructionContext,
   resolveRepositoryInstructionProjects,
 } from "../services/repositoryInstructions";
+import {
+  getPlanExecutionModesByProjectId,
+  resolvePlanProjectExecutionMode,
+} from "../services/planExecutionModes";
 import {
   buildQuestionnaireResponseArtifacts,
   buildQuestionnaireResponseProviderInputItems,
@@ -536,8 +541,23 @@ const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
   "Plan mode is read-only. Do not edit files, update todos, run mutating terminal commands, stage, commit, checkout, merge, reset, stash, or claim changes were made. Use tools to inspect the repo, ask blocking questions when needed, then end with a concrete implementation plan. If the user asks you to implement while still in Plan, produce an implementation plan instead of applying it.";
 const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
   "The previous assistant turn used Plan mode. Execute the latest plan unless the user changed direction.";
-const STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION =
-  "This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. In Build mode, use workspace and git tools against the selected task repository/worktree. The agent terminal remains independent from that workspace. In Plan mode, inspect only and return a concrete plan.";
+const buildStandaloneImplementSystemInstruction = (task: ImplementTask): string => {
+  const appState = useAppStore.getState();
+  const resolutions = (task.execution_targets ?? []).map((target) =>
+    resolveProjectExecutionMode({
+      project: appState.getProjectById(target.projectId),
+      target,
+    }).mode
+  );
+  const hasGitTarget = resolutions.includes('git');
+  const hasDirectTarget = resolutions.includes('direct');
+  const executionInstruction = hasDirectTarget && hasGitTarget
+    ? 'This task mixes Git and direct targets. Use Git tools only for Git targets. Edit direct targets in their project directory without branch, worktree, commit, merge, or other Git operations.'
+    : hasDirectTarget
+      ? 'This is a direct-edit task. Work in the project directory without branch, worktree, commit, merge, or other Git operations.'
+      : 'In Build mode, use workspace and Git tools against the selected task repository or worktree.';
+  return `This is a standalone implementation task, not an Architect plan task. Do not call task_todo_* or task_artifact_* tools; they are unavailable for standalone tasks. Work directly from the conversation, task title, and execution context. ${executionInstruction} The agent terminal remains independent from that workspace. In Plan mode, inspect only and return a concrete plan.`;
+};
 const ARCHITECT_TASK_ONLY_TOOL_IDS = new Set([
   "task_todo_get",
   "task_todo_update",
@@ -1726,6 +1746,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       activeRepositoryPath: taskState.activeRepositoryPath,
       workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
       branchWorktrees: taskState.branchWorktrees,
+      architectExecutionModesByProjectId: appState.activeArchitectPlanId
+        ? getPlanExecutionModesByProjectId(
+            appState.planNodes,
+            appState.activePlanContext?.executionModesByProjectId,
+          )
+        : undefined,
     });
   };
 
@@ -1754,22 +1780,71 @@ export const useChatStore = create<ChatStore>((set, get) => {
     toolIds: string[],
     task: ImplementTask | undefined,
   ): string[] => {
-    if (!isStandaloneImplementTask(task)) {
+    if (!task) {
       return toolIds;
     }
-    const projectIds = Array.from(new Set([
+    const persistedTargets = task.execution_targets ?? [];
+    const legacyProjectIds = Array.from(new Set([
       ...(task.project_ids || []),
-      ...(task.execution_targets || []).map((target) => target.projectId),
       task.project_id,
     ].filter((projectId): projectId is string => Boolean(projectId))));
-    const usesDirectEditing = projectIds.length > 0 && projectIds.every((projectId) => {
-      const project = useAppStore.getState().getProjectById(projectId);
-      return Boolean(project?.directEdit && project.gitSetupState === 'not_git');
-    });
+    const resolutions = persistedTargets.length > 0
+      ? persistedTargets.map((target) => ({
+          projectId: target.projectId,
+          resolution: resolveProjectExecutionMode({
+            project: useAppStore.getState().getProjectById(target.projectId),
+            target,
+          }),
+        }))
+      : legacyProjectIds.map((projectId) => ({
+          projectId,
+          resolution: resolveProjectExecutionMode({
+            project: useAppStore.getState().getProjectById(projectId),
+          }),
+        }));
+    const gitToolsUnavailable = resolutions.length > 0 &&
+      resolutions.every(({ resolution }) => resolution.mode !== 'git');
     return toolIds.filter((toolId) =>
-      !ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId) &&
-      !(usesDirectEditing && isGitToolId(toolId))
+      !(isStandaloneImplementTask(task) && ARCHITECT_TASK_ONLY_TOOL_IDS.has(toolId)) &&
+      !(gitToolsUnavailable && isGitToolId(toolId))
     );
+  };
+
+  const filterToolIdsForArchitectPlan = (
+    toolIds: string[],
+    executionContext: ProjectExecutionContext,
+  ): string[] => {
+    const appState = useAppStore.getState();
+    const planProjectIds = new Set<string>();
+    for (const node of appState.planNodes ?? []) {
+      for (const projectId of node.projectIds ?? []) {
+        if (projectId) planProjectIds.add(projectId);
+      }
+      if (node.projectId) planProjectIds.add(node.projectId);
+      for (const projectId of Object.keys(node.executionModesByProjectId ?? {})) {
+        planProjectIds.add(projectId);
+      }
+    }
+    for (const projectId of Object.keys(
+      appState.activePlanContext?.executionModesByProjectId ?? {},
+    )) {
+      planProjectIds.add(projectId);
+    }
+    if (planProjectIds.size === 0 && executionContext.focusedProjectId) {
+      planProjectIds.add(executionContext.focusedProjectId);
+    }
+    const projectIds = Array.from(planProjectIds);
+    const gitToolsUnavailable = projectIds.length > 0 && projectIds.every((projectId) =>
+      resolvePlanProjectExecutionMode({
+        projectId,
+        nodes: appState.planNodes,
+        executionModesByProjectId: appState.activePlanContext?.executionModesByProjectId,
+        project: appState.getProjectById(projectId),
+      }) !== 'git'
+    );
+    return gitToolsUnavailable
+      ? toolIds.filter((toolId) => !isGitToolId(toolId))
+      : toolIds;
   };
 
   const formatStandaloneArchitectToolUnavailable = (toolName: string): string =>
@@ -1805,11 +1880,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : []),
       ].filter((projectId): projectId is string => Boolean(projectId)),
     );
-    const hasExecutionTargets =
-      Array.isArray(executionTask.execution_targets) && executionTask.execution_targets.length > 0;
-    const hasBranch = Boolean(executionTask.branch_name?.trim());
+    const executionTargets = Array.isArray(executionTask.execution_targets)
+      ? executionTask.execution_targets
+      : [];
+    const hasExecutionTargets = executionTargets.length > 0;
+    const hasRequiredBranches = hasExecutionTargets
+      ? executionTargets.every((target) => {
+          const resolution = resolveProjectExecutionMode({
+            project: appState.getProjectById(target.projectId),
+            target,
+          });
+          return resolution.mode !== 'git' || Boolean(target.branchName?.trim());
+        })
+      : Boolean(executionTask.branch_name?.trim());
 
-    if (projectIds.size === 0 || !hasBranch) {
+    if (projectIds.size === 0 || !hasRequiredBranches) {
       throw buildSendError(
         "This standalone task is missing its execution target, repository, or branch. Reopen the task or recreate it so Macro can initialize the worktree before contacting the agent.",
       );
@@ -6873,7 +6958,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (appMode === "Implement" && isStandaloneImplementTask(implementContextTask)) {
-      systemInstructions.push(STANDALONE_IMPLEMENT_SYSTEM_INSTRUCTION);
+      systemInstructions.push(buildStandaloneImplementSystemInstruction(implementContextTask));
     }
 
     if (allowedToolIds.includes("terminal_run")) {
@@ -6900,8 +6985,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         executionContext.projectMounts
           .map((mount) => `${mount.mountName}=>${mount.displayName}`)
           .join(", ") || "none";
-      const executionTargetInstruction =
-        "Git operations must target exactly one project; there is no git repository at the virtual root. The agent terminal is independent from these project mounts.";
+      const scopedExecutionMounts = executionContext.projectMounts.filter((mount) =>
+        executionContext.projectIds.includes(mount.projectId)
+      );
+      const hasGitMount = scopedExecutionMounts.some((mount) => mount.executionMode === 'git');
+      const hasDirectMount = scopedExecutionMounts.some((mount) => mount.executionMode === 'direct');
+      const executionTargetInstruction = hasGitMount && hasDirectMount
+        ? "This context mixes Git and direct projects. Git operations must target exactly one Git project. Never use Git on a direct project. There is no repository at the virtual root. The agent terminal is independent from these project mounts."
+        : hasDirectMount
+          ? "This is a direct project context. Work in the project directory without Git operations. The agent terminal is independent from these project mounts."
+          : "Git operations must target exactly one project; there is no Git repository at the virtual root. The agent terminal is independent from these project mounts.";
       systemInstructions.push(
         `[Execution Context] group="${executionContext.groupName || executionContext.groupId || "none"}", default_project="${executionContext.projectName || executionContext.projectId || "none"}", focused_project="${executionContext.focusedProjectId || "none"}", scoped_projects="${scopedProjects}", task="${executionContext.taskId || "none"}", branch="${executionContext.branchName || "none"}", virtual_root="${executionContext.virtualRootEnabled ? "enabled" : "disabled"}", project_mounts="${mountSummary}". When virtual_root is enabled, the visible workspace root is virtual and its first level contains only project mounts such as \`api/\` or \`web/\`. Use virtual paths like \`api/src/server.ts\` for filesystem tools, or pass \`project_id\` to target one project explicitly. ${executionTargetInstruction}`,
       );
@@ -6952,11 +7045,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
       systemInstructions.push(
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
-      systemInstructions.push(
-        "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each project's Git workflow profile and merge into the plan integration branch.",
+      const persistedArchitectExecutionModes = Object.values(
+        getPlanExecutionModesByProjectId(
+          useAppStore.getState().planNodes,
+          useAppStore.getState().activePlanContext?.executionModesByProjectId,
+        ),
       );
+      const architectExecutionModes = persistedArchitectExecutionModes.length > 0
+        ? persistedArchitectExecutionModes
+        : executionContext.projectMounts
+          .filter((mount) => executionContext.projectIds.includes(mount.projectId))
+          .flatMap((mount) =>
+            mount.executionMode === 'git' || mount.executionMode === 'direct'
+              ? [mount.executionMode]
+              : []
+          );
+      const hasDirectArchitectTarget = architectExecutionModes.includes('direct');
+      const hasGitArchitectTarget = architectExecutionModes.includes('git');
+      if (hasDirectArchitectTarget && hasGitArchitectTarget) {
+        systemInstructions.push(
+          "This plan mixes Git and direct targets. Propose branch slugs only for Git targets. Direct targets run in their project directory without branches, worktrees, commits, or merges. Preserve each project's execution mode when defining nodes and dependencies.",
+        );
+      } else if (hasDirectArchitectTarget) {
+        systemInstructions.push(
+          "This is a direct-only plan. Do not propose branches, worktrees, commits, merges, or other Git operations. Each node runs in its project directory and Macro finalizes the work by accepting its direct checkpoint.",
+        );
+      } else {
+        systemInstructions.push(
+          "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each project's Git workflow profile and merge into the plan integration branch.",
+        );
+      }
       systemInstructions.push(
-        "Each executable plan node owns its own work branch. Express sequential work with `dependencies`, never by reusing a `featureSlug`; duplicate pending slugs are normalized into unique task slugs. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself: Macro adds a synthetic finalization task after the terminal strategy nodes and handles the final merge.",
+        "Express sequential work with `dependencies`. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself. Macro adds a synthetic finalization task after the terminal strategy nodes and finalizes each target according to its persisted execution mode.",
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {
@@ -8062,6 +8182,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       status: params.updatedPlan.status,
       targetBranch: params.updatedPlan.targetBranch,
       targetBranchesByProjectId: params.updatedPlan.targetBranchesByProjectId,
+      executionModesByProjectId: params.updatedPlan.executionModesByProjectId,
       hasMixedTargetBranches:
         Boolean(params.updatedPlan.targetBranchesByProjectId) &&
         new Set(
@@ -8745,6 +8866,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       taskAllowedToolIds = filterToolIdsForImplementTask(
         baseAllowedToolIds,
         taskForToolScope,
+      );
+    } else if (params.modeAtSend === "Architect") {
+      taskAllowedToolIds = filterToolIdsForArchitectPlan(
+        baseAllowedToolIds,
+        executionContext,
       );
     }
     const toolsState = useToolsStore.getState();

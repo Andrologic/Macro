@@ -20,8 +20,10 @@ export const registerArchitectStrategyScenarios = (
     createTranscriptEntry,
     expectArchitectSelection,
     getArchitectPlanMock,
+    getLatestStreamOptions,
     loadChatStore,
     providerState,
+    projectGroups,
     savePreferenceForTest,
     sendArchitectMessageAndGetToolHandler,
     setArchitectStoreState,
@@ -191,6 +193,7 @@ export const registerArchitectStrategyScenarios = (
             dependencies: [],
             projectId: 'project-1',
             projectIds: ['project-1'],
+            executionModesByProjectId: { 'project-1': 'git' },
           },
         ],
       });
@@ -515,6 +518,13 @@ export const registerArchitectStrategyScenarios = (
     });
 
     it('uses plan scope for unscoped strategy_update nodes and explicit scope for targeted nodes', async () => {
+      projectGroups[0]?.projects.push({
+        ...projectGroups[0].projects[0],
+        id: 'project-2',
+        name: 'API',
+        path: '/repos/api',
+        mountName: 'api',
+      });
       const activePlan = createPlan({
         id: 'plan-multi',
         slug: 'checkout',
@@ -536,6 +546,7 @@ export const registerArchitectStrategyScenarios = (
             branchSlug: 'checkout-web',
             projectId: 'project-1',
             projectIds: ['project-1'],
+            executionModesByProjectId: { 'project-1': 'git' },
           },
           {
             id: 'task-api',
@@ -549,6 +560,7 @@ export const registerArchitectStrategyScenarios = (
             branchSlug: 'checkout-api',
             projectId: 'project-2',
             projectIds: ['project-2'],
+            executionModesByProjectId: { 'project-2': 'git' },
           },
         ],
         predictedBranches: [],
@@ -905,6 +917,176 @@ export const registerArchitectStrategyScenarios = (
       expect(String(streamOptions.messages[0]?.content)).toContain(
         'Custom PLAN_EXPLORER prompt for tests.'
       );
+    });
+
+    it('describes a direct-only Architect plan without Git workflow instructions', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      const { useChatStore } = await loadChatStore();
+      activateArchitectPlanForTest({
+        conversationId: 'plan-conv',
+        nodes: [{
+          id: 'direct-node',
+          title: 'Edit docs',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+          projectIds: ['project-1'],
+          executionModesByProjectId: { 'project-1': 'direct' },
+        }],
+      });
+      useChatStore.setState({
+        conversations: [createConversation('plan-conv')],
+        messages: [],
+        selectedConversationId: 'plan-conv',
+        selectedConversationIdsByMode: { Architect: 'plan-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'plan-conv',
+        content: 'Structure cette modification directe.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{
+        allowedToolIds: string[];
+        messages: Array<{ content: string }>;
+      }>();
+      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
+      expect(streamOptions.allowedToolIds).not.toContain('git_status');
+      expect(streamOptions.allowedToolIds).not.toContain('git_diff');
+    });
+
+    it('uses the selected project mode before a direct Architect plan has nodes', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      Object.assign(projectGroups[0]?.projects[0] ?? {}, {
+        directEdit: true,
+        gitSetupState: 'not_git',
+      });
+      const { useChatStore } = await loadChatStore();
+      activateArchitectPlanForTest({ conversationId: 'plan-conv', nodes: [] });
+      useChatStore.setState({
+        conversations: [createConversation('plan-conv')],
+        messages: [],
+        selectedConversationId: 'plan-conv',
+        selectedConversationIdsByMode: { Architect: 'plan-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'plan-conv',
+        content: 'Prépare une stratégie directe.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ messages: Array<{ content: string }> }>();
+      expect(String(streamOptions.messages[0]?.content)).toContain('This is a direct-only plan.');
+      expect(String(streamOptions.messages[0]?.content)).not.toContain('Git workflow for plans is strict');
+    });
+
+    it('filters Git tools from an empty persisted direct plan after the project gains Git', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      const { useChatStore } = await loadChatStore();
+      activateArchitectPlanForTest({
+        conversationId: 'plan-conv',
+        nodes: [],
+        executionModesByProjectId: { 'project-1': 'direct' },
+      });
+      useChatStore.setState({
+        conversations: [createConversation('plan-conv')],
+        messages: [],
+        selectedConversationId: 'plan-conv',
+        selectedConversationIdsByMode: { Architect: 'plan-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'plan-conv',
+        content: 'Continue ce plan direct.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ allowedToolIds: string[] }>();
+      expect(streamOptions.allowedToolIds).not.toContain('git_status');
+      expect(streamOptions.allowedToolIds).not.toContain('git_diff');
+    });
+
+    it('keeps Git read tools for a mixed Architect plan while the direct project is focused', async () => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      Object.assign(projectGroups[0]?.projects[0] ?? {}, {
+        directEdit: true,
+        gitSetupState: 'not_git',
+      });
+      projectGroups[0]?.projects.push({
+        id: 'project-2',
+        name: 'API',
+        path: '/repos/api',
+        mountName: 'api',
+        created_at: '2026-03-19T00:00:00.000Z',
+        status: 'active',
+        gitSetupState: 'ready',
+        directEdit: false,
+        metadata: {
+          description: '',
+          tags: [],
+          team_members: [],
+          api_contracts: [],
+          dependencies: [],
+        },
+      });
+      const { useChatStore } = await loadChatStore();
+      activateArchitectPlanForTest({
+        conversationId: 'plan-conv',
+        projectIds: ['project-1', 'project-2'],
+        nodes: [{
+          id: 'mixed-node',
+          title: 'Update both projects',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+          projectIds: ['project-1', 'project-2'],
+          executionModesByProjectId: {
+            'project-1': 'direct',
+            'project-2': 'git',
+          },
+        }],
+      });
+      useChatStore.setState({
+        conversations: [createConversation('plan-conv')],
+        messages: [],
+        selectedConversationId: 'plan-conv',
+        selectedConversationIdsByMode: { Architect: 'plan-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'plan-conv',
+        content: 'Prépare les changements des deux projets.',
+      });
+
+      const streamOptions = getLatestStreamOptions<{ allowedToolIds: string[] }>();
+      expect(streamOptions.allowedToolIds).toContain('git_status');
+      expect(streamOptions.allowedToolIds).toContain('git_diff');
     });
 
     it('removes strategy mutation tools from Architect turns after plan validation', async () => {

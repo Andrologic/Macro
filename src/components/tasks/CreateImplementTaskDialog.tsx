@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { getCreatableStandaloneTaskKinds } from '../../services/standaloneTaskKinds';
+import { resolveProjectExecutionMode } from '../../services/projectExecutionMode';
 import {
   gitStatus,
   gitTaskStartPoints,
@@ -151,9 +152,14 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const filteredBranches = normalizedStartPointQuery
     ? branches.filter((branch) => branch.name.toLocaleLowerCase().includes(normalizedStartPointQuery))
     : branches;
-  const isDirectEditProject = Boolean(
-    selectedProject?.directEdit && selectedProject.gitSetupState === 'not_git'
-  );
+  const isDirectEditProject = selectedProject
+    ? resolveProjectExecutionMode({
+        project: {
+          ...selectedProject,
+          userReadOnly: false,
+        },
+      }).mode === 'direct'
+    : false;
   const creatableTaskKinds = useMemo(
     () => selectedProject
       ? isDirectEditProject
@@ -187,12 +193,19 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           'Work in the project folder without a dedicated branch or worktree. Accepted changes are committed to the current branch.',
         ),
   };
+  const directTaskDescription = t(
+    'implement.taskKindDirectEditHelp',
+    'Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.',
+  );
   const getTaskKindDescription = (kind: StandaloneTaskKind): string => {
     if (!selectedProject) {
       return t(
         'implement.taskKindSelectProjectHelp',
         'Select a target project to see which task types are available.',
       );
+    }
+    if (isDirectEditProject) {
+      return directTaskDescription;
     }
     if (!creatableTaskKinds.includes(kind)) {
       return t(

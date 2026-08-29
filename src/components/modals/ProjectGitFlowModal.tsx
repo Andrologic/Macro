@@ -156,21 +156,6 @@ export const ProjectGitFlowModal: React.FC = () => {
     return t('common.error', 'An error occurred');
   };
 
-  const continueProjectSetupFlow = (detection: ProjectGitFlowDetection) => {
-    const prompts = buildProjectSetupPrompts(resolvedProjectPath, detection);
-    if (prompts.length === 0) {
-      setProjectSetupFlow(null);
-      return;
-    }
-
-    setProjectSetupFlow({
-      detection,
-      prompts,
-      promptIndex: 0,
-      acceptedActions: [],
-    });
-  };
-
   const logProjectAccessEvent = (phase: string, payload: Record<string, unknown>) => {
     devLogger.info(
       JSON.stringify({
@@ -221,6 +206,11 @@ export const ProjectGitFlowModal: React.FC = () => {
         'projects.accessDirectEdit',
         'Macro edits this folder directly. Git branches, worktrees, commits, and parallel tasks are unavailable.'
       )
+    : project.gitSetupState === 'unknown' || !project.gitSetupState
+      ? t(
+          'projects.accessGitStateUnknown',
+          'Macro could not confirm whether this folder is a Git repository. Check its Git status before enabling implementation actions.',
+        )
     : project.readOnlyReason === 'manual'
     ? t('projects.accessManualReadOnly', 'This project is manually forced to read-only.')
     : project.readOnlyReason === 'missing_git'
@@ -334,6 +324,27 @@ export const ProjectGitFlowModal: React.FC = () => {
     }
   };
 
+  const handleDisableDirectEditing = async () => {
+    if (!projectId || isAccessSaving || !project.directEdit) {
+      return;
+    }
+
+    setIsAccessSaving(true);
+    try {
+      await updateProjectAccess(projectId, false, false, false);
+      notify.success(
+        t('projects.projectDirectEditDisabled', '{{projectName}} is now read-only until Git is initialized.', {
+          projectName: project.name,
+        })
+      );
+    } catch (error) {
+      const normalized = toServiceError(error);
+      notify.error(normalized.message || t('common.error', 'An error occurred'));
+    } finally {
+      setIsAccessSaving(false);
+    }
+  };
+
   const handlePrepareProjectGit = async () => {
     if (!projectId || isAccessSaving) {
       return;
@@ -342,7 +353,32 @@ export const ProjectGitFlowModal: React.FC = () => {
     setIsAccessSaving(true);
     try {
       const detection = await services.previewProjectGitSetup({ path: project.path });
-      continueProjectSetupFlow(detection);
+      const prompts = buildProjectSetupPrompts(resolvedProjectPath, detection);
+      if (prompts.length === 0) {
+        setProjectSetupFlow(null);
+        const result = await updateProjectGitFlowWithSetup(
+          projectId,
+          resolveProjectGitFlowSettings(settings),
+          [],
+          detection.resolvedRepoRootPath ?? null,
+          detection.setupState,
+          detection.recommendedActionSequence,
+        );
+        if (result.detection.setupState === 'ready') {
+          notify.success(
+            t('projects.projectGitPrepared', 'Git is ready for {{projectName}}.', {
+              projectName: project.name,
+            })
+          );
+        }
+        return;
+      }
+      setProjectSetupFlow({
+        detection,
+        prompts,
+        promptIndex: 0,
+        acceptedActions: [],
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('common.error', 'An error occurred');
       notify.error(message);
@@ -617,6 +653,8 @@ export const ProjectGitFlowModal: React.FC = () => {
                       ? t('projects.projectAccessGitReady', 'Git ready')
                       : project.gitSetupState === 'unborn'
                         ? t('projects.projectAccessGitUnborn', 'Initial commit missing')
+                        : project.gitSetupState === 'unknown' || !project.gitSetupState
+                          ? t('projects.projectAccessGitUnknown', 'Git state unavailable')
                         : t('projects.projectAccessGitMissing', 'Git missing')}
                   </span>
                 </div>
@@ -626,6 +664,19 @@ export const ProjectGitFlowModal: React.FC = () => {
               </div>
 
               <div className="flex shrink-0 items-center gap-2">
+                {project.directEdit && (
+                  <button
+                    type="button"
+                    onClick={() => void handleDisableDirectEditing()}
+                    disabled={isAccessSaving}
+                    className={cn(
+                      'rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground transition-colors hover:bg-secondary/90',
+                      isAccessSaving && 'cursor-not-allowed opacity-60'
+                    )}
+                  >
+                    {t('projects.disableDirectEditingAction', 'Disable direct editing')}
+                  </button>
+                )}
                 {project.gitSetupState === 'ready' || project.directEdit ? (
                   <button
                     type="button"
@@ -673,6 +724,8 @@ export const ProjectGitFlowModal: React.FC = () => {
                         ? t('common.saving', 'Saving...')
                         : project.gitSetupState === 'unborn'
                           ? t('projects.createInitialCommitAction', 'Create initial commit')
+                          : project.gitSetupState === 'unknown' || !project.gitSetupState
+                            ? t('projects.checkGitStatusAction', 'Check Git status')
                           : t('projects.initializeGitAction', 'Initialize Git')}
                     </button>
                   </>

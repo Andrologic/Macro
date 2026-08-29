@@ -14,6 +14,8 @@ type MockAppState = {
       name: string;
       mountName: string;
       path: string;
+      gitSetupState: 'ready';
+      directEdit: false;
     }>;
   }>;
 };
@@ -32,6 +34,8 @@ const appState: MockAppState = {
           name: 'Web',
           mountName: 'web',
           path: '/repos/web',
+          gitSetupState: 'ready',
+          directEdit: false,
         },
       ],
     },

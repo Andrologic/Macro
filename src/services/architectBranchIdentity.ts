@@ -211,6 +211,9 @@ export const collectRenderedPlanPredictedBranchDescriptors = (params: {
   params.nodes.forEach((node) => {
     const branchIntent = branchIntentsByNodeId.get(node.id) || getPlanNodeBranchIntent(node);
     normalizeNodeProjectIds(node).forEach((projectId) => {
+      if (node.executionModesByProjectId?.[projectId] === 'direct') {
+        return;
+      }
       const settings = params.getProjectGitFlowSettings?.(projectId);
       const branchKey = buildPlanTaskFeatureBranchKey(
         params.planSlug,

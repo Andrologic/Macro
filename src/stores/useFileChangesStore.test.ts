@@ -409,12 +409,14 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-a',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: worktreeKeyA,
         planBranchName: 'plan/integration',
       },
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-b',
         worktreeKey: worktreeKeyB,
         planBranchName: 'plan/integration',
@@ -433,12 +435,14 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-a',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: worktreeKeyA,
         planBranchName: 'plan/integration',
       },
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-b',
         worktreeKey: worktreeKeyB,
         planBranchName: 'plan/integration',
@@ -457,6 +461,7 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: missingWorktreeKey,
         planBranchName: 'plan/integration',
@@ -475,6 +480,7 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-b',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         worktreeKey: missingWorktreeKey,
         planBranchName: 'plan/integration',
@@ -494,6 +500,7 @@ const tasksById = {
     execution_targets: [
       {
         projectId: 'project-a',
+        executionMode: 'git' as const,
         branchName: 'feature/task-a',
         targetBranchName: 'release/project-a',
         worktreeKey: worktreeKeyA,
@@ -609,8 +616,8 @@ const appStoreState = {
       directEdit: directProjectMode,
       gitSetupState: directProjectMode ? 'not_git' as const : 'ready' as const,
     };
-    if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath };
-    if (projectId === 'project-c') return { id: 'project-c', name: 'Project C', path: repoCPath };
+    if (projectId === 'project-b') return { id: 'project-b', name: 'Project B', path: repoBPath, gitSetupState: 'ready' as const, directEdit: false };
+    if (projectId === 'project-c') return { id: 'project-c', name: 'Project C', path: repoCPath, gitSetupState: 'ready' as const, directEdit: false };
     return undefined;
   },
 };
@@ -914,6 +921,63 @@ describe('useFileChangesStore', () => {
     });
     await restartedStore.getState().loadCurrentChanges();
     expect(restartedStore.getState().getRepository(repositoryId)?.commitState).toBe('committed');
+  });
+
+  it('keeps a legacy checkpoint target direct after the project becomes Git-ready', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    const legacyTarget = tasksById['task-6'].execution_targets[0] as {
+      executionMode?: 'direct';
+    };
+    delete legacyTarget.executionMode;
+    const gitReviewSnapshotMock = mock(async () => {
+      throw new Error('Git review must not run for a checkpoint target');
+    });
+    const directReviewSnapshotMock = mock(async () => ({
+      branch: 'direct',
+      stagedPaths: [],
+      changes: [],
+      conflictedFiles: [],
+      mergeInProgress: false,
+      isClean: true,
+      hasAcceptedChanges: false,
+    }));
+    const legacyStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+    try {
+      await legacyStore.getState().loadCurrentChanges();
+    } finally {
+      legacyTarget.executionMode = 'direct';
+    }
+
+    expect(legacyStore.getState().getRepository(directRepositoryId)?.executionMode).toBe('direct');
+    expect(directReviewSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(gitReviewSnapshotMock).not.toHaveBeenCalled();
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitMergeCheckMock).not.toHaveBeenCalled();
   });
 
   it('rehydrates prepared task worktree mappings before loading changes', async () => {
@@ -1778,6 +1842,42 @@ describe('useFileChangesStore', () => {
     expect(result.commits).toHaveLength(2);
     expect(generateCommitMessagesMock).toHaveBeenCalledTimes(3);
     expect(gitCommitMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not read direct target files through Git when generating messages for a mixed task', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+    useFileChangesStore.setState((state) => ({
+      repositories: state.repositories.map((repository) =>
+        repository.id === repositoryIdB
+          ? { ...repository, executionMode: 'direct' as const }
+          : repository
+      ),
+    }));
+    gitReadFilePairMock.mockClear();
+    generateCommitMessagesMock.mockImplementation(async () => {
+      throw new Error('stop after building the generation input');
+    });
+
+    await expect(store.commitAllReadyTaskRepositories()).rejects.toThrow(
+      'stop after building the generation input',
+    );
+
+    expect(gitReadFilePairMock.mock.calls.map((call) => call[0].repoPath)).toEqual([
+      worktreeAPath,
+    ]);
+    const [input] = generateCommitMessagesMock.mock.calls[0] as unknown as [{
+      repositories: Array<{
+        repositoryId: string;
+        files: Array<{ path: string; summary: string }>;
+      }>;
+    }];
+    expect(input.repositories.find((repository) => repository.repositoryId === repositoryIdB)?.files)
+      .toEqual([{
+        path: 'README.md',
+        summary: '+ updated',
+      }]);
   });
 
   it('retries when generated commit messages are structurally valid but not conventional', async () => {

@@ -40,6 +40,7 @@ const project = (
   name: string,
   baseBranch: string,
   mainBranch: string,
+  overrides: Partial<TaskProjectFilterOption> = {},
 ): TaskProjectFilterOption => ({
   id,
   name,
@@ -57,6 +58,7 @@ const project = (
     hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
     bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
   },
+  ...overrides,
 });
 
 describe('CreateImplementTaskDialog task type help', () => {

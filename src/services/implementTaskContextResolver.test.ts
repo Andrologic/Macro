@@ -127,7 +127,7 @@ describe('resolveImplementTaskForContext', () => {
     expect(resolve([pendingTask, laterActiveTask, firstActiveTask, archivedTask])).toBe(firstActiveTask);
   });
 
-  it('retargets a standalone task with stale project identity to the current selection for eligibility', () => {
+  it('does not select a standalone task with stale project identity', () => {
     const staleStandaloneTask = createTask({
       id: 'task-standalone',
       task_source: 'standalone',
@@ -135,7 +135,7 @@ describe('resolveImplementTaskForContext', () => {
       project_ids: ['removed-project'],
     });
 
-    expect(resolve([staleStandaloneTask])).toBe(staleStandaloneTask);
+    expect(resolve([staleStandaloneTask])).toBeNull();
   });
 
   it('returns null when every unselected task is outside the current project scope', () => {

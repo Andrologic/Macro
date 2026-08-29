@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
+import type { WorkspaceScope } from './tauriIpc';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
+import { registerAppStateGetter } from './appStateRuntime';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -37,14 +39,27 @@ let importCounter = 0;
 
 interface LoadArchitectPlanServiceOptions {
   tauriAvailable?: boolean;
+  appSettings?: Map<string, string>;
   filesByWorkspacePath?: Record<string, Record<string, string>>;
   registrySnapshot?: ValidProjectRegistrySnapshot;
   workspaceRoot?: string;
+  macroBranchCommitIfDirty?: typeof actualTauriIpc.macroBranchCommitIfDirty;
+  workspaceArchitectListPlans?: typeof actualTauriIpc.workspaceArchitectListPlans;
+  workspaceArchitectActivatePlanHead?: typeof actualTauriIpc.workspaceArchitectActivatePlanHead;
+  workspaceScopeCalls?: Array<{
+    operation: string;
+    workspaceScope?: WorkspaceScope;
+  }>;
+  failWriteOnce?: (params: {
+    path: string;
+    workspacePath?: string | null;
+    workspaceScope?: WorkspaceScope;
+  }) => boolean;
 }
 
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
-  const appSettings = new Map<string, string>();
+  const appSettings = options.appSettings ?? new Map<string, string>();
   const configDocuments = new Map(['runtime', 'settings', 'agents', 'providers', 'tools', 'skills', 'git'].map((kind) => [kind, {
     kind,
     scope: { type: 'user' },
@@ -56,6 +71,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     diagnostics: [],
   }]));
   let configRevision = 0;
+  let writeFailureTriggered = false;
   const workspaceFilesByWorkspacePath = options.filesByWorkspacePath ?? {};
   const normalizeMockPath = (value: string): string =>
     value.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -157,7 +173,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       return { applied: true };
     },
     workspaceGetActiveRoot: async () => options.workspaceRoot ?? '/repos/web',
-    macroBranchCommitIfDirty: async () => ({
+    macroBranchCommitIfDirty: options.macroBranchCommitIfDirty ?? (async () => ({
       branch: '@macro',
       state: 'clean',
       worktree_path: `${options.workspaceRoot ?? '/repos/web'}/.git/macro-metadata-worktree`,
@@ -171,8 +187,15 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       commit_hash: null,
       reason: null,
       next_action: null,
-    }),
-    fsReadFileWithOptions: async (params: { path: string; workspacePath?: string | null }) => {
+    })),
+    workspaceArchitectListPlans: options.workspaceArchitectListPlans,
+    workspaceArchitectActivatePlanHead: options.workspaceArchitectActivatePlanHead,
+    fsReadFileWithOptions: async (params: {
+      path: string;
+      workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
+    }) => {
+      options.workspaceScopeCalls?.push({ operation: 'read', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       const content = workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(params.path)];
       if (typeof content !== 'string') {
@@ -184,7 +207,13 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       path: string;
       content: string;
       workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
     }) => {
+      options.workspaceScopeCalls?.push({ operation: 'write', workspaceScope: params.workspaceScope });
+      if (!writeFailureTriggered && options.failWriteOnce?.(params)) {
+        writeFailureTriggered = true;
+        throw new Error('Injected replica write failure');
+      }
       const workspacePath = params.workspacePath ?? '';
       if (!workspaceFilesByWorkspacePath[workspacePath]) {
         workspaceFilesByWorkspacePath[workspacePath] = {};
@@ -202,7 +231,9 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     fsListDir: async (params: {
       path: string;
       workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
     }) => {
+      options.workspaceScopeCalls?.push({ operation: 'list', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       return listWorkspaceDir(workspacePath, params.path);
     },
@@ -210,7 +241,9 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       path: string;
       recursive?: boolean;
       workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
     }) => {
+      options.workspaceScopeCalls?.push({ operation: 'delete', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       const workspaceFiles = workspaceFilesByWorkspacePath[workspacePath] ?? {};
       const normalizedPath = normalizeMockPath(params.path);
@@ -301,6 +334,7 @@ describe('architectPlanService', () => {
   });
 
   afterEach(() => {
+    registerAppStateGetter(() => ({ standaloneProjects: [], projectGroups: [] }));
     mock.restore();
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { localStorage?: unknown }).localStorage;
@@ -667,6 +701,73 @@ describe('architectPlanService', () => {
     expect(reloaded?.expectedProjectIds).toEqual(['web', 'api']);
   });
 
+  it('snapshots the mode of a project added to an empty draft plan', async () => {
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/web': {},
+      '/repos/docs': {},
+    };
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'web',
+      scopedProjectIds: ['web', 'docs'],
+      actionableProjectIds: ['web', 'docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web', 'docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web', 'docs'],
+      validProjectIdSet: new Set(['web', 'docs']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([
+        ['web', '/repos/web'],
+        ['docs', '/repos/docs'],
+      ]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['web', 'git'],
+        ['docs', 'direct'],
+      ]),
+      hasRegisteredProjects: true,
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'expanded-direct-plan',
+      projectIds: ['web'],
+    });
+
+    const updated = await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      projectIds: ['web', 'docs'],
+      expectedProjectIds: ['web', 'docs'],
+    });
+    expect(updated.executionModesByProjectId).toEqual({ web: 'git', docs: 'direct' });
+
+    const gitSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      repoPathByProjectId: new Map([
+        ['web', '/repos/web'],
+        ['docs', '/repos/docs'],
+      ]),
+      executionModeByProjectId: new Map([
+        ['web', 'git'],
+        ['docs', 'git'],
+      ]),
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      registrySnapshot: gitSnapshot,
+      filesByWorkspacePath,
+    });
+
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.executionModesByProjectId).toEqual({ web: 'git', docs: 'direct' });
+  });
+
   it('persists read-only context project ids separately from actionable project ids', async () => {
     const created = await service.createArchitectPlan({
       branchName,
@@ -951,7 +1052,15 @@ describe('architectPlanService', () => {
         ['web', '/repos/web'],
         ['api', '/repos/api'],
       ]),
+      workspacePathByProjectId: new Map([
+        ['web', '/repos/web'],
+        ['api', '/repos/api'],
+      ]),
       gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['web', 'git'],
+        ['api', 'git'],
+      ]),
       hasRegisteredProjects: true,
     };
 
@@ -999,6 +1108,586 @@ describe('architectPlanService', () => {
     expect(listed.activePlanId).toBeNull();
   });
 
+  it('persists and reloads a direct-only plan from the project workspace', async () => {
+    registerAppStateGetter(() => ({
+      standaloneProjects: [{
+        id: 'docs',
+        path: '/repos/docs',
+        isReadOnly: false,
+        gitSetupState: 'ready' as const,
+        directEdit: false,
+      }],
+      projectGroups: [],
+    }));
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+    const macroBranchCommitIfDirty = mock(async () => ({
+      branch: '@macro',
+      state: 'clean' as const,
+      worktree_path: '/repos/docs/.git/macro-metadata-worktree',
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+      output: '',
+      error: null,
+    }));
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot,
+      filesByWorkspacePath,
+      macroBranchCommitIfDirty,
+    });
+    await service.createArchitectPlan({
+      branchName,
+      planId: 'direct-plan',
+      projectIds: ['docs'],
+      nodes: [{
+        id: 'edit-docs',
+        title: 'Edit docs',
+        description: 'Update the guide',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs'],
+        executionModesByProjectId: { docs: 'direct' },
+      }],
+    });
+
+    expect(filesByWorkspacePath['/repos/docs']['branches/develop/plans/direct-plan/plan.json'])
+      .toContain('"docs": "direct"');
+    expect(macroBranchCommitIfDirty).not.toHaveBeenCalled();
+
+    storage.clear();
+    const reloaded = await service.getArchitectPlan(branchName, 'direct-plan');
+
+    expect(reloaded?.projectIds).toEqual(['docs']);
+    expect(reloaded?.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
+
+    macroBranchCommitIfDirty.mockClear();
+    await service.commitArchitectPlanMetadata({
+      branchName,
+      planId: 'direct-plan',
+      commitMessage: 'chore(metadata): finalize architect plan direct-plan',
+    });
+    expect(macroBranchCommitIfDirty).not.toHaveBeenCalled();
+  });
+
+  it('keeps persisted direct plan metadata in the project after Git is initialized', async () => {
+    const appProject: {
+      id: string;
+      path: string;
+      isReadOnly: boolean;
+      gitSetupState: 'not_git' | 'ready';
+      directEdit: boolean;
+    } = {
+      id: 'docs',
+      path: '/repos/docs',
+      isReadOnly: false,
+      gitSetupState: 'not_git' as const,
+      directEdit: true,
+    };
+    registerAppStateGetter(() => ({
+      standaloneProjects: [appProject],
+      projectGroups: [],
+    }));
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+    const workspaceScopeCalls: Array<{ operation: string; workspaceScope?: WorkspaceScope }> = [];
+    const macroBranchCommitIfDirty = mock(async () => ({
+      branch: '@macro',
+      state: 'clean' as const,
+      worktree_path: '/repos/docs/.git/macro-metadata-worktree',
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+      output: '',
+      error: null,
+    }));
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+      workspaceScopeCalls,
+      macroBranchCommitIfDirty,
+    });
+    await service.createArchitectPlan({
+      branchName,
+      planId: 'transition-plan',
+      projectIds: ['docs'],
+      nodes: [{
+        id: 'edit-docs',
+        title: 'Edit docs',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs'],
+        executionModesByProjectId: { docs: 'direct' },
+      }],
+    });
+
+    appProject.gitSetupState = 'ready';
+    appProject.directEdit = false;
+    const gitSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      repoPathByProjectId: new Map([['docs', '/repos/docs']]),
+      executionModeByProjectId: new Map([['docs', 'git']]),
+    };
+    storage.clear();
+    workspaceScopeCalls.length = 0;
+    macroBranchCommitIfDirty.mockClear();
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: gitSnapshot,
+      filesByWorkspacePath,
+      workspaceScopeCalls,
+      macroBranchCommitIfDirty,
+    });
+
+    const reloaded = await service.getArchitectPlan(branchName, 'transition-plan');
+
+    expect(reloaded?.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
+    expect(workspaceScopeCalls.length).toBeGreaterThan(0);
+    expect(workspaceScopeCalls.every((call) => call.workspaceScope === 'direct')).toBe(true);
+    expect(macroBranchCommitIfDirty).not.toHaveBeenCalled();
+
+    workspaceScopeCalls.length = 0;
+    const activation = await service.getArchitectPlanActivationPayload(
+      branchName,
+      'transition-plan',
+    );
+    expect(activation?.plan.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
+    expect(workspaceScopeCalls.length).toBeGreaterThan(0);
+    expect(workspaceScopeCalls.every((call) => call.workspaceScope === 'direct')).toBe(true);
+  });
+
+  it('keeps an empty direct plan and transcript discoverable after Git is initialized', async () => {
+    const appProject = {
+      id: 'docs',
+      path: '/repos/docs',
+      isReadOnly: false,
+      gitSetupState: 'not_git' as 'not_git' | 'ready',
+      directEdit: true,
+    };
+    registerAppStateGetter(() => ({ standaloneProjects: [appProject], projectGroups: [] }));
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'empty-direct-transition',
+      projectIds: ['docs'],
+    });
+    await service.saveArchitectPlanChatMessages(branchName, created.id, [{
+      id: 'message-1',
+      role: 'user',
+      content: 'Conserver ce brouillon.',
+      createdAt: '2026-08-29T13:00:00.000Z',
+    }]);
+    expect(created.executionModesByProjectId).toEqual({ docs: 'direct' });
+
+    appProject.gitSetupState = 'ready';
+    appProject.directEdit = false;
+    const runtimeList = mock(async () => ({ activePlanId: null, plans: [] }));
+    const runtimeHead = mock(async () => null);
+    const gitSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      repoPathByProjectId: new Map([['docs', '/repos/docs']]),
+      executionModeByProjectId: new Map([['docs', 'git']]),
+    };
+    storage.clear();
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: gitSnapshot,
+      filesByWorkspacePath,
+      workspaceArchitectListPlans: runtimeList as typeof actualTauriIpc.workspaceArchitectListPlans,
+      workspaceArchitectActivatePlanHead: runtimeHead as typeof actualTauriIpc.workspaceArchitectActivatePlanHead,
+    });
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    const activation = await service.getArchitectPlanActivationPayload(
+      branchName,
+      created.id,
+    );
+    const transcript = await service.getArchitectPlanChatTranscript(branchName, created.id);
+
+    expect(listed.plans.map((plan: ArchitectPlanSummary) => plan.id)).toContain(created.id);
+    expect(activation?.plan.executionModesByProjectId).toEqual({ docs: 'direct' });
+    expect(transcript?.messages.map((message: { content: string }) => message.content)).toEqual([
+      'Conserver ce brouillon.',
+    ]);
+    expect(runtimeList).not.toHaveBeenCalled();
+    expect(runtimeHead).not.toHaveBeenCalled();
+  });
+
+  it('keeps persisted direct plan targets when direct editing becomes blocked', async () => {
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      manualReadOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'direct-plan-blocked-after-reload',
+      projectIds: ['docs'],
+    });
+
+    const blockedSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      actionableProjectIds: [],
+      readOnlyProjectIds: ['docs'],
+      actionableProjectIdSet: new Set<string>(),
+      readOnlyProjectIdSet: new Set(['docs']),
+      executionModeByProjectId: new Map(),
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: blockedSnapshot,
+      filesByWorkspacePath,
+    });
+
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.projectIds).toEqual(['docs']);
+    expect(reloaded?.executionModesByProjectId).toEqual({ docs: 'direct' });
+  });
+
+  it('flushes task execution metadata only for persisted Git targets in a mixed plan', async () => {
+    const projects = [
+      {
+        id: 'docs',
+        path: '/repos/docs',
+        isReadOnly: false,
+        gitSetupState: 'not_git' as 'not_git' | 'ready',
+        directEdit: true,
+      },
+      {
+        id: 'api',
+        path: '/repos/api',
+        isReadOnly: false,
+        gitSetupState: 'ready' as const,
+        directEdit: false,
+      },
+    ];
+    registerAppStateGetter(() => ({ standaloneProjects: projects, projectGroups: [] }));
+    const initialSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs', 'api'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs', 'api']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs', 'api'],
+      validProjectIdSet: new Set(['docs', 'api']),
+      repoPathByProjectId: new Map([['api', '/repos/api']]),
+      workspacePathByProjectId: new Map([
+        ['docs', '/repos/docs'],
+        ['api', '/repos/api'],
+      ]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['docs', 'direct'],
+        ['api', 'git'],
+      ]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+      '/repos/api': {},
+    };
+    const macroBranchCommitIfDirty = mock(async ({ workspacePath }: { workspacePath?: string | null } = {}) => ({
+      branch: '@macro',
+      state: 'clean' as const,
+      worktree_path: `${workspacePath}/.git/macro-metadata-worktree`,
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+      output: '',
+      error: null,
+    }));
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: initialSnapshot,
+      filesByWorkspacePath,
+      macroBranchCommitIfDirty,
+    });
+    await service.createArchitectPlan({
+      branchName,
+      planId: 'mixed-transition-plan',
+      projectIds: ['docs', 'api'],
+      nodes: [{
+        id: 'mixed-task',
+        title: 'Update docs and API',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs', 'api'],
+        executionModesByProjectId: { docs: 'direct', api: 'git' },
+      }],
+    });
+
+    projects[0]!.gitSetupState = 'ready';
+    projects[0]!.directEdit = false;
+    const transitionedSnapshot: ValidProjectRegistrySnapshot = {
+      ...initialSnapshot,
+      repoPathByProjectId: new Map([
+        ['docs', '/repos/docs'],
+        ['api', '/repos/api'],
+      ]),
+      executionModeByProjectId: new Map([
+        ['docs', 'git'],
+        ['api', 'git'],
+      ]),
+    };
+    storage.clear();
+    macroBranchCommitIfDirty.mockClear();
+    const { clearMacroMetadataCoordinatorForTests } = await import('./macroMetadataCoordinator');
+    clearMacroMetadataCoordinatorForTests();
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: transitionedSnapshot,
+      filesByWorkspacePath,
+      macroBranchCommitIfDirty,
+    });
+
+    await service.writeArchitectTaskExecution({
+      branchName,
+      planId: 'mixed-transition-plan',
+      execution: {
+        taskId: 'mixed-task',
+        title: 'Update docs and API',
+        completedAt: '2026-08-29T12:00:00.000Z',
+        repositories: [{
+          projectId: 'api',
+          repoPath: '/repos/api',
+          branchName: 'feature/mixed-task',
+          planBranchName: 'plan/mixed-transition-plan',
+        }],
+      },
+    });
+
+    expect(macroBranchCommitIfDirty.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+    ]);
+    expect(filesByWorkspacePath['/repos/docs'][
+      'branches/develop/plans/mixed-transition-plan/tasks/mixed-task/executed.md'
+    ]).toContain('Update docs and API');
+  });
+
+  it('recovers a mixed direct and Git replica mutation with the full workspace key', async () => {
+    registerAppStateGetter(() => ({
+      standaloneProjects: [
+        {
+          id: 'docs',
+          path: '/repos/docs',
+          isReadOnly: false,
+          gitSetupState: 'not_git',
+          directEdit: true,
+        },
+        {
+          id: 'api',
+          path: '/repos/api',
+          isReadOnly: false,
+          gitSetupState: 'ready',
+          directEdit: false,
+        },
+      ],
+      projectGroups: [],
+    }));
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs', 'api'],
+      actionableProjectIds: ['docs', 'api'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs', 'api']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs', 'api'],
+      validProjectIdSet: new Set(['docs', 'api']),
+      repoPathByProjectId: new Map([['api', '/repos/api']]),
+      workspacePathByProjectId: new Map([
+        ['docs', '/repos/docs'],
+        ['api', '/repos/api'],
+      ]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['docs', 'direct'],
+        ['api', 'git'],
+      ]),
+      hasRegisteredProjects: true,
+    };
+    const appSettings = new Map<string, string>();
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+      '/repos/api': {},
+    };
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      appSettings,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot,
+      filesByWorkspacePath,
+      failWriteOnce: ({ workspacePath }) => workspacePath === '/repos/api',
+    });
+
+    await expect(service.createArchitectPlan({
+      branchName,
+      planId: 'mixed-recovery-plan',
+      projectIds: ['docs', 'api'],
+      nodes: [{
+        id: 'mixed-task',
+        title: 'Update docs and API',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs', 'api'],
+        executionModesByProjectId: { docs: 'direct', api: 'git' },
+      }],
+    })).rejects.toThrow('Injected replica write failure');
+
+    const pendingBeforeRecovery = JSON.parse(
+      appSettings.get('pendingArchitectPlanReplicaMutations:v1') ?? '[]',
+    ) as Array<{ workspaceKey: string }>;
+    expect(pendingBeforeRecovery).toHaveLength(1);
+    expect(pendingBeforeRecovery[0]?.workspaceKey).toBe('/repos/api|/repos/docs');
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      appSettings,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot,
+      filesByWorkspacePath,
+    });
+    await service.listArchitectPlans(branchName, true, true);
+
+    expect(JSON.parse(
+      appSettings.get('pendingArchitectPlanReplicaMutations:v1') ?? '[]',
+    )).toEqual([]);
+    expect(JSON.parse(
+      appSettings.get('pendingArchitectPlanReplicaMutationsQuarantine:v1') ?? '[]',
+    )).toEqual([]);
+    expect(filesByWorkspacePath['/repos/docs'][
+      'branches/develop/plans/mixed-recovery-plan/plan.json'
+    ]).toBeDefined();
+    expect(filesByWorkspacePath['/repos/api'][
+      'branches/develop/plans/mixed-recovery-plan/plan.json'
+    ]).toBeDefined();
+  });
+
   it('removes orphaned planned metadata while preserving executed task history', async () => {
     const registrySnapshot: ValidProjectRegistrySnapshot = {
       selectedGroupId: null,
@@ -1011,7 +1700,9 @@ describe('architectPlanService', () => {
       validProjectIds: ['web'],
       validProjectIdSet: new Set(['web']),
       repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([['web', '/repos/web']]),
       gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['web', 'git']]),
       hasRegisteredProjects: true,
     };
     const filesByWorkspacePath: Record<string, Record<string, string>> = {

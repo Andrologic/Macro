@@ -470,10 +470,17 @@ async fn resolve_workspace_for_path(
 ) -> Result<PathBuf, BackendError> {
     let base_workspace = workspace_path.unwrap_or(workspace);
     let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
-    if allow_outside_workspace.unwrap_or(false) || (!metadata_scope && !is_macro_scoped_path(path))
-    {
+    let direct_scope = matches!(workspace_scope.map(str::trim), Some("direct"));
+    if allow_outside_workspace.unwrap_or(false) || !is_macro_scoped_path(path) {
         return Ok(base_workspace);
     }
+    if direct_scope {
+        return Ok(base_workspace.join(".macro"));
+    }
+
+    debug_assert!(
+        metadata_scope || workspace_scope.is_none() || workspace_scope == Some("default")
+    );
 
     if parse_wsl_unc_path(&base_workspace.to_string_lossy()).is_some() {
         return Err(BackendError::Git {
@@ -3397,6 +3404,30 @@ mod tests {
         .expect("canonical virtual metadata workspace");
 
         assert_eq!(virtual_resolved, resolved);
+    }
+
+    #[tokio::test]
+    async fn test_direct_metadata_scope_stays_in_project_after_git_initialization() {
+        let default_workspace = setup_empty_workspace();
+        let explicit_repo = setup_empty_workspace();
+        let _repo = init_git_repo(explicit_repo.path());
+
+        let resolved = resolve_workspace_for_path(
+            default_workspace.path().to_path_buf(),
+            GitState::new(),
+            Some(explicit_repo.path().to_path_buf()),
+            ".macro/branches/develop/plans/index.json",
+            None,
+            Some("direct"),
+        )
+        .await
+        .expect("resolve direct metadata workspace");
+
+        assert_eq!(resolved, explicit_repo.path().join(".macro"));
+        assert!(!explicit_repo
+            .path()
+            .join(".git/macro-metadata-worktree")
+            .exists());
     }
 
     #[tokio::test]
