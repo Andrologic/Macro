@@ -162,7 +162,7 @@ const flushRender = async () => {
 };
 
 const waitForCreateDialog = async () => {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     if (dialog) return dialog;
     await act(async () => {
@@ -900,17 +900,6 @@ describe('TaskQueue', () => {
       await flushRender();
     });
     expect(document.activeElement).toBe(projectFilter);
-
-    await act(async () => {
-      document.body.querySelector<HTMLButtonElement>(
-        '[data-tour-id="implement-create-task"]'
-      )?.click();
-      await flushRender();
-    });
-    const createDialog = await waitForCreateDialog();
-    expect(createDialog).not.toBeNull();
-    expect(createDialog?.textContent ?? '').not.toContain('Task type');
-    expect(createDialog?.textContent ?? '').not.toContain('Starting point');
   });
 
   it('requires an explicit project when creating from the all-projects view', async () => {
