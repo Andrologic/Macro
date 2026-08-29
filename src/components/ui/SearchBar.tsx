@@ -11,6 +11,7 @@ interface SearchBarProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onC
   showClear?: boolean;
   inputId?: string;
   inputAriaLabel?: string;
+  inputAutoFocus?: boolean;
 }
 
 export const SearchBar: React.FC<SearchBarProps> = ({
@@ -21,6 +22,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   showClear = true,
   inputId,
   inputAriaLabel,
+  inputAutoFocus = false,
   'aria-label': containerAriaLabel,
   ...props
 }) => {
@@ -42,6 +44,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       <Icon name="search" size={16} className="text-muted-foreground flex-shrink-0 mx-1" />
       <input
         id={inputId}
+        autoFocus={inputAutoFocus}
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}

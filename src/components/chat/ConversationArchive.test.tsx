@@ -125,6 +125,39 @@ describe('ConversationArchive', () => {
     expect(document.body.textContent).toContain('No archived conversations');
   });
 
+  it('opens and closes search inside the existing compact header', async () => {
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-tour-id="chat-conversation-search"]')).toBeNull();
+    const searchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="chat-search-toggle"]'
+    );
+    const header = searchToggle?.closest('.h-12');
+    expect(searchToggle?.className).toContain('h-7 w-7');
+
+    await act(async () => {
+      searchToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const searchInput = document.body.querySelector<HTMLInputElement>(
+      '[data-tour-id="chat-conversation-search"] input'
+    );
+    expect(searchInput?.closest('.h-12')).toBe(header ?? null);
+    expect(document.activeElement).toBe(searchInput ?? null);
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-search-toggle"]')
+        ?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-conversation-search"]')).toBeNull();
+    expect(header?.className).toContain('h-12');
+  });
+
   it('selects the first archived conversation and restores the previous active selection', () => {
     const conversations = [{ id: 'conversation-1' }, { id: 'conversation-2' }];
     const archivedIds = new Set(['conversation-2']);

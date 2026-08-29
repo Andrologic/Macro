@@ -102,9 +102,20 @@ describe('ArchitectProjectNavigator search', () => {
       await flushRender();
     });
 
-    const searchInput = document.body.querySelector<HTMLInputElement>(
+    expect(document.body.querySelector('[data-tour-id="architect-plan-search"]')).toBeNull();
+    const searchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="architect-search-toggle"]'
+    );
+    expect(searchToggle?.className).toContain('h-7 w-7');
+    await act(async () => {
+      searchToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    let searchInput = document.body.querySelector<HTMLInputElement>(
       '[data-tour-id="architect-plan-search"] input'
     );
+    expect(searchInput?.closest('.h-12')).not.toBeNull();
     const valueSetter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       'value'
@@ -133,11 +144,27 @@ describe('ArchitectProjectNavigator search', () => {
       persistActiveSelection: true,
     });
 
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="architect-search-toggle"]')
+        ?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
     const archiveToggle = document.body.querySelector<HTMLButtonElement>(
       '[data-tour-id="architect-archive-toggle"]'
     );
     await act(async () => {
       archiveToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="architect-search-toggle"]')
+        ?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    searchInput = document.body.querySelector<HTMLInputElement>(
+      '[data-tour-id="architect-plan-search"] input'
+    );
+    await act(async () => {
+      valueSetter?.call(searchInput, 'DEPLOIEMENT');
+      searchInput?.dispatchEvent(new window.Event('input', { bubbles: true }));
       await flushRender();
     });
     expect(document.body.textContent).toContain('Déploiement archivé');

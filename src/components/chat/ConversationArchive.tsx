@@ -395,6 +395,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   })));
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const archivedIds = useConversationArchiveStore((state) => state.archivedConversationIds);
   const hydrateArchivedConversationIds = useConversationArchiveStore(
     (state) => state.hydrateArchivedConversationIds
@@ -870,11 +871,37 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         data-tour-id="chat-conversations-panel"
       >
         <div className="h-12 border-b border-border flex items-center justify-between px-4">
-          <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Icon name="message-circle" size={16} className="text-primary" />
-            {t('chat.conversations', 'Conversations')}
-          </h1>
+          {isSearchOpen ? (
+            <SearchBar
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder={t('chat.searchConversations', 'Search conversations...')}
+              className="h-8 min-w-0 flex-1 rounded-md py-1"
+              showClear={false}
+              inputAutoFocus
+              data-tour-id="chat-conversation-search"
+            />
+          ) : (
+            <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Icon name="message-circle" size={16} className="text-primary" />
+              {t('chat.conversations', 'Conversations')}
+            </h1>
+          )}
           <div className="flex items-center gap-1">
+            <PanelHeaderIconButton
+              icon={isSearchOpen ? 'x' : 'search'}
+              label={isSearchOpen
+                ? t('common.close', 'Close')
+                : t('chat.searchConversations', 'Search conversations...')}
+              pressed={isSearchOpen}
+              onClick={() => {
+                if (isSearchOpen) setSearchQuery('');
+                setIsSearchOpen((current) => !current);
+              }}
+              data-tour-id="chat-search-toggle"
+            />
+            {!isSearchOpen && (
+              <>
             <PanelHeaderIconButton
               icon="archive"
               label={t('chat.archives', 'Archives')}
@@ -902,6 +929,8 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               disabled={isBulkDeleting}
               data-tour-id="chat-new-conversation"
             />
+              </>
+            )}
           </div>
         </div>
 
@@ -967,15 +996,6 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             </div>
           </div>
         )}
-
-        <div className="p-3 border-b border-border">
-          <SearchBar
-            value={searchQuery}
-            onChange={setSearchQuery}
-            placeholder={t('chat.searchConversations', 'Search conversations...')}
-            data-tour-id="chat-conversation-search"
-          />
-        </div>
 
         <div ref={archiveListRef} className="flex-1 overflow-y-auto">
           {archiveRows.length > 0 ? (

@@ -124,6 +124,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [expandedPlanLists, setExpandedPlanLists] = useState<string[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [creatingScopeId, setCreatingScopeId] = useState<string | null>(null);
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
@@ -901,11 +902,37 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       {scopeCreateMenuPortal}
       {scopeContextMenuPortal}
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon name="folder-tree" size={15} className="shrink-0 text-primary" />
-          <h2 className="truncate text-sm font-semibold text-foreground">{t('architect.projectNavigator.title', 'Projets')}</h2>
-        </div>
+        {isSearchOpen ? (
+          <SearchBar
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder={t('architect.projectNavigator.searchPlans', 'Rechercher des plans...')}
+            className="h-8 min-w-0 flex-1 rounded-md py-1"
+            showClear={false}
+            inputAutoFocus
+            data-tour-id="architect-plan-search"
+          />
+        ) : (
+          <div className="flex min-w-0 items-center gap-2">
+            <Icon name="folder-tree" size={15} className="shrink-0 text-primary" />
+            <h2 className="truncate text-sm font-semibold text-foreground">{t('architect.projectNavigator.title', 'Projets')}</h2>
+          </div>
+        )}
         <div className="flex shrink-0 items-center gap-1">
+          <PanelHeaderIconButton
+            icon={isSearchOpen ? 'x' : 'search'}
+            label={isSearchOpen
+              ? t('common.close', 'Close')
+              : t('architect.projectNavigator.searchPlans', 'Rechercher des plans...')}
+            pressed={isSearchOpen}
+            onClick={() => {
+              if (isSearchOpen) setSearchQuery('');
+              setIsSearchOpen((current) => !current);
+            }}
+            data-tour-id="architect-search-toggle"
+          />
+          {!isSearchOpen && (
+            <>
           <PanelHeaderIconButton
             icon="archive"
             label={t('architect.projectNavigator.archives', 'Archives')}
@@ -928,16 +955,9 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
             label={t('architect.projectNavigator.manageProjects', 'Gérer les projets')}
             onClick={openProjectNavigator}
           />
+            </>
+          )}
         </div>
-      </div>
-
-      <div className="shrink-0 border-b border-border px-3 py-2.5">
-        <SearchBar
-          value={searchQuery}
-          onChange={setSearchQuery}
-          placeholder={t('architect.projectNavigator.searchPlans', 'Rechercher des plans...')}
-          data-tour-id="architect-plan-search"
-        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-2.5">

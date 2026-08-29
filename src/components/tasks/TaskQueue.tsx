@@ -728,6 +728,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS_FILTER);
   const [statusFilter, setStatusFilter] = useState<TaskQueueStatusFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [showCreateTaskDialog, setShowCreateTaskDialog] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
@@ -2005,13 +2006,39 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       data-tour-id="implement-task-panel"
     >
       <div className="h-12 border-b border-border flex items-center justify-between gap-3 px-4">
-        <div className="flex min-w-0 items-center gap-2">
+        {isSearchOpen ? (
+          <SearchBar
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder={t('implement.searchTasks', 'Search tasks...')}
+            className="h-8 min-w-0 flex-1 rounded-md py-1"
+            showClear={false}
+            inputAutoFocus
+            data-tour-id="implement-task-search"
+          />
+        ) : (
+          <div className="flex min-w-0 items-center gap-2">
           <h1 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <Icon name="list-todo" size={16} className="text-primary" />
             {t('implement.tasks', 'Tasks')}
           </h1>
-        </div>
+          </div>
+        )}
         <div className="flex shrink-0 items-center gap-1">
+          <PanelHeaderIconButton
+            icon={isSearchOpen ? 'x' : 'search'}
+            label={isSearchOpen
+              ? t('common.close', 'Close')
+              : t('implement.searchTasks', 'Search tasks...')}
+            pressed={isSearchOpen}
+            onClick={() => {
+              if (isSearchOpen) setSearchQuery('');
+              setIsSearchOpen((current) => !current);
+            }}
+            data-tour-id="implement-search-toggle"
+          />
+          {!isSearchOpen && (
+            <>
           <PanelHeaderIconButton
             icon="archive"
             label={t('implement.archives', 'Archives')}
@@ -2043,16 +2070,9 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                     : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
           />
+            </>
+          )}
         </div>
-      </div>
-
-      <div className="border-b border-border px-3 py-2.5">
-        <SearchBar
-          value={searchQuery}
-          onChange={setSearchQuery}
-          placeholder={t('implement.searchTasks', 'Search tasks...')}
-          data-tour-id="implement-task-search"
-        />
       </div>
 
       <div className="px-4 py-3 border-b border-border">

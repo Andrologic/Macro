@@ -381,10 +381,12 @@ Exemples :
 
 Chaque panneau gauche propose une recherche locale propre à son mode. Implement
 recherche uniquement les tâches, Chat uniquement les conversations et Architect
-uniquement les plans. Le filtre s'applique dès la saisie, sans tenir compte de
-la casse ni des accents. Une requête vide restitue la liste courante. Les
-filtres, les archives et le tri déjà actifs restent appliqués aux résultats.
-Une recherche sans correspondance affiche un état vide explicite. Choisir un
+uniquement les plans. Une icône compacte dans l'en-tête du panneau ouvre le
+champ à la place du titre, sans ajouter de bandeau ni modifier durablement la
+hauteur du panneau. Le filtre s'applique dès la saisie, sans tenir compte de la
+casse ni des accents. Une requête vide restitue la liste courante. Les filtres,
+les archives et le tri déjà actifs restent appliqués aux résultats. Une
+recherche sans correspondance affiche un état vide explicite. Choisir un
 résultat déclenche la même sélection que dans la liste non filtrée.
 
 En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.

@@ -524,9 +524,20 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
+    expect(document.body.querySelector('[data-tour-id="implement-task-search"]')).toBeNull();
+    const searchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-search-toggle"]'
+    );
+    expect(searchToggle?.className).toContain('h-7 w-7');
+    await act(async () => {
+      searchToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
     const searchInput = document.body.querySelector<HTMLInputElement>(
       '[data-tour-id="implement-task-search"] input'
     );
+    expect(searchInput?.closest('.h-12')).not.toBeNull();
     const valueSetter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       'value'
