@@ -344,6 +344,7 @@ pub struct WorkspaceArchitectPlanTranscriptDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WorkspaceArchitectListPlansRequestDto {
+    pub request_id: Option<String>,
     pub branch_name: String,
     pub include_deleted: bool,
     pub include_archived: bool,

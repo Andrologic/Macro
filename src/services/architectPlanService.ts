@@ -4799,6 +4799,7 @@ export const commitArchitectPlanMetadata = async (input: {
 
 export interface ListArchitectPlansOptions {
   scopedProjectIdsHint?: string[];
+  requestId?: string;
 }
 
 export const listArchitectPlans = async (
@@ -4842,6 +4843,7 @@ const listArchitectPlansWithDeps = async (
         includeDeleted,
         includeArchived,
         scopedProjectIdsHint: options.scopedProjectIdsHint,
+        requestId: options.requestId,
       });
       return {
         activePlanId: runtimeList.activePlanId,
