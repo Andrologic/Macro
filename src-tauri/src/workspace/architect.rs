@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::fs;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_TARGET_BRANCH: &str = "main";
 const DEFAULT_NEW_PLAN_LABEL: &str = "new plan";
@@ -123,9 +123,15 @@ struct ArchitectPlanHeadSnapshot {
 
 static ARCHITECT_RUNTIME_CACHE: OnceLock<RwLock<HashMap<String, ArchitectPlanRuntimeBranchIndex>>> =
     OnceLock::new();
+static ARCHITECT_RUNTIME_BUILD_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    OnceLock::new();
 
 fn runtime_cache() -> &'static RwLock<HashMap<String, ArchitectPlanRuntimeBranchIndex>> {
     ARCHITECT_RUNTIME_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn runtime_build_locks() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    ARCHITECT_RUNTIME_BUILD_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn normalize_branch_name(value: &str) -> String {
@@ -1161,6 +1167,26 @@ async fn load_branch_index(
         }
     }
 
+    let build_lock = {
+        let mut locks = runtime_build_locks().lock().await;
+        locks
+            .entry(cache_key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    let _build_guard = build_lock.lock().await;
+
+    {
+        let cache = runtime_cache().read().await;
+        if let Some(cached) = cache.get(&cache_key) {
+            if !branch_index_is_stale(metadata_root, cached).await {
+                let mut reused = cached.clone();
+                reused.rebuilt_last_load = false;
+                return Ok(reused);
+            }
+        }
+    }
+
     let previous_generation = {
         let cache = runtime_cache().read().await;
         cache
@@ -1719,6 +1745,36 @@ mod tests {
         assert!(!index_path.with_extension("json.rebuild.backup").exists());
     }
 
+    #[tokio::test]
+    async fn coalesces_concurrent_rebuilds_for_the_same_branch_index() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let project_path = workspace.path().join("concurrent-project");
+        let _repo = init_repo(&project_path);
+        let metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let plan_id = "concurrent-plan";
+        write_json(
+            &architect_plan_index_path(&metadata_root, "main"),
+            &ArchitectPlanIndexFile {
+                version: 3,
+                active_plan_id: Some(plan_id.to_string()),
+                plans: vec![plan_summary(plan_id, "project-concurrent")],
+                reserved_plan_slugs: Vec::new(),
+            },
+        );
+
+        let first = load_branch_index(&project_path, &metadata_root, "main", &[]);
+        let second = load_branch_index(&project_path, &metadata_root, "main", &[]);
+        let (first, second) = tokio::join!(first, second);
+        let first = first.expect("first concurrent index load");
+        let second = second.expect("second concurrent index load");
+
+        assert_eq!(first.branch_generation, 1);
+        assert_eq!(second.branch_generation, 1);
+        assert_ne!(first.rebuilt_last_load, second.rebuilt_last_load);
+    }
+
     #[test]
     fn collect_workspace_state_project_paths_includes_standalone_projects() {
         let mut state = WorkspaceState::default();
@@ -1804,6 +1860,7 @@ mod tests {
             &project_path,
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
@@ -1915,6 +1972,7 @@ mod tests {
             workspace.path(),
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
@@ -2022,6 +2080,7 @@ mod tests {
             workspace.path(),
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
