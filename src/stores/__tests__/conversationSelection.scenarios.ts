@@ -64,6 +64,55 @@ export const registerConversationSelectionScenarios = (
       expect(useChatStore.getState().getComposerDraftForContext('conversation:created')).toBeNull();
     });
 
+    it('removes a persisted composer draft after deleting its conversation', async () => {
+      const { useChatStore } = await loadChatStore();
+      const conversation = {
+        ...createConversation('conversation-to-delete', ''),
+        project_id: null,
+        group_id: null,
+        scope_mode: 'Chat' as const,
+      };
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [conversation],
+        selectedConversationId: conversation.id,
+        selectedConversationIdsByMode: { Chat: conversation.id },
+        composerDraftsByContextKey: {},
+      }));
+      useChatStore.getState().saveComposerDraftForContext(
+        `conversation:${conversation.id}`,
+        { text: 'Draft to delete', images: [], contextRefs: [] },
+      );
+
+      await useChatStore.getState().deleteConversation(conversation.id, { mode: 'chat' });
+
+      expect(
+        useChatStore.getState().getComposerDraftForContext(`conversation:${conversation.id}`),
+      ).toBeNull();
+    });
+
+    it('drops an archived conversation draft and refuses to restore it', async () => {
+      const { useChatStore } = await loadChatStore();
+      const { useConversationArchiveStore } = await import('../useConversationArchiveStore');
+      useChatStore.setState(createIdleChatStoreState({ composerDraftsByContextKey: {} }));
+      useChatStore.getState().saveComposerDraftForContext('conversation:archived', {
+        text: 'Private archived draft',
+        images: [],
+        contextRefs: [],
+      });
+
+      useConversationArchiveStore.getState().replaceArchivedConversationIds(['archived']);
+      useChatStore.getState().discardComposerDraftForConversation('archived');
+      useChatStore.getState().saveComposerDraftForContext('conversation:archived', {
+        text: 'Must stay discarded',
+        images: [],
+        contextRefs: [],
+      });
+
+      expect(
+        useChatStore.getState().getComposerDraftForContext('conversation:archived'),
+      ).toBeNull();
+    });
+
     it('clears Architect conversation selection when no plan is selected', async () => {
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(

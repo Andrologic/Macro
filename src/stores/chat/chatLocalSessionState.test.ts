@@ -5,9 +5,12 @@ import type {
   ConversationQuestionnaireState,
 } from "../../types";
 import {
+  COMPOSER_DRAFTS_STORAGE_KEY,
   clearQuestionnaireDraftsForConversations,
+  loadComposerDraftsFromStorage,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
+  saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
   setActiveQuestionnaireDraftStep,
@@ -135,5 +138,77 @@ describe("chatLocalSessionState", () => {
     saveMessageImagesToStorage({ "message-1": [image] });
 
     expect(loadMessageImagesFromStorage()).toEqual({ "message-1": [image] });
+  });
+
+  it("round-trips a composer draft with an image and a context reference", () => {
+    saveComposerDraftsToStorage({
+      "conversation:conv-a": {
+        text: "Inspect the screenshot and README.",
+        images: [{
+          id: "image-1",
+          mimeType: "image/png",
+          dataUrl: "data:image/png;base64,AQID",
+          width: 32,
+          height: 24,
+          createdAt: "2026-08-29T09:00:00.000Z",
+        }],
+        contextRefs: [{
+          id: "file:README.md",
+          kind: "file",
+          title: "README.md",
+          path: "C:/repo/README.md",
+          relativePath: "README.md",
+          projectId: "project-1",
+        }],
+      },
+    });
+
+    expect(loadComposerDraftsFromStorage()).toEqual({
+      "conversation:conv-a": {
+        text: "Inspect the screenshot and README.",
+        images: [expect.objectContaining({ id: "image-1", width: 32, height: 24 })],
+        contextRefs: [expect.objectContaining({
+          id: "file:README.md",
+          kind: "file",
+          relativePath: "README.md",
+        })],
+      },
+    });
+  });
+
+  it("ignores invalid composer draft storage without throwing", () => {
+    window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      "conversation:valid": {
+        text: "Still valid",
+        images: [],
+        contextRefs: [],
+      },
+      "conversation:invalid-image": {
+        text: "Must be ignored",
+        images: [{
+          id: "image-1",
+          mimeType: "text/plain",
+          dataUrl: "javascript:alert(1)",
+          createdAt: "today",
+        }],
+        contextRefs: [],
+      },
+      "conversation:invalid-ref": {
+        text: "Must also be ignored",
+        images: [],
+        contextRefs: [{ id: "unknown", kind: "unknown", title: "Unknown" }],
+      },
+    }));
+
+    expect(loadComposerDraftsFromStorage()).toEqual({
+      "conversation:valid": {
+        text: "Still valid",
+        images: [],
+        contextRefs: [],
+      },
+    });
+
+    window.localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, "not-json");
+    expect(loadComposerDraftsFromStorage()).toEqual({});
   });
 });

@@ -1229,6 +1229,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [composerDraftContextKey]);
   const activeComposerDraftContextKeyRef = useRef<string | null>(null);
   const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
+  const skipComposerDraftPersistenceRef = useRef(false);
   const latestComposerDraftRef = useRef({
     text: '',
     images: [] as MessageImageAttachment[],
@@ -1659,6 +1660,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
 
     const savedNextDraft = getComposerDraftForContext(composerDraftContextKey);
+    skipComposerDraftPersistenceRef.current = true;
     activeComposerDraftContextKeyRef.current = composerDraftContextKey;
     if (!previousContextKey && !savedNextDraft) {
       return;
@@ -1717,6 +1719,39 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       contextRefs: cloneContextRefs(composerContextRefs),
     };
   }, [composerContextRefs, composerImages, inputValue]);
+
+  useEffect(() => {
+    if (activeComposerDraftContextKeyRef.current !== composerDraftContextKey) return;
+    if (skipComposerDraftPersistenceRef.current) {
+      skipComposerDraftPersistenceRef.current = false;
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      saveComposerDraftForContext(composerDraftContextKey, {
+        text: inputValue,
+        images: [...composerImages],
+        contextRefs: cloneContextRefs(composerContextRefs),
+      });
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    composerContextRefs,
+    composerDraftContextKey,
+    composerImages,
+    inputValue,
+    saveComposerDraftForContext,
+  ]);
+
+  useEffect(() => {
+    const persistActiveDraft = () => {
+      const contextKey = activeComposerDraftContextKeyRef.current;
+      if (contextKey) {
+        saveComposerDraftForContext(contextKey, latestComposerDraftRef.current);
+      }
+    };
+    window.addEventListener('pagehide', persistActiveDraft);
+    return () => window.removeEventListener('pagehide', persistActiveDraft);
+  }, [saveComposerDraftForContext]);
 
   const streamingMessageContentLength =
     currentMessages[currentMessages.length - 1]?.content.length ?? 0;
