@@ -1188,11 +1188,29 @@ const POST_CREATE_HYDRATION_TIMEOUT_MS = 5_000;
 const PROJECT_CREATION_TIMEOUT_MS = 30_000;
 let postCreateHydrationGeneration = 0;
 let postCreateHydrationTail: Promise<void> = Promise.resolve();
+let latestPostCreateHydration: PostCreateHydrationContext | null = null;
+let postCreateSessionPersistenceTail: Promise<void> = Promise.resolve();
+let postCreateSessionPersistenceGeneration = 0;
+
+type PostCreateHydrationInput = {
+  requestId: string;
+  action: string;
+  standaloneProjects: Project[];
+  projectGroups: ProjectGroup[];
+  groupId: string | null;
+  projectId: string | null;
+};
+
+type PostCreateHydrationContext = {
+  generation: number;
+  input: PostCreateHydrationInput;
+};
 
 const createProjectCreationDeadline = (requestId: string) => {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => {
+      void Promise.resolve(services.cancelProjectOperation?.(requestId)).catch(() => undefined);
       reject(new MacroServiceError(
         "PROJECT_CREATION_TIMEOUT",
         `Project creation ${requestId} exceeded ${PROJECT_CREATION_TIMEOUT_MS} ms.`,
@@ -1212,15 +1230,30 @@ const createProjectCreationDeadline = (requestId: string) => {
   };
 };
 
-const schedulePostCreateHydration = (input: {
+const schedulePostCreateSessionPersistence = (input: {
   requestId: string;
-  action: string;
-  standaloneProjects: Project[];
-  projectGroups: ProjectGroup[];
-  groupId: string | null;
-  projectId: string | null;
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  mode: AppMode;
 }): void => {
-  const generation = ++postCreateHydrationGeneration;
+  const generation = ++postCreateSessionPersistenceGeneration;
+  const persistence = postCreateSessionPersistenceTail.catch(() => undefined).then(async () => {
+    if (generation !== postCreateSessionPersistenceGeneration) {
+      return;
+    }
+    await persistSessionContext(input);
+  });
+  postCreateSessionPersistenceTail = persistence.catch((error) => {
+    logProjectRegistryAction("failed", {
+      action: "post_create_session_persistence",
+      requestId: input.requestId,
+      error: toServiceError(error).message,
+    });
+  });
+};
+
+const runPostCreateHydration = async (context: PostCreateHydrationContext): Promise<void> => {
+  const { generation, input } = context;
   const isCurrentHydration = (): boolean => {
     const state = useAppStore.getState();
     const targetStillExists = input.projectId
@@ -1230,58 +1263,70 @@ const schedulePostCreateHydration = (input: {
         : true;
     return postCreateHydrationGeneration === generation && targetStillExists;
   };
-  let signalStarted!: () => void;
-  const started = new Promise<void>((resolve) => {
-    signalStarted = resolve;
+  if (!isCurrentHydration()) {
+    return;
+  }
+  await reconcileProjectRegistryDependencies({
+    standaloneProjects: input.standaloneProjects,
+    projectGroups: input.projectGroups,
+    selectedGroupId: input.groupId,
+    selectedProjectId: input.projectId,
   });
-  const hydration = postCreateHydrationTail.catch(() => undefined).then(async () => {
-    signalStarted();
+  if (!isCurrentHydration()) {
+    return;
+  }
+  const state = useAppStore.getState();
+  if (state.projectSwitchPolicy === "resume_per_project" && input.groupId) {
+    await restoreProjectContext(input.groupId, input.projectId);
     if (!isCurrentHydration()) {
       return;
     }
-    await reconcileProjectRegistryDependencies({
-      standaloneProjects: input.standaloneProjects,
-      projectGroups: input.projectGroups,
-      selectedGroupId: input.groupId,
-      selectedProjectId: input.projectId,
-    });
-    if (!isCurrentHydration()) {
-      return;
-    }
-    const state = useAppStore.getState();
-    if (state.projectSwitchPolicy === "resume_per_project" && input.groupId) {
-      await restoreProjectContext(input.groupId, input.projectId);
-      if (!isCurrentHydration()) {
+  }
+  await ensureAutoPlanForSelection({
+    groupId: input.groupId,
+    projectId: input.projectId,
+    requestId: input.requestId,
+  });
+};
+
+const enqueuePostCreateHydration = (
+  context: PostCreateHydrationContext,
+  recovery = false,
+): void => {
+  const { generation, input } = context;
+  const queued = postCreateHydrationTail.catch(() => undefined).then(async () => {
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    const hydration = runPostCreateHydration(context);
+    const recoverLatestAfterLateCompletion = () => {
+      if (!timedOut || postCreateHydrationGeneration === generation) {
         return;
       }
-    }
-    await ensureAutoPlanForSelection({
-      groupId: input.groupId,
-      projectId: input.projectId,
-      requestId: input.requestId,
-    });
-  });
-  postCreateHydrationTail = hydration.catch(() => undefined);
-
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  void started.then(() => {
+      const latest = latestPostCreateHydration;
+      if (latest && latest.generation === postCreateHydrationGeneration) {
+        enqueuePostCreateHydration(latest, true);
+      }
+    };
+    void hydration.then(
+      recoverLatestAfterLateCompletion,
+      recoverLatestAfterLateCompletion,
+    );
     const timeout = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(
-        () => reject(new Error(`Post-create hydration exceeded ${POST_CREATE_HYDRATION_TIMEOUT_MS} ms.`)),
-        POST_CREATE_HYDRATION_TIMEOUT_MS,
-      );
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        reject(new Error(`Post-create hydration exceeded ${POST_CREATE_HYDRATION_TIMEOUT_MS} ms.`));
+      }, POST_CREATE_HYDRATION_TIMEOUT_MS);
     });
-    return Promise.race([hydration, timeout]);
-  })
-    .then(() => {
+
+    try {
+      await Promise.race([hydration, timeout]);
       logProjectRegistryAction("succeeded", {
-        action: `${input.action}_post_create_hydration`,
+        action: `${input.action}_post_create_hydration${recovery ? "_recovery" : ""}`,
         requestId: input.requestId,
       });
-    })
-    .catch((error) => {
+    } catch (error) {
       const normalized = toServiceError(error);
-      if (isCurrentHydration()) {
+      if (postCreateHydrationGeneration === generation) {
         useAppStore.setState({
           architectPlanCatalogStatus: "error",
           architectPlanCatalogError: normalized.message,
@@ -1292,12 +1337,22 @@ const schedulePostCreateHydration = (input: {
         requestId: input.requestId,
         error: normalized.message,
       });
-    })
-    .finally(() => {
+    } finally {
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
-    });
+    }
+  });
+  postCreateHydrationTail = queued.catch(() => undefined);
+};
+
+const schedulePostCreateHydration = (input: PostCreateHydrationInput): void => {
+  const context = {
+    generation: ++postCreateHydrationGeneration,
+    input,
+  };
+  latestPostCreateHydration = context;
+  enqueuePostCreateHydration(context);
 };
 
 const pruneLegacyPlaceholderWorkspaces = (groups: ProjectGroup[]): ProjectGroup[] => {
@@ -4054,14 +4109,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         nextMacroEnabledProjects,
       );
 
-      await deadline.wait(persistSessionContext({
+      schedulePostCreateSessionPersistence({
+        requestId,
         selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
-      }));
-      if (get().projectAddOperation?.requestId !== requestId) {
-        return newProject;
-      }
+      });
 
       logProjectRegistryAction("succeeded", {
         action: "create_project",
@@ -4267,14 +4320,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         nextMacroEnabledProjects,
       );
 
-      await deadline.wait(persistSessionContext({
+      schedulePostCreateSessionPersistence({
+        requestId,
 	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
-      }));
-      if (get().projectAddOperation?.requestId !== requestId) {
-        return result;
-      }
+      });
 
       logProjectRegistryAction("succeeded", {
         action: "create_project_with_git_setup",
@@ -4483,14 +4534,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         nextMacroEnabledProjects,
       );
 
-      await deadline.wait(persistSessionContext({
+      schedulePostCreateSessionPersistence({
+        requestId,
 	        selectedGroupId: targetGroupId,
         selectedProjectId: preferredFocusProjectId,
         mode: state.mode,
-      }));
-      if (get().projectAddOperation?.requestId !== requestId) {
-        return result;
-      }
+      });
 
       logProjectRegistryAction("succeeded", {
         action: "create_new_project_repo",

@@ -366,6 +366,27 @@ const createProjectMock = mock(async (data: { name: string; path?: string }) => 
   bootstrapStandaloneProjects = [...bootstrapStandaloneProjects, project];
   return { project };
 });
+const createProjectWithGitSetupMock = mock(async (data: { name: string; path: string }) => {
+  const project: ProjectRecord = {
+    id: `project-${data.name.toLowerCase()}`,
+    name: data.name,
+    path: data.path,
+    gitFlowSettings: { baseBranch: 'develop' },
+  };
+  bootstrapStandaloneProjects = [...bootstrapStandaloneProjects, project];
+  return { project, detection: {} as never };
+});
+const createNewProjectRepoMock = mock(async (data: { repoName: string; parentPath: string; folderName: string }) => {
+  const project: ProjectRecord = {
+    id: `project-${data.repoName.toLowerCase()}`,
+    name: data.repoName,
+    path: `${data.parentPath}/${data.folderName}`,
+    gitFlowSettings: { baseBranch: 'develop' },
+  };
+  bootstrapStandaloneProjects = [...bootstrapStandaloneProjects, project];
+  return { project, detection: {} as never };
+});
+const cancelProjectOperationMock = mock(async (_requestId: string) => true);
 const debugResetProjectMock = mock(async (data: { projectId: string }) => {
   bootstrapProjectGroups = bootstrapProjectGroups
     .map((group) => ({
@@ -455,18 +476,23 @@ const reconcileLocalProjectRegistryStateMock = mock(async () => undefined);
 const deleteLocalProjectContextStateMock = mock(async (projectId: string) => {
   projectContexts.delete(projectId);
 });
+const buildSessionContextFromInput = (input: {
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  mode: string;
+}): NonNullable<typeof sessionContext> => ({
+  globalProjectId: input.selectedGroupId,
+  selectedGroupId: input.selectedGroupId,
+  selectedProjectId: input.selectedProjectId,
+  mode: input.mode,
+  updatedAt: '2026-04-17T12:00:00.000Z',
+});
 const upsertLocalSessionContextStateMock = mock(async (input: {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   mode: string;
 }) => {
-  sessionContext = {
-    globalProjectId: input.selectedGroupId,
-    selectedGroupId: input.selectedGroupId,
-    selectedProjectId: input.selectedProjectId,
-    mode: input.mode,
-    updatedAt: '2026-04-17T12:00:00.000Z',
-  };
+  sessionContext = buildSessionContextFromInput(input);
   return sessionContext;
 });
 
@@ -508,6 +534,9 @@ const registerUseAppStoreMocks = async () => {
     services: {
       getAppBootstrap: getAppBootstrapMock,
       createProject: createProjectMock,
+      createProjectWithGitSetup: createProjectWithGitSetupMock,
+      createNewProjectRepo: createNewProjectRepoMock,
+      cancelProjectOperation: cancelProjectOperationMock,
       debugResetProject: debugResetProjectMock,
       removeProject: removeProjectMock,
     },
@@ -516,6 +545,9 @@ const registerUseAppStoreMocks = async () => {
     services: {
       getAppBootstrap: getAppBootstrapMock,
       createProject: createProjectMock,
+      createProjectWithGitSetup: createProjectWithGitSetupMock,
+      createNewProjectRepo: createNewProjectRepoMock,
+      cancelProjectOperation: cancelProjectOperationMock,
       debugResetProject: debugResetProjectMock,
       removeProject: removeProjectMock,
     },
@@ -652,6 +684,9 @@ describe('useAppStore architect plan resolution', () => {
       bootstrapStandaloneProjects = [...bootstrapStandaloneProjects, project];
       return { project };
     });
+    createProjectWithGitSetupMock.mockClear();
+    createNewProjectRepoMock.mockClear();
+    cancelProjectOperationMock.mockClear();
     getAppBootstrapMock.mockImplementation(async () => ({
       plan: bootstrapPlan,
       standaloneProjects: bootstrapStandaloneProjects,
@@ -813,13 +848,21 @@ describe('useAppStore architect plan resolution', () => {
     );
   });
 
-  it('applies a newer hydration after an older reconciliation resumes late', async () => {
+  it('expires a stuck hydration and reapplies the newer context after the old work resumes', async () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [];
     let releaseFirstReconciliation!: () => void;
     let signalFirstStarted!: () => void;
+    let signalSecondApplied!: () => void;
+    let signalRecoveryApplied!: () => void;
     const firstStarted = new Promise<void>((resolve) => {
       signalFirstStarted = resolve;
+    });
+    const secondApplied = new Promise<void>((resolve) => {
+      signalSecondApplied = resolve;
+    });
+    const recoveryApplied = new Promise<void>((resolve) => {
+      signalRecoveryApplied = resolve;
     });
     const firstReconciliation = new Promise<void>((resolve) => {
       releaseFirstReconciliation = resolve;
@@ -833,48 +876,52 @@ describe('useAppStore architect plan resolution', () => {
       })
       .mockImplementationOnce(async () => {
         useAppStoreForReconciliation.setState({ selectedProjectId: 'project-second' });
+        signalSecondApplied();
+      })
+      .mockImplementationOnce(async () => {
+        useAppStoreForReconciliation.setState({ selectedProjectId: 'project-second' });
+        signalRecoveryApplied();
       });
-    const { useAppStore } = await loadIsolatedUseAppStore();
-    useAppStoreForReconciliation = useAppStore;
-    let unsubscribe = () => undefined;
-    const secondCatalogReady = new Promise<void>((resolve) => {
-      unsubscribe = useAppStore.subscribe((state: {
-        selectedProjectId: string | null;
-        architectPlanCatalogStatus: string;
-      }) => {
-        if (
-          state.selectedProjectId === 'project-second' &&
-          state.architectPlanCatalogStatus === 'ready'
-        ) {
-          resolve();
-        }
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    let nextTimerId = 0;
+    const timers = new Map<number, { callback: () => void; delay: number }>();
+    globalThis.setTimeout = ((callback: TimerHandler, delay?: number) => {
+      const id = ++nextTimerId;
+      timers.set(id, { callback: callback as () => void, delay: delay ?? 0 });
+      return id;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle?: ReturnType<typeof setTimeout>) => {
+      timers.delete(Number(handle));
+    }) as typeof clearTimeout;
+
+    try {
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      useAppStoreForReconciliation = useAppStore;
+      await useAppStore.getState().createProject({
+        name: 'First', description: '', groupId: null, path: '/repos/first', requestId: 'project-add-first',
       });
-    });
+      await firstStarted;
+      await useAppStore.getState().createProject({
+        name: 'Second', description: '', groupId: null, path: '/repos/second', requestId: 'project-add-second',
+      });
 
-    await useAppStore.getState().createProject({
-      name: 'First',
-      description: '',
-      groupId: null,
-      path: '/repos/first',
-      requestId: 'project-add-first',
-    });
-    await firstStarted;
-    await useAppStore.getState().createProject({
-      name: 'Second',
-      description: '',
-      groupId: null,
-      path: '/repos/second',
-      requestId: 'project-add-second',
-    });
-    expect(useAppStore.getState().selectedProjectId).toBe('project-second');
+      const firstHydrationDeadline = Array.from(timers.values()).find(({ delay }) => delay === 5_000);
+      expect(firstHydrationDeadline).toBeDefined();
+      firstHydrationDeadline?.callback();
+      await secondApplied;
+      expect(useAppStore.getState().selectedProjectId).toBe('project-second');
 
-    releaseFirstReconciliation();
-    await secondCatalogReady;
-    unsubscribe();
+      releaseFirstReconciliation();
+      await recoveryApplied;
 
-    expect(useAppStore.getState().selectedProjectId).toBe('project-second');
-    expect(useAppStore.getState().architectPlanCatalogStatus).toBe('ready');
-    expect(useAppStore.getState().architectPlanCatalogError).toBeNull();
+      expect(useAppStore.getState().selectedProjectId).toBe('project-second');
+      expect(useAppStore.getState().architectPlanCatalogStatus).toBe('ready');
+      expect(useAppStore.getState().architectPlanCatalogError).toBeNull();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
   });
 
   it('bounds an obsolete project creation without disturbing the newer success', async () => {
@@ -942,9 +989,95 @@ describe('useAppStore architect plan resolution', () => {
       ]);
       expect(useAppStore.getState().projectAddOperation).toBeNull();
       expect(useAppStore.getState().lastError).toBeNull();
+      expect(cancelProjectOperationMock).toHaveBeenCalledWith('request-first');
     } finally {
       globalThis.setTimeout = originalSetTimeout;
       globalThis.clearTimeout = originalClearTimeout;
+    }
+  });
+
+  it('serializes post-create session persistence for all three creation variants', async () => {
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [];
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const variants = [
+      {
+        label: 'plain',
+        create: (round: number) => useAppStore.getState().createProject({
+          name: `LatestPlain${round}`,
+          description: '',
+          groupId: null,
+          path: `/repos/latest-plain-${round}`,
+          requestId: `latest-plain-${round}`,
+        }),
+      },
+      {
+        label: 'git-setup',
+        create: (round: number) => useAppStore.getState().createProjectWithGitSetup({
+          name: `LatestSetup${round}`,
+          description: '',
+          groupId: null,
+          path: `/repos/latest-setup-${round}`,
+          gitSetupActions: [],
+          expectedSetupState: 'ready',
+          expectedRecommendedActionSequence: [],
+          requestId: `latest-setup-${round}`,
+        }),
+      },
+      {
+        label: 'new-repo',
+        create: (round: number) => useAppStore.getState().createNewProjectRepo({
+          repoName: `LatestRepo${round}`,
+          parentPath: '/repos',
+          folderName: `latest-repo-${round}`,
+          groupId: null,
+          requestId: `latest-repo-${round}`,
+        }),
+      },
+    ];
+
+    for (const [round, variant] of variants.entries()) {
+      let releaseOlderPersistence!: () => void;
+      let signalOlderStarted!: () => void;
+      let signalLatestPersisted!: () => void;
+      const olderStarted = new Promise<void>((resolve) => {
+        signalOlderStarted = resolve;
+      });
+      const olderPersistence = new Promise<void>((resolve) => {
+        releaseOlderPersistence = resolve;
+      });
+      const latestPersisted = new Promise<void>((resolve) => {
+        signalLatestPersisted = resolve;
+      });
+      upsertLocalSessionContextStateMock
+        .mockImplementationOnce(async (input) => {
+          signalOlderStarted();
+          await olderPersistence;
+          sessionContext = buildSessionContextFromInput(input);
+          return sessionContext;
+        })
+        .mockImplementationOnce(async (input) => {
+          sessionContext = buildSessionContextFromInput(input);
+          signalLatestPersisted();
+          return sessionContext;
+        });
+
+      await useAppStore.getState().createProject({
+        name: `Older${round}`,
+        description: '',
+        groupId: null,
+        path: `/repos/older-${round}`,
+        requestId: `older-${round}`,
+      });
+      await olderStarted;
+      const latest = await variant.create(round);
+      const latestProject = 'project' in latest ? latest.project : latest;
+
+      releaseOlderPersistence();
+      await latestPersisted;
+
+      expect(sessionContext?.selectedProjectId, variant.label).toBe(latestProject.id);
+      expect(useAppStore.getState().selectedProjectId, variant.label).toBe(latestProject.id);
     }
   });
 
