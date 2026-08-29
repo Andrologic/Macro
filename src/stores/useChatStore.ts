@@ -8013,6 +8013,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       status: params.updatedPlan.status,
       targetBranch: params.updatedPlan.targetBranch,
       targetBranchesByProjectId: params.updatedPlan.targetBranchesByProjectId,
+      executionModesByProjectId: params.updatedPlan.executionModesByProjectId,
       hasMixedTargetBranches:
         Boolean(params.updatedPlan.targetBranchesByProjectId) &&
         new Set(

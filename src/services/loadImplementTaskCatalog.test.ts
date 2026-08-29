@@ -367,6 +367,7 @@ describe('createLoadImplementTaskCatalog', () => {
           description: 'Live in-memory version',
           status: 'validated',
           targetBranch: 'feature/live-checkout',
+          executionModesByProjectId: { web: 'direct' },
         },
         planNodes: [
           {
@@ -424,6 +425,10 @@ describe('createLoadImplementTaskCatalog', () => {
       'plan-finalization:plan-live',
     ]);
     expect(catalog.tasks[0]?.plan_target_branch).toBe('feature/live-checkout');
+    expect(
+      catalog.plans.find((plan) => plan.targetBranch === 'feature/live-checkout')
+        ?.executionModesByProjectId,
+    ).toEqual({ web: 'direct' });
     expect(catalog.plans.map((plan) => [plan.id, plan.targetBranch])).toEqual([
       ['plan-live', 'develop'],
       ['plan-live', 'feature/live-checkout'],

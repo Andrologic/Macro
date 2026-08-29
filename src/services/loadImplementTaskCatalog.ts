@@ -36,6 +36,7 @@ interface ActivePlanContextState {
   status: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   hasMixedTargetBranches?: boolean;
 }
 
@@ -163,6 +164,7 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
     status: activePlanContext.status as ArchitectPlanRecord['status'],
     targetBranch: activePlanContext.targetBranch,
     targetBranchesByProjectId: activePlanContext.targetBranchesByProjectId,
+    executionModesByProjectId: activePlanContext.executionModesByProjectId,
     projectId: projectIds[0],
     projectIds,
     createdAt: new Date().toISOString(),

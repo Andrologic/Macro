@@ -236,7 +236,7 @@ export const retargetPlanForExecution = <TPlan extends PlanExecutionScopeRef>(
   };
 };
 
-const retargetExecutionTargets = (
+const retargetLegacyExecutionTargets = (
   targets: TaskExecutionTarget[] | undefined,
   replacementProjectIds: string[],
   knownProjectIdSet: Set<string>
@@ -247,27 +247,17 @@ const retargetExecutionTargets = (
   const singleReplacementProjectId =
     replacementProjectIds.length === 1 ? replacementProjectIds[0] : null;
 
-  return targets
-    .map((target) => {
-      const projectId = mapProjectId(
-        target.projectId,
-        singleReplacementProjectId,
-        knownProjectIdSet
-      );
-      if (!projectId) {
-        return null;
-      }
-      if (projectId === target.projectId) {
-        return target;
-      }
-      const branchName = target.branchName || target.targetBranchName || 'work';
-      return {
-        ...target,
-        projectId,
-        worktreeKey: toBranchWorktreeKey(projectId, branchName),
-      };
-    })
-    .filter((target): target is TaskExecutionTarget => Boolean(target));
+  return targets.map((target) => {
+    if (knownProjectIdSet.has(target.projectId) || !singleReplacementProjectId) {
+      return target;
+    }
+    const branchName = target.branchName || target.targetBranchName || 'work';
+    return {
+      ...target,
+      projectId: singleReplacementProjectId,
+      worktreeKey: toBranchWorktreeKey(singleReplacementProjectId, branchName),
+    };
+  });
 };
 
 export const retargetTaskForExecution = <TTask extends TaskExecutionScopeRef>(
@@ -284,6 +274,11 @@ export const retargetTaskForExecution = <TTask extends TaskExecutionScopeRef>(
   if (!hasUnknownProjectId) {
     return task;
   }
+  if ((task.execution_targets ?? []).some((target) =>
+    !knownProjectIdSet.has(target.projectId) && target.executionMode !== undefined
+  )) {
+    return task;
+  }
 
   const replacementProjectIds = resolveExecutionProjectIds({
     persistedIds: persistedProjectIds,
@@ -294,11 +289,12 @@ export const retargetTaskForExecution = <TTask extends TaskExecutionScopeRef>(
     return task;
   }
 
-  const executionTargets = retargetExecutionTargets(
+  const executionTargets = retargetLegacyExecutionTargets(
     task.execution_targets,
     replacementProjectIds,
     knownProjectIdSet
   );
+
   return {
     ...task,
     project_id: replacementProjectIds[0] ?? task.project_id,

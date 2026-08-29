@@ -164,7 +164,9 @@ const appState = {
     appState.pendingArchitectPlanActivationPayload = null;
     return payload;
   },
-  setActivePlanContext: (_context: unknown) => undefined,
+  setActivePlanContext: (context: unknown) => {
+    appState.activePlanContext = context as typeof appState.activePlanContext;
+  },
   setSelectedTask: (taskId: string | null) => {
     appState.selectedTaskId = taskId;
   },

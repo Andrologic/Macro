@@ -57,6 +57,7 @@ type MockPlanContext = {
   description: string;
   status: 'draft' | 'validated' | 'completed' | 'in_progress';
   targetBranch: string;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
 };
 
 type MockConversation = {
@@ -274,6 +275,7 @@ const applyStrategyMutationPreviewMock = mock(async (params: {
   status: 'in_progress',
   targetBranch: 'develop',
   targetBranchesByProjectId: { 'project-1': 'develop' },
+  executionModesByProjectId: { 'project-1': 'direct' },
   nodes: appState.planNodes,
   predictedBranches: appState.predictedBranches,
 }));
@@ -2246,6 +2248,9 @@ describe('StrategyGraph', () => {
     await flushRender();
 
     expect(applyStrategyMutationPreviewMock).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().activePlanContext?.executionModesByProjectId).toEqual({
+      'project-1': 'direct',
+    });
     expect(useAppStore.getState().strategyMutationPreview).toBeNull();
     expect(taskState.refreshFromPlan).toHaveBeenCalledTimes(1);
     expect(notifySuccessMock).toHaveBeenCalledTimes(1);

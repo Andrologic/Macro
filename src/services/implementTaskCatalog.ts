@@ -46,6 +46,7 @@ export interface ImplementTaskPlanSummary {
   storageBranch: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   hasMixedTargetBranches?: boolean;
   projectIds: string[];
   taskCount: number;
@@ -551,6 +552,7 @@ export const buildImplementTaskCatalog = (params: {
         storageBranch: plan.targetBranch,
         targetBranch: getUniqueTargetBranch(getArchitectPlanTargetBranchesByProjectId(plan), plan.targetBranch) || '',
         targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
+        executionModesByProjectId: plan.executionModesByProjectId,
         hasMixedTargetBranches: planHasMixedTargetBranches(plan),
         projectIds: unique(
           [

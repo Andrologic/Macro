@@ -1,8 +1,33 @@
 import { describe, expect, it } from 'bun:test';
-import { retargetPlanForExecution } from './projectIdentityReconciliation';
+import { retargetPlanForExecution, retargetTaskForExecution } from './projectIdentityReconciliation';
 import type { PlanNode, PredictedBranch } from '../types';
 
 describe('projectIdentityReconciliation', () => {
+  it('does not move an orphaned execution target onto the selected project', () => {
+    const task = {
+      id: 'orphaned-task',
+      project_id: 'removed-project',
+      project_ids: ['removed-project'],
+      execution_targets: [{
+        projectId: 'removed-project',
+        executionMode: 'direct' as const,
+        checkpointId: 'checkpoint-1',
+        branchName: '',
+        worktreeKey: 'removed-project::checkpoint-1',
+        repoPath: 'C:/removed/project',
+      }],
+    };
+
+    const retargeted = retargetTaskForExecution(task, {
+      scopedProjectIds: ['current-project'],
+      knownProjectIds: ['current-project'],
+    });
+
+    expect(retargeted.execution_targets?.[0]).toEqual(task.execution_targets[0]);
+    expect(retargeted.execution_targets?.[0]?.projectId).toBe('removed-project');
+    expect(retargeted.project_id).toBe('removed-project');
+  });
+
   it('retargets stale strategy children even when the plan already points to the current project', () => {
     const currentProjectId = 'project-octan-sales-1780653766405';
     const staleProjectId = 'project-lplr-app-1780329499166';
