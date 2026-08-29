@@ -1131,7 +1131,88 @@ describe('ChatZone', () => {
     });
 
     expect(getComposerEditor().value).toBe('Message suivant pendant la préparation.');
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Message suivant pendant la préparation.',
+    );
+  });
+
+  it('removes the persisted draft after a confirmed send', async () => {
+    const sendDeferred = createDeferred<{ status: 'sent' }>();
+    chatState = {
+      ...chatState,
+      sendMessage: mock(() => sendDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Brouillon envoyé et confirmé.');
+    await clickSendButton();
+
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Brouillon envoyé et confirmé.',
+    );
+
+    await act(async () => {
+      sendDeferred.resolve({ status: 'sent' });
+      await sendDeferred.promise;
+    });
+
     expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+  });
+
+  it('keeps the composer draft when an Implement kickoff is cancelled', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Persist composer drafts',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Running',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/composer-drafts',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Persist unsent composer content.',
+        },
+      ],
+    };
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => ({ status: 'cancelled' as const })),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Conserver ces notes si le démarrage est annulé.');
+
+    const kickoffButton = requireContainer().querySelector(
+      '[data-tour-id="implement-start-execution"]',
+    );
+    expect(kickoffButton).not.toBeNull();
+    await act(async () => {
+      kickoffButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe(
+      'Conserver ces notes si le démarrage est annulé.',
+    );
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Conserver ces notes si le démarrage est annulé.',
+    );
   });
 
   it('restores the composer when a send fails before Macro accepts it', async () => {

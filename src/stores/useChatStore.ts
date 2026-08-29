@@ -6497,6 +6497,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (conversationIds.length === 0) return;
     set((state) => {
       const next = { ...state.composerDraftsByContextKey };
+      const conversationIdSet = new Set(conversationIds);
+      const removedTaskIds = new Set(
+        state.conversations
+          .filter((conversation) => conversationIdSet.has(conversation.id))
+          .map((conversation) => conversation.task_id)
+          .filter((taskId): taskId is string => Boolean(taskId)),
+      );
       let changed = false;
       conversationIds.forEach((conversationId) => {
         const contextKey = `conversation:${conversationId}`;
@@ -6504,6 +6511,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
           delete next[contextKey];
           changed = true;
         }
+      });
+      Object.keys(next).forEach((contextKey) => {
+        if (!contextKey.startsWith("context:Implement::")) return;
+        const taskId = contextKey.slice(contextKey.lastIndexOf("::") + 2);
+        if (!removedTaskIds.has(taskId)) return;
+        delete next[contextKey];
+        changed = true;
       });
       if (!changed) return state;
       persistComposerDrafts(next);

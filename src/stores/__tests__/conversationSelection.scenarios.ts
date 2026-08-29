@@ -70,6 +70,7 @@ export const registerConversationSelectionScenarios = (
         ...createConversation('conversation-to-delete', ''),
         project_id: null,
         group_id: null,
+        task_id: 'task-to-delete',
         scope_mode: 'Chat' as const,
       };
       useChatStore.setState(createIdleChatStoreState({
@@ -82,20 +83,43 @@ export const registerConversationSelectionScenarios = (
         `conversation:${conversation.id}`,
         { text: 'Draft to delete', images: [], contextRefs: [] },
       );
+      const temporaryTaskContextKey =
+        'context:Implement::none::none::task-to-delete';
+      useChatStore.getState().saveComposerDraftForContext(
+        temporaryTaskContextKey,
+        { text: 'Temporary task draft', images: [], contextRefs: [] },
+      );
 
       await useChatStore.getState().deleteConversation(conversation.id, { mode: 'chat' });
 
       expect(
         useChatStore.getState().getComposerDraftForContext(`conversation:${conversation.id}`),
       ).toBeNull();
+      expect(
+        useChatStore.getState().getComposerDraftForContext(temporaryTaskContextKey),
+      ).toBeNull();
     });
 
     it('drops an archived conversation draft and refuses to restore it', async () => {
       const { useChatStore } = await loadChatStore();
       const { useConversationArchiveStore } = await import('../useConversationArchiveStore');
-      useChatStore.setState(createIdleChatStoreState({ composerDraftsByContextKey: {} }));
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{
+          ...createConversation('archived', ''),
+          task_id: 'archived-task',
+          scope_mode: 'Implement' as const,
+        }],
+        composerDraftsByContextKey: {},
+      }));
       useChatStore.getState().saveComposerDraftForContext('conversation:archived', {
         text: 'Private archived draft',
+        images: [],
+        contextRefs: [],
+      });
+      const temporaryTaskContextKey =
+        'context:Implement::none::none::archived-task';
+      useChatStore.getState().saveComposerDraftForContext(temporaryTaskContextKey, {
+        text: 'Private temporary draft',
         images: [],
         contextRefs: [],
       });
@@ -110,6 +134,9 @@ export const registerConversationSelectionScenarios = (
 
       expect(
         useChatStore.getState().getComposerDraftForContext('conversation:archived'),
+      ).toBeNull();
+      expect(
+        useChatStore.getState().getComposerDraftForContext(temporaryTaskContextKey),
       ).toBeNull();
     });
 
