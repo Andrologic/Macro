@@ -328,6 +328,38 @@ describe('remoteKernelApi', () => {
     expect(fetchCalls.filter((call) => call.url.includes('/tools/executions/'))).toHaveLength(1);
   });
 
+  it('rejects a malformed durable completed mutation result', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      fetchCalls.push({ url: String(url) });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
+        });
+      }
+      if (String(url).includes('/tools/executions/')) {
+        return jsonResponse({
+          state: 'completed',
+          status_code: 200,
+          body: { checkpoint: null },
+        });
+      }
+      throw new TypeError('response lost after execution');
+    }) as unknown as typeof fetch;
+
+    await expect(
+      executeRemoteWorkspaceTool({
+        mode: 'Implement',
+        toolId: 'write',
+        args: { path: 'src/malformed.ts', content: 'next' },
+        focusedProjectId: 'project-1',
+      }),
+    ).rejects.toMatchObject({ code: 'REMOTE_INVALID_RESPONSE' });
+  });
+
   it('reuses a persisted mutation identity after a prolonged transport outage', async () => {
     setEnv('VITE_BACKEND_TRANSPORT', 'remote');
     setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');

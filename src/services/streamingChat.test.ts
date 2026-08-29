@@ -204,7 +204,7 @@ describe('streamingChat native request ownership', () => {
     mock.restore();
   });
 
-  it('keeps the newer native request listeners after an older same-session request finishes', async () => {
+  it('keeps cancellation and listeners owned by the newer same-session request', async () => {
     const listeners = new Map<string, Array<(event: { payload: Record<string, unknown> }) => void>>();
     const requestIds: string[] = [];
     let markBothRequestsStarted!: () => void;
@@ -225,19 +225,30 @@ describe('streamingChat native request ownership', () => {
         );
       };
     });
+    let signalCancellation!: () => void;
+    const cancellationObserved = new Promise<void>((resolve) => {
+      signalCancellation = resolve;
+    });
+    const cancelledRequestIds: string[] = [];
     const invokeImpl = mock(async (
       command: string,
-      params: { request?: { request_id?: string } },
+      params: { request?: { request_id?: string }; requestId?: string },
     ) => {
+      if (command === 'ai_cancel_stream' && params.requestId) {
+        cancelledRequestIds.push(params.requestId);
+        signalCancellation();
+        return;
+      }
       if (command !== 'ai_stream_chat' || !params.request?.request_id) return;
       requestIds.push(params.request.request_id);
       if (requestIds.length === 2) markBothRequestsStarted();
     });
-    const { streamChat } = await loadStreamingChat(undefined, {
+    const { cancelStream, streamChat } = await loadStreamingChat(undefined, {
       forceTauriAvailable: true,
       listenImpl,
       invokeImpl,
     });
+    const firstTokens: string[] = [];
     const secondTokens: string[] = [];
     const start = (onToken: (token: string) => void) => streamChat({
       sessionId: 'shared-session',
@@ -257,18 +268,24 @@ describe('streamingChat native request ownership', () => {
       }
     };
 
-    const first = start(() => undefined);
+    const first = start((token) => firstTokens.push(token));
     const second = start((token) => secondTokens.push(token));
     await bothRequestsStarted;
     expect(requestIds).toHaveLength(2);
 
     emit('ai:done', { request_id: requestIds[0], output_text: 'first', tool_calls: [] });
     await first;
+    emit('ai:stream', { request_id: requestIds[0], delta: 'late-first' });
     emit('ai:stream', { request_id: requestIds[1], delta: 'second' });
-    emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
-    await second;
+    cancelStream('shared-session');
+    await cancellationObserved;
 
+    expect(firstTokens).toEqual(['first']);
     expect(secondTokens).toEqual(['second']);
+    expect(cancelledRequestIds).toEqual([requestIds[1]]);
+
+    emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
+    void second;
   });
 });
 

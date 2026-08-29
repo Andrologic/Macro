@@ -299,10 +299,7 @@ const completedRemoteToolExecution = (
       details: { status: statusCode, body },
     };
   }
-  if (!status.body || typeof status.body !== 'object') {
-    throw new Error('The remote kernel returned an invalid completed mutation result.');
-  }
-  return status.body as RemoteWorkspaceToolExecution;
+  return parseRemoteWorkspaceToolExecution(status.body);
 };
 
 const pollRemoteMutationResult = async (
@@ -408,6 +405,19 @@ export interface RemoteWorkspaceToolExecution {
   result: string;
   checkpoint?: { files: RemoteCheckpointSnapshotFile[] } | null;
 }
+
+const parseRemoteWorkspaceToolExecution = (
+  response: unknown,
+): RemoteWorkspaceToolExecution => {
+  if (
+    !response ||
+    typeof response !== 'object' ||
+    typeof (response as Record<string, unknown>).result !== 'string'
+  ) {
+    return invalidResponse('tool execution', response);
+  }
+  return response as RemoteWorkspaceToolExecution;
+};
 
 export const executeRemoteWorkspaceToolDetailed = async (params: {
   mode: AppMode;
@@ -575,10 +585,7 @@ export const executeRemoteWorkspaceToolDetailed = async (params: {
         timeoutMs: remoteToolTimeoutMs(params.toolId),
         body: requestBody,
       });
-      if (!response || typeof response !== 'object' || typeof (response as Record<string, unknown>).result !== 'string') {
-        return invalidResponse('tool execution', response);
-      }
-      return response as RemoteWorkspaceToolExecution;
+      return parseRemoteWorkspaceToolExecution(response);
     };
     let payload: RemoteWorkspaceToolExecution;
     try {

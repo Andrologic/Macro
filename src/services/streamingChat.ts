@@ -3799,13 +3799,6 @@ const streamChatViaNativeToolCallingProvider = async (
     onError(err);
   } finally {
     clearTauriListeners(options.sessionId);
-    const activeResources = activeStreamResourcesBySessionId.get(
-      getStreamSessionId(options.sessionId)
-    );
-    if (activeResources) {
-      activeResources.tauriRequestId = null;
-      pruneActiveStreamResources(options.sessionId);
-    }
   }
 };
 
