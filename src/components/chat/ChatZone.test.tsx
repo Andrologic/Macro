@@ -237,6 +237,7 @@ export type TaskState = {
     title: string;
     draft?: boolean;
     task_source?: 'architect' | 'standalone' | 'plan_finalization';
+    standalone_kind?: 'legacy' | 'manual_feature' | null;
     is_blocked?: boolean;
     blocked_by?: string[];
     status?: string;
@@ -1104,6 +1105,49 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(requireContainer().textContent).not.toContain('Type your message');
+  });
+
+  it('clears the composer as soon as an accepted send starts preparing', async () => {
+    const sendDeferred = createDeferred<{ status: 'sent' }>();
+    chatState = {
+      ...chatState,
+      sendMessage: mock(() => sendDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Prépare la branche et le worktree.');
+    await clickSendButton();
+
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(1);
+    expect(getComposerEditor().value).toBe('');
+
+    await setComposerText('Message suivant pendant la préparation.');
+
+    await act(async () => {
+      sendDeferred.resolve({ status: 'sent' });
+      await sendDeferred.promise;
+    });
+
+    expect(getComposerEditor().value).toBe('Message suivant pendant la préparation.');
+  });
+
+  it('restores the composer when a send fails before Macro accepts it', async () => {
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => {
+        throw new Error('Envoi refusé');
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Brouillon à restaurer.');
+    await clickSendButton();
+
+    expect(getComposerEditor().value).toBe('Brouillon à restaurer.');
   });
 
   it('renders standalone launch steps under the first message and retries a safe failure', async () => {

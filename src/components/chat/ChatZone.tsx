@@ -105,6 +105,7 @@ import { notify } from '../ui/toastService';
 import { toServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
+import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -1246,6 +1247,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           messages.filter((message) => message.conversation_id === selectedConversationId)
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
+  );
+  const activeStandaloneLaunchProgress = selectedConversationId
+    ? standaloneTaskLaunchByConversationId[selectedConversationId]
+    : undefined;
+  const showManualDraftComposerNotice = Boolean(
+    mode === 'Implement' &&
+      isManualDraftPendingInitialization(selectedTask) &&
+      !activeStandaloneLaunchProgress &&
+      !currentMessages.some((message) => message.role === 'user')
   );
 
   useEffect(() => {
@@ -2676,14 +2686,59 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
     }
 
+    const sentDraft: SavedComposerDraft = {
+      savedDraftText: text,
+      savedDraftImages: imagesForMessage,
+      savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+    };
+    const clearsComposerImmediately = !goalComposerEditSession;
+    const restoreSentDraft = () => {
+      saveComposerDraftForContext(conversationDraftKey, {
+        text: sentDraft.savedDraftText,
+        images: sentDraft.savedDraftImages,
+        contextRefs: sentDraft.savedDraftContextRefs,
+      });
+      const activeDraftContext = activeComposerDraftContextKeyRef.current;
+      if (
+        activeDraftContext !== composerDraftContextKey &&
+        activeDraftContext !== conversationDraftKey
+      ) {
+        return;
+      }
+      const latestDraft = latestComposerDraftRef.current;
+      if (
+        latestDraft.text.length > 0 ||
+        latestDraft.images.length > 0 ||
+        latestDraft.contextRefs.length > 0
+      ) {
+        return;
+      }
+      applySavedComposerDraft(sentDraft);
+    };
+
     try {
-      const result = await sendMessage({
+      const sendPromise = sendMessage({
         conversationId,
         content,
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
+      if (clearsComposerImmediately) {
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(conversationDraftKey);
+        composerEditorRef.current?.clear();
+        clearComposerContextRefs();
+        setComposerImages([]);
+        setInputValue('');
+        latestComposerDraftRef.current = {
+          text: '',
+          images: [],
+          contextRefs: [],
+        };
+        resetPromptHistoryNavigation();
+      }
+      const result = await sendPromise;
       if (result.status === 'sent') {
         if (goalEditTransactionId) {
           if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
@@ -2711,16 +2766,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         } else {
           clearComposerDraftForContext(composerDraftContextKey);
           clearComposerDraftForContext(conversationDraftKey);
-          composerEditorRef.current?.clear();
-          clearComposerContextRefs();
-          setComposerImages([]);
-          setInputValue('');
         }
         resetPromptHistoryNavigation();
       } else if (goalEditTransactionId) {
         settleConversationGoalEdit(goalEditTransactionId, 'rollback');
       } else if (tracksGoalTurn) {
         setConversationGoalStatus(conversationId, 'paused');
+        if (clearsComposerImmediately) restoreSentDraft();
+      } else if (clearsComposerImmediately) {
+        restoreSentDraft();
       }
     } catch (error) {
       if (goalEditTransactionId) {
@@ -2732,6 +2786,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           toServiceError(error).message,
         );
       }
+      if (clearsComposerImmediately) restoreSentDraft();
       // Keep the draft intact. The visible error feedback comes from the chat store.
     }
   };
@@ -3402,10 +3457,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
                   message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
-                const standaloneLaunchProgress = selectedConversationId
-                  ? standaloneTaskLaunchByConversationId[selectedConversationId]
-                  : undefined;
-
                 return (
                   <MemoizedChatMessageRow
                     key={virtualMessage.key}
@@ -3425,8 +3476,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onRegenerate={handleRegenerate}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
                     standaloneLaunchProgress={
-                      standaloneLaunchProgress?.userMessageId === message.id
-                        ? standaloneLaunchProgress
+                      activeStandaloneLaunchProgress?.userMessageId === message.id
+                        ? activeStandaloneLaunchProgress
                         : null
                     }
                   />
@@ -3573,6 +3624,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   </div>
               )}
             </div>
+
+            {showManualDraftComposerNotice && (
+              <div
+                data-testid="manual-draft-composer-notice"
+                data-chat-composer-notice="true"
+                className="mx-auto flex w-full max-w-2xl items-start gap-2 rounded-xl border border-sky-500/25 bg-background/90 px-3 py-2 text-xs text-foreground shadow-lg shadow-black/15 backdrop-blur"
+              >
+                <Icon name="alert-circle" size={14} className="mt-0.5 shrink-0 text-sky-400" />
+                <p>
+                  {t(
+                    'terminal.manualDraftBanner',
+                    'Send a first message to name this feature and initialize its terminal.'
+                  )}
+                </p>
+              </div>
+            )}
 
             {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
               <TaskBlockedState
