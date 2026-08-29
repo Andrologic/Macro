@@ -226,6 +226,69 @@ export const bumpVersion = (currentVersion, releaseType, preid) => {
 
 export const readPackageJson = () => JSON.parse(readTextFile(PACKAGE_JSON_PATH));
 
+export const getCargoLockDependencyVersions = (content) => {
+  const versions = new Map();
+  for (const block of content.split(/\r?\n(?=\[\[package\]\])/)) {
+    if (!block.startsWith('[[package]]')) {
+      continue;
+    }
+    const name = block.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+    const version = block.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+    if (name && version) {
+      versions.set(name, version);
+    }
+  }
+  return versions;
+};
+
+const majorMinor = (version) => {
+  const parsed = parseSemver(version);
+  return `${parsed.major}.${parsed.minor}`;
+};
+
+export const getTauriDependencyIssues = (packageJson, cargoLockContent) => {
+  const dependencies = {
+    ...packageJson.dependencies,
+    ...packageJson.devDependencies,
+  };
+  const issues = [];
+  const apiVersion = dependencies['@tauri-apps/api'];
+  const cliVersion = dependencies['@tauri-apps/cli'];
+  const cargoVersions = getCargoLockDependencyVersions(cargoLockContent);
+  const rustTauriVersion = cargoVersions.get('tauri');
+
+  if (!apiVersion || !cliVersion) {
+    issues.push('@tauri-apps/api and @tauri-apps/cli must both use exact versions.');
+  } else if (apiVersion !== cliVersion) {
+    issues.push(
+      `@tauri-apps/api (${apiVersion}) and @tauri-apps/cli (${cliVersion}) must use the same version.`
+    );
+  }
+
+  if (apiVersion && rustTauriVersion && majorMinor(apiVersion) !== majorMinor(rustTauriVersion)) {
+    issues.push(
+      `@tauri-apps/api (${apiVersion}) and Rust tauri (${rustTauriVersion}) must use the same major and minor version.`
+    );
+  }
+
+  for (const [packageName, jsVersion] of Object.entries(dependencies)) {
+    if (!packageName.startsWith('@tauri-apps/plugin-')) {
+      continue;
+    }
+    const crateName = `tauri-${packageName.slice('@tauri-apps/'.length).replaceAll('_', '-')}`;
+    const rustVersion = cargoVersions.get(crateName);
+    if (!rustVersion) {
+      issues.push(`${packageName} has no matching ${crateName} package in Cargo.lock.`);
+    } else if (jsVersion !== rustVersion) {
+      issues.push(
+        `${packageName} (${jsVersion}) does not match ${crateName} in Cargo.lock (${rustVersion}).`
+      );
+    }
+  }
+
+  return issues;
+};
+
 export const readPackageVersion = () => {
   const packageJson = readPackageJson();
   return assertValidSemver(packageJson.version);
@@ -318,7 +381,8 @@ export const syncVersionFiles = (version) => {
 };
 
 export const readVersionState = () => {
-  const packageVersion = readPackageVersion();
+  const packageJson = readPackageJson();
+  const packageVersion = assertValidSemver(packageJson.version);
   const cargoToml = readTextFile(CARGO_TOML_PATH);
   const cargoLock = readTextFile(CARGO_LOCK_PATH);
   const cargoVersion = getCargoPackageVersion(cargoToml);
@@ -328,6 +392,8 @@ export const readVersionState = () => {
   const settingsModal = readTextFile(SETTINGS_MODAL_PATH);
 
   const issues = [];
+
+  issues.push(...getTauriDependencyIssues(packageJson, cargoLock));
 
   if (cargoVersion !== packageVersion) {
     issues.push(
