@@ -18,6 +18,8 @@ and linked docs when a task needs detail.
 - Technical architecture source of truth: `docs/technical-architecture.md`.
 - Setup, release, and script overview: `README.md`.
 - Contribution and PR checks: `CONTRIBUTING.md`.
+- Stable release work: read `docs/release-agent-runbook.md` before preparing,
+  tagging, publishing, recovering, or cleaning up a release.
 
 ## Working Rules
 
