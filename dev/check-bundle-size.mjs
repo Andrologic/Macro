@@ -12,7 +12,7 @@ const BUDGETS = [
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 48_000 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
   { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 120_000 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 132_000 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 137_000 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;

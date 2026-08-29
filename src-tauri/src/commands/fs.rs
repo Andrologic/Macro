@@ -471,7 +471,9 @@ async fn resolve_workspace_for_path(
     let base_workspace = workspace_path.unwrap_or(workspace);
     let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
     let direct_scope = matches!(workspace_scope.map(str::trim), Some("direct"));
-    if allow_outside_workspace.unwrap_or(false) || !is_macro_scoped_path(path) {
+    if allow_outside_workspace.unwrap_or(false)
+        || (!metadata_scope && !direct_scope && !is_macro_scoped_path(path))
+    {
         return Ok(base_workspace);
     }
     if direct_scope {
@@ -3416,7 +3418,7 @@ mod tests {
             default_workspace.path().to_path_buf(),
             GitState::new(),
             Some(explicit_repo.path().to_path_buf()),
-            ".macro/branches/develop/plans/index.json",
+            "branches/develop/plans/index.json",
             None,
             Some("direct"),
         )
