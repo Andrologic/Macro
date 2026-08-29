@@ -72,6 +72,28 @@ const translationMock = createTranslationMock({
     'The system has too many files open, so Macro paused automatic repository refreshes before retrying.',
   'errors.degraded.service.resourcePressure.nextStep':
     'Wait a moment, then retry. If this keeps happening, close extra project windows or terminals.',
+  'errors.degraded.service.gitObjectMissing.title': 'Git review is paused',
+  'errors.degraded.service.gitObjectMissing.body':
+    'A Git object needed for this review is unavailable. Macro did not modify any working files.',
+  'errors.degraded.service.gitObjectMissing.nextStep':
+    'Retry to ask Git for the object again. Open the technical details to inspect the repository, object ID, and Git output.',
+  'errors.degraded.service.directCheckpointCorrupt.title': "Macro's review checkpoint is damaged",
+  'errors.degraded.service.directCheckpointCorrupt.body':
+    "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.",
+  'errors.degraded.service.directCheckpointCorrupt.nextStep':
+    'Retry once, then open the technical details for diagnosis.',
+  'errors.degraded.service.directModeConfigurationRequired.title':
+    'Direct review needs configuration',
+  'errors.degraded.service.directModeConfigurationRequired.body':
+    'This project is not a Git repository, and direct editing is not enabled.',
+  'errors.degraded.service.directModeConfigurationRequired.nextStep':
+    'Enable direct editing for the project.',
+  'errors.degraded.service.directCheckpointProjectMismatch.title':
+    "Macro's review checkpoint belongs to another project path",
+  'errors.degraded.service.directCheckpointProjectMismatch.body':
+    'The saved checkpoint identity does not match this project path.',
+  'errors.degraded.service.directCheckpointProjectMismatch.nextStep':
+    'Check the saved project path before changing its metadata.',
 });
 
 const installFileChangesRuntimeMock = () => {
@@ -3650,6 +3672,391 @@ describe('FileChangesPanel', () => {
       })
     );
     expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+  });
+
+  it('does not start a polling snapshot while the initial review load is pending', async () => {
+    seedStores(buildRepository(false));
+    let finishInitialLoad!: () => void;
+    const pendingInitialLoad = new Promise<void>((resolve) => {
+      finishInitialLoad = resolve;
+    });
+    loadCurrentChangesMock = mock(async () => pendingInitialLoad);
+    useFileChangesStore.setState({ loadCurrentChanges: loadCurrentChangesMock });
+
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        root?.render(<FileChangesPanel />);
+        await Promise.resolve();
+      });
+      expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(1_500);
+        await Promise.resolve();
+      });
+      expect(loadCurrentChangesMock).toHaveBeenCalledTimes(1);
+
+      finishInitialLoad();
+      await act(async () => {
+        await pendingInitialLoad;
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('cancels an active review load when the panel closes', async () => {
+    seedStores(buildRepository(false));
+    const cancelReviewLoad = mock(() => undefined);
+    useFileChangesStore.setState({ cancelReviewLoad });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    await act(async () => {
+      root?.unmount();
+      root = null;
+      await Promise.resolve();
+    });
+
+    expect(cancelReviewLoad).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens project settings instead of retrying an invalid direct-mode configuration', async () => {
+    seedStores(buildRepository(false));
+    const openProjectGitFlowModal = mock(() => undefined);
+    useAppStore.setState({ openProjectGitFlowModal });
+    useFileChangesStore.setState({
+      reviewSuspension: {
+        taskId: 'task-1',
+        retrying: false,
+        error: {
+          code: 'DIRECT_MODE_CONFIGURATION_REQUIRED',
+          message: 'Direct review requires project configuration.',
+          details: { projectId: 'project-1', worktreeModified: false },
+        },
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    const settingsButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Project settings'
+    );
+    expect(settingsButton).toBeDefined();
+    expect(Array.from(document.querySelectorAll('button')).some(
+      (button) => button.textContent?.trim() === 'Retry'
+    )).toBe(false);
+    await act(async () => {
+      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(openProjectGitFlowModal).toHaveBeenCalledWith('project-1');
+  });
+
+  it('does not retry a suspended review when an unrelated project changes', async () => {
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        execution_targets: [{ projectId: 'project-1', executionMode: 'direct' }],
+      },
+    });
+    const retrySuspendedReview = mock(async () => undefined);
+    useFileChangesStore.setState({
+      reviewSuspension: {
+        taskId: 'task-1',
+        retrying: false,
+        error: {
+          code: 'DIRECT_CHECKPOINT_CORRUPT',
+          message: "Macro's internal review checkpoint is incomplete.",
+          details: { reviewProjectId: 'project-1' },
+        },
+      },
+      retrySuspendedReview,
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    retrySuspendedReview.mockClear();
+
+    await act(async () => {
+      useAppStore.setState({
+        projectGroups: [
+          ...useAppStore.getState().projectGroups,
+          {
+            id: 'group-unrelated',
+            name: 'Unrelated',
+            isOpen: true,
+            projects: [{
+              id: 'project-2',
+              name: 'Project Two',
+              mountName: 'project-two',
+              path: '/tmp/changed-unrelated-path',
+              isReadOnly: false,
+              created_at: '2026-04-08T00:00:00.000Z',
+              status: 'active',
+              metadata: {
+                description: '',
+                tags: [],
+                team_members: [],
+                api_contracts: [],
+                dependencies: [],
+              },
+            }],
+          },
+        ],
+      });
+      await flushRender();
+    });
+
+    expect(retrySuspendedReview).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a suspended multi-project review when another target changes', async () => {
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        execution_targets: [
+          { projectId: 'project-1', executionMode: 'direct', checkpointId: 'checkpoint-a' },
+          { projectId: 'project-2', executionMode: 'direct', checkpointId: 'checkpoint-b' },
+        ],
+      },
+    });
+    const retrySuspendedReview = mock(async () => undefined);
+    useFileChangesStore.setState({
+      reviewSuspension: {
+        taskId: 'task-1',
+        retrying: false,
+        error: {
+          code: 'DIRECT_CHECKPOINT_CORRUPT',
+          message: "Macro's internal review checkpoint is incomplete.",
+          details: { reviewProjectId: 'project-1' },
+        },
+      },
+      retrySuspendedReview,
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    retrySuspendedReview.mockClear();
+
+    await act(async () => {
+      useTaskStore.setState((state) => ({
+        tasks: state.tasks.map((task) => task.id === 'task-1'
+          ? {
+              ...task,
+              execution_targets: task.execution_targets?.map((target) => target.projectId === 'project-2'
+                ? { ...target, checkpointId: 'checkpoint-b-updated' }
+                : target),
+            }
+          : task),
+      }));
+      await flushRender();
+    });
+
+    expect(retrySuspendedReview).not.toHaveBeenCalled();
+  });
+
+  it('retries a suspended Git review when its effective worktree changes', async () => {
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        execution_targets: [{
+          projectId: 'project-1',
+          executionMode: 'git',
+          worktreeKey: 'repo-1',
+          branchName: 'feature/task-1',
+        }],
+      },
+    });
+    useTaskStore.setState({ branchWorktrees: { 'repo-1': '/tmp/old-worktree' } });
+    const retrySuspendedReview = mock(async () => undefined);
+    useFileChangesStore.setState({
+      reviewSuspension: {
+        taskId: 'task-1',
+        retrying: false,
+        error: {
+          code: 'GIT_OBJECT_MISSING',
+          message: 'A Git object required for this operation is missing.',
+          details: { reviewProjectId: 'project-1' },
+        },
+      },
+      retrySuspendedReview,
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    retrySuspendedReview.mockClear();
+
+    await act(async () => {
+      useTaskStore.setState({ branchWorktrees: { 'repo-1': '/tmp/repaired-worktree' } });
+      await flushRender();
+    });
+
+    expect(retrySuspendedReview).toHaveBeenCalledTimes(1);
+    expect(retrySuspendedReview).toHaveBeenCalledWith('task-1');
+  });
+
+  it('opens settings for the project that suspended a multi-project review', async () => {
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        execution_targets: [
+          { projectId: 'project-1', executionMode: 'direct' },
+          { projectId: 'project-2', executionMode: 'direct' },
+        ],
+      },
+    });
+    const openProjectGitFlowModal = mock(() => undefined);
+    useAppStore.setState({ openProjectGitFlowModal });
+    useFileChangesStore.setState({
+      reviewSuspension: {
+        taskId: 'task-1',
+        retrying: false,
+        error: {
+          code: 'DIRECT_CHECKPOINT_PROJECT_MISMATCH',
+          message: "Macro's internal review checkpoint belongs to another project path.",
+          details: { reviewProjectId: 'project-2' },
+        },
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    const settingsButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Project settings'
+    );
+    await act(async () => {
+      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(openProjectGitFlowModal).toHaveBeenCalledWith('project-2');
+  });
+
+  it('deduplicates a missing-object warning, stops polling, and resumes from Retry', async () => {
+    seedStores(buildRepository(false));
+    const retrySuspendedReviewMock = mock(async () => undefined);
+    useFileChangesStore.setState({
+      ...useFileChangesStore.getState(),
+      reviewSuspension: {
+        taskId: 'task-1',
+        retrying: false,
+        error: {
+          code: 'GIT_OBJECT_MISSING',
+          message: 'A Git object required for this operation is missing.',
+          details: {
+            objectId: '0123456789abcdef0123456789abcdef01234567',
+            retryAttempted: true,
+            worktreeModified: false,
+            gitOutput: 'fatal: unable to read object',
+          },
+        },
+      },
+      retrySuspendedReview: retrySuspendedReviewMock,
+    });
+    loadCurrentChangesMock.mockClear();
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    expect(notifyActionRequiredMock).toHaveBeenCalledTimes(1);
+    expect(notifyActionRequiredMock).toHaveBeenCalledWith(
+      'Git review is paused',
+      expect.objectContaining({
+        notificationKey: 'implement-review:suspended:GIT_OBJECT_MISSING:task-1',
+      })
+    );
+    expect(loadCurrentChangesMock).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+      'Macro did not modify any working files.'
+    );
+    expect(document.body.textContent).toContain('Show details');
+    const detailsButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Show details'
+    );
+    expect(detailsButton?.getAttribute('aria-expanded')).toBe('false');
+    const detailsId = detailsButton?.getAttribute('aria-controls');
+    expect(detailsId).toBeTruthy();
+    await act(async () => {
+      detailsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    expect(detailsButton?.getAttribute('aria-expanded')).toBe('true');
+    expect(document.getElementById(detailsId || '')?.textContent).toContain(
+      '0123456789abcdef0123456789abcdef01234567'
+    );
+
+    const retryButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Retry'
+    );
+    expect(retryButton).toBeDefined();
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    expect(retrySuspendedReviewMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      useFileChangesStore.setState({
+        reviewSuspension: {
+          taskId: 'task-1',
+          retrying: false,
+          error: {
+            code: 'DIRECT_CHECKPOINT_CORRUPT',
+            message: "Macro's internal review checkpoint is incomplete.",
+            details: {
+              checkpointId: 'task-1-0123456789abcdef',
+              acceptedHistoryAtRisk: true,
+              worktreeModified: false,
+            },
+          },
+        },
+      });
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain("Macro's review checkpoint is damaged");
+    expect(document.body.textContent).not.toContain('repository is damaged');
+
+    await act(async () => {
+      useFileChangesStore.setState({
+        reviewSuspension: {
+          taskId: 'task-1',
+          retrying: false,
+          error: {
+            code: 'DIRECT_CHECKPOINT_PROJECT_MISMATCH',
+            message: "Macro's internal review checkpoint belongs to another project path.",
+            details: { checkpointId: 'task-1-0123456789abcdef' },
+          },
+        },
+      });
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('belongs to another project path');
+    expect(Array.from(document.querySelectorAll('button')).some(
+      (button) => button.textContent?.trim() === 'Retry'
+    )).toBe(false);
+    expect(notifyActionRequiredMock).toHaveBeenLastCalledWith(
+      "Macro's review checkpoint belongs to another project path",
+      expect.objectContaining({
+        actions: [expect.objectContaining({ label: 'Project settings' })],
+      })
+    );
   });
 
   it('loads changes when only a focused project is selected', async () => {

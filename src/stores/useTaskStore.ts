@@ -258,6 +258,12 @@ const resolveExecutionTargetMode = (target: TaskExecutionTarget) => {
   return resolveProjectExecutionMode({ project, target });
 };
 
+const isDirectCheckpointCleanupTarget = (target: TaskExecutionTarget): boolean => {
+  if (isDirectEditTarget(target)) return true;
+  const project = useAppStore.getState().getProjectById(target.projectId);
+  return Boolean(target.checkpointId) && project?.gitSetupState === 'not_git';
+};
+
 const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
   i18n.t(key, { defaultValue: fallback, ...(options || {}) });
 
@@ -326,6 +332,12 @@ const getTaskExecutionModesByProjectId = (
         : [];
     })
   );
+
+const isDirectCheckpointCleanupTask = (task: CatalogedImplementTask): boolean => {
+  if (task.task_source !== 'standalone') return false;
+  const targets = getExecutionTargets(task);
+  return targets.length > 0 && targets.every(isDirectCheckpointCleanupTarget);
+};
 
 const DIRECT_DRAFT_REVERT_SAGA_TARGET = '@direct-draft-revert';
 
@@ -604,7 +616,9 @@ const resumeLinkedTaskGitCleanup = async (
           );
         }
         await tauriIpc.directCheckpointRemove({
+          taskId: current.taskId,
           checkpointId: target.checkpointId,
+          projectPath: target.repoPath,
         });
         current = {
           ...current,
@@ -1121,7 +1135,7 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
     return false;
   }
 
-  if (isDirectTask(task)) {
+  if (isDirectCheckpointCleanupTask(task)) {
     return false;
   }
 
@@ -1215,6 +1229,19 @@ const ensureTargetWorktreePath = async (
       );
     }
     await tauriIpc.workspaceSetActiveRoot(projectPath);
+    if (!target.checkpointId) {
+      const preparedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
+      if (!preparedPath) {
+        throw toServiceError(
+          tTask(
+            'implement.errors.cannotResolveTaskProject',
+            'Cannot resolve project for task {{taskId}}',
+            { taskId: task.id }
+          )
+        );
+      }
+      return preparedPath;
+    }
     await tauriIpc.directCheckpointEnsure({
       taskId: task.id,
       projectPath,
@@ -3205,11 +3232,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
-      executionTargets.forEach(assertExecutionTargetRunnable);
+      executionTargets
+        .filter((target) => !isDirectCheckpointCleanupTarget(target))
+        .forEach(assertExecutionTargetRunnable);
       const gitTargets = executionTargets.filter(
-        (target) => isGitExecutionTarget(target) && !isRepositoryRootTarget(target),
+        (target) =>
+          !isDirectCheckpointCleanupTarget(target) &&
+          isGitExecutionTarget(target) &&
+          !isRepositoryRootTarget(target),
       );
-      const directTargets = executionTargets.filter(isDirectEditTarget);
+      const directTargets = executionTargets.filter(isDirectCheckpointCleanupTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
           directTargets.map(async (target) => [
@@ -3242,7 +3274,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           revertTitle: params.title ?? null,
           revertDescription: params.description ?? null,
           executionTargets: executionTargets.map((target) => {
-            if (isDirectEditTarget(target)) {
+            if (isDirectCheckpointCleanupTarget(target)) {
               return {
                 worktreeKey: target.worktreeKey,
                 repoPath: target.repoPath,
@@ -3483,9 +3515,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      executionTargets.forEach(assertExecutionTargetRunnable);
+      executionTargets
+        .filter((target) => !isDirectCheckpointCleanupTarget(target))
+        .forEach(assertExecutionTargetRunnable);
       const gitTargets = executionTargets.filter(
-        (target) => isGitExecutionTarget(target) && !isRepositoryRootTarget(target),
+        (target) =>
+          !isDirectCheckpointCleanupTarget(target) &&
+          isGitExecutionTarget(target) &&
+          !isRepositoryRootTarget(target),
       );
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
       await tauriIpc.workspaceArchiveManualFeature({
@@ -3645,11 +3682,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      executionTargets.forEach(assertExecutionTargetRunnable);
+      executionTargets
+        .filter((target) => !isDirectCheckpointCleanupTarget(target))
+        .forEach(assertExecutionTargetRunnable);
       const gitTargets = executionTargets.filter(
-        (target) => isGitExecutionTarget(target) && !isRepositoryRootTarget(target),
+        (target) =>
+          !isDirectCheckpointCleanupTarget(target) &&
+          isGitExecutionTarget(target) &&
+          !isRepositoryRootTarget(target),
       );
-      const directTargets = executionTargets.filter(isDirectEditTarget);
+      const directTargets = executionTargets.filter(isDirectCheckpointCleanupTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
           directTargets.map(async (target) => [
@@ -3676,7 +3718,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             phase: 'prepared' as const,
             draft: task.draft,
             executionTargets: executionTargets.map((target) => {
-              if (isDirectEditTarget(target)) {
+              if (isDirectCheckpointCleanupTarget(target)) {
                 return {
                   worktreeKey: target.worktreeKey,
                   repoPath: target.repoPath,
@@ -3753,7 +3795,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         for (const target of directTargets) {
           await tauriIpc.directCheckpointRemove({
+            taskId,
             checkpointId: directCheckpointIds.get(target.worktreeKey)!,
+            projectPath: target.repoPath,
           });
         }
       }

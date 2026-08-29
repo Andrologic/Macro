@@ -5,6 +5,7 @@ import {
   SmartCommitMessageGenerationError,
   type GeneratedCommitMessages,
 } from '../services/smartCommitMessageGenerator';
+import type { GitReviewFileDto } from '../services/tauriIpc';
 
 const repoAPath = 'C:/repos/project-a';
 const repoBPath = 'C:/repos/project-b';
@@ -242,6 +243,12 @@ const gitWorktreeInspectMock = mock(async (
     isDirty: null,
   };
 });
+
+const directCheckpointEnsureMock = mock(async (params: {
+  taskId: string;
+  projectPath: string;
+  checkpointId?: string;
+}) => params.checkpointId ?? `${params.taskId}-0000000000000001`);
 
 const gitDiffMock = mock(async ({ repoPath, paths }: { repoPath: string; paths?: string[] }) => {
   const path = paths?.[0] || '';
@@ -667,6 +674,7 @@ describe('useFileChangesStore', () => {
 
     gitStatusMock.mockClear();
     gitWorktreeInspectMock.mockClear();
+    directCheckpointEnsureMock.mockClear();
     gitDiffMock.mockClear();
     gitMergeCheckMock.mockClear();
     gitMergeCheckMock.mockImplementation(async (_params: { repoPath: string; branchName: string; intoBranch: string }) => ({
@@ -750,9 +758,10 @@ describe('useFileChangesStore', () => {
     appStoreState.selectedGroupId = null;
     appStoreState.selectedProjectId = 'project-a';
     appStoreState.selectedTaskId = 'task-6';
-    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    taskStoreState.branchWorktrees[directWorktreeKey] = 'C:/stale/project-a';
     let directStaged = false;
     let directAccepted = false;
+    let directRestoreRevision = 'v1:test';
     const directReviewSnapshotMock = mock(async () => ({
       branch: 'direct',
       stagedPaths: directStaged && !directAccepted ? ['src/main.ts'] : [],
@@ -778,6 +787,8 @@ describe('useFileChangesStore', () => {
       mergeInProgress: false,
       isClean: directAccepted,
       hasAcceptedChanges: directAccepted,
+      snapshotId: `snapshot-${directRestoreRevision}`,
+      restoreRevisions: { 'src/main.ts': directRestoreRevision },
     }));
     const directStagePathsMock = mock(async () => {
       directStaged = true;
@@ -785,6 +796,12 @@ describe('useFileChangesStore', () => {
     const directAcceptChangesMock = mock(async () => {
       directAccepted = true;
       return 'checkpoint-hash';
+    });
+    let directRestoreConflict = false;
+    const directRestoreWorktreePathsMock = mock(async () => {
+      if (directRestoreConflict) {
+        throw { code: 'REVISION_CONFLICT', message: 'raw backend message' };
+      }
     });
     useFileChangesStore = createFileChangesStore({
       tauri: {
@@ -800,22 +817,56 @@ describe('useFileChangesStore', () => {
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
         gitCommit: gitCommitMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
         directReviewSnapshot: directReviewSnapshotMock,
         directStagePaths: directStagePathsMock,
+        directRestoreWorktreePaths: directRestoreWorktreePathsMock,
         directAcceptChanges: directAcceptChangesMock,
       },
       getGitFlowBaseBranch: () => 'develop',
       getAppState: () => appStoreState,
       getTaskState: () => taskStoreState,
-      setTaskState: () => undefined,
+      setTaskState: (partial) => {
+        if (partial.branchWorktrees) {
+          taskStoreState.branchWorktrees = partial.branchWorktrees;
+        }
+      },
       generateCommitMessages: generateCommitMessagesMock,
     });
 
     await useFileChangesStore.getState().loadCurrentChanges();
     const directRepository = useFileChangesStore.getState().getRepository(directRepositoryId);
     expect(directRepository?.executionMode).toBe('direct');
+    expect(directCheckpointEnsureMock).not.toHaveBeenCalled();
+    expect(directReviewSnapshotMock).toHaveBeenCalledWith(expect.objectContaining({
+      projectPath: repoAPath,
+    }));
     const changeId = directRepository?.changes[0]?.id;
     expect(changeId).toBeTruthy();
+
+    useFileChangesStore.getState().openDiffModal(directRepositoryId, changeId!);
+    directRestoreRevision = 'v1:newer-poll';
+    await useFileChangesStore.getState().loadCurrentChanges({
+      silent: true,
+      preserveDiffModalSession: true,
+    });
+    await useFileChangesStore.getState().revertChanges(directRepositoryId, [changeId!]);
+    expect(directRestoreWorktreePathsMock).toHaveBeenCalledWith({
+      taskId: 'task-6',
+      projectPath: repoAPath,
+      checkpointId: 'task-6-0000000000000001',
+      snapshotId: 'snapshot-v1:test',
+      paths: ['src/main.ts'],
+      requestId: expect.stringContaining('direct-restore'),
+    });
+    directRestoreConflict = true;
+    await expect(
+      useFileChangesStore.getState().revertChanges(directRepositoryId, [changeId!])
+    ).rejects.toEqual({ code: 'REVISION_CONFLICT', message: 'raw backend message' });
+    expect(useFileChangesStore.getState().getRepository(directRepositoryId)?.lastError).toBe(
+      'The file changed after this review loaded. Refresh the review before retrying.'
+    );
+    directRestoreConflict = false;
 
     await useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!]);
     const result = await useFileChangesStore.getState().commitAllReadyTaskRepositories();
@@ -825,6 +876,7 @@ describe('useFileChangesStore', () => {
       taskId: 'task-6',
       projectPath: repoAPath,
       checkpointId: 'task-6-0000000000000001',
+      snapshotId: 'snapshot-v1:newer-poll',
       paths: ['src/main.ts'],
     });
     expect(directAcceptChangesMock).toHaveBeenCalledWith({
@@ -850,6 +902,7 @@ describe('useFileChangesStore', () => {
         gitRestorePaths: gitRestorePathsMock,
         gitAdd: gitAddMock,
         gitCommit: gitCommitMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
         directReviewSnapshot: directReviewSnapshotMock,
       },
       getGitFlowBaseBranch: () => 'develop',
@@ -943,6 +996,8 @@ describe('useFileChangesStore', () => {
       mergeInProgress: false,
       isClean: true,
       hasAcceptedChanges: false,
+      snapshotId: 'snapshot-direct-empty',
+      restoreRevisions: {},
     }));
     const legacyStore = createFileChangesStore({
       tauri: {
@@ -1082,6 +1137,667 @@ describe('useFileChangesStore', () => {
 
     expect(useFileChangesStore.getState().lastError).toContain('repository is locked');
     expect(gitStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('cancels every active Git review request when the panel load is abandoned', async () => {
+    const resolvers: Array<(value: never) => void> = [];
+    const gitReviewSnapshotMock = mock((_repoPath: string, _requestId?: string) => new Promise<never>((resolve) => {
+      resolvers.push(resolve);
+    }));
+    const gitCancelReviewMock = mock(async (_requestId: string) => undefined);
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+        gitCancelReview: gitCancelReviewMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    void useFileChangesStore.getState().loadCurrentChanges();
+    for (let attempt = 0; attempt < 10 && resolvers.length < 2; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(resolvers).toHaveLength(2);
+    const requestIds = gitReviewSnapshotMock.mock.calls
+      .map((call) => call[1])
+      .filter((requestId): requestId is string => typeof requestId === 'string');
+
+    useFileChangesStore.getState().cancelReviewLoad();
+
+    expect(gitCancelReviewMock.mock.calls.map((call) => call[0]).sort())
+      .toEqual([...requestIds].sort());
+  });
+
+  it('cancels an active direct checkpoint snapshot when the panel load is abandoned', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    let snapshotStarted = false;
+    const directReviewSnapshotMock = mock((_params: { requestId?: string }) => {
+      snapshotStarted = true;
+      return new Promise<never>(() => undefined);
+    });
+    const gitCancelReviewMock = mock(async (_requestId: string) => undefined);
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+        gitCancelReview: gitCancelReviewMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    void useFileChangesStore.getState().loadCurrentChanges();
+    for (let attempt = 0; attempt < 10 && !snapshotStarted; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(snapshotStarted).toBeTrue();
+    const requestId = directReviewSnapshotMock.mock.calls[0]?.[0]?.requestId;
+    expect(typeof requestId).toBe('string');
+
+    useFileChangesStore.getState().cancelReviewLoad();
+
+    expect(gitCancelReviewMock).toHaveBeenCalledWith(requestId);
+  });
+
+  it('cancels sibling review requests when one repository snapshot fails', async () => {
+    const pendingRequestIds: string[] = [];
+    const gitReviewSnapshotMock = mock(async (repoPath: string, requestId?: string) => {
+      if (repoPath === worktreeAPath) {
+        throw new Error('repository snapshot failed');
+      }
+      if (requestId) pendingRequestIds.push(requestId);
+      return new Promise<never>(() => undefined);
+    });
+    const gitCancelReviewMock = mock(async (_requestId: string) => undefined);
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+        gitCancelReview: gitCancelReviewMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(pendingRequestIds).toHaveLength(1);
+    expect(gitCancelReviewMock).toHaveBeenCalledWith(pendingRequestIds[0]);
+    expect(useFileChangesStore.getState().lastError).toContain('repository snapshot failed');
+  });
+
+  it('never sends a confirmed non-Git project through Git when task metadata is stale', async () => {
+    const directReviewSnapshotMock = mock(async () => {
+      throw new Error('direct review should require configuration first');
+    });
+    const forbiddenGitReviewSnapshotMock = mock(async () => {
+      throw new Error('Git review must not run for a confirmed non-Git project');
+    });
+    const nonGitAppState = {
+      ...appStoreState,
+      selectedGroupId: null,
+      selectedProjectId: 'project-a',
+      selectedTaskId: 'task-6',
+      getProjectById: (projectId: string) => projectId === 'project-a'
+        ? {
+            id: 'project-a',
+            name: 'Project A',
+            path: repoAPath,
+            directEdit: false,
+            gitSetupState: 'not_git' as const,
+          }
+        : undefined,
+    };
+    const staleDirectTask = {
+      ...tasksById['task-6'],
+      execution_targets: [{
+        projectId: 'project-a',
+        branchName: 'direct',
+        executionMode: 'git' as const,
+        targetBranchName: 'direct',
+        worktreeKey: directWorktreeKey,
+      }],
+    };
+    const staleTaskState = {
+      ...taskStoreState,
+      branchWorktrees: { [directWorktreeKey]: repoAPath },
+      getTaskById: (taskId: string) => taskId === 'task-6'
+        ? { ...staleDirectTask, status: 'InProgress' as const }
+        : undefined,
+    };
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: forbiddenGitReviewSnapshotMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => nonGitAppState,
+      getTaskState: () => staleTaskState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(useFileChangesStore.getState().reviewSuspension?.error.code)
+      .toBe('DIRECT_MODE_CONFIGURATION_REQUIRED');
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(forbiddenGitReviewSnapshotMock).not.toHaveBeenCalled();
+    expect(directReviewSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('suspends polling with checkpoint-specific details when direct review is corrupt', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    const directReviewSnapshotMock = mock(async () => {
+      throw {
+        code: 'DIRECT_CHECKPOINT_CORRUPT',
+        message: "Macro's internal review checkpoint is incomplete.",
+        details: {
+          checkpointId: 'task-6-0000000000000001',
+          objectId: '0123456789abcdef0123456789abcdef01234567',
+          operation: 'direct_checkpoint_index_blob',
+          retryAttempted: true,
+          acceptedHistoryAtRisk: false,
+          worktreeModified: false,
+        },
+      };
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    expect(useFileChangesStore.getState().reviewSuspension?.error.code)
+      .toBe('DIRECT_CHECKPOINT_CORRUPT');
+    expect(useFileChangesStore.getState().reviewSuspension?.error.details)
+      .toEqual(expect.objectContaining({ reviewProjectId: 'project-a' }));
+    expect(useFileChangesStore.getState().lastError).toBeNull();
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitReadFilePairMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a structured checkpoint suspension when direct file hydration fails', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    const directReviewFileMock = mock(async () => {
+      throw {
+        code: 'DIRECT_CHECKPOINT_CORRUPT',
+        message: "Macro's internal review checkpoint is incomplete.",
+        details: { checkpointId: 'task-6-0000000000000001', retryAttempted: true },
+      };
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
+        directReviewSnapshot: mock(async () => ({
+          branch: 'direct',
+          stagedPaths: [],
+          changes: [{
+            path: 'src/main.ts',
+            status: 'modified',
+            additions: 1,
+            deletions: 1,
+            hasPendingVisibleChange: true,
+            hasValidatedStage: false,
+            validatedRemovedLineNumbers: [],
+            validatedAddedLineNumbers: [],
+            isBinary: false,
+            tooLarge: false,
+            requiresHydration: true,
+            originalContent: '',
+            indexContent: '',
+            modifiedContent: '',
+            language: 'TypeScript',
+            hunks: [],
+          }],
+          conflictedFiles: [],
+          mergeInProgress: false,
+          isClean: false,
+          hasAcceptedChanges: false,
+          snapshotId: 'snapshot-direct-a',
+          restoreRevisions: { 'src/main.ts': 'v1:test' },
+        })),
+        directReviewFile: directReviewFileMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const repository = useFileChangesStore.getState().repositories[0];
+    useFileChangesStore.getState().openDiffModal(repository.id, repository.changes[0]!.id);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(directReviewFileMock).toHaveBeenCalledTimes(1);
+    expect(useFileChangesStore.getState().reviewSuspension?.error.code)
+      .toBe('DIRECT_CHECKPOINT_CORRUPT');
+    expect(useFileChangesStore.getState().reviewSuspension?.error.details)
+      .toEqual(expect.objectContaining({ reviewProjectId: 'project-a' }));
+    expect(useFileChangesStore.getState().lastError).toBeNull();
+  });
+
+  it('does not attach a late hydration failure to the newly selected task', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    let rejectHydration: (reason: unknown) => void = () => undefined;
+    const directReviewFileMock = mock(() => new Promise<never>((_resolve, reject) => {
+      rejectHydration = reject;
+    }));
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
+        directReviewSnapshot: mock(async () => ({
+          branch: 'direct',
+          stagedPaths: [],
+          changes: [{
+            path: 'src/main.ts',
+            status: 'modified',
+            additions: 1,
+            deletions: 1,
+            hasPendingVisibleChange: true,
+            hasValidatedStage: false,
+            validatedRemovedLineNumbers: [],
+            validatedAddedLineNumbers: [],
+            isBinary: false,
+            tooLarge: false,
+            requiresHydration: true,
+            originalContent: '',
+            indexContent: '',
+            modifiedContent: '',
+            language: 'TypeScript',
+            hunks: [],
+          }],
+          conflictedFiles: [],
+          mergeInProgress: false,
+          isClean: false,
+          hasAcceptedChanges: false,
+          snapshotId: 'snapshot-direct-b',
+          restoreRevisions: { 'src/main.ts': 'v1:test' },
+        })),
+        directReviewFile: directReviewFileMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const repository = useFileChangesStore.getState().repositories[0]!;
+    useFileChangesStore.getState().openDiffModal(repository.id, repository.changes[0]!.id);
+    await Promise.resolve();
+    appStoreState.selectedTaskId = 'task-2';
+    rejectHydration({
+      code: 'DIRECT_CHECKPOINT_CORRUPT',
+      message: 'late checkpoint failure',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useFileChangesStore.getState().reviewSuspension).toBeNull();
+  });
+
+  it('does not apply a late direct hydration result after review cancellation', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    taskStoreState.branchWorktrees[directWorktreeKey] = repoAPath;
+    let resolveHydration: (value: GitReviewFileDto) => void = () => undefined;
+    const directReviewFileMock = mock((_params: { requestId?: string }) => new Promise<GitReviewFileDto>((resolve) => {
+      resolveHydration = resolve;
+    }));
+    const gitCancelReviewMock = mock(async (_requestId: string) => undefined);
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
+        directReviewSnapshot: mock(async () => ({
+          branch: 'direct',
+          stagedPaths: [],
+          changes: [{
+            path: 'src/main.ts',
+            status: 'modified',
+            additions: 1,
+            deletions: 1,
+            hasPendingVisibleChange: true,
+            hasValidatedStage: false,
+            validatedRemovedLineNumbers: [],
+            validatedAddedLineNumbers: [],
+            isBinary: false,
+            tooLarge: false,
+            requiresHydration: true,
+            originalContent: '',
+            indexContent: '',
+            modifiedContent: '',
+            language: 'TypeScript',
+            hunks: [],
+          }],
+          conflictedFiles: [],
+          mergeInProgress: false,
+          isClean: false,
+          hasAcceptedChanges: false,
+          snapshotId: 'snapshot-direct-c',
+          restoreRevisions: { 'src/main.ts': 'v1:test' },
+        })),
+        directReviewFile: directReviewFileMock,
+        gitCancelReview: gitCancelReviewMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const repository = useFileChangesStore.getState().repositories[0]!;
+    useFileChangesStore.getState().openDiffModal(repository.id, repository.changes[0]!.id);
+    await Promise.resolve();
+    useFileChangesStore.getState().cancelReviewLoad();
+    const directRequestId = directReviewFileMock.mock.calls[0]?.[0]?.requestId;
+    expect(typeof directRequestId).toBe('string');
+    expect(gitCancelReviewMock).toHaveBeenCalledWith(directRequestId);
+    resolveHydration({
+      path: 'src/main.ts',
+      status: 'modified',
+      headExists: true,
+      indexExists: true,
+      worktreeExists: true,
+      headContent: 'const value = 1;',
+      indexContent: 'const value = 1;',
+      worktreeContent: 'const value = 999;',
+      pendingDiff: {
+        originalContent: 'const value = 1;',
+        modifiedContent: 'const value = 999;',
+        additions: 1,
+        deletions: 1,
+        hunks: [],
+      },
+      fullDiff: {
+        originalContent: 'const value = 1;',
+        modifiedContent: 'const value = 999;',
+        additions: 1,
+        deletions: 1,
+        hunks: [],
+      },
+      hasValidatedStage: false,
+      validatedRemovedLineNumbers: [],
+      validatedAddedLineNumbers: [],
+      isBinary: false,
+      tooLarge: false,
+      language: 'TypeScript',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useFileChangesStore.getState().repositories[0]!.changes[0]!.requiresHydration).toBeTrue();
+    expect(useFileChangesStore.getState().repositories[0]!.changes[0]!.modifiedContent).toBe('');
+  });
+
+  it('suspends repeated review loads on a missing Git object and resumes explicitly', async () => {
+    appStoreState.selectedProjectId = 'project-a';
+    let shouldFail = false;
+    const gitReviewSnapshotMock = mock(async () => {
+      if (shouldFail) {
+        throw {
+          code: 'GIT_OBJECT_MISSING',
+          message: 'A Git object required for this operation is missing.',
+          details: {
+            objectId: '0123456789abcdef0123456789abcdef01234567',
+            retryAttempted: true,
+            worktreeModified: false,
+          },
+        };
+      }
+      return {
+        branch: 'feature/task-a',
+        stagedPaths: [],
+        changes: [{
+          path: 'src/main.ts',
+          status: 'modified',
+          additions: 1,
+          deletions: 1,
+          hasPendingVisibleChange: true,
+          hasValidatedStage: false,
+          validatedRemovedLineNumbers: [],
+          validatedAddedLineNumbers: [],
+          isBinary: false,
+          tooLarge: false,
+          requiresHydration: true,
+          originalContent: '',
+          indexContent: '',
+          modifiedContent: '',
+          language: 'TypeScript',
+          hunks: [],
+        }],
+        conflictedFiles: [],
+        mergeInProgress: false,
+        isClean: false,
+      };
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const previousRepositories = useFileChangesStore.getState().repositories;
+    expect(previousRepositories).toHaveLength(1);
+
+    shouldFail = true;
+    await useFileChangesStore.getState().loadCurrentChanges({ silent: true });
+    const suspended = useFileChangesStore.getState();
+    expect(suspended.repositories).toEqual(previousRepositories);
+    expect(suspended.lastError).toBeNull();
+    expect(suspended.reviewSuspension?.error.code).toBe('GIT_OBJECT_MISSING');
+    expect(gitReviewSnapshotMock).toHaveBeenCalledTimes(2);
+
+    shouldFail = false;
+    await suspended.retrySuspendedReview('task-1');
+    expect(useFileChangesStore.getState().reviewSuspension).toBeNull();
+    expect(gitReviewSnapshotMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not expose the previous task repositories when a new task suspends', async () => {
+    let shouldFail = false;
+    const gitReviewSnapshotMock = mock(async (repoPath: string) => {
+      if (shouldFail) {
+        throw {
+          code: 'GIT_OBJECT_MISSING',
+          message: 'missing',
+          details: { retryAttempted: true, worktreeModified: false },
+        };
+      }
+      return {
+        branch: repoPath.includes('project-b') ? 'feature/task-b' : 'feature/task-a',
+        stagedPaths: [],
+        changes: [],
+        conflictedFiles: [],
+        mergeInProgress: false,
+        isClean: true,
+      };
+    });
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+    await useFileChangesStore.getState().loadCurrentChanges();
+    expect(useFileChangesStore.getState().repositories).not.toHaveLength(0);
+
+    shouldFail = true;
+    appStoreState.selectedTaskId = 'task-2';
+    await useFileChangesStore.getState().loadCurrentChanges();
+
+    const suspended = useFileChangesStore.getState();
+    expect(suspended.currentTaskId).toBe('task-2');
+    expect(suspended.repositories).toHaveLength(0);
+    expect(suspended.diffModalSession).toBeNull();
+    expect(suspended.reviewSuspension?.taskId).toBe('task-2');
   });
 
   it('uses the execution target branch as the standalone integration branch', async () => {
@@ -1398,6 +2114,28 @@ describe('useFileChangesStore', () => {
       path: 'src/main.ts',
     });
     expect(gitDiffMock.mock.calls.length).toBe(initialGitDiffCalls);
+  });
+
+  it('does not hydrate a file already classified as too large', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    useFileChangesStore.setState((state) => ({
+      repositories: state.repositories.map((repository) => repository.id === repositoryIdA
+        ? {
+            ...repository,
+            changes: repository.changes.map((change) => change.id === changeIdA
+              ? { ...change, tooLarge: true, requiresHydration: true }
+              : change),
+          }
+        : repository),
+    }));
+    gitReadFilePairMock.mockClear();
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+
+    expect(gitReadFilePairMock).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().getDiffModalSession()?.isHydratingFullContext).toBe(false);
   });
 
   it('resets only the right-side draft content', async () => {

@@ -410,7 +410,8 @@
     "commitMessageRequired": "Un message de commit est requis.",
     "commitSucceededTaskNotCompleted": "Les modifications ont été validées, mais la tâche n'a pas pu être complétée automatiquement.",
     "deletedChangeReadOnly": "Les fichiers supprimés sont en lecture seule pendant la review. Restaurez-les via le flow de tâche.",
-    "revertChangesFailed": "Impossible d'annuler les changements."
+    "revertChangesFailed": "Impossible d'annuler les changements.",
+    "reviewChangedSinceLoad": "Le fichier a changé depuis le chargement de cette review. Actualisez la review avant de réessayer."
   },
   "taskCommandsManualDraftUnsupported": "Envoyez un premier message pour préparer la branche, le worktree et le terminal de cette fonctionnalité.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

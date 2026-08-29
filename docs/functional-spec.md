@@ -737,6 +737,10 @@ L'utilisateur doit pouvoir :
 - demander des améliorations
 - apporter de petits ajustements manuels
 
+Si un objet Git nécessaire à la review reste absent après une actualisation et une seule relance, Macro suspend les actualisations automatiques de cette review. L’interface précise qu’aucun fichier de travail n’a été modifié, propose de réessayer et donne accès aux détails Git. Une nouvelle tentative explicite, un changement de tâche ou une modification des métadonnées de review peut reprendre le chargement. Un changement d’état sans lien avec la review ne la relance pas. Macro ne lance aucune réparation destructive pour traiter cette erreur.
+
+Pour un projet sans Git, la review repose sur l’historique interne de Macro. Si ce checkpoint est absent, lié à un autre projet ou incomplet, le panneau suspend ses actualisations et nomme le checkpoint interne, pas un dépôt Git utilisateur. Macro conserve l’historique disponible et les fichiers du projet. Une réparation qui pourrait perdre un état accepté n’est jamais automatique.
+
 ### 14.5 Édition manuelle autorisée pendant la review
 
 Macro doit rester majoritairement en lecture seule.

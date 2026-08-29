@@ -1128,6 +1128,27 @@ pub async fn workspace_finalize_manual_feature(
 }
 
 #[tauri::command]
+pub async fn workspace_bind_manual_feature_direct_checkpoint(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    task_id: String,
+    project_id: String,
+    checkpoint_id: String,
+) -> Result<ManualFeatureDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::bind_manual_feature_direct_checkpoint(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        &project_id,
+        &checkpoint_id,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn workspace_revert_manual_feature_to_draft(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,

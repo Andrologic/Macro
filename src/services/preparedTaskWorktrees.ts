@@ -1,5 +1,6 @@
 import type { Project, TaskExecutionTarget } from '../types';
 import type * as tauriIpc from './tauriIpc';
+import { isReviewSuspendingError, toServiceError } from './contracts/errors';
 import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 export interface PreparedTaskWorktreeProjectRef {
@@ -12,6 +13,9 @@ export interface PreparedTaskWorktreeTauri {
   isTauriAvailable: () => boolean;
   gitWorktreeInspect: typeof tauriIpc.gitWorktreeInspect;
   directCheckpointEnsure?: typeof tauriIpc.directCheckpointEnsure;
+  directCheckpointResolveId?: typeof tauriIpc.directCheckpointResolveId;
+  workspaceBindManualFeatureDirectCheckpoint?:
+    typeof tauriIpc.workspaceBindManualFeatureDirectCheckpoint;
 }
 
 export const resolveTaskRepositoryPath = (
@@ -38,14 +42,6 @@ export const resolvePreparedTaskWorktreePath = async (params: {
   getProjectById: (projectId: string) => PreparedTaskWorktreeProjectRef | null | undefined;
   tauri: PreparedTaskWorktreeTauri;
 }): Promise<string | null> => {
-  const cached = resolveCachedPreparedTaskWorktreePath(
-    params.target,
-    params.branchWorktrees
-  );
-  if (cached) {
-    return cached;
-  }
-
   const project = params.getProjectById(params.target.projectId);
   const repoPath = project?.path || params.target.repoPath || null;
   if (!repoPath || !params.tauri.isTauriAvailable()) {
@@ -64,14 +60,33 @@ export const resolvePreparedTaskWorktreePath = async (params: {
       target: params.target,
     });
     if (resolution.mode === 'direct') {
-      if (!params.taskId || !params.tauri.directCheckpointEnsure) {
+      if (params.target.checkpointId) {
+        return repoPath;
+      }
+      if (
+        !params.taskId ||
+        !params.tauri.directCheckpointEnsure ||
+        !params.tauri.directCheckpointResolveId ||
+        !params.tauri.workspaceBindManualFeatureDirectCheckpoint
+      ) {
         return null;
       }
+      const checkpointId = await params.tauri.directCheckpointResolveId({
+        taskId: params.taskId,
+        projectPath: repoPath,
+      });
       await params.tauri.directCheckpointEnsure({
         taskId: params.taskId,
         projectPath: repoPath,
-        checkpointId: params.target.checkpointId,
+        checkpointId,
       });
+      await params.tauri.workspaceBindManualFeatureDirectCheckpoint({
+        taskId: params.taskId,
+        projectId: params.target.projectId,
+        checkpointId,
+      });
+      params.target.executionMode = 'direct';
+      params.target.checkpointId = checkpointId;
       return repoPath;
     }
     if (resolution.mode !== 'git') {
@@ -80,6 +95,14 @@ export const resolvePreparedTaskWorktreePath = async (params: {
 
     if (params.target.executionKind === 'repository_root') {
       return repoPath;
+    }
+
+    const cached = resolveCachedPreparedTaskWorktreePath(
+      params.target,
+      params.branchWorktrees
+    );
+    if (cached) {
+      return cached;
     }
 
     const inspection = await params.tauri.gitWorktreeInspect({
@@ -91,7 +114,21 @@ export const resolvePreparedTaskWorktreePath = async (params: {
     if (inspection.status === 'ready' && inspection.worktreePath.trim().length > 0) {
       return inspection.worktreePath;
     }
-  } catch {
+  } catch (error) {
+    const normalized = toServiceError(error);
+    if (isReviewSuspendingError(normalized)) {
+      const details = normalized.details && typeof normalized.details === 'object' &&
+        !Array.isArray(normalized.details)
+        ? normalized.details as Record<string, unknown>
+        : { cause: normalized.details ?? null };
+      throw {
+        ...normalized,
+        details: {
+          ...details,
+          reviewProjectId: params.target.projectId,
+        },
+      };
+    }
     return null;
   }
 

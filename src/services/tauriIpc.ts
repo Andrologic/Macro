@@ -452,6 +452,8 @@ export interface GitReviewSnapshotDto {
 
 export interface DirectReviewSnapshotDto extends GitReviewSnapshotDto {
   hasAcceptedChanges: boolean;
+  snapshotId: string;
+  restoreRevisions: Record<string, string>;
 }
 
 export interface GitReviewFileDto {
@@ -2499,8 +2501,15 @@ export async function gitReadFilePair(params: {
   });
 }
 
-export async function gitReviewSnapshot(repoPath: string): Promise<GitReviewSnapshotDto> {
-  return invoke<GitReviewSnapshotDto>("git_review_snapshot", { repoPath });
+export async function gitReviewSnapshot(
+  repoPath: string,
+  requestId?: string,
+): Promise<GitReviewSnapshotDto> {
+  return invoke<GitReviewSnapshotDto>("git_review_snapshot", { repoPath, requestId });
+}
+
+export async function gitCancelReview(requestId: string): Promise<void> {
+  return invoke<void>('git_cancel_review', { requestId });
 }
 
 export async function directCheckpointEnsure(params: {
@@ -2512,7 +2521,9 @@ export async function directCheckpointEnsure(params: {
 }
 
 export async function directCheckpointRemove(params: {
+  taskId: string;
   checkpointId: string;
+  projectPath: string;
 }): Promise<boolean> {
   return invoke<boolean>('direct_checkpoint_remove', params);
 }
@@ -2528,6 +2539,7 @@ export async function directReviewSnapshot(params: {
   taskId: string;
   projectPath: string;
   checkpointId?: string;
+  requestId?: string;
 }): Promise<DirectReviewSnapshotDto> {
   return invoke<DirectReviewSnapshotDto>('direct_review_snapshot', params);
 }
@@ -2538,6 +2550,7 @@ export async function directReviewFile(params: {
   checkpointId?: string;
   path: string;
   status: string;
+  requestId?: string;
 }): Promise<GitReviewFileDto> {
   return invoke<GitReviewFileDto>('direct_review_file', params);
 }
@@ -2546,6 +2559,7 @@ export async function directStagePaths(params: {
   taskId: string;
   projectPath: string;
   checkpointId?: string;
+  snapshotId: string;
   paths: string[];
 }): Promise<void> {
   return invoke<void>('direct_stage_paths', params);
@@ -2564,7 +2578,9 @@ export async function directRestoreWorktreePaths(params: {
   taskId: string;
   projectPath: string;
   checkpointId?: string;
+  snapshotId: string;
   paths: string[];
+  requestId: string;
 }): Promise<void> {
   return invoke<void>('direct_restore_worktree_paths', params);
 }
@@ -2580,10 +2596,12 @@ export async function directAcceptChanges(params: {
 export async function gitReviewFile(params: {
   repoPath: string;
   path: string;
+  requestId?: string;
 }): Promise<GitReviewFileDto> {
   return invoke<GitReviewFileDto>("git_review_file", {
     repoPath: params.repoPath,
     path: params.path,
+    requestId: params.requestId,
   });
 }
 
@@ -3316,6 +3334,17 @@ export async function workspaceFinalizeManualFeature(params: {
       featureSlug: params.featureSlug,
       taskKind: params.taskKind,
     },
+  );
+}
+
+export async function workspaceBindManualFeatureDirectCheckpoint(params: {
+  taskId: string;
+  projectId: string;
+  checkpointId: string;
+}): Promise<WorkspaceManualFeatureDto> {
+  return invoke<WorkspaceManualFeatureDto>(
+    'workspace_bind_manual_feature_direct_checkpoint',
+    params,
   );
 }
 

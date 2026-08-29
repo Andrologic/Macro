@@ -410,7 +410,8 @@
     "commitMessageRequired": "Commit message is required.",
     "commitSucceededTaskNotCompleted": "Changes were committed, but the task could not be completed automatically.",
     "deletedChangeReadOnly": "Deleted files are read-only during review. Restore them from the task flow instead.",
-    "revertChangesFailed": "Failed to revert changes."
+    "revertChangesFailed": "Failed to revert changes.",
+    "reviewChangedSinceLoad": "The file changed after this review loaded. Refresh the review before retrying."
   },
   "taskCommandsManualDraftUnsupported": "Send a first message to prepare this feature's branch, worktree, and terminal.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

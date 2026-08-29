@@ -3,8 +3,10 @@ use crate::fs::get_file_language;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::path::Component;
 
 const MAX_REVIEW_INLINE_BYTES: usize = 200 * 1024;
+const EXTERNAL_LINK_TARGET_PLACEHOLDER: &str = "[external link target]";
 
 #[derive(Clone)]
 struct ReviewFileSide {
@@ -46,49 +48,332 @@ fn bytes_to_review_side(bytes: Option<Vec<u8>>) -> ReviewFileSide {
     }
 }
 
-fn read_head_file_bytes(repo: &Repository, relative_path: &Path) -> Result<Option<Vec<u8>>> {
-    let Some(commit) = get_head_commit(repo)? else {
-        return Ok(None);
-    };
-
-    let tree = commit.tree()?;
-    let entry = match tree.get_path(relative_path) {
-        Ok(entry) => entry,
-        Err(_) => return Ok(None),
-    };
-    let object = entry.to_object(repo)?;
-    let Some(blob) = object.as_blob() else {
-        return Ok(None);
-    };
-
-    Ok(Some(blob.content().to_vec()))
+fn blob_to_review_side(blob: &git2::Blob<'_>) -> ReviewFileSide {
+    if blob.size() > MAX_REVIEW_INLINE_BYTES {
+        return ReviewFileSide {
+            exists: true,
+            content: String::new(),
+            is_binary: blob.is_binary(),
+            too_large: true,
+        };
+    }
+    bytes_to_review_side(Some(blob.content().to_vec()))
 }
 
-fn read_index_file_bytes(repo: &Repository, relative_path: &Path) -> Result<Option<Vec<u8>>> {
+fn git_blob_to_review_side(
+    blob: &git2::Blob<'_>,
+    relative_path: &Path,
+    is_symbolic_link: bool,
+) -> ReviewFileSide {
+    if !is_symbolic_link {
+        return blob_to_review_side(blob);
+    }
+    let Ok(target) = std::str::from_utf8(blob.content()) else {
+        return bytes_to_review_side(Some(EXTERNAL_LINK_TARGET_PLACEHOLDER.as_bytes().to_vec()));
+    };
+    if link_target_escapes_worktree(relative_path, Path::new(target)) {
+        return bytes_to_review_side(Some(EXTERNAL_LINK_TARGET_PLACEHOLDER.as_bytes().to_vec()));
+    }
+    blob_to_review_side(blob)
+}
+
+fn read_blob_header(repo: &Repository, oid: git2::Oid, operation: &str) -> Result<usize> {
+    let odb = repo.odb().map_err(|error| {
+        BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
+    })?;
+    let (size, kind) = odb.read_header(oid).map_err(|error| {
+        BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
+    })?;
+    if kind != git2::ObjectType::Blob {
+        return Err(BackendError::Git {
+            message: format!("Expected Git blob {oid} while building review."),
+        });
+    }
+    Ok(size)
+}
+
+fn read_head_file_side(repo: &Repository, relative_path: &Path) -> Result<ReviewFileSide> {
+    let Some(commit) = get_head_commit(repo)? else {
+        return Ok(ReviewFileSide::absent());
+    };
+
+    let tree_id = commit.tree_id();
+    let tree = commit.tree().map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(tree_id.to_string()),
+            Some("review_head_tree".to_string()),
+        )
+    })?;
+    let entry = match tree.get_path(relative_path) {
+        Ok(entry) => entry,
+        Err(error)
+            if error.class() == git2::ErrorClass::Odb
+                && error.code() == git2::ErrorCode::NotFound =>
+        {
+            return Err(BackendError::git_object_missing(
+                error,
+                None,
+                Some("review_head_path".to_string()),
+            ));
+        }
+        Err(_) => return Ok(ReviewFileSide::absent()),
+    };
+    let entry_id = entry.id();
+    if read_blob_header(repo, entry_id, "review_head_blob")? > MAX_REVIEW_INLINE_BYTES {
+        return Ok(ReviewFileSide {
+            exists: true,
+            content: String::new(),
+            is_binary: false,
+            too_large: true,
+        });
+    }
+    let object = entry.to_object(repo).map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(entry_id.to_string()),
+            Some("review_head_blob".to_string()),
+        )
+    })?;
+    let Some(blob) = object.as_blob() else {
+        return Ok(ReviewFileSide::absent());
+    };
+
+    Ok(git_blob_to_review_side(
+        blob,
+        relative_path,
+        entry.filemode() == 0o120000,
+    ))
+}
+
+fn read_index_file_side(repo: &Repository, relative_path: &Path) -> Result<ReviewFileSide> {
     let mut index = repo.index()?;
     index.read(true)?;
     let Some(entry) = index.get_path(relative_path, 0) else {
-        return Ok(None);
+        return Ok(ReviewFileSide::absent());
     };
 
-    let blob = repo.find_blob(entry.id)?;
-    Ok(Some(blob.content().to_vec()))
+    if read_blob_header(repo, entry.id, "review_index_blob")? > MAX_REVIEW_INLINE_BYTES {
+        return Ok(ReviewFileSide {
+            exists: true,
+            content: String::new(),
+            is_binary: false,
+            too_large: true,
+        });
+    }
+    let blob = repo.find_blob(entry.id).map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(entry.id.to_string()),
+            Some("review_index_blob".to_string()),
+        )
+    })?;
+    Ok(git_blob_to_review_side(
+        &blob,
+        relative_path,
+        entry.mode & 0o170000 == 0o120000,
+    ))
 }
 
-fn read_worktree_file_bytes(repo_root: &Path, relative_path: &Path) -> Result<Option<Vec<u8>>> {
-    let absolute_path = repo_root.join(relative_path);
+struct InspectedWorktreeEntry {
+    parent: CapabilityDir,
+    file_name: OsString,
+    metadata: cap_std::fs::Metadata,
+}
 
-    match fs::read(&absolute_path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+#[cfg(windows)]
+fn review_metadata_is_reparse_point(metadata: &cap_std::fs::Metadata) -> bool {
+    use cap_std::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn review_metadata_is_reparse_point(_metadata: &cap_std::fs::Metadata) -> bool {
+    false
+}
+
+fn open_review_worktree(repo_root: &Path) -> Result<CapabilityDir> {
+    let canonical_root = repo_root.canonicalize().map_err(|error| BackendError::Io {
+        message: format!("Failed to resolve review worktree: {error}"),
+        source: error,
+    })?;
+    CapabilityDir::open_ambient_dir(&canonical_root, ambient_authority()).map_err(|error| {
+        BackendError::Io {
+            message: format!("Failed to retain review worktree: {error}"),
+            source: error,
+        }
+    })
+}
+
+fn inspect_worktree_entry(
+    root: &CapabilityDir,
+    relative_path: &Path,
+) -> Result<Option<InspectedWorktreeEntry>> {
+    let mut parent = root.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain review worktree: {error}"),
+        source: error,
+    })?;
+    let mut components = relative_path.components().peekable();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(segment) = component else {
+            return Err(BackendError::Validation(
+                "Review path must remain inside the worktree.".to_string(),
+            ));
+        };
+        let metadata = match parent.symlink_metadata(segment) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!(
+                        "Failed to inspect review worktree entry {:?}: {}",
+                        relative_path, error
+                    ),
+                    source: error,
+                })
+            }
+        };
+        let is_symlink = metadata.file_type().is_symlink();
+        let is_reparse_point = review_metadata_is_reparse_point(&metadata);
+        if components.peek().is_some() && (is_symlink || is_reparse_point) {
+            return Err(BackendError::Validation(
+                "Review path crosses a linked directory.".to_string(),
+            ));
+        }
+        if components.peek().is_none() {
+            if is_reparse_point && !is_symlink {
+                return Err(BackendError::Validation(
+                    "Review path resolves to an unsupported linked entry.".to_string(),
+                ));
+            }
+            return Ok(Some(InspectedWorktreeEntry {
+                parent,
+                file_name: segment.to_os_string(),
+                metadata,
+            }));
+        }
+        parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to retain review worktree parent {:?}: {error}",
+                relative_path
+            ),
+            source: error,
+        })?;
+    }
+    Ok(None)
+}
+
+fn open_review_regular_file(entry: &InspectedWorktreeEntry) -> std::io::Result<cap_std::fs::File> {
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = entry.parent.open_with(&entry.file_name, &options)?;
+    let metadata = file.metadata()?;
+    if metadata.file_type().is_symlink() || review_metadata_is_reparse_point(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Review file changed to a linked entry.",
+        ));
+    }
+    Ok(file)
+}
+
+fn read_worktree_file_side(
+    worktree: &CapabilityDir,
+    relative_path: &Path,
+) -> Result<ReviewFileSide> {
+    let Some(entry) = inspect_worktree_entry(worktree, relative_path)? else {
+        return Ok(ReviewFileSide::absent());
+    };
+
+    if entry.metadata.file_type().is_symlink() {
+        let target = entry
+            .parent
+            .read_link_contents(&entry.file_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to read review worktree link {:?}: {}",
+                    relative_path, error
+                ),
+                source: error,
+            })?;
+        if link_target_escapes_worktree(relative_path, &target) {
+            return Ok(bytes_to_review_side(Some(
+                EXTERNAL_LINK_TARGET_PLACEHOLDER.as_bytes().to_vec(),
+            )));
+        }
+        return Ok(bytes_to_review_side(Some(
+            target.to_string_lossy().as_bytes().to_vec(),
+        )));
+    }
+    if !entry.metadata.is_file() {
+        return Ok(ReviewFileSide::absent());
+    }
+
+    match open_review_regular_file(&entry) {
+        Ok(file) => {
+            let mut bytes = Vec::with_capacity(
+                entry
+                    .metadata
+                    .len()
+                    .min((MAX_REVIEW_INLINE_BYTES + 1) as u64) as usize,
+            );
+            file.take((MAX_REVIEW_INLINE_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|error| BackendError::Io {
+                    message: format!(
+                        "Failed to read review worktree file {:?}: {error}",
+                        relative_path
+                    ),
+                    source: error,
+                })?;
+            Ok(bytes_to_review_side(Some(bytes)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ReviewFileSide::absent()),
         Err(error) => Err(BackendError::Io {
             message: format!(
-                "Failed to read worktree file {:?}: {}",
-                absolute_path, error
+                "Failed to open review worktree file {:?}: {}",
+                relative_path, error
             ),
             source: error,
         }),
     }
+}
+
+fn link_target_escapes_worktree(relative_path: &Path, target: &Path) -> bool {
+    if target.is_absolute() {
+        return true;
+    }
+    let mut depth = relative_path
+        .parent()
+        .map(|parent| {
+            parent
+                .components()
+                .filter(|component| matches!(component, Component::Normal(_)))
+                .count()
+        })
+        .unwrap_or(0);
+    for component in target.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => return true,
+            Component::ParentDir if depth == 0 => return true,
+            Component::ParentDir => depth -= 1,
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+        }
+    }
+    false
 }
 
 fn split_review_lines(value: &str) -> Vec<&str> {
@@ -315,18 +600,6 @@ fn normalize_review_status(status: &str) -> String {
     }
 }
 
-fn read_review_file_sides(
-    repo: &Repository,
-    repo_root: &Path,
-    relative_path: &Path,
-) -> Result<(ReviewFileSide, ReviewFileSide, ReviewFileSide)> {
-    Ok((
-        bytes_to_review_side(read_head_file_bytes(repo, relative_path)?),
-        bytes_to_review_side(read_index_file_bytes(repo, relative_path)?),
-        bytes_to_review_side(read_worktree_file_bytes(repo_root, relative_path)?),
-    ))
-}
-
 #[derive(Default)]
 struct ReviewSnapshotStats {
     additions: u32,
@@ -349,17 +622,29 @@ fn review_diff_path(delta: git2::DiffDelta<'_>) -> Option<String> {
         .map(|path| path.to_string_lossy().replace('\\', "/"))
 }
 
-fn build_review_diff_stats(diff: &git2::Diff<'_>) -> Result<HashMap<String, ReviewSnapshotStats>> {
+fn build_review_diff_stats(
+    diff: &git2::Diff<'_>,
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<HashMap<String, ReviewSnapshotStats>> {
     let stats_by_path: RefCell<HashMap<String, ReviewSnapshotStats>> = RefCell::new(HashMap::new());
+    let cancelled = std::cell::Cell::new(false);
 
-    diff.foreach(
+    let foreach_result = diff.foreach(
         &mut |delta, _progress| {
+            if should_cancel() {
+                cancelled.set(true);
+                return false;
+            }
             if let Some(path) = review_diff_path(delta) {
                 stats_by_path.borrow_mut().entry(path).or_default();
             }
             true
         },
         Some(&mut |delta, _binary| {
+            if should_cancel() {
+                cancelled.set(true);
+                return false;
+            }
             if let Some(path) = review_diff_path(delta) {
                 stats_by_path
                     .borrow_mut()
@@ -370,34 +655,38 @@ fn build_review_diff_stats(diff: &git2::Diff<'_>) -> Result<HashMap<String, Revi
             true
         }),
         None,
-        None,
-    )?;
-
-    let mut stats_by_path = stats_by_path.into_inner();
-    let stats = diff.stats()?;
-    let stats_buffer = stats.to_buf(git2::DiffStatsFormat::NUMBER, 0)?;
-    let stats_text = std::str::from_utf8(stats_buffer.as_ref()).unwrap_or_default();
-    for line in stats_text.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(additions) = parts.next() else {
-            continue;
-        };
-        let Some(deletions) = parts.next() else {
-            continue;
-        };
-        let path = parts.collect::<Vec<_>>().join(" ");
-        if path.is_empty() {
-            continue;
-        }
-        let entry = stats_by_path.entry(path).or_default();
-        entry.additions = additions.parse::<u32>().unwrap_or(0);
-        entry.deletions = deletions.parse::<u32>().unwrap_or(0);
+        Some(&mut |delta, _hunk, line| {
+            if should_cancel() {
+                cancelled.set(true);
+                return false;
+            }
+            let Some(path) = review_diff_path(delta) else {
+                return true;
+            };
+            let mut stats = stats_by_path.borrow_mut();
+            let entry = stats.entry(path).or_default();
+            match line.origin() {
+                '+' => entry.additions = entry.additions.saturating_add(line.num_lines()),
+                '-' => entry.deletions = entry.deletions.saturating_add(line.num_lines()),
+                _ => {}
+            }
+            true
+        }),
+    );
+    if cancelled.get() || should_cancel() {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
     }
+    foreach_result?;
 
-    Ok(stats_by_path)
+    Ok(stats_by_path.into_inner())
 }
 
-fn build_staged_review_stats(repo: &Repository) -> Result<HashMap<String, ReviewSnapshotStats>> {
+fn build_staged_review_stats(
+    repo: &Repository,
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<HashMap<String, ReviewSnapshotStats>> {
     let head_commit = get_head_commit(repo)?;
     let head_tree = match head_commit.as_ref() {
         Some(commit) => Some(commit.tree()?),
@@ -405,23 +694,32 @@ fn build_staged_review_stats(repo: &Repository) -> Result<HashMap<String, Review
     };
     let mut index = repo.index()?;
     index.read(true)?;
-    let diff = repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), None)?;
-    build_review_diff_stats(&diff)
+    let mut options = git2::DiffOptions::new();
+    options.max_size(MAX_REVIEW_INLINE_BYTES as i64);
+    let diff = repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut options))?;
+    build_review_diff_stats(&diff, should_cancel)
 }
 
-fn build_pending_review_stats(repo: &Repository) -> Result<HashMap<String, ReviewSnapshotStats>> {
+fn build_pending_review_stats(
+    repo: &Repository,
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<HashMap<String, ReviewSnapshotStats>> {
     let mut index = repo.index()?;
     index.read(true)?;
     let mut options = git2::DiffOptions::new();
     options
         .include_untracked(true)
         .recurse_untracked_dirs(true)
-        .include_typechange(true);
+        .include_typechange(true)
+        .max_size(MAX_REVIEW_INLINE_BYTES as i64);
     let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut options))?;
-    build_review_diff_stats(&diff)
+    build_review_diff_stats(&diff, should_cancel)
 }
 
-fn build_workdir_review_stats(repo: &Repository) -> Result<HashMap<String, ReviewSnapshotStats>> {
+fn build_workdir_review_stats(
+    repo: &Repository,
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<HashMap<String, ReviewSnapshotStats>> {
     let head_commit = get_head_commit(repo)?;
     let head_tree = match head_commit.as_ref() {
         Some(commit) => Some(commit.tree()?),
@@ -431,9 +729,10 @@ fn build_workdir_review_stats(repo: &Repository) -> Result<HashMap<String, Revie
     options
         .include_untracked(true)
         .recurse_untracked_dirs(true)
-        .include_typechange(true);
+        .include_typechange(true)
+        .max_size(MAX_REVIEW_INLINE_BYTES as i64);
     let diff = repo.diff_tree_to_workdir(head_tree.as_ref(), Some(&mut options))?;
-    build_review_diff_stats(&diff)
+    build_review_diff_stats(&diff, should_cancel)
 }
 
 fn review_blob_side_metadata(blob: git2::Blob<'_>) -> ReviewSideMetadata {
@@ -449,12 +748,44 @@ fn read_head_side_metadata(repo: &Repository, relative_path: &Path) -> Result<Re
         return Ok(ReviewSideMetadata::default());
     };
 
-    let tree = commit.tree()?;
+    let tree_id = commit.tree_id();
+    let tree = commit.tree().map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(tree_id.to_string()),
+            Some("review_head_tree_metadata".to_string()),
+        )
+    })?;
     let entry = match tree.get_path(relative_path) {
         Ok(entry) => entry,
+        Err(error)
+            if error.class() == git2::ErrorClass::Odb
+                && error.code() == git2::ErrorCode::NotFound =>
+        {
+            return Err(BackendError::git_object_missing(
+                error,
+                None,
+                Some("review_head_path_metadata".to_string()),
+            ));
+        }
         Err(_) => return Ok(ReviewSideMetadata::default()),
     };
-    let object = entry.to_object(repo)?;
+    let entry_id = entry.id();
+    let size = read_blob_header(repo, entry_id, "review_head_blob_metadata")?;
+    if size > MAX_REVIEW_INLINE_BYTES {
+        return Ok(ReviewSideMetadata {
+            exists: true,
+            is_binary: false,
+            too_large: true,
+        });
+    }
+    let object = entry.to_object(repo).map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(entry_id.to_string()),
+            Some("review_head_blob_metadata".to_string()),
+        )
+    })?;
     let Some(blob) = object.as_blob() else {
         return Ok(ReviewSideMetadata::default());
     };
@@ -469,44 +800,63 @@ fn read_index_side_metadata(repo: &Repository, relative_path: &Path) -> Result<R
         return Ok(ReviewSideMetadata::default());
     };
 
-    let blob = repo.find_blob(entry.id)?;
+    let size = read_blob_header(repo, entry.id, "review_index_blob_metadata")?;
+    if size > MAX_REVIEW_INLINE_BYTES {
+        return Ok(ReviewSideMetadata {
+            exists: true,
+            is_binary: false,
+            too_large: true,
+        });
+    }
+    let blob = repo.find_blob(entry.id).map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(entry.id.to_string()),
+            Some("review_index_blob_metadata".to_string()),
+        )
+    })?;
     Ok(review_blob_side_metadata(blob))
 }
 
 fn read_worktree_side_metadata(
-    repo_root: &Path,
+    worktree: &CapabilityDir,
     relative_path: &Path,
 ) -> Result<ReviewSideMetadata> {
-    let absolute_path = repo_root.join(relative_path);
-    let metadata = match fs::metadata(&absolute_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ReviewSideMetadata::default());
-        }
-        Err(error) => {
-            return Err(BackendError::Io {
-                message: format!(
-                    "Failed to inspect worktree file {:?}: {}",
-                    absolute_path, error
-                ),
-                source: error,
-            });
-        }
+    let Some(entry) = inspect_worktree_entry(worktree, relative_path)? else {
+        return Ok(ReviewSideMetadata::default());
     };
 
-    if !metadata.is_file() {
+    if entry.metadata.file_type().is_symlink() {
+        let target = entry
+            .parent
+            .read_link_contents(&entry.file_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to read review worktree link {:?}: {}",
+                    relative_path, error
+                ),
+                source: error,
+            })?;
+        let target_bytes = target.to_string_lossy();
+        return Ok(ReviewSideMetadata {
+            exists: true,
+            is_binary: target_bytes.as_bytes().contains(&0),
+            too_large: target_bytes.len() > MAX_REVIEW_INLINE_BYTES,
+        });
+    }
+    if !entry.metadata.is_file() {
         return Ok(ReviewSideMetadata::default());
     }
 
     let mut sample = [0u8; 8192];
     let bytes_read =
-        match fs::File::open(&absolute_path).and_then(|mut file| file.read(&mut sample)) {
+        match open_review_regular_file(&entry).and_then(|mut file| file.read(&mut sample)) {
             Ok(bytes_read) => bytes_read,
             Err(error) => {
                 return Err(BackendError::Io {
                     message: format!(
-                        "Failed to sample worktree file {:?}: {}",
-                        absolute_path, error
+                        "Failed to sample review worktree file {:?}: {}",
+                        relative_path, error
                     ),
                     source: error,
                 });
@@ -516,19 +866,89 @@ fn read_worktree_side_metadata(
     Ok(ReviewSideMetadata {
         exists: true,
         is_binary: sample[..bytes_read].contains(&0),
-        too_large: metadata.len() > MAX_REVIEW_INLINE_BYTES as u64,
+        too_large: entry.metadata.len() > MAX_REVIEW_INLINE_BYTES as u64,
     })
 }
 
 fn read_review_snapshot_metadata(
     repo: &Repository,
-    repo_root: &Path,
+    worktree: &CapabilityDir,
     relative_path: &Path,
 ) -> Result<ReviewSideMetadata> {
     let head = read_head_side_metadata(repo, relative_path)?;
     let index = read_index_side_metadata(repo, relative_path)?;
-    let worktree = read_worktree_side_metadata(repo_root, relative_path)?;
+    let worktree = read_worktree_side_metadata(worktree, relative_path)?;
 
+    Ok(ReviewSideMetadata {
+        exists: head.exists || index.exists || worktree.exists,
+        is_binary: head.is_binary || index.is_binary || worktree.is_binary,
+        too_large: head.too_large || index.too_large || worktree.too_large,
+    })
+}
+
+fn read_frozen_review_snapshot_metadata(
+    repo: &Repository,
+    head_tree: &git2::Tree<'_>,
+    index: &git2::Index,
+    worktree: &CapabilityDir,
+    relative_path: &Path,
+) -> Result<ReviewSideMetadata> {
+    let head = match head_tree.get_path(relative_path) {
+        Ok(entry) => {
+            let entry_id = entry.id();
+            let size = read_blob_header(repo, entry_id, "review_head_blob_metadata")?;
+            if size > MAX_REVIEW_INLINE_BYTES {
+                ReviewSideMetadata {
+                    exists: true,
+                    is_binary: false,
+                    too_large: true,
+                }
+            } else {
+                let blob = repo.find_blob(entry_id).map_err(|error| {
+                    BackendError::git_object_missing(
+                        error,
+                        Some(entry_id.to_string()),
+                        Some("review_head_blob_metadata".to_string()),
+                    )
+                })?;
+                review_blob_side_metadata(blob)
+            }
+        }
+        Err(error)
+            if error.class() == git2::ErrorClass::Odb
+                && error.code() == git2::ErrorCode::NotFound =>
+        {
+            return Err(BackendError::git_object_missing(
+                error,
+                None,
+                Some("review_head_path_metadata".to_string()),
+            ));
+        }
+        Err(_) => ReviewSideMetadata::default(),
+    };
+    let index = match index.get_path(relative_path, 0) {
+        Some(entry) => {
+            let size = read_blob_header(repo, entry.id, "review_index_blob_metadata")?;
+            if size > MAX_REVIEW_INLINE_BYTES {
+                ReviewSideMetadata {
+                    exists: true,
+                    is_binary: false,
+                    too_large: true,
+                }
+            } else {
+                let blob = repo.find_blob(entry.id).map_err(|error| {
+                    BackendError::git_object_missing(
+                        error,
+                        Some(entry.id.to_string()),
+                        Some("review_index_blob_metadata".to_string()),
+                    )
+                })?;
+                review_blob_side_metadata(blob)
+            }
+        }
+        None => ReviewSideMetadata::default(),
+    };
+    let worktree = read_worktree_side_metadata(worktree, relative_path)?;
     Ok(ReviewSideMetadata {
         exists: head.exists || index.exists || worktree.exists,
         is_binary: head.is_binary || index.is_binary || worktree.is_binary,
@@ -542,7 +962,36 @@ pub(super) fn build_git_review_file(
     relative_path: &Path,
     status: &str,
 ) -> Result<GitReviewFileDto> {
-    let (head, index, worktree) = read_review_file_sides(repo, repo_root, relative_path)?;
+    build_git_review_file_with_cancellation(repo, repo_root, relative_path, status, || false)
+}
+
+pub(super) fn build_git_review_file_with_cancellation<F>(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+    status: &str,
+    should_cancel: F,
+) -> Result<GitReviewFileDto>
+where
+    F: Fn() -> bool,
+{
+    let check_cancelled = || {
+        if should_cancel() {
+            Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
+    let retained_worktree = open_review_worktree(repo_root)?;
+    let head = read_head_file_side(repo, relative_path)?;
+    check_cancelled()?;
+    let index = read_index_file_side(repo, relative_path)?;
+    check_cancelled()?;
+    let worktree = read_worktree_file_side(&retained_worktree, relative_path)?;
+    check_cancelled()?;
     let is_binary = head.is_binary || index.is_binary || worktree.is_binary;
     let too_large = head.too_large || index.too_large || worktree.too_large;
     let pending_diff = if is_binary || too_large {
@@ -555,6 +1004,7 @@ pub(super) fn build_git_review_file(
     } else {
         build_review_diff(&head.content, &worktree.content)
     };
+    check_cancelled()?;
     let (has_validated_stage, validated_removed_line_numbers, validated_added_line_numbers) =
         if is_binary || too_large {
             (false, Vec::new(), Vec::new())
@@ -565,6 +1015,7 @@ pub(super) fn build_git_review_file(
                 &worktree.content,
             )
         };
+    check_cancelled()?;
     let absolute_path = repo_root.join(relative_path);
 
     Ok(GitReviewFileDto {
@@ -591,9 +1042,34 @@ pub(super) fn build_git_review_snapshot(
     repo: &Repository,
     repo_root: &Path,
 ) -> Result<GitReviewSnapshotDto> {
-    let staged_stats = build_staged_review_stats(repo)?;
-    let pending_stats = build_pending_review_stats(repo)?;
-    let workdir_stats = build_workdir_review_stats(repo)?;
+    build_git_review_snapshot_with_cancellation(repo, repo_root, || false)
+}
+
+pub(super) fn build_git_review_snapshot_with_cancellation<F>(
+    repo: &Repository,
+    repo_root: &Path,
+    should_cancel: F,
+) -> Result<GitReviewSnapshotDto>
+where
+    F: Fn() -> bool,
+{
+    let check_cancelled = || {
+        if should_cancel() {
+            Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
+    let retained_worktree = open_review_worktree(repo_root)?;
+    let staged_stats = build_staged_review_stats(repo, &should_cancel)?;
+    check_cancelled()?;
+    let pending_stats = build_pending_review_stats(repo, &should_cancel)?;
+    check_cancelled()?;
+    let workdir_stats = build_workdir_review_stats(repo, &should_cancel)?;
+    check_cancelled()?;
     let status = build_git_status(repo)?;
     let staged_paths = {
         let mut paths = status
@@ -637,8 +1113,9 @@ pub(super) fn build_git_review_snapshot(
 
     let mut changes = Vec::with_capacity(visible_files.len());
     for (path, (raw_status, has_pending_visible_change)) in visible_files {
+        check_cancelled()?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let metadata = read_review_snapshot_metadata(repo, repo_root, &relative_path)?;
+        let metadata = read_review_snapshot_metadata(repo, &retained_worktree, &relative_path)?;
         let pending = match (pending_stats.get(&path), workdir_stats.get(&path)) {
             (Some(pending), Some(workdir)) if pending.additions == 0 && pending.deletions == 0 => {
                 Some(workdir)
@@ -691,9 +1168,189 @@ pub(super) fn build_git_review_snapshot(
     })
 }
 
+fn review_delta_status(status: git2::Delta) -> String {
+    match status {
+        git2::Delta::Added | git2::Delta::Untracked => "added",
+        git2::Delta::Deleted => "deleted",
+        git2::Delta::Renamed => "renamed",
+        _ => "modified",
+    }
+    .to_string()
+}
+
+pub(super) fn build_direct_git_review_snapshot_with_cancellation<F>(
+    repo: &Repository,
+    repo_root: &Path,
+    index: &git2::Index,
+    head_id: git2::Oid,
+    should_cancel: F,
+) -> Result<GitReviewSnapshotDto>
+where
+    F: Fn() -> bool,
+{
+    let check_cancelled = || {
+        if should_cancel() {
+            Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
+    let retained_worktree = open_review_worktree(repo_root)?;
+    let head_commit = repo.find_commit(head_id).map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(head_id.to_string()),
+            Some("direct_review_head_commit".to_string()),
+        )
+    })?;
+    let head_tree_id = head_commit.tree_id();
+    let head_tree = head_commit.tree().map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(head_tree_id.to_string()),
+            Some("direct_review_head_tree".to_string()),
+        )
+    })?;
+
+    let mut staged_options = git2::DiffOptions::new();
+    staged_options.max_size(MAX_REVIEW_INLINE_BYTES as i64);
+    let staged_diff =
+        repo.diff_tree_to_index(Some(&head_tree), Some(index), Some(&mut staged_options))?;
+    let staged_stats = build_review_diff_stats(&staged_diff, &should_cancel)?;
+    check_cancelled()?;
+
+    let mut pending_options = git2::DiffOptions::new();
+    pending_options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_typechange(true)
+        .max_size(MAX_REVIEW_INLINE_BYTES as i64);
+    let pending_diff = repo.diff_index_to_workdir(Some(index), Some(&mut pending_options))?;
+    let pending_stats = build_review_diff_stats(&pending_diff, &should_cancel)?;
+    check_cancelled()?;
+
+    let mut workdir_options = git2::DiffOptions::new();
+    workdir_options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_typechange(true)
+        .max_size(MAX_REVIEW_INLINE_BYTES as i64);
+    let workdir_diff = repo.diff_tree_to_workdir(Some(&head_tree), Some(&mut workdir_options))?;
+    let workdir_stats = build_review_diff_stats(&workdir_diff, &should_cancel)?;
+    check_cancelled()?;
+
+    let mut staged_paths = staged_diff
+        .deltas()
+        .filter_map(review_diff_path)
+        .collect::<Vec<_>>();
+    staged_paths.sort();
+    staged_paths.dedup();
+    let staged_path_set = staged_paths.iter().cloned().collect::<HashSet<_>>();
+    let mut visible_by_path: HashMap<String, (String, bool)> = HashMap::new();
+    for delta in pending_diff.deltas() {
+        let status = review_delta_status(delta.status());
+        if let Some(path) = review_diff_path(delta) {
+            visible_by_path.insert(path, (status, true));
+        }
+    }
+    for delta in staged_diff.deltas() {
+        let status = review_delta_status(delta.status());
+        if let Some(path) = review_diff_path(delta) {
+            visible_by_path.entry(path).or_insert((status, false));
+        }
+    }
+    let mut visible_files = visible_by_path.into_iter().collect::<Vec<_>>();
+    visible_files.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut changes = Vec::with_capacity(visible_files.len());
+    for (path, (raw_status, has_pending_visible_change)) in visible_files {
+        check_cancelled()?;
+        let relative_path = validate_repo_relative_file_path(&path)?;
+        let metadata = read_frozen_review_snapshot_metadata(
+            repo,
+            &head_tree,
+            index,
+            &retained_worktree,
+            &relative_path,
+        )?;
+        let pending = match (pending_stats.get(&path), workdir_stats.get(&path)) {
+            (Some(pending), Some(workdir)) if pending.additions == 0 && pending.deletions == 0 => {
+                Some(workdir)
+            }
+            (Some(pending), _) => Some(pending),
+            (None, workdir) => workdir,
+        };
+        let staged = staged_stats.get(&path);
+        let has_validated_stage = staged_path_set.contains(&path);
+        changes.push(GitReviewChangeDto {
+            path: path.clone(),
+            status: normalize_review_status(&raw_status),
+            additions: if has_pending_visible_change {
+                pending.map(|stats| stats.additions).unwrap_or(0)
+            } else {
+                0
+            },
+            deletions: if has_pending_visible_change {
+                pending.map(|stats| stats.deletions).unwrap_or(0)
+            } else {
+                0
+            },
+            has_pending_visible_change,
+            has_validated_stage,
+            validated_removed_line_numbers: Vec::new(),
+            validated_added_line_numbers: Vec::new(),
+            is_binary: metadata.is_binary
+                || pending.is_some_and(|stats| stats.is_binary)
+                || staged.is_some_and(|stats| stats.is_binary),
+            too_large: metadata.too_large,
+            requires_hydration: true,
+            original_content: String::new(),
+            index_content: String::new(),
+            modified_content: String::new(),
+            language: get_file_language(&repo_root.join(&relative_path))
+                .unwrap_or_else(|| "Unknown".to_string()),
+            hunks: Vec::new(),
+        });
+    }
+    let mut conflicted_files = Vec::new();
+    if index.has_conflicts() {
+        for conflict in index.conflicts()? {
+            let conflict = conflict?;
+            let path = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref())
+                .map(|entry| String::from_utf8_lossy(&entry.path).replace('\\', "/"));
+            if let Some(path) = path {
+                conflicted_files.push(path);
+            }
+        }
+        conflicted_files.sort();
+        conflicted_files.dedup();
+    }
+    let is_clean = changes.is_empty() && conflicted_files.is_empty();
+    Ok(GitReviewSnapshotDto {
+        branch: get_branch_name(repo)?.unwrap_or_else(|| "DETACHED".to_string()),
+        staged_paths,
+        changes,
+        conflicted_files,
+        merge_in_progress: is_merge_in_progress(repo),
+        is_clean,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_git_review_file, build_git_review_snapshot, build_review_diff};
+    use super::{
+        build_git_review_file, build_git_review_file_with_cancellation, build_git_review_snapshot,
+        build_git_review_snapshot_with_cancellation, build_review_diff, inspect_worktree_entry,
+        open_review_regular_file, open_review_worktree,
+    };
+    use crate::core::error::BackendError;
     use git2::{Repository, Signature};
     use std::fs;
     use std::path::Path;
@@ -764,6 +1421,96 @@ mod tests {
     }
 
     #[test]
+    fn git_review_snapshot_keeps_exact_paths_with_repeated_spaces() {
+        let (temp, repo) = init_review_repo();
+        let spaced = Path::new("a  b.txt");
+        fs::write(temp.path().join(spaced), "accepted\n").expect("write spaced file");
+        let mut index = repo.index().expect("index");
+        index.add_path(spaced).expect("add spaced file");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("tree");
+        let parent = repo.head().expect("head").peel_to_commit().expect("commit");
+        let signature = Signature::now("Macro", "macro@example.com").expect("signature");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "track spaced file",
+            &tree,
+            &[&parent],
+        )
+        .expect("commit spaced file");
+        drop(tree);
+        drop(parent);
+        fs::write(temp.path().join(spaced), "accepted\npending\n").expect("modify spaced file");
+
+        let snapshot = build_git_review_snapshot(&repo, temp.path()).expect("snapshot");
+        let change = snapshot
+            .changes
+            .iter()
+            .find(|change| change.path == "a  b.txt")
+            .expect("exact spaced path");
+        assert_eq!(change.additions, 1);
+        assert_eq!(change.deletions, 0);
+    }
+
+    #[test]
+    fn git_review_snapshot_stops_during_file_traversal_when_cancelled() {
+        let (temp, repo) = init_review_repo();
+        for index in 0..8 {
+            fs::write(
+                temp.path().join(format!("pending-{index}.txt")),
+                "pending\n",
+            )
+            .expect("write pending file");
+        }
+        let checks = std::cell::Cell::new(0usize);
+
+        let error = match build_git_review_snapshot_with_cancellation(&repo, temp.path(), || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            next > 5
+        }) {
+            Ok(_) => panic!("cancellation must stop snapshot traversal"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "Git review was cancelled."
+        ));
+        assert!(checks.get() > 5);
+    }
+
+    #[test]
+    fn git_review_file_stops_between_bounded_reads_when_cancelled() {
+        let (temp, repo) = init_review_repo();
+        fs::write(temp.path().join("README.md"), "changed\n").expect("modify readme");
+        let checks = std::cell::Cell::new(0usize);
+
+        let error = match build_git_review_file_with_cancellation(
+            &repo,
+            temp.path(),
+            Path::new("README.md"),
+            "modified",
+            || {
+                let next = checks.get() + 1;
+                checks.set(next);
+                next >= 4
+            },
+        ) {
+            Ok(_) => panic!("cancellation must stop file hydration before diff calculation"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "Git review was cancelled."
+        ));
+        assert_eq!(checks.get(), 4);
+    }
+
+    #[test]
     fn git_review_snapshot_detects_large_and_binary_without_content() {
         let (temp, repo) = init_review_repo();
         fs::write(
@@ -786,9 +1533,31 @@ mod tests {
             .expect("binary change");
 
         assert!(large.too_large);
+        assert_eq!(large.additions, 0);
+        assert_eq!(large.deletions, 0);
         assert!(large.modified_content.is_empty());
         assert!(binary.is_binary);
         assert!(binary.modified_content.is_empty());
+    }
+
+    #[test]
+    fn git_review_file_keeps_large_blob_and_worktree_reads_bounded() {
+        let (temp, repo) = init_review_repo();
+        let large_content = "x".repeat(super::MAX_REVIEW_INLINE_BYTES * 4);
+        fs::write(temp.path().join("README.md"), &large_content).expect("write large file");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("stage large file");
+        index.write().expect("write index");
+
+        let file = build_git_review_file(&repo, temp.path(), Path::new("README.md"), "modified")
+            .expect("review large file");
+
+        assert!(file.too_large);
+        assert!(file.index_content.is_empty());
+        assert!(file.worktree_content.is_empty());
+        assert!(file.full_diff.hunks.is_empty());
     }
 
     #[test]
@@ -817,5 +1586,308 @@ mod tests {
         assert_eq!(file.worktree_content, "hello\nstaged\nworld\n");
         assert!(!file.full_diff.hunks.is_empty());
         assert!(file.has_validated_stage);
+    }
+
+    #[test]
+    fn review_reports_an_index_blob_that_is_really_missing_without_touching_worktree() {
+        let (temp, repo) = init_review_repo();
+        let worktree_path = temp.path().join("README.md");
+        fs::write(&worktree_path, "content only in the index\n").expect("modify readme");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new("README.md"))
+            .expect("stage readme");
+        index.write().expect("write index");
+        index.read(true).expect("refresh index");
+        let object_id = index
+            .get_path(Path::new("README.md"), 0)
+            .expect("index entry")
+            .id;
+        let object_path = repo
+            .path()
+            .join("objects")
+            .join(&object_id.to_string()[..2])
+            .join(&object_id.to_string()[2..]);
+        assert!(object_path.is_file(), "test requires a loose staged blob");
+        fs::remove_file(&object_path).expect("remove only the temporary staged blob");
+        let worktree_before = fs::read(&worktree_path).expect("read worktree before review");
+
+        let file_error =
+            match build_git_review_file(&repo, temp.path(), Path::new("README.md"), "modified") {
+                Ok(_) => panic!("missing index blob must fail review hydration"),
+                Err(error) => error,
+            };
+        assert!(matches!(
+            file_error,
+            BackendError::GitObjectMissing {
+                object_id: Some(ref missing_id),
+                ..
+            } if missing_id == &object_id.to_string()
+        ));
+
+        let snapshot_error = match build_git_review_snapshot(&repo, temp.path()) {
+            Ok(_) => panic!("missing index blob must fail review snapshot"),
+            Err(error) => error,
+        };
+        assert!(snapshot_error.is_git_object_missing());
+        assert_eq!(
+            fs::read(&worktree_path).expect("read worktree after review"),
+            worktree_before
+        );
+    }
+
+    #[test]
+    fn review_reads_a_symbolic_link_itself_without_exposing_its_target() {
+        let (temp, repo) = init_review_repo();
+        let outside = temp
+            .path()
+            .parent()
+            .expect("parent")
+            .join("outside-review-secret.txt");
+        fs::write(&outside, "secret outside project\n").expect("write outside file");
+        let link = temp.path().join("linked.txt");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).expect("create link");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+            return;
+        }
+
+        let file = build_git_review_file(&repo, temp.path(), Path::new("linked.txt"), "added")
+            .expect("review link");
+
+        assert_eq!(file.worktree_content, "[external link target]");
+        assert!(!file
+            .worktree_content
+            .contains(&outside.to_string_lossy().to_string()));
+        assert!(!file.worktree_content.contains("secret outside project"));
+        assert!(!temp
+            .path()
+            .join(".git")
+            .join("outside-review-secret.txt")
+            .exists());
+    }
+
+    #[test]
+    fn review_masks_external_link_targets_from_the_index_and_head() {
+        let (temp, repo) = init_review_repo();
+        let outside = temp.path().parent().expect("parent").join(format!(
+            "outside-review-index-head-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let relative = Path::new("accepted-link.txt");
+        let target = outside.to_string_lossy().as_bytes().to_vec();
+        let blob = repo.blob(&target).expect("external link blob");
+        let mut index = repo.index().expect("index");
+        index
+            .add(&git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o120000,
+                uid: 0,
+                gid: 0,
+                file_size: u32::try_from(target.len()).expect("link target size"),
+                id: blob,
+                flags: 0,
+                flags_extended: 0,
+                path: b"accepted-link.txt".to_vec(),
+            })
+            .expect("stage external link");
+        index.write().expect("persist staged link");
+
+        let staged = build_git_review_file(&repo, temp.path(), relative, "added")
+            .expect("review staged link");
+        assert_eq!(
+            staged.index_content,
+            super::EXTERNAL_LINK_TARGET_PLACEHOLDER
+        );
+        assert!(!staged
+            .index_content
+            .contains(&outside.to_string_lossy().to_string()));
+
+        let tree_id = index.write_tree().expect("write accepted link tree");
+        let tree = repo.find_tree(tree_id).expect("accepted link tree");
+        let parent = repo.head().expect("head").peel_to_commit().expect("commit");
+        let signature = Signature::now("Macro", "macro@example.com").expect("signature");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "accept external link",
+            &tree,
+            &[&parent],
+        )
+        .expect("commit external link");
+
+        let accepted = build_git_review_file(&repo, temp.path(), relative, "modified")
+            .expect("review accepted link");
+        assert_eq!(
+            accepted.head_content,
+            super::EXTERNAL_LINK_TARGET_PLACEHOLDER
+        );
+        assert_eq!(
+            accepted.index_content,
+            super::EXTERNAL_LINK_TARGET_PLACEHOLDER
+        );
+        assert!(!accepted
+            .head_content
+            .contains(&outside.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn review_masks_a_relative_link_target_that_escapes_the_worktree() {
+        let (temp, repo) = init_review_repo();
+        let outside_name = format!(
+            "outside-review-relative-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        );
+        let outside = temp.path().parent().expect("parent").join(&outside_name);
+        fs::write(&outside, "secret outside project\n").expect("write outside file");
+        let link = temp.path().join("linked-relative.txt");
+        let relative_target = std::path::PathBuf::from("..").join(&outside_name);
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&relative_target, &link).expect("create relative link");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&relative_target, &link).is_err() {
+            let _ = fs::remove_file(&outside);
+            return;
+        }
+
+        let file = build_git_review_file(
+            &repo,
+            temp.path(),
+            Path::new("linked-relative.txt"),
+            "added",
+        )
+        .expect("review relative link");
+
+        assert_eq!(file.worktree_content, "[external link target]");
+        assert!(!file.worktree_content.contains(&outside_name));
+        assert!(!file.worktree_content.contains("secret outside project"));
+        fs::remove_file(outside).expect("remove outside fixture");
+    }
+
+    #[test]
+    fn review_rejects_a_path_through_a_linked_directory() {
+        let (temp, repo) = init_review_repo();
+        let outside_dir = temp
+            .path()
+            .parent()
+            .expect("parent")
+            .join("outside-review-dir");
+        fs::create_dir_all(&outside_dir).expect("outside dir");
+        fs::write(outside_dir.join("secret.txt"), "secret outside project\n")
+            .expect("write outside file");
+        let link = temp.path().join("linked-dir");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_dir, &link).expect("create link");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside_dir, &link).is_err() {
+            return;
+        }
+
+        let error = match build_git_review_file(
+            &repo,
+            temp.path(),
+            Path::new("linked-dir/secret.txt"),
+            "added",
+        ) {
+            Ok(_) => panic!("review must not cross linked directories"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("crosses a linked directory"));
+    }
+
+    #[test]
+    fn review_file_open_does_not_follow_a_link_swapped_after_inspection() {
+        let (temp, _repo) = init_review_repo();
+        let victim = temp.path().join("victim.txt");
+        fs::write(&victim, "safe\n").expect("initial file");
+        let retained = open_review_worktree(temp.path()).expect("retain worktree");
+        let entry = inspect_worktree_entry(&retained, Path::new("victim.txt"))
+            .expect("inspect file")
+            .expect("file exists");
+        fs::remove_file(&victim).expect("remove inspected file");
+        let outside = TempDir::new().expect("outside directory");
+        fs::write(
+            outside.path().join("secret.txt"),
+            "secret outside project\n",
+        )
+        .expect("outside secret");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), &victim)
+            .expect("swap file for link");
+        #[cfg(windows)]
+        {
+            let status = crate::core::process::background_command("cmd")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(&victim)
+                .arg(outside.path())
+                .status()
+                .expect("swap file for junction");
+            assert!(status.success(), "mklink /J must create the test junction");
+        }
+
+        let error = open_review_regular_file(&entry)
+            .expect_err("a swapped linked entry must not be opened");
+
+        assert!(!error.to_string().contains("secret outside project"));
+        assert_eq!(
+            fs::read_to_string(outside.path().join("secret.txt")).expect("outside preserved"),
+            "secret outside project\n"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn review_never_reads_through_a_windows_junction() {
+        let (temp, repo) = init_review_repo();
+        let outside = TempDir::new().expect("outside directory");
+        fs::write(
+            outside.path().join("secret.txt"),
+            "secret outside project\n",
+        )
+        .expect("outside secret");
+        let junction = temp.path().join("linked-dir");
+        let status = crate::core::process::background_command("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .status()
+            .expect("create junction");
+        assert!(status.success(), "mklink /J must create the test junction");
+
+        let file_error = match build_git_review_file(
+            &repo,
+            temp.path(),
+            Path::new("linked-dir/secret.txt"),
+            "added",
+        ) {
+            Ok(_) => panic!("review must not cross a junction"),
+            Err(error) => error,
+        };
+        assert!(file_error
+            .to_string()
+            .contains("crosses a linked directory"));
+        assert!(!file_error.to_string().contains("secret outside project"));
+
+        let snapshot = build_git_review_snapshot(&repo, temp.path()).expect("safe snapshot");
+        assert!(snapshot
+            .changes
+            .iter()
+            .all(|change| !change.path.contains("secret.txt")
+                && !change.original_content.contains("secret outside project")
+                && !change.index_content.contains("secret outside project")
+                && !change.modified_content.contains("secret outside project")));
+        assert_eq!(
+            fs::read_to_string(outside.path().join("secret.txt")).expect("outside preserved"),
+            "secret outside project\n"
+        );
     }
 }

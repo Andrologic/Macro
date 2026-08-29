@@ -1056,7 +1056,7 @@ describe('useTaskStore merge workflow review loading', () => {
       execution_targets: [{
         projectId: 'project-1',
         branchName: 'direct',
-        executionMode: 'direct',
+        executionMode: 'git',
         checkpointId: 'task-checkpoint-0000000000000001',
         executionKind: 'worktree',
         worktreeKey: 'project-1::direct',
@@ -1068,7 +1068,7 @@ describe('useTaskStore merge workflow review loading', () => {
       name: 'Project One',
       path: '/repos/web',
       directEdit: false,
-      gitSetupState: 'ready',
+      gitSetupState: 'not_git',
     });
     chatStoreConversations = [{ id: 'conv-direct', task_id: task.id }];
     const { useTaskStore } = await loadIsolatedTaskStore();
@@ -1085,7 +1085,9 @@ describe('useTaskStore merge workflow review loading', () => {
 
     expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
     expect(directCheckpointRemoveMock).toHaveBeenCalledWith({
+      taskId: task.id,
       checkpointId: 'task-checkpoint-0000000000000001',
+      projectPath: '/repos/web',
     });
     expect(directCheckpointResolveIdMock).not.toHaveBeenCalled();
     expect(gitStatusMock).not.toHaveBeenCalled();
@@ -1358,7 +1360,9 @@ describe('useTaskStore merge workflow review loading', () => {
 
     expect(recoveryOrder).toEqual(['task', 'checkpoint']);
     expect(directCheckpointRemoveMock).toHaveBeenCalledWith({
+      taskId: task.id,
       checkpointId: 'task-checkpoint-0000000000000001',
+      projectPath: '/project/that/may/move',
     });
     expect(directCheckpointResolveIdMock).not.toHaveBeenCalled();
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
@@ -3134,7 +3138,9 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
     await useTaskStore.getState().revertManualFeatureToDraft({ taskId: 'task-1' });
 
     expect(directCheckpointRemoveMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
       checkpointId: 'task-checkpoint-0000000000000001',
+      projectPath: '/repos/web',
     });
     expect(directCheckpointResolveIdMock).not.toHaveBeenCalled();
     expect(gitStatusMock).not.toHaveBeenCalled();

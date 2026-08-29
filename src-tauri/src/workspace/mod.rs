@@ -14,7 +14,7 @@ use chrono::Utc;
 use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
-use metadata::direct_checkpoint_id;
+use metadata::{direct_checkpoint_id, direct_checkpoint_task_segment};
 use metadata::{
     CreateNewProjectRepoRequest, CreateProjectRequest, DebugResetProjectReportDto,
     ImportGitRepoRequest, ManualFeatureDto, ManualFeatureMergeWorkflowDto, PlanDto,
@@ -2761,6 +2761,119 @@ pub async fn update_manual_feature_merge_workflow(
         })
 }
 
+pub async fn bind_manual_feature_direct_checkpoint(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    project_id: &str,
+    checkpoint_id: &str,
+) -> Result<ManualFeatureDto> {
+    let normalized_task_id = task_id.trim();
+    let normalized_project_id = project_id.trim();
+    let normalized_checkpoint_id = checkpoint_id.trim();
+    let (owner, hash) = normalized_checkpoint_id.rsplit_once('-').ok_or_else(|| {
+        BackendError::Validation("Invalid direct checkpoint identifier.".to_string())
+    })?;
+    if owner != direct_checkpoint_task_segment(normalized_task_id)
+        || hash.len() != 16
+        || !hash.chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(BackendError::Validation(
+            "Invalid direct checkpoint identifier.".to_string(),
+        ));
+    }
+
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let project = state
+        .standalone_projects
+        .iter()
+        .find(|project| project.id == normalized_project_id)
+        .or_else(|| find_project_by_id(&state.project_groups, normalized_project_id));
+    let Some(project) = project else {
+        return Err(BackendError::Validation(
+            "Direct checkpoint binding requires an existing project.".to_string(),
+        ));
+    };
+    if !project.direct_edit || project.git_setup_state != PROJECT_GIT_SETUP_NOT_GIT {
+        return Err(BackendError::Validation(
+            "Direct checkpoint binding requires a confirmed non-Git direct project.".to_string(),
+        ));
+    }
+    let project_path = resolve_project_path(workspace_path, &project.path);
+    let stable_project_path = project_path
+        .canonicalize()
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to resolve direct project path: {error}"),
+            source: error,
+        })?;
+    if direct_checkpoint_id(normalized_task_id, &stable_project_path) != normalized_checkpoint_id {
+        return Err(BackendError::Validation(
+            "Direct checkpoint identity does not match this project.".to_string(),
+        ));
+    }
+    let feature = state
+        .manual_features
+        .iter_mut()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
+        })?;
+    let target = feature
+        .execution_targets
+        .iter_mut()
+        .find(|target| target.project_id == normalized_project_id)
+        .ok_or_else(|| {
+            BackendError::Validation(
+                "Direct checkpoint target does not belong to this task.".to_string(),
+            )
+        })?;
+    let mut binding_changed = false;
+    match target.execution_mode.as_deref() {
+        Some("direct") => {}
+        None => {
+            target.execution_mode = Some("direct".to_string());
+            binding_changed = true;
+        }
+        Some(_) => {
+            return Err(BackendError::Validation(
+                "Direct checkpoint target is not in direct mode.".to_string(),
+            ));
+        }
+    }
+    if let Some(existing) = target.checkpoint_id.as_deref() {
+        if existing != normalized_checkpoint_id {
+            return Err(BackendError::Validation(
+                "Direct checkpoint identity is already bound to another value.".to_string(),
+            ));
+        }
+        if !binding_changed {
+            return Ok(feature.clone());
+        }
+    } else {
+        target.checkpoint_id = Some(normalized_checkpoint_id.to_string());
+        binding_changed = true;
+    }
+    debug_assert!(binding_changed);
+    feature.updated_at = Utc::now().to_rfc3339();
+
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "bind_manual_feature_direct_checkpoint",
+    )
+    .await?;
+    sanitized_state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
+        })
+}
+
 async fn ensure_project_directory(project_path: &Path, operation: &str) -> Result<()> {
     if project_path.exists() {
         let metadata =
@@ -5057,6 +5170,18 @@ fn manual_feature_to_task_value(feature: &ManualFeatureDto) -> Value {
                         }
                         if let Some(repo_path) = target.repo_path.as_ref() {
                             value.insert("repoPath".to_string(), Value::String(repo_path.clone()));
+                        }
+                        if let Some(execution_mode) = target.execution_mode.as_ref() {
+                            value.insert(
+                                "executionMode".to_string(),
+                                Value::String(execution_mode.clone()),
+                            );
+                        }
+                        if let Some(checkpoint_id) = target.checkpoint_id.as_ref() {
+                            value.insert(
+                                "checkpointId".to_string(),
+                                Value::String(checkpoint_id.clone()),
+                            );
                         }
                         Value::Object(value)
                     })
@@ -8175,6 +8300,48 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn manual_feature_projection_keeps_direct_checkpoint_identity() {
+        let feature = ManualFeatureDto {
+            id: "task-direct".to_string(),
+            conversation_id: "conversation".to_string(),
+            draft: false,
+            title: "Direct task".to_string(),
+            description: "Review without project Git".to_string(),
+            status: "InProgress".to_string(),
+            feature_slug: None,
+            task_kind: None,
+            branch_name: Some("direct".to_string()),
+            archived_at: None,
+            archive_reason: None,
+            merged_at: None,
+            base_branch: "direct".to_string(),
+            project_ids: vec!["project-a".to_string()],
+            context_project_ids: Vec::new(),
+            execution_targets: vec![WorkspaceTaskExecutionTargetDto {
+                project_id: "project-a".to_string(),
+                branch_name: "direct".to_string(),
+                target_branch_name: Some("direct".to_string()),
+                execution_mode: Some("direct".to_string()),
+                execution_kind: Some("worktree".to_string()),
+                checkpoint_id: Some("task-direct-0123456789abcdef".to_string()),
+                base_commit_hash: None,
+                worktree_key: "direct:project-a".to_string(),
+                repo_path: Some("C:/project".to_string()),
+            }],
+            merge_workflow: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let projected = manual_feature_to_task_value(&feature);
+        assert_eq!(projected["execution_targets"][0]["executionMode"], "direct");
+        assert_eq!(
+            projected["execution_targets"][0]["checkpointId"],
+            "task-direct-0123456789abcdef"
+        );
+    }
 
     #[test]
     fn parse_wsl_unc_path_supports_wsl_dollar_prefix() {

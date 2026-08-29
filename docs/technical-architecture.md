@@ -706,7 +706,7 @@ Ils sont utilisés pour :
 
 La branche `@macro` sert de branche metadata dédiée.
 
-Elle est synchronisée separatement du code métier.
+Elle est synchronisée séparément du code métier.
 
 Le système doit pouvoir :
 
@@ -738,6 +738,16 @@ Les métadonnées d'un plan direct vivent dans `<projet>/.macro` grâce au scope
 La revue repose sur un dépôt de point de restauration privé stocké dans les données applicatives de Macro. Son worktree pointe vers le dossier du projet, sans y créer de `.git`. Le premier démarrage capture une base ; les commandes natives de revue, validation, dévalidation, restauration et acceptation réutilisent ensuite le modèle de diff existant. Le dépôt privé exclut notamment `.git`, `.macro`, les dépendances, les sorties de build et les secrets usuels. L'identité du point de restauration combine l'identifiant de tâche et le chemin canonique du projet.
 
 Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`. Une cible `blocked` ou `invalid` ne reçoit aucun répertoire de travail et propose de vérifier les réglages du projet. Le runtime distant ne prépare pas ces tâches tant que son contrat d'exécution directe n'est pas pris en charge explicitement.
+
+### 12.8 Objets absents pendant la review
+
+La review conserve libgit2 pour les opérations locales courantes. Si une lecture échoue avec la combinaison exacte `Odb` et `NotFound`, le backend actualise l’ODB, évince le handle `Repository` mis en cache et relance la lecture une seule fois.
+
+Dans un clone partiel déclaré par `extensions.partialClone`, `remote.*.promisor` ou `remote.*.partialCloneFilter`, Macro demande uniquement l’objet connu à Git officiel avec une commande bornée et non interactive. Il actualise ensuite libgit2 avant la relance. Une absence persistante utilise le code stable `GIT_OBJECT_MISSING` et fournit le SHA, l’opération et une sortie Git bornée. Le chemin absolu du profil ou du dépôt n’est pas transmis dans les détails affichés. Ce chemin ne modifie ni le worktree ni l’index et ne lance aucune réparation globale.
+
+Les projets déclarés `not_git` ne passent jamais par les commandes Git du projet. Le panneau utilise leur checkpoint privé sous `direct-checkpoints`. `ensure` initialise le checkpoint avant la première review. Les rafraîchissements suivants ouvrent directement l'identifiant persisté et vérifient le commit `HEAD`, les arbres, les blobs et l'index dans le snapshot. Cette vérification partage un budget de 256 Mio et de 100 000 objets entre l'historique et l'index. Une cible héritée sans identifiant retrouve d'abord un checkpoint existant lié à la tâche et au chemin, puis persiste cet identifiant avant les rafraîchissements suivants. Si le projet a été déplacé, Macro refuse de dériver une nouvelle base tant que l'identité précédente existe. Les identifiants déjà initialisés gardent aussi un marqueur hors du dépôt interne. Ce marqueur empêche une activation tardive de recréer une base après la suppression du checkpoint. La review actualise puis rouvre ce dépôt interne une seule fois. Une absence persistante devient `DIRECT_CHECKPOINT_MISSING`, `DIRECT_CHECKPOINT_PROJECT_MISMATCH` ou `DIRECT_CHECKPOINT_CORRUPT`, sans hydratation réseau. Macro conserve le checkpoint endommagé. Il ne crée une base que pour un identifiant neuf et sans historique. La capture initiale parcourt au plus 4 096 entrées du système de fichiers. Chaque snapshot direct reçoit aussi un identifiant opaque, conservé dix minutes dans un registre backend borné à 256 entrées. Le registre lie les révisions à la tâche, au chemin canonique du projet, au checkpoint et à une empreinte de son `HEAD` et de son index. Une validation ou une restauration ne peut donc pas ajouter un chemin, réutiliser un snapshot après une mutation du checkpoint ou fournir une empreinte calculée par le frontend. Les commandes refusent plus de 4 096 chemins avant de cloner ou de développer la liste IPC. Le calcul des révisions du worktree lit au plus 256 Mio au total, avec une vérification d'annulation entre les blocs de 64 Kio. Le nettoyage d'une restauration vérifie l'empreinte des sauvegardes et des fichiers publiés. Il ne supprime jamais récursivement une entrée remplacée pendant l'opération.
+
+`resolveProjectExecutionMode` centralise la décision du panneau droit. Un mode `direct` ou un `checkpointId` persisté reste direct. `gitSetupState: not_git` interdit le chemin Git. Une configuration sans Git qui n’autorise pas l’édition directe bloque la review avec `DIRECT_MODE_CONFIGURATION_REQUIRED`. Les anciens projets chargés sans `gitSetupState` conservent le chemin Git pour compatibilité.
 
 ---
 
