@@ -1699,4 +1699,126 @@ describe('useAppStore architect plan resolution', () => {
       fastPlan.id
     );
   });
+
+  it('persists Architect plan selections in click order when the first write is slow', async () => {
+    const currentPlan = buildPlan({ id: 'plan-current-persist-race' });
+    const slowPlan = buildPlan({ id: 'plan-slow-persist' });
+    const fastPlan = buildPlan({ id: 'plan-fast-persist' });
+    planById.set(currentPlan.id, currentPlan);
+    planById.set(slowPlan.id, slowPlan);
+    planById.set(fastPlan.id, fastPlan);
+
+    let signalSlowStarted!: () => void;
+    let releaseSlowPersist!: () => void;
+    let signalFastPersisted!: () => void;
+    const slowStarted = new Promise<void>((resolve) => {
+      signalSlowStarted = resolve;
+    });
+    const slowRelease = new Promise<void>((resolve) => {
+      releaseSlowPersist = resolve;
+    });
+    const fastPersisted = new Promise<void>((resolve) => {
+      signalFastPersisted = resolve;
+    });
+    persistActiveArchitectPlanMock
+      .mockImplementationOnce(async () => {
+        signalSlowStarted();
+        await slowRelease;
+      })
+      .mockImplementationOnce(async () => {
+        signalFastPersisted();
+      });
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: currentPlan.id,
+      activePlanContext: {
+        id: currentPlan.id,
+        title: currentPlan.title,
+        label: currentPlan.label,
+        description: currentPlan.description,
+        status: currentPlan.status,
+        targetBranch: currentPlan.targetBranch,
+      },
+    });
+
+    const slowActivation = useAppStore.getState().activateArchitectPlan(slowPlan.id);
+    await slowStarted;
+    const fastActivation = useAppStore.getState().activateArchitectPlan(fastPlan.id);
+
+    expect(persistActiveArchitectPlanMock).toHaveBeenCalledTimes(1);
+    releaseSlowPersist();
+    await fastPersisted;
+    await Promise.all([slowActivation, fastActivation]);
+
+    expect(persistActiveArchitectPlanMock.mock.calls as unknown as Array<[string, string]>).toEqual([
+      ['develop', slowPlan.id],
+      ['develop', fastPlan.id],
+    ]);
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(fastPlan.id);
+  });
+
+  it('continues the Architect plan persistence queue after a rejected write', async () => {
+    const currentPlan = buildPlan({ id: 'plan-current-persist-error' });
+    const failedPlan = buildPlan({ id: 'plan-persist-error' });
+    const recoveredPlan = buildPlan({ id: 'plan-persist-recovered' });
+    planById.set(currentPlan.id, currentPlan);
+    planById.set(failedPlan.id, failedPlan);
+    planById.set(recoveredPlan.id, recoveredPlan);
+
+    let rejectFirstPersist!: (error: Error) => void;
+    let signalFirstStarted!: () => void;
+    let signalSecondPersisted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = resolve;
+    });
+    const firstPersist = new Promise<void>((_resolve, reject) => {
+      rejectFirstPersist = reject;
+    });
+    const secondPersisted = new Promise<void>((resolve) => {
+      signalSecondPersisted = resolve;
+    });
+    persistActiveArchitectPlanMock
+      .mockImplementationOnce(async () => {
+        signalFirstStarted();
+        await firstPersist;
+      })
+      .mockImplementationOnce(async () => {
+        signalSecondPersisted();
+      });
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Architect',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: currentPlan.id,
+      activePlanContext: {
+        id: currentPlan.id,
+        title: currentPlan.title,
+        label: currentPlan.label,
+        description: currentPlan.description,
+        status: currentPlan.status,
+        targetBranch: currentPlan.targetBranch,
+      },
+    });
+
+    const failedActivation = useAppStore.getState().activateArchitectPlan(failedPlan.id);
+    await firstStarted;
+    const recoveredActivation = useAppStore.getState().activateArchitectPlan(recoveredPlan.id);
+    rejectFirstPersist(new Error('Active plan persistence failed'));
+    await secondPersisted;
+    await Promise.all([failedActivation, recoveredActivation]);
+
+    expect(persistActiveArchitectPlanMock.mock.calls as unknown as Array<[string, string]>).toEqual([
+      ['develop', failedPlan.id],
+      ['develop', recoveredPlan.id],
+    ]);
+    expect(useAppStore.getState().activeArchitectPlanId).toBe(recoveredPlan.id);
+  });
 });

@@ -678,6 +678,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     publishedStandaloneTasks,
     activateTask,
     createManualFeatureDraft,
+    reserveManualFeatureCreation,
+    releaseManualFeatureCreation,
     renameTask,
     archiveTask,
     restoreTask,
@@ -698,6 +700,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     publishedStandaloneTasks: state.publishedStandaloneTasks,
     activateTask: state.activateTask,
     createManualFeatureDraft: state.createManualFeatureDraft,
+    reserveManualFeatureCreation: state.reserveManualFeatureCreation,
+    releaseManualFeatureCreation: state.releaseManualFeatureCreation,
     renameTask: state.renameTask,
     archiveTask: state.archiveTask,
     restoreTask: state.restoreTask,
@@ -892,6 +896,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const targetGroupId = getProjectGroupByProjectId(projectGroups, projectId)?.id ?? null;
 
     const taskId = `manual-feature-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (!reserveManualFeatureCreation(taskId)) return;
     const provisionalTitle = taskKind === 'bugfix'
       ? t('implement.manualBugfixUntitled', 'New bugfix')
       : taskKind === 'hotfix'
@@ -957,6 +962,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           : undefined,
       });
     } finally {
+      releaseManualFeatureCreation(taskId);
       setPendingTaskId((current) => (current === taskId ? null : current));
     }
   };
