@@ -4,6 +4,7 @@ mod external_apps;
 pub mod fs;
 pub mod git;
 pub mod mcp;
+pub mod repository_instructions;
 pub mod skills;
 pub mod speech;
 pub mod terminal;
@@ -5405,6 +5406,61 @@ pub struct DbUpdateProviderConfigParams {
     is_enabled: Option<bool>,
 }
 
+fn validate_ai_provider_fields(
+    name: &str,
+    provider_type: &str,
+    base_url: &str,
+    is_local: bool,
+) -> CommandResult<()> {
+    if name.trim().is_empty() {
+        return Err(command_error("Provider name is required."));
+    }
+    if provider_type.trim().is_empty() {
+        return Err(command_error("Provider type is required."));
+    }
+
+    let provider_type = provider_type.trim();
+    let linked_provider = matches!(provider_type, "chatgpt" | "copilot");
+    if base_url.trim().is_empty() {
+        return if linked_provider {
+            Ok(())
+        } else {
+            Err(command_error("Provider base URL is required."))
+        };
+    }
+
+    if provider_type == "copilot" {
+        return if base_url.trim() == "copilot://cli" {
+            Ok(())
+        } else {
+            Err(command_error(
+                "Copilot provider base URL must use the internal copilot://cli endpoint.",
+            ))
+        };
+    }
+
+    let parsed = reqwest::Url::parse(base_url.trim())
+        .map_err(|_| command_error("Provider base URL must be a valid URL."))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(command_error("Provider base URL must use HTTP or HTTPS."));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(command_error(
+            "Provider base URLs must not contain credentials.",
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(command_error(
+            "Provider base URLs must not contain a query or fragment.",
+        ));
+    }
+    if !is_local && parsed.scheme() != "https" {
+        return Err(command_error("Remote provider base URLs must use HTTPS."));
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn db_update_provider_config(
     pool: State<'_, DbPool>,
@@ -5436,6 +5492,27 @@ pub async fn db_update_provider_config(
     } else {
         None
     };
+    let provider_type = params
+        .provider_type
+        .as_deref()
+        .unwrap_or(&previous_config.provider_type)
+        .trim()
+        .to_string();
+    let is_local = params.is_local.unwrap_or(previous_config.is_local);
+    let name = params
+        .name
+        .as_deref()
+        .unwrap_or(&previous_config.name)
+        .trim()
+        .to_string();
+    let base_url = params
+        .base_url
+        .as_deref()
+        .unwrap_or(&previous_config.base_url)
+        .trim()
+        .to_string();
+    validate_ai_provider_fields(&name, &provider_type, &base_url, is_local)?;
+
     if let Some(api_key) = params.api_key.as_deref() {
         if api_key.trim().is_empty() {
             secrets::delete_api_key(&provider_id)
@@ -5445,10 +5522,6 @@ pub async fn db_update_provider_config(
         .map_err(|error| command_error(format!("Failed to update provider secret: {error}")))?;
     }
 
-    let provider_type = params
-        .provider_type
-        .unwrap_or(previous_config.provider_type);
-    let is_local = params.is_local.unwrap_or(previous_config.is_local);
     let has_api_key = params
         .api_key
         .as_deref()
@@ -5462,9 +5535,9 @@ pub async fn db_update_provider_config(
 
     let definition = serde_json::json!({
         "providerType": provider_type,
-        "name": params.name.unwrap_or(previous_config.name),
+        "name": name,
         "enabled": is_enabled,
-        "baseUrl": params.base_url.unwrap_or(previous_config.base_url),
+        "baseUrl": base_url,
         "isLocal": is_local,
     });
     if let Err(error) =
@@ -5493,6 +5566,10 @@ pub async fn db_create_provider_config(
     is_local: bool,
 ) -> CommandResult<ProviderConfig> {
     let pool = get_pool(&pool).await?;
+    validate_ai_provider_fields(&name, &provider_type, &base_url, is_local)?;
+    let name = name.trim().to_string();
+    let provider_type = provider_type.trim().to_string();
+    let base_url = base_url.trim().to_string();
     let id = format!("provider-{}", uuid::Uuid::new_v4().simple());
     let has_api_key = api_key.as_deref().is_some_and(|key| !key.trim().is_empty());
     let definition = serde_json::json!({
@@ -6074,7 +6151,7 @@ mod tests {
         resolve_requested_workspace, resolve_workspace_for_tool_path,
         restore_deleted_provider_secrets, rollback_pending_file_changes,
         rollback_pending_file_changes_via_fs, tool_cancel_workspace, tool_execution_timeout,
-        validate_agent_git_repo_path, validate_checkpoint_size_values,
+        validate_agent_git_repo_path, validate_ai_provider_fields, validate_checkpoint_size_values,
         wsl_mutation_backup_read_script, wsl_mutation_backup_write_script, DbPool,
         ParsedPatchOperation, PendingFileChange, INTERNAL_CHECKPOINT_SNAPSHOTS_FIELD,
         MAX_CHECKPOINT_FILES_PER_MUTATION, MAX_CHECKPOINT_TOTAL_BYTES,
@@ -6095,6 +6172,61 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::sync::Barrier;
+
+    #[test]
+    fn ai_provider_validation_rejects_empty_and_unsafe_endpoints() {
+        assert!(
+            validate_ai_provider_fields("", "openai", "https://api.example.test", false).is_err()
+        );
+        assert!(validate_ai_provider_fields("Example", "openai", "", false).is_err());
+        assert!(
+            validate_ai_provider_fields("Example", "openai", "ftp://example.test", false).is_err()
+        );
+        assert!(
+            validate_ai_provider_fields("Example", "openai", "http://example.test", false).is_err()
+        );
+        assert!(validate_ai_provider_fields(
+            "Example",
+            "openai",
+            "https://user:secret@example.test",
+            false
+        )
+        .is_err());
+        assert!(validate_ai_provider_fields(
+            "Example",
+            "openai",
+            "https://example.test?v=1",
+            false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ai_provider_validation_accepts_remote_local_and_linked_providers() {
+        assert!(validate_ai_provider_fields(
+            "Example",
+            "openai",
+            "https://api.example.test/v1",
+            false
+        )
+        .is_ok());
+        assert!(validate_ai_provider_fields(
+            "Local",
+            "openai-compatible",
+            "http://127.0.0.1:11434/v1",
+            true
+        )
+        .is_ok());
+        assert!(validate_ai_provider_fields("ChatGPT", "chatgpt", "", false).is_ok());
+        assert!(
+            validate_ai_provider_fields("GitHub Copilot", "copilot", "copilot://cli", false)
+                .is_ok()
+        );
+        assert!(
+            validate_ai_provider_fields("GitHub Copilot", "copilot", "copilot://other", false)
+                .is_err()
+        );
+    }
 
     async fn execute_readonly_workspace_tool(
         workspace: &Path,

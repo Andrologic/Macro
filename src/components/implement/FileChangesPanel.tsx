@@ -1395,6 +1395,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const hasReadyToCommit = reviewSummary.actionCounts.ready_to_commit > 0;
   const isDirectEditReview = repositories.length > 0 &&
     repositories.every((repository) => repository.executionMode === 'direct');
+  const isDirectTaskReview = isDirectEditReview || currentTask?.task_kind === 'direct';
   const showValidateChangesButton = currentTask !== null && currentTask.status !== 'Completed';
   const allTaskRepositoriesResolved = Boolean(
     currentTask &&
@@ -1764,7 +1765,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     finishingTaskIdRef.current = currentTask.id;
     setIsFinishingTask(true);
     try {
-      if (!isDirectEditReview) {
+      if (!isDirectTaskReview) {
         const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
         if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
           resetReviewState();
@@ -1798,7 +1799,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const primaryActionTitle = !canFinishTask && isCommitDisabled
     ? commitDisabledReason
     : undefined;
-  const primaryActionIcon = isDirectEditReview
+  const primaryActionIcon = isDirectEditReview || (canFinishTask && isDirectTaskReview)
     ? 'check-circle' as const
     : canFinishTask ? 'git-merge' as const : 'git-commit' as const;
   const primaryActionLabel = canFinishTask

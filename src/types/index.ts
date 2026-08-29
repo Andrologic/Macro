@@ -18,8 +18,13 @@ export type TaskStatus =
 export type MessageRole = 'user' | 'assistant';
 export type ChatCompletionReason =
   | 'completed'
+  | 'length'
+  | 'length_recovered'
+  | 'incomplete'
+  | 'incomplete_recovered'
   | 'tool_turn_limit'
-  | 'post_tool_empty_fallback';
+  | 'post_tool_empty_fallback'
+  | (string & {});
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';
@@ -32,9 +37,10 @@ export type PlanNodeType = 'spec' | 'feature' | 'task' | 'milestone';
 export type PlanNodeTodoStatus = 'pending' | 'in-progress' | 'done';
 export type PlanTaskArtifactContentType = 'markdown' | 'json' | 'text';
 export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bugfix';
-export type StandaloneTaskKind = 'feature' | 'bugfix' | 'hotfix';
+export type StandaloneTaskKind = 'feature' | 'bugfix' | 'hotfix' | 'direct';
 export type CompletionMergePolicy = 'merge_commit' | 'fast_forward';
 export type ProjectGitSetupState =
+  | 'unknown'
   | 'not_git'
   | 'unborn'
   | 'single_main_only'
@@ -129,6 +135,8 @@ export interface PlanNode {
   branchSlug?: string;
   projectId?: string;
   projectIds?: string[];
+  /** Mode snapshot used when this plan target was accepted. */
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   estimatedTime?: string;
   archivedAt?: string | null;
   archiveReason?: string | null;
@@ -201,6 +209,9 @@ export interface TaskExecutionTarget {
   // Git repository later without changing how an existing task must run.
   executionMode?: 'git' | 'direct';
   checkpointId?: string;
+  // Direct Git tasks remember the commit that was checked out at creation so
+  // the review can recognize a completed commit after an application restart.
+  baseCommitHash?: string;
   // `worktree` tasks run in dedicated task worktrees, while
   // `repository_root` targets operate directly in the parent repository.
   executionKind?: 'worktree' | 'repository_root';
@@ -603,7 +614,7 @@ export interface Project {
   gitFlowSettings?: ProjectGitFlowSettings;
   userReadOnly?: boolean;
   directEdit?: boolean;
-  gitSetupState?: Extract<ProjectGitSetupState, 'ready' | 'not_git' | 'unborn'>;
+  gitSetupState?: Extract<ProjectGitSetupState, 'unknown' | 'ready' | 'not_git' | 'unborn'>;
   isReadOnly?: boolean;
   readOnlyReason?: 'manual' | 'missing_git' | 'missing_initial_commit' | 'manual_and_missing_git' | null;
   metadata: ProjectMetadata;
@@ -636,6 +647,8 @@ export interface ProjectMount {
   displayName: string;
   workspacePath: string | null;
   isReadOnly?: boolean;
+  executionMode?: 'git' | 'direct' | 'blocked' | 'invalid';
+  executionModeReason?: string;
 }
 
 export interface FileChange {
@@ -919,6 +932,20 @@ export interface ContextCompactionDecisionAudit {
   contextLimitWarning?: string | null;
   autoCompactionEnabled?: boolean | null;
   formula?: string | null;
+  completionReason?: ChatCompletionReason | null;
+  compactionMethod?: string | null;
+  prunedElements?: Array<{
+    messageId: string;
+    toolName: string;
+    target: string;
+    reason: string;
+    estimatedTokensSaved: number;
+  }>;
+  estimatedTokensGained?: number | null;
+  pruningEstimatedTokensGained?: number | null;
+  checkpointDecision?: string | null;
+  checkpointInvalidated?: boolean | null;
+  promptCacheCompatibility?: string | null;
 }
 
 export type ContextCompactionKind =

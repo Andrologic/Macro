@@ -1,5 +1,6 @@
 import type { GlobalProject, Project, ProjectGroup, ProjectRegistry } from '../types';
 import type { LocalProjectContextState } from './localProjectContext';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 export const isProjectReadOnly = (project: Pick<Project, 'isReadOnly'> | null | undefined): boolean =>
   Boolean(project?.isReadOnly);
@@ -8,12 +9,17 @@ export const isProjectActionable = (project: Pick<Project, 'isReadOnly'> | null 
   Boolean(project) && !project?.isReadOnly;
 
 export const isProjectGitActionable = (
-  project: Pick<Project, 'isReadOnly' | 'gitSetupState' | 'directEdit'> | null | undefined
+  project: Pick<
+    Project,
+    'id' | 'path' | 'isReadOnly' | 'userReadOnly' | 'gitSetupState' | 'directEdit'
+  > | null | undefined
+): boolean => resolveProjectExecutionMode({ project }).mode === 'git';
+
+export const isProjectPlanActionable = (
+  project: Pick<Project, 'id' | 'path' | 'isReadOnly' | 'userReadOnly' | 'gitSetupState' | 'directEdit'> | null | undefined
 ): boolean => {
-  if (!project || project.isReadOnly || project.directEdit) {
-    return false;
-  }
-  return !project.gitSetupState || project.gitSetupState === 'ready';
+  const mode = resolveProjectExecutionMode({ project }).mode;
+  return mode === 'git' || mode === 'direct';
 };
 
 export const toGlobalProject = (group: ProjectGroup): GlobalProject => ({

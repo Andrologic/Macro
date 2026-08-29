@@ -64,7 +64,9 @@ const loadToolsView = async () => {
   mock.module('../search/SettingsSearch', () => ({
     useSettingsSearch: () => ({ query: '', setQuery: () => undefined, matches: () => true }),
     SettingsCollectionHeader: ({ action }: { action?: React.ReactNode }) => <div>{action}</div>,
-    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    SettingsSearchEmpty: ({ message }: { message?: React.ReactNode }) => (
+      <div>{message ?? 'No matching tools'}</div>
+    ),
     matchesSettingsSearch: () => true,
   }));
 
@@ -81,6 +83,10 @@ const loadToolsView = async () => {
         return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? _key;
       },
     }),
+    initReactI18next: {
+      type: '3rdParty',
+      init: () => undefined,
+    },
   }));
 
   mock.module('../../../stores/useToolsStore', () => ({
@@ -272,6 +278,40 @@ describe('ToolsView', () => {
     expect(container?.textContent).not.toContain('Security & approvals');
     expect(container?.textContent).not.toContain('Architect Tool Autonomy');
     expect(loadSettingsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows MCP validation next to the first invalid field', async () => {
+    const { ToolsView } = await loadToolsView();
+    await act(async () => {
+      root?.render(<ToolsView />);
+      await Promise.resolve();
+    });
+
+    const addButton = Array.from(container?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.trim() === 'Add'
+    );
+    await act(async () => {
+      addButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(upsertMcpServerMock).not.toHaveBeenCalled();
+    expect(container?.textContent).toContain('Server name is required.');
+    expect(document.activeElement).toBe(
+      container?.querySelector('input[aria-invalid="true"]') ?? null
+    );
+  });
+
+  it('keeps built-in tools configurable when the selected model lacks native tool calling', async () => {
+    providerState = { selectedSupportsNativeToolCalling: () => false };
+    const { ToolsView } = await loadToolsView();
+    await act(async () => {
+      root?.render(<ToolsView />);
+      await Promise.resolve();
+    });
+
+    const webSearchSwitch = container?.querySelector<HTMLInputElement>('#web_search');
+    expect(webSearchSwitch?.disabled).toBe(false);
   });
 
   it('saves stdio MCP server configuration from the settings form', async () => {

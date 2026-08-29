@@ -306,13 +306,17 @@ const TaskItem: React.FC<TaskItemProps> = ({
         ? t('implement.taskKindHotfix', 'Hotfix')
         : task.task_kind === 'feature'
           ? t('implement.taskKindFeature', 'Feature')
+          : task.task_kind === 'direct'
+            ? t('implement.taskKindDirect', 'Direct')
           : task.draft
             ? t('implement.taskKindPending', 'Agent classification')
             : t('implement.standaloneBadge', 'Standalone');
     contextBadges.push({
       key: 'standalone',
       label: taskKindLabel,
-      icon: task.task_kind ? getPlanKindIconName(task.task_kind) : 'sparkles',
+      icon: task.task_kind === 'direct'
+        ? 'git-commit'
+        : task.task_kind ? getPlanKindIconName(task.task_kind) : 'sparkles',
     });
   }
   if (task.draft) {
@@ -846,6 +850,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     taskKind: StandaloneTaskKind;
     startPoint:
       | { kind: 'new' }
+      | { kind: 'direct'; branchName: string; baseCommitHash: string | null }
       | { kind: 'worktree'; worktree: import('../../services/tauriIpc').GitAvailableWorktreeDto }
       | { kind: 'branch'; branch: import('../../services/tauriIpc').GitAvailableTaskBranchDto };
   }) => {
@@ -890,6 +895,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       ? t('implement.manualBugfixUntitled', 'New bugfix')
       : taskKind === 'hotfix'
         ? t('implement.manualHotfixUntitled', 'New hotfix')
+        : taskKind === 'direct'
+          ? t('implement.manualDirectUntitled', 'New direct task')
         : t('implement.manualFeatureUntitled', 'New feature');
     setPendingTaskId(taskId);
     let conversationId: string | null = null;
@@ -909,9 +916,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         groupId: targetGroupId,
         projectIds: [projectId],
         contextProjectIds: [],
-        baseBranch: taskKind === 'hotfix'
-          ? targetProject.gitFlowSettings?.mainBranch || getGitFlowMainBranch()
-          : targetProject.gitFlowSettings?.baseBranch || getGitFlowBaseBranch(),
+        baseBranch: taskKind === 'direct'
+          ? startPoint.kind === 'direct' ? startPoint.branchName : null
+          : taskKind === 'hotfix'
+            ? targetProject.gitFlowSettings?.mainBranch || getGitFlowMainBranch()
+            : targetProject.gitFlowSettings?.baseBranch || getGitFlowBaseBranch(),
         title: provisionalTitle,
         description: '',
         taskKind,
@@ -919,7 +928,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           ? startPoint.worktree.branchName
           : startPoint.kind === 'branch'
             ? startPoint.branch.name
-            : null,
+            : startPoint.kind === 'direct'
+              ? startPoint.branchName
+              : null,
+        baseCommitHash: startPoint.kind === 'direct' ? startPoint.baseCommitHash : null,
       });
       await activateTask(taskId);
       if (!(await selectConversation(conversation.id))) {
@@ -1173,6 +1185,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         taskMatchesProjectId(task, project.id)
       ).length,
       isReadOnly: Boolean(project.isReadOnly),
+      directEdit: project.directEdit,
+      gitSetupState: project.gitSetupState,
       gitFlowSettings: project.gitFlowSettings,
     })),
     [availableProjects, projectGroups, tasks]
@@ -2077,12 +2091,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         <React.Suspense fallback={null}>
           <CreateImplementTaskDialog
             projects={projectFilterOptions}
-            initialProjectId={
-              projectFilter !== ALL_PROJECTS_FILTER &&
-              editableProjectOptions.some((project) => project.id === projectFilter)
-                ? projectFilter
-                : null
-            }
+            initialProjectId={null}
             isCreating={Boolean(pendingTaskId)}
             onClose={() => {
               if (!pendingTaskId) setShowCreateTaskDialog(false);

@@ -8,6 +8,7 @@ import {
 import { Icon } from '../../../ui/Icon';
 import { Button } from '../../../ui/Button';
 import { Input } from '../../../ui/Input';
+import { Switch } from '../../../ui/Switch';
 import { ConfirmPromptModal } from '../../../ui/ConfirmPromptModal';
 import { notify } from '../../../ui/toastService';
 import { cn } from '../../../../utils/cn';
@@ -21,6 +22,7 @@ import {
   SettingsSearchEmpty,
   useSettingsSearch,
 } from '../../search/SettingsSearch';
+import { SettingsEmptyState } from '../../../shared/SettingsEmptyState';
 
 interface EditingProvider {
   id: string;
@@ -34,6 +36,8 @@ interface EditingProvider {
   providerType: string;
   copilotSendTimeoutMinutes: string;
 }
+
+type ProviderFieldErrors = Partial<Record<'name' | 'baseUrl', string>>;
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -91,6 +95,15 @@ const providerTypeOptions = [
 const isLocalProviderType = (providerType: string): boolean =>
   providerType === 'ollama' || providerType === 'lmstudio';
 
+const defaultBaseUrlByProviderType: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
+  ollama: 'http://localhost:11434/v1',
+  lmstudio: 'http://localhost:1234/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+};
+
 export const ProvidersSettings: React.FC = () => {
   const { t } = useTranslation();
   const {
@@ -128,6 +141,9 @@ export const ProvidersSettings: React.FC = () => {
   const [refreshingCopilotProviderIds, setRefreshingCopilotProviderIds] = useState<string[]>([]);
   const [revealingProviderId, setRevealingProviderId] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<ProviderFieldErrors>({});
+  const nameInputRef = React.useRef<HTMLInputElement | null>(null);
+  const baseUrlInputRef = React.useRef<HTMLInputElement | null>(null);
   const apiKeyInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const filteredProviders = useMemo(() => {
@@ -166,6 +182,12 @@ export const ProvidersSettings: React.FC = () => {
 
   const translateAuthError = (code: string, fallback: string) =>
     t(`providers.authErrors.${code}`, fallback);
+  const getProviderTypeLabel = (providerType: string): string => {
+    if (providerType === 'copilot') return t('providers.types.copilot', 'GitHub Copilot');
+    if (providerType === 'chatgpt') return t('providers.types.chatgpt', 'ChatGPT');
+    const option = providerTypeOptions.find((candidate) => candidate.value === providerType);
+    return option ? t(option.labelKey, option.fallback) : providerType;
+  };
 
   const refreshCopilotProviderStatus = useCallback(
     async (providerId: string, options?: { silent?: boolean }) => {
@@ -448,6 +470,7 @@ export const ProvidersSettings: React.FC = () => {
   };
 
   const handleEdit = (config: ProviderConfig) => {
+    setFieldErrors({});
     const providerSettings = providerSettingsById[config.id];
     setEditingProvider({
       id: config.id,
@@ -466,10 +489,11 @@ export const ProvidersSettings: React.FC = () => {
   };
 
   const handleCreate = () => {
+    setFieldErrors({});
     setEditingProvider({
       id: '',
       name: '',
-      baseUrl: '',
+      baseUrl: 'https://api.openai.com/v1',
       apiKey: '',
       hasStoredApiKey: false,
       apiKeyLoaded: true,
@@ -484,6 +508,42 @@ export const ProvidersSettings: React.FC = () => {
 
   const handleSave = async () => {
     if (!editingProvider) return;
+
+    const nextErrors: ProviderFieldErrors = {};
+    if (!editingProvider.name.trim()) {
+      nextErrors.name = t('providers.validation.nameRequired', 'Provider name is required.');
+    }
+    if (!isLinkedProviderType(editingProvider.providerType)) {
+      const rawBaseUrl = editingProvider.baseUrl.trim();
+      if (!rawBaseUrl) {
+        nextErrors.baseUrl = t('providers.validation.baseUrlRequired', 'Base URL is required.');
+      } else {
+        try {
+          const parsedBaseUrl = new URL(rawBaseUrl);
+          const isSupportedProtocol = parsedBaseUrl.protocol === 'http:' || parsedBaseUrl.protocol === 'https:';
+          const isUnsafeRemoteProtocol = !editingProvider.isLocal && parsedBaseUrl.protocol !== 'https:';
+          if (!isSupportedProtocol || isUnsafeRemoteProtocol || parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
+            nextErrors.baseUrl = t(
+              'providers.validation.baseUrlInvalid',
+              editingProvider.isLocal
+                ? 'Enter a valid HTTP or HTTPS URL without credentials, query parameters, or a fragment.'
+                : 'Enter a valid HTTPS URL without credentials, query parameters, or a fragment.'
+            );
+          }
+        } catch {
+          nextErrors.baseUrl = t('providers.validation.baseUrlInvalid', 'Enter a valid provider URL.');
+        }
+      }
+    }
+    setFieldErrors(nextErrors);
+    if (nextErrors.name) {
+      nameInputRef.current?.focus();
+      return;
+    }
+    if (nextErrors.baseUrl) {
+      baseUrlInputRef.current?.focus();
+      return;
+    }
 
     setSaving(true);
     try {
@@ -674,20 +734,27 @@ export const ProvidersSettings: React.FC = () => {
 
         <div className="max-w-xl space-y-4">
           <div className="space-y-1">
-            <label className="text-sm font-medium">{t('common.name', 'Name')}</label>
+            <label htmlFor="provider-name" className="text-sm font-medium">{t('common.name', 'Name')}</label>
             <Input
+              id="provider-name"
+              ref={nameInputRef}
               value={editingProvider.name}
-              onChange={(event) =>
-                setEditingProvider({ ...editingProvider, name: event.target.value })
-              }
+              aria-invalid={Boolean(fieldErrors.name)}
+              aria-describedby={fieldErrors.name ? 'provider-name-error' : undefined}
+              onChange={(event) => {
+                setFieldErrors((current) => ({ ...current, name: undefined }));
+                setEditingProvider({ ...editingProvider, name: event.target.value });
+              }}
               placeholder={t('providers.form.namePlaceholder', 'e.g. OpenAI, Local Mistral')}
             />
+            {fieldErrors.name && <p id="provider-name-error" className="text-xs text-destructive">{fieldErrors.name}</p>}
           </div>
 
           <div className="grid grid-cols-1 gap-4">
             <div className="space-y-1">
-              <label className="text-sm font-medium">{t('common.type', 'Type')}</label>
+              <label htmlFor="provider-type" className="text-sm font-medium">{t('common.type', 'Type')}</label>
               <select
+                id="provider-type"
                 className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
                 value={editingProvider.providerType}
                 disabled={isLinkedProviderType(editingProvider.providerType)}
@@ -696,8 +763,10 @@ export const ProvidersSettings: React.FC = () => {
                   setEditingProvider({
                     ...editingProvider,
                     providerType,
+                    baseUrl: defaultBaseUrlByProviderType[providerType] ?? '',
                     isLocal: isLocalProviderType(providerType),
                   });
+                  setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
                 }}
               >
                 {isLinkedProviderType(editingProvider.providerType) && (
@@ -720,25 +789,55 @@ export const ProvidersSettings: React.FC = () => {
           {showLinkedFields && (
             <>
               <div className="space-y-1">
-                <label className="text-sm font-medium">
+                <label htmlFor="provider-base-url" className="text-sm font-medium">
                   {t('providers.form.baseUrlLabel', 'Base URL')}
                 </label>
                 <Input
+                  id="provider-base-url"
+                  ref={baseUrlInputRef}
                   value={editingProvider.baseUrl}
-                  onChange={(event) =>
-                    setEditingProvider({ ...editingProvider, baseUrl: event.target.value })
-                  }
+                  aria-invalid={Boolean(fieldErrors.baseUrl)}
+                  aria-describedby={fieldErrors.baseUrl ? 'provider-base-url-error' : undefined}
+                  onChange={(event) => {
+                    setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
+                    setEditingProvider({ ...editingProvider, baseUrl: event.target.value });
+                  }}
                   placeholder={t('providers.form.baseUrlPlaceholder', 'https://api.openai.com/v1')}
+                />
+                {fieldErrors.baseUrl && <p id="provider-base-url-error" className="text-xs text-destructive">{fieldErrors.baseUrl}</p>}
+              </div>
+
+              <div className="flex items-start justify-between gap-4 rounded-md border border-border bg-card/40 px-3 py-2.5">
+                <div className="min-w-0 space-y-0.5">
+                  <label htmlFor="provider-local-endpoint" className="text-sm font-medium">
+                    {t('providers.form.localEndpointLabel', 'Local endpoint')}
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      'providers.form.localEndpointDescription',
+                      'Allow HTTP for a provider running on this device. Leave this off for remote services.'
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  id="provider-local-endpoint"
+                  checked={editingProvider.isLocal}
+                  disabled={isLocalProviderType(editingProvider.providerType)}
+                  onCheckedChange={(isLocal) => {
+                    setFieldErrors((current) => ({ ...current, baseUrl: undefined }));
+                    setEditingProvider({ ...editingProvider, isLocal });
+                  }}
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-sm font-medium">
+                <label htmlFor="provider-api-key" className="text-sm font-medium">
                   {t('providers.form.apiKeyLabel', 'API Key')}
                 </label>
                 <div className="space-y-2">
                   <div className="relative">
                     <Input
+                      id="provider-api-key"
                       ref={apiKeyInputRef}
                       type={showApiKey ? 'text' : 'password'}
                       value={editingProvider.apiKey}
@@ -921,7 +1020,9 @@ export const ProvidersSettings: React.FC = () => {
           />
 
           {providerListItems.length === 0 ? (
-            <SettingsSearchEmpty />
+            <SettingsSearchEmpty
+              message={t('providers.noProvidersFound', 'No providers found matching your search.')}
+            />
           ) : (
         <div className="grid grid-cols-1 gap-3">
           {providerListItems.map((item) => {
@@ -1065,7 +1166,7 @@ export const ProvidersSettings: React.FC = () => {
                     <div>
                       <h4 className="font-medium text-foreground">{provider.name}</h4>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span className="capitalize">{provider.providerType}</span>
+                        <span>{getProviderTypeLabel(provider.providerType)}</span>
                         <span>•</span>
                         <span>{provider.baseUrl}</span>
                       </div>
@@ -1382,7 +1483,7 @@ export const ProvidersSettings: React.FC = () => {
                         </span>
                       ) : (
                         <>
-                          <span className="capitalize">{provider.providerType}</span>
+                          <span>{getProviderTypeLabel(provider.providerType)}</span>
                           <span>•</span>
                           <span>{provider.baseUrl}</span>
                         </>
@@ -1410,22 +1511,15 @@ export const ProvidersSettings: React.FC = () => {
           )}
         </>
       ) : (
-        <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center">
-          <Icon name="server" size={28} className="mx-auto mb-3 text-muted-foreground/60" />
-          <p className="text-sm font-medium text-foreground">
-            {t('chat.noProvidersConfigured', 'No providers configured')}
-          </p>
-          <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
-            {t(
-              'providers.emptyDescription',
-              'Add a provider to connect Macro to an AI service.'
-            )}
-          </p>
-          <Button onClick={handleCreate} className="mt-4 h-9 px-3" size="sm">
+        <SettingsEmptyState
+          icon="server"
+          title={t('chat.noProvidersConfigured', 'No providers configured')}
+          description={t('providers.emptyDescription', 'Add a provider to connect Macro to an AI service.')}
+          action={<Button onClick={handleCreate} className="h-9 px-3" size="sm">
             <Icon name="plus" size={15} />
             {t('providers.add', 'Add Provider')}
-          </Button>
-        </div>
+          </Button>}
+        />
       )}
     </div>
   );

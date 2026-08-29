@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
+import type { ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 const promptDefaults = {
@@ -59,7 +60,9 @@ let importCounter = 0;
 const loadPromptsView = async () => {
   mock.module('../search/SettingsSearch', () => ({
     useSettingsSearch: () => ({ query: '', matches: () => true }),
-    SettingsSearchEmpty: () => <div>No matching settings</div>,
+    SettingsSearchEmpty: ({ message }: { message?: ReactNode }) => (
+      <div>{message ?? 'No matching settings'}</div>
+    ),
   }));
 
   const actualPreferences = await import(
@@ -155,6 +158,10 @@ describe('PromptsView', () => {
       '#promptPlanExplorer'
     ) as HTMLTextAreaElement | null;
     expect(planExplorerField?.value).toBe('Customized plan explorer prompt');
+    const saveButton = Array.from(container?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Save Changes')
+    ) as HTMLButtonElement | undefined;
+    expect(saveButton?.disabled).toBe(true);
 
     const restoreButton = planExplorerField?.parentElement?.querySelector('button');
     await act(async () => {
@@ -163,10 +170,7 @@ describe('PromptsView', () => {
     });
 
     expect(planExplorerField?.value).toBe(promptDefaults.promptPlanExplorer);
-
-    const saveButton = Array.from(container?.querySelectorAll('button') ?? []).find(
-      (button) => button.textContent?.includes('Save Changes')
-    );
+    expect(saveButton?.disabled).toBe(false);
     await act(async () => {
       saveButton?.click();
       await Promise.resolve();
@@ -181,5 +185,6 @@ describe('PromptsView', () => {
       promptRepoAuditor: 'Customized repo auditor prompt',
       smartCommitPrompt: 'Customized commit generation prompt',
     });
+    expect(saveButton?.disabled).toBe(true);
   });
 });

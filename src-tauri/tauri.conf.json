@@ -37,7 +37,8 @@
           "Japanese",
           "Korean"
         ],
-        "displayLanguageSelector": true
+        "displayLanguageSelector": true,
+        "installerHooks": "installer-hooks.nsh"
       }
     }
   },
@@ -64,7 +65,7 @@
         "https://raw.githubusercontent.com/Andrologic/Macro/updates/channels/{{target}}.json"
       ],
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   }

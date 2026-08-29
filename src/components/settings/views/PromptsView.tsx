@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   DEFAULT_SMART_COMMIT_PROMPT,
   PREF_KEYS,
@@ -12,6 +13,7 @@ import {
 import { Icon } from '../../ui/Icon';
 import { cn } from '../../../utils/cn';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
+import { notify } from '../../ui/toastService';
 
 type CommitPromptKey = typeof PREF_KEYS.SMART_COMMIT_PROMPT;
 type PromptEditorKey = PromptPreferenceKey | CommitPromptKey;
@@ -52,7 +54,9 @@ const createDefaultPromptState = (): PromptState =>
 const DEFAULT_PROMPT_STATE = createDefaultPromptState();
 
 export const PromptsView: React.FC = () => {
+  const { t } = useTranslation();
   const [prompts, setPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
+  const [savedPrompts, setSavedPrompts] = useState<PromptState>(DEFAULT_PROMPT_STATE);
   const promptsTouchedRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -63,14 +67,18 @@ export const PromptsView: React.FC = () => {
         ...PROMPT_EDITOR_KEYS,
       ]);
 
-      if (cancelled || promptsTouchedRef.current) {
+      if (cancelled) {
         return;
       }
 
-      setPrompts({
+      const loadedPrompts = {
         ...DEFAULT_PROMPT_STATE,
         ...storedPrompts,
-      });
+      };
+      setSavedPrompts(loadedPrompts);
+      if (!promptsTouchedRef.current) {
+        setPrompts(loadedPrompts);
+      }
     };
 
     let cancelled = false;
@@ -85,6 +93,10 @@ export const PromptsView: React.FC = () => {
     () =>
       PROMPT_EDITOR_KEYS.some((key) => prompts[key] !== getDefaultPromptValue(key)),
     [prompts]
+  );
+  const isDirty = useMemo(
+    () => PROMPT_EDITOR_KEYS.some((key) => prompts[key] !== savedPrompts[key]),
+    [prompts, savedPrompts]
   );
   const handlePromptChange = (key: PromptEditorKey, value: string) => {
     promptsTouchedRef.current = true;
@@ -103,12 +115,18 @@ export const PromptsView: React.FC = () => {
     setIsSaving(true);
     setSaveSuccess(false);
 
-    await savePreferences(prompts);
-
-    setIsSaving(false);
-    setSaveSuccess(true);
-
-    setTimeout(() => setSaveSuccess(false), 3000);
+    try {
+      await savePreferences(prompts);
+      setSavedPrompts(prompts);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (error) {
+      notify.error(t('prompts.saveFailed', 'Unable to save system prompts.'), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleRestoreAll = () => {
@@ -128,10 +146,10 @@ export const PromptsView: React.FC = () => {
               htmlFor={key}
               className="text-sm font-medium text-foreground"
             >
-              {definition.label}
+              {t(`prompts.editors.${key}.label`, definition.label)}
             </label>
             <p className="text-xs text-muted-foreground">
-              {definition.description}
+              {t(`prompts.editors.${key}.description`, definition.description)}
             </p>
           </div>
           <button
@@ -145,7 +163,7 @@ export const PromptsView: React.FC = () => {
                 : 'text-muted-foreground/60 cursor-not-allowed'
             )}
           >
-            Restore
+            {t('common.restore', 'Restore')}
           </button>
         </div>
         <textarea
@@ -163,8 +181,8 @@ export const PromptsView: React.FC = () => {
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300 pb-10">
       <SettingsSectionHeader
         className="mb-4"
-        title="System Prompts"
-        description="Customize the base mode prompts and the internal profile prompts used during plan, review, and repo-audit flows."
+        title={t('prompts.title', 'System Prompts')}
+        description={t('prompts.description', 'Customize the base mode prompts and the internal profile prompts used during plan, review, and repo-audit flows.')}
         action={
           <div className="flex items-center gap-2">
             <button
@@ -178,17 +196,19 @@ export const PromptsView: React.FC = () => {
                   : 'text-muted-foreground/60 cursor-not-allowed'
               )}
             >
-              Restore All
+              {t('prompts.restoreAll', 'Restore All')}
             </button>
             <button
               type="button"
               onClick={handleSave}
-              disabled={isSaving}
+              disabled={isSaving || !isDirty}
               className={cn(
                 'px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-2',
                 saveSuccess
                   ? 'bg-emerald-500/20 text-emerald-500'
-                  : 'bg-primary text-primary-foreground hover:bg-primary/90'
+                  : isDirty
+                    ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                    : 'bg-muted text-muted-foreground cursor-not-allowed'
               )}
             >
               {isSaving ? (
@@ -198,7 +218,7 @@ export const PromptsView: React.FC = () => {
               ) : (
                 <Icon name="edit" size={14} />
               )}
-              {saveSuccess ? 'Saved' : 'Save Changes'}
+              {saveSuccess ? t('common.saved', 'Saved') : t('common.saveChanges', 'Save Changes')}
             </button>
           </div>
         }

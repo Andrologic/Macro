@@ -45,6 +45,7 @@ import {
   getReadyCommitRepositories,
   isRepositoryReadyToCommit,
 } from '../services/smartCommitDrafts';
+import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -114,7 +115,9 @@ export interface ReviewRepositoryState {
   branchName: string;
   planBranchName: string | null;
   executionMode?: 'git' | 'direct';
+  executionKind?: 'worktree' | 'repository_root';
   checkpointId?: string;
+  baseCommitHash?: string;
   changes: FileChangeEntry[];
   stagedPaths: string[];
   selectedChangeId: string | null;
@@ -200,10 +203,13 @@ const EMPTY_STATS: ReviewRepositoryStats = {
 };
 
 interface FileChangesProjectRef {
-  path?: string | null;
+  id: string;
+  path: string;
   name?: string | null;
   directEdit?: boolean;
   gitSetupState?: Project['gitSetupState'];
+  userReadOnly?: boolean;
+  isReadOnly?: boolean;
 }
 
 interface FileChangesTaskLike {
@@ -220,11 +226,19 @@ interface FileChangesTaskLike {
 
 interface FileChangesGitStatus {
   branch: string;
+  head_commit?: { id?: string; hash: string } | null;
   staged_files: Array<{ path: string; status: string }>;
   unstaged_files: Array<{ path: string; status: string }>;
   untracked_files: Array<{ path: string; status: string }>;
   is_clean: boolean;
 }
+
+const hasHeadMovedFromBase = (
+  headCommit: FileChangesGitStatus['head_commit'],
+  baseCommitHash: string,
+): boolean => Boolean(
+  headCommit && headCommit.id !== baseCommitHash && headCommit.hash !== baseCommitHash
+);
 
 type FileChangesTauriDeps = Pick<
   typeof tauriIpc,
@@ -529,6 +543,15 @@ const buildSmartCommitMessageInput = async (
     repositories: await Promise.all(repositories.map(async (repository) => {
       const project = appState.getProjectById(repository.projectId);
       const files = await Promise.all(repository.stagedPaths.map(async (path) => {
+        if (repository.executionMode === 'direct') {
+          const change = repository.changes.find((candidate) => candidate.path === path);
+          return {
+            path,
+            summary: change
+              ? summarizeLineChanges(change.originalContent, change.modifiedContent)
+              : 'Direct workspace change.',
+          };
+        }
         try {
           const pair = await deps.tauri.gitReadFilePair({
             repoPath: repository.worktreePath,
@@ -991,9 +1014,16 @@ const loadRepositoryState = async (params: {
 
   const repositoryId = buildFileChangesRepositoryId(target);
   const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
-  const executionMode = target.executionMode ?? (
-    project?.directEdit && project.gitSetupState === 'not_git' ? 'direct' : 'git'
-  );
+  const executionResolution = resolveProjectExecutionMode({ project, target });
+  if (executionResolution.mode !== 'git' && executionResolution.mode !== 'direct') {
+    throw new Error(
+      tChanges(
+        'implement.errors.projectExecutionInvalid',
+        'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
+      ),
+    );
+  }
+  const executionMode = executionResolution.mode;
   if (executionMode === 'direct' || deps.tauri.gitReviewSnapshot) {
     try {
       const snapshot = executionMode === 'direct'
@@ -1026,6 +1056,17 @@ const loadRepositoryState = async (params: {
         snapshot.hasAcceptedChanges
       ) {
         hasCommittedSnapshot = true;
+      }
+      if (
+        executionMode === 'git' &&
+        target.executionKind === 'repository_root' &&
+        target.baseCommitHash &&
+        changes.length === 0 &&
+        stagedPaths.length === 0 &&
+        snapshot.isClean
+      ) {
+        const status = await deps.tauri.gitStatus(worktreePath);
+        hasCommittedSnapshot = hasHeadMovedFromBase(status.head_commit, target.baseCommitHash);
       }
       if (
         executionMode === 'git' &&
@@ -1062,7 +1103,9 @@ const loadRepositoryState = async (params: {
         branchName: normalizedBranchName,
         planBranchName,
         executionMode,
+        executionKind: target.executionKind,
         checkpointId: target.checkpointId,
+        baseCommitHash: target.baseCommitHash,
         changes,
         stagedPaths,
         selectedChangeId,
@@ -1126,6 +1169,16 @@ const loadRepositoryState = async (params: {
   let hasCommittedSnapshot = Boolean(committedRecord || previousRepository?.commitState === 'committed');
   if (
     !hasCommittedSnapshot &&
+    target.executionKind === 'repository_root' &&
+    target.baseCommitHash &&
+    changes.length === 0 &&
+    stagedPaths.length === 0 &&
+    status.is_clean
+  ) {
+    hasCommittedSnapshot = hasHeadMovedFromBase(status.head_commit, target.baseCommitHash);
+  }
+  if (
+    !hasCommittedSnapshot &&
     changes.length === 0 &&
     stagedPaths.length === 0 &&
     status.is_clean &&
@@ -1159,7 +1212,9 @@ const loadRepositoryState = async (params: {
     branchName: normalizeBranchName(target.branchName),
     planBranchName,
     executionMode: 'git',
+    executionKind: target.executionKind,
     checkpointId: target.checkpointId,
+    baseCommitHash: target.baseCommitHash,
     changes,
     stagedPaths,
     selectedChangeId,
@@ -2387,6 +2442,18 @@ export const createFileChangesStore = (
           checkpointId: repository.checkpointId,
         });
       } else {
+        if (repository.executionKind === 'repository_root') {
+          const status = await deps.tauri.gitStatus(repository.worktreePath);
+          if (status.branch !== repository.branchName) {
+            throw new Error(
+              tChanges(
+                'implement.errors.directTaskBranchChanged',
+                'The current branch changed from {{expected}} to {{actual}}. Switch back before committing this direct task.',
+                { expected: repository.branchName, actual: status.branch },
+              ),
+            );
+          }
+        }
         await ensureNoForeignStagedFiles(deps, repository.worktreePath, repository.stagedPaths);
         hash = await deps.tauri.gitCommit({
           repoPath: repository.worktreePath,

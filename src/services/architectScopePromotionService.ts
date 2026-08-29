@@ -1,4 +1,5 @@
 import type { PlanNode, PredictedBranch, Project, ProjectGitFlowSettings, ProjectGroup } from '../types';
+import i18n from '../i18n';
 import { useAppStore } from '../stores/useAppStore';
 import {
   collectRenderedPlanPredictedBranchDescriptors,
@@ -11,6 +12,7 @@ import {
 } from './architectPlanService';
 import { provisionPlanBranches, type ProvisionPlanBranchesResult } from './architectGitFlowService';
 import { renderArchitectPlanIntegrationBranchName } from './architectPlanKinds';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 interface ArchitectScopePromotionAppState {
   projectGroups: ProjectGroup[];
@@ -46,6 +48,9 @@ const unique = (items: Array<string | null | undefined>): string[] =>
         .filter((item) => item.length > 0)
     )
   );
+
+const tPromotion = (key: string, fallback: string, options?: Record<string, unknown>): string =>
+  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
 
 const getProjectGitFlowSettings = (
   getProjectById: (projectId: string) => Project | undefined,
@@ -131,14 +136,22 @@ export const createArchitectScopePromotionService = (
     if (requestedProjectIds.length === 0) {
       const plan = await deps.getArchitectPlan(params.branchName, params.planId);
       if (!plan) {
-        throw new Error(`Plan ${params.planId} is unavailable.`);
+        throw new Error(tPromotion(
+          'implement.errors.architectPromotionPlanUnavailable',
+          'Plan {{planId}} is unavailable.',
+          { planId: params.planId },
+        ));
       }
       return { plan, promotedProjectIds: [], provision: null };
     }
 
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || plan.status === 'deleted') {
-      throw new Error(`Plan ${params.planId} is unavailable.`);
+      throw new Error(tPromotion(
+        'implement.errors.architectPromotionPlanUnavailable',
+        'Plan {{planId}} is unavailable.',
+        { planId: params.planId },
+      ));
     }
 
     const appState = deps.getAppState();
@@ -150,23 +163,42 @@ export const createArchitectScopePromotionService = (
     const nonContextProjectIds = promotedProjectIds.filter((projectId) => !contextProjectIdSet.has(projectId));
     if (nonContextProjectIds.length > 0) {
       throw new Error(
-        `Cannot promote project${nonContextProjectIds.length > 1 ? 's' : ''} ${nonContextProjectIds.join(', ')} because ${nonContextProjectIds.length > 1 ? 'they are' : 'it is'} outside this task context.`
+        tPromotion(
+          'implement.errors.architectPromotionOutsideContext',
+          'Cannot add {{projects}} because those projects are outside this task context.',
+          { projects: nonContextProjectIds.join(', ') },
+        ),
       );
     }
 
     for (const projectId of promotedProjectIds) {
       const project = appState.getProjectById(projectId) || findProjectInGroups(appState.projectGroups, projectId);
       if (!project) {
-        throw new Error(`Cannot promote project ${projectId}: project is not registered.`);
-      }
-      if (project.isReadOnly) {
-        throw new Error(`Cannot promote project ${project.name || projectId}: the project is read-only.`);
+        throw new Error(tPromotion(
+          'implement.errors.architectPromotionProjectMissing',
+          'Cannot add {{project}} because the project is not registered.',
+          { project: projectId },
+        ));
       }
       if (!project.path?.trim()) {
-        throw new Error(`Cannot promote project ${project.name || projectId}: repository path is missing.`);
+        throw new Error(tPromotion(
+          'implement.errors.architectPromotionPathMissing',
+          'Cannot add {{project}} because its project path is missing.',
+          { project: project.name || projectId },
+        ));
       }
-      if (project.gitSetupState && project.gitSetupState !== 'ready') {
-        throw new Error(`Cannot promote project ${project.name || projectId}: Git is not ready for editable work.`);
+      const mode = resolveProjectExecutionMode({ project }).mode;
+      if (mode !== 'git' && mode !== 'direct') {
+        if (project.userReadOnly || project.isReadOnly) {
+          throw new Error(tPromotion(
+            'implement.errors.projectExecutionReadOnly',
+            'Change the project access setting before continuing.',
+          ));
+        }
+        throw new Error(tPromotion(
+          'implement.errors.projectExecutionBlocked',
+          'Initialize Git or enable direct editing in the project settings before continuing.',
+        ));
       }
     }
 
@@ -186,6 +218,17 @@ export const createArchitectScopePromotionService = (
         ...node,
         projectId: nodeProjectIds[0],
         projectIds: nodeProjectIds,
+        executionModesByProjectId: {
+          ...(node.executionModesByProjectId ?? {}),
+          ...Object.fromEntries(promotedProjectIds.map((projectId) => {
+            const project = appState.getProjectById(projectId) || findProjectInGroups(appState.projectGroups, projectId);
+            const mode = resolveProjectExecutionMode({ project }).mode;
+            if (mode !== 'git' && mode !== 'direct') {
+              throw new Error(`Cannot persist execution mode for project ${projectId}.`);
+            }
+            return [projectId, mode];
+          })),
+        },
       };
     });
 

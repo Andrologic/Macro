@@ -3,7 +3,7 @@
  * Type-safe wrapper around Tauri's invoke function
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isBrowserRuntimeBridgeEnabled } from "./tauriRuntimeBridge";
 import type { TaskCatalogDto } from "./contracts/dtos";
 import type {
   MCPCatalogDto,
@@ -1024,6 +1024,38 @@ export interface FsWriteResultDto {
   unix_mode?: number;
 }
 
+export interface RepositoryInstructionProjectInputDto {
+  projectId: string;
+  projectName: string;
+  rootPath: string;
+  scopePath?: string | null;
+}
+
+export interface RepositoryInstructionSourceDto {
+  projectId: string;
+  projectName: string;
+  sourcePath: string;
+  relativePath: string;
+  depth: number;
+  sizeBytes: number;
+  content: string;
+}
+
+export interface RepositoryInstructionIssueDto {
+  projectId: string;
+  code: string;
+  sourcePath?: string | null;
+  message: string;
+}
+
+export interface RepositoryInstructionLoadResultDto {
+  sources: RepositoryInstructionSourceDto[];
+  issues: RepositoryInstructionIssueDto[];
+  totalBytes: number;
+  fileLimit: number;
+  byteLimit: number;
+}
+
 export interface WorkspaceBootstrapDto {
   plan: Plan | null;
   standaloneProjects: Project[];
@@ -1067,6 +1099,7 @@ export interface WorkspaceArchitectPlanSummaryDto {
   deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
+  executionModesByProjectId?: Record<string, "git" | "direct"> | null;
   conversationId?: string | null;
   projectId?: string | null;
   projectIds?: string[];
@@ -1099,6 +1132,7 @@ export interface WorkspaceArchitectPlanRecordDto {
   deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
+  executionModesByProjectId?: Record<string, "git" | "direct"> | null;
   conversationId?: string | null;
   projectId?: string | null;
   projectIds?: string[];
@@ -1166,6 +1200,10 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
   projectId: string;
   branchName: string;
   targetBranchName?: string | null;
+  executionMode?: 'git' | 'direct' | null;
+  executionKind?: 'worktree' | 'repository_root' | null;
+  checkpointId?: string | null;
+  baseCommitHash?: string | null;
   worktreeKey: string;
   repoPath?: string | null;
 }
@@ -1210,7 +1248,7 @@ export interface WorkspaceManualFeatureDto {
   description: string;
   status: string;
   featureSlug: string | null;
-  taskKind: 'feature' | 'bugfix' | 'hotfix' | null;
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | 'direct' | null;
   branchName: string | null;
   archivedAt: string | null;
   archiveReason: string | null;
@@ -1314,7 +1352,7 @@ export interface TerminalOutputEvent {
   updated_at: string;
 }
 
-export type WorkspaceScope = "default" | "metadata";
+export type WorkspaceScope = "default" | "metadata" | "direct";
 export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface FrontendLogParams {
@@ -1750,6 +1788,20 @@ export async function dbFinalizeConversationReplay(params: {
 
 export async function fsReadFile(path: string): Promise<FsFileContentDto> {
   return invoke<FsFileContentDto>("fs_read_file", { path });
+}
+
+export async function repositoryInstructionsLoad(params: {
+  projects: RepositoryInstructionProjectInputDto[];
+  maxFiles?: number;
+  maxTotalBytes?: number;
+}): Promise<RepositoryInstructionLoadResultDto> {
+  return invoke<RepositoryInstructionLoadResultDto>("repository_instructions_load", {
+    input: {
+      projects: params.projects,
+      maxFiles: params.maxFiles ?? null,
+      maxTotalBytes: params.maxTotalBytes ?? null,
+    },
+  });
 }
 
 export async function fsReadFileWithOptions(params: {
@@ -3224,8 +3276,9 @@ export async function workspaceCreateManualFeatureDraft(params: {
   baseBranch?: string | null;
   title?: string | null;
   description?: string | null;
-  taskKind: 'feature' | 'bugfix' | 'hotfix';
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | 'direct';
   existingBranchName?: string | null;
+  baseCommitHash?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_create_manual_feature_draft",
@@ -3240,6 +3293,7 @@ export async function workspaceCreateManualFeatureDraft(params: {
       description: params.description ?? null,
       taskKind: params.taskKind,
       existingBranchName: params.existingBranchName ?? null,
+      baseCommitHash: params.baseCommitHash ?? null,
     },
   );
 }
@@ -3250,7 +3304,7 @@ export async function workspaceFinalizeManualFeature(params: {
   title: string;
   description: string;
   featureSlug: string;
-  taskKind: 'feature' | 'bugfix' | 'hotfix';
+  taskKind: 'feature' | 'bugfix' | 'hotfix' | 'direct';
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_finalize_manual_feature",
@@ -4222,6 +4276,62 @@ export async function updaterTarget(): Promise<string> {
   return invoke<string>("updater_target");
 }
 
+export interface NativeStagedUpdateDto {
+  currentVersion: string;
+  version: string;
+  date: string | null;
+  notes: string;
+  target: string;
+  sha256: string;
+  packageSize: number;
+  phase: 'staged' | 'activating' | 'failed';
+  activationAttempts: number;
+  error: string | null;
+}
+
+export interface NativeAppUpdateSnapshotDto {
+  currentVersion: string;
+  update: NativeStagedUpdateDto | null;
+}
+
+export async function appUpdateStatus(): Promise<NativeAppUpdateSnapshotDto> {
+  return invoke<NativeAppUpdateSnapshotDto>('app_update_status');
+}
+
+export async function appUpdateCheckAndStage(params: {
+  target: string;
+  allowDowngrades: boolean;
+}): Promise<NativeAppUpdateSnapshotDto> {
+  return invoke<NativeAppUpdateSnapshotDto>('app_update_check_and_stage', {
+    target: params.target,
+    allowDowngrades: params.allowDowngrades,
+  });
+}
+
+export async function appUpdateExitAfterCleanShutdown(): Promise<void> {
+  return invoke<void>('app_update_exit_after_clean_shutdown');
+}
+
+export async function appExitCleanly(): Promise<void> {
+  return invoke<void>('app_exit_cleanly');
+}
+
+export async function appUpdateDiscard(): Promise<void> {
+  return invoke<void>('app_update_discard');
+}
+
+export async function appUpdateInstallNow(): Promise<void> {
+  return invoke<void>('app_update_install_now');
+}
+
+export async function appInstallerCloseRequestPending(): Promise<boolean> {
+  return invoke<boolean>('app_installer_close_request_pending');
+}
+
+export async function appInstallerCloseRespond(accepted: boolean): Promise<void> {
+  return invoke<void>('app_installer_close_respond', { accepted });
+}
+
 // ============ Utility ============
 
 /**
@@ -4238,7 +4348,10 @@ export function isTauriAvailable(): boolean {
     } | null;
   };
 
-  return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function';
+  return (
+    typeof tauriWindow.__TAURI_INTERNALS__?.invoke === 'function' ||
+    isBrowserRuntimeBridgeEnabled()
+  );
 }
 
 export function isRemoteBackendAvailable(): boolean {

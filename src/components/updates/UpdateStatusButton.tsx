@@ -42,8 +42,8 @@ export const getUpdateButtonPresentation = (
       };
     case 'ready':
       return {
-        icon: 'download',
-        label: translate('updates.restartToUpdate', 'Restart to update to v{{version}}', {
+        icon: 'check-circle',
+        label: translate('updates.readyForNextLaunch', 'Update v{{version}} will be installed the next time Macro opens', {
           version: version ?? '',
         }),
         spinning: false,
@@ -96,6 +96,7 @@ export const UpdateStatusButton: React.FC = () => {
     );
 
   if (!isAutomaticUpdaterEnabled()) return null;
+  if (phase === 'idle' || phase === 'upToDate') return null;
 
   const progress = percentage(downloadedBytes, totalBytes);
   const presentation = getUpdateButtonPresentation(
@@ -104,7 +105,7 @@ export const UpdateStatusButton: React.FC = () => {
     progress,
     (key, fallback, options) => t(key, { defaultValue: fallback, ...options }),
   );
-  const isBusy = phase === 'checking' || phase === 'installing';
+  const isBusy = phase === 'installing';
 
   const handleClick = async () => {
     if (
@@ -116,10 +117,8 @@ export const UpdateStatusButton: React.FC = () => {
       return;
     }
 
-    const outcome = await checkForUpdates();
-    if (outcome === 'upToDate') {
-      notify.success(t('updates.upToDate', 'Macro is up to date'));
-    } else if (outcome === 'error') {
+    const outcome = await checkForUpdates({ explicit: true });
+    if (outcome === 'error') {
       notify.error(t('updates.checkFailed', 'Unable to check for updates'), {
         description: useAppUpdateStore.getState().error ?? undefined,
       });
@@ -132,8 +131,8 @@ export const UpdateStatusButton: React.FC = () => {
       size="sm"
       variant="ghost"
       className={cn(
-        'h-6 min-w-6 gap-1 px-1.5 text-[11px]',
-        presentation.emphasis === 'ready' && 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/15 hover:text-emerald-300',
+        'h-7 min-w-7 gap-1 px-1.5 text-[11px] transition-colors duration-150',
+        presentation.emphasis === 'ready' && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary',
         presentation.emphasis === 'error' && 'text-amber-400 hover:text-amber-300',
       )}
       aria-label={presentation.label}
@@ -142,12 +141,27 @@ export const UpdateStatusButton: React.FC = () => {
       onClick={() => void handleClick()}
       data-tour-id="footer-app-update"
     >
-      <Icon
-        name={presentation.icon}
-        size={12}
-        className={cn('shrink-0', presentation.spinning && 'animate-spin')}
-      />
-      {phase === 'downloading' && progress !== null ? <span>{progress}%</span> : null}
+      {phase === 'downloading' ? (
+        <span
+          className="relative grid h-4 w-4 shrink-0 place-items-center rounded-full transition-transform duration-150"
+          style={progress === null ? undefined : {
+            background: `conic-gradient(currentColor ${progress * 3.6}deg, color-mix(in srgb, currentColor 18%, transparent) 0deg)`,
+          }}
+          aria-hidden="true"
+        >
+          <span className="absolute inset-[2px] rounded-full bg-background" />
+          <Icon name="download" size={9} className="relative" />
+        </span>
+      ) : (
+        <Icon
+          name={presentation.icon}
+          size={14}
+          className={cn(
+            'shrink-0 transition-opacity duration-150',
+            presentation.spinning && 'motion-safe:animate-spin',
+          )}
+        />
+      )}
       {phase === 'ready' ? <span className="hidden max-w-36 truncate xl:inline">v{update?.version}</span> : null}
     </Button>
   );

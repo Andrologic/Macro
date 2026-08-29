@@ -5,8 +5,8 @@ import React, {
   useMemo,
   useState,
 } from 'react';
-import { useTranslation } from 'react-i18next';
 import { SearchBar } from '../../ui/SearchBar';
+import { SettingsEmptyState } from '../../shared/SettingsEmptyState';
 
 type SettingsSearchContextValue = {
   query: string;
@@ -122,11 +122,13 @@ export const SettingsCollectionHeader: React.FC<SettingsCollectionHeaderProps> =
   </div>
 );
 
-export const SettingsSearchEmpty: React.FC = () => {
-  const { t } = useTranslation();
-  return (
-    <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
-      {t('settings.searchNoResults', 'No matching settings')}
-    </div>
-  );
-};
+export interface SettingsSearchEmptyProps {
+  message: React.ReactNode;
+}
+
+export const SettingsSearchEmpty: React.FC<SettingsSearchEmptyProps> = ({ message }) => (
+  <SettingsEmptyState
+    description={message}
+    className="py-10"
+  />
+);

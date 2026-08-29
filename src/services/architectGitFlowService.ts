@@ -1,4 +1,4 @@
-import type { PlanNode, PredictedBranch, ProjectGitFlowSettings, ProjectGroup } from '../types';
+import type { PlanNode, PredictedBranch, Project, ProjectGitFlowSettings, ProjectGroup } from '../types';
 import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import {
@@ -59,6 +59,7 @@ import {
   type MergeWorkflowResolutionAction,
   type MergeWorkflowStrategy,
 } from './mergeWorkflow';
+import { resolvePlanProjectExecutionMode } from './planExecutionModes';
 
 const BRANCH_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
@@ -575,6 +576,7 @@ const resolvePlanProjectRepoPathsFromAppState = (
   const resolved: ResolvedProjectRepository[] = [];
   const ignoredProjectIds: string[] = [];
   const blockingProjectIds: string[] = [];
+  let directProjectCount = 0;
 
   for (const projectId of candidateProjectIds) {
     if (isSyntheticProjectId(projectId)) {
@@ -583,6 +585,20 @@ const resolvePlanProjectRepoPathsFromAppState = (
     }
 
     const project = appState.getProjectById(projectId);
+    const executionMode = resolvePlanProjectExecutionMode({
+      projectId,
+      nodes: plan.nodes,
+      executionModesByProjectId: plan.executionModesByProjectId,
+      project: project as Project | null | undefined,
+    });
+    if (executionMode === 'direct') {
+      directProjectCount += 1;
+      continue;
+    }
+    if (executionMode !== 'git') {
+      blockingProjectIds.push(projectId);
+      continue;
+    }
     const directRepoPath = normalizeProjectRegistryPath(project?.path);
 
     if (registrySnapshot.validProjectIdSet.has(projectId)) {
@@ -612,6 +628,9 @@ const resolvePlanProjectRepoPathsFromAppState = (
     );
   }
 
+  if (resolved.length === 0 && directProjectCount === candidateProjectIds.length) {
+    return [];
+  }
   if (resolved.length === 0) {
     throw new Error(
       options?.errorMessage || 'Unable to resolve repository path for this plan. Select at least one project before continuing.'
@@ -1351,18 +1370,7 @@ export const createArchitectGitFlowService = (
     );
 
     if (!deps.tauri.isTauriAvailable()) {
-      const existingFeatureBranches = Array.from(featureBranchesByProject.values()).flat();
-      return {
-        planBranchName: renderPlanBranchNameForProject({
-          plan,
-          projectId: plan.projectId || plan.projectIds?.[0] || 'project',
-          getProjectById: deps.getAppState().getProjectById,
-        }),
-        repositories: [],
-        createdPlanBranch: false,
-        createdFeatureBranches: [],
-        existingFeatureBranches,
-      };
+      throw new Error('Plan execution preparation requires the desktop runtime.');
     }
 
     const repositories = resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {

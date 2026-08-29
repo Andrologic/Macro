@@ -1,58 +1,74 @@
 import { describe, expect, mock, test } from 'bun:test';
 import {
   TauriAppUpdaterClient,
-  type NativeDownloadEvent,
-  type NativeUpdate,
   type NativeUpdaterBindings,
 } from './appUpdater';
+import type { NativeAppUpdateSnapshotDto } from './tauriIpc';
 
-const createFixture = () => {
-  const close = mock(async () => undefined);
-  const install = mock(async () => undefined);
-  const download = mock(async (onEvent?: (event: NativeDownloadEvent) => void) => {
-    onEvent?.({ event: 'Started', data: { contentLength: 12 } });
-    onEvent?.({ event: 'Progress', data: { chunkLength: 12 } });
-    onEvent?.({ event: 'Finished' });
-  });
-  const update: NativeUpdate = {
-    currentVersion: '0.1.0',
+const snapshot = (currentVersion = '0.1.0'): NativeAppUpdateSnapshotDto => ({
+  currentVersion,
+  update: {
+    currentVersion,
     version: '0.2.0',
     date: '2026-08-19T10:20:30Z',
-    body: '## Changes',
-    close,
-    install,
-    download,
-  };
-  const check = mock(async (_options?: { timeout?: number }): Promise<NativeUpdate | null> => update);
-  const relaunch = mock(async () => undefined);
+    notes: '## Changes',
+    target: 'stable-windows-x86_64',
+    sha256: 'abc',
+    packageSize: 12,
+    phase: 'staged',
+    activationAttempts: 0,
+    error: null,
+  },
+});
+
+const createFixture = (currentVersion = '0.1.0') => {
+  let progressListener: ((event: {
+    type: 'started' | 'progress' | 'finished';
+    contentLength?: number;
+    chunkLength?: number;
+  }) => void) | null = null;
+  const status = mock(async () => ({ currentVersion, update: null }));
+  const checkAndStage = mock(async () => {
+    progressListener?.({ type: 'started', contentLength: 12 });
+    progressListener?.({ type: 'progress', chunkLength: 12 });
+    progressListener?.({ type: 'finished' });
+    return snapshot(currentVersion);
+  });
+  const installNow = mock(async () => undefined);
+  const discard = mock(async () => undefined);
+  const unlisten = mock(() => undefined);
   const bindings: NativeUpdaterBindings = {
-    getVersion: mock(async () => '0.1.0'),
     getUpdaterTarget: mock(async () => 'windows-x86_64'),
-    check,
-    relaunch,
+    status,
+    checkAndStage,
+    installNow,
+    discard,
+    listenForProgress: mock(async (listener) => {
+      progressListener = listener;
+      return unlisten;
+    }),
   };
-  return { bindings, check, close, download, install, relaunch, update };
+  return { bindings, checkAndStage, discard, installNow, status, unlisten };
 };
 
 describe('TauriAppUpdaterClient', () => {
-  test('maps metadata and native download progress', async () => {
+  test('stages an update and maps native progress', async () => {
     const fixture = createFixture();
     const client = new TauriAppUpdaterClient(async () => fixture.bindings);
     const events: unknown[] = [];
 
-    await expect(client.check()).resolves.toEqual({
+    await expect(client.checkAndDownload((event) => events.push(event))).resolves.toEqual({
       currentVersion: '0.1.0',
       update: {
         currentVersion: '0.1.0',
         version: '0.2.0',
         date: '2026-08-19T10:20:30Z',
         notes: '## Changes',
+        activationAttempts: 0,
+        activationError: null,
       },
     });
-    await client.download((event) => events.push(event));
-
-    expect(fixture.check).toHaveBeenCalledWith({
-      timeout: 30_000,
+    expect(fixture.checkAndStage).toHaveBeenCalledWith({
       target: 'stable-windows-x86_64',
       allowDowngrades: false,
     });
@@ -61,84 +77,42 @@ describe('TauriAppUpdaterClient', () => {
       { type: 'progress', chunkLength: 12 },
       { type: 'finished' },
     ]);
+    expect(fixture.unlisten).toHaveBeenCalledTimes(1);
   });
 
-  test('closes an obsolete update before checking again', async () => {
-    const fixture = createFixture();
-    const client = new TauriAppUpdaterClient(async () => fixture.bindings);
-
-    await client.check();
-    fixture.check.mockImplementationOnce(async () => null);
-    await expect(client.check()).resolves.toEqual({ currentVersion: '0.1.0', update: null });
-
-    expect(fixture.close).toHaveBeenCalledTimes(1);
-  });
-
-  test('checks the preview target without allowing downgrades', async () => {
+  test('selects the preview target without allowing downgrades', async () => {
     const fixture = createFixture();
     const client = new TauriAppUpdaterClient(
       async () => fixture.bindings,
       async () => 'preview',
     );
 
-    await client.check();
-
-    expect(fixture.check).toHaveBeenCalledWith({
-      timeout: 30_000,
+    await client.checkAndDownload(() => undefined);
+    expect(fixture.checkAndStage).toHaveBeenCalledWith({
       target: 'preview-windows-x86_64',
       allowDowngrades: false,
     });
   });
 
-  test('allows returning from a prerelease to the stable channel', async () => {
-    const fixture = createFixture();
-    fixture.bindings.getVersion = mock(async () => '0.2.0-nightly.20260825.12');
-    const client = new TauriAppUpdaterClient(
-      async () => fixture.bindings,
-      async () => 'stable',
-    );
+  test('allows returning from a prerelease to stable', async () => {
+    const fixture = createFixture('0.2.0-nightly.20260825.12');
+    const client = new TauriAppUpdaterClient(async () => fixture.bindings);
 
-    await client.check();
-
-    expect(fixture.check).toHaveBeenCalledWith({
-      timeout: 30_000,
+    await client.checkAndDownload(() => undefined);
+    expect(fixture.checkAndStage).toHaveBeenCalledWith({
       target: 'stable-windows-x86_64',
       allowDowngrades: true,
     });
   });
 
-  test('installs, closes the native resource, and relaunches in order', async () => {
+  test('delegates installation and discard to the native updater', async () => {
     const fixture = createFixture();
-    const order: string[] = [];
-    fixture.install.mockImplementation(async () => { order.push('install'); });
-    fixture.close.mockImplementation(async () => { order.push('close'); });
-    fixture.relaunch.mockImplementation(async () => { order.push('relaunch'); });
     const client = new TauriAppUpdaterClient(async () => fixture.bindings);
 
-    await client.check();
     await client.installAndRelaunch();
+    await client.reset();
 
-    expect(order).toEqual(['install', 'close', 'relaunch']);
-    await expect(client.download(() => undefined)).rejects.toThrow(
-      'No update is available to download.',
-    );
-  });
-
-  test('retries only the relaunch after the update was installed', async () => {
-    const fixture = createFixture();
-    fixture.relaunch
-      .mockImplementationOnce(async () => {
-        throw new Error('relaunch failed');
-      })
-      .mockImplementationOnce(async () => undefined);
-    const client = new TauriAppUpdaterClient(async () => fixture.bindings);
-
-    await client.check();
-    await expect(client.installAndRelaunch()).rejects.toThrow('relaunch failed');
-    await expect(client.installAndRelaunch()).resolves.toBeUndefined();
-
-    expect(fixture.install).toHaveBeenCalledTimes(1);
-    expect(fixture.close).toHaveBeenCalledTimes(1);
-    expect(fixture.relaunch).toHaveBeenCalledTimes(2);
+    expect(fixture.installNow).toHaveBeenCalledTimes(1);
+    expect(fixture.discard).toHaveBeenCalledTimes(1);
   });
 });

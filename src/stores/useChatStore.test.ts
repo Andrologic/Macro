@@ -4,10 +4,12 @@ import type {
   AppMode,
   Conversation,
   MCPServer,
+  PlanNode,
   ProjectGroup,
   SkillManifest,
 } from '../types';
 import type { ScopedTurnConfiguration } from '../services/configurationClient';
+import type { RepositoryInstructionLoadResultDto } from '../services/tauriIpc';
 import {
   type ArchitectPlanRecord,
   type ArchitectPlanStatus,
@@ -90,6 +92,8 @@ const projectGroups: ProjectGroup[] = [
         mountName: 'web',
         created_at: '2026-03-19T00:00:00.000Z',
         status: 'active',
+        gitSetupState: 'ready',
+        directEdit: false,
         metadata: {
           description: '',
           tags: [],
@@ -111,10 +115,12 @@ const appState = {
   activeThemeId: 'macro-dark',
   codeOverflowMode: 'wrap' as const,
   activeArchitectPlanId: null as string | null,
+  planNodes: [] as PlanNode[],
   activePlanContext: null as {
     id?: string;
     targetBranch: string;
     status?: ArchitectPlanStatus;
+    executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   } | null,
   architectPlanSwitch: {
     requestId: 0,
@@ -159,7 +165,9 @@ const appState = {
     appState.pendingArchitectPlanActivationPayload = null;
     return payload;
   },
-  setActivePlanContext: (_context: unknown) => undefined,
+  setActivePlanContext: (context: unknown) => {
+    appState.activePlanContext = context as typeof appState.activePlanContext;
+  },
   setSelectedTask: (taskId: string | null) => {
     appState.selectedTaskId = taskId;
   },
@@ -201,9 +209,11 @@ const appState = {
       }
 
       appState.activeArchitectPlanId = plan.id;
+      appState.planNodes = plan.nodes;
       appState.activePlanContext = {
         id: plan.id,
         targetBranch: options?.targetBranch ?? plan.targetBranch,
+        executionModesByProjectId: plan.executionModesByProjectId,
       };
       appState.architectPlanSwitch = {
         requestId: appState.architectPlanSwitch.requestId + 1,
@@ -897,6 +907,22 @@ const fsReadFileWithOptionsMock = mock(async (_params: {
   is_binary: false,
   size: 30,
   encoding: 'utf-8',
+}));
+const repositoryInstructionsLoadMock = mock(async (_params: {
+  projects: Array<{
+    projectId: string;
+    projectName: string;
+    rootPath: string;
+    scopePath?: string | null;
+  }>;
+  maxFiles?: number;
+  maxTotalBytes?: number;
+}): Promise<RepositoryInstructionLoadResultDto> => ({
+  sources: [],
+  issues: [],
+  totalBytes: 0,
+  fileLimit: 16,
+  byteLimit: 64 * 1024,
 }));
 const fsExistsMock = mock(async () => true);
 const fsWriteFileMock = mock(async (params: { path: string; content: string }) => ({
@@ -1853,6 +1879,7 @@ const registerUseChatStoreMocks = async () => {
     }),
     fsExists: fsExistsMock,
     fsReadFileWithOptions: fsReadFileWithOptionsMock,
+    repositoryInstructionsLoad: repositoryInstructionsLoadMock,
 	    fsWriteFile: fsWriteFileMock,
 	    fsDelete: fsDeleteMock,
 	    updateMessage: updateMessageMock,
@@ -1937,7 +1964,7 @@ const registerUseChatStoreMocks = async () => {
       actionableProjectIds: ['project-1'],
       contextProjectIds: [],
       taskId: null,
-      branchName: 'develop',
+      branchName: projectGroups[0]?.projects[0]?.gitSetupState === 'not_git' ? null : 'develop',
       workspacePath: 'C:/repos/web',
       defaultWorkspacePath: 'C:/repos/web/.macro/worktrees/task-1',
       workspacePathsByProjectId: {
@@ -1952,6 +1979,11 @@ const registerUseChatStoreMocks = async () => {
           displayName: 'Web',
           workspacePath: 'C:/repos/web/.macro/worktrees/task-1',
           isReadOnly: false,
+          executionMode:
+            projectGroups[0]?.projects[0]?.gitSetupState === 'not_git' &&
+            projectGroups[0]?.projects[0]?.directEdit
+              ? 'direct'
+              : 'git',
         },
         {
           projectId: 'project-2',
@@ -1960,6 +1992,7 @@ const registerUseChatStoreMocks = async () => {
           displayName: 'API',
           workspacePath: 'C:/repos/api/.macro/worktrees/task-1',
           isReadOnly: true,
+          executionMode: 'git',
         },
       ],
     })),
@@ -2115,9 +2148,11 @@ const activateArchitectPlanForTest = (
   const plan = createScenarioPlan('started', overrides);
   architectPlans.set(plan.id, plan);
   appState.activeArchitectPlanId = plan.id;
+  appState.planNodes = plan.nodes;
   appState.activePlanContext = {
     id: plan.id,
     targetBranch: plan.targetBranch,
+    executionModesByProjectId: plan.executionModesByProjectId,
   };
   return plan;
 };
@@ -2464,6 +2499,7 @@ const useChatStoreScenarioContext = {
   COMPACTED_STATE_MARKER,
   DEFAULT_PROVIDER_CONFIGS,
   appState,
+  projectGroups,
   appSettingValues,
   activateArchitectPlanForTest,
   architectPlanConversationSyncRecords,
@@ -2509,6 +2545,7 @@ const useChatStoreScenarioContext = {
   fetchWebPageMock,
   flushAsyncWork,
   fsReadFileWithOptionsMock,
+  repositoryInstructionsLoadMock,
   fsExistsMock,
   fsWriteFileMock,
   fsDeleteMock,
@@ -2530,7 +2567,6 @@ const useChatStoreScenarioContext = {
   loadChatStore,
   importMessagesMock,
   providerState,
-  projectGroups,
   queueSendChatNonStreamingImplementation,
   registerUseChatStoreMocks,
   savePreferenceForTest,
@@ -2633,6 +2669,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.activeThemeId = 'macro-dark';
     appState.codeOverflowMode = 'wrap';
     appState.activeArchitectPlanId = null;
+    appState.planNodes = [];
     appState.activePlanContext = null;
     appState.architectPlanSwitch = {
       requestId: 0,
@@ -2646,9 +2683,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appState.pendingArchitectPlanActivationPayload = null;
     appState.strategyMutationPreview = null;
     const defaultProject = projectGroups[0]?.projects[0];
+    projectGroups[0]?.projects.splice(1);
     if (defaultProject) {
-      delete defaultProject.directEdit;
-      delete defaultProject.gitSetupState;
+      defaultProject.directEdit = false;
+      defaultProject.gitSetupState = 'ready';
     }
     const { useSkillsStore } = await import('./useSkillsStore');
     useSkillsStore.setState({
@@ -2741,6 +2779,14 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       is_binary: false,
       size: 30,
       encoding: 'utf-8',
+    }));
+    repositoryInstructionsLoadMock.mockClear();
+    repositoryInstructionsLoadMock.mockImplementation(async () => ({
+      sources: [],
+      issues: [],
+      totalBytes: 0,
+      fileLimit: 16,
+      byteLimit: 64 * 1024,
     }));
     fsExistsMock.mockClear();
     fsExistsMock.mockImplementation(async () => true);

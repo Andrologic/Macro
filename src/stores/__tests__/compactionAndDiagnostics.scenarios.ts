@@ -718,7 +718,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
       expect(
         useChatStore.getState().conversationCompactionStatusById['chat-conv'],
       ).toMatchObject({
-        phase: 'compacted',
+        phase: 'compacting',
         upToMessageId: 'a1',
         summaryText: 'Previous compacted summary.',
         kind: 'manual',
@@ -881,7 +881,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
 
       expect(
         useChatStore.getState().conversationCompactionStatusById['chat-conv'],
-      ).toBeUndefined();
+      ).toMatchObject({ phase: 'compacting' });
 
       await flushAsyncWork();
 
@@ -1003,7 +1003,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
       expect(
         useChatStore.getState().conversationCompactionStatusById['chat-conv'],
       ).toMatchObject({
-        phase: 'compacted',
+        phase: 'compacting',
         summaryText: 'Previous persisted compacted summary.',
       });
 
@@ -2039,6 +2039,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
     });
 
     it('uses the completed stream provider for the final full context refresh', async () => {
+      context.tauriAvailable = true;
       appState.mode = 'Chat';
       providerState.providerConfigs = [
         { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-1', providerType: 'openai' },

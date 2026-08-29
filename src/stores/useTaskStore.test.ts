@@ -221,6 +221,8 @@ const appStoreState = {
           id: 'project-1',
           name: 'Project One',
           path: '/repos/web',
+          gitSetupState: 'ready' as 'ready' | 'unborn' | 'not_git' | 'unknown',
+          directEdit: false,
         },
       ],
     },
@@ -230,7 +232,7 @@ const appStoreState = {
     name: string;
     path: string;
     directEdit?: boolean;
-    gitSetupState?: 'ready' | 'not_git';
+    gitSetupState?: 'ready' | 'unborn' | 'not_git' | 'unknown';
   }>,
   activeArchitectPlanId: null as string | null,
   activePlanContext: null as { targetBranch?: string | null } | null,
@@ -239,7 +241,7 @@ const appStoreState = {
     name: string;
     path: string;
     directEdit?: boolean;
-    gitSetupState?: 'ready' | 'not_git';
+    gitSetupState?: 'ready' | 'unborn' | 'not_git' | 'unknown';
   },
   setMode: mock((_mode: 'Implement') => undefined),
   setSelectedTask: mock((_taskId: string | null) => undefined),
@@ -394,6 +396,31 @@ const flushPromises = async () => {
 
 beforeEach(() => {
   installTauriRuntimeMock();
+  appStoreState.selectedTaskId = null;
+  appStoreState.selectedGroupId = 'group-1';
+  appStoreState.selectedProjectId = null;
+  appStoreState.projectGroups = [{
+    id: 'group-1',
+    name: 'Group One',
+    isOpen: true,
+    projects: [{
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      gitSetupState: 'ready' as const,
+      directEdit: false,
+    }],
+  }];
+  appStoreState.standaloneProjects = [];
+  appStoreState.getProjectById = (projectId: string) => projectId === 'project-1'
+    ? {
+        id: 'project-1',
+        name: 'Project One',
+        path: '/repos/web',
+        gitSetupState: 'ready' as const,
+        directEdit: false,
+      }
+    : null;
   dbAppSettings.clear();
   chatStoreConversations = [];
   chatStoreRuntimeById = {};
@@ -600,6 +627,13 @@ describe('getPlanActivationCandidateTask', () => {
 
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
   it('does not let a slow task activation restore its worktree after a newer selection', async () => {
+    appStoreState.getProjectById = () => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      gitSetupState: 'ready' as const,
+      directEdit: false,
+    });
     let resolveSlow!: (value: GitWorktreeInspectionDto) => void;
     let resolveFast!: (value: GitWorktreeInspectionDto) => void;
     gitWorktreeInspectMock
@@ -614,6 +648,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
       assigned_branch: 'feature/slow',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/slow',
         worktreeKey: 'project-1::feature/slow',
         executionKind: 'worktree',
@@ -625,6 +660,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
       assigned_branch: 'feature/fast',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/fast',
         worktreeKey: 'project-1::feature/fast',
         executionKind: 'worktree',
@@ -767,6 +803,8 @@ describe('useTaskStore merge workflow review loading', () => {
       id: 'project-1',
       name: 'Project One',
       path: '/repos/web',
+      gitSetupState: 'ready' as const,
+      directEdit: false,
     });
     appStoreState.setMode.mockClear();
     appStoreState.setSelectedTask.mockClear();
@@ -791,7 +829,7 @@ describe('useTaskStore merge workflow review loading', () => {
     }));
   });
 
-  const buildMergeReviewTask = () =>
+  const buildMergeReviewTask = (overrides: Partial<ImplementTask> = {}) =>
     buildTask({
       status: 'Blocked',
       execution_targets: [
@@ -800,10 +838,12 @@ describe('useTaskStore merge workflow review loading', () => {
           branchName: 'feature/review-actions',
           planBranchName: 'plan/review-actions',
           executionKind: 'worktree',
+          executionMode: 'git',
           worktreeKey: 'project-1::feature/review-actions',
           repoPath: '/repos/web',
         },
       ],
+      ...overrides,
     });
 
   const buildBlockedMergeRuntime = (): MergeWorkflowRuntimeState => {
@@ -960,6 +1000,7 @@ describe('useTaskStore merge workflow review loading', () => {
       branch_name: 'direct',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'direct',
         branchName: 'direct',
         executionKind: 'worktree',
         worktreeKey: 'project-1::direct',
@@ -1028,6 +1069,7 @@ describe('useTaskStore merge workflow review loading', () => {
       conversation_id: 'conv-preflight',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/preflight',
         executionKind: 'worktree',
         worktreeKey: 'project-1::feature/preflight',
@@ -1150,6 +1192,7 @@ describe('useTaskStore merge workflow review loading', () => {
       branch_name: 'direct',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'direct',
         branchName: 'direct',
         worktreeKey: 'project-1::direct',
         repoPath: '/project/that/may/move',
@@ -1427,6 +1470,7 @@ describe('useTaskStore merge workflow review loading', () => {
       execution_targets: [
         {
           projectId: 'project-1',
+          executionMode: 'git',
           branchName: 'feature/git-retry-one',
           executionKind: 'worktree',
           worktreeKey: 'project-1::feature/git-retry-one',
@@ -1434,6 +1478,7 @@ describe('useTaskStore merge workflow review loading', () => {
         },
         {
           projectId: 'project-1',
+          executionMode: 'git',
           branchName: 'feature/git-retry-two',
           executionKind: 'worktree',
           worktreeKey: 'project-1::feature/git-retry-two',
@@ -1493,6 +1538,7 @@ describe('useTaskStore merge workflow review loading', () => {
       conversation_id: 'conv-branch-checkpoint',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/branch-checkpoint',
         executionKind: 'worktree',
         worktreeKey: 'project-1::feature/branch-checkpoint',
@@ -1568,6 +1614,7 @@ describe('useTaskStore merge workflow review loading', () => {
       conversation_id: 'conv-worktree-checkpoint',
       execution_targets: [{
         projectId: 'project-1',
+        executionMode: 'git',
         branchName: 'feature/worktree-checkpoint',
         executionKind: 'worktree',
         worktreeKey: 'project-1::feature/worktree-checkpoint',
@@ -1657,6 +1704,13 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(secondRuntime?.phase).toBe('ready');
     expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
     expect(persistArchitectPlanMergeWorkflowSessionMock).toHaveBeenCalledTimes(1);
+    expect(persistArchitectPlanMergeWorkflowSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: expect.objectContaining({
+          executionModesByProjectId: { 'project-1': 'git' },
+        }),
+      }),
+    );
   });
 
   it('allows a forced merge review load to bypass an existing in-flight load', async () => {
@@ -1936,7 +1990,116 @@ describe('useTaskStore merge workflow review loading', () => {
     ).toBe('merged');
   });
 
+  it('does not inspect Git publication for a blocked standalone target', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-blocked',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'InProgress',
+      assigned_branch: 'feature/blocked',
+      branch_name: 'feature/blocked',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/blocked',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/blocked',
+        repoPath: '/repos/web',
+      }],
+    });
+    appStoreState.getProjectById = () => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: false,
+      gitSetupState: 'unborn',
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+
+    await expect(useTaskStore.getState().deleteTask(task.id)).rejects.toThrow(
+      'Create the initial commit',
+    );
+
+    expect(gitBranchListMock).not.toHaveBeenCalled();
+    expect(gitStatusMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(workspaceDeleteManualFeatureMock).not.toHaveBeenCalled();
+  });
+
+  it('loads merge review for only the Git target of a mixed task', async () => {
+    appStoreState.projectGroups = [{
+      id: 'group-1',
+      name: 'Group One',
+      isOpen: true,
+      projects: [
+        {
+          id: 'project-1',
+          name: 'Project One',
+          path: '/repos/web',
+          gitSetupState: 'ready',
+          directEdit: false,
+        },
+        {
+          id: 'direct-project',
+          name: 'Direct Project',
+          path: '/repos/direct',
+          gitSetupState: 'not_git',
+          directEdit: true,
+        },
+      ],
+    }];
+    appStoreState.getProjectById = (projectId: string) =>
+      appStoreState.projectGroups[0]?.projects.find((project) => project.id === projectId) ?? null;
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask({
+        project_ids: ['project-1', 'direct-project'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/review-actions',
+            planBranchName: 'plan/review-actions',
+            executionKind: 'worktree',
+            executionMode: 'git',
+            worktreeKey: 'project-1::feature/review-actions',
+            repoPath: '/repos/web',
+          },
+          {
+            projectId: 'direct-project',
+            branchName: '',
+            executionKind: 'repository_root',
+            executionMode: 'direct',
+            checkpointId: 'checkpoint-1',
+            worktreeKey: 'direct:direct-project:task-1',
+            repoPath: '/repos/direct',
+          },
+        ],
+      })],
+      branchWorktrees: {
+        'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
+        'direct:direct-project:task-1': '/repos/direct',
+      },
+      mergeWorkflowRuntimeByTaskId: {},
+    });
+
+    const runtime = await useTaskStore.getState().loadMergeWorkflowReview('task-1', { force: true });
+
+    expect(runtime?.repositories).toHaveLength(1);
+    expect(runtime?.repositories[0]?.projectId).toBe('project-1');
+    const gitArguments = [
+      ...gitStatusMock.mock.calls,
+      ...gitDiffMock.mock.calls,
+      ...gitMergeCheckMock.mock.calls,
+      ...gitBranchListMock.mock.calls,
+    ].flat();
+    expect(gitArguments.some((argument) => JSON.stringify(argument).includes('/repos/direct')))
+      .toBe(false);
+  });
+
   it('does not report a materialized merge complete when its plan metadata is missing', async () => {
+    globalThis.localStorage?.clear();
     let statusCallCount = 0;
     gitStatusMock.mockImplementation(async () => {
       statusCallCount += 1;
@@ -1959,7 +2122,7 @@ describe('useTaskStore merge workflow review loading', () => {
     });
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
-      tasks: [buildMergeReviewTask()],
+      tasks: [buildMergeReviewTask({ plan_id: 'missing-plan' })],
       branchWorktrees: {
         'project-1::feature/review-actions': '/repos/web/.macro/worktrees/task-1',
       },
@@ -1971,7 +2134,7 @@ describe('useTaskStore merge workflow review loading', () => {
     });
 
     await expect(useTaskStore.getState().runMergeWorkflow('task-1')).rejects.toThrow(
-      'Plan not found: plan-1'
+      'Cannot update plan metadata for task task-1.'
     );
 
     expect(gitCompleteMergeMock).toHaveBeenCalledWith({
@@ -1980,7 +2143,9 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(gitFastForwardMock).not.toHaveBeenCalled();
     expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']).toBeDefined();
-    expect(useTaskStore.getState().lastError).toContain('Plan not found: plan-1');
+    expect(useTaskStore.getState().lastError).toContain(
+      'Cannot update plan metadata for task task-1.'
+    );
   });
 
   it('does not start a second manual merge resolution when conflicts are already materialized', async () => {
@@ -2256,7 +2421,15 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
     commitManualFeatureMetadataMock.mockClear();
     removeManualFeatureMetadataMock.mockClear();
     appStoreState.selectedTaskId = null;
-    appStoreState.getProjectById = (_projectId: string) => null;
+    appStoreState.getProjectById = (projectId: string) => projectId === 'project-1'
+      ? {
+          id: 'project-1',
+          name: 'Project One',
+          path: '/repos/web',
+          gitSetupState: 'ready',
+          directEdit: false,
+        }
+      : null;
     appStoreState.setSelectedTask.mockClear();
     updateStandaloneTaskStatusImpl = null;
   });
@@ -2370,6 +2543,7 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
         status: 'InReview',
         execution_targets: [{
           projectId: 'project-1',
+          executionMode: 'direct',
           branchName: 'direct',
           worktreeKey: 'project-1::direct',
           executionKind: 'worktree',
@@ -2393,6 +2567,47 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
     expect(refreshFromPlanMock).toHaveBeenCalledTimes(1);
   });
 
+  it('finishes a Direct Git task without merging or cleaning its current branch', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => {
+      useTaskStore.setState({
+        tasks: [buildStandaloneTask({ status: 'Completed', task_kind: 'direct' })],
+      });
+    });
+    const runMergeWorkflowMock = mock(async () => undefined);
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        status: 'InReview',
+        task_kind: 'direct',
+        assigned_branch: 'develop',
+        branch_name: 'develop',
+        execution_targets: [{
+          projectId: 'project-1',
+          branchName: 'develop',
+          targetBranchName: 'develop',
+          executionMode: 'git',
+          executionKind: 'repository_root',
+          baseCommitHash: 'base-hash',
+          worktreeKey: 'repository-root-project-1',
+          repoPath: '/repos/web',
+        }],
+      })],
+      refreshFromPlan: refreshFromPlanMock,
+      runMergeWorkflow: runMergeWorkflowMock,
+      lastError: null,
+    });
+
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(workspaceUpdateStandaloneTaskStatusMock).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      status: 'Completed',
+    });
+    expect(runMergeWorkflowMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+  });
+
   it('rejects direct-edit completion when persistence refuses the transition', async () => {
     appStoreState.getProjectById = (_projectId: string) => ({
       id: 'project-1',
@@ -2411,6 +2626,7 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
         status: 'InReview',
         execution_targets: [{
           projectId: 'project-1',
+          executionMode: 'direct',
           branchName: 'direct',
           worktreeKey: 'project-1::direct',
           executionKind: 'worktree',
@@ -2530,6 +2746,30 @@ describe('useTaskStore task status transition guards', () => {
   });
 });
 
+describe('useTaskStore execution blocker messages', () => {
+  it('requires the initial commit instead of suggesting direct editing for an unborn repository', async () => {
+    appStoreState.getProjectById = (_projectId: string) => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      directEdit: false,
+      gitSetupState: 'unborn',
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    await expect(useTaskStore.getState().createManualFeatureDraft({
+      taskId: 'task-unborn',
+      conversationId: 'conversation-unborn',
+      groupId: 'group-1',
+      projectIds: ['project-1'],
+      contextProjectIds: [],
+      taskKind: 'feature',
+    })).rejects.toThrow('Create the initial commit');
+
+    expect(useTaskStore.getState().lastError).toContain('Create the initial commit');
+  });
+});
+
 describe('useTaskStore reopenTask and retryTask', () => {
   beforeEach(() => {
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
@@ -2626,7 +2866,15 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
     syncTerminalDisplayMetadataMock.mockClear();
     syncManualFeatureMetadataFromTaskMock.mockClear();
     appStoreState.selectedTaskId = null;
-    appStoreState.getProjectById = (_projectId: string) => null;
+    appStoreState.getProjectById = (projectId: string) => projectId === 'project-1'
+      ? {
+          id: 'project-1',
+          name: 'Project One',
+          path: '/repos/web',
+          gitSetupState: 'ready',
+          directEdit: false,
+        }
+      : null;
   });
 
   it('cleans standalone execution state and reverts the task to draft metadata', async () => {
@@ -2671,6 +2919,7 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
               branchName: 'feature/quick-export',
               worktreeKey: 'project-1::feature/quick-export',
               repoPath: '/repos/web',
+              executionMode: 'git',
             },
           ],
         }),
@@ -2728,13 +2977,13 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
     });
   });
 
-  it('keeps a task in direct mode when the project gains Git before it returns to draft', async () => {
+  it('keeps a task in direct mode when Git is initialized without a commit before it returns to draft', async () => {
     appStoreState.getProjectById = (_projectId: string) => ({
       id: 'project-1',
       name: 'Project One',
       path: '/repos/web',
       directEdit: false,
-      gitSetupState: 'ready',
+      gitSetupState: 'unborn',
     });
     const { useTaskStore } = await loadIsolatedTaskStore();
     const refreshFromPlanMock = mock(async () => {
@@ -2838,6 +3087,8 @@ describe('useTaskStore task command terminal lifecycle', () => {
             id: 'project-1',
             name: 'Project One',
             path: '/repos/web',
+            gitSetupState: 'ready' as const,
+            directEdit: false,
           },
         ],
       },
@@ -2847,6 +3098,8 @@ describe('useTaskStore task command terminal lifecycle', () => {
       id: 'project-1',
       name: 'Project One',
       path: '/repos/web',
+      gitSetupState: 'ready' as const,
+      directEdit: false,
     });
     taskProjectCommandRegistryMock = {
       version: 3,
@@ -2879,6 +3132,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
           execution_targets: [
             {
               projectId: 'project-1',
+              executionMode: 'git',
               branchName: 'feature/run-app',
               worktreeKey: 'project-1::feature/run-app',
               repoPath: '/repos/web',
@@ -2925,12 +3179,16 @@ describe('useTaskStore task command terminal lifecycle', () => {
         id: 'project-lplr-app-1780329499166',
         name: 'octan_sales',
         path: '/repos/octan_sales',
+        gitSetupState: 'ready',
+        directEdit: false,
       },
     ];
     appStoreState.getProjectById = (_projectId: string) => ({
       id: 'project-lplr-app-1780329499166',
       name: 'octan_sales',
       path: '/repos/octan_sales',
+      gitSetupState: 'ready',
+      directEdit: false,
     });
     taskProjectCommandRegistryMock = {
       version: 3,
@@ -2963,6 +3221,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
               branchName: 'feature/run-app',
               worktreeKey: 'branch-project-lplr-app-feature-run-app',
               repoPath: '/repos/lplr-app',
+              executionMode: 'git',
             },
           ],
         }),
@@ -3029,6 +3288,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
           execution_targets: [
             {
               projectId: 'project-1',
+              executionMode: 'git',
               branchName: 'feature/run-app',
               worktreeKey: 'project-1::feature/run-app',
               repoPath: '/repos/web',
@@ -3134,11 +3394,15 @@ describe('useTaskStore task command terminal lifecycle', () => {
             id: 'project-1',
             name: 'Project One',
             path: '/repos/web',
+            gitSetupState: 'ready' as const,
+            directEdit: false,
           },
           {
             id: 'project-2',
             name: 'Project Two',
             path: '/repos/api',
+            gitSetupState: 'ready' as const,
+            directEdit: false,
           },
         ],
       },
@@ -3148,11 +3412,15 @@ describe('useTaskStore task command terminal lifecycle', () => {
           id: 'project-2',
           name: 'Project Two',
           path: '/repos/api',
+          gitSetupState: 'ready' as const,
+          directEdit: false,
         }
       : {
           id: 'project-1',
           name: 'Project One',
           path: '/repos/web',
+          gitSetupState: 'ready' as const,
+          directEdit: false,
         };
     taskProjectCommandRegistryMock = {
       version: 3,
@@ -3232,12 +3500,14 @@ describe('useTaskStore task command terminal lifecycle', () => {
         execution_targets: [
           {
             projectId: 'project-1',
+            executionMode: 'git',
             branchName: 'feature/run-app',
             worktreeKey: 'project-1::feature/run-app',
             repoPath: '/repos/web',
           },
           {
             projectId: 'project-2',
+            executionMode: 'git',
             branchName: 'feature/run-app',
             worktreeKey: 'project-2::feature/run-app',
             repoPath: '/repos/api',
@@ -3267,4 +3537,68 @@ describe('useTaskStore task command terminal lifecycle', () => {
     expect(closeTabMock).toHaveBeenCalledTimes(2);
     expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
   });
+});
+
+describe('useTaskStore task preparation safety', () => {
+  it('rejects every target before preparing the Git part of a mixed blocked task', async () => {
+    gitWorktreeInspectMock.mockClear();
+    gitWorktreeCreateMock.mockClear();
+    gitWorktreeRemoveMock.mockClear();
+    appStoreState.selectedTaskId = null;
+    appStoreState.selectedGroupId = 'group-1';
+    appStoreState.selectedProjectId = 'project-git';
+    appStoreState.projectGroups = [];
+    appStoreState.standaloneProjects = [];
+    appStoreState.getProjectById = (projectId: string) => projectId === 'project-git'
+      ? {
+          id: 'project-git',
+          name: 'Git project',
+          path: '/repos/git',
+          gitSetupState: 'ready' as const,
+          directEdit: false,
+        }
+      : {
+          id: 'project-blocked',
+          name: 'Blocked project',
+          path: '/repos/blocked',
+          gitSetupState: 'not_git' as const,
+          directEdit: false,
+          isReadOnly: true,
+        };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        id: 'mixed-blocked-task',
+        status: 'Pending',
+        draft: false,
+        project_id: 'project-git',
+        project_ids: ['project-git', 'project-blocked'],
+        execution_targets: [
+          {
+            projectId: 'project-git',
+            executionMode: 'git',
+            branchName: 'feature/mixed-blocked',
+            worktreeKey: 'project-git::feature/mixed-blocked',
+            repoPath: '/repos/git',
+          },
+          {
+            projectId: 'project-blocked',
+            branchName: '',
+            worktreeKey: 'project-blocked::blocked',
+            repoPath: '/repos/blocked',
+          },
+        ],
+      })],
+      branchWorktrees: {},
+      lastError: null,
+    });
+
+    await useTaskStore.getState().startTask('mixed-blocked-task');
+
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Initialize Git or enable direct editing');
+  });
+
 });

@@ -57,6 +57,7 @@ type MockPlanContext = {
   description: string;
   status: 'draft' | 'validated' | 'completed' | 'in_progress';
   targetBranch: string;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
 };
 
 type MockConversation = {
@@ -274,6 +275,7 @@ const applyStrategyMutationPreviewMock = mock(async (params: {
   status: 'in_progress',
   targetBranch: 'develop',
   targetBranchesByProjectId: { 'project-1': 'develop' },
+  executionModesByProjectId: { 'project-1': 'direct' },
   nodes: appState.planNodes,
   predictedBranches: appState.predictedBranches,
 }));
@@ -324,6 +326,7 @@ const buildFrozenPlanNodeMapMock = (params: {
 
 const notifySuccessMock = mock((..._args: unknown[]) => undefined);
 const notifyErrorMock = mock((..._args: unknown[]) => undefined);
+const persistArchitectPlanStrategyPreviewMock = mock(async (..._args: unknown[]) => undefined);
 
 let StrategyGraph!: typeof import('./StrategyGraph').StrategyGraph;
 let importCounter = 0;
@@ -370,7 +373,7 @@ const loadStrategyGraphModule = async () => {
   mock.module('../../services/architectPlanArtifactService.ts', () => planArtifactServiceMock);
 
   const planRuntimeServiceMock = {
-    persistArchitectPlanStrategyPreview: mock(async () => undefined),
+    persistArchitectPlanStrategyPreview: persistArchitectPlanStrategyPreviewMock,
   };
   mock.module('../../services/architectPlanRuntimeService', () => planRuntimeServiceMock);
   mock.module('../../services/architectPlanRuntimeService.ts', () => planRuntimeServiceMock);
@@ -607,6 +610,7 @@ describe('StrategyGraph', () => {
   beforeEach(() => {
     validatePlanAndProvisionBranchesMock.mockClear();
     applyStrategyMutationPreviewMock.mockClear();
+    persistArchitectPlanStrategyPreviewMock.mockClear();
     notifySuccessMock.mockClear();
     notifyErrorMock.mockClear();
     resetState();
@@ -2246,9 +2250,60 @@ describe('StrategyGraph', () => {
     await flushRender();
 
     expect(applyStrategyMutationPreviewMock).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().activePlanContext?.executionModesByProjectId).toEqual({
+      'project-1': 'direct',
+    });
     expect(useAppStore.getState().strategyMutationPreview).toBeNull();
     expect(taskState.refreshFromPlan).toHaveBeenCalledTimes(1);
     expect(notifySuccessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps direct execution modes when discarding a strategy preview', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+        executionModesByProjectId: { 'project-1': 'direct' },
+      },
+      strategyMutationPreview: {
+        planId: 'plan-1',
+        status: 'valid',
+        autoProvisionBranches: false,
+        frozenNodes: [],
+        rewrittenPendingNodes: [],
+        newNodes: [],
+        removedPendingNodes: [],
+        conflicts: [],
+      },
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    const discardButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Discard'
+    );
+    expect(discardButton).not.toBeUndefined();
+
+    act(() => {
+      discardButton?.click();
+    });
+    await flushRender();
+
+    expect(persistArchitectPlanStrategyPreviewMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: expect.objectContaining({
+          executionModesByProjectId: { 'project-1': 'direct' },
+        }),
+        preview: null,
+      })
+    );
   });
 
   it('validates the plan, switches to Implement, and activates the first task without auto execution', async () => {

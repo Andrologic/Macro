@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { registerAppStateGetter } from './appStateRuntime';
 import { toServiceError } from './contracts/errors';
 import {
   createMacroSyncService,
@@ -61,6 +62,7 @@ const macroBranchPushMock = mock(async ({ workspacePath }: { workspacePath?: str
     output: `push ok:${workspacePath || 'default'}`,
   })
 );
+const syncArchitectPlanChatMock = mock(async () => undefined);
 
 const metadataTargets = [
   { repoPath: '/repos/web', projectId: 'web' },
@@ -103,6 +105,7 @@ const createAppState = (overrides?: {
   metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
   activeArchitectPlanId?: string | null;
   activePlanContext?: { targetBranch: string } | null;
+  planNodes?: import('../types').PlanNode[];
   selectedGroupId?: string | null;
   selectedProjectId?: string | null;
   directEditProjectId?: string | null;
@@ -111,6 +114,7 @@ const createAppState = (overrides?: {
   metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy ?? 'ask',
   activeArchitectPlanId: overrides?.activeArchitectPlanId ?? 'plan-1',
   activePlanContext: overrides?.activePlanContext ?? { targetBranch: 'develop' },
+  planNodes: overrides?.planNodes ?? [],
   selectedGroupId: overrides?.selectedGroupId ?? 'group-1',
   selectedProjectId: overrides?.selectedProjectId ?? 'web',
   projectGroups: [
@@ -125,6 +129,7 @@ const createAppState = (overrides?: {
           mountName: 'web',
           path: '/repos/web',
           directEdit: overrides?.directEditProjectId === 'web',
+          gitSetupState: overrides?.directEditProjectId === 'web' ? 'not_git' as const : 'ready' as const,
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -141,6 +146,7 @@ const createAppState = (overrides?: {
           mountName: 'api',
           path: '/repos/api',
           directEdit: overrides?.directEditProjectId === 'api',
+          gitSetupState: overrides?.directEditProjectId === 'api' ? 'not_git' as const : 'ready' as const,
           created_at: '2026-03-14T00:00:00.000Z',
           status: 'active' as const,
           metadata: {
@@ -162,6 +168,7 @@ const loadMacroSyncService = (overrides?: {
   metadataAutoPush?: boolean;
   metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
   directEditProjectId?: string | null;
+  planNodes?: import('../types').PlanNode[];
 }) => createMacroSyncService({
   tauriIpc: {
     isTauriAvailable: () => true,
@@ -175,16 +182,21 @@ const loadMacroSyncService = (overrides?: {
     metadataAutoPush: overrides?.metadataAutoPush,
     metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy,
     directEditProjectId: overrides?.directEditProjectId,
+    planNodes: overrides?.planNodes,
   }),
   resolveTargets: async () => metadataTargets,
+  syncArchitectPlanChat: syncArchitectPlanChatMock,
   toServiceError,
 });
 
 describe('macroSyncService', () => {
   beforeEach(() => {
+    registerAppStateGetter(() => createAppState());
     setMetadataSyncStatusMock.mockReset();
 
     macroBranchEnsureMock.mockReset();
+    syncArchitectPlanChatMock.mockReset();
+    syncArchitectPlanChatMock.mockImplementation(async () => undefined);
     macroBranchEnsureMock.mockImplementation(async ({ workspacePath }: { workspacePath?: string | null } = {}) =>
       createMacroResult({
         output: `ensured:${workspacePath || 'default'}`,
@@ -279,6 +291,26 @@ describe('macroSyncService', () => {
     expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
       '/repos/api',
     ]);
+  });
+
+  it('does not invoke Git when a target has no registered project metadata', async () => {
+    const service = createMacroSyncService({
+      tauriIpc: {
+        isTauriAvailable: () => true,
+        macroBranchEnsure: macroBranchEnsureMock,
+        macroBranchStatus: macroBranchStatusMock,
+        macroBranchCommitIfDirty: macroBranchCommitIfDirtyMock,
+        macroBranchPull: macroBranchPullMock,
+        macroBranchPush: macroBranchPushMock,
+      },
+      getAppState: () => createAppState(),
+      resolveTargets: async () => [{ repoPath: '/repos/missing', projectId: 'missing' }],
+      toServiceError,
+    });
+
+    await service.refreshMacroSyncStatus();
+
+    expect(macroBranchStatusMock).not.toHaveBeenCalled();
   });
 
   it('skips WSL repositories when syncing @macro metadata', async () => {
@@ -458,6 +490,57 @@ describe('macroSyncService', () => {
     expect(macroBranchPushMock).not.toHaveBeenCalled();
     expect(macroBranchStatusMock).toHaveBeenCalledTimes(2);
     expect(result?.reason).toBe('behind');
+  });
+
+  it('copies a direct plan transcript without inspecting Git after the project gains Git', async () => {
+    const service = loadMacroSyncService({
+      planNodes: [{
+        id: 'direct-docs',
+        title: 'Edit docs',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        projectId: 'web',
+        projectIds: ['web'],
+        executionModesByProjectId: { web: 'direct' },
+      }],
+    });
+
+    const result = await service.syncMacroMetadataAfterStream({
+      mode: 'Architect',
+      conversationId: 'conv-direct',
+      trigger: 'send',
+    });
+
+    expect(syncArchitectPlanChatMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchStatusMock).not.toHaveBeenCalled();
+    expect(result?.repositories).toEqual([]);
+  });
+
+  it('inspects only Git targets after copying a mixed plan transcript', async () => {
+    const service = loadMacroSyncService({
+      planNodes: [{
+        id: 'mixed-work',
+        title: 'Update web and API',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        projectId: 'web',
+        projectIds: ['web', 'api'],
+        executionModesByProjectId: { web: 'direct', api: 'git' },
+      }],
+    });
+
+    await service.syncMacroMetadataAfterStream({
+      mode: 'Architect',
+      conversationId: 'conv-mixed',
+      trigger: 'send',
+    });
+
+    expect(syncArchitectPlanChatMock).toHaveBeenCalledTimes(1);
+    expect(macroBranchStatusMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+    ]);
   });
 
   it('surfaces stream metadata conflicts without committing or pushing', async () => {

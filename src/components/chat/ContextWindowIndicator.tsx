@@ -71,6 +71,40 @@ const getContextLimitSourceLabel = (
   }
 };
 
+const getRepositoryInstructionIssueMessage = (
+  t: TranslationFunction,
+  code: string,
+): string => {
+  if (code === 'file_limit_reached' || code === 'project_limit_reached') {
+    return t(
+      'chat.contextWindow.repositoryInstructionIssue.countLimit',
+      'Some repository instruction files were omitted because the count limit was reached.',
+    );
+  }
+  if (
+    code === 'byte_limit_reached' ||
+    code === 'context_serialization_limit_reached'
+  ) {
+    return t(
+      'chat.contextWindow.repositoryInstructionIssue.sizeLimit',
+      'Some repository instructions were omitted because the size limit was reached.',
+    );
+  }
+  if (
+    code === 'instruction_symlink_escape' ||
+    code === 'scope_outside_project'
+  ) {
+    return t(
+      'chat.contextWindow.repositoryInstructionIssue.outsideProject',
+      'Macro rejected a repository instruction path outside the project.',
+    );
+  }
+  return t(
+    'chat.contextWindow.repositoryInstructionIssue.loadFailure',
+    'Macro could not load some repository instructions.',
+  );
+};
+
 const clampRatio = (value?: number): number =>
   typeof value === 'number' && Number.isFinite(value)
     ? Math.min(Math.max(value, 0), 1)
@@ -542,6 +576,53 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                 'The selected model has a smaller window than the last known checkpoint.',
               )}
             </div>
+          ) : null}
+
+          {(effectiveDiagnostics?.repositoryInstructionSources?.length ?? 0) > 0 ||
+          (effectiveDiagnostics?.repositoryInstructionIssues?.length ?? 0) > 0 ? (
+            <details className="mt-3 border-t border-border/60 pt-3 text-xs">
+              <summary className="cursor-pointer text-muted-foreground">
+                {t(
+                  'chat.contextWindow.repositoryInstructions',
+                  'Repository instructions',
+                )}{' '}
+                · {effectiveDiagnostics?.repositoryInstructionSources?.length ?? 0}
+              </summary>
+              <div className="mt-2 space-y-2">
+                {effectiveDiagnostics?.repositoryInstructionSources?.map((source) => (
+                  <div
+                    key={`${source.projectId}:${source.sourcePath}`}
+                    className="min-w-0 rounded border border-border/60 bg-muted/30 p-2"
+                  >
+                    <p className="truncate font-medium" title={source.projectName}>
+                      {source.projectName}
+                    </p>
+                    <p
+                      className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground"
+                      title={source.sourcePath}
+                    >
+                      {source.relativePath}
+                    </p>
+                  </div>
+                ))}
+                {effectiveDiagnostics?.repositoryInstructionIssues?.map((issue, index) => (
+                  <div
+                    key={`${issue.projectId}:${issue.code}:${issue.sourcePath ?? index}`}
+                    className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-amber-700 dark:text-amber-300"
+                  >
+                    <p className="font-medium">{issue.projectId} · {issue.code}</p>
+                    <p className="mt-0.5 break-words text-[10px]" title={issue.message}>
+                      {getRepositoryInstructionIssueMessage(t, issue.code)}
+                    </p>
+                    {issue.sourcePath ? (
+                      <p className="mt-0.5 truncate font-mono text-[10px]" title={issue.sourcePath}>
+                        {issue.sourcePath}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </details>
           ) : null}
 
           <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/60 pt-3">

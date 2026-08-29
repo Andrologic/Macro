@@ -49,6 +49,12 @@ interface PanelPosition {
   placement: TourPlacement;
 }
 
+interface TourOriginState {
+  mode: AppMode;
+  isLeftOpen: boolean;
+  isRightOpen: boolean;
+}
+
 const TOUR_STEPS: TourStep[] = [
   {
     id: 'welcome',
@@ -386,6 +392,7 @@ export const OnboardingGuide: React.FC = () => {
   const [panelSize, setPanelSize] = useState<PanelSize>({ width: 368, height: 300 });
   const panelRef = useRef<HTMLDivElement | null>(null);
   const preferenceLoadedRef = useRef(false);
+  const tourOriginRef = useRef<TourOriginState | null>(null);
 
   const activeStep = TOUR_STEPS[activeStepIndex] ?? TOUR_STEPS[0];
   const firstStepBySection = useMemo(() => {
@@ -422,15 +429,34 @@ export const OnboardingGuide: React.FC = () => {
     setActiveStepIndex((current) => Math.max(0, current - 1));
   }, []);
 
+  const captureTourOrigin = useCallback(() => {
+    const appState = useAppStore.getState();
+    tourOriginRef.current = {
+      mode: appState.mode,
+      isLeftOpen: appState.isLeftPanelOpen,
+      isRightOpen: appState.isRightPanelOpen,
+    };
+  }, []);
+
+  const restoreTourOrigin = useCallback(() => {
+    const origin = tourOriginRef.current;
+    if (!origin) return;
+    tourOriginRef.current = null;
+    setMode(origin.mode);
+    setLeftPanelOpen(origin.isLeftOpen);
+    setRightPanelOpen(origin.isRightOpen);
+  }, [setLeftPanelOpen, setMode, setRightPanelOpen]);
+
   const completeTour = useCallback(async (lastStepId: string) => {
     setIsOpen(false);
+    restoreTourOrigin();
     await savePreference(PREF_KEYS.ONBOARDING_STATE, {
       version: ONBOARDING_VERSION,
       completedAt: new Date().toISOString(),
       dismissedAt: null,
       lastStepId,
     } satisfies OnboardingPreferenceState);
-  }, []);
+  }, [restoreTourOrigin]);
 
   const nextStep = useCallback(() => {
     if (isLastStep) {
@@ -443,13 +469,14 @@ export const OnboardingGuide: React.FC = () => {
 
   const dismissTour = useCallback(async () => {
     setIsOpen(false);
+    restoreTourOrigin();
     await savePreference(PREF_KEYS.ONBOARDING_STATE, {
       version: ONBOARDING_VERSION,
       completedAt: null,
       dismissedAt: new Date().toISOString(),
       lastStepId: activeStep.id,
     } satisfies OnboardingPreferenceState);
-  }, [activeStep.id]);
+  }, [activeStep.id, restoreTourOrigin]);
 
   useEffect(() => {
     if (preferenceLoadedRef.current) {
@@ -471,6 +498,7 @@ export const OnboardingGuide: React.FC = () => {
           (!state.completedAt && !state.dismissedAt);
 
         if (shouldStart) {
+          captureTourOrigin();
           setIsOpen(true);
         } else if (state.lastStepId) {
           const restoredIndex = TOUR_STEPS.findIndex((step) => step.id === state.lastStepId);
@@ -484,17 +512,18 @@ export const OnboardingGuide: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [captureTourOrigin]);
 
   useEffect(() => {
     const handleStart = () => {
+      captureTourOrigin();
       setActiveStepIndex(0);
       setIsOpen(true);
     };
 
     window.addEventListener('macro:start-onboarding', handleStart);
     return () => window.removeEventListener('macro:start-onboarding', handleStart);
-  }, []);
+  }, [captureTourOrigin]);
 
   useEffect(() => {
     if (!isOpen) {

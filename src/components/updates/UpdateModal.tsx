@@ -6,12 +6,14 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import {
+  hasUnapprovedRestartSafetyActivity,
   selectRestartSafetySnapshot,
   type RestartSafetySnapshot,
 } from '../../services/restartSafety';
-import { prepareForPotentialShutdown } from '../../services/windowShutdown';
-import { PREF_KEYS, savePreference } from '../../services/preferences';
+import { beginAppShutdownGate } from '../../services/appShutdownGate';
 import { isProjectGitActionable } from '../../services/globalProjects';
+import { PREF_KEYS, savePreference } from '../../services/preferences';
+import { prepareForPotentialShutdown } from '../../services/windowShutdown';
 import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
@@ -43,44 +45,63 @@ const getSelectedWorkspacePaths = (): string[] => {
 
 export const UpdateModal: React.FC = () => {
   const { t } = useTranslation();
-  const [phase, update, error, errorOperation, detailsOpen, closeDetails, installAndRestart] =
-    useAppUpdateStore(
-      useShallow((state) => [
-        state.phase,
-        state.availableUpdate,
-        state.error,
-        state.errorOperation,
-        state.detailsOpen,
-        state.closeDetails,
-        state.installAndRestart,
-      ]),
-    );
+  const [
+    phase,
+    update,
+    errorOperation,
+    detailsOpen,
+    closeDetails,
+    installAndRestart,
+    reset,
+    checkForUpdates,
+  ] = useAppUpdateStore(
+    useShallow((state) => [
+      state.phase,
+      state.availableUpdate,
+      state.errorOperation,
+      state.detailsOpen,
+      state.closeDetails,
+      state.installAndRestart,
+      state.reset,
+      state.checkForUpdates,
+    ]),
+  );
   const [restartWarning, setRestartWarning] = useState<RestartSafetySnapshot | null>(null);
-  const safeActionRef = useRef<HTMLButtonElement>(null);
+  const closeActionRef = useRef<HTMLButtonElement>(null);
 
   if (!detailsOpen || !update) return null;
+
+  const redownload = async () => {
+    await reset();
+    const outcome = await checkForUpdates({ explicit: true });
+    if (outcome === 'error') {
+      notify.error(t('updates.downloadFailed', 'The update could not be downloaded'));
+    }
+  };
+
+  const needsRedownload = phase === 'error' && errorOperation === 'install';
+  const isInstalling = phase === 'installing';
 
   const close = () => {
     setRestartWarning(null);
     closeDetails();
   };
 
-  const install = async (force: boolean) => {
-    try {
-      await prepareForPotentialShutdown(getSelectedWorkspacePaths());
-    } catch (prepareError) {
-      notify.error(t('updates.prepareFailed', 'Macro could not prepare the restart'), {
-        description: prepareError instanceof Error ? prepareError.message : String(prepareError),
-      });
+  const install = async (approvedSafety: RestartSafetySnapshot) => {
+    const releaseShutdownGate = beginAppShutdownGate();
+    const currentSafety = getRestartSafetySnapshot();
+    if (hasUnapprovedRestartSafetyActivity(approvedSafety, currentSafety)) {
+      releaseShutdownGate();
+      setRestartWarning(currentSafety);
       return;
     }
 
-    if (!force) {
-      const safety = getRestartSafetySnapshot();
-      if (safety.hasActiveWork) {
-        setRestartWarning(safety);
-        return;
-      }
+    try {
+      await prepareForPotentialShutdown(getSelectedWorkspacePaths());
+    } catch {
+      releaseShutdownGate();
+      notify.error(t('updates.prepareFailed', 'Macro could not prepare the restart'));
+      return;
     }
 
     if (update.notes.trim()) {
@@ -89,169 +110,138 @@ export const UpdateModal: React.FC = () => {
           version: update.version,
           content: update.notes,
         });
-      } catch (releaseNoteError) {
-        console.warn('Failed to preserve updater release notes:', releaseNoteError);
+      } catch {
+        // Release notes are useful after relaunch, but never block a verified update.
       }
     }
 
-    const installed = await installAndRestart();
-    if (!installed) {
+    if (!(await installAndRestart())) {
+      releaseShutdownGate();
       notify.error(t('updates.installFailed', 'The update could not be installed'), {
         description: useAppUpdateStore.getState().error ?? undefined,
       });
     }
   };
 
-  const requestRestart = () => {
+  const requestInstall = () => {
     const safety = getRestartSafetySnapshot();
     if (safety.hasActiveWork) {
       setRestartWarning(safety);
       return;
     }
-    void install(false);
+    void install(safety);
   };
 
-  const forceRestart = () => {
-    setRestartWarning(getRestartSafetySnapshot());
-    void install(true);
-  };
-
-  const isInstalling = phase === 'installing';
-  const canInstall = phase === 'ready'
-    || (phase === 'error' && errorOperation === 'install');
   const activeItems = restartWarning
     ? [...restartWarning.activeAgents, ...restartWarning.activeImplementations]
     : [];
 
+  if (restartWarning) {
+    return (
+      <Dialog
+        title={t('updates.activeWorkTitle', 'Agents are still running')}
+        onClose={isInstalling ? () => undefined : close}
+        initialFocusRef={closeActionRef}
+      >
+        <article className="w-full max-w-lg overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl">
+          <header className="border-b border-border px-5 py-5">
+            <h2 className="text-lg font-semibold text-foreground">
+              {t('updates.activeWorkTitle', 'Agents are still running')}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t('updates.activeWorkDescription', '{{count}} active task may lose its current output if Macro closes now.', {
+                count: restartWarning.activeWorkCount,
+              })}
+            </p>
+          </header>
+          <ul className="max-h-64 space-y-2 overflow-y-auto px-5 py-4">
+            {activeItems.map((activity) => (
+              <li key={`${activity.kind}:${activity.id}`} className="rounded-lg border border-border bg-background/45 px-3 py-2 text-sm">
+                {activity.title ?? activity.id}
+              </li>
+            ))}
+          </ul>
+          <footer className="flex justify-end gap-2 border-t border-border px-5 py-4">
+            <Button ref={closeActionRef} type="button" size="sm" variant="primary" onClick={close}>
+              {t('updates.wait', 'Wait')}
+            </Button>
+            <Button type="button" size="sm" variant="error" onClick={() => void install(restartWarning)}>
+              {t('updates.restartAnyway', 'Install anyway')}
+            </Button>
+          </footer>
+        </article>
+      </Dialog>
+    );
+  }
+
   return (
     <Dialog
-      title={restartWarning
-        ? t('updates.activeWorkTitle', 'Agents are still running')
-        : t('updates.dialogTitle', 'Macro update')}
+      title={t('updates.dialogTitle', 'Macro update')}
       onClose={isInstalling ? () => undefined : close}
-      initialFocusRef={safeActionRef}
+      initialFocusRef={closeActionRef}
       backdropClassName="fixed inset-0 z-[12500] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm"
     >
       <article className="flex max-h-[min(86vh,720px)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl ring-1 ring-white/5">
-        {restartWarning ? (
-          <>
-            <header className="border-b border-border px-5 py-5 sm:px-6">
-              <div className="flex items-start gap-3">
-                <div className="rounded-lg bg-amber-500/10 p-2 text-amber-400">
-                  <Icon name="triangle-alert" size={18} />
-                </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-foreground">
-                    {t('updates.activeWorkTitle', 'Agents are still running')}
-                  </h2>
-                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                    {t(
-                      'updates.activeWorkDescription',
-                      '{{count}} active task may lose its current output if Macro restarts now.',
-                      { count: restartWarning.activeWorkCount },
-                    )}
+        <header className="border-b border-border px-5 py-5 sm:px-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg bg-primary/10 p-2 text-primary">
+                <Icon name="download" size={18} />
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+                  {t('updates.available', 'Update available')}
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-foreground">
+                  Macro v{update.version}
+                </h2>
+                {update.date ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {new Date(update.date).toLocaleDateString()}
                   </p>
-                </div>
+                ) : null}
               </div>
-            </header>
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
-              <ul className="space-y-2">
-                {activeItems.map((activity) => (
-                  <li key={`${activity.kind}:${activity.id}`} className="rounded-lg border border-border bg-background/45 px-3 py-2">
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {activity.title ?? activity.id}
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {activity.kind === 'agent'
-                        ? t('updates.agentActivity', 'Agent')
-                        : t('updates.implementActivity', 'Implement execution')}
-                      {' · '}{activity.phase}
-                    </div>
-                  </li>
-                ))}
-              </ul>
             </div>
-            <footer className="flex justify-end gap-2 border-t border-border bg-background/30 px-5 py-4 sm:px-6">
-              <Button ref={safeActionRef} type="button" size="sm" variant="primary" onClick={close}>
-                {t('updates.wait', 'Wait')}
+            <button
+              type="button"
+              onClick={close}
+              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label={t('common.close', 'Close')}
+            >
+              <Icon name="x" size={16} />
+            </button>
+          </div>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+          {update.notes.trim() ? (
+            <MarkdownRenderer content={update.notes} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {t('updates.noNotes', 'No release notes were provided for this update.')}
+            </p>
+          )}
+        </div>
+
+        <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-5 py-4 sm:px-6">
+          <p className="text-xs text-muted-foreground">
+            {t('updates.installsNextLaunch', 'It will be installed the next time Macro opens.')}
+          </p>
+          <div className="flex shrink-0 gap-2">
+            <Button ref={closeActionRef} type="button" size="sm" variant="ghost" disabled={isInstalling} onClick={close}>
+              {t('common.close', 'Close')}
+            </Button>
+            {needsRedownload ? (
+              <Button type="button" size="sm" variant="primary" onClick={() => void redownload()}>
+                {t('updates.downloadAgain', 'Download again')}
               </Button>
-              <Button type="button" size="sm" variant="error" onClick={forceRestart}>
-                {t('updates.restartAnyway', 'Restart anyway')}
+            ) : (
+              <Button type="button" size="sm" variant="primary" isLoading={isInstalling} onClick={requestInstall}>
+                {t('updates.installNow', 'Install now')}
               </Button>
-            </footer>
-          </>
-        ) : (
-          <>
-            <header className="border-b border-border px-5 py-5 sm:px-6">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="rounded-lg bg-primary/10 p-2 text-primary">
-                    <Icon name="download" size={18} />
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
-                      {t('updates.available', 'Update available')}
-                    </p>
-                    <h2 className="mt-1 text-lg font-semibold text-foreground">
-                      Macro v{update.version}
-                    </h2>
-                    {update.date ? (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {new Date(update.date).toLocaleDateString()}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  aria-label={t('common.close', 'Close')}
-                  title={t('common.close', 'Close')}
-                  disabled={isInstalling}
-                  onClick={close}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-                >
-                  <Icon name="x" size={16} />
-                </button>
-              </div>
-            </header>
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
-              {update.notes.trim() ? (
-                <MarkdownRenderer content={update.notes} className="release-notes-markdown" />
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  {t('updates.noNotes', 'No release notes were provided for this version.')}
-                </p>
-              )}
-              {error ? (
-                <p className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                  {error}
-                </p>
-              ) : null}
-            </div>
-            <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-5 py-4 sm:px-6">
-              <p className="text-xs text-muted-foreground">
-                {phase === 'downloading'
-                  ? t('updates.downloadInProgress', 'The signed update is downloading in the background.')
-                  : t('updates.restartRequired', 'Macro will reopen after the update is installed.')}
-              </p>
-              <div className="flex shrink-0 gap-2">
-                <Button ref={safeActionRef} type="button" size="sm" variant="ghost" disabled={isInstalling} onClick={close}>
-                  {t('updates.later', 'Later')}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="primary"
-                  isLoading={isInstalling}
-                  disabled={!canInstall}
-                  onClick={requestRestart}
-                >
-                  {t('updates.restartAndUpdate', 'Restart and update')}
-                </Button>
-              </div>
-            </footer>
-          </>
-        )}
+            )}
+          </div>
+        </footer>
       </article>
     </Dialog>
   );

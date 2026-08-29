@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { installReactI18nextMock } from '../../test-utils/reactI18nextMock';
 
 type Project = {
   id: string;
   name: string;
   path: string;
+  gitSetupState?: 'ready' | 'unborn' | 'not_git' | 'unknown';
+  directEdit?: boolean;
 };
 
 type ProjectGroup = {
@@ -140,11 +143,11 @@ let importCounter = 0;
 let originalConsoleError: typeof console.error;
 
 const GROUP_ONE_PROJECTS: Project[] = [
-  { id: 'project-a', name: 'API', path: '/repo/api' },
-  { id: 'project-b', name: 'Web', path: '/repo/web' },
+  { id: 'project-a', name: 'API', path: '/repo/api', gitSetupState: 'ready', directEdit: false },
+  { id: 'project-b', name: 'Web', path: '/repo/web', gitSetupState: 'ready', directEdit: false },
 ];
 const GROUP_TWO_PROJECTS: Project[] = [
-  { id: 'project-c', name: 'Docs', path: '/repo/docs' },
+  { id: 'project-c', name: 'Docs', path: '/repo/docs', gitSetupState: 'ready', directEdit: false },
 ];
 
 const createStoreHook = <T,>(getSnapshot: () => T) => {
@@ -308,23 +311,10 @@ const selectGitScope = async (container: HTMLDivElement, value: string) => {
   await flushAsyncWork();
 };
 
-const translateMock = (
-  key: string,
-  fallbackOrOptions?: string | { defaultValue?: string; [key: string]: unknown },
-  maybeOptions?: { defaultValue?: string; [key: string]: unknown }
-) => {
-  if (typeof fallbackOrOptions === 'string') return fallbackOrOptions;
-  return maybeOptions?.defaultValue ?? fallbackOrOptions?.defaultValue ?? key;
-};
-
 const loadFooter = async () => {
   mock.restore();
 
-  mock.module('react-i18next', () => ({
-    useTranslation: () => ({
-      t: translateMock,
-    }),
-  }));
+  installReactI18nextMock();
 
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: (options: { directory?: boolean; multiple?: boolean; title?: string }) =>
@@ -459,6 +449,10 @@ const loadFooter = async () => {
 
   mock.module('./NotificationCenterPopover', () => ({
     NotificationCenterPopover: () => null,
+  }));
+
+  mock.module('../updates/UpdateStatusButton', () => ({
+    UpdateStatusButton: () => null,
   }));
 
   importCounter += 1;
@@ -608,6 +602,20 @@ describe('Footer', () => {
     container = null;
     root = null;
     mock.restore();
+  });
+
+  it('exposes the notification center relationship to assistive technology', async () => {
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await flushAsyncWork();
+
+    const button = container.querySelector<HTMLButtonElement>('[aria-controls="notification-center-popover"]');
+    expect(button?.getAttribute('aria-label')).toBe('Notifications');
+    expect(button?.getAttribute('title')).toBe('Notifications');
   });
 
   it('uses the selected Implement task repository for the label and Git commands', async () => {

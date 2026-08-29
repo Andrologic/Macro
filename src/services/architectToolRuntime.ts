@@ -61,8 +61,8 @@ import type {
 import {
   getFocusedProjectForGroup,
   getProjectGroupByProjectId,
-  getScopedGitActionableProjectIds,
 } from "./globalProjects";
+import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 const strategyMutationRepairAttempts = new Map<string, number>();
 
@@ -776,14 +776,13 @@ const resolveStrategyForPlan = async (params: {
   }
 
   const appState = getAppState();
-  const selectedProjectIds = getScopedGitActionableProjectIds(
-    {
-      standaloneProjects: appState.standaloneProjects ?? [],
-      projectGroups: appState.projectGroups,
-    },
-    appState.selectedGroupId,
-    appState.selectedProjectId,
-  );
+  const registrySnapshot = buildValidProjectRegistrySnapshot({
+    standaloneProjects: appState.standaloneProjects ?? [],
+    projectGroups: appState.projectGroups,
+    selectedGroupId: appState.selectedGroupId,
+    selectedProjectId: appState.selectedProjectId,
+  });
+  const selectedProjectIds = registrySnapshot.actionableProjectIds;
   const editablePlanProjectIds = resolvePlanEditableProjectIds(activePlan);
   const contextPlanProjectIds = resolvePlanContextProjectIds(activePlan);
   const globalPlanProjectIds = resolvePlanGlobalProjectIds(appState, activePlan);
@@ -804,7 +803,6 @@ const resolveStrategyForPlan = async (params: {
     requestedPlanSlug && planService.isArchitectPlanSlugMutable(activePlan)
       ? normalizePlanSlugInput(requestedPlanSlug, activePlan.slug || activePlan.id)
       : activePlan.slug;
-
   const idBase = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const existingIdByTitle = new Map(
     existingNodesForPatch.map((node) => [node.title, node.id]),
@@ -835,6 +833,21 @@ const resolveStrategyForPlan = async (params: {
       contextProjectIds: contextPlanProjectIds,
       globalProjectIds: globalPlanProjectIds,
     });
+    const executionModesByProjectId = Object.fromEntries(
+      resolvedProjectIds.map((projectId) => {
+        const persistedMode = existingNodesForPatch
+          .find((existingNode) => existingNode.id === preferredId)
+          ?.executionModesByProjectId?.[projectId];
+        const mode = activePlan.executionModesByProjectId?.[projectId] ??
+          persistedMode ??
+          registrySnapshot.executionModeByProjectId.get(projectId);
+        if (!mode) {
+          throw new Error(`Project ${projectId} has no valid execution mode.`);
+        }
+        return [projectId, mode];
+      }),
+    );
+    const hasGitTarget = Object.values(executionModesByProjectId).includes('git');
     return {
       id:
         preferredId && preferredId.length > 0
@@ -843,12 +856,17 @@ const resolveStrategyForPlan = async (params: {
       title: node.title,
       description: node.description,
       type: node.type,
-      assignedBranch: node.assignedBranch,
-      branchType: node.branchType,
-      branchSlug: node.branchSlug,
+      ...(hasGitTarget
+        ? {
+            assignedBranch: node.assignedBranch,
+            branchType: node.branchType,
+            branchSlug: node.branchSlug,
+          }
+        : {}),
       status: node.status,
       projectId: resolvedProjectIds[0] || undefined,
       projectIds: resolvedProjectIds,
+      executionModesByProjectId,
       dependencies: [...node.dependencies],
       todos: clonePlanNodeTodos(node.todos),
       artifactContracts: normalizeArtifactContracts(node),
@@ -1082,6 +1100,12 @@ export const handleArchitectToolCall = async (
     strategyService,
   } = params;
   const appState = params.getAppState();
+  const registrySnapshot = buildValidProjectRegistrySnapshot({
+    standaloneProjects: appState.standaloneProjects ?? [],
+    projectGroups: appState.projectGroups,
+    selectedGroupId: appState.selectedGroupId,
+    selectedProjectId: appState.selectedProjectId,
+  });
 
   if (toolName === "plan_create") {
     if (args.status !== undefined && args.status !== "draft") {
@@ -1103,14 +1127,7 @@ export const handleArchitectToolCall = async (
           .filter((projectId): projectId is string => typeof projectId === "string")
           .map((projectId) => projectId.trim())
           .filter(Boolean)
-      : getScopedGitActionableProjectIds(
-          {
-            standaloneProjects: appState.standaloneProjects ?? [],
-            projectGroups: appState.projectGroups,
-          },
-          appState.selectedGroupId,
-          appState.selectedProjectId,
-        );
+      : registrySnapshot.actionableProjectIds;
     const contextProjectIds = Array.isArray(args.context_project_ids)
       ? args.context_project_ids
           .filter((projectId): projectId is string => typeof projectId === "string")

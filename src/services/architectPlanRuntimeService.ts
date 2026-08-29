@@ -8,6 +8,11 @@ import { filterNonWslProjectPaths } from './wslPaths';
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 const runtimeMutationQueues = new Map<string, Promise<void>>();
 
+type RuntimeWorkspaceTarget = {
+  workspacePath: string;
+  workspaceScope: tauriIpc.WorkspaceScope;
+};
+
 const serializeRuntimeMutation = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
   const previous = runtimeMutationQueues.get(key) ?? Promise.resolve();
   let release!: () => void;
@@ -73,15 +78,15 @@ const emptyArchitectPlanRuntimeRecord = (
 });
 
 const readRuntimeAtWorkspace = async (
-  workspacePath: string,
+  target: RuntimeWorkspaceTarget,
   runtimePath: string,
 ): Promise<ArchitectPlanRuntimeRecord | null> => {
   try {
     const file = await tauriIpc.fsReadFileWithOptions({
       path: runtimePath,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
-      workspacePath,
+      workspaceScope: target.workspaceScope,
+      workspacePath: target.workspacePath,
     });
     const parsed = JSON.parse(file.content) as Partial<ArchitectPlanRuntimeRecord>;
     if (!parsed || typeof parsed !== 'object') {
@@ -109,7 +114,7 @@ const readRuntimeAtWorkspace = async (
 };
 
 const writeRuntimeAtWorkspace = async (
-  workspacePath: string,
+  target: RuntimeWorkspaceTarget,
   runtimePath: string,
   record: ArchitectPlanRuntimeRecord,
 ): Promise<void> => {
@@ -118,15 +123,17 @@ const writeRuntimeAtWorkspace = async (
     content: JSON.stringify(record, null, 2),
     createDirs: true,
     allowOutsideWorkspace: false,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
-    workspacePath,
+    workspaceScope: target.workspaceScope,
+    workspacePath: target.workspacePath,
   });
 };
 
-const resolveRuntimeWorkspacePaths = async (params: {
+const resolveRuntimeWorkspaceTargets = async (params: {
   projectIds?: string[] | null;
   repoPaths?: Array<string | null | undefined>;
-}): Promise<string[]> => {
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  allowFallbackPaths?: boolean;
+}): Promise<RuntimeWorkspaceTarget[]> => {
   const appState = useAppStore.getState();
   const appStateWithOptionalProjects = appState as unknown as {
     projects?: Array<{ id?: string; path?: string | null }>;
@@ -134,13 +141,28 @@ const resolveRuntimeWorkspacePaths = async (params: {
   const projects = Array.isArray(appStateWithOptionalProjects.projects)
     ? appStateWithOptionalProjects.projects
     : [];
-  const projectPaths = (params.projectIds || []).map((projectId) => {
+  const registeredTargets = (params.projectIds || []).flatMap((projectId): RuntimeWorkspaceTarget[] => {
     const project = typeof appState.getProjectById === 'function'
       ? appState.getProjectById(projectId)
       : projects.find((candidate) => candidate.id === projectId);
-
-    return project?.path ?? null;
+    if (!project?.path || filterNonWslProjectPaths([project.path]).length === 0) {
+      return [];
+    }
+    return [{
+      workspacePath: project.path,
+      workspaceScope: params.executionModesByProjectId?.[projectId] === 'direct'
+        ? 'direct'
+        : METADATA_WORKSPACE_SCOPE,
+    }];
   });
+  if (registeredTargets.length > 0) {
+    return Array.from(new Map(
+      registeredTargets.map((target) => [`${target.workspaceScope}:${target.workspacePath}`, target])
+    ).values());
+  }
+  if (params.allowFallbackPaths === false) {
+    return [];
+  }
   let activeRoot: string | null = null;
   if (tauriIpc.isTauriAvailable()) {
     try {
@@ -150,7 +172,9 @@ const resolveRuntimeWorkspacePaths = async (params: {
     }
   }
 
-  return filterNonWslProjectPaths(unique([...(params.repoPaths || []), ...projectPaths, activeRoot]));
+  return filterNonWslProjectPaths(unique([...(params.repoPaths || []), activeRoot])).map(
+    (workspacePath) => ({ workspacePath, workspaceScope: METADATA_WORKSPACE_SCOPE })
+  );
 };
 
 export const readArchitectPlanRuntime = async (params: {
@@ -158,16 +182,17 @@ export const readArchitectPlanRuntime = async (params: {
   planId: string;
   projectIds?: string[] | null;
   repoPaths?: Array<string | null | undefined>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }): Promise<ArchitectPlanRuntimeRecord | null> => {
   if (!tauriIpc.isTauriAvailable()) {
     return null;
   }
 
   const runtimePath = getArchitectPlanRuntimePath(params.branchName, params.planId);
-  const workspacePaths = await resolveRuntimeWorkspacePaths(params);
+  const workspaceTargets = await resolveRuntimeWorkspaceTargets(params);
 
-  for (const workspacePath of workspacePaths) {
-    const record = await readRuntimeAtWorkspace(workspacePath, runtimePath);
+  for (const target of workspaceTargets) {
+    const record = await readRuntimeAtWorkspace(target, runtimePath);
     if (record) {
       return record.planId
         ? record
@@ -183,6 +208,7 @@ export const writeArchitectPlanRuntime = async (params: {
   planId: string;
   projectIds?: string[] | null;
   repoPaths?: Array<string | null | undefined>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   record: ArchitectPlanRuntimeRecord;
 }): Promise<void> => {
   if (!tauriIpc.isTauriAvailable()) {
@@ -190,21 +216,24 @@ export const writeArchitectPlanRuntime = async (params: {
   }
 
   const runtimePath = getArchitectPlanRuntimePath(params.branchName, params.planId);
-  const workspacePaths = await resolveRuntimeWorkspacePaths(params);
-  if (workspacePaths.length === 0) {
+  const workspaceTargets = await resolveRuntimeWorkspaceTargets({
+    ...params,
+    allowFallbackPaths: false,
+  });
+  if (workspaceTargets.length === 0) {
     return;
   }
 
   await Promise.all(
-    workspacePaths.map((workspacePath) =>
-      writeRuntimeAtWorkspace(workspacePath, runtimePath, params.record),
+    workspaceTargets.map((target) =>
+      writeRuntimeAtWorkspace(target, runtimePath, params.record),
     ),
   );
 };
 
 export const updateArchitectPlanRuntime = async (params: {
   branchName: string;
-  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId'>;
+  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId' | 'executionModesByProjectId'>;
   repoPaths?: Array<string | null | undefined>;
   update: (record: ArchitectPlanRuntimeRecord) => ArchitectPlanRuntimeRecord | null;
 }): Promise<ArchitectPlanRuntimeRecord | null> => serializeRuntimeMutation(
@@ -220,6 +249,7 @@ export const updateArchitectPlanRuntime = async (params: {
       planId: params.plan.id,
       projectIds,
       repoPaths: params.repoPaths,
+      executionModesByProjectId: params.plan.executionModesByProjectId,
     })) || emptyArchitectPlanRuntimeRecord(params.plan.id);
   const updated = params.update(current);
 
@@ -241,6 +271,7 @@ export const updateArchitectPlanRuntime = async (params: {
     planId: params.plan.id,
     projectIds,
     repoPaths: params.repoPaths,
+    executionModesByProjectId: params.plan.executionModesByProjectId,
     record: normalized,
   });
 
@@ -250,7 +281,7 @@ export const updateArchitectPlanRuntime = async (params: {
 
 export const persistArchitectPlanMergeWorkflowSession = async (params: {
   branchName: string;
-  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId'>;
+  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId' | 'executionModesByProjectId'>;
   taskId: string;
   session: PersistedMergeWorkflowSession | null;
   repoPaths?: Array<string | null | undefined>;
@@ -276,7 +307,7 @@ export const persistArchitectPlanMergeWorkflowSession = async (params: {
 
 export const persistArchitectPlanStrategyPreview = async (params: {
   branchName: string;
-  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId'>;
+  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId' | 'executionModesByProjectId'>;
   preview: StrategyMutationPreview | null;
   repoPaths?: Array<string | null | undefined>;
 }): Promise<ArchitectPlanRuntimeRecord | null> =>

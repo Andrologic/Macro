@@ -1,12 +1,19 @@
-.macro
-.codex
-.playwright-cli/
-.toast-placement*.png
+# Workspace-local tool state
+/.macro/
+/.codex/
+/.kilo/
+/.playwright-cli/
+/.vscode/
+/.vs/
+/.worktrees/
+*.code-workspace
+
+# Python caches
 __pycache__/
 *.py[cod]
 
 # Logs
-logs
+/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -15,23 +22,28 @@ pnpm-debug.log*
 lerna-debug.log*
 bun-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Dependencies, builds, caches, and temporary files
+node_modules/
+dist/
+dist-ssr/
 output/
-*.local
 /coverage/
+/tmp/
+.vite/
+*.tsbuildinfo
+*.eslintcache
+*.local
 
 # Bun
 .bun/
 *.bun-build
 bun.lockb
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# Editors and operating systems
+.idea/
 .DS_Store
+Thumbs.db
+Desktop.ini
 *.suo
 *.ntvs*
 *.njsproj
@@ -39,25 +51,21 @@ bun.lockb
 *.sw?
 
 # Rust
-/target/
+target/
 **/*.rs.bk
 *.pdb
 
 # Nix
 .result
-direnv/.direnvrc
-.direnv
+.direnv/
 
-# Tauri
-src-tauri/target/
-src-tauri/binaries/
-src-tauri/resources/macro-ai-runtime*
-src-tauri/resources/macro-copilot-bridge*
-src-tauri/macro.db
+# Generated Tauri resources
+/src-tauri/resources/macro-ai-runtime*
+/src-tauri/resources/macro-copilot-bridge*
 
 # Local AI keys
-public/ai-keys.local.json
-dev/ai-keys.local.json
+/public/ai-keys.local.json
+/dev/ai-keys.local.json
 
 # Local secrets and signing material
 .env
@@ -68,8 +76,3 @@ dev/ai-keys.local.json
 *.p8
 *.p12
 *.key
-
-# Temporary visual QA reports and captures
-/design-qa.md
-/design-qa-artifacts/
-/docs/design-qa/

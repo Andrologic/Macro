@@ -83,7 +83,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
           <Switch
             checked={settings.enabled}
             disabled={!skill.isValid}
-                aria-label={t('common.enable', 'Enable')}
+            aria-label={t('common.enable', 'Enable')}
             onCheckedChange={onEnabledChange}
           />
           <button
@@ -149,17 +149,6 @@ export const SkillCard: React.FC<SkillCardProps> = ({
                     )}
                   </div>
                 )}
-                <p className="truncate text-xs text-muted-foreground/70" title={skillPath}>
-                  {t('skills.skillPath', 'SKILL.md')}: {skillPath}
-                </p>
-                <p className="truncate text-xs text-muted-foreground/60" title={rootPath}>
-                  {t('skills.rootPath', 'Root')}: {rootPath}
-                </p>
-                {skill.location && skill.location.kind !== 'local' && (
-                  <p className="truncate text-xs text-muted-foreground/60" title={skill.location.uri}>
-                    {skill.location.kind}: {skill.location.uri}
-                  </p>
-                )}
               </div>
 
               <div className="flex flex-wrap gap-2 text-xs">
@@ -177,15 +166,11 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               </div>
 
               {availabilityReasons.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 text-xs">
-                  {availabilityReasons.map((reason) => (
-                    <span
-                      key={reason}
-                      className="rounded bg-amber-500/10 px-2 py-0.5 text-amber-700 dark:text-amber-300"
-                    >
-                      {reason}
-                    </span>
-                  ))}
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                  <p className="font-medium">{t('skills.unavailableStatus', 'Unavailable')}</p>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                    {availabilityReasons.map((reason) => <li key={reason}>{reason}</li>)}
+                  </ul>
                 </div>
               )}
 
@@ -202,39 +187,42 @@ export const SkillCard: React.FC<SkillCardProps> = ({
                 </div>
               )}
 
-              {diagnostics.length > 0 && (
-                <div className="space-y-1 rounded-lg border border-border bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
-                  {diagnostics.slice(0, 6).map((diagnostic) => (
-                    <div
-                      key={`${diagnostic.code}:${diagnostic.message}`}
-                      className={cn(
-                        diagnostic.severity === 'error' && 'text-destructive',
-                        diagnostic.severity === 'warning' && 'text-amber-700 dark:text-amber-300',
-                      )}
-                    >
-                      {diagnostic.severity}: {diagnostic.message}
+              <details className="rounded-lg border border-border bg-muted/20 text-xs text-muted-foreground">
+                <summary className="cursor-pointer px-3 py-2 font-medium text-foreground hover:bg-accent/50">
+                  {t('skills.technicalDetails', 'Technical details')}
+                </summary>
+                <div className="space-y-3 border-t border-border px-3 py-2">
+                  <div className="space-y-1">
+                    <p className="break-all" title={skillPath}>{t('skills.skillPath', 'SKILL.md')}: {skillPath}</p>
+                    <p className="break-all" title={rootPath}>{t('skills.rootPath', 'Root')}: {rootPath}</p>
+                    {skill.location && skill.location.kind !== 'local' && (
+                      <p className="break-all" title={skill.location.uri}>{skill.location.kind}: {skill.location.uri}</p>
+                    )}
+                  </div>
+                  {diagnostics.length > 0 && (
+                    <div className="space-y-1 rounded-md border border-border bg-background/50 p-2">
+                      {diagnostics.map((diagnostic) => (
+                        <div key={`${diagnostic.code}:${diagnostic.message}`} className={cn(
+                          diagnostic.severity === 'error' && 'text-destructive',
+                          diagnostic.severity === 'warning' && 'text-amber-700 dark:text-amber-300',
+                        )}>
+                          {diagnostic.severity}: {diagnostic.message}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                  {diagnostics.length > 6 && (
-                    <div>
-                      {t('skills.moreDiagnostics', '+{{count}} more diagnostics', {
-                        count: diagnostics.length - 6,
-                      })}
+                  )}
+                  {metadataEntries.length > 0 && (
+                    <div className="space-y-1 rounded-md border border-border bg-background/50 p-2">
+                      {metadataEntries.map(([key, value]) => (
+                        <div key={key} className="grid grid-cols-[120px_minmax(0,1fr)] gap-2">
+                          <span className="truncate text-muted-foreground/70">{key}</span>
+                          <span className="break-all">{String(value)}</span>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
-              )}
-
-              {metadataEntries.length > 0 && (
-                <div className="space-y-1 rounded-lg border border-border bg-muted/20 px-2 py-1.5 text-xs text-muted-foreground">
-                  {metadataEntries.map(([key, value]) => (
-                    <div key={key} className="grid grid-cols-[120px_minmax(0,1fr)] gap-2">
-                      <span className="truncate text-muted-foreground/70">{key}</span>
-                      <span className="truncate" title={String(value)}>{String(value)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              </details>
             </div>
 
             <div className="grid shrink-0 grid-cols-[auto_auto] items-center gap-x-2 gap-y-2 self-start text-xs text-muted-foreground">

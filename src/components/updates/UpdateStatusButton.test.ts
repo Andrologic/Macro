@@ -20,7 +20,8 @@ describe('update status button presentation', () => {
 
   test('makes a downloaded update and failures visible', () => {
     expect(getUpdateButtonPresentation('ready', '0.2.0', 100, translate)).toMatchObject({
-      label: 'Restart to update to v0.2.0',
+      label: 'Update v0.2.0 will be installed the next time Macro opens',
+      icon: 'check-circle',
       emphasis: 'ready',
     });
     expect(getUpdateButtonPresentation('error', '0.2.0', null, translate)).toMatchObject({

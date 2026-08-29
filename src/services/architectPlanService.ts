@@ -40,6 +40,7 @@ import {
   recordMacroMetadataMutation,
   type MacroMetadataMutationKind,
 } from './macroMetadataCoordinator';
+import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 import {
   SERVICE_ERROR_CODES,
   createPlanMetadataMissingError,
@@ -151,6 +152,7 @@ export interface ArchitectPlanRecord {
   deletedAt?: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
@@ -182,6 +184,7 @@ export interface ArchitectPlanSummary {
   deletedAt?: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
@@ -476,6 +479,7 @@ const planRecordFromActivationSummary = (
     status: summary.status,
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
     targetBranchesByProjectId: summary.targetBranchesByProjectId,
+    executionModesByProjectId: summary.executionModesByProjectId,
     conversationId: summary.conversationId,
     projectId: scope.actionableProjectIds[0],
     projectIds: scope.actionableProjectIds,
@@ -870,7 +874,9 @@ const normalizeContextProjectIds = (
       if (!registrySnapshot?.validProjectIdSet.has(normalizedProjectId)) {
         continue;
       }
-      if (!registrySnapshot?.readOnlyProjectIdSet.has(normalizedProjectId)) {
+      const contextProjectIdSet = registrySnapshot.manualReadOnlyProjectIdSet ??
+        registrySnapshot.readOnlyProjectIdSet;
+      if (!contextProjectIdSet.has(normalizedProjectId)) {
         continue;
       }
     }
@@ -1454,6 +1460,7 @@ interface ArchitectMetadataScope {
   repoPath: string | null;
   workspacePath: string | null;
   source: 'local' | 'project' | 'workspace';
+  workspaceScope?: tauriIpc.WorkspaceScope;
 }
 
 interface ArchitectPlanReplicaSnapshot {
@@ -1521,7 +1528,8 @@ const resolveScopeProjectId = (
 
 const getProjectMetadataScopes = (
   registrySnapshot: ValidProjectRegistrySnapshot,
-  projectIds?: string[]
+  projectIds?: string[],
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>,
 ): ArchitectMetadataScope[] => {
   const targetProjectIds = projectIds && projectIds.length > 0
     ? Array.from(new Set(projectIds))
@@ -1529,18 +1537,25 @@ const getProjectMetadataScopes = (
 
   return targetProjectIds.flatMap((projectId) => {
     const repoPath = registrySnapshot.repoPathByProjectId.get(projectId) || null;
-    if (!repoPath) {
+    const workspacePath = registrySnapshot.workspacePathByProjectId.get(projectId) || null;
+    if (!workspacePath) {
       return [];
     }
+    const executionMode = executionModesByProjectId?.[projectId] ??
+      registrySnapshot.executionModeByProjectId.get(projectId);
     return [{
-      scopeKey: buildScopeKey('project', repoPath, projectId),
+      scopeKey: buildScopeKey(repoPath ? 'project' : 'workspace', workspacePath, projectId),
       projectId,
       repoPath,
-      workspacePath: repoPath,
-      source: 'project' as const,
+      workspacePath,
+      source: repoPath ? 'project' as const : 'workspace' as const,
+      workspaceScope: executionMode === 'direct' ? 'direct' : METADATA_WORKSPACE_SCOPE,
     }];
   });
 };
+
+const getScopeWorkspaceScope = (scope: ArchitectMetadataScope): tauriIpc.WorkspaceScope =>
+  scope.workspaceScope ?? METADATA_WORKSPACE_SCOPE;
 
 const getWorkspaceFallbackScope = async (): Promise<ArchitectMetadataScope | null> => {
   if (!tauriIpc.isTauriAvailable()) {
@@ -1565,6 +1580,7 @@ const getWorkspaceFallbackScope = async (): Promise<ArchitectMetadataScope | nul
 const resolveMetadataScopes = async (projectIds?: string[], options?: {
   includeAllKnown?: boolean;
   includeWorkspaceFallback?: boolean;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }, registrySnapshot?: ValidProjectRegistrySnapshot | null, deps?: ResolvedArchitectPlanServiceDependencies): Promise<ArchitectMetadataScope[]> => {
   const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   if (!resolvedDeps.tauri.isTauriAvailable()) {
@@ -1582,14 +1598,26 @@ const resolveMetadataScopes = async (projectIds?: string[], options?: {
     await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState });
   const scopes: ArchitectMetadataScope[] = [];
   if (projectIds && projectIds.length > 0) {
-    scopes.push(...getProjectMetadataScopes(resolvedRegistrySnapshot, projectIds));
+    scopes.push(...getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      projectIds,
+      options?.executionModesByProjectId,
+    ));
   }
-  if (options?.includeAllKnown || scopes.length === 0) {
-    scopes.push(...getProjectMetadataScopes(resolvedRegistrySnapshot));
+  if (options?.includeAllKnown || ((!projectIds || projectIds.length === 0) && scopes.length === 0)) {
+    scopes.push(...getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      undefined,
+      options?.executionModesByProjectId,
+    ));
   }
   if (options?.includeWorkspaceFallback !== false) {
     const workspaceScope = await getWorkspaceFallbackScope();
-    if (workspaceScope) {
+    const duplicatesDirectWorkspace = workspaceScope && scopes.some((scope) =>
+      scope.source === 'workspace' &&
+      normalizeRepoPath(scope.workspacePath) === normalizeRepoPath(workspaceScope.workspacePath)
+    );
+    if (workspaceScope && !duplicatesDirectWorkspace) {
       scopes.push(workspaceScope);
     }
   }
@@ -1748,6 +1776,19 @@ const dedupeProjectIdDiagnostics = (projectIds: string[]): string[] => Array.fro
 const shouldValidateProjectIds = (registrySnapshot?: ValidProjectRegistrySnapshot | null): boolean =>
   Boolean(registrySnapshot?.hasRegisteredProjects);
 
+const normalizePersistedExecutionModes = (
+  value: Record<string, 'git' | 'direct'> | null | undefined,
+  projectIds: string[],
+): Record<string, 'git' | 'direct'> | undefined => {
+  const allowedProjectIds = new Set(projectIds);
+  const entries = Object.entries(value ?? {}).filter(
+    ([projectId, mode]) => allowedProjectIds.has(projectId) && (mode === 'git' || mode === 'direct'),
+  );
+  return entries.length > 0
+    ? Object.fromEntries(entries) as Record<string, 'git' | 'direct'>
+    : undefined;
+};
+
 const sanitizeProjectIdsForRegistry = (
   projectIds?: string[],
   projectId?: string,
@@ -1780,7 +1821,9 @@ const sanitizeProjectIdsForRegistry = (
       continue;
     }
 
-    if (validateProjectIds && registrySnapshot?.readOnlyProjectIdSet.has(normalizedProjectId)) {
+    const manualReadOnlyProjectIdSet = registrySnapshot?.manualReadOnlyProjectIdSet ??
+      registrySnapshot?.readOnlyProjectIdSet;
+    if (validateProjectIds && manualReadOnlyProjectIdSet?.has(normalizedProjectId)) {
       removedInvalidProjectIds.push(normalizedProjectId);
       continue;
     }
@@ -1848,7 +1891,10 @@ const sanitizePredictedBranchesForRegistry = (
     if (
       isSyntheticProjectId(normalizedProjectId) ||
       (validateProjectIds && !registrySnapshot?.validProjectIdSet.has(normalizedProjectId)) ||
-      (validateProjectIds && Boolean(registrySnapshot?.readOnlyProjectIdSet.has(normalizedProjectId)))
+      (validateProjectIds && Boolean(
+        (registrySnapshot?.manualReadOnlyProjectIdSet ?? registrySnapshot?.readOnlyProjectIdSet)
+          ?.has(normalizedProjectId),
+      ))
     ) {
       removedInvalidProjectIds.push(normalizedProjectId);
       changed = true;
@@ -1982,6 +2028,10 @@ const sanitizeArchitectPlanRecord = (
       normalizedProjectIds,
       plan.targetBranch || normalized
     ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      plan.executionModesByProjectId,
+      normalizedProjectIds,
+    ),
     projectId: normalizedProjectIds[0],
     projectIds: normalizedScope.actionableProjectIds,
     contextProjectIds: normalizedScope.contextProjectIds,
@@ -2010,7 +2060,10 @@ const sanitizeArchitectPlanRecord = (
     registrySnapshot
   );
   const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
-    ? (normalizedPlan.projectIds || []).filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
+    ? (normalizedPlan.projectIds || []).filter((projectId) =>
+        (registrySnapshot.manualReadOnlyProjectIdSet ?? registrySnapshot.readOnlyProjectIdSet)
+          .has(projectId)
+      )
     : [];
   const sanitizedContextProjectIds = normalizeContextProjectIds(
     [...(normalizedPlan.contextProjectIds || []), ...migratedContextProjectIds],
@@ -2051,6 +2104,10 @@ const sanitizeArchitectPlanRecord = (
         getProjectGitFlowSettings: registryProjectSettingsResolver,
         fallbackTargetBranch: normalizedPlan.targetBranch,
       }
+    ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      normalizedPlan.executionModesByProjectId,
+      sanitizedProjects.projectIds,
     ),
     nodes: sanitizedNodes.nodes,
     predictedBranches: sanitizedPredictedBranches.predictedBranches,
@@ -2136,6 +2193,10 @@ const sanitizeArchitectPlanSummary = (
       projectIds,
       summary.targetBranch || branchName
     ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      summary.executionModesByProjectId,
+      projectIds,
+    ),
     projectId: normalizedScope.actionableProjectIds[0],
     projectIds: normalizedScope.actionableProjectIds,
     contextProjectIds: normalizedScope.contextProjectIds,
@@ -2160,7 +2221,10 @@ const sanitizeArchitectPlanSummary = (
     registrySnapshot
   );
   const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
-    ? (normalizedSummary.projectIds || []).filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
+    ? (normalizedSummary.projectIds || []).filter((projectId) =>
+        (registrySnapshot.manualReadOnlyProjectIdSet ?? registrySnapshot.readOnlyProjectIdSet)
+          .has(projectId)
+      )
     : [];
   const sanitizedContextProjectIds = normalizeContextProjectIds(
     [...(normalizedSummary.contextProjectIds || []), ...migratedContextProjectIds],
@@ -2200,6 +2264,10 @@ const sanitizeArchitectPlanSummary = (
         getProjectGitFlowSettings: registryProjectSettingsResolver,
         fallbackTargetBranch: normalizedSummary.targetBranch,
       }
+    ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      normalizedSummary.executionModesByProjectId,
+      sanitizedProjects.projectIds,
     ),
   });
   const changed =
@@ -2297,6 +2365,7 @@ const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): unknown =
   deletedAt: summary.deletedAt,
   targetBranch: summary.targetBranch,
   targetBranchesByProjectId: summary.targetBranchesByProjectId,
+  executionModesByProjectId: summary.executionModesByProjectId,
   conversationId: summary.conversationId,
   projectId: summary.projectId,
   projectIds: summary.projectIds,
@@ -2403,7 +2472,7 @@ const syncPlanTaskMetadataAtScope = async (
       recursive: false,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
 
@@ -2414,7 +2483,7 @@ const syncPlanTaskMetadataAtScope = async (
         .map((entry) =>
           tauriIpc.fsDelete({
             path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, entry.name),
-            workspaceScope: METADATA_WORKSPACE_SCOPE,
+            workspaceScope: getScopeWorkspaceScope(scope),
             workspacePath: scope.workspacePath,
           }).catch(() => undefined)
         )
@@ -2443,7 +2512,7 @@ const readJsonFileAtScope = async <T>(
     const file = await tauriIpc.fsReadFileWithOptions({
       path,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     return JSON.parse(file.content) as T;
@@ -2468,7 +2537,7 @@ const writeJsonFileAtScope = async (
     content,
     createDirs: true,
     allowOutsideWorkspace: false,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
   return true;
@@ -2483,7 +2552,7 @@ const readTextFileAtScope = async (
     const file = await tauriIpc.fsReadFileWithOptions({
       path,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     return file.content;
@@ -2507,7 +2576,7 @@ const writeTextFileAtScope = async (
     content,
     createDirs: true,
     allowOutsideWorkspace: false,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
   return true;
@@ -2965,13 +3034,13 @@ const removePlanAtScope = async (scope: ArchitectMetadataScope, branchName: stri
 
   const path = getPlanDir(normalized, safeId);
   if (!await tauriIpc.fsExists(path, {
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   })) return;
   await tauriIpc.fsDelete({
     path,
     recursive: true,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
 };
@@ -2980,6 +3049,7 @@ interface ArchitectPlanReplicaMutationTarget {
   scope: ArchitectMetadataScope;
   action: 'upsert' | 'remove' | 'index';
   plan: ArchitectPlanRecord | null;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   index: ArchitectPlanIndex;
   chatMessages?: ArchitectPlanChatMessage[];
   replacePlanDirectory?: boolean;
@@ -3019,7 +3089,13 @@ const isReplicaMutationPayload = (
         ? target.plan === null
         : !!target.plan && target.plan.id === entry.planId && target.plan.targetBranch === entry.branchName &&
           target.index.plans.some((summary) => summary.id === entry.planId)) &&
-    (target.chatMessages === undefined || (Array.isArray(target.chatMessages) && target.chatMessages.every((message) =>
+    (target.executionModesByProjectId === undefined || (
+      target.executionModesByProjectId !== null &&
+      typeof target.executionModesByProjectId === 'object' &&
+      Object.entries(target.executionModesByProjectId).every(([projectId, mode]) =>
+        projectId.length > 0 && (mode === 'git' || mode === 'direct')
+      )
+    )) && (target.chatMessages === undefined || (Array.isArray(target.chatMessages) && target.chatMessages.every((message) =>
       !!message && typeof message.id === 'string' && (message.role === 'user' || message.role === 'assistant') &&
       typeof message.content === 'string' && typeof message.createdAt === 'string'
     ))) && (target.replacePlanDirectory === undefined || typeof target.replacePlanDirectory === 'boolean') &&
@@ -3029,6 +3105,110 @@ const isReplicaMutationPayload = (
         typeof content === 'string'
       )));
   });
+};
+
+const getMutationTargetExecutionModes = (
+  target: ArchitectPlanReplicaMutationTarget,
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+): Record<string, 'git' | 'direct'> =>
+  target.executionModesByProjectId ??
+  (target.plan ? getPlanExecutionModes(target.plan, registrySnapshot) : {});
+
+const shouldCommitMutationTarget = (
+  target: ArchitectPlanReplicaMutationTarget,
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+): boolean => {
+  const modesByProjectId = getMutationTargetExecutionModes(target, registrySnapshot);
+  if (target.scope.projectId) {
+    return modesByProjectId[target.scope.projectId] === 'git';
+  }
+  return Object.values(modesByProjectId).some((mode) => mode === 'git');
+};
+
+const getPlanExecutionModes = (
+  plan: ArchitectPlanRecord,
+  registrySnapshot?: ValidProjectRegistrySnapshot | null,
+): Record<string, 'git' | 'direct'> => {
+  const projectIds = new Set(plan.projectIds ?? []);
+  const modes = Object.fromEntries(
+    Object.entries(plan.executionModesByProjectId ?? {}).filter(
+      ([projectId, mode]) => projectIds.has(projectId) && (mode === 'git' || mode === 'direct'),
+    ),
+  ) as Record<string, 'git' | 'direct'>;
+  const nodeModes = getPlanExecutionModesByProjectId(plan.nodes);
+  for (const [projectId, mode] of Object.entries(nodeModes)) {
+    if (!modes[projectId]) modes[projectId] = mode;
+  }
+  for (const projectId of plan.projectIds ?? []) {
+    if (modes[projectId]) continue;
+    const observedMode = registrySnapshot?.executionModeByProjectId.get(projectId);
+    if (observedMode === 'git' || observedMode === 'direct') {
+      modes[projectId] = observedMode;
+    }
+  }
+  return modes;
+};
+
+interface PersistedDirectPlanDiscovery {
+  plan: ArchitectPlanRecord;
+  scopes: ArchitectMetadataScope[];
+}
+
+const discoverPersistedDirectPlan = async (params: {
+  branchName: string;
+  planId: string;
+  registrySnapshot?: ValidProjectRegistrySnapshot | null;
+  deps: ResolvedArchitectPlanServiceDependencies;
+}): Promise<PersistedDirectPlanDiscovery | null> => {
+  const registrySnapshot = params.registrySnapshot;
+  if (!registrySnapshot || !params.deps.tauri.isTauriAvailable()) {
+    return null;
+  }
+  const directModes = Object.fromEntries(
+    registrySnapshot.validProjectIds.map((projectId) => [projectId, 'direct' as const]),
+  );
+  const directScopes = getProjectMetadataScopes(
+    registrySnapshot,
+    registrySnapshot.validProjectIds,
+    directModes,
+  );
+  const candidates = (
+    await Promise.all(directScopes.map(async (scope) => ({
+      scope,
+      result: await readPlanAtScopeWithDiagnostics(
+        scope,
+        params.branchName,
+        params.planId,
+        registrySnapshot,
+      ),
+    })))
+  ).filter(({ scope, result }) => {
+    if (!scope.projectId || !result.plan) return false;
+    return getPlanExecutionModes(result.plan, registrySnapshot)[scope.projectId] === 'direct';
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+  const plan = candidates
+    .map(({ result }) => result.plan as ArchitectPlanRecord)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  if (!plan) {
+    return null;
+  }
+  const executionModesByProjectId = getPlanExecutionModes(plan, registrySnapshot);
+  const expectedProjectIds = normalizeArchitectPlanScope(plan, {
+    useExpectedAsActionableFallback: true,
+  }).expectedProjectIds;
+  const scopes = await resolveMetadataScopes(
+    expectedProjectIds,
+    {
+      includeWorkspaceFallback: false,
+      executionModesByProjectId,
+    },
+    registrySnapshot,
+    params.deps,
+  );
+  return { plan, scopes };
 };
 
 const getReplicaMutationWorkspaceKey = (targets: ArchitectPlanReplicaMutationTarget[]): string => {
@@ -3042,7 +3222,10 @@ const getRegistryWorkspaceKey = (
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
   targets: ArchitectPlanReplicaMutationTarget[],
 ): string => {
-  const roots = Array.from(registrySnapshot?.repoPathByProjectId.values() || [])
+  const roots = Array.from(new Set([
+    ...Array.from(registrySnapshot?.workspacePathByProjectId.values() || []),
+    ...Array.from(registrySnapshot?.repoPathByProjectId.values() || []),
+  ]))
     .map(normalizeProjectRegistryPath).filter((value): value is string => !!value).sort();
   return roots.length > 0 ? roots.join('|') : getReplicaMutationWorkspaceKey(targets);
 };
@@ -3076,7 +3259,7 @@ const applyArchitectPlanReplicaMutation = async (
             content,
             createDirs: true,
             allowOutsideWorkspace: false,
-            workspaceScope: METADATA_WORKSPACE_SCOPE,
+            workspaceScope: getScopeWorkspaceScope(target.scope),
             workspacePath: target.scope.workspacePath,
           });
         }
@@ -3150,7 +3333,14 @@ const recoverArchitectPlanReplicaMutationsUnlocked = async (
         }
         currentEntry = { ...currentEntry, phase: 'committing', updatedAt: new Date().toISOString() };
         await upsertArchitectPlanMutationJournal(currentEntry, deps.tauri);
-        await commitMetadataScopes(currentEntry.payload.targets.map((target) => target.scope), currentEntry.payload.commitMessage, { commit: true }, deps);
+        await commitMetadataScopes(
+          currentEntry.payload.targets
+            .filter((target) => shouldCommitMutationTarget(target, registrySnapshot))
+            .map((target) => target.scope),
+          currentEntry.payload.commitMessage,
+          { commit: true },
+          deps,
+        );
         await removeArchitectPlanMutationJournal(currentEntry.id, deps.tauri);
       } catch (error) {
         await upsertArchitectPlanMutationJournal({
@@ -3208,7 +3398,14 @@ const runArchitectPlanReplicaMutation = async (params: {
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
     currentEntry = { ...currentEntry, phase: 'committing', updatedAt: new Date().toISOString() };
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
-    await commitMetadataScopes(params.targets.map((target) => target.scope), params.commitMessage, { commit: true }, params.deps);
+    await commitMetadataScopes(
+      params.targets
+        .filter((target) => shouldCommitMutationTarget(target, params.registrySnapshot))
+        .map((target) => target.scope),
+      params.commitMessage,
+      { commit: true },
+      params.deps,
+    );
     await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri);
     } catch (error) {
       await upsertArchitectPlanMutationJournal({
@@ -3245,6 +3442,7 @@ const buildUpsertReplicaMutationTarget = async (params: {
     scope: params.scope,
     action: 'upsert',
     plan: params.plan,
+    executionModesByProjectId: getPlanExecutionModes(params.plan, params.registrySnapshot),
     chatMessages: params.chatMessages,
     replacePlanDirectory: params.replacePlanDirectory,
     extraFiles: params.extraFiles,
@@ -3265,6 +3463,7 @@ const buildRemoveReplicaMutationTarget = async (params: {
   scope: ArchitectMetadataScope;
   branchName: string;
   planId: string;
+  plan?: ArchitectPlanRecord;
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined;
 }): Promise<ArchitectPlanReplicaMutationTarget> => {
   const index = await readIndexAtScope(params.scope, params.branchName, params.registrySnapshot);
@@ -3276,6 +3475,9 @@ const buildRemoveReplicaMutationTarget = async (params: {
     scope: params.scope,
     action: 'remove',
     plan: null,
+    executionModesByProjectId: params.plan
+      ? getPlanExecutionModes(params.plan, params.registrySnapshot)
+      : {},
     index: {
       ...index,
       version: 3,
@@ -3310,7 +3512,7 @@ const readPlanFilesAtScope = async (
       recursive: true,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     const files = entries.filter((entry) => entry.kind === 'file');
@@ -3320,7 +3522,7 @@ const readPlanFilesAtScope = async (
         const content = await tauriIpc.fsReadFileWithOptions({
           path: `${planDir}/${relativePath}`,
           allowOutsideWorkspace: false,
-          workspaceScope: METADATA_WORKSPACE_SCOPE,
+          workspaceScope: getScopeWorkspaceScope(scope),
           workspacePath: scope.workspacePath,
         });
         return [relativePath, content.content] as const;
@@ -3355,6 +3557,8 @@ const toSummary = (
     archivedFromStatus: plan.archivedFromStatus,
     deletedAt: plan.deletedAt,
     targetBranch: plan.targetBranch,
+    targetBranchesByProjectId: plan.targetBranchesByProjectId,
+    executionModesByProjectId: plan.executionModesByProjectId,
     conversationId: plan.conversationId,
     projectId: plan.projectId,
     projectIds,
@@ -3471,7 +3675,7 @@ const listTargetBranchesAtScope = async (
       recursive: true,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
 
@@ -3516,8 +3720,26 @@ const readAggregatedIndex = async (
         resolvedRegistrySnapshot,
         resolvedDeps
       );
+      if (resolvedRegistrySnapshot) {
+        const transitionedDirectScopes = getProjectMetadataScopes(
+          resolvedRegistrySnapshot,
+          resolvedRegistrySnapshot.validProjectIds.filter(
+            (projectId) => resolvedRegistrySnapshot.executionModeByProjectId.get(projectId) !== 'direct',
+          ),
+          Object.fromEntries(
+            resolvedRegistrySnapshot.validProjectIds.map((projectId) => [projectId, 'direct']),
+          ),
+        ).map((scope) => ({
+          ...scope,
+          scopeKey: `direct:${scope.workspacePath || scope.projectId || 'unknown'}`,
+          repoPath: null,
+          workspaceScope: 'direct' as const,
+        }));
+        scopes.push(...transitionedDirectScopes);
+      }
+      const dedupedScopes = dedupeScopes(scopes);
       const indexes = await Promise.all(
-        scopes.map(async (scope) => ({
+        dedupedScopes.map(async (scope) => ({
           scope,
           index: await readIndexAtScope(scope, normalized, resolvedRegistrySnapshot),
         }))
@@ -3594,7 +3816,13 @@ const loadPlanReplicaSet = async (
       ? (options?.registrySnapshot ??
         await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState }))
       : undefined;
-  const scopes = await resolveMetadataScopes(
+  const persistedDirectPlan = await discoverPersistedDirectPlan({
+    branchName: normalizedBranch,
+    planId: safeId,
+    registrySnapshot: resolvedRegistrySnapshot,
+    deps: resolvedDeps,
+  });
+  const scopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
     undefined,
     { includeAllKnown: true },
     resolvedRegistrySnapshot,
@@ -3669,7 +3897,10 @@ const loadPlanReplicaSet = async (
   const expectedScopes = dedupeScopes([
     ...(await resolveMetadataScopes(
       expectedProjectIds,
-      { includeWorkspaceFallback: false },
+      {
+        includeWorkspaceFallback: false,
+        executionModesByProjectId: getPlanExecutionModes(canonical.plan, resolvedRegistrySnapshot),
+      },
       resolvedRegistrySnapshot,
       resolvedDeps
     )),
@@ -3830,6 +4061,21 @@ const isWorkspaceArchitectRuntimeAvailable = (
   typeof deps.tauri.workspaceArchitectActivatePlanHead === 'function' &&
   typeof deps.tauri.workspaceArchitectActivatePlanChat === 'function';
 
+const canUseWorkspaceArchitectRuntimeForScope = (
+  registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  scopedProjectIdsHint?: string[],
+): boolean => {
+  if (!registrySnapshot?.hasRegisteredProjects) return true;
+  const projectIds = scopedProjectIdsHint?.length
+    ? scopedProjectIdsHint
+    : registrySnapshot.scopedProjectIds.length > 0
+      ? registrySnapshot.scopedProjectIds
+      : registrySnapshot.validProjectIds;
+  return projectIds.length > 0 && projectIds.every(
+    (projectId) => registrySnapshot.executionModeByProjectId.get(projectId) === 'git',
+  );
+};
+
 const mapRuntimeArchitectPlanSummary = (
   branchName: string,
   summary: tauriIpc.WorkspaceArchitectPlanSummaryDto
@@ -3914,8 +4160,17 @@ export const getArchitectPlanChatTranscript = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const persistedDirectPlan = await discoverPersistedDirectPlan({
+    branchName: normalizedBranch,
+    planId: safeId,
+    registrySnapshot,
+    deps,
+  });
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+  if (!persistedDirectPlan &&
+      isWorkspaceArchitectRuntimeAvailable(deps) &&
+      canUseWorkspaceArchitectRuntimeForScope(registrySnapshot)) {
     const transcript = await deps.tauri.workspaceArchitectActivatePlanChat({
       branchName: normalizedBranch,
       planId: safeId,
@@ -4084,40 +4339,59 @@ const loadArchitectPlanActivationPayloadImpl = async (
     return payload;
   }
 
-  try {
-    const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
-      normalizedBranch,
-      safeId,
-      options,
-      deps
-    );
-    if (runtimePayload) {
-      logArchitectPlanActivationLoad({
-        branchName: normalizedBranch,
-        planId: safeId,
-        resolutionMode: runtimePayload.resolutionMode,
-        sharedConversation: runtimePayload.sharedConversation,
-        durationMs: Date.now() - startedAt,
-      });
-      return runtimePayload;
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const persistedDirectPlan = await discoverPersistedDirectPlan({
+    branchName: normalizedBranch,
+    planId: safeId,
+    registrySnapshot,
+    deps,
+  });
+  const persistedDirectSummary: ArchitectPlanSummary | null = persistedDirectPlan
+    ? {
+        ...persistedDirectPlan.plan,
+        nodeCount: persistedDirectPlan.plan.nodes.length,
+        predictedBranchCount: persistedDirectPlan.plan.predictedBranches.length,
+      }
+    : null;
+
+  if (!persistedDirectPlan && canUseWorkspaceArchitectRuntimeForScope(
+    registrySnapshot,
+    options.scopedProjectIdsHint,
+  )) {
+    try {
+      const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
+        normalizedBranch,
+        safeId,
+        options,
+        deps
+      );
+      if (runtimePayload) {
+        logArchitectPlanActivationLoad({
+          branchName: normalizedBranch,
+          planId: safeId,
+          resolutionMode: runtimePayload.resolutionMode,
+          sharedConversation: runtimePayload.sharedConversation,
+          durationMs: Date.now() - startedAt,
+        });
+        return runtimePayload;
+      }
+    } catch (error) {
+      devLogger.warn(
+        JSON.stringify({
+          event: 'architect_plan_runtime_activation_fallback',
+          at: new Date().toISOString(),
+          branchName: normalizedBranch,
+          planId: safeId,
+          error: toErrorMessage(error),
+        })
+      );
     }
-  } catch (error) {
-    devLogger.warn(
-      JSON.stringify({
-        event: 'architect_plan_runtime_activation_fallback',
-        at: new Date().toISOString(),
-        branchName: normalizedBranch,
-        planId: safeId,
-        error: toErrorMessage(error),
-      })
-    );
   }
 
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   let index: ArchitectPlanIndex | null = null;
-  let summary = hintedSummary;
+  let summary: ArchitectPlanSummary | null = hintedSummary ?? persistedDirectSummary;
 
-  if (!summary || options.allowIndexFallback !== false) {
+  if (!persistedDirectPlan && (!summary || options.allowIndexFallback !== false)) {
     index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
     summary =
       summary ??
@@ -4161,7 +4435,7 @@ const loadArchitectPlanActivationPayloadImpl = async (
         .filter((projectId) => projectId.length > 0)
     )
   );
-  const scopes = await resolveMetadataScopes(
+  const scopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
     scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
     {
       includeAllKnown: !summary && scopedProjectIds.length === 0,
@@ -4432,7 +4706,8 @@ const commitMetadataScopes = async (
 const ensurePlanScopes = async (
   projectIds: string[],
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  deps?: ResolvedArchitectPlanServiceDependencies
+  deps?: ResolvedArchitectPlanServiceDependencies,
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>,
 ): Promise<ArchitectMetadataScope[]> => {
   const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   if (!resolvedDeps.tauri.isTauriAvailable()) {
@@ -4450,7 +4725,11 @@ const ensurePlanScopes = async (
     await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState });
 
   if (projectIds.length > 0) {
-    const scopes = dedupeScopes(getProjectMetadataScopes(resolvedRegistrySnapshot, projectIds));
+    const scopes = dedupeScopes(getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      projectIds,
+      executionModesByProjectId,
+    ));
     if (scopes.length > 0) {
       return scopes;
     }
@@ -4458,7 +4737,11 @@ const ensurePlanScopes = async (
 
   const scopedProjectIds = resolvedRegistrySnapshot.scopedProjectIds;
   if (scopedProjectIds.length > 0) {
-    const selectedScopes = dedupeScopes(getProjectMetadataScopes(resolvedRegistrySnapshot, scopedProjectIds));
+    const selectedScopes = dedupeScopes(getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      scopedProjectIds,
+      executionModesByProjectId,
+    ));
     if (selectedScopes.length > 0) {
       return selectedScopes;
     }
@@ -4490,11 +4773,23 @@ export const commitArchitectPlanMetadata = async (input: {
       throwPlanMetadataMissing(normalizedBranch, safeId);
     }
 
-    await commitMetadataScopes(
-      dedupeScopes([
+    const executionModesByProjectId = getPlanExecutionModes(
+      replicaSet.canonical.plan,
+      registrySnapshot,
+    );
+    const persistedModes = Object.values(executionModesByProjectId);
+    const metadataScopes = dedupeScopes([
         ...replicaSet.expectedScopes,
         ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
-      ]),
+      ]).filter((scope) => {
+        if (scope.projectId) {
+          return executionModesByProjectId[scope.projectId] === 'git';
+        }
+        return persistedModes.some((mode) => mode === 'git');
+      });
+
+    await commitMetadataScopes(
+      metadataScopes,
       input.commitMessage,
       { commit: true },
       deps
@@ -4532,8 +4827,15 @@ const listArchitectPlansWithDeps = async (
   await recoverArchitectPlanReplicaMutations(deps);
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
+  const hasPersistedDirectPlan = index.plans.some((plan) =>
+    Object.values(plan.executionModesByProjectId ?? {}).includes('direct')
+  );
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+  if (isWorkspaceArchitectRuntimeAvailable(deps) &&
+      canUseWorkspaceArchitectRuntimeForScope(registrySnapshot, options.scopedProjectIdsHint) &&
+      !hasPersistedDirectPlan) {
     try {
       const runtimeList = await deps.tauri.workspaceArchitectListPlans({
         branchName: normalizedBranch,
@@ -4559,8 +4861,6 @@ const listArchitectPlansWithDeps = async (
     }
   }
 
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
   const plans = index.plans.filter((plan) => {
     if (!includeDeleted && plan.status === 'deleted') return false;
     if (!includeArchived && plan.status === 'archived') return false;
@@ -4734,6 +5034,15 @@ const createArchitectPlanUnlocked = async (
     status: input.status || 'draft',
     targetBranch: normalizedBranch,
     targetBranchesByProjectId: normalizedTargetBranchesByProjectId,
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      Object.fromEntries(
+        projectIds.map((projectId) => [
+          projectId,
+          registrySnapshot?.executionModeByProjectId.get(projectId),
+        ]),
+      ) as Record<string, 'git' | 'direct'>,
+      projectIds,
+    ),
     conversationId: input.conversationId,
     projectId: projectIds[0],
     projectIds,
@@ -4753,7 +5062,12 @@ const createArchitectPlanUnlocked = async (
   }
   const plan = planResult.plan;
 
-  const scopes = await ensurePlanScopes(plan.expectedProjectIds || plan.projectIds || [], registrySnapshot, deps);
+  const scopes = await ensurePlanScopes(
+    plan.expectedProjectIds || plan.projectIds || [],
+    registrySnapshot,
+    deps,
+    getPlanExecutionModes(plan, registrySnapshot),
+  );
   const targets = await Promise.all(scopes.map((scope) => buildUpsertReplicaMutationTarget({
     scope,
     branchName: normalizedBranch,
@@ -4960,6 +5274,20 @@ export const updateArchitectPlan = async (input: {
     }
   }
 
+  const existingProjectIdSet = new Set(normalizeProjectIds(existing.projectIds, existing.projectId));
+  const nextExecutionModesByProjectId = Object.fromEntries(
+    Object.entries(existing.executionModesByProjectId ?? {}).filter(
+      ([projectId, mode]) => projectIds.includes(projectId) && (mode === 'git' || mode === 'direct'),
+    ),
+  ) as Record<string, 'git' | 'direct'>;
+  for (const projectId of projectIds) {
+    if (existingProjectIdSet.has(projectId) || nextExecutionModesByProjectId[projectId]) continue;
+    const observedMode = registrySnapshot?.executionModeByProjectId.get(projectId);
+    if (observedMode === 'git' || observedMode === 'direct') {
+      nextExecutionModesByProjectId[projectId] = observedMode;
+    }
+  }
+
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
     slug: requestedSlug,
@@ -4973,6 +5301,7 @@ export const updateArchitectPlan = async (input: {
     conversationId: input.conversationId !== undefined ? input.conversationId : existing.conversationId,
     status: input.status || existing.status,
     targetBranchesByProjectId: normalizedTargetBranchesByProjectId,
+    executionModesByProjectId: nextExecutionModesByProjectId,
     projectId: projectIds[0],
     projectIds,
     contextProjectIds,
@@ -4992,7 +5321,8 @@ export const updateArchitectPlan = async (input: {
   const targetScopes = await ensurePlanScopes(
     candidate.expectedProjectIds || candidate.projectIds || [],
     registrySnapshot,
-    deps
+    deps,
+    getPlanExecutionModes(candidate, registrySnapshot),
   );
   const existingScopes = dedupeScopes([
     ...replicaSet.expectedScopes,
@@ -5027,7 +5357,13 @@ export const updateArchitectPlan = async (input: {
   if (!hasSemanticChange && !hasScopeChanges && shouldActivate) {
     const targets = await Promise.all(targetScopes.map(async (scope): Promise<ArchitectPlanReplicaMutationTarget> => {
       const index = await readIndexAtScope(scope, normalizedBranch, registrySnapshot);
-      return { scope, action: 'index', plan: null, index: { ...index, version: 3, activePlanId: safeId } };
+      return {
+        scope,
+        action: 'index',
+        plan: null,
+        executionModesByProjectId: getPlanExecutionModes(existing, registrySnapshot),
+        index: { ...index, version: 3, activePlanId: safeId },
+      };
     }));
     await runArchitectPlanReplicaMutation({
       branchName: normalizedBranch,
@@ -5067,6 +5403,7 @@ export const updateArchitectPlan = async (input: {
       scope,
       branchName: normalizedBranch,
       planId: next.id,
+      plan: next,
       registrySnapshot,
     }))),
   ];
@@ -5257,11 +5594,17 @@ export const setActiveArchitectPlan = async (
         if (!exists || index.activePlanId === safeId) {
           return null;
         }
-        return { scope, action: 'index', plan: null, index: {
-          ...index,
-          version: 3,
-          activePlanId: safeId,
-        } };
+        return {
+          scope,
+          action: 'index',
+          plan: null,
+          executionModesByProjectId: getPlanExecutionModes(replicaSet.canonical.plan, registrySnapshot),
+          index: {
+            ...index,
+            version: 3,
+            activePlanId: safeId,
+          },
+        };
       })
     )).filter((target): target is ArchitectPlanReplicaMutationTarget => target !== null);
     if (targets.length > 0) {
@@ -5299,7 +5642,11 @@ export const deleteArchitectPlan = async (input: {
 
     if (input.hardDelete) {
       const targets = await Promise.all(scopes.map((scope) => buildRemoveReplicaMutationTarget({
-        scope, branchName: normalizedBranch, planId: safeId, registrySnapshot,
+        scope,
+        branchName: normalizedBranch,
+        planId: safeId,
+        plan: replicaSet.canonical.plan,
+        registrySnapshot,
       })));
       await runArchitectPlanReplicaMutation({
         branchName: normalizedBranch, planId: safeId, operation: 'delete', targets, registrySnapshot, deps,
@@ -5688,7 +6035,7 @@ const listPlanRelativeFilesAtScope = async (
       recursive: true,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     return entries
@@ -5869,15 +6216,24 @@ export const writeArchitectTaskExecution = async (params: {
         content: buildTaskExecutedMarkdown(replicaSet.canonical.plan, params.execution),
         createDirs: true,
         allowOutsideWorkspace: false,
-        workspaceScope: METADATA_WORKSPACE_SCOPE,
+        workspaceScope: getScopeWorkspaceScope(scope),
         workspacePath: scope.workspacePath,
       })
     )
   );
 
+  const executionModesByProjectId = getPlanExecutionModes(
+    replicaSet.canonical.plan,
+    registrySnapshot,
+  );
+  const persistedModes = Object.values(executionModesByProjectId);
   const taskExecutionWorkspacePaths: string[] = [];
   for (const scope of dedupeScopes(replicaSet.expectedScopes)) {
     if (scope.source === 'local' || !scope.workspacePath) continue;
+    const shouldSyncGitMetadata = scope.projectId
+      ? executionModesByProjectId[scope.projectId] === 'git'
+      : persistedModes.includes('git');
+    if (!shouldSyncGitMetadata) continue;
     taskExecutionWorkspacePaths.push(scope.workspacePath);
     recordMacroMetadataMutation({
       workspacePath: scope.workspacePath,

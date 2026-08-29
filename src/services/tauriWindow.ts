@@ -12,7 +12,7 @@ export type WindowCloseRequestedListener = (
 ) => void | Promise<void>;
 
 async function invokeWindow<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('./tauriRuntimeBridge');
   return invoke<T>(command, args);
 }
 

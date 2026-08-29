@@ -26,6 +26,7 @@ struct ChatCompletionAccumulator {
     reasoning_summary: String,
     tool_calls: Vec<AiToolCall>,
     is_reasoning: bool,
+    completion_reason: Option<String>,
 }
 
 pub async fn stream_chat(
@@ -193,8 +194,9 @@ async fn stream_chat_inner(
     }
 
     if !saw_completion {
-        return Err("Provider stream ended before a completion marker was received.".to_string());
+        accumulator.completion_reason = Some("incomplete".to_string());
     }
+    ensure_terminal_completion_reason(&mut accumulator.completion_reason, &accumulator.tool_calls);
 
     if accumulator.is_reasoning {
         emit_delta(
@@ -221,7 +223,7 @@ async fn stream_chat_inner(
                 reasoning_summary: optional_text(accumulator.reasoning_summary),
                 tool_traces: None,
                 hidden_context: None,
-                completion_reason: None,
+                completion_reason: accumulator.completion_reason,
             },
         )
         .map_err(|error| error.to_string())?;
@@ -386,6 +388,10 @@ fn process_sse_event(
         return Ok(false);
     }
     if data == "[DONE]" {
+        ensure_terminal_completion_reason(
+            &mut accumulator.completion_reason,
+            &accumulator.tool_calls,
+        );
         return Ok(true);
     }
 
@@ -461,11 +467,42 @@ fn process_sse_event(
         }
     }
 
-    Ok(choice
-        .get("finish_reason")
-        .filter(|value| !value.is_null())
-        .is_some()
-        || is_terminal_sse_value(&value))
+    if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        accumulator.completion_reason = Some(normalize_finish_reason(finish_reason).to_string());
+    }
+
+    Ok(accumulator.completion_reason.is_some() || is_terminal_sse_value(&value))
+}
+
+fn normalize_finish_reason(finish_reason: &str) -> &str {
+    match finish_reason {
+        "length" | "max_tokens" | "max_output_tokens" => "length",
+        "stop" | "tool_calls" | "function_call" => "completed",
+        "" => "incomplete",
+        other => other,
+    }
+}
+
+fn ensure_terminal_completion_reason(
+    completion_reason: &mut Option<String>,
+    tool_calls: &[AiToolCall],
+) {
+    if completion_reason.is_none() {
+        let has_complete_tool_batch = !tool_calls.is_empty()
+            && tool_calls.iter().all(|tool_call| {
+                !tool_call.id.trim().is_empty()
+                    && !tool_call.function.name.trim().is_empty()
+                    && serde_json::from_str::<Value>(&tool_call.function.arguments).is_ok()
+            });
+        *completion_reason = Some(
+            if has_complete_tool_batch {
+                "completed"
+            } else {
+                "incomplete"
+            }
+            .to_string(),
+        );
+    }
 }
 
 fn emit_first_token_timeline(
@@ -874,6 +911,25 @@ mod tests {
             &serde_json::from_str::<Value>(&extract_sse_data(&events[0]).expect("data"))
                 .expect("payload")
         ));
+    }
+
+    #[test]
+    fn finish_reasons_preserve_output_limit_exhaustion() {
+        assert_eq!(normalize_finish_reason("length"), "length");
+        assert_eq!(normalize_finish_reason("max_output_tokens"), "length");
+        assert_eq!(normalize_finish_reason("stop"), "completed");
+        assert_eq!(normalize_finish_reason("content_filter"), "content_filter");
+    }
+
+    #[test]
+    fn terminal_marker_without_finish_reason_is_incomplete() {
+        let mut completion_reason = None;
+        ensure_terminal_completion_reason(&mut completion_reason, &[]);
+        assert_eq!(completion_reason.as_deref(), Some("incomplete"));
+
+        let mut completed = Some("completed".to_string());
+        ensure_terminal_completion_reason(&mut completed, &[]);
+        assert_eq!(completed.as_deref(), Some("completed"));
     }
 
     #[test]

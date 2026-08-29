@@ -1,0 +1,56 @@
+[package]
+name = "tauri-remote-ui"
+version = "1.1.0"
+license = "AGPL-3.0-only"
+authors = ["DraviaVemal"]
+description = "A Tauri plugin that exposes the application’s UI to a web browser, allowing full interaction while the native app continues running. This enables frontend debug, end-to-end UI testing using existing web-based testing tools without requiring modifications to the app itself."
+edition = "2021"
+rust-version = "1.77.2"
+exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
+links = "tauri-remote-ui"
+repository = "https://github.com/DraviaVemal/tauri-remote-ui"
+
+[dependencies]
+tauri = { version = "2" }
+serde = "1"
+thiserror = "2"
+tokio = { version = "1.47", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = "0.1"
+hyper-tungstenite = "0.18"
+serde_json = "1"
+mime_guess = "2"
+http-body-util = "0.1"
+futures = "0.3"
+urlencoding = "2.1"
+log = "0.4"
+if-addrs = "0.13"
+
+[build-dependencies]
+tauri-plugin = { version = "2.4.0", features = ["build"] }
+
+# ---------------------------------------------------------------------------
+# Lint configuration
+#
+# Keep this in sync with `cargo clippy` runs in CI. The intent is:
+#   * `unsafe` is forbidden — the crate is pure-safe Rust today and any new
+#     unsafe block needs an explicit, reviewed exemption.
+#   * `unused_must_use` is denied so dropped `Result`s are caught at build.
+#   * `clippy::all` (correctness, suspicious, style, complexity, perf) runs as
+#     warnings; treat them as errors in CI via `-D warnings` if desired.
+#   * A few high-value extra clippy lints are pulled in individually.
+# ---------------------------------------------------------------------------
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+uninlined_format_args = "warn"
+needless_pass_by_value = "warn"
+explicit_iter_loop = "warn"
+redundant_clone = "warn"
+semicolon_if_nothing_returned = "warn"
