@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Component;
 
-const MAX_REVIEW_INLINE_BYTES: usize = 200 * 1024;
+pub(super) const MAX_REVIEW_INLINE_BYTES: usize = 200 * 1024;
 const EXTERNAL_LINK_TARGET_PLACEHOLDER: &str = "[external link target]";
 
 #[derive(Clone)]
