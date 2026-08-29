@@ -1,4 +1,7 @@
-param([string]$InstallerPath)
+param(
+  [string]$InstallerPath,
+  [switch]$FailAfterStateIsolation
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -36,12 +39,15 @@ $registryBackup = Join-Path $testRoot 'registry-backup'
 $directoryBackup = Join-Path $testRoot 'existing-default-install'
 $legacyDirectoryBackup = Join-Path $testRoot 'existing-legacy-install'
 $installedPaths = [System.Collections.Generic.List[string]]::new()
-$defaultDirectoryMoved = $false
-$legacyDirectoryMoved = $false
+$registryIsolationStarted = $false
+$testStateMutationStarted = $false
+$testFailure = $null
 $registrySnapshots = @(
-  @{ Key = $manufacturerRegKey; ProviderPath = $manufacturerKey; File = Join-Path $registryBackup 'manufacturer.reg'; Existed = $false },
-  @{ Key = $uninstallRegKey; ProviderPath = $uninstallKey; File = Join-Path $registryBackup 'uninstall.reg'; Existed = $false }
+  @{ Key = $manufacturerRegKey; ProviderPath = $manufacturerKey; File = Join-Path $registryBackup 'manufacturer.reg'; Existed = Test-Path -LiteralPath $manufacturerKey },
+  @{ Key = $uninstallRegKey; ProviderPath = $uninstallKey; File = Join-Path $registryBackup 'uninstall.reg'; Existed = Test-Path -LiteralPath $uninstallKey }
 )
+$defaultDirectoryExisted = Test-Path -LiteralPath $defaultInstallPath
+$legacyDirectoryExisted = Test-Path -LiteralPath $legacyInstallPath
 
 function Remove-TestRegistry {
   Remove-Item -LiteralPath $manufacturerKey -Recurse -Force -ErrorAction SilentlyContinue
@@ -55,61 +61,157 @@ function Invoke-RegCommand {
   return $process.ExitCode
 }
 
+function Get-FileSha256 {
+  param([string]$Path)
+
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+    }
+    finally {
+      $sha256.Dispose()
+    }
+  }
+  finally {
+    $stream.Dispose()
+  }
+}
+
 function Export-RegistrySnapshot {
   param([hashtable]$Snapshot)
 
-  if (-not (Test-Path -LiteralPath $Snapshot.ProviderPath)) {
+  if (-not $Snapshot.Existed) {
     return
   }
   $exitCode = Invoke-RegCommand "export `"$($Snapshot.Key)`" `"$($Snapshot.File)`" /y"
   if ($exitCode -ne 0) {
     throw "Could not back up registry key $($Snapshot.Key)."
   }
-  $Snapshot.Existed = $true
 }
 
 function Restore-TestState {
+  $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+
   foreach ($path in $installedPaths) {
     $uninstaller = Join-Path $path 'uninstall.exe'
     if (Test-Path -LiteralPath $uninstaller) {
       try {
         $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
         if ($process.ExitCode -ne 0) {
-          Write-Warning "Uninstaller cleanup failed for $path with exit code $($process.ExitCode)."
+          $cleanupErrors.Add("Uninstaller cleanup failed for '$path' with exit code $($process.ExitCode).")
         }
       }
       catch {
-        Write-Warning "Could not run the uninstaller cleanup for $path. $($_.Exception.Message)"
+        $cleanupErrors.Add("Could not run the uninstaller cleanup for '$path': $($_.Exception.Message)")
       }
     }
   }
 
-  Remove-TestRegistry
-  foreach ($snapshot in $registrySnapshots) {
-    if ($snapshot.Existed -and (Test-Path -LiteralPath $snapshot.File)) {
-      $exitCode = Invoke-RegCommand "import `"$($snapshot.File)`""
-      if ($exitCode -ne 0) {
-        Write-Warning "Could not restore registry key $($snapshot.Key) from $($snapshot.File)."
+  if ($registryIsolationStarted) {
+    foreach ($snapshot in $registrySnapshots) {
+      try {
+        Remove-Item -LiteralPath $snapshot.ProviderPath -Recurse -Force -ErrorAction SilentlyContinue
+      }
+      catch {
+        $cleanupErrors.Add("Could not remove test registry key '$($snapshot.Key)': $($_.Exception.Message)")
+      }
+    }
+    foreach ($snapshot in $registrySnapshots) {
+      if ($snapshot.Existed) {
+        try {
+          if (-not (Test-Path -LiteralPath $snapshot.File)) {
+            throw "The backup file '$($snapshot.File)' is missing."
+          }
+          $exitCode = Invoke-RegCommand "import `"$($snapshot.File)`""
+          if ($exitCode -ne 0) {
+            throw "reg.exe exited with code $exitCode."
+          }
+        }
+        catch {
+          $cleanupErrors.Add("Could not restore registry key '$($snapshot.Key)': $($_.Exception.Message)")
+        }
       }
     }
   }
 
-  if (Test-Path -LiteralPath $defaultInstallPath) {
-    Remove-Item -LiteralPath $defaultInstallPath -Recurse -Force
+  try {
+    if (Test-Path -LiteralPath $directoryBackup) {
+      Remove-Item -LiteralPath $defaultInstallPath -Recurse -Force -ErrorAction SilentlyContinue
+      New-Item -ItemType Directory -Path (Split-Path $defaultInstallPath) -Force | Out-Null
+      Move-Item -LiteralPath $directoryBackup -Destination $defaultInstallPath
+    }
+    elseif ($testStateMutationStarted -and -not $defaultDirectoryExisted) {
+      Remove-Item -LiteralPath $defaultInstallPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
-  if ($defaultDirectoryMoved -and (Test-Path -LiteralPath $directoryBackup)) {
-    New-Item -ItemType Directory -Path (Split-Path $defaultInstallPath) -Force | Out-Null
-    Move-Item -LiteralPath $directoryBackup -Destination $defaultInstallPath
-  }
-  if (Test-Path -LiteralPath $legacyInstallPath) {
-    Remove-Item -LiteralPath $legacyInstallPath -Recurse -Force
-  }
-  if ($legacyDirectoryMoved -and (Test-Path -LiteralPath $legacyDirectoryBackup)) {
-    Move-Item -LiteralPath $legacyDirectoryBackup -Destination $legacyInstallPath
+  catch {
+    $cleanupErrors.Add("Could not restore '$defaultInstallPath': $($_.Exception.Message)")
   }
 
-  if (Test-Path -LiteralPath $testRoot) {
-    Remove-Item -LiteralPath $testRoot -Recurse -Force
+  try {
+    if (Test-Path -LiteralPath $legacyDirectoryBackup) {
+      Remove-Item -LiteralPath $legacyInstallPath -Recurse -Force -ErrorAction SilentlyContinue
+      Move-Item -LiteralPath $legacyDirectoryBackup -Destination $legacyInstallPath
+    }
+    elseif ($testStateMutationStarted -and -not $legacyDirectoryExisted) {
+      Remove-Item -LiteralPath $legacyInstallPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+  catch {
+    $cleanupErrors.Add("Could not restore '$legacyInstallPath': $($_.Exception.Message)")
+  }
+
+  if ($registryIsolationStarted) {
+    foreach ($snapshot in $registrySnapshots) {
+      try {
+        if ($snapshot.Existed -ne (Test-Path -LiteralPath $snapshot.ProviderPath)) {
+          throw 'The key existence does not match its initial state.'
+        }
+        if ($snapshot.Existed) {
+          $verificationFile = Join-Path $registryBackup "$([System.IO.Path]::GetFileNameWithoutExtension($snapshot.File))-restored.reg"
+          $exitCode = Invoke-RegCommand "export `"$($snapshot.Key)`" `"$verificationFile`" /y"
+          if ($exitCode -ne 0) {
+            throw "reg.exe exited with code $exitCode while verifying the restored key."
+          }
+          if ((Get-FileSha256 $snapshot.File) -ne (Get-FileSha256 $verificationFile)) {
+            throw 'The restored key differs from its backup.'
+          }
+        }
+      }
+      catch {
+        $cleanupErrors.Add("Registry verification failed for '$($snapshot.Key)': $($_.Exception.Message)")
+      }
+    }
+  }
+
+  try {
+    if ($defaultDirectoryExisted -ne (Test-Path -LiteralPath $defaultInstallPath)) {
+      throw "The directory existence does not match its initial state."
+    }
+    if ($legacyDirectoryExisted -ne (Test-Path -LiteralPath $legacyInstallPath)) {
+      throw "The directory existence does not match its initial state."
+    }
+  }
+  catch {
+    $cleanupErrors.Add("Installation directory verification failed: $($_.Exception.Message)")
+  }
+
+  if ($cleanupErrors.Count -eq 0) {
+    try {
+      if (Test-Path -LiteralPath $testRoot) {
+        Remove-Item -LiteralPath $testRoot -Recurse -Force
+      }
+    }
+    catch {
+      $cleanupErrors.Add("Could not remove test directory '$testRoot': $($_.Exception.Message)")
+    }
+  }
+
+  if ($cleanupErrors.Count -gt 0) {
+    $details = $cleanupErrors -join [Environment]::NewLine
+    throw "The NSIS test could not restore the original Windows state. Recovery files remain in '$testRoot'.$([Environment]::NewLine)$details"
   }
 }
 
@@ -174,14 +276,21 @@ function Assert-RegistryClean {
 }
 
 function Invoke-Installer {
-  param([int]$Language)
+  param(
+    [int]$Language,
+    [string]$Destination
+  )
 
   if (-not (Test-Path -LiteralPath $manufacturerKey)) {
     New-Item -Path $manufacturerKey -Force | Out-Null
   }
   Set-ItemProperty -LiteralPath $manufacturerKey -Name 'Installer Language' -Value ([string]$Language)
 
-  $process = Start-Process -FilePath $InstallerPath -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
+  $arguments = '/S'
+  if ($Destination) {
+    $arguments = "/S /D=$Destination"
+  }
+  $process = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
   if ($process.ExitCode -ne 0) {
     throw "The installer failed with exit code $($process.ExitCode) for language $Language."
   }
@@ -203,21 +312,24 @@ function Uninstall-TestInstallation {
   Assert-RegistryClean
 }
 
-New-Item -ItemType Directory -Path $registryBackup -Force | Out-Null
-foreach ($snapshot in $registrySnapshots) {
-  Export-RegistrySnapshot $snapshot
-}
-if (Test-Path -LiteralPath $defaultInstallPath) {
-  Move-Item -LiteralPath $defaultInstallPath -Destination $directoryBackup
-  $defaultDirectoryMoved = $true
-}
-if (Test-Path -LiteralPath $legacyInstallPath) {
-  Move-Item -LiteralPath $legacyInstallPath -Destination $legacyDirectoryBackup
-  $legacyDirectoryMoved = $true
-}
-
 try {
+  New-Item -ItemType Directory -Path $registryBackup -Force | Out-Null
+  foreach ($snapshot in $registrySnapshots) {
+    Export-RegistrySnapshot $snapshot
+  }
+  if ($defaultDirectoryExisted) {
+    Move-Item -LiteralPath $defaultInstallPath -Destination $directoryBackup
+  }
+  if ($legacyDirectoryExisted) {
+    Move-Item -LiteralPath $legacyInstallPath -Destination $legacyDirectoryBackup
+  }
+
+  $registryIsolationStarted = $true
+  $testStateMutationStarted = $true
   Remove-TestRegistry
+  if ($FailAfterStateIsolation) {
+    throw 'Intentional failure after isolating the installer test state.'
+  }
 
   Write-Host 'Testing a clean per-user installation.'
   Invoke-Installer -Language 1033
@@ -236,8 +348,17 @@ try {
   }
   Uninstall-TestInstallation $existingPath
 
+  Write-Host 'Testing an explicit legacy /D destination.'
+  $installedPaths.Add($legacyInstallPath)
+  Invoke-Installer -Language 1031 -Destination $legacyInstallPath
+  Assert-InstalledAt $legacyInstallPath
+  if (Test-Path -LiteralPath $defaultInstallPath) {
+    throw 'The installer ignored the explicit /D destination and created the clean-install default.'
+  }
+  Uninstall-TestInstallation $legacyInstallPath
+
   Write-Host 'Testing rejection of a stale installation path.'
-  $stalePath = Join-Path $testRoot 'missing-old-install'
+  $stalePath = Join-Path ([System.IO.Path]::GetTempPath()) "installer-language-smoke-$([guid]::NewGuid().ToString('N'))"
   Set-RegisteredInstallPath $stalePath
   Invoke-Installer -Language 1034
   Assert-InstalledAt $defaultInstallPath
@@ -263,8 +384,23 @@ try {
     Uninstall-TestInstallation $defaultInstallPath
   }
 
-  Write-Host 'NSIS installer smoke test passed for clean, existing, stale, cleanup, and six language cases.'
+  Write-Host 'NSIS installer smoke test passed for clean, existing, explicit, stale, cleanup, and six language cases.'
+}
+catch {
+  $testFailure = $_
 }
 finally {
-  Restore-TestState
+  try {
+    Restore-TestState
+  }
+  catch {
+    if ($testFailure) {
+      throw "The installer smoke test failed: $($testFailure.Exception.Message)$([Environment]::NewLine)Cleanup also failed: $($_.Exception.Message)"
+    }
+    throw
+  }
+}
+
+if ($testFailure) {
+  throw $testFailure
 }

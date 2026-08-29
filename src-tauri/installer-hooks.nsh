@@ -27,20 +27,30 @@ LangString MacroClosePrompt 1042 "Macro가 열려 있습니다. 계속하면 Mac
 Function MacroResolveInstallLocation
   ; Tauri 2.10 initializes $INSTDIR to $LOCALAPPDATA\Macro and then trusts the
   ; saved manufacturer key without checking whether that installation remains.
-  ; Keep an explicit NSIS /D override, otherwise retain only a location that
-  ; still contains Macro or its uninstaller.
+  ; NSIS removes /D from $CMDLINE after applying it. Read the operating-system
+  ; command line so Tauri's initialization cannot hide an explicit destination.
+  System::Call 'kernel32::GetCommandLineW() w .R6'
+  ClearErrors
+  ${GetOptions} $R6 "/D=" $R7
+  ${IfNot} ${Errors}
+    StrCpy $INSTDIR $R7
+    Return
+  ${EndIf}
+
+  ; Without /D, retain only a saved location that still contains Macro or its
+  ; uninstaller. A different value may have been selected on the directory page.
   ReadRegStr $R8 SHCTX "Software\macro\Macro" ""
   ${If} $R8 != ""
     IfFileExists "$R8\macro.exe" macro_install_location_found 0
     IfFileExists "$R8\uninstall.exe" macro_install_location_found 0
-    ; Without /D, Tauri copied the stale registry value into $INSTDIR. A
-    ; different value is an explicit destination and remains authoritative.
+    ; Tauri copied the stale registry value into $INSTDIR. A different value
+    ; was selected after initialization and remains authoritative.
     ${If} $INSTDIR != $R8
       Return
     ${EndIf}
   ${Else}
-    ; $LOCALAPPDATA\Macro is Tauri 2.10's clean-install default. Any other
-    ; value can only have come from an explicit /D destination.
+    ; $LOCALAPPDATA\Macro is Tauri 2.10's clean-install default. Preserve a
+    ; different value selected after initialization.
     ${If} $INSTDIR != "$LOCALAPPDATA\Macro"
       Return
     ${EndIf}

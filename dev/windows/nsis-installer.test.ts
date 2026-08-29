@@ -13,6 +13,8 @@ describe('Windows NSIS installer policy', () => {
   });
 
   it('keeps explicit and existing valid locations but rejects stale registry values', () => {
+    expect(hooks).toContain("System::Call 'kernel32::GetCommandLineW() w .R6'");
+    expect(hooks).toContain('${GetOptions} $R6 "/D=" $R7');
     expect(hooks).toContain('${If} $INSTDIR != $R8');
     expect(hooks).toContain('${If} $INSTDIR != "$LOCALAPPDATA\\Macro"');
     expect(hooks).toContain('IfFileExists "$R8\\macro.exe" macro_install_location_found 0');
@@ -47,7 +49,11 @@ describe('Windows NSIS installer policy', () => {
   it('backs up and restores registry state in a finally block', () => {
     expect(smokeTest).toContain('Invoke-RegCommand "export');
     expect(smokeTest).toContain('Invoke-RegCommand "import');
-    expect(smokeTest).toMatch(/finally\s*\{\s*Restore-TestState\s*\}/);
+    expect(smokeTest).toMatch(/finally\s*\{\s*try\s*\{\s*Restore-TestState/);
+    expect(smokeTest.indexOf('try {')).toBeLessThan(smokeTest.indexOf('New-Item -ItemType Directory -Path $registryBackup'));
+    expect(smokeTest).toContain("Recovery files remain in '$testRoot'");
+    expect(smokeTest).toContain('The restored key differs from its backup.');
+    expect(smokeTest).toContain('if ($FailAfterStateIsolation)');
     expect(smokeTest).toContain('Assert-RegistryClean');
   });
 });
