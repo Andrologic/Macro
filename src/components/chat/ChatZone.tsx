@@ -106,6 +106,7 @@ import { toServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
+import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -3536,24 +3537,65 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           )}
         </div>
 
-        {showManualDraftComposerNotice && (
-          <div className="pointer-events-none relative z-10 h-0">
-            <div className="absolute inset-x-3 bottom-3 flex justify-center">
-              <div
-                data-testid="manual-draft-composer-notice"
-                data-chat-composer-notice="true"
-                className="pointer-events-auto flex w-full max-w-2xl items-start gap-2 rounded-xl border border-sky-500/25 bg-background/90 px-3 py-2 text-xs text-foreground shadow-lg shadow-black/15 backdrop-blur"
-              >
-                <Icon name="alert-circle" size={14} className="mt-0.5 shrink-0 text-sky-400" />
-                <p>
-                  {t(
-                    'terminal.manualDraftBanner',
-                    'Send a first message to name this feature and initialize its terminal.'
-                  )}
-                </p>
-              </div>
-            </div>
-          </div>
+        {(showManualDraftComposerNotice ||
+          (selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0) ||
+          composerError ||
+          showSkillNativeToolWarning ||
+          isSelectedConversationArchived) && (
+          <ChatFloatingNoticeStack>
+            {composerError && (
+              <ActionableErrorCallout
+                className="shadow-lg shadow-black/15 backdrop-blur"
+                compact
+                presentation={presentServiceError(composerError, {
+                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                    ? t(
+                        'chat.providerRestoreUnavailable',
+                        'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
+                      )
+                    : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
+                })}
+              />
+            )}
+
+            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
+              <ChatFloatingNotice icon="lock" tone="neutral">
+                <div className="font-medium text-foreground">
+                  {t('implement.taskBlockedTitle', 'Task blocked')}
+                </div>
+                {selectedTaskBlockedMessage && (
+                  <p className="mt-1">{selectedTaskBlockedMessage}</p>
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {showSkillNativeToolWarning && (
+              <ChatFloatingNotice icon="triangle-alert" tone="warning">
+                {t(
+                  'skills.nativeToolRequiredWarning',
+                  'Skills require a native tool-calling model/provider.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {isSelectedConversationArchived && (
+              <ChatFloatingNotice icon="archive" tone="neutral">
+                {t(
+                  'chat.archivedConversationReadOnly',
+                  'This conversation is archived. Restore it before sending another message.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {showManualDraftComposerNotice && (
+              <ChatFloatingNotice icon="alert-circle" testId="manual-draft-composer-notice">
+                {t(
+                  'terminal.manualDraftBanner',
+                  'Send a first message to name this feature and initialize its terminal.'
+                )}
+              </ChatFloatingNotice>
+            )}
+          </ChatFloatingNoticeStack>
         )}
 
         {/* Input Area */}
@@ -3656,14 +3698,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               )}
             </div>
 
-            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
-              <TaskBlockedState
-                variant="compact"
-                title={t('implement.taskBlockedTitle', 'Task blocked')}
-                message={selectedTaskBlockedMessage}
-              />
-            )}
-
             {selectedTask && !isSelectedTaskDependencyBlocked && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
               <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
@@ -3709,45 +3743,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     {t('implement.startExecution', 'Start execution')}
                   </button>
                 </div>
-              </div>
-            )}
-
-            {composerError && (
-              <ActionableErrorCallout
-                className="mb-3"
-                compact
-                presentation={presentServiceError(composerError, {
-                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
-                    ? t(
-                        'chat.providerRestoreUnavailable',
-                        'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
-                      )
-                    : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
-                })}
-              />
-            )}
-
-            {showSkillNativeToolWarning && (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                <Icon name="triangle-alert" size={14} className="mt-0.5 shrink-0" />
-                <span>
-                  {t(
-                    'skills.nativeToolRequiredWarning',
-                    'Skills require a native tool-calling model/provider.'
-                  )}
-                </span>
-              </div>
-            )}
-
-            {isSelectedConversationArchived && (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                <Icon name="archive" size={14} className="mt-0.5 shrink-0" />
-                <span>
-                  {t(
-                    'chat.archivedConversationReadOnly',
-                    'This conversation is archived. Restore it before sending another message.'
-                  )}
-                </span>
               </div>
             )}
 

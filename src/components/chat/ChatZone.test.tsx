@@ -1266,6 +1266,26 @@ describe('ChatZone', () => {
     expect(composer?.placeholder).toBe('Restoring conversation...');
   });
 
+  it('shows archived conversation information in the floating chat notice area', async () => {
+    useConversationArchiveStore.setState({
+      archivedConversationIds: new Set(['conv-1']),
+      isArchiveHydrated: true,
+      archiveHydrationError: null,
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const notice = Array.from(
+      requireContainer().querySelectorAll('[data-chat-floating-notice="true"]'),
+    ).find((element) => element.textContent?.includes('This conversation is archived.'));
+    const footer = requireContainer().querySelector('[data-tour-id="chat-footer"]');
+    expect(notice).toBeDefined();
+    expect(notice?.closest('[data-chat-floating-notices="true"]')).not.toBeNull();
+    expect(footer?.contains(notice ?? null)).toBe(false);
+  });
+
   it('does not render the legacy skills dropdown in the composer control row', async () => {
     await act(async () => {
       requireRoot().render(<ChatZone />);
@@ -2318,6 +2338,13 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain(
       'Skills require a native tool-calling model/provider.'
     );
+    const skillNotice = Array.from(
+      requireContainer().querySelectorAll('[data-chat-floating-notice="true"]'),
+    ).find((element) => element.textContent?.includes('Skills require a native tool-calling model/provider.'));
+    expect(skillNotice?.getAttribute('data-chat-floating-notice-tone')).toBe('warning');
+    expect(
+      requireContainer().querySelector('[data-tour-id="chat-footer"]')?.contains(skillNotice ?? null),
+    ).toBe(false);
 
     await act(async () => {
       useChatStore.setState({ composerContextRefs: [] });
@@ -2467,7 +2494,7 @@ describe('ChatZone', () => {
     );
   });
 
-  it('keeps Macro runtime errors in the composer notice', async () => {
+  it('keeps Macro runtime errors in the floating chat notice area', async () => {
     chatState = {
       ...chatState,
       sendState: 'error',
@@ -2488,6 +2515,13 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).not.toContain('Task worktree is not ready yet.');
     expect(requireContainer().textContent).toContain('Show details');
+    const errorCallout = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent === 'Show details'
+    )?.closest('[data-chat-floating-notices="true"]');
+    expect(errorCallout).not.toBeNull();
+    expect(
+      requireContainer().querySelector('[data-tour-id="chat-footer"]')?.contains(errorCallout ?? null),
+    ).toBe(false);
     await act(async () => {
       Array.from(requireContainer().querySelectorAll('button')).find(
         (button) => button.textContent === 'Show details'

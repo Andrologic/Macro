@@ -420,6 +420,15 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     expect(requireContainer().textContent).not.toContain('Task briefing');
     expect(requireContainer().textContent).not.toContain('Optional guidance for this task kickoff');
     expect(requireContainer().querySelector('[data-icon="lock"]')).not.toBeNull();
+    const floatingBlockedNotice = Array.from(
+      requireContainer().querySelectorAll('[data-chat-floating-notice="true"]'),
+    ).find((element) => element.textContent?.includes('Blocked by: Prepare checkout model'));
+    expect(floatingBlockedNotice).toBeDefined();
+    expect(
+      requireContainer().querySelector('[data-tour-id="chat-footer"]')?.contains(
+        floatingBlockedNotice ?? null,
+      ),
+    ).toBe(false);
     const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
     expect(composer).not.toBeNull();
     expect(composer?.disabled).toBe(true);
