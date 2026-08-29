@@ -43,6 +43,7 @@ use tauri::{async_runtime::JoinHandle, AppHandle, Error, Listener, Manager, Url,
 use tokio::{
     net::TcpListener,
     sync::{Mutex, RwLock},
+    time::{timeout, Duration},
 };
 
 /// Extension trait for Tauri's `AppHandle` to manage the Remote UI server lifecycle.
@@ -105,6 +106,7 @@ type WindowLabel = String;
 const VERSION_PREFIX: &str = "version:";
 const SESSION_REPLACED_CLOSE_CODE: u16 = 4009;
 const SESSION_REPLACED_CLOSE_REASON: &str = "session_replaced";
+const SESSION_REPLACED_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn session_replaced_close_message() -> Message {
     Message::Close(Some(hyper_tungstenite::tungstenite::protocol::CloseFrame {
@@ -113,29 +115,54 @@ fn session_replaced_close_message() -> Message {
     }))
 }
 
-/// WebSocket sink handle for a single connection (sending side).
-pub(crate) type WsSink = Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>;
-
-fn replace_current_handle<T>(
-    handles: &mut HashMap<WindowLabel, Arc<T>>,
+fn transfer_ws_ownership(
+    ws_window_handle: &mut HashMap<WindowLabel, WsSink>,
     window_label: &str,
-    handle: Arc<T>,
-) -> Option<Arc<T>> {
-    handles.insert(window_label.to_owned(), handle)
+    ws_handle: WsSink,
+) -> Option<WsSink> {
+    ws_window_handle.insert(window_label.to_owned(), ws_handle)
 }
 
-fn remove_handle_if_current<T>(
-    handles: &mut HashMap<WindowLabel, Arc<T>>,
-    window_label: &str,
-    handle: &Arc<T>,
-) {
-    if handles
-        .get(window_label)
-        .is_some_and(|current| Arc::ptr_eq(current, handle))
+async fn close_replaced_ws(previous: WsSink) {
+    match timeout(SESSION_REPLACED_CLOSE_TIMEOUT, async {
+        previous
+            .lock()
+            .await
+            .send(session_replaced_close_message())
+            .await
+    })
+    .await
     {
-        handles.remove(window_label);
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => log::warn!("Failed to close existing socket connection: {err}"),
+        Err(_) => {
+            log::warn!("Timed out while closing the replaced socket connection");
+        }
     }
 }
+
+fn ws_handle_is_current(
+    ws_window_handle: &HashMap<WindowLabel, WsSink>,
+    window_label: &str,
+    ws_handle: &WsSink,
+) -> bool {
+    ws_window_handle
+        .get(window_label)
+        .is_some_and(|current| Arc::ptr_eq(current, ws_handle))
+}
+
+fn remove_ws_handle_if_current(
+    ws_window_handle: &mut HashMap<WindowLabel, WsSink>,
+    window_label: &str,
+    ws_handle: &WsSink,
+) {
+    if ws_handle_is_current(ws_window_handle, window_label, ws_handle) {
+        ws_window_handle.remove(window_label);
+    }
+}
+
+/// WebSocket sink handle for a single connection (sending side).
+pub(crate) type WsSink = Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>;
 
 /// The main Remote UI RPC server struct.
 ///
@@ -343,13 +370,13 @@ impl RpcServer {
         ))
     }
 
-    /// Set the WebSocket handle for a given window label.
-    pub(crate) fn set_ws_handle(
+    /// Transfer a window label to a new WebSocket and terminate its previous owner.
+    pub(crate) fn transfer_ws_ownership(
         &mut self,
         window_label: &str,
         ws_handle: WsSink,
     ) -> Option<WsSink> {
-        replace_current_handle(&mut self.ws_window_handle, window_label, ws_handle)
+        transfer_ws_ownership(&mut self.ws_window_handle, window_label, ws_handle)
     }
 
     /// Get the WebSocket handle for a given window label, if present.
@@ -358,7 +385,11 @@ impl RpcServer {
     }
 
     pub(crate) fn remove_ws_handle_if_current(&mut self, window_label: &str, ws_handle: &WsSink) {
-        remove_handle_if_current(&mut self.ws_window_handle, window_label, ws_handle);
+        remove_ws_handle_if_current(&mut self.ws_window_handle, window_label, ws_handle);
+    }
+
+    pub(crate) fn ws_handle_is_current(&self, window_label: &str, ws_handle: &WsSink) -> bool {
+        ws_handle_is_current(&self.ws_window_handle, window_label, ws_handle)
     }
 }
 
@@ -643,16 +674,44 @@ fn websocket_credentials_match(
 #[cfg(test)]
 mod tests {
     use super::{
-        confined_asset_path, remove_handle_if_current, replace_current_handle,
-        session_replaced_close_message, websocket_credentials_match, SESSION_REPLACED_CLOSE_CODE,
+        close_replaced_ws, confined_asset_path, remove_ws_handle_if_current, transfer_ws_ownership,
+        websocket_credentials_match, WindowLabel, WsSink, SESSION_REPLACED_CLOSE_CODE,
         SESSION_REPLACED_CLOSE_REASON,
     };
-    use hyper_tungstenite::tungstenite::{accept, client, Message};
+    use futures::{SinkExt, StreamExt};
+    use http_body_util::Full;
+    use hyper::{
+        body::{Bytes, Incoming},
+        server::conn::http1,
+        service::service_fn,
+        Request, Response,
+    };
+    use hyper_tungstenite::tungstenite::{client, Message};
+    use hyper_util::rt::TokioIo;
     use std::collections::HashMap;
-    use std::net::{TcpListener, TcpStream};
+    use std::convert::Infallible;
+    use std::net::TcpStream;
     use std::sync::Arc;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::{mpsc, Mutex};
+
+    async fn upgrade_test_websocket(
+        request: Request<Incoming>,
+        sink_tx: mpsc::UnboundedSender<WsSink>,
+    ) -> Result<Response<Full<Bytes>>, Infallible> {
+        let (response, websocket) =
+            hyper_tungstenite::upgrade(request, None).expect("upgrade test websocket");
+        tokio::spawn(async move {
+            let websocket = websocket.await.expect("finish test websocket upgrade");
+            let (sink, mut stream) = websocket.split();
+            sink_tx
+                .send(Arc::new(Mutex::new(sink)))
+                .expect("publish test websocket sink");
+            while stream.next().await.is_some() {}
+        });
+        Ok(response)
+    }
 
     #[test]
     fn websocket_requires_the_expected_origin_and_token() {
@@ -703,39 +762,73 @@ mod tests {
 
     #[test]
     fn second_real_client_receives_ownership_without_reconnect_eviction_loop() {
-        let first_owner = Arc::new("first");
-        let second_owner = Arc::new("second");
-        let mut registry = HashMap::new();
-        assert!(replace_current_handle(&mut registry, "main", first_owner.clone()).is_none());
-        let replaced = replace_current_handle(&mut registry, "main", second_owner.clone())
-            .expect("second client must replace the first registry owner");
-        assert!(Arc::ptr_eq(&replaced, &first_owner));
-        remove_handle_if_current(&mut registry, "main", &first_owner);
-        assert!(Arc::ptr_eq(
-            registry
-                .get("main")
-                .expect("new owner must remain registered"),
-            &second_owner,
-        ));
-        remove_handle_if_current(&mut registry, "main", &second_owner);
-        assert!(!registry.contains_key("main"));
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test websocket server");
-        let address = listener.local_addr().expect("read test websocket address");
+        let (address_tx, address_rx) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
-            let (first_stream, _) = listener.accept().expect("accept first client");
-            let mut first = accept(first_stream).expect("upgrade first client");
-            let (second_stream, _) = listener.accept().expect("accept second client");
-            let mut second = accept(second_stream).expect("upgrade second client");
+            let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind test websocket server");
+                address_tx
+                    .send(listener.local_addr().expect("read test websocket address"))
+                    .expect("publish test websocket address");
+                let (sink_tx, mut sink_rx) = mpsc::unbounded_channel();
 
-            first
-                .send(session_replaced_close_message())
-                .expect("close replaced client");
-            second
-                .send(Message::Text("session_owner".into()))
-                .expect("confirm new owner");
+                let label = "main";
+                let mut owners: HashMap<WindowLabel, WsSink> = HashMap::new();
+
+                let (first_stream, _) = listener.accept().await.expect("accept first test client");
+                let first_sink_tx = sink_tx.clone();
+                tokio::spawn(async move {
+                    http1::Builder::new()
+                        .serve_connection(
+                            TokioIo::new(first_stream),
+                            service_fn(move |request| {
+                                upgrade_test_websocket(request, first_sink_tx.clone())
+                            }),
+                        )
+                        .with_upgrades()
+                        .await
+                        .expect("serve first test websocket connection");
+                });
+                let first_sink = sink_rx.recv().await.expect("receive first socket sink");
+                assert!(transfer_ws_ownership(&mut owners, label, first_sink.clone()).is_none());
+
+                let (second_stream, _) =
+                    listener.accept().await.expect("accept second test client");
+                tokio::spawn(async move {
+                    http1::Builder::new()
+                        .serve_connection(
+                            TokioIo::new(second_stream),
+                            service_fn(move |request| {
+                                upgrade_test_websocket(request, sink_tx.clone())
+                            }),
+                        )
+                        .with_upgrades()
+                        .await
+                        .expect("serve second test websocket connection");
+                });
+                let second_sink = sink_rx.recv().await.expect("receive second socket sink");
+                let replaced = transfer_ws_ownership(&mut owners, label, second_sink.clone())
+                    .expect("first socket must be replaced");
+                remove_ws_handle_if_current(&mut owners, label, &first_sink);
+
+                assert!(owners
+                    .get(label)
+                    .is_some_and(|current| Arc::ptr_eq(current, &second_sink)));
+                close_replaced_ws(replaced).await;
+                owners
+                    .get(label)
+                    .expect("second socket remains session owner")
+                    .lock()
+                    .await
+                    .send(Message::Text("session_owner".into()))
+                    .await
+                    .expect("send through current session owner");
+            });
         });
 
+        let address = address_rx.recv().expect("receive test websocket address");
         let url = format!("ws://{address}/remote_ui_ws");
         let (mut first, _) = client(
             url.as_str(),
@@ -775,26 +868,32 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
             let primary_label;
             // Transfer primary-session ownership to the newest browser client. The
             // terminal close code tells the previous client not to reconnect.
-            let existing_handle = {
+            let replaced_ws = {
                 let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>();
                 let mut remote_ui_mut = remote_ui.write().await;
                 primary_label = remote_ui_mut.rpc_server.primary_window_label().to_owned();
                 remote_ui_mut
                     .rpc_server
-                    .set_ws_handle(&primary_label, ws_sender.clone())
+                    .transfer_ws_ownership(&primary_label, ws_sender.clone())
             };
-            if let Some(existing_handle) = existing_handle {
-                if let Err(err) = existing_handle
-                    .lock()
-                    .await
-                    .send(session_replaced_close_message())
-                    .await
-                {
-                    log::warn!("Failed to close existing socket connection: {err}");
-                }
+            if let Some(replaced_ws) = replaced_ws {
+                tokio::spawn(close_replaced_ws(replaced_ws));
             }
             let mut session_error = None;
             while let Some(message_stream) = rx.next().await {
+                let is_current_owner = {
+                    let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>();
+                    let is_current = remote_ui
+                        .read()
+                        .await
+                        .rpc_server
+                        .ws_handle_is_current(&primary_label, &ws_sender);
+                    is_current
+                };
+                if !is_current_owner {
+                    log::debug!("Ignoring traffic from a replaced Remote UI session");
+                    break;
+                }
                 match message_stream {
                     Ok(message) => match message {
                         Message::Text(msg) => {
