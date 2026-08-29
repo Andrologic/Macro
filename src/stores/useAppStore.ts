@@ -841,6 +841,7 @@ const hydrateArchitectPlanInStore = async (input: {
     branchName: reconciledActivationPayload.targetBranch,
     planId: plan.id,
     projectIds: plan.projectIds,
+    executionModesByProjectId: plan.executionModesByProjectId,
   });
   const persistedPreview = runtime?.strategyPreview ?? null;
   if (!persistedPreview) {

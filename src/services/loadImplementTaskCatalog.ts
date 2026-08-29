@@ -381,6 +381,7 @@ export const createLoadImplementTaskCatalog = (
             branchName: plan.targetBranch,
             planId: plan.id,
             projectIds: plan.projectIds,
+            executionModesByProjectId: plan.executionModesByProjectId,
           });
           return runtime ? ([toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id }), runtime] as const) : null;
         }),

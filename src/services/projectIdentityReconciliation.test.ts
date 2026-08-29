@@ -91,6 +91,23 @@ describe('projectIdentityReconciliation', () => {
     expect(retargeted).toEqual(plan);
   });
 
+  it('does not move a legacy plan without physical identity proof', () => {
+    const plan = {
+      id: 'orphaned-legacy-plan',
+      projectId: 'removed-project',
+      projectIds: ['removed-project'],
+      nodes: [],
+      predictedBranches: [],
+    };
+
+    const retargeted = retargetPlanForExecution(plan, {
+      scopedProjectIds: ['current-project'],
+      knownProjectIds: ['current-project'],
+    });
+
+    expect(retargeted).toEqual(plan);
+  });
+
   it('retargets stale strategy children even when the plan already points to the current project', () => {
     const currentProjectId = 'project-octan-sales-1780653766405';
     const staleProjectId = 'project-lplr-app-1780329499166';

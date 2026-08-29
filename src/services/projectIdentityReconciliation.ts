@@ -119,7 +119,7 @@ export const resolveExecutionProjectIds = (params: {
     return physicalProjectIds;
   }
 
-  return scopedProjectIds.length === 1 ? scopedProjectIds : [];
+  return [];
 };
 
 export const projectRefMatchesExecutionScope = (
