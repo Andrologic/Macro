@@ -151,6 +151,15 @@ fn ws_handle_is_current(
         .is_some_and(|current| Arc::ptr_eq(current, ws_handle))
 }
 
+fn with_current_ws_owner<T>(
+    ws_window_handle: &HashMap<WindowLabel, WsSink>,
+    window_label: &str,
+    ws_handle: &WsSink,
+    action: impl FnOnce() -> T,
+) -> Option<T> {
+    ws_handle_is_current(ws_window_handle, window_label, ws_handle).then(action)
+}
+
 fn remove_ws_handle_if_current(
     ws_window_handle: &mut HashMap<WindowLabel, WsSink>,
     window_label: &str,
@@ -675,8 +684,8 @@ fn websocket_credentials_match(
 mod tests {
     use super::{
         close_replaced_ws, confined_asset_path, remove_ws_handle_if_current, transfer_ws_ownership,
-        websocket_credentials_match, WindowLabel, WsSink, SESSION_REPLACED_CLOSE_CODE,
-        SESSION_REPLACED_CLOSE_REASON,
+        websocket_credentials_match, with_current_ws_owner, WindowLabel, WsSink,
+        SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_CLOSE_REASON,
     };
     use futures::{SinkExt, StreamExt};
     use http_body_util::Full;
@@ -693,7 +702,7 @@ mod tests {
     use std::net::TcpStream;
     use std::sync::Arc;
     use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::sync::{mpsc, Mutex};
 
     async fn upgrade_test_websocket(
@@ -775,7 +784,9 @@ mod tests {
                 let (sink_tx, mut sink_rx) = mpsc::unbounded_channel();
 
                 let label = "main";
-                let mut owners: HashMap<WindowLabel, WsSink> = HashMap::new();
+                let owners = Arc::new(tokio::sync::RwLock::new(
+                    HashMap::<WindowLabel, WsSink>::new(),
+                ));
 
                 let (first_stream, _) = listener.accept().await.expect("accept first test client");
                 let first_sink_tx = sink_tx.clone();
@@ -792,7 +803,12 @@ mod tests {
                         .expect("serve first test websocket connection");
                 });
                 let first_sink = sink_rx.recv().await.expect("receive first socket sink");
-                assert!(transfer_ws_ownership(&mut owners, label, first_sink.clone()).is_none());
+                assert!(transfer_ws_ownership(
+                    &mut *owners.write().await,
+                    label,
+                    first_sink.clone()
+                )
+                .is_none());
 
                 let (second_stream, _) =
                     listener.accept().await.expect("accept second test client");
@@ -809,15 +825,56 @@ mod tests {
                         .expect("serve second test websocket connection");
                 });
                 let second_sink = sink_rx.recv().await.expect("receive second socket sink");
-                let replaced = transfer_ws_ownership(&mut owners, label, second_sink.clone())
-                    .expect("first socket must be replaced");
-                remove_ws_handle_if_current(&mut owners, label, &first_sink);
+                let (dispatch_started_tx, dispatch_started_rx) = std::sync::mpsc::channel();
+                let (release_dispatch_tx, release_dispatch_rx) = std::sync::mpsc::channel();
+                let dispatch_owners = owners.clone();
+                let dispatch_sink = first_sink.clone();
+                let dispatch = tokio::spawn(async move {
+                    let owners = dispatch_owners.read().await;
+                    with_current_ws_owner(&owners, label, &dispatch_sink, || {
+                        dispatch_started_tx
+                            .send(())
+                            .expect("signal dispatch ownership check");
+                        release_dispatch_rx
+                            .recv()
+                            .expect("release in-flight dispatch");
+                    })
+                });
+                dispatch_started_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("old owner reaches dispatch while holding the ownership read lock");
 
-                assert!(owners
+                let transfer_owners = owners.clone();
+                let transfer_sink = second_sink.clone();
+                let transfer = tokio::spawn(async move {
+                    let mut owners = transfer_owners.write().await;
+                    transfer_ws_ownership(&mut owners, label, transfer_sink)
+                });
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(
+                    !transfer.is_finished(),
+                    "ownership transfer must wait for an accepted RPC dispatch"
+                );
+                release_dispatch_tx
+                    .send(())
+                    .expect("finish in-flight dispatch");
+                assert!(dispatch.await.expect("join dispatch task").is_some());
+                let replaced = transfer
+                    .await
+                    .expect("join ownership transfer")
+                    .expect("first socket must be replaced");
+
+                let mut owner_guard = owners.write().await;
+                assert!(with_current_ws_owner(&owner_guard, label, &first_sink, || ()).is_none());
+                remove_ws_handle_if_current(&mut owner_guard, label, &first_sink);
+                assert!(owner_guard
                     .get(label)
                     .is_some_and(|current| Arc::ptr_eq(current, &second_sink)));
+                drop(owner_guard);
                 close_replaced_ws(replaced).await;
                 owners
+                    .read()
+                    .await
                     .get(label)
                     .expect("second socket remains session owner")
                     .lock()
@@ -924,15 +981,32 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                                 }
                             } else {
                                 let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>();
-                                let remote_ui_mut = remote_ui.read().await;
-                                if let Err(err) = remote_ui_mut.invoke_rpc(
-                                    msg.as_ref(),
-                                    ws_sender.clone(),
-                                    session_id,
-                                    pending_listeners.clone(),
-                                ) {
-                                    session_error = Some(err);
-                                    break;
+                                let remote_ui_read = remote_ui.read().await;
+                                let invoke_result = with_current_ws_owner(
+                                    &remote_ui_read.rpc_server.ws_window_handle,
+                                    &primary_label,
+                                    &ws_sender,
+                                    || {
+                                        remote_ui_read.invoke_rpc(
+                                            msg.as_ref(),
+                                            ws_sender.clone(),
+                                            session_id,
+                                            pending_listeners.clone(),
+                                        )
+                                    },
+                                );
+                                match invoke_result {
+                                    None => {
+                                        log::debug!(
+                                            "Ignoring RPC from a replaced Remote UI session"
+                                        );
+                                        break;
+                                    }
+                                    Some(Err(err)) => {
+                                        session_error = Some(err);
+                                        break;
+                                    }
+                                    Some(Ok(())) => {}
                                 }
                             }
                         }
