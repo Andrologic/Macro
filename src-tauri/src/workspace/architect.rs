@@ -15,8 +15,9 @@ use futures::future::try_join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 
@@ -123,15 +124,89 @@ struct ArchitectPlanHeadSnapshot {
 
 static ARCHITECT_RUNTIME_CACHE: OnceLock<RwLock<HashMap<String, ArchitectPlanRuntimeBranchIndex>>> =
     OnceLock::new();
-static ARCHITECT_RUNTIME_BUILD_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+static ARCHITECT_RUNTIME_BUILD_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
+    OnceLock::new();
+static ARCHITECT_INDEX_REBUILD_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+static ARCHITECT_INDEX_REBUILD_COUNTS: OnceLock<std::sync::Mutex<HashMap<PathBuf, usize>>> =
     OnceLock::new();
 
 fn runtime_cache() -> &'static RwLock<HashMap<String, ArchitectPlanRuntimeBranchIndex>> {
     ARCHITECT_RUNTIME_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn runtime_build_locks() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
+fn runtime_build_locks() -> &'static Mutex<HashMap<String, Weak<Mutex<()>>>> {
     ARCHITECT_RUNTIME_BUILD_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn architect_index_rebuild_locks() -> &'static Mutex<HashMap<PathBuf, Weak<Mutex<()>>>> {
+    ARCHITECT_INDEX_REBUILD_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_for_key<K>(locks: &mut HashMap<K, Weak<Mutex<()>>>, key: K) -> Arc<Mutex<()>>
+where
+    K: Clone + Eq + Hash,
+{
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+fn canonical_architect_index_path(index_path: &Path) -> PathBuf {
+    index_path.canonicalize().unwrap_or_else(|_| {
+        index_path
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .and_then(|parent| index_path.file_name().map(|name| parent.join(name)))
+            .unwrap_or_else(|| index_path.to_path_buf())
+    })
+}
+
+async fn architect_index_rebuild_lock(index_path: &Path) -> Arc<Mutex<()>> {
+    let index_path = canonical_architect_index_path(index_path);
+    let mut locks = architect_index_rebuild_locks().lock().await;
+    lock_for_key(&mut locks, index_path)
+}
+
+#[cfg(test)]
+fn record_architect_index_rebuild(index_path: &Path) {
+    let index_path = canonical_architect_index_path(index_path);
+    let counts =
+        ARCHITECT_INDEX_REBUILD_COUNTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut counts = counts.lock().expect("lock architect index rebuild counts");
+    *counts.entry(index_path).or_default() += 1;
+}
+
+#[cfg(test)]
+fn reset_architect_index_rebuild_count(index_path: &Path) {
+    let index_path = canonical_architect_index_path(index_path);
+    if let Some(counts) = ARCHITECT_INDEX_REBUILD_COUNTS.get() {
+        counts
+            .lock()
+            .expect("lock architect index rebuild counts")
+            .remove(&index_path);
+    }
+}
+
+#[cfg(test)]
+fn architect_index_rebuild_count(index_path: &Path) -> usize {
+    let index_path = canonical_architect_index_path(index_path);
+    ARCHITECT_INDEX_REBUILD_COUNTS
+        .get()
+        .and_then(|counts| {
+            counts
+                .lock()
+                .expect("lock architect index rebuild counts")
+                .get(&index_path)
+                .copied()
+        })
+        .unwrap_or_default()
 }
 
 fn normalize_branch_name(value: &str) -> String {
@@ -720,19 +795,28 @@ async fn read_index_at_scope(
     let path = architect_plan_index_path(&scope.metadata_root, branch_name);
     let index = match read_json_file::<ArchitectPlanIndexFile>(&path).await {
         Ok(Some(index)) => index,
-        Ok(None) => rebuild_index_from_plan_directories(scope, branch_name, &path).await?,
-        Err(index_error) => {
-            tracing::warn!(action = "architect_index_rebuild_started", scope = %scope.scope_key, reason = %index_error);
-            rebuild_index_from_plan_directories(scope, branch_name, &path)
-                .await
-                .map_err(|rebuild_error| BackendError::Filesystem {
-                    message: format!(
-                        "Architect index {} is corrupt and rebuild failed: {}; {}",
-                        path.display(),
-                        index_error,
-                        rebuild_error
-                    ),
-                })?
+        Ok(None) | Err(_) => {
+            // Cache entries vary with the requested project filter, but several entries can
+            // point at the same index.json. Serialize only recovery of that physical file.
+            let rebuild_lock = architect_index_rebuild_lock(&path).await;
+            let _rebuild_guard = rebuild_lock.lock().await;
+            match read_json_file::<ArchitectPlanIndexFile>(&path).await {
+                Ok(Some(index)) => index,
+                Ok(None) => rebuild_index_from_plan_directories(scope, branch_name, &path).await?,
+                Err(index_error) => {
+                    tracing::warn!(action = "architect_index_rebuild_started", scope = %scope.scope_key, reason = %index_error);
+                    rebuild_index_from_plan_directories(scope, branch_name, &path)
+                        .await
+                        .map_err(|rebuild_error| BackendError::Filesystem {
+                            message: format!(
+                                "Architect index {} is corrupt and rebuild failed: {}; {}",
+                                path.display(),
+                                index_error,
+                                rebuild_error
+                            ),
+                        })?
+                }
+            }
         }
     };
     let plans = index
@@ -790,6 +874,9 @@ async fn rebuild_index_from_plan_directories(
     branch_name: &str,
     index_path: &Path,
 ) -> Result<ArchitectPlanIndexFile> {
+    #[cfg(test)]
+    record_architect_index_rebuild(index_path);
+
     let plans_root = index_path
         .parent()
         .ok_or_else(|| BackendError::Filesystem {
@@ -1169,10 +1256,7 @@ async fn load_branch_index(
 
     let build_lock = {
         let mut locks = runtime_build_locks().lock().await;
-        locks
-            .entry(cache_key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        lock_for_key(&mut locks, cache_key.clone())
     };
     let _build_guard = build_lock.lock().await;
 
@@ -1775,6 +1859,53 @@ mod tests {
         assert_ne!(first.rebuilt_last_load, second.rebuilt_last_load);
     }
 
+    #[tokio::test]
+    async fn coalesces_global_and_targeted_rebuilds_for_the_same_physical_index() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let project_path = workspace.path().join("concurrent-project");
+        let _repo = init_repo(&project_path);
+        let metadata_root = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let plan_id = "concurrent-plan";
+        let index_path = architect_plan_index_path(&metadata_root, "main");
+        write_json(
+            &architect_plan_dir(&metadata_root, "main", plan_id).join("plan.json"),
+            &plan_record(plan_id, "project-concurrent"),
+        );
+        reset_architect_index_rebuild_count(&index_path);
+
+        let global = load_branch_index(&project_path, &metadata_root, "main", &[]);
+        let targeted_project_ids = ["project-concurrent".to_string()];
+        let targeted =
+            load_branch_index(&project_path, &metadata_root, "main", &targeted_project_ids);
+        let (global, targeted) = tokio::join!(global, targeted);
+        let global = global.expect("global index load");
+        let targeted = targeted.expect("targeted index load");
+
+        assert!(global.plan_summaries_by_id.contains_key(plan_id));
+        assert!(targeted.plan_summaries_by_id.contains_key(plan_id));
+        assert_eq!(architect_index_rebuild_count(&index_path), 1);
+    }
+
+    #[test]
+    fn lock_table_discards_inactive_keys() {
+        let mut locks: HashMap<String, Weak<Mutex<()>>> = HashMap::new();
+        for index in 0..100 {
+            let lock = lock_for_key(&mut locks, format!("scope-{index}"));
+            drop(lock);
+        }
+
+        assert_eq!(locks.len(), 1);
+        assert_eq!(
+            locks
+                .values()
+                .filter(|lock| lock.strong_count() > 0)
+                .count(),
+            0
+        );
+    }
+
     #[test]
     fn collect_workspace_state_project_paths_includes_standalone_projects() {
         let mut state = WorkspaceState::default();
@@ -1860,6 +1991,7 @@ mod tests {
             &project_path,
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
@@ -1971,6 +2103,7 @@ mod tests {
             workspace.path(),
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
@@ -2078,6 +2211,7 @@ mod tests {
             workspace.path(),
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
