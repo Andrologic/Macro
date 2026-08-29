@@ -537,7 +537,18 @@ describe('TaskQueue', () => {
     const searchInput = document.body.querySelector<HTMLInputElement>(
       '[data-tour-id="implement-task-search"] input'
     );
-    expect(searchInput?.closest('.h-12')).not.toBeNull();
+    const header = searchInput?.closest('.h-12');
+    const openSearchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-search-toggle"]'
+    );
+    const searchBar = document.body.querySelector<HTMLElement>(
+      '[data-tour-id="implement-task-search"]'
+    );
+    expect(header).not.toBeNull();
+    expect(header?.className).toContain('gap-2');
+    expect(openSearchToggle?.className).toContain('h-8 w-8');
+    expect(searchBar?.className).toContain('focus-within:border-border');
+    expect(searchBar?.className).toContain('focus-within:ring-0');
     const valueSetter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       'value'

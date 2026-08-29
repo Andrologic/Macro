@@ -115,7 +115,18 @@ describe('ArchitectProjectNavigator search', () => {
     let searchInput = document.body.querySelector<HTMLInputElement>(
       '[data-tour-id="architect-plan-search"] input'
     );
-    expect(searchInput?.closest('.h-12')).not.toBeNull();
+    const header = searchInput?.closest('.h-12');
+    const openSearchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="architect-search-toggle"]'
+    );
+    const searchBar = document.body.querySelector<HTMLElement>(
+      '[data-tour-id="architect-plan-search"]'
+    );
+    expect(header).not.toBeNull();
+    expect(header?.className).toContain('gap-2');
+    expect(openSearchToggle?.className).toContain('h-8 w-8');
+    expect(searchBar?.className).toContain('focus-within:border-border');
+    expect(searchBar?.className).toContain('focus-within:ring-0');
     const valueSetter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       'value'

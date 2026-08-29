@@ -146,8 +146,18 @@ describe('ConversationArchive', () => {
     const searchInput = document.body.querySelector<HTMLInputElement>(
       '[data-tour-id="chat-conversation-search"] input'
     );
+    const openSearchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="chat-search-toggle"]'
+    );
+    const searchBar = document.body.querySelector<HTMLElement>(
+      '[data-tour-id="chat-conversation-search"]'
+    );
     expect(searchInput?.closest('.h-12')).toBe(header ?? null);
     expect(document.activeElement).toBe(searchInput ?? null);
+    expect(header?.className).toContain('gap-2');
+    expect(openSearchToggle?.className).toContain('h-8 w-8');
+    expect(searchBar?.className).toContain('focus-within:border-border');
+    expect(searchBar?.className).toContain('focus-within:ring-0');
 
     await act(async () => {
       document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-search-toggle"]')

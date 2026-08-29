@@ -870,13 +870,13 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
         className={cn('h-full w-full bg-card border-r border-border flex flex-col', className)}
         data-tour-id="chat-conversations-panel"
       >
-        <div className="h-12 border-b border-border flex items-center justify-between px-4">
+        <div className="h-12 border-b border-border flex items-center justify-between gap-2 px-4">
           {isSearchOpen ? (
             <SearchBar
               value={searchQuery}
               onChange={setSearchQuery}
               placeholder={t('chat.searchConversations', 'Search conversations...')}
-              className="h-8 min-w-0 flex-1 rounded-md py-1"
+              className="h-8 min-w-0 flex-1 rounded-md py-1 focus-within:border-border focus-within:ring-0"
               showClear={false}
               inputAutoFocus
               data-tour-id="chat-conversation-search"
@@ -894,6 +894,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                 ? t('common.close', 'Close')
                 : t('chat.searchConversations', 'Search conversations...')}
               pressed={isSearchOpen}
+              className={isSearchOpen ? 'h-8 w-8' : undefined}
               onClick={() => {
                 if (isSearchOpen) setSearchQuery('');
                 setIsSearchOpen((current) => !current);

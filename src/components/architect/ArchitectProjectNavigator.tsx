@@ -901,13 +901,13 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background" aria-label={t('architect.projectNavigator.title', 'Projets')}>
       {scopeCreateMenuPortal}
       {scopeContextMenuPortal}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
         {isSearchOpen ? (
           <SearchBar
             value={searchQuery}
             onChange={setSearchQuery}
             placeholder={t('architect.projectNavigator.searchPlans', 'Rechercher des plans...')}
-            className="h-8 min-w-0 flex-1 rounded-md py-1"
+            className="h-8 min-w-0 flex-1 rounded-md py-1 focus-within:border-border focus-within:ring-0"
             showClear={false}
             inputAutoFocus
             data-tour-id="architect-plan-search"
@@ -925,6 +925,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               ? t('common.close', 'Close')
               : t('architect.projectNavigator.searchPlans', 'Rechercher des plans...')}
             pressed={isSearchOpen}
+            className={isSearchOpen ? 'h-8 w-8' : undefined}
             onClick={() => {
               if (isSearchOpen) setSearchQuery('');
               setIsSearchOpen((current) => !current);
