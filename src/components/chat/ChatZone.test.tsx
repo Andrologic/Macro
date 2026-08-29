@@ -1227,6 +1227,25 @@ describe('ChatZone', () => {
       'Prépare cette tâche.',
       { skipAgentCodeReplayCheck: undefined },
     );
+
+    await act(async () => {
+      chatState = {
+        ...chatState,
+        messages: [
+          ...chatState.messages,
+          buildMessage({
+            id: 'msg-assistant-1',
+            role: 'assistant',
+            content: 'Je commence la mise en œuvre.',
+          }),
+        ],
+      };
+      useChatStore.emit();
+    });
+
+    expect(requireContainer().querySelector(
+      '[data-testid="standalone-task-launch-progress"]',
+    )).toBeNull();
   });
 
   it('keeps the composer locked until archived conversations are hydrated', async () => {

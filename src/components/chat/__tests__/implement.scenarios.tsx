@@ -70,7 +70,13 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     const footer = requireContainer().querySelector('[data-tour-id="chat-footer"]');
     const composer = requireContainer().querySelector('[data-tour-id="chat-composer"]');
     expect(notice).not.toBeNull();
-    expect(footer?.contains(notice)).toBe(true);
+    expect(footer?.contains(notice)).toBe(false);
+    const controlRow = requireContainer().querySelector('[data-tour-id="chat-control-row"]');
+    expect(
+      notice && controlRow
+        ? Boolean(notice.compareDocumentPosition(controlRow) & Node.DOCUMENT_POSITION_FOLLOWING)
+        : false,
+    ).toBe(true);
     expect(
       notice && composer
         ? Boolean(notice.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING)

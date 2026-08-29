@@ -1251,6 +1251,17 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const activeStandaloneLaunchProgress = selectedConversationId
     ? standaloneTaskLaunchByConversationId[selectedConversationId]
     : undefined;
+  const visibleStandaloneLaunchProgress = useMemo(() => {
+    if (!activeStandaloneLaunchProgress) return undefined;
+    const kickoffMessageIndex = currentMessages.findIndex(
+      (message) => message.id === activeStandaloneLaunchProgress.userMessageId
+    );
+    if (kickoffMessageIndex < 0) return activeStandaloneLaunchProgress;
+    const agentHasStartedReplying = currentMessages
+      .slice(kickoffMessageIndex + 1)
+      .some((message) => message.role === 'assistant');
+    return agentHasStartedReplying ? undefined : activeStandaloneLaunchProgress;
+  }, [activeStandaloneLaunchProgress, currentMessages]);
   const showManualDraftComposerNotice = Boolean(
     mode === 'Implement' &&
       isManualDraftPendingInitialization(selectedTask) &&
@@ -3476,8 +3487,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onRegenerate={handleRegenerate}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
                     standaloneLaunchProgress={
-                      activeStandaloneLaunchProgress?.userMessageId === message.id
-                        ? activeStandaloneLaunchProgress
+                      visibleStandaloneLaunchProgress?.userMessageId === message.id
+                        ? visibleStandaloneLaunchProgress
                         : null
                     }
                   />
@@ -3524,6 +3535,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             </div>
           )}
         </div>
+
+        {showManualDraftComposerNotice && (
+          <div className="pointer-events-none relative z-10 h-0">
+            <div className="absolute inset-x-3 bottom-3 flex justify-center">
+              <div
+                data-testid="manual-draft-composer-notice"
+                data-chat-composer-notice="true"
+                className="pointer-events-auto flex w-full max-w-2xl items-start gap-2 rounded-xl border border-sky-500/25 bg-background/90 px-3 py-2 text-xs text-foreground shadow-lg shadow-black/15 backdrop-blur"
+              >
+                <Icon name="alert-circle" size={14} className="mt-0.5 shrink-0 text-sky-400" />
+                <p>
+                  {t(
+                    'terminal.manualDraftBanner',
+                    'Send a first message to name this feature and initialize its terminal.'
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Input Area */}
         <ScrollSeparator state={separatorState} />
@@ -3624,22 +3655,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   </div>
               )}
             </div>
-
-            {showManualDraftComposerNotice && (
-              <div
-                data-testid="manual-draft-composer-notice"
-                data-chat-composer-notice="true"
-                className="mx-auto flex w-full max-w-2xl items-start gap-2 rounded-xl border border-sky-500/25 bg-background/90 px-3 py-2 text-xs text-foreground shadow-lg shadow-black/15 backdrop-blur"
-              >
-                <Icon name="alert-circle" size={14} className="mt-0.5 shrink-0 text-sky-400" />
-                <p>
-                  {t(
-                    'terminal.manualDraftBanner',
-                    'Send a first message to name this feature and initialize its terminal.'
-                  )}
-                </p>
-              </div>
-            )}
 
             {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
               <TaskBlockedState
