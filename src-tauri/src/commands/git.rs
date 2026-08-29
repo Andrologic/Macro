@@ -7572,16 +7572,11 @@ fn direct_checkpoint_revision(repo: &Repository) -> Result<String> {
 
 fn load_direct_checkpoint_index_snapshot(repo: &Repository) -> Result<git2::Index> {
     validate_direct_checkpoint_index_file(repo)?;
-    let mut source = repo.index()?;
-    source.read(true)?;
-    let mut snapshot = git2::Index::new()?;
-    for (entry_count, entry) in source.iter().enumerate() {
-        if entry_count >= MAX_DIRECT_REVIEW_PATHS {
-            return Err(BackendError::FilesystemFileTooLarge {
-                message: "Direct checkpoint index path limit exceeded.".to_string(),
-            });
-        }
-        snapshot.add(&entry)?;
+    let snapshot = git2::Index::open(&repo.path().join("index"))?;
+    if snapshot.len() > MAX_DIRECT_REVIEW_PATHS {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: "Direct checkpoint index path limit exceeded.".to_string(),
+        });
     }
     Ok(snapshot)
 }
@@ -7599,6 +7594,13 @@ fn direct_checkpoint_revision_from_index(repo: &Repository, index: &git2::Index)
             accepted_history_at_risk: true,
             git_output: None,
         })?;
+    direct_checkpoint_revision_from_index_and_head(index, head)
+}
+
+fn direct_checkpoint_revision_from_index_and_head(
+    index: &git2::Index,
+    head: Oid,
+) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(head.as_bytes());
     for (entry_count, entry) in index.iter().enumerate() {
@@ -9124,27 +9126,44 @@ pub async fn direct_review_snapshot(
             checkpoint_id.as_deref(),
             cancellation,
             |repo, validated| {
-                let checkpoint_revision = direct_checkpoint_revision(repo)?;
-                let status = build_git_status(repo)?;
-                let mut visible_paths = HashSet::new();
-                for path in status
-                    .staged_files
+                let index = load_direct_checkpoint_index_snapshot(repo)?;
+                let head_id =
+                    repo.head()?
+                        .target()
+                        .ok_or_else(|| BackendError::DirectCheckpointCorrupt {
+                            message: "Macro's internal review checkpoint HEAD has no target."
+                                .to_string(),
+                            checkpoint_id: direct_checkpoint_repo_id(repo),
+                            object_id: None,
+                            operation: Some("direct_review_snapshot".to_string()),
+                            retry_attempted: false,
+                            accepted_history_at_risk: true,
+                            git_output: None,
+                        })?;
+                let checkpoint_revision =
+                    direct_checkpoint_revision_from_index_and_head(&index, head_id)?;
+                let snapshot = review::build_direct_git_review_snapshot_with_cancellation(
+                    repo,
+                    validated,
+                    &index,
+                    head_id,
+                    || git_review_is_cancelled(&operation_cancellation),
+                )
+                .map_err(|error| error.with_git_object_context(None, "direct_review_snapshot"))?;
+                let mut visible_paths = snapshot
+                    .changes
                     .iter()
-                    .chain(status.unstaged_files.iter())
-                    .chain(status.untracked_files.iter())
                     .map(|change| change.path.clone())
-                {
-                    visible_paths.insert(path);
-                    if visible_paths.len() > MAX_DIRECT_REVIEW_PATHS {
-                        return Err(BackendError::FilesystemFileTooLarge {
-                            message: "Direct review contains too many changed paths.".to_string(),
-                        });
-                    }
-                }
-                let mut visible_paths = visible_paths.into_iter().collect::<Vec<_>>();
+                    .collect::<Vec<_>>();
                 visible_paths.sort();
+                visible_paths.dedup();
+                if visible_paths.len() > MAX_DIRECT_REVIEW_PATHS {
+                    return Err(BackendError::FilesystemFileTooLarge {
+                        message: "Direct review contains too many changed paths.".to_string(),
+                    });
+                }
                 let restore_paths =
-                    expand_direct_rename_paths(repo, &visible_paths, DirectRenameAxis::Worktree)?;
+                    expand_direct_worktree_rename_paths_from_index(repo, &index, &visible_paths)?;
                 if restore_paths.len() > MAX_DIRECT_REVIEW_PATHS {
                     return Err(BackendError::FilesystemFileTooLarge {
                         message: "Direct review contains too many changed paths.".to_string(),
@@ -9174,22 +9193,14 @@ pub async fn direct_review_snapshot(
                         )?,
                     );
                 }
-                let snapshot =
-                    review::build_git_review_snapshot_with_cancellation(repo, validated, || {
-                        git_review_is_cancelled(&operation_cancellation)
-                    })
-                    .map_err(|error| {
-                        error.with_git_object_context(None, "direct_review_snapshot")
-                    })?;
                 let mut snapshot = snapshot;
                 filter_direct_checkpoint_snapshot(&mut snapshot);
                 let has_accepted_changes = repo
-                    .head()
-                    .and_then(|head| head.peel_to_commit())
+                    .find_commit(head_id)
                     .map_err(|error| {
                         BackendError::git_object_missing(
                             error,
-                            None,
+                            Some(head_id.to_string()),
                             Some("direct_review_accepted_state".to_string()),
                         )
                     })?
@@ -10329,7 +10340,18 @@ fn restore_direct_tracked_path(
     relative: &Path,
     display_path: &str,
     expected_revision: &str,
+    cancellation: Option<&Arc<AtomicBool>>,
 ) -> Result<DirectRestoreBackup> {
+    let check_cancelled = || {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
     let odb = repo.odb().map_err(|error| {
         BackendError::git_object_missing(
             error,
@@ -10372,6 +10394,7 @@ fn restore_direct_tracked_path(
                     message: format!("Failed to read linked path {display_path}: {error}"),
                     source: error,
                 })?;
+            check_cancelled()?;
             let mut git_hasher = Sha1::new();
             git_hasher.update(format!("blob {object_size}\0").as_bytes());
             git_hasher.update(&link_target);
@@ -10399,6 +10422,10 @@ fn restore_direct_tracked_path(
                     message: format!("Failed to create linked path {display_path}: {error}"),
                     source: error,
                 })?;
+            if let Err(error) = check_cancelled() {
+                let _ = parent.remove_file(&temporary_name);
+                return Err(error);
+            }
             let backup =
                 match move_direct_restore_entry_to_backup(&parent, &file_name, display_path) {
                     Ok(backup) => backup,
@@ -10416,6 +10443,16 @@ fn restore_direct_tracked_path(
                 expected_revision,
             ) {
                 let _ = parent.remove_file(&temporary_name);
+                return Err(error);
+            }
+            if let Err(error) = check_cancelled() {
+                let _ = parent.remove_file(&temporary_name);
+                restore_direct_restore_backup(
+                    &parent,
+                    &file_name,
+                    backup.as_deref(),
+                    &absolute_parent,
+                )?;
                 return Err(error);
             }
             if let Err(error) = atomic_publish_direct_restore_entry(
@@ -10493,6 +10530,11 @@ fn restore_direct_tracked_path(
     git_hasher.update(format!("blob {object_size}\0").as_bytes());
     let mut buffer = [0u8; 64 * 1024];
     let write_result = loop {
+        if let Err(error) = check_cancelled() {
+            drop(temporary);
+            let _ = parent.remove_file(&temporary_name);
+            return Err(error);
+        }
         match object_reader.read(&mut buffer) {
             Ok(0) => break temporary.sync_all(),
             Ok(bytes_read) => {
@@ -10500,6 +10542,12 @@ fn restore_direct_tracked_path(
                 git_hasher.update(&buffer[..bytes_read]);
                 if let Err(error) = temporary.write_all(&buffer[..bytes_read]) {
                     break Err(error);
+                }
+                #[cfg(test)]
+                if display_path == "macro-test-cancel-during-restore.bin" {
+                    if let Some(flag) = cancellation {
+                        flag.store(true, Ordering::Release);
+                    }
                 }
             }
             Err(error) => break Err(error),
@@ -10512,6 +10560,11 @@ fn restore_direct_tracked_path(
             message: format!("Failed to persist reverted path {display_path}: {error}"),
             source: error,
         });
+    }
+    if let Err(error) = check_cancelled() {
+        drop(temporary);
+        let _ = parent.remove_file(&temporary_name);
+        return Err(error);
     }
     if Oid::from_bytes(git_hasher.finalize().as_slice()).ok() != Some(entry.id) {
         drop(temporary);
@@ -10558,6 +10611,10 @@ fn restore_direct_tracked_path(
             .expect("write concurrent save");
         concurrent.sync_all().expect("persist concurrent save");
     }
+    if let Err(error) = check_cancelled() {
+        let _ = parent.remove_file(&temporary_name);
+        return Err(error);
+    }
     let backup = match move_direct_restore_entry_to_backup(&parent, &file_name, display_path) {
         Ok(backup) => backup,
         Err(error) => {
@@ -10574,6 +10631,11 @@ fn restore_direct_tracked_path(
         expected_revision,
     ) {
         let _ = parent.remove_file(&temporary_name);
+        return Err(error);
+    }
+    if let Err(error) = check_cancelled() {
+        let _ = parent.remove_file(&temporary_name);
+        restore_direct_restore_backup(&parent, &file_name, backup.as_deref(), &absolute_parent)?;
         return Err(error);
     }
     #[cfg(test)]
@@ -10630,6 +10692,11 @@ fn restore_direct_tracked_path(
         return Err(BackendError::Validation(
             "Injected direct restore failure after backup.".to_string(),
         ));
+    }
+    if let Err(error) = check_cancelled() {
+        let _ = parent.remove_file(&temporary_name);
+        restore_direct_restore_backup(&parent, &file_name, backup.as_deref(), &absolute_parent)?;
+        return Err(error);
     }
     if let Err(error) = atomic_publish_direct_restore_entry(
         &parent,
@@ -11230,6 +11297,7 @@ fn restore_direct_worktree_paths_with_verified_index(
                 &relative,
                 &path,
                 &expected_revision,
+                cancellation,
             )
             .map(Some)
         } else {
@@ -15916,6 +15984,74 @@ mod tests {
     }
 
     #[test]
+    fn direct_review_snapshot_uses_one_frozen_index_across_an_aba_replacement() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let path = project_path.join("file.txt");
+        fs::write(&path, "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "validated\n").expect("validated file");
+        let mut validated_index = repo.index().expect("validated index");
+        validated_index
+            .add_path(Path::new("file.txt"))
+            .expect("stage validated file");
+        validated_index.write().expect("persist validated index");
+        fs::write(&path, "pending\n").expect("pending file");
+        let frozen_index = load_direct_checkpoint_index_snapshot(&repo).expect("frozen index");
+        let head_id = repo.head().expect("head").target().expect("head target");
+        let checkpoint_revision =
+            direct_checkpoint_revision_from_index_and_head(&frozen_index, head_id)
+                .expect("frozen revision");
+        let index_path = repo.path().join("index");
+        let original_index = fs::read(&index_path).expect("original index bytes");
+        let mut changed_index = repo.index().expect("changed index");
+        changed_index
+            .remove_path(Path::new("file.txt"))
+            .expect("remove index entry");
+        changed_index.write().expect("persist changed index");
+        let replacement_index = fs::read(&index_path).expect("replacement index bytes");
+        fs::write(&index_path, &original_index).expect("restore starting index");
+        let checks = std::cell::Cell::new(0usize);
+
+        let snapshot = review::build_direct_git_review_snapshot_with_cancellation(
+            &repo,
+            &project_path,
+            &frozen_index,
+            head_id,
+            || {
+                let check = checks.get() + 1;
+                checks.set(check);
+                if check == 2 {
+                    fs::write(&index_path, &replacement_index).expect("install replacement index");
+                } else if check == 3 {
+                    fs::write(&index_path, &original_index).expect("complete index ABA");
+                }
+                false
+            },
+        )
+        .expect("snapshot from frozen index");
+
+        assert_eq!(fs::read(&index_path).expect("final index"), original_index);
+        assert!(snapshot
+            .changes
+            .iter()
+            .any(|change| change.path == "file.txt" && change.has_validated_stage));
+        let reopened = Repository::open_bare(repo.path()).expect("reopen restored checkpoint");
+        assert_eq!(
+            direct_checkpoint_revision(&reopened).expect("restored revision"),
+            checkpoint_revision
+        );
+        register_direct_review_authorization_if_checkpoint_unchanged(
+            &reopened,
+            &checkpoint_revision,
+            "task-1",
+            &project_path,
+            "task-1-0000000000000001",
+            &HashMap::from([("file.txt".to_string(), "v1:regular:test".to_string())]),
+        )
+        .expect("the frozen snapshot matches the restored checkpoint revision");
+    }
+
+    #[test]
     fn direct_checkpoint_verification_has_one_global_object_budget() {
         let (_temp, project_path, repo) = init_direct_checkpoint();
         fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
@@ -16021,6 +16157,40 @@ mod tests {
         .expect_err("pre-cancelled restore must stop before publication");
 
         assert_eq!(fs::read_to_string(path).expect("file"), "pending\n");
+    }
+
+    #[test]
+    fn cancellation_during_blob_copy_does_not_publish_or_move_the_current_file() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let name = "macro-test-cancel-during-restore.bin";
+        let path = project_path.join(name);
+        fs::write(&path, vec![b'a'; 192 * 1024]).expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let pending = vec![b'p'; 192 * 1024];
+        fs::write(&path, &pending).expect("pending file");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let revision =
+            direct_worktree_revision(&root, Path::new(name), name).expect("snapshot revision");
+        let cancellation = Arc::new(AtomicBool::new(false));
+
+        let error = restore_direct_worktree_paths_with_revisions(
+            &repo,
+            &project_path,
+            vec![name.to_string()],
+            &HashMap::from([(name.to_string(), revision)]),
+            Some(&cancellation),
+        )
+        .expect_err("cancellation during blob copy must stop before publication");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert_eq!(fs::read(path).expect("current file"), pending);
+        assert!(fs::read_dir(&project_path)
+            .expect("project entries")
+            .all(|entry| !entry
+                .expect("project entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("macro-restore")));
     }
 
     #[test]
