@@ -25,7 +25,11 @@ mock.module('./tauriIpc', () => ({
   },
 }));
 
-const { updateArchitectPlanRuntime, readArchitectPlanRuntime } =
+const {
+  persistArchitectPlanStrategyPreview,
+  updateArchitectPlanRuntime,
+  readArchitectPlanRuntime,
+} =
   await import('./architectPlanRuntimeService');
 
 describe('architectPlanRuntimeService', () => {
@@ -101,6 +105,40 @@ describe('architectPlanRuntimeService', () => {
       },
       repoPaths: ['C:/old-direct-project'],
       update: (record) => record,
+    });
+
+    expect(workspaceScopes).toContain('direct');
+    expect(workspaceScopes).not.toContain('metadata');
+    expect(workspacePaths).toEqual(['C:/direct-project']);
+  });
+
+  it('preserves direct scope through the strategy preview persistence wrapper', async () => {
+    files.clear();
+    workspaceScopes.length = 0;
+    workspacePaths.length = 0;
+    useAppStore.setState({
+      standaloneProjects: [{
+        id: 'project-direct',
+        name: 'Direct project',
+        mountName: 'direct-project',
+        path: 'C:/direct-project',
+        created_at: '',
+        status: 'active',
+        gitSetupState: 'ready',
+        directEdit: true,
+        metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+      }],
+      projectGroups: [],
+    });
+
+    await persistArchitectPlanStrategyPreview({
+      branchName: 'develop',
+      plan: {
+        id: 'plan-direct-wrapper',
+        projectIds: ['project-direct'],
+        executionModesByProjectId: { 'project-direct': 'direct' },
+      },
+      preview: null,
     });
 
     expect(workspaceScopes).toContain('direct');

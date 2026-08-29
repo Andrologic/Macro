@@ -310,6 +310,18 @@ const isDirectEditTask = (task: CatalogedImplementTask): boolean => {
   return targets.every(isDirectEditTarget);
 };
 
+const getTaskExecutionModesByProjectId = (
+  task: CatalogedImplementTask
+): Record<string, 'git' | 'direct'> =>
+  Object.fromEntries(
+    getExecutionTargets(retargetTaskForCurrentAppScope(task)).flatMap((target) => {
+      const resolution = resolveExecutionTargetMode(target);
+      return resolution.mode === 'git' || resolution.mode === 'direct'
+        ? [[target.projectId, resolution.mode] as const]
+        : [];
+    })
+  );
+
 const DIRECT_DRAFT_REVERT_SAGA_TARGET = '@direct-draft-revert';
 
 const getTaskIntegrationBranch = (
@@ -1082,6 +1094,7 @@ const persistMergeWorkflowSessionForTask = async (
       id: task.plan_id,
       projectId: task.project_id,
       projectIds: task.project_ids,
+      executionModesByProjectId: getTaskExecutionModesByProjectId(task),
     },
     taskId: task.id,
     session,

@@ -968,6 +968,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           id: activePlanContext.id,
           projectId: projectIds[0],
           projectIds,
+          executionModesByProjectId: activePlanContext.executionModesByProjectId,
         },
         preview: null,
       });

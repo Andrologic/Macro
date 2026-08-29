@@ -155,19 +155,45 @@ const mapProjectId = (
   return singleReplacementProjectId;
 };
 
+const remapExecutionModes = (
+  executionModesByProjectId: Record<string, 'git' | 'direct'> | undefined,
+  singleReplacementProjectId: string | null,
+  knownProjectIdSet: Set<string>
+): { executionModesByProjectId?: Record<string, 'git' | 'direct'>; conflict: boolean } => {
+  if (!executionModesByProjectId) {
+    return { conflict: false };
+  }
+
+  const remapped: Record<string, 'git' | 'direct'> = {};
+  for (const [projectId, executionMode] of Object.entries(executionModesByProjectId)) {
+    const nextProjectId = knownProjectIdSet.has(projectId)
+      ? projectId
+      : singleReplacementProjectId;
+    if (!nextProjectId) {
+      return { executionModesByProjectId, conflict: true };
+    }
+    const existingMode = remapped[nextProjectId];
+    if (existingMode && existingMode !== executionMode) {
+      return { executionModesByProjectId, conflict: true };
+    }
+    remapped[nextProjectId] = executionMode;
+  }
+
+  return { executionModesByProjectId: remapped, conflict: false };
+};
+
 const retargetPlanNode = (
   node: PlanNode,
   replacementProjectIds: string[],
   knownProjectIdSet: Set<string>
-): PlanNode => {
+): { node: PlanNode; conflict: boolean } => {
   const nodeProjectIds = normalizeExecutionProjectIds([
     ...(node.projectIds ?? []),
     node.projectId,
   ]);
   const hasUnknownProjectId = nodeProjectIds.some((projectId) => !knownProjectIdSet.has(projectId));
-  if (!hasUnknownProjectId) {
-    return node;
-  }
+  const hasUnknownModeProjectId = Object.keys(node.executionModesByProjectId ?? {})
+    .some((projectId) => !knownProjectIdSet.has(projectId));
 
   const validNodeProjectIds = nodeProjectIds.filter((projectId) => knownProjectIdSet.has(projectId));
   const nextProjectIds =
@@ -176,9 +202,31 @@ const retargetPlanNode = (
       : validNodeProjectIds.length > 0
         ? validNodeProjectIds
         : replacementProjectIds;
-  return nextProjectIds.length > 0
-    ? { ...node, projectId: nextProjectIds[0], projectIds: nextProjectIds }
-    : node;
+  const singleReplacementProjectId =
+    replacementProjectIds.length === 1 ? replacementProjectIds[0] : null;
+  const remappedModes = remapExecutionModes(
+    node.executionModesByProjectId,
+    singleReplacementProjectId,
+    knownProjectIdSet
+  );
+  if (remappedModes.conflict) {
+    return { node, conflict: true };
+  }
+  if (!hasUnknownProjectId && !hasUnknownModeProjectId) {
+    return { node, conflict: false };
+  }
+
+  return {
+    node: nextProjectIds.length > 0
+      ? {
+          ...node,
+          projectId: nextProjectIds[0],
+          projectIds: nextProjectIds,
+          executionModesByProjectId: remappedModes.executionModesByProjectId,
+        }
+      : node,
+    conflict: false,
+  };
 };
 
 export const retargetPlanForExecution = <TPlan extends PlanExecutionScopeRef>(
@@ -197,21 +245,23 @@ export const retargetPlanForExecution = <TPlan extends PlanExecutionScopeRef>(
     ]),
     ...(plan.predictedBranches ?? []).map((branch) => branch.projectId),
   ]);
-  const hasUnknownProjectId = normalizeExecutionProjectIds([
+  const unknownProjectIds = normalizeExecutionProjectIds([
     ...persistedProjectIds,
     ...childProjectIds,
-  ]).some((projectId) => !knownProjectIdSet.has(projectId));
-  if (!hasUnknownProjectId) {
-    return plan;
-  }
+  ]).filter((projectId) => !knownProjectIdSet.has(projectId));
   const persistedModeProjectIds = normalizeExecutionProjectIds([
     ...Object.keys(plan.executionModesByProjectId ?? {}),
     ...(plan.nodes ?? []).flatMap((node) => Object.keys(node.executionModesByProjectId ?? {})),
   ]);
-  if (persistedModeProjectIds.some((projectId) => !knownProjectIdSet.has(projectId))) {
+  const unknownModeProjectIds = persistedModeProjectIds
+    .filter((projectId) => !knownProjectIdSet.has(projectId));
+  const unknownIdentityProjectIds = normalizeExecutionProjectIds([
+    ...unknownProjectIds,
+    ...unknownModeProjectIds,
+  ]);
+  if (unknownIdentityProjectIds.length === 0) {
     return plan;
   }
-
   const replacementProjectIds = resolveExecutionProjectIds({
     persistedIds: persistedProjectIds.length > 0 ? persistedProjectIds : childProjectIds,
     availableProjectIds: plan.availableProjectIds,
@@ -222,16 +272,33 @@ export const retargetPlanForExecution = <TPlan extends PlanExecutionScopeRef>(
   if (replacementProjectIds.length === 0) {
     return plan;
   }
+  if (replacementProjectIds.length === 1 && unknownIdentityProjectIds.length > 1) {
+    return plan;
+  }
 
   const singleReplacementProjectId =
     replacementProjectIds.length === 1 ? replacementProjectIds[0] : null;
+  const remappedPlanModes = remapExecutionModes(
+    plan.executionModesByProjectId,
+    singleReplacementProjectId,
+    knownProjectIdSet
+  );
+  if (remappedPlanModes.conflict) {
+    return plan;
+  }
+  const retargetedNodes = (plan.nodes ?? []).map((node) =>
+    retargetPlanNode(node, replacementProjectIds, knownProjectIdSet)
+  );
+  if (retargetedNodes.some(({ conflict }) => conflict)) {
+    return plan;
+  }
+
   return {
     ...plan,
     projectId: replacementProjectIds[0] ?? plan.projectId,
     projectIds: replacementProjectIds,
-    nodes: (plan.nodes ?? []).map((node) =>
-      retargetPlanNode(node, replacementProjectIds, knownProjectIdSet)
-    ),
+    executionModesByProjectId: remappedPlanModes.executionModesByProjectId,
+    nodes: retargetedNodes.map(({ node }) => node),
     predictedBranches: (plan.predictedBranches ?? []).map((branch) => {
       const projectId = mapProjectId(
         branch.projectId,

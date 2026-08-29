@@ -1704,6 +1704,13 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(secondRuntime?.phase).toBe('ready');
     expect(gitMergeCheckMock).toHaveBeenCalledTimes(1);
     expect(persistArchitectPlanMergeWorkflowSessionMock).toHaveBeenCalledTimes(1);
+    expect(persistArchitectPlanMergeWorkflowSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: expect.objectContaining({
+          executionModesByProjectId: { 'project-1': 'git' },
+        }),
+      }),
+    );
   });
 
   it('allows a forced merge review load to bypass an existing in-flight load', async () => {

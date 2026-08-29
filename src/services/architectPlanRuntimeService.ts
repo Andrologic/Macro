@@ -281,7 +281,7 @@ export const updateArchitectPlanRuntime = async (params: {
 
 export const persistArchitectPlanMergeWorkflowSession = async (params: {
   branchName: string;
-  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId'>;
+  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId' | 'executionModesByProjectId'>;
   taskId: string;
   session: PersistedMergeWorkflowSession | null;
   repoPaths?: Array<string | null | undefined>;
@@ -307,7 +307,7 @@ export const persistArchitectPlanMergeWorkflowSession = async (params: {
 
 export const persistArchitectPlanStrategyPreview = async (params: {
   branchName: string;
-  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId'>;
+  plan: Pick<ArchitectPlanRecord, 'id' | 'projectIds' | 'projectId' | 'executionModesByProjectId'>;
   preview: StrategyMutationPreview | null;
   repoPaths?: Array<string | null | undefined>;
 }): Promise<ArchitectPlanRuntimeRecord | null> =>

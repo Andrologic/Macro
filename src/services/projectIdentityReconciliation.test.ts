@@ -91,6 +91,68 @@ describe('projectIdentityReconciliation', () => {
     expect(retargeted).toEqual(plan);
   });
 
+  it('remaps direct mode metadata when the plan has one physical project match', () => {
+    const plan = {
+      id: 'reopened-direct-plan',
+      projectId: 'old-project-id',
+      projectIds: ['old-project-id'],
+      availableProjectIds: ['current-project-id'],
+      replicas: [{ projectId: 'current-project-id' }],
+      executionModesByProjectId: {
+        'old-project-id': 'direct',
+      } as Record<string, 'git' | 'direct'>,
+      nodes: [{
+        id: 'node-1',
+        title: 'Direct work',
+        type: 'task' as const,
+        status: 'pending' as const,
+        dependencies: [],
+        projectId: 'old-project-id',
+        projectIds: ['old-project-id'],
+        executionModesByProjectId: {
+          'old-project-id': 'direct',
+        } as Record<string, 'git' | 'direct'>,
+      }],
+      predictedBranches: [],
+    };
+
+    const retargeted = retargetPlanForExecution(plan, {
+      scopedProjectIds: ['current-project-id'],
+      knownProjectIds: ['current-project-id'],
+    });
+
+    expect(retargeted.projectId).toBe('current-project-id');
+    expect(retargeted.projectIds).toEqual(['current-project-id']);
+    expect(retargeted.executionModesByProjectId).toEqual({
+      'current-project-id': 'direct',
+    });
+    expect(retargeted.nodes?.[0]?.projectId).toBe('current-project-id');
+    expect(retargeted.nodes?.[0]?.executionModesByProjectId).toEqual({
+      'current-project-id': 'direct',
+    });
+  });
+
+  it('does not collapse several stale project identities onto one physical match', () => {
+    const plan = {
+      id: 'ambiguous-reopened-plan',
+      projectIds: ['old-project-one', 'old-project-two'],
+      availableProjectIds: ['current-project-id'],
+      executionModesByProjectId: {
+        'old-project-one': 'direct' as const,
+        'old-project-two': 'direct' as const,
+      },
+      nodes: [],
+      predictedBranches: [],
+    };
+
+    const retargeted = retargetPlanForExecution(plan, {
+      scopedProjectIds: ['current-project-id'],
+      knownProjectIds: ['current-project-id'],
+    });
+
+    expect(retargeted).toEqual(plan);
+  });
+
   it('does not move a legacy plan without physical identity proof', () => {
     const plan = {
       id: 'orphaned-legacy-plan',
