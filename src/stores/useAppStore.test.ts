@@ -773,6 +773,68 @@ describe('useAppStore architect plan resolution', () => {
     );
   });
 
+  it('ignores a late post-create hydration failure after a newer project succeeds', async () => {
+    bootstrapProjectGroups = [];
+    bootstrapStandaloneProjects = [];
+    let rejectFirstHydration!: (error: Error) => void;
+    let signalFirstStarted!: () => void;
+    let signalFirstRejected!: () => void;
+    let signalSecondFinished!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = resolve;
+    });
+    const firstRejected = new Promise<void>((resolve) => {
+      signalFirstRejected = resolve;
+    });
+    const secondFinished = new Promise<void>((resolve) => {
+      signalSecondFinished = resolve;
+    });
+    const firstHydration = new Promise<void>((_resolve, reject) => {
+      rejectFirstHydration = reject;
+    });
+    listArchitectPlansMock
+      .mockImplementationOnce(async () => {
+        signalFirstStarted();
+        try {
+          await firstHydration;
+          return { activePlanId: null, plans: [] };
+        } finally {
+          signalFirstRejected();
+        }
+      })
+      .mockImplementationOnce(async () => {
+        signalSecondFinished();
+        return { activePlanId: null, plans: [] };
+      });
+    const { useAppStore } = await loadIsolatedUseAppStore();
+
+    await useAppStore.getState().createProject({
+      name: 'First',
+      description: '',
+      groupId: null,
+      path: '/repos/first',
+      requestId: 'project-add-first',
+    });
+    await firstStarted;
+    await useAppStore.getState().createProject({
+      name: 'Second',
+      description: '',
+      groupId: null,
+      path: '/repos/second',
+      requestId: 'project-add-second',
+    });
+    await secondFinished;
+
+    rejectFirstHydration(new Error('stale architect index failure'));
+    await firstRejected;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useAppStore.getState().selectedProjectId).toBe('project-second');
+    expect(useAppStore.getState().architectPlanCatalogStatus).toBe('ready');
+    expect(useAppStore.getState().architectPlanCatalogError).toBeNull();
+  });
+
   it('selects a recovered standalone project on initialize when no remembered selection is valid', async () => {
     bootstrapProjectGroups = [];
     bootstrapStandaloneProjects = [

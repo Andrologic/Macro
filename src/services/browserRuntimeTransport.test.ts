@@ -134,22 +134,41 @@ test('authentifie les invocations et rétablit la connexion des écouteurs', asy
 }, 10_000);
 
 test('arrête définitivement la reconnexion quand un autre onglet prend la session', async () => {
-  const transport = await import('./browserRuntimeTransport');
-  const unlisten = await transport.listenBrowserRuntime('runtime:event', () => undefined);
-  const activeSocket = FakeWebSocket.instances.at(-1)!;
-  const connectionCount = FakeWebSocket.instances.length;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nextTimerId = 0;
+  const scheduled = new Map<number, () => void>();
+  globalThis.setTimeout = ((callback: TimerHandler) => {
+    nextTimerId += 1;
+    scheduled.set(nextTimerId, callback as () => void);
+    return nextTimerId;
+  }) as typeof globalThis.setTimeout;
+  globalThis.clearTimeout = ((timerId: number | undefined) => {
+    if (timerId !== undefined) scheduled.delete(timerId);
+  }) as typeof globalThis.clearTimeout;
 
-  const interruptedInvocation = transport.invokeBrowserRuntime('state_get_snapshot');
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  activeSocket.emit('close', { code: 4009, reason: 'session_replaced' });
+  try {
+    const transport = await import('./browserRuntimeTransport');
+    const unlisten = await transport.listenBrowserRuntime('runtime:event', () => undefined);
+    const activeSocket = FakeWebSocket.instances.at(-1)!;
+    const connectionCount = FakeWebSocket.instances.length;
 
-  await expect(interruptedInvocation).rejects.toMatchObject({
-    code: 'BROWSER_RUNTIME_SESSION_REPLACED',
-  });
-  await expect(transport.invokeBrowserRuntime('git_status')).rejects.toMatchObject({
-    code: 'BROWSER_RUNTIME_SESSION_REPLACED',
-  });
-  await new Promise((resolve) => setTimeout(resolve, 1_200));
-  expect(FakeWebSocket.instances).toHaveLength(connectionCount);
-  unlisten();
+    const interruptedInvocation = transport.invokeBrowserRuntime('state_get_snapshot');
+    await Promise.resolve();
+    activeSocket.emit('close', { code: 4009, reason: 'session_replaced' });
+
+    await expect(interruptedInvocation).rejects.toMatchObject({
+      code: 'BROWSER_RUNTIME_SESSION_REPLACED',
+    });
+    await expect(transport.invokeBrowserRuntime('git_status')).rejects.toMatchObject({
+      code: 'BROWSER_RUNTIME_SESSION_REPLACED',
+    });
+    expect(scheduled).toHaveLength(0);
+    for (const callback of scheduled.values()) callback();
+    expect(FakeWebSocket.instances).toHaveLength(connectionCount);
+    unlisten();
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
 });

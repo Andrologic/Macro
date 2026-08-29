@@ -1185,6 +1185,7 @@ const ensureAutoPlanForSelection = async (input: {
 };
 
 const POST_CREATE_HYDRATION_TIMEOUT_MS = 5_000;
+let postCreateHydrationGeneration = 0;
 
 const schedulePostCreateHydration = (input: {
   requestId: string;
@@ -1194,6 +1195,13 @@ const schedulePostCreateHydration = (input: {
   groupId: string | null;
   projectId: string | null;
 }): void => {
+  const generation = ++postCreateHydrationGeneration;
+  const isCurrentHydration = (): boolean => {
+    const state = useAppStore.getState();
+    return postCreateHydrationGeneration === generation &&
+      state.selectedGroupId === input.groupId &&
+      state.selectedProjectId === input.projectId;
+  };
   const hydration = (async () => {
     await reconcileProjectRegistryDependencies({
       standaloneProjects: input.standaloneProjects,
@@ -1229,10 +1237,12 @@ const schedulePostCreateHydration = (input: {
     })
     .catch((error) => {
       const normalized = toServiceError(error);
-      useAppStore.setState({
-        architectPlanCatalogStatus: "error",
-        architectPlanCatalogError: normalized.message,
-      });
+      if (isCurrentHydration()) {
+        useAppStore.setState({
+          architectPlanCatalogStatus: "error",
+          architectPlanCatalogError: normalized.message,
+        });
+      }
       logProjectRegistryAction("failed", {
         action: `${input.action}_post_create_hydration`,
         requestId: input.requestId,
@@ -2074,6 +2084,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
     const requestKind = `${catalogScopeKey}::${options.hydrateActivePlan !== false ? 'hydrate' : 'catalog'}`;
     architectPlanCatalogRequestIdsByKind.set(requestKind, requestId);
+    const isCurrentScope = () => {
+      if (architectPlanCatalogRequestIdsByKind.get(requestKind) !== requestId) return false;
+      const latest = get();
+      return buildArchitectPlanCatalogScopeKey({
+        selectedGroupId: latest.selectedGroupId,
+        selectedProjectId: latest.selectedProjectId,
+        scopedProjectIds: getScopedProjectIds(
+          { standaloneProjects: latest.standaloneProjects, projectGroups: latest.projectGroups },
+          latest.selectedGroupId,
+          latest.selectedProjectId,
+        ),
+      }) === catalogScopeKey;
+    };
 
     if (!contextId || scopedProjectIds.length === 0) {
       if (options.hydrateActivePlan !== false) {
@@ -2122,19 +2145,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }),
         includeArchivedInVisible: options.includeArchivedInVisible === true,
       });
-      const isCurrentScope = () => {
-        if (architectPlanCatalogRequestIdsByKind.get(requestKind) !== requestId) return false;
-        const latest = get();
-        return buildArchitectPlanCatalogScopeKey({
-          selectedGroupId: latest.selectedGroupId,
-          selectedProjectId: latest.selectedProjectId,
-          scopedProjectIds: getScopedProjectIds(
-            { standaloneProjects: latest.standaloneProjects, projectGroups: latest.projectGroups },
-            latest.selectedGroupId,
-            latest.selectedProjectId,
-          ),
-        }) === catalogScopeKey;
-      };
       if (!isCurrentScope()) return null;
       const catalogModernPlanCount = result.snapshot.branches.reduce(
         (count, branch) =>
@@ -2208,7 +2218,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       return result;
     } catch (error) {
-      if (architectPlanCatalogRequestIdsByKind.get(requestKind) !== requestId) return null;
+      if (!isCurrentScope()) return null;
       const normalized = toServiceError(error);
       set({
         architectPlanCatalogStatus: "error",
