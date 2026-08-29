@@ -28,6 +28,33 @@ describe('projectIdentityReconciliation', () => {
     expect(retargeted.project_id).toBe('removed-project');
   });
 
+  it('does not move a plan with a persisted mode onto the selected project', () => {
+    const plan = {
+      id: 'orphaned-plan',
+      projectId: 'removed-project',
+      projectIds: ['removed-project'],
+      executionModesByProjectId: { 'removed-project': 'direct' as const },
+      nodes: [{
+        id: 'node-1',
+        title: 'Orphaned direct work',
+        type: 'task' as const,
+        status: 'pending' as const,
+        dependencies: [],
+        projectId: 'removed-project',
+        projectIds: ['removed-project'],
+        executionModesByProjectId: { 'removed-project': 'direct' as const },
+      }],
+      predictedBranches: [],
+    };
+
+    const retargeted = retargetPlanForExecution(plan, {
+      scopedProjectIds: ['current-project'],
+      knownProjectIds: ['current-project'],
+    });
+
+    expect(retargeted).toEqual(plan);
+  });
+
   it('retargets stale strategy children even when the plan already points to the current project', () => {
     const currentProjectId = 'project-octan-sales-1780653766405';
     const staleProjectId = 'project-lplr-app-1780329499166';

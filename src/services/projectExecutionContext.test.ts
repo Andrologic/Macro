@@ -162,7 +162,7 @@ describe('resolveProjectExecutionContext', () => {
     expect(context.workspacePath).toBe('/repos/solo-app');
   });
 
-  it('retargets a stale single-project task to the selected standalone project', async () => {
+  it('does not expose the selected project for a task with an orphaned persisted target', async () => {
     const { resolveProjectExecutionContext } = await loadProjectExecutionContext();
     const standaloneProject = {
       ...projects[0],
@@ -196,10 +196,12 @@ describe('resolveProjectExecutionContext', () => {
       selectedTaskId: 'task-stale',
     });
 
-    expect(context.projectId).toBe('project-lplr-current');
-    expect(context.projectIds).toEqual(['project-lplr-current']);
-    expect(context.actionableProjectIds).toEqual(['project-lplr-current']);
-    expect(context.workspacePath).toBe('/repos/lplr-app');
+    expect(context.taskId).toBe('task-stale');
+    expect(context.projectId).toBeNull();
+    expect(context.projectIds).toEqual([]);
+    expect(context.actionableProjectIds).toEqual([]);
+    expect(context.projectMounts).toEqual([]);
+    expect(context.workspacePath).toBeNull();
   });
 
   it('prefers the current registry path over stale task repoPath snapshots', async () => {

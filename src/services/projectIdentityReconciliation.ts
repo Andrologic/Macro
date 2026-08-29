@@ -16,6 +16,7 @@ export type PlanExecutionScopeRef = {
   projectId?: string | null;
   projectIds?: string[];
   availableProjectIds?: string[];
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   replicas?: ProjectReplicaRef[];
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
@@ -200,6 +201,13 @@ export const retargetPlanForExecution = <TPlan extends PlanExecutionScopeRef>(
     ...childProjectIds,
   ]).some((projectId) => !knownProjectIdSet.has(projectId));
   if (!hasUnknownProjectId) {
+    return plan;
+  }
+  const persistedModeProjectIds = normalizeExecutionProjectIds([
+    ...Object.keys(plan.executionModesByProjectId ?? {}),
+    ...(plan.nodes ?? []).flatMap((node) => Object.keys(node.executionModesByProjectId ?? {})),
+  ]);
+  if (persistedModeProjectIds.some((projectId) => !knownProjectIdSet.has(projectId))) {
     return plan;
   }
 

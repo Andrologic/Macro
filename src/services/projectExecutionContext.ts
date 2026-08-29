@@ -140,6 +140,12 @@ export const resolveProjectExecutionContext = (
   ]).filter((projectId) => projectById.has(projectId));
   const taskContextProjectIds = uniqueStrings(task?.context_project_ids || [])
     .filter((projectId) => projectById.has(projectId));
+  const hasDeclaredTaskScope = Boolean(task && uniqueStrings([
+    ...(task.execution_targets ?? []).map((target) => target.projectId),
+    ...(task.project_ids ?? []),
+    ...(task.context_project_ids ?? []),
+    task.project_id,
+  ]).length > 0);
   const conversationProjectId = cleanString(conversation?.project_id);
   const knownConversationProjectId =
     conversationProjectId && projectById.has(conversationProjectId)
@@ -170,7 +176,7 @@ export const resolveProjectExecutionContext = (
         )?.id
       : null) ||
     null;
-  const hasTaskScope = taskProjectIds.length > 0 || taskContextProjectIds.length > 0;
+  const hasTaskScope = hasDeclaredTaskScope || taskProjectIds.length > 0 || taskContextProjectIds.length > 0;
   const scopedProjectIds = uniqueStrings([
     ...(hasTaskScope
       ? [...taskProjectIds, ...taskContextProjectIds]
