@@ -1067,6 +1067,7 @@ export interface WorkspaceArchitectPlanSummaryDto {
   deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
+  executionModesByProjectId?: Record<string, "git" | "direct"> | null;
   conversationId?: string | null;
   projectId?: string | null;
   projectIds?: string[];
@@ -1099,6 +1100,7 @@ export interface WorkspaceArchitectPlanRecordDto {
   deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
+  executionModesByProjectId?: Record<string, "git" | "direct"> | null;
   conversationId?: string | null;
   projectId?: string | null;
   projectIds?: string[];

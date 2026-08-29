@@ -682,9 +682,11 @@ const findActiveTasksSharingExecutionBranch = (
   }
 
   const targetKeys = new Set(
-    getExecutionTargets(executionTask).map(
-      (target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`
-    )
+    getExecutionTargets(executionTask)
+      .filter((target) => target.executionMode !== 'direct')
+      .map(
+        (target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`
+      )
   );
   if (targetKeys.size === 0) {
     return [];
@@ -697,9 +699,11 @@ const findActiveTasksSharingExecutionBranch = (
     if (candidate.plan_id !== executionTask.plan_id) return false;
     if (candidate.archived_at || candidate.status === 'Completed') return false;
 
-    return getExecutionTargets(executionCandidate).some((target) =>
-      targetKeys.has(`${target.projectId}::${normalizeBranchName(target.branchName)}`)
-    );
+    return getExecutionTargets(executionCandidate)
+      .filter((target) => target.executionMode !== 'direct')
+      .some((target) =>
+        targetKeys.has(`${target.projectId}::${normalizeBranchName(target.branchName)}`)
+      );
   });
 };
 
@@ -714,9 +718,11 @@ const assertArchitectTaskBranchIsExclusive = (
 
   const sharedBranches = Array.from(
     new Set(
-      getExecutionTargets(retargetTaskForCurrentAppScope(task)).map((target) =>
-        normalizeBranchName(target.branchName)
-      )
+      getExecutionTargets(retargetTaskForCurrentAppScope(task))
+        .filter((target) => target.executionMode !== 'direct')
+        .map((target) =>
+          normalizeBranchName(target.branchName)
+        )
     )
   ).join(', ');
   const taskTitles = sharingTasks.map((candidate) => candidate.title).join(', ');

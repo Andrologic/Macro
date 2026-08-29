@@ -152,6 +152,7 @@ export interface ArchitectPlanRecord {
   deletedAt?: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
@@ -183,6 +184,7 @@ export interface ArchitectPlanSummary {
   deletedAt?: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   conversationId?: string;
   projectId?: string;
   projectIds?: string[];
@@ -477,6 +479,7 @@ const planRecordFromActivationSummary = (
     status: summary.status,
     targetBranch: normalizeBranchName(summary.targetBranch || branchName),
     targetBranchesByProjectId: summary.targetBranchesByProjectId,
+    executionModesByProjectId: summary.executionModesByProjectId,
     conversationId: summary.conversationId,
     projectId: scope.actionableProjectIds[0],
     projectIds: scope.actionableProjectIds,
@@ -1771,6 +1774,19 @@ const dedupeProjectIdDiagnostics = (projectIds: string[]): string[] => Array.fro
 const shouldValidateProjectIds = (registrySnapshot?: ValidProjectRegistrySnapshot | null): boolean =>
   Boolean(registrySnapshot?.hasRegisteredProjects);
 
+const normalizePersistedExecutionModes = (
+  value: Record<string, 'git' | 'direct'> | null | undefined,
+  projectIds: string[],
+): Record<string, 'git' | 'direct'> | undefined => {
+  const allowedProjectIds = new Set(projectIds);
+  const entries = Object.entries(value ?? {}).filter(
+    ([projectId, mode]) => allowedProjectIds.has(projectId) && (mode === 'git' || mode === 'direct'),
+  );
+  return entries.length > 0
+    ? Object.fromEntries(entries) as Record<string, 'git' | 'direct'>
+    : undefined;
+};
+
 const sanitizeProjectIdsForRegistry = (
   projectIds?: string[],
   projectId?: string,
@@ -2005,6 +2021,10 @@ const sanitizeArchitectPlanRecord = (
       normalizedProjectIds,
       plan.targetBranch || normalized
     ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      plan.executionModesByProjectId,
+      normalizedProjectIds,
+    ),
     projectId: normalizedProjectIds[0],
     projectIds: normalizedScope.actionableProjectIds,
     contextProjectIds: normalizedScope.contextProjectIds,
@@ -2074,6 +2094,10 @@ const sanitizeArchitectPlanRecord = (
         getProjectGitFlowSettings: registryProjectSettingsResolver,
         fallbackTargetBranch: normalizedPlan.targetBranch,
       }
+    ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      normalizedPlan.executionModesByProjectId,
+      sanitizedProjects.projectIds,
     ),
     nodes: sanitizedNodes.nodes,
     predictedBranches: sanitizedPredictedBranches.predictedBranches,
@@ -2159,6 +2183,10 @@ const sanitizeArchitectPlanSummary = (
       projectIds,
       summary.targetBranch || branchName
     ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      summary.executionModesByProjectId,
+      projectIds,
+    ),
     projectId: normalizedScope.actionableProjectIds[0],
     projectIds: normalizedScope.actionableProjectIds,
     contextProjectIds: normalizedScope.contextProjectIds,
@@ -2223,6 +2251,10 @@ const sanitizeArchitectPlanSummary = (
         getProjectGitFlowSettings: registryProjectSettingsResolver,
         fallbackTargetBranch: normalizedSummary.targetBranch,
       }
+    ),
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      normalizedSummary.executionModesByProjectId,
+      sanitizedProjects.projectIds,
     ),
   });
   const changed =
@@ -2320,6 +2352,7 @@ const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): unknown =
   deletedAt: summary.deletedAt,
   targetBranch: summary.targetBranch,
   targetBranchesByProjectId: summary.targetBranchesByProjectId,
+  executionModesByProjectId: summary.executionModesByProjectId,
   conversationId: summary.conversationId,
   projectId: summary.projectId,
   projectIds: summary.projectIds,
@@ -3083,7 +3116,16 @@ const getPlanExecutionModes = (
   plan: ArchitectPlanRecord,
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
 ): Record<string, 'git' | 'direct'> => {
-  const modes = getPlanExecutionModesByProjectId(plan.nodes);
+  const projectIds = new Set(plan.projectIds ?? []);
+  const modes = Object.fromEntries(
+    Object.entries(plan.executionModesByProjectId ?? {}).filter(
+      ([projectId, mode]) => projectIds.has(projectId) && (mode === 'git' || mode === 'direct'),
+    ),
+  ) as Record<string, 'git' | 'direct'>;
+  const nodeModes = getPlanExecutionModesByProjectId(plan.nodes);
+  for (const [projectId, mode] of Object.entries(nodeModes)) {
+    if (!modes[projectId]) modes[projectId] = mode;
+  }
   for (const projectId of plan.projectIds ?? []) {
     if (modes[projectId]) continue;
     const observedMode = registrySnapshot?.executionModeByProjectId.get(projectId);
@@ -3129,7 +3171,7 @@ const discoverPersistedDirectPlan = async (params: {
     })))
   ).filter(({ scope, result }) => {
     if (!scope.projectId || !result.plan) return false;
-    return getPlanExecutionModesByProjectId(result.plan.nodes)[scope.projectId] === 'direct';
+    return getPlanExecutionModes(result.plan, registrySnapshot)[scope.projectId] === 'direct';
   });
   if (candidates.length === 0) {
     return null;
@@ -3502,6 +3544,8 @@ const toSummary = (
     archivedFromStatus: plan.archivedFromStatus,
     deletedAt: plan.deletedAt,
     targetBranch: plan.targetBranch,
+    targetBranchesByProjectId: plan.targetBranchesByProjectId,
+    executionModesByProjectId: plan.executionModesByProjectId,
     conversationId: plan.conversationId,
     projectId: plan.projectId,
     projectIds,
@@ -3663,8 +3707,26 @@ const readAggregatedIndex = async (
         resolvedRegistrySnapshot,
         resolvedDeps
       );
+      if (resolvedRegistrySnapshot) {
+        const transitionedDirectScopes = getProjectMetadataScopes(
+          resolvedRegistrySnapshot,
+          resolvedRegistrySnapshot.validProjectIds.filter(
+            (projectId) => resolvedRegistrySnapshot.executionModeByProjectId.get(projectId) !== 'direct',
+          ),
+          Object.fromEntries(
+            resolvedRegistrySnapshot.validProjectIds.map((projectId) => [projectId, 'direct']),
+          ),
+        ).map((scope) => ({
+          ...scope,
+          scopeKey: `direct:${scope.workspacePath || scope.projectId || 'unknown'}`,
+          repoPath: null,
+          workspaceScope: 'direct' as const,
+        }));
+        scopes.push(...transitionedDirectScopes);
+      }
+      const dedupedScopes = dedupeScopes(scopes);
       const indexes = await Promise.all(
-        scopes.map(async (scope) => ({
+        dedupedScopes.map(async (scope) => ({
           scope,
           index: await readIndexAtScope(scope, normalized, resolvedRegistrySnapshot),
         }))
@@ -3986,6 +4048,21 @@ const isWorkspaceArchitectRuntimeAvailable = (
   typeof deps.tauri.workspaceArchitectActivatePlanHead === 'function' &&
   typeof deps.tauri.workspaceArchitectActivatePlanChat === 'function';
 
+const canUseWorkspaceArchitectRuntimeForScope = (
+  registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  scopedProjectIdsHint?: string[],
+): boolean => {
+  if (!registrySnapshot?.hasRegisteredProjects) return true;
+  const projectIds = scopedProjectIdsHint?.length
+    ? scopedProjectIdsHint
+    : registrySnapshot.scopedProjectIds.length > 0
+      ? registrySnapshot.scopedProjectIds
+      : registrySnapshot.validProjectIds;
+  return projectIds.length > 0 && projectIds.every(
+    (projectId) => registrySnapshot.executionModeByProjectId.get(projectId) === 'git',
+  );
+};
+
 const mapRuntimeArchitectPlanSummary = (
   branchName: string,
   summary: tauriIpc.WorkspaceArchitectPlanSummaryDto
@@ -4070,8 +4147,17 @@ export const getArchitectPlanChatTranscript = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const persistedDirectPlan = await discoverPersistedDirectPlan({
+    branchName: normalizedBranch,
+    planId: safeId,
+    registrySnapshot,
+    deps,
+  });
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+  if (!persistedDirectPlan &&
+      isWorkspaceArchitectRuntimeAvailable(deps) &&
+      canUseWorkspaceArchitectRuntimeForScope(registrySnapshot)) {
     const transcript = await deps.tauri.workspaceArchitectActivatePlanChat({
       branchName: normalizedBranch,
       planId: safeId,
@@ -4255,7 +4341,10 @@ const loadArchitectPlanActivationPayloadImpl = async (
       }
     : null;
 
-  if (!persistedDirectPlan) {
+  if (!persistedDirectPlan && canUseWorkspaceArchitectRuntimeForScope(
+    registrySnapshot,
+    options.scopedProjectIdsHint,
+  )) {
     try {
       const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
         normalizedBranch,
@@ -4725,8 +4814,15 @@ const listArchitectPlansWithDeps = async (
   await recoverArchitectPlanReplicaMutations(deps);
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
+  const hasPersistedDirectPlan = index.plans.some((plan) =>
+    Object.values(plan.executionModesByProjectId ?? {}).includes('direct')
+  );
 
-  if (isWorkspaceArchitectRuntimeAvailable(deps)) {
+  if (isWorkspaceArchitectRuntimeAvailable(deps) &&
+      canUseWorkspaceArchitectRuntimeForScope(registrySnapshot, options.scopedProjectIdsHint) &&
+      !hasPersistedDirectPlan) {
     try {
       const runtimeList = await deps.tauri.workspaceArchitectListPlans({
         branchName: normalizedBranch,
@@ -4752,8 +4848,6 @@ const listArchitectPlansWithDeps = async (
     }
   }
 
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
   const plans = index.plans.filter((plan) => {
     if (!includeDeleted && plan.status === 'deleted') return false;
     if (!includeArchived && plan.status === 'archived') return false;
@@ -4927,6 +5021,15 @@ const createArchitectPlanUnlocked = async (
     status: input.status || 'draft',
     targetBranch: normalizedBranch,
     targetBranchesByProjectId: normalizedTargetBranchesByProjectId,
+    executionModesByProjectId: normalizePersistedExecutionModes(
+      Object.fromEntries(
+        projectIds.map((projectId) => [
+          projectId,
+          registrySnapshot?.executionModeByProjectId.get(projectId),
+        ]),
+      ) as Record<string, 'git' | 'direct'>,
+      projectIds,
+    ),
     conversationId: input.conversationId,
     projectId: projectIds[0],
     projectIds,

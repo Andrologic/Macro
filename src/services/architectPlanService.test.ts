@@ -44,6 +44,8 @@ interface LoadArchitectPlanServiceOptions {
   registrySnapshot?: ValidProjectRegistrySnapshot;
   workspaceRoot?: string;
   macroBranchCommitIfDirty?: typeof actualTauriIpc.macroBranchCommitIfDirty;
+  workspaceArchitectListPlans?: typeof actualTauriIpc.workspaceArchitectListPlans;
+  workspaceArchitectActivatePlanHead?: typeof actualTauriIpc.workspaceArchitectActivatePlanHead;
   workspaceScopeCalls?: Array<{
     operation: string;
     workspaceScope?: WorkspaceScope;
@@ -186,6 +188,8 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       reason: null,
       next_action: null,
     })),
+    workspaceArchitectListPlans: options.workspaceArchitectListPlans,
+    workspaceArchitectActivatePlanHead: options.workspaceArchitectActivatePlanHead,
     fsReadFileWithOptions: async (params: {
       path: string;
       workspacePath?: string | null;
@@ -1243,6 +1247,88 @@ describe('architectPlanService', () => {
     expect(activation?.plan.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
     expect(workspaceScopeCalls.length).toBeGreaterThan(0);
     expect(workspaceScopeCalls.every((call) => call.workspaceScope === 'direct')).toBe(true);
+  });
+
+  it('keeps an empty direct plan and transcript discoverable after Git is initialized', async () => {
+    const appProject = {
+      id: 'docs',
+      path: '/repos/docs',
+      isReadOnly: false,
+      gitSetupState: 'not_git' as 'not_git' | 'ready',
+      directEdit: true,
+    };
+    registerAppStateGetter(() => ({ standaloneProjects: [appProject], projectGroups: [] }));
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'empty-direct-transition',
+      projectIds: ['docs'],
+    });
+    await service.saveArchitectPlanChatMessages(branchName, created.id, [{
+      id: 'message-1',
+      role: 'user',
+      content: 'Conserver ce brouillon.',
+      createdAt: '2026-08-29T13:00:00.000Z',
+    }]);
+    expect(created.executionModesByProjectId).toEqual({ docs: 'direct' });
+
+    appProject.gitSetupState = 'ready';
+    appProject.directEdit = false;
+    const runtimeList = mock(async () => ({ activePlanId: null, plans: [] }));
+    const runtimeHead = mock(async () => null);
+    const gitSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      repoPathByProjectId: new Map([['docs', '/repos/docs']]),
+      executionModeByProjectId: new Map([['docs', 'git']]),
+    };
+    storage.clear();
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: gitSnapshot,
+      filesByWorkspacePath,
+      workspaceArchitectListPlans: runtimeList as typeof actualTauriIpc.workspaceArchitectListPlans,
+      workspaceArchitectActivatePlanHead: runtimeHead as typeof actualTauriIpc.workspaceArchitectActivatePlanHead,
+    });
+
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    const activation = await service.getArchitectPlanActivationPayload(
+      branchName,
+      created.id,
+    );
+    const transcript = await service.getArchitectPlanChatTranscript(branchName, created.id);
+
+    expect(listed.plans.map((plan: ArchitectPlanSummary) => plan.id)).toContain(created.id);
+    expect(activation?.plan.executionModesByProjectId).toEqual({ docs: 'direct' });
+    expect(transcript?.messages.map((message: { content: string }) => message.content)).toEqual([
+      'Conserver ce brouillon.',
+    ]);
+    expect(runtimeList).not.toHaveBeenCalled();
+    expect(runtimeHead).not.toHaveBeenCalled();
   });
 
   it('flushes task execution metadata only for persisted Git targets in a mixed plan', async () => {
