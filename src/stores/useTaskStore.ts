@@ -683,7 +683,7 @@ const findActiveTasksSharingExecutionBranch = (
 
   const targetKeys = new Set(
     getExecutionTargets(executionTask)
-      .filter((target) => target.executionMode !== 'direct')
+      .filter(isGitExecutionTarget)
       .map(
         (target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`
       )
@@ -700,7 +700,7 @@ const findActiveTasksSharingExecutionBranch = (
     if (candidate.archived_at || candidate.status === 'Completed') return false;
 
     return getExecutionTargets(executionCandidate)
-      .filter((target) => target.executionMode !== 'direct')
+      .filter(isGitExecutionTarget)
       .some((target) =>
         targetKeys.has(`${target.projectId}::${normalizeBranchName(target.branchName)}`)
       );
@@ -719,7 +719,7 @@ const assertArchitectTaskBranchIsExclusive = (
   const sharedBranches = Array.from(
     new Set(
       getExecutionTargets(retargetTaskForCurrentAppScope(task))
-        .filter((target) => target.executionMode !== 'direct')
+        .filter(isGitExecutionTarget)
         .map((target) =>
           normalizeBranchName(target.branchName)
         )

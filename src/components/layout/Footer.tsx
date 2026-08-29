@@ -709,6 +709,7 @@ export const Footer: React.FC = () => {
     projectGroups,
     selectedTaskId,
     activeArchitectPlanId,
+    activePlanContext,
     visibleArchitectPlans,
     planNodes,
     metadataMissingUpstreamPolicy,
@@ -720,6 +721,7 @@ export const Footer: React.FC = () => {
     projectGroups: state.projectGroups,
     selectedTaskId: state.selectedTaskId,
     activeArchitectPlanId: state.activeArchitectPlanId,
+    activePlanContext: state.activePlanContext,
     visibleArchitectPlans: state.visibleArchitectPlans,
     planNodes: state.planNodes,
     metadataMissingUpstreamPolicy: state.metadataMissingUpstreamPolicy,
@@ -780,9 +782,12 @@ export const Footer: React.FC = () => {
     manualProjectId: gitScopeProjectId,
     selectedFolder: canSelectFolder ? selectedFolder : null,
     activeArchitectPlanExecutionModesByProjectId: activeArchitectPlanId
-      ? getPlanExecutionModesByProjectId(planNodes)
+      ? getPlanExecutionModesByProjectId(
+          planNodes,
+          activePlanContext?.executionModesByProjectId,
+        )
       : undefined,
-  }), [activeArchitectPlanId, canSelectFolder, conversations, gitScopeProjectId, mode, planNodes, projectGroups, selectedConversationId, selectedFolder, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
+  }), [activeArchitectPlanId, activePlanContext?.executionModesByProjectId, canSelectFolder, conversations, gitScopeProjectId, mode, planNodes, projectGroups, selectedConversationId, selectedFolder, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
   const focusProjects = gitContext.candidates;
   const focusedProject = gitContext.project;
   const scopeProjects = useMemo<ScopedProject[]>(

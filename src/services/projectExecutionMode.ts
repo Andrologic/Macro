@@ -34,6 +34,12 @@ type ExecutionTarget = Pick<
   'projectId' | 'executionMode' | 'repoPath' | 'checkpointId'
 >;
 
+export const executionTargetDeclaresDirect = (
+  target: Pick<TaskExecutionTarget, 'executionMode' | 'checkpointId'>,
+): boolean =>
+  target.executionMode === 'direct' ||
+  (target.executionMode !== 'git' && Boolean(target.checkpointId));
+
 export const resolveProjectExecutionMode = (params: {
   project: ExecutionProject | null | undefined;
   target?: ExecutionTarget | null;

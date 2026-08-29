@@ -782,11 +782,11 @@ describe('useTaskStore.finishTask', () => {
   it('does not treat sibling direct plan tasks as sharing a Git branch', async () => {
     const directTarget = {
       projectId: 'project-1',
-      executionMode: 'direct' as const,
       branchName: '',
       worktreeKey: 'project-1::direct',
       repoPath: '/repos/web',
       targetBranchName: '',
+      checkpointId: 'checkpoint-legacy-direct',
     };
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({

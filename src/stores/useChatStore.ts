@@ -1729,7 +1729,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
       branchWorktrees: taskState.branchWorktrees,
       architectExecutionModesByProjectId: appState.activeArchitectPlanId
-        ? getPlanExecutionModesByProjectId(appState.planNodes)
+        ? getPlanExecutionModesByProjectId(
+            appState.planNodes,
+            appState.activePlanContext?.executionModesByProjectId,
+          )
         : undefined,
     });
   };
@@ -6881,7 +6884,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
       const persistedArchitectExecutionModes = Object.values(
-        getPlanExecutionModesByProjectId(useAppStore.getState().planNodes),
+        getPlanExecutionModesByProjectId(
+          useAppStore.getState().planNodes,
+          useAppStore.getState().activePlanContext?.executionModesByProjectId,
+        ),
       );
       const architectExecutionModes = persistedArchitectExecutionModes.length > 0
         ? persistedArchitectExecutionModes

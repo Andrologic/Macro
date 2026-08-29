@@ -49,7 +49,10 @@ interface MacroSyncAppState {
   metadataAutoPush: boolean;
   metadataMissingUpstreamPolicy: 'ask' | 'ignore';
   activeArchitectPlanId: string | null;
-  activePlanContext: { targetBranch: string } | null;
+  activePlanContext: {
+    targetBranch: string;
+    executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  } | null;
   planNodes: PlanNode[];
   selectedGroupId: string | null;
   selectedProjectId: string | null;
@@ -974,7 +977,10 @@ export const createMacroSyncService = (
         }
       }
 
-      const persistedModes = getPlanExecutionModesByProjectId(appState.planNodes);
+      const persistedModes = getPlanExecutionModesByProjectId(
+        appState.planNodes,
+        appState.activePlanContext?.executionModesByProjectId,
+      );
       const hasPersistedModes = Object.keys(persistedModes).length > 0;
       if (hasPersistedModes && !Object.values(persistedModes).includes('git')) {
         return applyMacroSyncResult(createAggregateMacroResult([]), []);

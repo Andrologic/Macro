@@ -20,6 +20,13 @@ const node = (
 });
 
 describe('getPlanExecutionModesByProjectId', () => {
+  it('keeps the persisted plan mode authoritative for newly generated nodes', () => {
+    expect(getPlanExecutionModesByProjectId(
+      [node('git-task', 'docs', 'git')],
+      { docs: 'direct' },
+    )).toEqual({ docs: 'direct' });
+  });
+
   it('keeps a direct-only plan direct', () => {
     expect(getPlanExecutionModesByProjectId([node('direct-task', 'docs', 'direct')]))
       .toEqual({ docs: 'direct' });

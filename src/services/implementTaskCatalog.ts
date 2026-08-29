@@ -122,11 +122,15 @@ const getUniqueTargetBranch = (
 const buildPlanFinalizationExecutionTargets = (
   plan: Pick<
     ArchitectPlanRecord,
-    'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId' | 'nodes'
+    'projectId' | 'projectIds' | 'targetBranch' | 'targetBranchesByProjectId' |
+      'executionModesByProjectId' | 'nodes'
   >
 ): TaskExecutionTarget[] => {
   const projectIds = normalizeProjectIds(plan.projectIds, plan.projectId);
-  const executionModesByProjectId = getPlanExecutionModesByProjectId(plan.nodes);
+  const executionModesByProjectId = getPlanExecutionModesByProjectId(
+    plan.nodes,
+    plan.executionModesByProjectId,
+  );
 
   return projectIds.map((projectId) => {
     const targetBranchName = plan.targetBranchesByProjectId?.[projectId] || plan.targetBranch;

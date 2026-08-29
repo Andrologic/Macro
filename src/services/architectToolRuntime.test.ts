@@ -298,6 +298,21 @@ describe('architectToolRuntime strategy scope', () => {
     expect(runtime.getAppliedPlan().predictedBranches).toEqual([]);
   });
 
+  it('keeps a persisted empty direct plan direct after the project gains Git', async () => {
+    const runtime = createRuntime(createPlan({
+      executionModesByProjectId: { 'mouillage-app': 'direct' },
+      nodes: [],
+    }));
+
+    await handleArchitectToolCall(runtime.params);
+
+    expect(runtime.getAppliedPlan().nodes[0]).toMatchObject({
+      executionModesByProjectId: { 'mouillage-app': 'direct' },
+    });
+    expect(runtime.getAppliedPlan().nodes[0]).not.toHaveProperty('assignedBranch');
+    expect(runtime.getAppliedPlan().predictedBranches).toEqual([]);
+  });
+
   it('coerces generated artifact contracts to required handoffs', async () => {
     const runtime = createRuntime(createPlan());
     runtime.params.args.nodes = [

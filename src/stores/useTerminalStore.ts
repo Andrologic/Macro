@@ -415,7 +415,10 @@ const resolveSessionBaseCwd = (projectId: string, fallbackProjectPath: string): 
     workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
     branchWorktrees: taskState.branchWorktrees,
     architectExecutionModesByProjectId: appState.activeArchitectPlanId
-      ? getPlanExecutionModesByProjectId(appState.planNodes)
+      ? getPlanExecutionModesByProjectId(
+          appState.planNodes,
+          appState.activePlanContext?.executionModesByProjectId,
+        )
       : undefined,
   });
 
@@ -541,7 +544,10 @@ const resolveManualTerminalContext = (params?: {
     workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
     branchWorktrees: taskState.branchWorktrees,
     architectExecutionModesByProjectId: appState.activeArchitectPlanId
-      ? getPlanExecutionModesByProjectId(appState.planNodes)
+      ? getPlanExecutionModesByProjectId(
+          appState.planNodes,
+          appState.activePlanContext?.executionModesByProjectId,
+        )
       : undefined,
   });
   const cwd =

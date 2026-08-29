@@ -838,7 +838,9 @@ const resolveStrategyForPlan = async (params: {
         const persistedMode = existingNodesForPatch
           .find((existingNode) => existingNode.id === preferredId)
           ?.executionModesByProjectId?.[projectId];
-        const mode = persistedMode ?? registrySnapshot.executionModeByProjectId.get(projectId);
+        const mode = activePlan.executionModesByProjectId?.[projectId] ??
+          persistedMode ??
+          registrySnapshot.executionModeByProjectId.get(projectId);
         if (!mode) {
           throw new Error(`Project ${projectId} has no valid execution mode.`);
         }

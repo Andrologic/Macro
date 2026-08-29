@@ -13,6 +13,7 @@ import {
   type MergeWorkflowRuntimeState,
 } from './mergeWorkflow';
 import type { InternalAgentProfile } from './internalAgentProfile';
+import { executionTargetDeclaresDirect } from './projectExecutionMode';
 
 export const loadPlanFinalizationMergeWorkflowRuntime = async (params: {
   taskId: string;
@@ -82,7 +83,7 @@ export const resolveMergeWorkflowActivationContext = (params: {
   return {
     repoPath: focus.repoPath,
     branchName:
-      focus.branchName || (focusedExecutionTarget?.executionMode === 'direct'
+      focus.branchName || (focusedExecutionTarget && executionTargetDeclaresDirect(focusedExecutionTarget)
         ? null
         : params.task.plan_target_branch || params.task.assigned_branch),
   };

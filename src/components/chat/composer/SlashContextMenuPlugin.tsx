@@ -195,6 +195,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
   const selectedProjectId = useAppStore((state) => state.selectedProjectId);
   const selectedTaskId = useAppStore((state) => state.selectedTaskId);
   const activeArchitectPlanId = useAppStore((state) => state.activeArchitectPlanId);
+  const activePlanExecutionModes = useAppStore(
+    (state) => state.activePlanContext?.executionModesByProjectId,
+  );
   const planNodes = useAppStore((state) => state.planNodes);
   const selectedConversationId = useChatStore((state) => state.selectedConversationId);
   const conversations = useChatStore((state) => state.conversations);
@@ -231,12 +234,13 @@ export const SlashContextMenuPlugin: React.FC = () => {
         workspacePathOverridesByProjectId: activeWorkspacePathOverridesByProjectId,
         branchWorktrees,
         architectExecutionModesByProjectId: activeArchitectPlanId
-          ? getPlanExecutionModesByProjectId(planNodes)
+          ? getPlanExecutionModesByProjectId(planNodes, activePlanExecutionModes)
           : undefined,
       }),
     [
       activeRepositoryPath,
       activeArchitectPlanId,
+      activePlanExecutionModes,
       activeWorkspacePathOverridesByProjectId,
       branchWorktrees,
       conversations,

@@ -3,12 +3,18 @@ import { resolveProjectExecutionMode, type ProjectExecutionMode } from './projec
 
 export const getPlanExecutionModesByProjectId = (
   nodes: PlanNode[] | null | undefined,
+  persistedPlanModes?: Record<string, 'git' | 'direct'> | null,
 ): Record<string, 'git' | 'direct'> => {
-  const modes: Record<string, 'git' | 'direct'> = {};
+  const modes: Record<string, 'git' | 'direct'> = Object.fromEntries(
+    Object.entries(persistedPlanModes ?? {}).filter(
+      ([, mode]) => mode === 'git' || mode === 'direct',
+    ),
+  );
   for (const node of nodes ?? []) {
     for (const [projectId, mode] of Object.entries(node.executionModesByProjectId ?? {})) {
       if (mode !== 'git' && mode !== 'direct') continue;
       const existing = modes[projectId];
+      if (persistedPlanModes?.[projectId]) continue;
       // A plan can span a project's transition from direct editing to Git.
       // Finalization needs Git if any surviving node for that project used it;
       // otherwise the direct-only plan remains free of Git operations.
@@ -21,9 +27,13 @@ export const getPlanExecutionModesByProjectId = (
 export const resolvePlanProjectExecutionMode = (params: {
   projectId: string;
   nodes: PlanNode[] | null | undefined;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'> | null;
   project: Project | null | undefined;
 }): ProjectExecutionMode => {
-  const persisted = getPlanExecutionModesByProjectId(params.nodes)[params.projectId];
+  const persisted = getPlanExecutionModesByProjectId(
+    params.nodes,
+    params.executionModesByProjectId,
+  )[params.projectId];
   if (persisted) {
     return resolveProjectExecutionMode({
       project: params.project,

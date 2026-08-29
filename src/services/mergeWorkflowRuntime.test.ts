@@ -46,4 +46,26 @@ describe('resolveMergeWorkflowActivationContext', () => {
       branchName: 'develop',
     });
   });
+
+  it('does not restore a branch for a legacy direct checkpoint without executionMode', () => {
+    expect(resolveMergeWorkflowActivationContext({
+      task: {
+        assigned_branch: 'plan/legacy-plan',
+        plan_target_branch: 'develop',
+        execution_targets: [{
+          projectId: 'docs',
+          repoPath: '/repos/docs',
+          branchName: '',
+          targetBranchName: '',
+          checkpointId: 'checkpoint-1',
+          worktreeKey: 'docs::legacy-direct',
+        }],
+      },
+      preferredProjectId: 'docs',
+      resolveRepoPath: (_projectId, repoPath) => repoPath ?? null,
+    })).toEqual({
+      repoPath: '/repos/docs',
+      branchName: null,
+    });
+  });
 });
