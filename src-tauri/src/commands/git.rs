@@ -7565,6 +7565,28 @@ fn resolve_direct_review_authorization(
 }
 
 fn direct_checkpoint_revision(repo: &Repository) -> Result<String> {
+    let mut index = repo.index()?;
+    index.read(true)?;
+    direct_checkpoint_revision_from_index(repo, &index)
+}
+
+fn load_direct_checkpoint_index_snapshot(repo: &Repository) -> Result<git2::Index> {
+    validate_direct_checkpoint_index_file(repo)?;
+    let mut source = repo.index()?;
+    source.read(true)?;
+    let mut snapshot = git2::Index::new()?;
+    for (entry_count, entry) in source.iter().enumerate() {
+        if entry_count >= MAX_DIRECT_REVIEW_PATHS {
+            return Err(BackendError::FilesystemFileTooLarge {
+                message: "Direct checkpoint index path limit exceeded.".to_string(),
+            });
+        }
+        snapshot.add(&entry)?;
+    }
+    Ok(snapshot)
+}
+
+fn direct_checkpoint_revision_from_index(repo: &Repository, index: &git2::Index) -> Result<String> {
     let head = repo
         .head()?
         .target()
@@ -7577,8 +7599,6 @@ fn direct_checkpoint_revision(repo: &Repository) -> Result<String> {
             accepted_history_at_risk: true,
             git_output: None,
         })?;
-    let mut index = repo.index()?;
-    index.read(true)?;
     let mut hasher = Sha256::new();
     hasher.update(head.as_bytes());
     for (entry_count, entry) in index.iter().enumerate() {
@@ -7980,7 +8000,7 @@ fn open_direct_checkpoint_at_locked(
             }
             ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)
         })?;
-    } else {
+    } else if create {
         ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)?;
     }
 
@@ -8331,6 +8351,17 @@ fn verify_direct_checkpoint_index_with_budget(
     cancellation: Option<&Arc<AtomicBool>>,
     budget: &mut DirectCheckpointVerificationBudget,
 ) -> Result<()> {
+    validate_direct_checkpoint_index_file(repo)?;
+    let mut index = repo.index().map_err(|error| BackendError::Git {
+        message: format!("Failed to open direct checkpoint index: {error}"),
+    })?;
+    index.read(true).map_err(|error| BackendError::Git {
+        message: format!("Failed to refresh direct checkpoint index: {error}"),
+    })?;
+    verify_direct_checkpoint_index_entries_with_budget(repo, &index, cancellation, budget)
+}
+
+fn validate_direct_checkpoint_index_file(repo: &Repository) -> Result<()> {
     match fs::symlink_metadata(repo.path().join("index")) {
         Ok(metadata) if metadata.is_file() && !direct_checkpoint_metadata_is_link(&metadata) => {}
         Ok(_) => {
@@ -8362,12 +8393,15 @@ fn verify_direct_checkpoint_index_with_budget(
             });
         }
     }
-    let mut index = repo.index().map_err(|error| BackendError::Git {
-        message: format!("Failed to open direct checkpoint index: {error}"),
-    })?;
-    index.read(true).map_err(|error| BackendError::Git {
-        message: format!("Failed to refresh direct checkpoint index: {error}"),
-    })?;
+    Ok(())
+}
+
+fn verify_direct_checkpoint_index_entries_with_budget(
+    repo: &Repository,
+    index: &git2::Index,
+    cancellation: Option<&Arc<AtomicBool>>,
+    budget: &mut DirectCheckpointVerificationBudget,
+) -> Result<()> {
     reject_direct_checkpoint_gitlinks(repo, &index, "direct_checkpoint_index_gitlink")?;
     for entry in index.iter() {
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
@@ -8437,6 +8471,35 @@ fn ensure_direct_checkpoint_integrity_with_cancellation(
     let mut budget = DirectCheckpointVerificationBudget::new();
     verify_direct_checkpoint_history_with_budget(repo, cancellation, &mut budget)
         .and_then(|_| verify_direct_checkpoint_index_with_budget(repo, cancellation, &mut budget))
+        .map_err(|error| {
+            if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                error
+            } else {
+                direct_checkpoint_corruption(repo, error, false)
+            }
+        })
+}
+
+fn ensure_direct_checkpoint_integrity_with_index_and_cancellation(
+    repo: &Repository,
+    index: &git2::Index,
+    cancellation: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+    let mut budget = DirectCheckpointVerificationBudget::new();
+    verify_direct_checkpoint_history_with_budget(repo, cancellation, &mut budget)
+        .and_then(|_| {
+            verify_direct_checkpoint_index_entries_with_budget(
+                repo,
+                index,
+                cancellation,
+                &mut budget,
+            )
+        })
         .map_err(|error| {
             if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
                 error
@@ -9360,6 +9423,47 @@ fn expand_direct_rename_paths(
         let Some(delta) = delta else {
             continue;
         };
+        let Some(new_path) = delta.new_file().path().and_then(Path::to_str) else {
+            continue;
+        };
+        if selected.contains(new_path) {
+            if let Some(old_path) = delta.old_file().path().and_then(Path::to_str) {
+                expanded.push(old_path.to_string());
+            }
+        }
+    }
+    expanded.sort();
+    expanded.dedup();
+    Ok(expanded)
+}
+
+fn expand_direct_worktree_rename_paths_from_index(
+    repo: &Repository,
+    index: &git2::Index,
+    paths: &[String],
+) -> Result<Vec<String>> {
+    if paths.len() > MAX_DIRECT_REVIEW_PATHS {
+        return Err(BackendError::FilesystemFileTooLarge {
+            message: "Direct review path limit exceeded.".to_string(),
+        });
+    }
+    let selected = paths.iter().cloned().collect::<HashSet<_>>();
+    let mut options = git2::DiffOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_typechange(true);
+    let mut diff = repo.diff_index_to_workdir(Some(index), Some(&mut options))?;
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true)
+        .renames_from_rewrites(true)
+        .for_untracked(true);
+    diff.find_similar(Some(&mut find))?;
+    let mut expanded = paths.to_vec();
+    for delta in diff.deltas() {
+        if delta.status() != git2::Delta::Renamed {
+            continue;
+        }
         let Some(new_path) = delta.new_file().path().and_then(Path::to_str) else {
             continue;
         };
@@ -11057,6 +11161,24 @@ fn restore_direct_worktree_paths_with_revisions(
     }
     let mut index = repo.index()?;
     index.read(true)?;
+    restore_direct_worktree_paths_with_verified_index(
+        repo,
+        validated,
+        paths,
+        expected_revisions,
+        cancellation,
+        &index,
+    )
+}
+
+fn restore_direct_worktree_paths_with_verified_index(
+    repo: &Repository,
+    validated: &Path,
+    paths: Vec<String>,
+    expected_revisions: &HashMap<String, String>,
+    cancellation: Option<&Arc<AtomicBool>>,
+    index: &git2::Index,
+) -> Result<()> {
     let restore_root = open_direct_restore_capability(validated)?;
     let mut remaining_revision_bytes = MAX_DIRECT_REVIEW_REVISION_BYTES;
     let validated_paths = paths
@@ -11190,22 +11312,38 @@ pub async fn direct_restore_worktree_paths(
             checkpoint_id.as_deref(),
             false,
             |repo, validated| {
+                if cancellation
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Acquire))
+                {
+                    return Err(BackendError::Git {
+                        message: "Git review was cancelled.".to_string(),
+                    });
+                }
+                let index = load_direct_checkpoint_index_snapshot(repo)?;
+                ensure_direct_checkpoint_integrity_with_index_and_cancellation(
+                    repo,
+                    &index,
+                    cancellation.as_ref(),
+                )?;
                 let expanded =
-                    expand_direct_rename_paths(repo, &paths, DirectRenameAxis::Worktree)?;
+                    expand_direct_worktree_rename_paths_from_index(repo, &index, &paths)?;
+                let checkpoint_revision = direct_checkpoint_revision_from_index(repo, &index)?;
                 let expected_revisions = resolve_direct_review_authorization(
                     &snapshot_id,
                     &task_id,
                     validated,
                     &direct_checkpoint_repo_id(repo),
-                    &direct_checkpoint_revision(repo)?,
+                    &checkpoint_revision,
                     &expanded,
                 )?;
-                restore_direct_worktree_paths_with_revisions(
+                restore_direct_worktree_paths_with_verified_index(
                     repo,
                     validated,
-                    paths,
+                    expanded,
                     &expected_revisions,
                     cancellation.as_ref(),
+                    &index,
                 )
             },
         )
@@ -13982,6 +14120,57 @@ mod tests {
     }
 
     #[test]
+    fn direct_checkpoint_index_snapshot_never_follows_an_external_link() {
+        let (temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let index_path = temp.path().join("checkpoint").join("index");
+        fs::remove_file(&index_path).expect("remove checkpoint index");
+        #[cfg(unix)]
+        {
+            let external = temp.path().join("external-index");
+            fs::write(&external, "external sentinel\n").expect("external index sentinel");
+            std::os::unix::fs::symlink(&external, &index_path).expect("link external index");
+        }
+        #[cfg(windows)]
+        {
+            let external = temp.path().join("external-index");
+            fs::create_dir(&external).expect("external index directory");
+            fs::write(external.join("keep.txt"), "external sentinel\n")
+                .expect("external index sentinel");
+            create_windows_junction(&index_path, &external);
+        }
+
+        let error = match load_direct_checkpoint_index_snapshot(&repo) {
+            Ok(_) => panic!("linked checkpoint index must fail before it is read"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                ..
+            } if operation == "direct_checkpoint_index"
+        ));
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_to_string(temp.path().join("external-index")).expect("external sentinel"),
+            "external sentinel\n"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            fs::read_to_string(temp.path().join("external-index/keep.txt"))
+                .expect("external sentinel"),
+            "external sentinel\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project_path.join("file.txt")).expect("worktree preserved"),
+            "accepted\n"
+        );
+    }
+
+    #[test]
     fn direct_restore_rejects_an_unmerged_checkpoint_index_without_touching_the_project() {
         let (_temp, project_path, repo) = init_direct_checkpoint();
         fs::write(project_path.join("conflict.txt"), "accepted\n").expect("write accepted file");
@@ -14906,6 +15095,47 @@ mod tests {
     }
 
     #[test]
+    fn opening_an_existing_checkpoint_for_an_invalid_restore_is_read_only() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("file.txt"), "accepted\n").expect("accepted file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let exclude_path = repo.path().join("info").join("exclude");
+        drop(repo);
+        fs::write(&exclude_path, "sentinel-invalid-exclusions\n").expect("alter exclusions");
+
+        let reopened =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), false)
+                .expect("open existing checkpoint without repair");
+        let error = resolve_direct_review_authorization(
+            "missing-snapshot",
+            "task-1",
+            &project,
+            &checkpoint_id,
+            &direct_checkpoint_revision(&reopened).expect("checkpoint revision"),
+            &["file.txt".to_string()],
+        )
+        .expect_err("missing snapshot must fail without repair");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read_to_string(exclude_path).expect("unchanged exclusions"),
+            "sentinel-invalid-exclusions\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project.join("file.txt")).expect("unchanged worktree"),
+            "accepted\n"
+        );
+    }
+
+    #[test]
     fn direct_checkpoint_exclusions_cannot_be_negated_by_project_gitignore() {
         let (_temp, project, repo) = init_direct_checkpoint();
         fs::create_dir_all(project.join(".env")).expect("secret directory");
@@ -15381,6 +15611,17 @@ mod tests {
             .expect("renamed file");
         assert_eq!(renamed.status, "renamed");
         assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
+        let index_snapshot =
+            load_direct_checkpoint_index_snapshot(&repo).expect("load index snapshot");
+        assert_eq!(
+            expand_direct_worktree_rename_paths_from_index(
+                &repo,
+                &index_snapshot,
+                &["new.txt".to_string()],
+            )
+            .expect("expand rename from index snapshot"),
+            vec!["new.txt".to_string(), "old.txt".to_string()]
+        );
         stage_direct_paths(&repo, &["new.txt".to_string()]).expect("stage rename pair");
         let mut index = repo.index().expect("index");
         index.read(true).expect("refresh index");
@@ -15839,6 +16080,66 @@ mod tests {
             "saved after snapshot\n"
         );
         assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_uses_the_exact_index_instance_authorized_for_the_snapshot() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let path = project_path.join("file.txt");
+        fs::write(&path, "accepted a\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "pending\n").expect("pending file");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let expected_revision = direct_worktree_revision(&root, Path::new("file.txt"), "file.txt")
+            .expect("pending revision");
+        let authorized_index =
+            load_direct_checkpoint_index_snapshot(&repo).expect("authorized index snapshot");
+        ensure_direct_checkpoint_integrity_with_index_and_cancellation(
+            &repo,
+            &authorized_index,
+            None,
+        )
+        .expect("authorized index integrity");
+        let authorized_checkpoint_revision =
+            direct_checkpoint_revision_from_index(&repo, &authorized_index)
+                .expect("authorized checkpoint revision");
+
+        fs::write(&path, "accepted b\n").expect("concurrent accepted content");
+        let concurrent_repo = Repository::open(repo.path()).expect("concurrent repository handle");
+        stage_direct_paths(&concurrent_repo, &["file.txt".to_string()])
+            .expect("replace on-disk index");
+        drop(concurrent_repo);
+        fs::write(&path, "pending\n").expect("restore pending content");
+        assert_ne!(
+            direct_checkpoint_revision(&repo).expect("new checkpoint revision"),
+            authorized_checkpoint_revision
+        );
+
+        restore_direct_worktree_paths_with_verified_index(
+            &repo,
+            &project_path,
+            vec!["file.txt".to_string()],
+            &HashMap::from([("file.txt".to_string(), expected_revision)]),
+            None,
+            &authorized_index,
+        )
+        .expect("restore from the authorized index instance");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("restored file"),
+            "accepted a\n"
+        );
+        let disk_entry = repo
+            .index()
+            .expect("current index")
+            .get_path(Path::new("file.txt"), 0)
+            .expect("current index entry");
+        assert_eq!(
+            repo.find_blob(disk_entry.id)
+                .expect("current index blob")
+                .content(),
+            b"accepted b\n"
+        );
     }
 
     #[test]

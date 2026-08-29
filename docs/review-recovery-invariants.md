@@ -37,10 +37,10 @@ Ce document fixe les invariants du chantier de récupération Git et de restaura
 
 1. Valider `taskId`, `checkpointId`, l'identité du projet et les racines canoniques.
 2. Prendre le verrou du checkpoint et le verrou du projet direct.
-3. Ouvrir le dépôt sans le créer, puis vérifier `HEAD`, tous les commits atteignables, leurs arbres, les blobs et l'index.
+3. Ouvrir le dépôt sans le créer et sans réparer ses fichiers internes, puis charger une seule instance de l'index. Vérifier `HEAD`, tous les commits atteignables, leurs arbres, les blobs et cette instance de l'index.
 4. Résoudre l'identifiant opaque du snapshot dans le registre backend, puis valider son propriétaire, la révision actuelle de `HEAD` et de l'index, tous les chemins, les paires de blobs, les renommages, les limites et la carte complète des révisions attendues.
 5. Relire chaque entrée du worktree par capacité et comparer sa révision attendue.
-6. Préparer les temporaires et sauvegardes dans les parents déjà validés.
+6. Préparer les temporaires et sauvegardes dans les parents déjà validés, puis restaurer uniquement depuis l'instance de l'index dont la révision a été autorisée.
 7. Vérifier l'annulation, puis publier les mutations.
 8. En cas d'échec, restaurer seulement les entrées dont l'empreinte publiée correspond encore à celle de l'opération.
 
