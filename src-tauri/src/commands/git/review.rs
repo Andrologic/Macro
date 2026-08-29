@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::Component;
 
 const MAX_REVIEW_INLINE_BYTES: usize = 200 * 1024;
+const EXTERNAL_LINK_TARGET_PLACEHOLDER: &str = "[external link target]";
 
 #[derive(Clone)]
 struct ReviewFileSide {
@@ -57,6 +58,23 @@ fn blob_to_review_side(blob: &git2::Blob<'_>) -> ReviewFileSide {
         };
     }
     bytes_to_review_side(Some(blob.content().to_vec()))
+}
+
+fn git_blob_to_review_side(
+    blob: &git2::Blob<'_>,
+    relative_path: &Path,
+    is_symbolic_link: bool,
+) -> ReviewFileSide {
+    if !is_symbolic_link {
+        return blob_to_review_side(blob);
+    }
+    let Ok(target) = std::str::from_utf8(blob.content()) else {
+        return bytes_to_review_side(Some(EXTERNAL_LINK_TARGET_PLACEHOLDER.as_bytes().to_vec()));
+    };
+    if link_target_escapes_worktree(relative_path, Path::new(target)) {
+        return bytes_to_review_side(Some(EXTERNAL_LINK_TARGET_PLACEHOLDER.as_bytes().to_vec()));
+    }
+    blob_to_review_side(blob)
 }
 
 fn read_blob_header(repo: &Repository, oid: git2::Oid, operation: &str) -> Result<usize> {
@@ -121,7 +139,11 @@ fn read_head_file_side(repo: &Repository, relative_path: &Path) -> Result<Review
         return Ok(ReviewFileSide::absent());
     };
 
-    Ok(blob_to_review_side(blob))
+    Ok(git_blob_to_review_side(
+        blob,
+        relative_path,
+        entry.filemode() == 0o120000,
+    ))
 }
 
 fn read_index_file_side(repo: &Repository, relative_path: &Path) -> Result<ReviewFileSide> {
@@ -146,7 +168,11 @@ fn read_index_file_side(repo: &Repository, relative_path: &Path) -> Result<Revie
             Some("review_index_blob".to_string()),
         )
     })?;
-    Ok(blob_to_review_side(&blob))
+    Ok(git_blob_to_review_side(
+        &blob,
+        relative_path,
+        entry.mode & 0o170000 == 0o120000,
+    ))
 }
 
 struct InspectedWorktreeEntry {
@@ -284,7 +310,7 @@ fn read_worktree_file_side(
             })?;
         if link_target_escapes_worktree(relative_path, &target) {
             return Ok(bytes_to_review_side(Some(
-                b"[external link target]".to_vec(),
+                EXTERNAL_LINK_TARGET_PLACEHOLDER.as_bytes().to_vec(),
             )));
         }
         return Ok(bytes_to_review_side(Some(
@@ -1641,6 +1667,74 @@ mod tests {
             .join(".git")
             .join("outside-review-secret.txt")
             .exists());
+    }
+
+    #[test]
+    fn review_masks_external_link_targets_from_the_index_and_head() {
+        let (temp, repo) = init_review_repo();
+        let outside = temp.path().parent().expect("parent").join(format!(
+            "outside-review-index-head-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let relative = Path::new("accepted-link.txt");
+        let target = outside.to_string_lossy().as_bytes().to_vec();
+        let blob = repo.blob(&target).expect("external link blob");
+        let mut index = repo.index().expect("index");
+        index
+            .add(&git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o120000,
+                uid: 0,
+                gid: 0,
+                file_size: u32::try_from(target.len()).expect("link target size"),
+                id: blob,
+                flags: 0,
+                flags_extended: 0,
+                path: b"accepted-link.txt".to_vec(),
+            })
+            .expect("stage external link");
+        index.write().expect("persist staged link");
+
+        let staged = build_git_review_file(&repo, temp.path(), relative, "added")
+            .expect("review staged link");
+        assert_eq!(
+            staged.index_content,
+            super::EXTERNAL_LINK_TARGET_PLACEHOLDER
+        );
+        assert!(!staged
+            .index_content
+            .contains(&outside.to_string_lossy().to_string()));
+
+        let tree_id = index.write_tree().expect("write accepted link tree");
+        let tree = repo.find_tree(tree_id).expect("accepted link tree");
+        let parent = repo.head().expect("head").peel_to_commit().expect("commit");
+        let signature = Signature::now("Macro", "macro@example.com").expect("signature");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "accept external link",
+            &tree,
+            &[&parent],
+        )
+        .expect("commit external link");
+
+        let accepted = build_git_review_file(&repo, temp.path(), relative, "modified")
+            .expect("review accepted link");
+        assert_eq!(
+            accepted.head_content,
+            super::EXTERNAL_LINK_TARGET_PLACEHOLDER
+        );
+        assert_eq!(
+            accepted.index_content,
+            super::EXTERNAL_LINK_TARGET_PLACEHOLDER
+        );
+        assert!(!accepted
+            .head_content
+            .contains(&outside.to_string_lossy().to_string()));
     }
 
     #[test]
