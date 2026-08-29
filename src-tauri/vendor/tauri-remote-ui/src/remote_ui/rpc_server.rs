@@ -103,6 +103,17 @@ impl RemoteUiExt for AppHandle {
 type WindowLabel = String;
 
 const VERSION_PREFIX: &str = "version:";
+const SESSION_REPLACED_CLOSE_CODE: u16 = 4009;
+const SESSION_REPLACED_CLOSE_REASON: &str = "session_replaced";
+
+fn session_replaced_close_message() -> Message {
+    Message::Close(Some(
+        hyper_tungstenite::tungstenite::protocol::CloseFrame {
+            code: SESSION_REPLACED_CLOSE_CODE.into(),
+            reason: SESSION_REPLACED_CLOSE_REASON.into(),
+        },
+    ))
+}
 
 /// WebSocket sink handle for a single connection (sending side).
 pub(crate) type WsSink = Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>;
@@ -615,7 +626,13 @@ fn websocket_credentials_match(
 
 #[cfg(test)]
 mod tests {
-    use super::{confined_asset_path, websocket_credentials_match};
+    use super::{
+        confined_asset_path, session_replaced_close_message, websocket_credentials_match,
+        SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_CLOSE_REASON,
+    };
+    use hyper_tungstenite::tungstenite::{accept, client, Message};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -664,6 +681,48 @@ mod tests {
 
         std::fs::remove_dir_all(&root).expect("temporary asset root must be removed");
     }
+
+    #[test]
+    fn second_real_client_receives_ownership_without_reconnect_eviction_loop() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test websocket server");
+        let address = listener.local_addr().expect("read test websocket address");
+        let server = thread::spawn(move || {
+            let (first_stream, _) = listener.accept().expect("accept first client");
+            let mut first = accept(first_stream).expect("upgrade first client");
+            let (second_stream, _) = listener.accept().expect("accept second client");
+            let mut second = accept(second_stream).expect("upgrade second client");
+
+            first
+                .send(session_replaced_close_message())
+                .expect("close replaced client");
+            second
+                .send(Message::Text("session_owner".into()))
+                .expect("confirm new owner");
+        });
+
+        let url = format!("ws://{address}/remote_ui_ws");
+        let (mut first, _) = client(
+            url.as_str(),
+            TcpStream::connect(address).expect("connect first client"),
+        )
+        .expect("handshake first client");
+        let (mut second, _) = client(
+            url.as_str(),
+            TcpStream::connect(address).expect("connect second client"),
+        )
+        .expect("handshake second client");
+
+        let Message::Close(Some(close)) = first.read().expect("read terminal close") else {
+            panic!("first client must receive a close frame");
+        };
+        assert_eq!(u16::from(close.code), SESSION_REPLACED_CLOSE_CODE);
+        assert_eq!(close.reason, SESSION_REPLACED_CLOSE_REASON);
+        assert_eq!(
+            second.read().expect("read ownership confirmation"),
+            Message::Text("session_owner".into())
+        );
+        server.join().expect("join test websocket server");
+    }
 }
 
 /// Handle a WebSocket connection for remote UI RPC.
@@ -678,7 +737,8 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
             let (tx, mut rx) = ws_stream.split();
             let ws_sender = Arc::new(Mutex::new(tx));
             let primary_label;
-            // Replace any existing handle for the primary window with this new one.
+            // Transfer primary-session ownership to the newest browser client. The
+            // terminal close code tells the previous client not to reconnect.
             {
                 let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>();
                 let mut remote_ui_mut = remote_ui.write().await;
@@ -686,7 +746,12 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                 if let Some(existing_handle) =
                     remote_ui_mut.rpc_server.get_ws_handle(&primary_label)
                 {
-                    if let Err(err) = existing_handle.lock().await.close().await {
+                    if let Err(err) = existing_handle
+                        .lock()
+                        .await
+                        .send(session_replaced_close_message())
+                        .await
+                    {
                         log::warn!("Failed to close existing socket connection: {err}");
                     }
                 }
