@@ -2,6 +2,10 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import {
+  installTauriRuntimeMock,
+  removeTauriRuntimeMock,
+} from '../../test-utils/tauriRuntime';
 
 let availableStartPoints = {
   worktrees: [] as Array<{ name: string; path: string; branchName: string; isDirty: boolean }>,
@@ -9,7 +13,10 @@ let availableStartPoints = {
 };
 let currentStatus = {
   branch: 'develop',
-  head_commit: { hash: '0123456789abcdef' },
+  head_commit: {
+    id: '0123456789abcdef0123456789abcdef01234567',
+    hash: '0123456',
+  },
   is_clean: true,
 };
 
@@ -21,13 +28,8 @@ mock.module('react-i18next', () => ({
 
 mock.module('../ui/Dialog', () => ({
   Dialog: ({ children, panelClassName }: { children: React.ReactNode; panelClassName?: string }) => (
-    <div data-panel-class={panelClassName}>{children}</div>
+    <div role="dialog" data-panel-class={panelClassName}>{children}</div>
   ),
-}));
-
-mock.module('../../services/tauriIpc', () => ({
-  gitTaskStartPoints: async () => availableStartPoints,
-  gitStatus: async () => currentStatus,
 }));
 
 import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
@@ -65,11 +67,19 @@ describe('CreateImplementTaskDialog task type help', () => {
     availableStartPoints = { worktrees: [], branches: [] };
     currentStatus = {
       branch: 'develop',
-      head_commit: { hash: '0123456789abcdef' },
+      head_commit: {
+        id: '0123456789abcdef0123456789abcdef01234567',
+        hash: '0123456',
+      },
       is_clean: true,
     };
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 600 });
+    installTauriRuntimeMock(mock(async (command) => {
+      if (command === 'git_task_start_points') return availableStartPoints;
+      if (command === 'git_status') return currentStatus;
+      return undefined;
+    }));
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -78,6 +88,7 @@ describe('CreateImplementTaskDialog task type help', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    removeTauriRuntimeMock();
   });
 
   it('describes every available task type for pointer and keyboard users', async () => {
@@ -250,7 +261,7 @@ describe('CreateImplementTaskDialog task type help', () => {
       startPoint: {
         kind: 'direct',
         branchName: 'develop',
-        baseCommitHash: '0123456789abcdef',
+        baseCommitHash: '0123456789abcdef0123456789abcdef01234567',
       },
     });
   });
@@ -294,6 +305,40 @@ describe('CreateImplementTaskDialog task type help', () => {
         baseCommitHash: null,
       },
     });
+  });
+
+  it('clears the automatic Direct choice when switching back to a Git project', async () => {
+    const noGitProject: TaskProjectFilterOption = {
+      ...project('folder', 'Folder project', 'develop', 'main'),
+      directEdit: true,
+      gitSetupState: 'not_git',
+    };
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[
+            noGitProject,
+            project('develop', 'Develop project', 'develop', 'main'),
+          ]}
+          initialProjectId="folder"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('Task type');
+    const gitProjectButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Develop project'),
+    );
+    await act(async () => gitProjectButton?.click());
+
+    expect(container.textContent).toContain('Task type');
+    expect(container.textContent).toContain('New work');
+    expect(container.textContent).toContain('Resume work');
+    expect(container.querySelector('[data-task-kind-available][aria-pressed="true"]')).toBeNull();
   });
 
   it('recomputes task type availability from the selected project workflow', async () => {

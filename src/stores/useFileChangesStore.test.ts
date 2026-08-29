@@ -56,7 +56,8 @@ let stagedFiles: Record<string, Record<string, string | null>> = {};
 let pathsWithEmptyGitDiff = new Set<string>();
 let directProjectMode = false;
 let directGitBranch = 'develop';
-let directGitHeadHash = 'base-direct-hash';
+let directGitHeadId = 'base-direct-full-hash';
+let directGitHeadHash = 'base-dir';
 let taskStatuses: Record<string, 'Pending' | 'InReview' | 'InProgress' | 'Completed'> = {
   'task-1': 'InProgress',
   'task-2': 'InProgress',
@@ -199,7 +200,7 @@ const buildGitStatus = (repoPath: string) => {
 
   return {
     branch: directGitBranch,
-    head_commit: { hash: directGitHeadHash },
+    head_commit: { id: directGitHeadId, hash: directGitHeadHash },
     staged_files: staged,
     unstaged_files: unstaged,
     untracked_files: untracked,
@@ -371,7 +372,8 @@ const commitRepository = async ({ repoPath }: { repoPath: string }) => {
       initialOriginalFiles[repoPath]['src/main.ts'] = nextContent;
     }
     currentFiles[repoPath] = {};
-    directGitHeadHash = 'direct-commit-hash';
+    directGitHeadId = 'direct-commit-full-hash';
+    directGitHeadHash = 'direct-c';
   }
   stagedFiles[repoPath] = {};
   return repoPath === repoAPath
@@ -536,7 +538,7 @@ const tasksById = {
         targetBranchName: 'develop',
         executionMode: 'git' as const,
         executionKind: 'repository_root' as const,
-        baseCommitHash: 'base-direct-hash',
+        baseCommitHash: 'base-direct-full-hash',
         worktreeKey: directGitWorktreeKey,
       },
     ],
@@ -644,7 +646,8 @@ describe('useFileChangesStore', () => {
     pathsWithEmptyGitDiff = new Set();
     directProjectMode = false;
     directGitBranch = 'develop';
-    directGitHeadHash = 'base-direct-hash';
+    directGitHeadId = 'base-direct-full-hash';
+    directGitHeadHash = 'base-dir';
     initialOriginalFiles[repoAPath]['src/main.ts'] = 'const value = 1;';
     appStoreState.selectedGroupId = 'group-1';
     appStoreState.selectedProjectId = null;

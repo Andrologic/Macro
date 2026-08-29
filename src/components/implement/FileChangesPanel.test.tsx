@@ -1788,6 +1788,56 @@ describe('FileChangesPanel', () => {
     expect(commitAllReadyTaskRepositoriesMock).not.toHaveBeenCalled();
   });
 
+  it('finishes a Direct Git task without creating a merge review runtime', async () => {
+    const repository: ReviewRepositoryState = {
+      ...buildRepository(true),
+      id: 'project-1::repository-root',
+      executionMode: 'git',
+      executionKind: 'repository_root',
+      changes: [],
+      selectedChangeId: null,
+      stats: {
+        pendingVisibleFileCount: 0,
+        validatedStagedFileCount: 0,
+        additions: 0,
+        deletions: 0,
+      },
+      stagedPaths: [],
+      commitState: 'committed',
+    };
+    const loadMergeWorkflowReviewMock = mock(async () => null);
+    seedStores(repository, {
+      taskOverrides: {
+        task_kind: 'direct',
+        execution_targets: [{
+          projectId: 'project-1',
+          branchName: 'develop',
+          targetBranchName: 'develop',
+          executionMode: 'git',
+          executionKind: 'repository_root',
+          worktreeKey: 'repository-root',
+        }],
+      },
+      taskStoreOverrides: {
+        loadMergeWorkflowReview: loadMergeWorkflowReviewMock,
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    const finishButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Finish task');
+    await act(async () => {
+      finishButton?.click();
+      await flushRender();
+    });
+
+    expect(loadMergeWorkflowReviewMock).not.toHaveBeenCalled();
+    expect(finishTaskMock).toHaveBeenCalledWith('task-1');
+  });
+
   it('protects Finish task from double clicks while the merge is in flight', async () => {
     const repository: ReviewRepositoryState = {
       ...buildRepository(true),

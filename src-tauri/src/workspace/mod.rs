@@ -1,6 +1,7 @@
 pub mod architect;
 pub mod metadata;
 
+use crate::commands::git::build_wsl_git_status;
 use crate::core::error::{BackendError, Result};
 use crate::core::process::{background_command, background_tokio_command};
 use crate::db::models::GitWorktreeRecord;
@@ -1971,6 +1972,36 @@ pub async fn get_metadata(
     })
 }
 
+fn is_active_direct_feature_for_projects(
+    feature: &ManualFeatureDto,
+    selected_project_ids: &[String],
+    direct_edit_project_ids: &HashSet<String>,
+) -> bool {
+    let targets_repository_root = feature.execution_targets.iter().any(|target| {
+        target.execution_mode.as_deref() == Some("direct")
+            || target.execution_kind.as_deref() == Some("repository_root")
+    });
+    let is_direct_task = feature.task_kind.as_deref() == Some("direct")
+        || targets_repository_root
+        || feature
+            .project_ids
+            .iter()
+            .any(|project_id| direct_edit_project_ids.contains(project_id));
+    let overlaps_selected_projects = feature
+        .project_ids
+        .iter()
+        .any(|project_id| selected_project_ids.contains(project_id))
+        || feature
+            .execution_targets
+            .iter()
+            .any(|target| selected_project_ids.contains(&target.project_id));
+
+    feature.archived_at.is_none()
+        && feature.status != "Completed"
+        && is_direct_task
+        && overlaps_selected_projects
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create_manual_feature_draft(
     workspace_path: &Path,
@@ -2030,32 +2061,28 @@ pub async fn create_manual_feature_draft(
         &state.project_groups,
     )?;
 
-    let direct_root_project_ids = normalized_project_ids
+    let direct_edit_project_ids = normalized_project_ids
         .iter()
         .filter(|project_id| {
             find_project_by_id_in_state(&state, project_id)
                 .map(|project| {
-                    normalized_task_kind == "direct"
-                        || (project.direct_edit
-                            && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT)
+                    project.direct_edit && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT
                 })
                 .unwrap_or(false)
         })
         .cloned()
         .collect::<HashSet<_>>();
-    let conflicting_feature = state.manual_features.iter().find(|feature| {
-        feature.archived_at.is_none()
-            && feature.status != "Completed"
-            && (feature
-                .project_ids
-                .iter()
-                .any(|project_id| direct_root_project_ids.contains(project_id))
-                || feature.execution_targets.iter().any(|target| {
-                    (target.execution_mode.as_deref() == Some("direct")
-                        || target.execution_kind.as_deref() == Some("repository_root"))
-                        && normalized_project_ids.contains(&target.project_id)
-                }))
-    });
+    let conflicting_feature = (normalized_task_kind == "direct")
+        .then(|| {
+            state.manual_features.iter().find(|feature| {
+                is_active_direct_feature_for_projects(
+                    feature,
+                    &normalized_project_ids,
+                    &direct_edit_project_ids,
+                )
+            })
+        })
+        .flatten();
     if let Some(feature) = conflicting_feature {
         return Err(BackendError::Validation(format!(
             "Direct-edit project already has an active task: {}",
@@ -2067,6 +2094,14 @@ pub async fn create_manual_feature_draft(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let execution_targets = if normalized_task_kind == "direct" {
+        validate_wsl_direct_git_snapshot(
+            &normalized_project_ids,
+            existing_branch_name,
+            base_commit_hash,
+            &state.standalone_projects,
+            &state.project_groups,
+        )
+        .await?;
         build_direct_task_execution_targets(
             workspace_path,
             normalized_task_id,
@@ -2179,6 +2214,7 @@ pub async fn finalize_manual_feature(
     let normalized_description = description.trim();
     let normalized_feature_slug = slugify(feature_slug);
     let normalized_task_kind = normalize_manual_task_kind(task_kind)?;
+    let reserves_feature_slug = normalized_task_kind != "direct";
     let feature_project_ids = state.manual_features[feature_index].project_ids.clone();
     validate_manual_task_kind_for_projects(
         normalized_task_kind,
@@ -2195,8 +2231,8 @@ pub async fn finalize_manual_feature(
         ));
     }
 
-    let slug_used_by_other_feature =
-        state
+    let slug_used_by_other_feature = reserves_feature_slug
+        && state
             .manual_features
             .iter()
             .enumerate()
@@ -2215,10 +2251,11 @@ pub async fn finalize_manual_feature(
         )));
     }
 
-    let slug_reserved_elsewhere = state.reserved_standalone_feature_slugs.iter().any(|value| {
-        value == &normalized_feature_slug
-            && existing_feature_slug.as_deref() != Some(normalized_feature_slug.as_str())
-    });
+    let slug_reserved_elsewhere = reserves_feature_slug
+        && state.reserved_standalone_feature_slugs.iter().any(|value| {
+            value == &normalized_feature_slug
+                && existing_feature_slug.as_deref() != Some(normalized_feature_slug.as_str())
+        });
     if slug_reserved_elsewhere {
         return Err(BackendError::Validation(format!(
             "Standalone feature slug \"{}\" is already reserved.",
@@ -2277,10 +2314,11 @@ pub async fn finalize_manual_feature(
     feature.execution_targets = execution_targets;
     feature.merge_workflow = None;
     feature.updated_at = Utc::now().to_rfc3339();
-    if !state
-        .reserved_standalone_feature_slugs
-        .iter()
-        .any(|value| value == &normalized_feature_slug)
+    if reserves_feature_slug
+        && !state
+            .reserved_standalone_feature_slugs
+            .iter()
+            .any(|value| value == &normalized_feature_slug)
     {
         state
             .reserved_standalone_feature_slugs
@@ -4588,6 +4626,60 @@ fn to_repository_root_worktree_key(task_id: &str, project_id: &str) -> String {
     )
 }
 
+async fn validate_wsl_direct_git_snapshot(
+    project_ids: &[String],
+    existing_branch_name: Option<&str>,
+    base_commit_hash: Option<&str>,
+    standalone_projects: &[ProjectDto],
+    project_groups: &[ProjectGroupDto],
+) -> Result<()> {
+    let requested_branch = existing_branch_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let requested_base_commit = base_commit_hash
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    for project_id in project_ids {
+        let Some(project) = standalone_projects
+            .iter()
+            .find(|project| project.id == *project_id)
+            .or_else(|| find_project_by_id(project_groups, project_id))
+        else {
+            continue;
+        };
+        if project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT {
+            continue;
+        }
+        let Some(wsl_path) = parse_wsl_unc_path(&project.path) else {
+            continue;
+        };
+        let status = build_wsl_git_status(&wsl_path).await?;
+        if !status.is_clean {
+            return Err(BackendError::Validation(format!(
+                "Project {} must have a clean working tree before creating a direct task.",
+                project.name
+            )));
+        }
+        let current_commit = status.head_commit.as_ref().ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Project {} must have a current commit before creating a direct task.",
+                project.name
+            ))
+        })?;
+        if Some(status.branch.as_str()) != requested_branch
+            || Some(current_commit.id.as_str()) != requested_base_commit
+        {
+            return Err(BackendError::Validation(format!(
+                "Project {} changed branch or commit while the direct task was being created. Refresh and try again.",
+                project.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn build_direct_task_execution_targets(
     workspace_path: &Path,
     task_id: &str,
@@ -6797,6 +6889,9 @@ fn sanitize_workspace_state(
         .filter(|value| !value.is_empty())
         .collect::<HashSet<_>>();
     for feature in &state.manual_features {
+        if feature.task_kind.as_deref() == Some("direct") {
+            continue;
+        }
         if let Some(feature_slug) = feature.feature_slug.as_ref() {
             let normalized = slugify(feature_slug);
             if !normalized.is_empty() {
@@ -7030,7 +7125,7 @@ fn sanitize_manual_features(
             .task_kind
             .as_ref()
             .map(|value| value.trim().to_lowercase())
-            .filter(|value| matches!(value.as_str(), "feature" | "bugfix" | "hotfix"));
+            .filter(|value| matches!(value.as_str(), "direct" | "feature" | "bugfix" | "hotfix"));
 
         sanitized_features.push(ManualFeatureDto {
             project_ids: fallback_project_ids,
@@ -10422,7 +10517,13 @@ mod tests {
         assert_eq!(direct_target.execution_mode.as_deref(), Some("direct"));
         assert!(direct_target.checkpoint_id.is_some());
 
-        init_git_repo(&project_path, "develop", &["main"]);
+        let repo = init_git_repo(&project_path, "develop", &["main"]);
+        let head = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("current commit")
+            .id()
+            .to_string();
         let mut state = load_or_create_state(temp.path(), &metadata_root)
             .await
             .expect("load direct project state");
@@ -10449,12 +10550,12 @@ mod tests {
             "direct-conv-2",
             &["project-direct".to_string()],
             &[],
-            None,
+            Some("develop"),
             Some("Second direct task"),
             None,
-            "feature",
-            None,
-            None,
+            "direct",
+            Some("develop"),
+            Some(&head),
         )
         .await
         .expect_err("second direct task should be rejected");
@@ -10465,6 +10566,154 @@ mod tests {
             ),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn direct_tasks_do_not_reserve_standalone_feature_slugs() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let first_project_path = temp.path().join("first-direct-project");
+        let second_project_path = temp.path().join("second-direct-project");
+        stdfs::create_dir_all(&first_project_path).expect("create first direct project");
+        stdfs::create_dir_all(&second_project_path).expect("create second direct project");
+
+        let mut first_project = make_project(
+            "project-direct-first",
+            first_project_path.to_string_lossy().as_ref(),
+        );
+        first_project.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
+        first_project.direct_edit = true;
+        first_project.is_read_only = false;
+        let mut second_project = make_project(
+            "project-direct-second",
+            second_project_path.to_string_lossy().as_ref(),
+        );
+        second_project.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
+        second_project.direct_edit = true;
+        second_project.is_read_only = false;
+
+        persist_sanitized_state(
+            temp.path(),
+            &metadata_root,
+            WorkspaceState {
+                standalone_projects: vec![first_project, second_project],
+                project_registry_explicitly_empty: false,
+                ..WorkspaceState::default()
+            },
+            "seed_direct_projects",
+        )
+        .await
+        .expect("seed direct projects");
+
+        for (task_id, conversation_id, project_id) in [
+            (
+                "direct-task-first",
+                "direct-conv-first",
+                "project-direct-first",
+            ),
+            (
+                "direct-task-second",
+                "direct-conv-second",
+                "project-direct-second",
+            ),
+        ] {
+            create_manual_feature_draft(
+                temp.path(),
+                &metadata_root,
+                task_id,
+                conversation_id,
+                &[project_id.to_string()],
+                &[],
+                None,
+                Some("Repeated direct task"),
+                None,
+                "direct",
+                None,
+                None,
+            )
+            .await
+            .expect("create direct task");
+            finalize_manual_feature(
+                temp.path(),
+                &metadata_root,
+                task_id,
+                Some(conversation_id),
+                "Repeated direct task",
+                "Apply the same kind of direct change.",
+                "repeated-direct-task",
+                "direct",
+            )
+            .await
+            .expect("finalize direct task with a reused slug");
+        }
+
+        let state = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .expect("load workspace state");
+        assert_eq!(
+            state
+                .manual_features
+                .iter()
+                .filter(|feature| feature.feature_slug.as_deref() == Some("repeated-direct-task"))
+                .count(),
+            2
+        );
+        assert!(state
+            .manual_features
+            .iter()
+            .all(|feature| feature.task_kind.as_deref() == Some("direct")));
+        assert!(!state
+            .reserved_standalone_feature_slugs
+            .iter()
+            .any(|slug| slug == "repeated-direct-task"));
+    }
+
+    #[tokio::test]
+    async fn worktree_task_does_not_count_as_an_active_direct_task() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("git-project");
+        init_git_repo(&project_path, "develop", &["main"]);
+        let mut project = make_project("project-git", project_path.to_string_lossy().as_ref());
+        project.git_setup_state = PROJECT_GIT_SETUP_READY.to_string();
+        project.direct_edit = false;
+        project.is_read_only = false;
+
+        persist_sanitized_state(
+            temp.path(),
+            &metadata_root,
+            WorkspaceState {
+                standalone_projects: vec![project],
+                project_registry_explicitly_empty: false,
+                ..WorkspaceState::default()
+            },
+            "seed_git_project",
+        )
+        .await
+        .expect("seed Git project");
+
+        let feature = create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "feature-task",
+            "feature-conversation",
+            &["project-git".to_string()],
+            &[],
+            Some("develop"),
+            Some("Feature in progress"),
+            None,
+            "feature",
+            Some("feature/in-progress"),
+            None,
+        )
+        .await
+        .expect("create worktree task");
+
+        assert!(!is_active_direct_feature_for_projects(
+            &feature,
+            &["project-git".to_string()],
+            &HashSet::new(),
+        ));
     }
 
     #[test]

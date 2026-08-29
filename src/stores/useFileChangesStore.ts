@@ -222,12 +222,19 @@ interface FileChangesTaskLike {
 
 interface FileChangesGitStatus {
   branch: string;
-  head_commit?: { hash: string } | null;
+  head_commit?: { id?: string; hash: string } | null;
   staged_files: Array<{ path: string; status: string }>;
   unstaged_files: Array<{ path: string; status: string }>;
   untracked_files: Array<{ path: string; status: string }>;
   is_clean: boolean;
 }
+
+const hasHeadMovedFromBase = (
+  headCommit: FileChangesGitStatus['head_commit'],
+  baseCommitHash: string,
+): boolean => Boolean(
+  headCommit && headCommit.id !== baseCommitHash && headCommit.hash !== baseCommitHash
+);
 
 type FileChangesTauriDeps = Pick<
   typeof tauriIpc,
@@ -1039,9 +1046,7 @@ const loadRepositoryState = async (params: {
         snapshot.isClean
       ) {
         const status = await deps.tauri.gitStatus(worktreePath);
-        hasCommittedSnapshot = Boolean(
-          status.head_commit?.hash && status.head_commit.hash !== target.baseCommitHash,
-        );
+        hasCommittedSnapshot = hasHeadMovedFromBase(status.head_commit, target.baseCommitHash);
       }
       if (
         executionMode === 'git' &&
@@ -1150,9 +1155,7 @@ const loadRepositoryState = async (params: {
     stagedPaths.length === 0 &&
     status.is_clean
   ) {
-    hasCommittedSnapshot = Boolean(
-      status.head_commit?.hash && status.head_commit.hash !== target.baseCommitHash,
-    );
+    hasCommittedSnapshot = hasHeadMovedFromBase(status.head_commit, target.baseCommitHash);
   }
   if (
     !hasCommittedSnapshot &&

@@ -2091,12 +2091,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         <React.Suspense fallback={null}>
           <CreateImplementTaskDialog
             projects={projectFilterOptions}
-            initialProjectId={
-              projectFilter !== ALL_PROJECTS_FILTER &&
-              editableProjectOptions.some((project) => project.id === projectFilter)
-                ? projectFilter
-                : null
-            }
+            initialProjectId={null}
             isCreating={Boolean(pendingTaskId)}
             onClose={() => {
               if (!pendingTaskId) setShowCreateTaskDialog(false);

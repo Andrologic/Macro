@@ -161,6 +161,17 @@ const flushRender = async () => {
   await Promise.resolve();
 };
 
+const waitForCreateDialog = async () => {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    if (dialog) return dialog;
+    await act(async () => {
+      await flushRender();
+    });
+  }
+  return null;
+};
+
 const makeGitFlowSettings = (
   baseBranch: string,
   mainBranch: string,
@@ -889,6 +900,17 @@ describe('TaskQueue', () => {
       await flushRender();
     });
     expect(document.activeElement).toBe(projectFilter);
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>(
+        '[data-tour-id="implement-create-task"]'
+      )?.click();
+      await flushRender();
+    });
+    const createDialog = await waitForCreateDialog();
+    expect(createDialog).not.toBeNull();
+    expect(createDialog?.textContent ?? '').not.toContain('Task type');
+    expect(createDialog?.textContent ?? '').not.toContain('Starting point');
   });
 
   it('requires an explicit project when creating from the all-projects view', async () => {
@@ -943,7 +965,7 @@ describe('TaskQueue', () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
-    const dialog = document.body.querySelector('[role="dialog"]');
+    const dialog = await waitForCreateDialog();
     const confirmButton = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') || []
     ).find((button) => button.textContent?.includes('Create task'));
@@ -1045,7 +1067,7 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    const dialog = document.body.querySelector('[role="dialog"]');
+    const dialog = await waitForCreateDialog();
     const findDialogButton = (text: string) => Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []
     ).find((button) => button.textContent?.includes(text));
@@ -1055,8 +1077,8 @@ describe('TaskQueue', () => {
     });
 
     const confirmButton = findDialogButton('Create task');
-    expect(dialog?.textContent).not.toContain('Task type');
-    expect(dialog?.textContent).not.toContain('Starting point');
+    expect(dialog?.textContent ?? '').not.toContain('Task type');
+    expect(dialog?.textContent ?? '').not.toContain('Starting point');
     expect(confirmButton?.disabled).toBe(false);
 
     await act(async () => {
@@ -1139,7 +1161,7 @@ describe('TaskQueue', () => {
       await flushRender();
     });
 
-    const dialog = document.body.querySelector('[role="dialog"]');
+    const dialog = await waitForCreateDialog();
     const findDialogButton = (text: string) => Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []
     ).find((button) => button.textContent?.includes(text));

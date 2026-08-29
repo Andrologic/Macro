@@ -379,7 +379,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           setWorktrees(startPoints.worktrees);
           setBranches(startPoints.branches);
           setCurrentBranch(status.branch && status.branch !== 'DETACHED' ? status.branch : null);
-          setCurrentHeadCommitHash(status.head_commit?.hash || null);
+          setCurrentHeadCommitHash(status.head_commit?.id || null);
           setIsCurrentRepositoryClean(status.is_clean);
         }
       })
@@ -452,7 +452,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                 key={project.id}
                 type="button"
                 aria-pressed={selectedProjectId === project.id}
-                onClick={() => setSelectedProjectId(project.id)}
+                onClick={() => {
+                  if (project.id !== selectedProjectId) {
+                    setSelectedTaskKind(null);
+                  }
+                  setSelectedProjectId(project.id);
+                }}
                 className={cn(
                   'flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors',
                   selectedProjectId === project.id
