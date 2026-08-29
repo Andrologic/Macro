@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
+import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { installReactI18nextMock } from '../../test-utils/reactI18nextMock';
 
@@ -141,6 +142,7 @@ let macroBranchCommitIfDirtyMock: ReturnType<typeof mock>;
 let setMetadataMissingUpstreamPolicyMock: ReturnType<typeof mock>;
 let importCounter = 0;
 let originalConsoleError: typeof console.error;
+let footerContentRenderProbe: ReturnType<typeof mock>;
 
 const GROUP_ONE_PROJECTS: Project[] = [
   { id: 'project-a', name: 'API', path: '/repo/api', gitSetupState: 'ready', directEdit: false },
@@ -448,7 +450,10 @@ const loadFooter = async () => {
   }));
 
   mock.module('./NotificationCenterPopover', () => ({
-    NotificationCenterPopover: () => null,
+    NotificationCenterPopover: () => {
+      footerContentRenderProbe();
+      return null;
+    },
   }));
 
   mock.module('../updates/UpdateStatusButton', () => ({
@@ -464,6 +469,7 @@ describe('Footer', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    footerContentRenderProbe = mock(() => undefined);
     originalConsoleError = console.error;
     console.error = (...args: unknown[]) => {
       const firstArg = typeof args[0] === 'string' ? args[0] : '';
@@ -665,6 +671,39 @@ describe('Footer', () => {
     await flushAsyncWork();
 
     expect(gitFetchMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
+  });
+
+  it('defers the Git footer update until after a project selection paints', async () => {
+    appState.mode = 'Architect';
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    appState.selectedProjectId = 'project-a';
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await waitForText(container, 'main-a');
+    gitStatusMock.mockClear();
+    footerContentRenderProbe.mockClear();
+
+    appState.selectedProjectId = 'project-b';
+    flushSync(() => root?.render(<Footer />));
+
+    expect(container.textContent ?? '').toContain('API');
+    expect(container.textContent ?? '').not.toContain('Web');
+    expect(gitStatusMock).not.toHaveBeenCalledWith('/repo/web');
+    expect(footerContentRenderProbe).toHaveBeenCalledTimes(0);
+
+    await waitForText(container, 'feature-b');
+
+    expect(container.textContent ?? '').toContain('Web');
+    expect(container.textContent ?? '').not.toContain('API');
+    expect(footerContentRenderProbe.mock.calls.length).toBeGreaterThan(0);
+    expect(
+      gitStatusMock.mock.calls.filter(([repoPath]) => repoPath === '/repo/web')
+    ).toHaveLength(2);
   });
 
   it('disables Git actions and executes no fallback command without an active Chat project', async () => {

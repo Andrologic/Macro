@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { open } from '../../services/tauriDialog';
@@ -41,6 +41,24 @@ type CodeDivergencePreflightStatus =
   | 'failed';
 type MacroConflictContext = FooterSyncAction | 'refresh';
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+type AppStoreState = ReturnType<typeof useAppStore.getState>;
+type TaskStoreState = ReturnType<typeof useTaskStore.getState>;
+type ChatStoreState = ReturnType<typeof useChatStore.getState>;
+
+interface FooterContextSnapshot {
+  mode: AppStoreState['mode'];
+  selectedProjectId: AppStoreState['selectedProjectId'];
+  standaloneProjects: AppStoreState['standaloneProjects'];
+  projectGroups: AppStoreState['projectGroups'];
+  selectedTaskId: AppStoreState['selectedTaskId'];
+  activeArchitectPlanId: AppStoreState['activeArchitectPlanId'];
+  activePlanContext: AppStoreState['activePlanContext'];
+  visibleArchitectPlans: AppStoreState['visibleArchitectPlans'];
+  planNodes: AppStoreState['planNodes'];
+  tasks: TaskStoreState['tasks'];
+  conversations: ChatStoreState['conversations'];
+  selectedConversationId: ChatStoreState['selectedConversationId'];
+}
 
 interface ScopedProject {
   id: string;
@@ -695,7 +713,9 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
   );
 };
 
-export const Footer: React.FC = () => {
+const FooterContent: React.FC<{ contextSnapshot: FooterContextSnapshot }> = React.memo(({
+  contextSnapshot,
+}) => {
   const { t } = useTranslation();
   const translate = useCallback<TranslateFn>(
     (key, fallback, options) => String(t(key, { defaultValue: fallback, ...(options || {}) })),
@@ -712,25 +732,16 @@ export const Footer: React.FC = () => {
     activePlanContext,
     visibleArchitectPlans,
     planNodes,
+    tasks,
+    conversations,
+    selectedConversationId,
+  } = contextSnapshot;
+  const {
     metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy,
   } = useAppStore(useShallow((state) => ({
-    mode: state.mode,
-    selectedProjectId: state.selectedProjectId,
-    standaloneProjects: state.standaloneProjects ?? [],
-    projectGroups: state.projectGroups,
-    selectedTaskId: state.selectedTaskId,
-    activeArchitectPlanId: state.activeArchitectPlanId,
-    activePlanContext: state.activePlanContext,
-    visibleArchitectPlans: state.visibleArchitectPlans,
-    planNodes: state.planNodes,
     metadataMissingUpstreamPolicy: state.metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy: state.setMetadataMissingUpstreamPolicy,
-  })));
-  const tasks = useTaskStore((state) => state.tasks);
-  const { conversations, selectedConversationId } = useChatStore(useShallow((state) => ({
-    conversations: state.conversations,
-    selectedConversationId: state.selectedConversationId,
   })));
   const notificationItems = useNotificationCenterStore((state) => state.items);
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
@@ -2383,4 +2394,33 @@ export const Footer: React.FC = () => {
       />
     </>
   );
+});
+
+FooterContent.displayName = 'FooterContent';
+
+export const Footer: React.FC = () => {
+  const appContext = useAppStore(useShallow((state) => ({
+    mode: state.mode,
+    selectedProjectId: state.selectedProjectId,
+    standaloneProjects: state.standaloneProjects ?? [],
+    projectGroups: state.projectGroups,
+    selectedTaskId: state.selectedTaskId,
+    activeArchitectPlanId: state.activeArchitectPlanId,
+    activePlanContext: state.activePlanContext,
+    visibleArchitectPlans: state.visibleArchitectPlans,
+    planNodes: state.planNodes,
+  })));
+  const tasks = useTaskStore((state) => state.tasks);
+  const chatContext = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    selectedConversationId: state.selectedConversationId,
+  })));
+  const currentContextSnapshot = useMemo<FooterContextSnapshot>(() => ({
+    ...appContext,
+    tasks,
+    ...chatContext,
+  }), [appContext, chatContext, tasks]);
+  const deferredContextSnapshot = useDeferredValue(currentContextSnapshot);
+
+  return <FooterContent contextSnapshot={deferredContextSnapshot} />;
 };
