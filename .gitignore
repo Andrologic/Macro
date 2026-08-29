@@ -73,3 +73,6 @@ dev/ai-keys.local.json
 /design-qa.md
 /design-qa-artifacts/
 /docs/design-qa/
+
+# Generated installer language smoke-test installations
+/tmp/installer-language-smoke-*/
