@@ -6680,7 +6680,7 @@ fn sanitize_workspace_state(
     let initial_manual_feature_count = state.manual_features.len();
     let (sanitized_manual_features, removed_manual_feature_targets) = sanitize_manual_features(
         &state.manual_features,
-        &actionable_project_ids,
+        &persisted_target_project_ids,
         &read_only_project_ids,
     );
     state.manual_features = sanitized_manual_features;
@@ -6884,14 +6884,15 @@ fn sanitize_plan_tasks(
 
 fn sanitize_manual_features(
     features: &[ManualFeatureDto],
-    actionable_project_ids: &HashSet<String>,
+    persisted_target_project_ids: &HashSet<String>,
     read_only_project_ids: &HashSet<String>,
 ) -> (Vec<ManualFeatureDto>, usize) {
     let mut removed_targets = 0usize;
     let mut sanitized_features = Vec::with_capacity(features.len());
 
     for feature in features {
-        let project_ids = sanitize_project_id_list(&feature.project_ids, actionable_project_ids);
+        let project_ids =
+            sanitize_project_id_list(&feature.project_ids, persisted_target_project_ids);
         let mut context_project_ids =
             sanitize_project_id_list(&feature.context_project_ids, read_only_project_ids);
         for project_id in &feature.project_ids {
@@ -6905,7 +6906,7 @@ fn sanitize_manual_features(
         let execution_targets = feature
             .execution_targets
             .iter()
-            .filter(|target| actionable_project_ids.contains(&target.project_id))
+            .filter(|target| persisted_target_project_ids.contains(&target.project_id))
             .cloned()
             .collect::<Vec<_>>();
         removed_targets += initial_target_len.saturating_sub(execution_targets.len());
@@ -10390,6 +10391,56 @@ mod tests {
                 .checkpoint_id
                 .as_deref()
                 .expect("checkpoint id")
+        );
+        assert!(!project_path.join(".git").exists());
+        assert_eq!(
+            stdfs::read_to_string(&marker_path).expect("read unchanged project file"),
+            "unchanged"
+        );
+
+        let updated_project = update_project_access(
+            temp.path(),
+            &metadata_root,
+            "project-direct",
+            false,
+            Some(false),
+            false,
+            None,
+        )
+        .await
+        .expect("disable direct editing");
+        assert!(!updated_project.direct_edit);
+
+        let blocked_state = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .expect("reload blocked direct project");
+        let blocked_feature = blocked_state
+            .manual_features
+            .iter()
+            .find(|feature| feature.id == "direct-task-1")
+            .expect("persisted direct task");
+        assert_eq!(
+            blocked_feature.project_ids,
+            vec!["project-direct".to_string()]
+        );
+        assert_eq!(blocked_feature.execution_targets.len(), 1);
+        assert_eq!(
+            blocked_feature.execution_targets[0]
+                .execution_mode
+                .as_deref(),
+            Some("direct")
+        );
+        assert_eq!(
+            blocked_feature.execution_targets[0].checkpoint_id,
+            direct_target.checkpoint_id
+        );
+        let blocked_catalog = list_tasks(temp.path(), &metadata_root)
+            .await
+            .expect("list blocked direct task catalog");
+        assert_eq!(blocked_catalog.tasks[0]["project_id"], "project-direct");
+        assert_eq!(
+            blocked_catalog.tasks[0]["execution_targets"][0]["executionMode"],
+            "direct"
         );
         assert!(!project_path.join(".git").exists());
         assert_eq!(
