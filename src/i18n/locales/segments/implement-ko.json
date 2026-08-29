@@ -1,6 +1,9 @@
 {
   "tasks": "작업",
+  "searchTasks": "작업 검색...",
+  "noSearchResults": "검색과 일치하는 작업이 없습니다.",
   "createStandaloneTask": "독립형 작업 생성",
+  "standaloneLaunch": { "title": "작업 준비", "preparingTask": "작업 준비 중", "creatingName": "이름 생성 중", "creatingWorkspace": "작업 공간 생성 중", "preparingProject": "프로젝트 준비 중", "startingAgent": "에이전트 시작 중", "ready": "준비됨", "retry": "다시 시도", "details": "세부 정보" },
   "selectProject": "작업을 보려면 프로젝트를 선택하세요.",
   "selectTaskShort": "작업 선택",
   "selectTask": "변경 사항을 검토할 작업을 선택하세요.",
@@ -409,7 +412,8 @@
     "commitMessageRequired": "커밋 메시지가 필요합니다.",
     "commitSucceededTaskNotCompleted": "변경 사항이 커밋되었지만 작업을 자동으로 완료할 수 없습니다.",
     "deletedChangeReadOnly": "삭제된 파일은 검토 중에 읽기 전용입니다. 대신 TaskFlow에서 복원하십시오.",
-    "revertChangesFailed": "변경을 되돌리지 못했습니다."
+    "revertChangesFailed": "변경을 되돌리지 못했습니다.",
+    "reviewChangedSinceLoad": "리뷰를 불러온 후 파일이 변경되었습니다. 다시 시도하기 전에 리뷰를 새로 고치세요."
   },
   "taskCommandsManualDraftUnsupported": "첫 메시지를 보내 이 기능의 브랜치, 워크트리, 터미널을 준비하세요.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

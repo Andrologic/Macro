@@ -1,6 +1,9 @@
 {
   "tasks": "Aufgaben",
+  "searchTasks": "Aufgaben suchen...",
+  "noSearchResults": "Keine Aufgabe entspricht dieser Suche.",
   "createStandaloneTask": "Erstellen Sie eine eigenständige Aufgabe",
+  "standaloneLaunch": { "title": "Aufgabe wird vorbereitet", "preparingTask": "Aufgabe vorbereiten", "creatingName": "Namen erstellen", "creatingWorkspace": "Arbeitsbereich erstellen", "preparingProject": "Projekt vorbereiten", "startingAgent": "Agent starten", "ready": "Bereit", "retry": "Erneut versuchen", "details": "Details" },
   "selectProject": "Wählen Sie ein Projekt aus, um Aufgaben anzuzeigen",
   "selectTaskShort": "Wählen Sie eine Aufgabe aus",
   "selectTask": "Wählen Sie eine Aufgabe aus, um Änderungen zu überprüfen",
@@ -409,7 +412,8 @@
     "commitMessageRequired": "Eine Commit-Message ist erforderlich.",
     "commitSucceededTaskNotCompleted": "Änderungen wurden übernommen, die Aufgabe konnte jedoch nicht automatisch abgeschlossen werden.",
     "deletedChangeReadOnly": "Gelöschte Dateien sind während der Überprüfung schreibgeschützt. Stellen Sie sie stattdessen aus dem Taskflow wieder her.",
-    "revertChangesFailed": "Änderungen konnten nicht verworfen werden."
+    "revertChangesFailed": "Änderungen konnten nicht verworfen werden.",
+    "reviewChangedSinceLoad": "Die Datei wurde nach dem Laden dieser Review geändert. Aktualisieren Sie die Review, bevor Sie es erneut versuchen."
   },
   "taskCommandsManualDraftUnsupported": "Senden Sie eine erste Nachricht, um Branch, Worktree und Terminal dieser Funktion vorzubereiten.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

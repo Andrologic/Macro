@@ -15,7 +15,12 @@ import {
 } from '../services/implementMultiRepoSummary';
 import { useAppStore } from './useAppStore';
 import { getGitFlowBaseBranch } from '../services/architectPlanService';
-import { toServiceError } from '../services/contracts/errors';
+import {
+  SERVICE_ERROR_CODES,
+  isReviewSuspendingError,
+  toServiceError,
+  type ServiceError,
+} from '../services/contracts/errors';
 import {
   buildFileChangesRepositoryId,
   getFileChangesExecutionTargets,
@@ -24,6 +29,7 @@ import {
   resolveCachedPreparedTaskWorktreePath,
   resolvePreparedTaskWorktreePath,
 } from '../services/preparedTaskWorktrees';
+import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
 import { getGlobalProjectById, getRepositoryScopedProjectIds } from '../services/globalProjects';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 import {
@@ -45,7 +51,6 @@ import {
   getReadyCommitRepositories,
   isRepositoryReadyToCommit,
 } from '../services/smartCommitDrafts';
-import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -118,6 +123,8 @@ export interface ReviewRepositoryState {
   executionKind?: 'worktree' | 'repository_root';
   checkpointId?: string;
   baseCommitHash?: string;
+  directSnapshotId?: string;
+  restoreRevisions?: Record<string, string>;
   changes: FileChangeEntry[];
   stagedPaths: string[];
   selectedChangeId: string | null;
@@ -173,11 +180,14 @@ export interface FileDiffModalSession {
   isDirty: boolean;
   isSaving: boolean;
   isHydratingFullContext: boolean;
+  directSnapshotId?: string;
+  restoreRevision?: string;
 }
 
 interface LoadCurrentChangesOptions {
   silent?: boolean;
   preserveDiffModalSession?: boolean;
+  preserveReviewSuspension?: boolean;
 }
 
 const DEBUG_FILE_DIFF_STORAGE_KEY = 'debug:file-diff';
@@ -256,9 +266,13 @@ type FileChangesTauriDeps = Pick<
 > & {
   gitStatus: (repoPath: string) => Promise<FileChangesGitStatus>;
   gitReviewSnapshot?: typeof tauriIpc.gitReviewSnapshot;
+  gitCancelReview?: typeof tauriIpc.gitCancelReview;
   gitReviewFile?: typeof tauriIpc.gitReviewFile;
   directReviewSnapshot?: typeof tauriIpc.directReviewSnapshot;
   directCheckpointEnsure?: typeof tauriIpc.directCheckpointEnsure;
+  directCheckpointResolveId?: typeof tauriIpc.directCheckpointResolveId;
+  workspaceBindManualFeatureDirectCheckpoint?:
+    typeof tauriIpc.workspaceBindManualFeatureDirectCheckpoint;
   directReviewFile?: typeof tauriIpc.directReviewFile;
   directStagePaths?: typeof tauriIpc.directStagePaths;
   directUnstagePaths?: typeof tauriIpc.directUnstagePaths;
@@ -477,6 +491,7 @@ const mergeFileChangesTauriDeps = (
     ...overrides,
     ...(!('gitReviewSnapshot' in overrides) ? { gitReviewSnapshot: undefined } : {}),
     ...(!('gitReviewFile' in overrides) ? { gitReviewFile: undefined } : {}),
+    ...(!('gitCancelReview' in overrides) ? { gitCancelReview: undefined } : {}),
   };
 };
 
@@ -548,8 +563,8 @@ const buildSmartCommitMessageInput = async (
           return {
             path,
             summary: change
-              ? summarizeLineChanges(change.originalContent, change.modifiedContent)
-              : 'Direct workspace change.',
+              ? summarizeLineChanges(change.originalContent, change.indexContent)
+              : 'Unable to inspect validated file content; summarize from the path.',
           };
         }
         try {
@@ -782,6 +797,20 @@ const resolveRepositoryWorktreePath = (
   return resolveCachedPreparedTaskWorktreePath(target, taskState.branchWorktrees);
 };
 
+const buildDirectModeConfigurationError = (
+  target: TaskExecutionTarget,
+  project: FileChangesProjectRef | null | undefined,
+): ServiceError => ({
+  code: SERVICE_ERROR_CODES.DIRECT_MODE_CONFIGURATION_REQUIRED,
+  message: 'Direct review must be enabled for this non-Git project.',
+  details: {
+    projectId: target.projectId,
+    gitSetupState: project?.gitSetupState ?? null,
+    directEdit: project?.directEdit ?? null,
+    targetExecutionMode: target.executionMode ?? null,
+  },
+});
+
 const resolveRepositoryWorktreePaths = async (
   deps: FileChangesStoreDependencies,
   targets: TaskExecutionTarget[]
@@ -799,14 +828,18 @@ const resolveRepositoryWorktreePaths = async (
       ...taskState.branchWorktrees,
       ...hydratedWorktrees,
     };
-
-    if (branchWorktrees[target.worktreeKey]) {
-      continue;
-    }
-
-    const cachedPath = resolveCachedPreparedTaskWorktreePath(target, branchWorktrees);
-    if (cachedPath) {
-      hydratedWorktrees[target.worktreeKey] = cachedPath;
+    const project = deps.getAppState().getProjectById(target.projectId);
+    const executionResolution = resolveProjectExecutionMode({ project, target });
+    if (executionResolution.mode !== 'git' && executionResolution.mode !== 'direct') {
+      if (project?.gitSetupState === 'not_git') {
+        throw buildDirectModeConfigurationError(target, project);
+      }
+      const projectPath = project?.path ?? target.repoPath ?? null;
+      if (projectPath) {
+        hydratedWorktrees[target.worktreeKey] = projectPath;
+      } else {
+        unresolvedTargets.push(target);
+      }
       continue;
     }
 
@@ -997,8 +1030,9 @@ const loadRepositoryState = async (params: {
   target: TaskExecutionTarget;
   previousRepository?: ReviewRepositoryState;
   committedRecord?: TaskCompletionRepositoryRecord;
+  reviewRequestId?: string;
 }): Promise<ReviewRepositoryState> => {
-  const { deps, task, target, previousRepository, committedRecord } = params;
+  const { deps, task, target, previousRepository, committedRecord, reviewRequestId } = params;
   const appState = deps.getAppState();
   const project = appState.getProjectById(target.projectId);
   const repoPath = project?.path ?? target.repoPath ?? null;
@@ -1016,6 +1050,9 @@ const loadRepositoryState = async (params: {
   const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
   const executionResolution = resolveProjectExecutionMode({ project, target });
   if (executionResolution.mode !== 'git' && executionResolution.mode !== 'direct') {
+    if (project?.gitSetupState === 'not_git') {
+      throw buildDirectModeConfigurationError(target, project);
+    }
     throw new Error(
       tChanges(
         'implement.errors.projectExecutionInvalid',
@@ -1031,8 +1068,9 @@ const loadRepositoryState = async (params: {
             taskId: task.id,
             projectPath: worktreePath,
             checkpointId: target.checkpointId,
+            requestId: reviewRequestId,
           })
-        : await deps.tauri.gitReviewSnapshot!(worktreePath);
+        : await deps.tauri.gitReviewSnapshot!(worktreePath, reviewRequestId);
       const changes = snapshot.changes.map((change) =>
         mapReviewChangeToEntry(
           repositoryId,
@@ -1106,6 +1144,14 @@ const loadRepositoryState = async (params: {
         executionKind: target.executionKind,
         checkpointId: target.checkpointId,
         baseCommitHash: target.baseCommitHash,
+        directSnapshotId:
+          executionMode === 'direct'
+            ? (snapshot as tauriIpc.DirectReviewSnapshotDto).snapshotId
+            : undefined,
+        restoreRevisions:
+          executionMode === 'direct'
+            ? (snapshot as tauriIpc.DirectReviewSnapshotDto).restoreRevisions
+            : undefined,
         changes,
         stagedPaths,
         selectedChangeId,
@@ -1225,6 +1271,21 @@ const loadRepositoryState = async (params: {
     savingChangeId: null,
     lastError: previousRepository?.lastError ?? null,
     lastCommitHash: previousRepository?.lastCommitHash ?? null,
+  };
+};
+
+const withReviewProjectContext = (error: unknown, projectId: string): ServiceError => {
+  const serviceError = toServiceError(error);
+  const details = serviceError.details && typeof serviceError.details === 'object' &&
+    !Array.isArray(serviceError.details)
+    ? serviceError.details as Record<string, unknown>
+    : { cause: serviceError.details ?? null };
+  return {
+    ...serviceError,
+    details: {
+      ...details,
+      reviewProjectId: projectId,
+    },
   };
 };
 
@@ -1377,10 +1438,13 @@ interface FileChangesState {
   isGeneratingCommitMessages: boolean;
   isCommitting: boolean;
   lastError: string | null;
+  reviewSuspension: { taskId: string; error: ServiceError; retrying: boolean } | null;
   lastCommitHash: string | null;
   executionRecords: Record<string, TaskCompletionRepositoryRecord>;
 
   loadCurrentChanges: (options?: LoadCurrentChangesOptions) => Promise<void>;
+  retrySuspendedReview: (taskId?: string) => Promise<void>;
+  cancelReviewLoad: () => void;
   resetReviewState: () => void;
   openDiffModal: (repositoryId: string, changeId: string) => void;
   closeDiffModal: () => void;
@@ -1433,12 +1497,29 @@ export const createFileChangesStore = (
   }
 
   return create<FileChangesState>((set, get) => {
+    let reviewRequestSequence = 0;
+    const reviewRequestNamespace = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const activeReviewRequestIds = new Set<string>();
+    const nextReviewRequestId = (scope: string): string => {
+      reviewRequestSequence += 1;
+      const requestId = `review-${reviewRequestNamespace}-${scope}-${reviewRequestSequence}`;
+      activeReviewRequestIds.add(requestId);
+      return requestId;
+    };
+    const cancelActiveReviewRequests = () => {
+      for (const requestId of activeReviewRequestIds) {
+        void deps.tauri.gitCancelReview?.(requestId);
+      }
+      activeReviewRequestIds.clear();
+    };
     const hydrateDiffModalFile = async (repositoryId: string, changeId: string) => {
       const repository = get().getRepository(repositoryId);
       const change = get().getChange(repositoryId, changeId);
       if (!repository || !change) {
         return;
       }
+      const requestTaskId = resolveSelectedTask(deps)?.id ?? null;
+      const requestLoadId = get().loadRequestId;
 
       set((state) => ({
         repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -1462,24 +1543,32 @@ export const createFileChangesStore = (
         let hydratedChange: FileChangeEntry;
         if (repository.executionMode === 'direct') {
           const task = ensureReviewTask(deps);
-          const reviewFile = await deps.tauri.directReviewFile!({
-            taskId: task.id,
-            projectPath: repository.worktreePath,
-            checkpointId: repository.checkpointId,
-            path: change.path,
-            status: change.status,
-          });
-          hydratedChange = mapReviewFileToEntry(
-            repositoryId,
-            reviewFile,
-            change.hasPendingVisibleChange,
-            change
-          );
+          const reviewRequestId = nextReviewRequestId('direct-file');
+          try {
+            const reviewFile = await deps.tauri.directReviewFile!({
+              taskId: task.id,
+              projectPath: repository.worktreePath,
+              checkpointId: repository.checkpointId,
+              path: change.path,
+              status: change.status,
+              requestId: reviewRequestId,
+            });
+            hydratedChange = mapReviewFileToEntry(
+              repositoryId,
+              reviewFile,
+              change.hasPendingVisibleChange,
+              change
+            );
+          } finally {
+            activeReviewRequestIds.delete(reviewRequestId);
+          }
         } else if (deps.tauri.gitReviewFile) {
+          const reviewRequestId = nextReviewRequestId('file');
           try {
             const reviewFile = await deps.tauri.gitReviewFile({
               repoPath: repository.worktreePath,
               path: change.path,
+              requestId: reviewRequestId,
             });
             hydratedChange = mapReviewFileToEntry(
               repositoryId,
@@ -1502,6 +1591,8 @@ export const createFileChangesStore = (
               },
               change
             );
+          } finally {
+            activeReviewRequestIds.delete(reviewRequestId);
           }
         } else {
           const pair = await deps.tauri.gitReadFilePair({
@@ -1526,6 +1617,10 @@ export const createFileChangesStore = (
             validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
             requiresHydration: false,
           };
+        }
+
+        if (get().loadRequestId !== requestLoadId) {
+          return;
         }
 
         set((state) => {
@@ -1556,7 +1651,37 @@ export const createFileChangesStore = (
           };
         });
       } catch (error) {
-        const message = toServiceError(error).message ||
+        if (get().loadRequestId !== requestLoadId) {
+          return;
+        }
+        const serviceError = withReviewProjectContext(error, repository.projectId);
+        if (isReviewSuspendingError(serviceError)) {
+          const currentTaskId = resolveSelectedTask(deps)?.id ?? null;
+          if (!requestTaskId || currentTaskId !== requestTaskId) {
+            return;
+          }
+          set((state) => ({
+            repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+              ...currentRepository,
+              loadingChangeId: null,
+              lastError: null,
+            })),
+            diffModalSession:
+              state.diffModalSession &&
+              state.diffModalSession.repositoryId === repositoryId &&
+              state.diffModalSession.changeId === changeId
+                ? { ...state.diffModalSession, isHydratingFullContext: false }
+                : state.diffModalSession,
+            lastError: null,
+            reviewSuspension: {
+              taskId: requestTaskId,
+              error: serviceError,
+              retrying: false,
+            },
+          }));
+          return;
+        }
+        const message = serviceError.message ||
           tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
         set((state) => ({
           repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -1592,10 +1717,12 @@ export const createFileChangesStore = (
     isGeneratingCommitMessages: false,
     isCommitting: false,
     lastError: null,
+    reviewSuspension: null,
     lastCommitHash: null,
     executionRecords: {},
 
   loadCurrentChanges: async (options) => {
+    cancelActiveReviewRequests();
     const previousState = get();
     const task = resolveSelectedTask(deps);
     const nextLoadRequestId = previousState.loadRequestId + 1;
@@ -1645,6 +1772,13 @@ export const createFileChangesStore = (
     }
 
     const sameTask = previousState.currentTaskId === task.id;
+    const scopedExecutionTargets = getScopedExecutionTargets(deps, task);
+    const requestedRepositoryIds = new Set(
+      scopedExecutionTargets.map((target) => buildFileChangesRepositoryId(target))
+    );
+    const sameScope = sameTask &&
+      previousState.repositories.length === requestedRepositoryIds.size &&
+      previousState.repositories.every((repository) => requestedRepositoryIds.has(repository.id));
     const silentReload = sameTask && options?.silent === true;
     const previousRepositories = new Map(
       (sameTask ? previousState.repositories : []).map((repository) => [repository.id, repository])
@@ -1664,6 +1798,7 @@ export const createFileChangesStore = (
       set({
         currentTaskId: task.id,
         lastError: null,
+        ...(!options?.preserveReviewSuspension ? { reviewSuspension: null } : {}),
         loadRequestId: nextLoadRequestId,
         executionRecords,
       });
@@ -1685,8 +1820,6 @@ export const createFileChangesStore = (
         task,
         deps.getGitFlowBaseBranch
       );
-      const scopedExecutionTargets = getScopedExecutionTargets(deps, task);
-
       if (executionTargets.length > 0 && scopedExecutionTargets.length === 0) {
         if (isStaleRequest(nextLoadRequestId, task.id)) {
           return;
@@ -1742,15 +1875,23 @@ export const createFileChangesStore = (
       }
 
       const repositories = await Promise.all(
-        scopedExecutionTargets.map((target) => {
+        scopedExecutionTargets.map(async (target, targetIndex) => {
           const repositoryId = buildFileChangesRepositoryId(target);
-          return loadRepositoryState({
-            deps,
-            task,
-            target,
-            previousRepository: previousRepositories.get(repositoryId),
-            committedRecord: executionRecords[repositoryId],
-          });
+          const reviewRequestId = nextReviewRequestId(`snapshot-${targetIndex}`);
+          try {
+            return await loadRepositoryState({
+              deps,
+              task,
+              target,
+              previousRepository: previousRepositories.get(repositoryId),
+              committedRecord: executionRecords[repositoryId],
+              reviewRequestId,
+            });
+          } catch (error) {
+            throw withReviewProjectContext(error, target.projectId);
+          } finally {
+            activeReviewRequestIds.delete(reviewRequestId);
+          }
         })
       );
 
@@ -1782,10 +1923,36 @@ export const createFileChangesStore = (
         ...latestDiffModalState,
         isLoading: false,
         lastError: null,
+        reviewSuspension: null,
         executionRecords,
       });
     } catch (error) {
+      cancelActiveReviewRequests();
       if (isStaleRequest(nextLoadRequestId, task.id)) {
+        return;
+      }
+
+      const serviceError = toServiceError(error);
+      if (isReviewSuspendingError(serviceError)) {
+        const preservedState = sameScope
+          ? {
+              repositories: previousState.repositories,
+              reviewSummary: previousState.reviewSummary,
+              selectedDiffTarget: previousState.selectedDiffTarget,
+              diffModalSession: previousState.diffModalSession,
+              isDiffModalOpen: previousState.isDiffModalOpen,
+            }
+          : resetLoadState;
+        set({
+          currentTaskId: task.id,
+          currentTaskLoadState: sameScope && previousState.repositories.length > 0 ? 'ready' : 'invalid_mapping',
+          currentTaskLoadMessage: null,
+          ...preservedState,
+          isLoading: false,
+          executionRecords,
+          lastError: null,
+          reviewSuspension: { taskId: task.id, error: serviceError, retrying: false },
+        });
         return;
       }
 
@@ -1797,13 +1964,32 @@ export const createFileChangesStore = (
         isLoading: false,
         executionRecords: {},
         lastError:
-          toServiceError(error).message ||
+          serviceError.message ||
           tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
       });
     }
   },
 
+  retrySuspendedReview: async (taskId) => {
+    const suspension = get().reviewSuspension;
+    if (!suspension) return;
+    const selectedTask = resolveSelectedTask(deps);
+    if (taskId && taskId !== suspension.taskId) return;
+    if (selectedTask?.id !== suspension.taskId || suspension.retrying) return;
+    set({ reviewSuspension: { ...suspension, retrying: true } });
+    await get().loadCurrentChanges({
+      silent: get().repositories.length > 0,
+      preserveReviewSuspension: true,
+    });
+  },
+
+  cancelReviewLoad: () => {
+    cancelActiveReviewRequests();
+    set({ loadRequestId: get().loadRequestId + 1, isLoading: false });
+  },
+
   resetReviewState: () => {
+    cancelActiveReviewRequests();
     set({
       currentTaskId: null,
       currentTaskLoadState: 'idle',
@@ -1818,6 +2004,7 @@ export const createFileChangesStore = (
       isGeneratingCommitMessages: false,
       isCommitting: false,
       lastError: null,
+      reviewSuspension: null,
       lastCommitHash: null,
       executionRecords: {},
     });
@@ -1825,9 +2012,8 @@ export const createFileChangesStore = (
 
   openDiffModal: (repositoryId, changeId) => {
     const repositories = get().repositories;
-    const change = repositories
-      .find((candidate) => candidate.id === repositoryId)
-      ?.changes.find((candidate) => candidate.id === changeId);
+    const repository = repositories.find((candidate) => candidate.id === repositoryId);
+    const change = repository?.changes.find((candidate) => candidate.id === changeId);
     if (!change) {
       return;
     }
@@ -1840,11 +2026,15 @@ export const createFileChangesStore = (
       ...deriveReviewState(repositories),
       selectedDiffTarget: { repositoryId, changeId },
       diffModalSession: buildDiffModalSession(repositoryId, change, {
-        isHydratingFullContext: true,
+        isHydratingFullContext: change.requiresHydration && !change.tooLarge && !change.isBinary,
+        directSnapshotId: repository?.directSnapshotId,
+        restoreRevision: repository?.restoreRevisions?.[change.path],
       }),
       isDiffModalOpen: true,
     });
-    void hydrateDiffModalFile(repositoryId, changeId);
+    if (change.requiresHydration && !change.tooLarge && !change.isBinary) {
+      void hydrateDiffModalFile(repositoryId, changeId);
+    }
   },
 
   closeDiffModal: () => {
@@ -1911,10 +2101,18 @@ export const createFileChangesStore = (
       const paths = targetChanges.map((change) => change.path);
       if (repository.executionMode === 'direct') {
         const task = ensureReviewTask(deps);
+        const modalSnapshotId = affectsOpenModal && targetChanges.length === 1
+          ? get().diffModalSession?.directSnapshotId
+          : undefined;
+        const snapshotId = modalSnapshotId ?? repository.directSnapshotId;
+        if (!snapshotId) {
+          throw new Error('The direct-review snapshot is unavailable. Refresh the review.');
+        }
         await deps.tauri.directStagePaths!({
           taskId: task.id,
           projectPath: repository.worktreePath,
           checkpointId: repository.checkpointId,
+          snapshotId,
           paths,
         });
       } else {
@@ -2163,12 +2361,26 @@ export const createFileChangesStore = (
       const paths = targetChanges.map((change) => change.path);
       if (repository.executionMode === 'direct') {
         const task = ensureReviewTask(deps);
-        await deps.tauri.directRestoreWorktreePaths!({
-          taskId: task.id,
-          projectPath: repository.worktreePath,
-          checkpointId: repository.checkpointId,
-          paths,
-        });
+        const modalSnapshotId = affectsOpenModal && targetChanges.length === 1
+          ? get().diffModalSession?.directSnapshotId
+          : undefined;
+        const snapshotId = modalSnapshotId ?? repository.directSnapshotId;
+        if (!snapshotId) {
+          throw new Error('The direct-review snapshot is unavailable. Refresh the review.');
+        }
+        const requestId = nextReviewRequestId('direct-restore');
+        try {
+          await deps.tauri.directRestoreWorktreePaths!({
+            taskId: task.id,
+            projectPath: repository.worktreePath,
+            checkpointId: repository.checkpointId,
+            snapshotId,
+            paths,
+            requestId,
+          });
+        } finally {
+          activeReviewRequestIds.delete(requestId);
+        }
       } else {
         await deps.tauri.gitRestorePaths({
           repoPath: repository.worktreePath,
@@ -2188,8 +2400,14 @@ export const createFileChangesStore = (
         }
       }
     } catch (error) {
-      const message = toServiceError(error).message ||
-        tChanges('implement.errors.revertChangesFailed', 'Failed to revert changes.');
+      const serviceError = toServiceError(error);
+      const message = serviceError.code === 'REVISION_CONFLICT'
+        ? tChanges(
+          'implement.errors.reviewChangedSinceLoad',
+          'The file changed after this review loaded. Refresh the review before retrying.'
+        )
+        : serviceError.message ||
+          tChanges('implement.errors.revertChangesFailed', 'Failed to revert changes.');
       set((state) => ({
         repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
           ...currentRepository,

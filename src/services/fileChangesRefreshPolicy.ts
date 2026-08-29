@@ -12,6 +12,7 @@ export const canAutoRefreshFileChangesForTask = (params: {
   isPlanFinalizationTask?: boolean;
   hasActiveMergeWorkflow?: boolean;
   hasResourcePressureError?: boolean;
+  hasReviewSuspension?: boolean;
   isResourcePressureBackoffActive?: boolean;
   hasRepositoryScope?: boolean;
   selectedTaskId?: string | null;
@@ -25,6 +26,7 @@ export const canAutoRefreshFileChangesForTask = (params: {
   params.isPlanFinalizationTask !== true &&
   params.hasActiveMergeWorkflow !== true &&
   params.hasResourcePressureError !== true &&
+  params.hasReviewSuspension !== true &&
   params.isResourcePressureBackoffActive !== true;
 
 export const __testables = {

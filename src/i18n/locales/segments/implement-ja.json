@@ -1,6 +1,9 @@
 {
   "tasks": "タスク",
+  "searchTasks": "タスクを検索...",
+  "noSearchResults": "この検索に一致するタスクはありません。",
   "createStandaloneTask": "スタンドアロンタスクの作成",
+  "standaloneLaunch": { "title": "タスクの準備", "preparingTask": "タスクを準備中", "creatingName": "名前を作成中", "creatingWorkspace": "ワークスペースを作成中", "preparingProject": "プロジェクトを準備中", "startingAgent": "エージェントを起動中", "ready": "準備完了", "retry": "再試行", "details": "詳細" },
   "selectProject": "タスクを表示するにはプロジェクトを選択してください",
   "selectTaskShort": "タスクを選択してください",
   "selectTask": "変更を確認するタスクを選択してください",
@@ -409,7 +412,8 @@
     "commitMessageRequired": "コミットメッセージは必須です。",
     "commitSucceededTaskNotCompleted": "変更はコミットされましたが、タスクを自動的に完了できませんでした。",
     "deletedChangeReadOnly": "削除されたファイルは、レビュー中は読み取り専用になります。代わりにタスク・フローからそれらを復元してください。",
-    "revertChangesFailed": "変更を元に戻せませんでした。"
+    "revertChangesFailed": "変更を元に戻せませんでした。",
+    "reviewChangedSinceLoad": "レビューの読み込み後にファイルが変更されました。再試行する前にレビューを更新してください。"
   },
   "taskCommandsManualDraftUnsupported": "最初のメッセージを送信して、この機能のブランチ、ワークツリー、ターミナルを準備してください。",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

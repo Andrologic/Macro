@@ -19,6 +19,7 @@ use tokio::time::{sleep, timeout};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_RETRY_ATTEMPTS: usize = 2;
+const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Default)]
 struct ChatCompletionAccumulator {
@@ -586,6 +587,10 @@ impl SseParser {
             }
         }
 
+        if self.input.len() + self.event.len() + self.utf8_tail.len() > MAX_SSE_BUFFER_BYTES {
+            return Err("Provider SSE buffer exceeded the 1048576-byte limit.".to_string());
+        }
+
         Ok(())
     }
 
@@ -936,6 +941,13 @@ mod tests {
     fn invalid_utf8_is_rejected_instead_of_replaced() {
         let mut parser = SseParser::default();
         assert!(parser.push(b"data: \xff").is_err());
+    }
+
+    #[test]
+    fn sse_parser_rejects_an_unbounded_event_buffer() {
+        let mut parser = SseParser::default();
+        let oversized = vec![b'x'; MAX_SSE_BUFFER_BYTES + 1];
+        assert!(parser.push(&oversized).is_err());
     }
 
     #[test]

@@ -1,6 +1,9 @@
 {
   "tasks": "Tareas",
+  "searchTasks": "Buscar tareas...",
+  "noSearchResults": "Ninguna tarea coincide con esta búsqueda.",
   "createStandaloneTask": "Crear tarea independiente",
+  "standaloneLaunch": { "title": "Preparación de la tarea", "preparingTask": "Preparando la tarea", "creatingName": "Creando el nombre", "creatingWorkspace": "Creando el espacio de trabajo", "preparingProject": "Preparando el proyecto", "startingAgent": "Iniciando el agente", "ready": "Lista", "retry": "Reintentar", "details": "Detalles" },
   "selectProject": "Seleccione un proyecto para ver las tareas",
   "selectTaskShort": "Seleccione una tarea",
   "selectTask": "Seleccione una tarea para revisar los cambios",
@@ -409,7 +412,8 @@
     "commitMessageRequired": "El mensaje de commit es obligatorio.",
     "commitSucceededTaskNotCompleted": "Se confirmaron los cambios, pero la tarea no se pudo completar automáticamente.",
     "deletedChangeReadOnly": "Los archivos eliminados son de solo lectura durante la revisión. En su lugar, restáurelos desde el flujo de tareas.",
-    "revertChangesFailed": "No se pudieron revertir los cambios."
+    "revertChangesFailed": "No se pudieron revertir los cambios.",
+    "reviewChangedSinceLoad": "El archivo cambió después de cargar esta revisión. Actualice la revisión antes de volver a intentarlo."
   },
   "taskCommandsManualDraftUnsupported": "Envía un primer mensaje para preparar la rama, el worktree y el terminal de esta función.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

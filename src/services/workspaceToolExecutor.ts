@@ -221,6 +221,92 @@ type PatchWriteRollbackSnapshot = {
   postMutationExpectedRevision?: string;
 };
 
+type CanonicalWorkspacePath = {
+  normalized: string;
+  comparisonKey: string;
+  prefixKey: string;
+  segments: string[];
+  escapedAboveRoot: boolean;
+};
+
+const canonicalizeWorkspacePath = (value: string): CanonicalWorkspacePath => {
+  let input = value.trim().replace(/\\/g, "/");
+  if (/^\/\/\?\/UNC\//i.test(input)) {
+    input = `//${input.slice(8)}`;
+  } else if (/^\/\/\?\/[a-z]:\//i.test(input)) {
+    input = input.slice(4);
+  }
+
+  const isUnc = input.startsWith("//");
+  const driveMatch = input.match(/^([a-z]:)(?:\/|$)/i);
+  const isAbsolutePosix = !isUnc && !driveMatch && input.startsWith("/");
+  const rawSegments = input.split("/").filter(Boolean);
+  let prefix = "";
+  let pathSegments = rawSegments;
+
+  if (isUnc) {
+    const server = rawSegments[0] ?? "";
+    const share = rawSegments[1] ?? "";
+    prefix = `//${server}/${share}`;
+    pathSegments = rawSegments.slice(2);
+  } else if (driveMatch) {
+    prefix = driveMatch[1];
+    pathSegments = rawSegments.slice(1);
+  } else if (isAbsolutePosix) {
+    prefix = "/";
+  }
+
+  const segments: string[] = [];
+  let escapedAboveRoot = false;
+  for (const segment of pathSegments) {
+    if (segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
+        segments.pop();
+      } else if (prefix) {
+        escapedAboveRoot = true;
+      } else {
+        segments.push(segment);
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  const normalized = prefix === "/"
+    ? `/${segments.join("/")}`
+    : prefix
+      ? `${prefix}${segments.length > 0 ? `/${segments.join("/")}` : ""}`
+      : segments.join("/") || ".";
+  const caseInsensitive = Boolean(driveMatch || isUnc);
+  const comparisonKey = caseInsensitive ? normalized.toLowerCase() : normalized;
+  const prefixKey = caseInsensitive ? prefix.toLowerCase() : prefix;
+  return { normalized, comparisonKey, prefixKey, segments, escapedAboveRoot };
+};
+
+const assertDistinctPatchTargets = (
+  paths: Array<{ displayPath: string; realPath: string }>,
+): void => {
+  const seen = new Map<string, string>();
+  for (const path of paths) {
+    const canonical = canonicalizeWorkspacePath(path.realPath);
+    if (canonical.escapedAboveRoot) {
+      throw new Error(
+        `Invalid apply_patch payload: ${path.displayPath} escapes its filesystem root.`,
+      );
+    }
+    const previous = seen.get(canonical.comparisonKey);
+    if (previous) {
+      throw new Error(
+        `Invalid apply_patch payload: ${path.displayPath} aliases already-targeted ${previous}.`,
+      );
+    }
+    seen.set(canonical.comparisonKey, path.displayPath);
+  }
+};
+
 const rollbackSnapshotsFromBackendPatch = (
   changes: PatchWriteCommitChange[],
   beforeSnapshots: AgentCodeCheckpointFileSnapshot[],
@@ -1063,6 +1149,32 @@ const normalizeWorkspacePath = (value?: string | null): string | null => {
   return trimmed;
 };
 
+const relativePathWithinRoot = (path: string, root: string): string | null => {
+  const normalizedPath = canonicalizeWorkspacePath(path);
+  const normalizedRoot = canonicalizeWorkspacePath(root);
+  if (
+    normalizedPath.escapedAboveRoot ||
+    normalizedRoot.escapedAboveRoot ||
+    normalizedPath.prefixKey !== normalizedRoot.prefixKey
+  ) {
+    return null;
+  }
+  const caseInsensitive = Boolean(normalizedRoot.prefixKey.match(/^(?:[a-z]:|\/\/)/i));
+  const pathSegments = caseInsensitive
+    ? normalizedPath.segments.map((segment) => segment.toLowerCase())
+    : normalizedPath.segments;
+  const rootSegments = caseInsensitive
+    ? normalizedRoot.segments.map((segment) => segment.toLowerCase())
+    : normalizedRoot.segments;
+  if (
+    rootSegments.length > pathSegments.length ||
+    rootSegments.some((segment, index) => pathSegments[index] !== segment)
+  ) {
+    return null;
+  }
+  return normalizedPath.segments.slice(rootSegments.length).join("/") || ".";
+};
+
 interface ProjectWorkspaceCandidate {
   id: string;
   name: string;
@@ -1225,10 +1337,10 @@ const findProjectByAbsolutePath = (
   if (!normalizedInput) return null;
 
   const matchingCandidates = candidates
-    .filter(
-      (candidate) =>
-        candidate.workspacePath &&
-        normalizedInput.startsWith(candidate.workspacePath),
+    .filter((candidate) =>
+      candidate.workspacePath
+        ? relativePathWithinRoot(normalizedInput, candidate.workspacePath) !== null
+        : false,
     )
     .sort(
       (left, right) =>
@@ -1676,6 +1788,9 @@ const joinPathWithinWorkspace = (
 ): string => {
   const normalizedInput = (inputPath || ".").replace(/\\/g, "/");
   if (isAbsolutePath(normalizedInput)) {
+    if (workspacePath !== "." && relativePathWithinRoot(normalizedInput, workspacePath) === null) {
+      throw new Error("Absolute path is outside the selected workspace.");
+    }
     return normalizedInput;
   }
 
@@ -1845,16 +1960,19 @@ const resolveVirtualToolTarget = async (params: {
     if (match) {
       return {
         candidate: match,
-        relativePath:
-          params.rawPath
-            .replace(/\\/g, "/")
-            .slice((match.workspacePath || "").length)
-            .replace(/^\/+/, "") || ".",
+        relativePath: relativePathWithinRoot(params.rawPath, match.workspacePath || "") || ".",
         explicitTarget: true,
         usedFocusedProject: false,
         matchCount: 1,
       };
     }
+    return {
+      candidate: null,
+      relativePath: params.rawPath,
+      explicitTarget: true,
+      usedFocusedProject: false,
+      matchCount: 0,
+    };
   }
 
   const focusedCandidate =
@@ -3061,6 +3179,17 @@ export const executeWorkspaceTool = async (
           });
         }
 
+        try {
+          assertDistinctPatchTargets(
+            pendingChanges.map((change) => ({
+              displayPath: change.target.displayPath,
+              realPath: change.target.realPath,
+            })),
+          );
+        } catch (error) {
+          return formatToolError(error);
+        }
+
         const backendChanges: PatchWriteCommitChange[] = pendingChanges.map(
           (change) => ({
             displayPath: change.target.displayPath,
@@ -4162,6 +4291,17 @@ export const executeWorkspaceTool = async (
           bytesWritten: newContent.length,
           expectedRevision,
         });
+      }
+
+      try {
+        assertDistinctPatchTargets(
+          pendingChanges.map((change) => ({
+            displayPath: change.path,
+            realPath: change.realPath,
+          })),
+        );
+      } catch (error) {
+        return formatToolError(error);
       }
 
       const backendChanges: PatchWriteCommitChange[] = pendingChanges.map(

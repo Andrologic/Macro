@@ -1201,6 +1201,13 @@ async fn delete_wsl_path_internal_with_revision(
 ) -> Result<(), BackendError> {
     let resolved = resolve_wsl_path(workspace, &path, None)?;
     let canonical_target = canonical_wsl_path_within_workspace(workspace, &resolved, None).await?;
+    if canonical_target.linux_path.trim_end_matches('/')
+        == workspace.linux_path.trim_end_matches('/')
+    {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "Refusing to delete the workspace root.".to_string(),
+        });
+    }
     let _mutation_guard = if acquire_lock {
         Some(
             super::content_mutation_lock(&super::wsl_content_mutation_key(&canonical_target))
@@ -1244,7 +1251,7 @@ fi
         &canonical_target,
         script,
         &[
-            canonical_target.linux_path.clone(),
+            resolved.linux_path.clone(),
             recursive_flag,
             expected_revision
                 .map(str::trim)
@@ -2728,7 +2735,9 @@ pub(crate) async fn delete_path_internal_unlocked(
     }
 
     let path_buf = PathBuf::from(&path);
-    let validated_path = validate_path(&path_buf, workspace)?;
+    // Validate the symlink destination, but keep the lexical path so deletion
+    // removes the link itself instead of the file or directory it points to.
+    let validated_path = validate_path_for_write(&path_buf, workspace)?;
 
     let workspace_path = workspace.to_path_buf();
     let capability_target = validated_path.clone();
@@ -2737,10 +2746,10 @@ pub(crate) async fn delete_path_internal_unlocked(
         let (directory, relative_path) =
             open_workspace_capability(&workspace_path, &capability_target, expected_identity)?;
         let metadata = directory
-            .metadata(&relative_path)
+            .symlink_metadata(&relative_path)
             .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
         let is_directory = metadata.is_dir();
-        if metadata.is_file() {
+        if metadata.file_type().is_symlink() || metadata.is_file() {
             directory
                 .remove_file(&relative_path)
                 .map_err(|error| io_error_to_backend_error(error, &capability_target))?;
@@ -4223,6 +4232,42 @@ mod tests {
             .unwrap();
         assert!(stat.is_symlink);
         assert_eq!(stat.kind, "symlink");
+    }
+
+    #[tokio::test]
+    async fn test_delete_refuses_the_workspace_root() {
+        let workspace = setup_empty_workspace();
+        let result = delete_path_internal_unlocked(
+            workspace.path(),
+            workspace.path().to_string_lossy().to_string(),
+            Some(true),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemInvalidPath { .. })
+        ));
+        assert!(workspace.path().is_dir());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_delete_symlink_removes_only_the_link() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("target.txt");
+        let link = workspace.path().join("link.txt");
+        fs::write(&target, "keep me").unwrap();
+        symlink(&target, &link).unwrap();
+
+        delete_path_internal_unlocked(workspace.path(), "link.txt".to_string(), None)
+            .await
+            .unwrap();
+
+        assert!(!link.exists());
+        assert_eq!(fs::read_to_string(target).unwrap(), "keep me");
     }
 
     #[tokio::test]

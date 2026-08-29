@@ -155,6 +155,12 @@ const POST_ASSISTANT_REFRESH_DELAY_MS = 400;
 const MULTI_REPOSITORY_MIN_SECTION_HEIGHT = 112;
 const NO_REASONING_EFFORTS = (_providerId?: string | null, _modelId?: string | null): ReasoningEffort[] => [];
 
+const readReviewProjectId = (details: unknown): string | null => {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const projectId = (details as Record<string, unknown>).reviewProjectId;
+  return typeof projectId === 'string' && projectId.trim() ? projectId : null;
+};
+
 const STATUS_COLORS = {
   added: 'text-primary',
   modified: 'text-foreground',
@@ -661,6 +667,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     projectGroups,
     getProjectById,
     openSettings,
+    openProjectGitFlowModal,
   } = useAppStore();
   const currentTask = useTaskStore((state) =>
     selectedTaskId ? state.tasks.find((task) => task.id === selectedTaskId) ?? null : null
@@ -740,6 +747,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const postAssistantRefreshPendingRef = useRef(false);
   const postAssistantRefreshInFlightRef = useRef(false);
   const postAssistantRefreshTimeoutRef = useRef<number | null>(null);
+  const reviewSuspensionStateRef = useRef<{
+    suspension: NonNullable<ReturnType<typeof useFileChangesStore.getState>['reviewSuspension']>;
+    contextSignature: string;
+  } | null>(null);
+  const reviewRetryInFlightRef = useRef(false);
   const [commitMessageEditState, setCommitMessageEditState] = useState<CommitMessageEditState | null>(null);
   const {
     ref: repositoryListRef,
@@ -756,8 +768,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isGeneratingCommitMessages,
     isCommitting,
     lastError,
+    reviewSuspension,
     executionRecords,
     loadCurrentChanges,
+    retrySuspendedReview,
+    cancelReviewLoad,
     resetReviewState,
     openDiffModal,
     closeDiffModal,
@@ -768,6 +783,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     commitAllReadyTaskRepositories,
     getOverallStats,
   } = useFileChangesStore();
+  useEffect(() => () => cancelReviewLoad(), [cancelReviewLoad]);
   const workspaceState = useMemo(
     () =>
       resolveProjectWorkspaceState({
@@ -811,6 +827,68 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
   const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
   const hasResourcePressureError = isTooManyOpenFilesMessage(lastError);
+  const hasReviewSuspension = reviewSuspension?.taskId === selectedTaskId;
+  const runSuspendedReviewRetry = useCallback(async (taskId?: string) => {
+    if (reviewRetryInFlightRef.current) return;
+    reviewRetryInFlightRef.current = true;
+    try {
+      await retrySuspendedReview(taskId);
+    } finally {
+      reviewRetryInFlightRef.current = false;
+    }
+  }, [retrySuspendedReview]);
+  const suspendedReviewProjectId = hasReviewSuspension
+    ? readReviewProjectId(reviewSuspension?.error.details)
+    : null;
+  const suspendedReviewTargetSignature = useTaskStore((state) => {
+    if (!selectedTaskId) return '';
+    const task = state.tasks.find((candidate) => candidate.id === selectedTaskId);
+    return task?.execution_targets
+      ?.filter((target) => !suspendedReviewProjectId || target.projectId === suspendedReviewProjectId)
+      .map((target) => [
+        target.projectId,
+        target.worktreeKey,
+        target.branchName,
+        state.branchWorktrees[target.worktreeKey] ?? '',
+      ].join(':'))
+      .join('|') ?? '';
+  });
+  const reviewProjectId = suspendedReviewProjectId
+    ?? selectedProjectId
+    ?? currentTask?.execution_targets?.[0]?.projectId
+    ?? currentTask?.project_id
+    ?? null;
+  const openReviewProjectSettings = useCallback(() => {
+    if (reviewProjectId) {
+      openProjectGitFlowModal(reviewProjectId);
+    }
+  }, [openProjectGitFlowModal, reviewProjectId]);
+  const reviewTargetProjectIds = suspendedReviewProjectId
+    ? [suspendedReviewProjectId]
+    : Array.from(new Set([
+        ...(currentTask?.execution_targets?.map((target) => target.projectId) ?? []),
+        ...(currentTask?.project_id ? [currentTask.project_id] : []),
+      ]));
+  const reviewContextSignature = JSON.stringify({
+    taskId: selectedTaskId,
+    effectiveTargets: suspendedReviewTargetSignature,
+    targets: currentTask?.execution_targets
+      ?.filter((target) => !suspendedReviewProjectId || target.projectId === suspendedReviewProjectId)
+      .map((target) => ({
+        projectId: target.projectId,
+        executionMode: target.executionMode ?? null,
+        checkpointId: target.checkpointId ?? null,
+      })) ?? [],
+    projects: reviewTargetProjectIds.map((projectId) => {
+      const project = getProjectById(projectId);
+      return {
+        projectId,
+        directEdit: project?.directEdit ?? null,
+        gitSetupState: project?.gitSetupState ?? null,
+        path: project?.path ?? null,
+      };
+    }),
+  });
   const canAutoRefreshCurrentTask = canAutoRefreshFileChangesForTask({
     selectedTaskId,
     taskStatus: currentTask?.status,
@@ -820,6 +898,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     isPlanFinalizationTask,
     hasActiveMergeWorkflow,
     hasResourcePressureError,
+    hasReviewSuspension,
     isResourcePressureBackoffActive: isTooManyOpenFilesBackoffActive(),
   });
   const isSelectedTaskAssistantActive =
@@ -942,6 +1021,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       resetReviewState();
       return;
     }
+    if (hasReviewSuspension) {
+      return;
+    }
+    if (reviewRetryInFlightRef.current) {
+      return;
+    }
     if (
       !hasRepositoryScope ||
       !selectedTaskId ||
@@ -957,11 +1042,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (isDiffModalOpen) {
       return;
     }
-    void loadCurrentChanges();
   }, [
     currentTask?.status,
     canAutoRefreshCurrentTask,
     hasResourcePressureError,
+    hasReviewSuspension,
     isDiffModalOpen,
     loadCurrentChanges,
     hasRepositoryScope,
@@ -985,7 +1070,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       !canAutoRefreshCurrentTask ||
       isPlanFinalizationTask ||
       hasActiveMergeWorkflow ||
-      hasResourcePressureError
+      hasResourcePressureError ||
+      hasReviewSuspension
     ) {
       return;
     }
@@ -1045,6 +1131,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       );
     };
 
+    void refreshChanges(false);
     scheduleRefresh(CHANGE_PANEL_POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
@@ -1060,6 +1147,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     hasActiveMergeWorkflow,
     canAutoRefreshCurrentTask,
     hasResourcePressureError,
+    hasReviewSuspension,
     isCommitting,
     isDiffModalOpen,
     isPlanFinalizationTask,
@@ -1068,6 +1156,72 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedProjectId,
     selectedTaskId,
     isReadOnlyRemoteMode,
+  ]);
+
+  useEffect(() => {
+    if (!hasReviewSuspension || !reviewSuspension) {
+      return;
+    }
+    const presentation = presentServiceError(reviewSuspension.error);
+    const resolvedPresentation = resolveDegradedErrorPresentation(
+      presentation,
+      (key, options) => String(t(key, options))
+    );
+    notify.actionRequired(resolvedPresentation.title, {
+      notificationKey: `implement-review:suspended:${reviewSuspension.error.code}:${selectedTaskId}`,
+      tone: 'warning',
+      description: [resolvedPresentation.body, resolvedPresentation.nextStep].filter(Boolean).join('\n\n'),
+      category: 'task_attention_required',
+      actions: presentation.primaryAction === 'retry'
+        ? [{
+            label: t('common.retry', 'Retry'),
+            variant: 'primary',
+            onClick: () => void runSuspendedReviewRetry(reviewSuspension.taskId),
+          }]
+        : presentation.primaryAction === 'open_project_settings' && reviewProjectId
+          ? [{
+              label: t('projects.projectSettings', 'Project settings'),
+              variant: 'primary',
+              onClick: openReviewProjectSettings,
+            }]
+          : [],
+    });
+  }, [
+    reviewSuspension,
+    hasReviewSuspension,
+    openReviewProjectSettings,
+    reviewProjectId,
+    runSuspendedReviewRetry,
+    selectedTaskId,
+    t,
+  ]);
+
+  useEffect(() => {
+    if (!hasReviewSuspension || !reviewSuspension) {
+      reviewSuspensionStateRef.current = null;
+      return;
+    }
+    const observed = reviewSuspensionStateRef.current;
+    if (observed?.suspension !== reviewSuspension) {
+      reviewSuspensionStateRef.current = {
+        suspension: reviewSuspension,
+        contextSignature: reviewContextSignature,
+      };
+      return;
+    }
+    if (observed.contextSignature === reviewContextSignature) {
+      return;
+    }
+    reviewSuspensionStateRef.current = {
+      suspension: reviewSuspension,
+      contextSignature: reviewContextSignature,
+    };
+    void runSuspendedReviewRetry(reviewSuspension.taskId);
+  }, [
+    reviewContextSignature,
+    reviewSuspension,
+    hasReviewSuspension,
+    runSuspendedReviewRetry,
   ]);
 
   useEffect(() => {
@@ -1157,6 +1311,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       isReadOnlyRemoteMode ||
       !hasRepositoryScope ||
       hasResourcePressureError ||
+      hasReviewSuspension ||
       !canAutoRefreshFileChangesForTask({
         selectedTaskId,
         taskStatus: currentTask?.status,
@@ -1166,6 +1321,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         isPlanFinalizationTask: false,
         hasActiveMergeWorkflow: false,
         hasResourcePressureError,
+        hasReviewSuspension,
         isResourcePressureBackoffActive: isTooManyOpenFilesBackoffActive(),
       }) ||
       !currentTask ||
@@ -1207,6 +1363,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   }, [
     currentMergeWorkflowRuntime,
     currentTask,
+    hasReviewSuspension,
     hasRepositoryScope,
     hasResourcePressureError,
     isCommitting,
@@ -1470,9 +1627,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         fallbackBody: mappingError,
       })
     : null;
-  const displayErrorPresentation = displayError
-    ? presentServiceError(displayError, {
-        fallbackBody: displayError,
+  const reviewError = hasReviewSuspension
+    ? reviewSuspension?.error ?? null
+    : displayError || null;
+  const displayErrorPresentation = reviewError
+    ? presentServiceError(reviewError, {
+        fallbackBody: displayError || undefined,
       })
     : null;
   const runCommit = async (
@@ -1747,6 +1907,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   }, []);
 
   const handleOpenCommit = () => {
+    if (hasReviewSuspension) return;
     if (isReadOnlyRemoteMode) {
       notify.error(REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE);
       return;
@@ -1757,6 +1918,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const handleFinishTask = async () => {
     if (
       !currentTask ||
+      hasReviewSuspension ||
       isCommitting ||
       isGeneratingCommitMessages ||
       isFinishingTask ||
@@ -1794,8 +1956,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     }
   };
   const isPrimaryActionDisabled = canFinishTask
-    ? isGeneratingCommitMessages || isFinishingTask
-    : isCommitDisabled;
+    ? hasReviewSuspension || isGeneratingCommitMessages || isFinishingTask
+    : hasReviewSuspension || isCommitDisabled;
   const primaryActionTitle = !canFinishTask && isCommitDisabled
     ? commitDisabledReason
     : undefined;
@@ -1964,23 +2126,35 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           />
         )}
-        {!isLoading && !mappingError && !displayError && outOfScopeMessage && (
+        {!isLoading && !mappingError && !reviewError && outOfScopeMessage && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {outOfScopeMessage}
           </div>
         )}
-        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && draftEmptyStateMessage && (
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !reviewError && !outOfScopeMessage && draftEmptyStateMessage && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {draftEmptyStateMessage}
           </div>
         )}
-        {!isLoading && !dependencyBlockedMessage && displayError && (
-          <div className="px-4 py-6">
+        {!isLoading && !dependencyBlockedMessage && reviewError && (
+          <div data-review-suspended={hasReviewSuspension ? 'true' : undefined} className="px-4 py-6">
             {displayErrorPresentation ? (
               <ActionableErrorCallout
                 presentation={displayErrorPresentation}
-                actionLabel={t('common.retry', 'Retry')}
-                onAction={() => void loadCurrentChanges()}
+                announce={hasReviewSuspension}
+                actionLabel={displayErrorPresentation.primaryAction === 'retry'
+                  ? t('common.retry', 'Retry')
+                  : displayErrorPresentation.primaryAction === 'open_project_settings' && reviewProjectId
+                    ? t('projects.projectSettings', 'Project settings')
+                    : null}
+                onAction={displayErrorPresentation.primaryAction === 'retry'
+                  ? () => void (hasReviewSuspension
+                    ? runSuspendedReviewRetry(reviewSuspension?.taskId)
+                    : loadCurrentChanges()
+                  )
+                  : displayErrorPresentation.primaryAction === 'open_project_settings' && reviewProjectId
+                    ? openReviewProjectSettings
+                    : null}
                 compact
               />
             ) : (
@@ -1988,12 +2162,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
             )}
           </div>
         )}
-        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && !showArtifactRepository && (
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !reviewError && !outOfScopeMessage && !draftEmptyStateMessage && repositories.length === 0 && !showArtifactRepository && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.noPendingChanges', 'No pending file changes for this task yet.')}
           </div>
         )}
-        {!isLoading && !mappingError && !dependencyBlockedMessage && !displayError && repositories.map((repository) => {
+        {!isLoading && !mappingError && !dependencyBlockedMessage && !reviewError && repositories.map((repository) => {
           const project = getProjectById(repository.projectId);
           const repositorySummary = repositorySummaryById.get(repository.id);
           const isExpanded =
@@ -2404,11 +2578,11 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           <button
             onClick={handleValidateChanges}
             data-tour-id="implement-validate-changes"
-            disabled={isValidateChangesDisabled}
+            disabled={hasReviewSuspension || isValidateChangesDisabled}
             title={isValidateChangesDisabled ? validateChangesDisabledReason : undefined}
             className={cn(
               'w-full py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
-              isValidateChangesDisabled
+              hasReviewSuspension || isValidateChangesDisabled
                 ? 'bg-muted text-muted-foreground cursor-not-allowed'
                 : 'bg-primary text-primary-foreground hover:bg-primary/90'
             )}
@@ -2434,7 +2608,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         </button>
       </div>
 
-      {isDiffModalOpen && selectedDiffTarget && (
+      {!hasReviewSuspension && isDiffModalOpen && selectedDiffTarget && (
         <FileChangesDiffModal
           onClose={closeDiffModal}
         />

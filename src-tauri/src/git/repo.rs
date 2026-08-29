@@ -7,13 +7,35 @@ use crate::core::error::{BackendError, Result};
 pub fn get_head_commit(repo: &Repository) -> Result<Option<Commit<'_>>> {
     let head = match repo.head() {
         Ok(head) => head,
-        Err(_) => return Ok(None),
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
 
-    let commit = head.peel_to_commit().map_err(|e| BackendError::Git {
-        message: e.to_string(),
+    let target = head.target().map(|oid| oid.to_string());
+    let commit = head.peel_to_commit().map_err(|error| {
+        BackendError::git_object_missing(error, target, Some("head_commit".to_string()))
     })?;
     Ok(Some(commit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn unborn_head_is_the_only_missing_head_treated_as_empty() {
+        let temp = TempDir::new().expect("temporary repository");
+        let repo = Repository::init(temp.path()).expect("initialize repository");
+        assert!(get_head_commit(&repo).expect("unborn repository").is_none());
+
+        fs::remove_file(repo.path().join("HEAD")).expect("remove HEAD reference");
+        assert!(
+            get_head_commit(&repo).is_err(),
+            "a missing HEAD reference must not look like an empty repository"
+        );
+    }
 }
 
 pub fn get_branch_name(repo: &Repository) -> Result<Option<String>> {

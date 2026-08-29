@@ -1,6 +1,9 @@
 {
   "tasks": "Tasks",
+  "searchTasks": "Search tasks...",
+  "noSearchResults": "No task matches this search.",
   "createStandaloneTask": "Create standalone task",
+  "standaloneLaunch": { "title": "Task preparation", "preparingTask": "Preparing task", "creatingName": "Creating name", "creatingWorkspace": "Creating workspace", "preparingProject": "Preparing project", "startingAgent": "Starting agent", "ready": "Ready", "retry": "Retry", "details": "Details" },
   "selectProject": "Select a project to view tasks",
   "selectTaskShort": "Select a task",
   "selectTask": "Select a task to review changes",
@@ -409,7 +412,8 @@
     "commitMessageRequired": "Commit message is required.",
     "commitSucceededTaskNotCompleted": "Changes were committed, but the task could not be completed automatically.",
     "deletedChangeReadOnly": "Deleted files are read-only during review. Restore them from the task flow instead.",
-    "revertChangesFailed": "Failed to revert changes."
+    "revertChangesFailed": "Failed to revert changes.",
+    "reviewChangedSinceLoad": "The file changed after this review loaded. Refresh the review before retrying."
   },
   "taskCommandsManualDraftUnsupported": "Send a first message to prepare this feature's branch, worktree, and terminal.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

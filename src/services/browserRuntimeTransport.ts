@@ -14,6 +14,7 @@ const BRIDGE_PORT = 1430;
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 10_000;
 const INVOKE_TIMEOUT_MS = 10 * 60_000;
+const SESSION_REPLACED_CLOSE_CODE = 4009;
 
 type RpcResponse = {
   status: 'success' | 'error';
@@ -32,6 +33,7 @@ let nextRequestId = 0;
 let connectionGeneration = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+let terminalDisconnectError: Error | null = null;
 
 const pendingRequests = new Map<number, PendingRequest>();
 const eventListeners = new Map<string, Set<EventCallback<unknown>>>();
@@ -42,8 +44,16 @@ const browserRuntimeConnectionError = (code: string, technicalDetails?: string):
     { code, technicalDetails },
   );
 
+const browserRuntimeSessionReplacedError = (): Error =>
+  Object.assign(
+    new Error(
+      'Macro moved the desktop runtime session to another browser tab. Reload this tab to take control again.',
+    ),
+    { code: 'BROWSER_RUNTIME_SESSION_REPLACED' },
+  );
+
 const scheduleReconnect = (): void => {
-  if (eventListeners.size === 0 || reconnectTimer !== null) return;
+  if (terminalDisconnectError || eventListeners.size === 0 || reconnectTimer !== null) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     void connect().catch(() => {
@@ -108,6 +118,7 @@ const handleMessage = (message: MessageEvent<string>): void => {
 };
 
 const connect = (): Promise<WebSocket> => {
+  if (terminalDisconnectError) return Promise.reject(terminalDisconnectError);
   if (socket?.readyState === WebSocket.OPEN) return Promise.resolve(socket);
   if (socketReady) return socketReady;
 
@@ -130,6 +141,7 @@ const connect = (): Promise<WebSocket> => {
         return;
       }
       opened = true;
+      terminalDisconnectError = null;
       socket = bridgeSocket;
       reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
       if (reconnectTimer !== null) {
@@ -150,10 +162,19 @@ const connect = (): Promise<WebSocket> => {
       rejectPendingRequests(browserRuntimeConnectionError('BROWSER_RUNTIME_CONNECTION_ERROR'));
       if (opened) scheduleReconnect();
     });
-    bridgeSocket.addEventListener('close', () => {
+    bridgeSocket.addEventListener('close', (event) => {
       if (generation !== connectionGeneration) return;
       if (socket === bridgeSocket) socket = null;
       socketReady = null;
+      if (event.code === SESSION_REPLACED_CLOSE_CODE) {
+        terminalDisconnectError = browserRuntimeSessionReplacedError();
+        if (reconnectTimer !== null) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        rejectPendingRequests(terminalDisconnectError);
+        return;
+      }
       rejectPendingRequests(browserRuntimeConnectionError('BROWSER_RUNTIME_CONNECTION_CLOSED'));
       if (opened) scheduleReconnect();
     });

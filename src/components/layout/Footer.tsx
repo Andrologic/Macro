@@ -20,7 +20,11 @@ import { openConflictAssistant } from '../../services/conflictAssistantService';
 import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
-import { resolveFooterGitContext } from '../../services/footerGitContext';
+import {
+  resolveFooterGitContext,
+  type FooterGitContext,
+  type FooterGitFolder,
+} from '../../services/footerGitContext';
 import { getPlanExecutionModesByProjectId } from '../../services/planExecutionModes';
 import { NotificationCenterPopover } from './NotificationCenterPopover';
 import { UpdateStatusButton } from '../updates/UpdateStatusButton';
@@ -41,6 +45,32 @@ type CodeDivergencePreflightStatus =
   | 'failed';
 type MacroConflictContext = FooterSyncAction | 'refresh';
 type TranslateFn = (key: string, fallback: string, options?: Record<string, unknown>) => string;
+type AppStoreState = ReturnType<typeof useAppStore.getState>;
+type TaskStoreState = ReturnType<typeof useTaskStore.getState>;
+type ChatStoreState = ReturnType<typeof useChatStore.getState>;
+
+interface FooterContextSnapshot {
+  mode: AppStoreState['mode'];
+  selectedProjectId: AppStoreState['selectedProjectId'];
+  standaloneProjects: AppStoreState['standaloneProjects'];
+  projectGroups: AppStoreState['projectGroups'];
+  selectedTaskId: AppStoreState['selectedTaskId'];
+  activeArchitectPlanId: AppStoreState['activeArchitectPlanId'];
+  activePlanContext: AppStoreState['activePlanContext'];
+  visibleArchitectPlans: AppStoreState['visibleArchitectPlans'];
+  planNodes: AppStoreState['planNodes'];
+  tasks: TaskStoreState['tasks'];
+  conversations: ChatStoreState['conversations'];
+  selectedConversationId: ChatStoreState['selectedConversationId'];
+}
+
+const footerGitContextSignature = (context: FooterGitContext): string =>
+  JSON.stringify({
+    contextKey: context.contextKey,
+    reason: context.reason,
+    project: context.project,
+    candidates: context.candidates,
+  });
 
 interface ScopedProject {
   id: string;
@@ -695,7 +725,23 @@ const CodeDivergenceResolutionModal: React.FC<CodeDivergenceResolutionModalProps
   );
 };
 
-export const Footer: React.FC = () => {
+interface FooterContentProps {
+  gitContext: FooterGitContext;
+  canSelectFolder: boolean;
+  gitScopeProjectId: string | null;
+  setGitScopeProjectId: React.Dispatch<React.SetStateAction<string | null>>;
+  selectedFolder: FooterGitFolder | null;
+  setSelectedFolder: React.Dispatch<React.SetStateAction<FooterGitFolder | null>>;
+}
+
+const FooterContent: React.FC<FooterContentProps> = React.memo(({
+  gitContext,
+  canSelectFolder,
+  gitScopeProjectId,
+  setGitScopeProjectId,
+  selectedFolder,
+  setSelectedFolder,
+}) => {
   const { t } = useTranslation();
   const translate = useCallback<TranslateFn>(
     (key, fallback, options) => String(t(key, { defaultValue: fallback, ...(options || {}) })),
@@ -703,41 +749,16 @@ export const Footer: React.FC = () => {
   );
   const isTauriRuntime = tauriIpc.isTauriAvailable();
   const {
-    mode,
-    selectedProjectId,
-    standaloneProjects,
-    projectGroups,
-    selectedTaskId,
-    activeArchitectPlanId,
-    activePlanContext,
-    visibleArchitectPlans,
-    planNodes,
     metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy,
   } = useAppStore(useShallow((state) => ({
-    mode: state.mode,
-    selectedProjectId: state.selectedProjectId,
-    standaloneProjects: state.standaloneProjects ?? [],
-    projectGroups: state.projectGroups,
-    selectedTaskId: state.selectedTaskId,
-    activeArchitectPlanId: state.activeArchitectPlanId,
-    activePlanContext: state.activePlanContext,
-    visibleArchitectPlans: state.visibleArchitectPlans,
-    planNodes: state.planNodes,
     metadataMissingUpstreamPolicy: state.metadataMissingUpstreamPolicy,
     setMetadataMissingUpstreamPolicy: state.setMetadataMissingUpstreamPolicy,
-  })));
-  const tasks = useTaskStore((state) => state.tasks);
-  const { conversations, selectedConversationId } = useChatStore(useShallow((state) => ({
-    conversations: state.conversations,
-    selectedConversationId: state.selectedConversationId,
   })));
   const notificationItems = useNotificationCenterStore((state) => state.items);
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
   const setNotificationCenterOpen = useNotificationCenterStore((state) => state.setCenterOpen);
 
-  const [gitScopeProjectId, setGitScopeProjectId] = useState<string | null>(null);
-  const [selectedFolder, setSelectedFolder] = useState<{ name: string; path: string } | null>(null);
   const [codeStatus, setCodeStatus] = useState(DEFAULT_CODE_STATUS);
   const [focusedProjectBranch, setFocusedProjectBranch] = useState<string | null>(null);
   const [macroSnapshot, setMacroSnapshot] = useState<tauriIpc.MacroBranchSyncDto | null>(null);
@@ -762,32 +783,6 @@ export const Footer: React.FC = () => {
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const footerMetadataSyncRef = useRef(footerMetadataSync);
 
-  const registeredProjectCount = standaloneProjects.length + projectGroups.reduce(
-    (count, group) => count + group.projects.length,
-    0,
-  );
-  const canSelectFolder = mode === 'Architect' && registeredProjectCount === 0;
-
-  const gitContext = useMemo(() => resolveFooterGitContext({
-    mode,
-    standaloneProjects,
-    projectGroups,
-    selectedTaskId,
-    tasks,
-    activeArchitectPlanId,
-    visibleArchitectPlans,
-    selectedConversationId,
-    conversations,
-    durableFocusProjectId: selectedProjectId,
-    manualProjectId: gitScopeProjectId,
-    selectedFolder: canSelectFolder ? selectedFolder : null,
-    activeArchitectPlanExecutionModesByProjectId: activeArchitectPlanId
-      ? getPlanExecutionModesByProjectId(
-          planNodes,
-          activePlanContext?.executionModesByProjectId,
-        )
-      : undefined,
-  }), [activeArchitectPlanId, activePlanContext?.executionModesByProjectId, canSelectFolder, conversations, gitScopeProjectId, mode, planNodes, projectGroups, selectedConversationId, selectedFolder, selectedProjectId, selectedTaskId, standaloneProjects, tasks, visibleArchitectPlans]);
   const focusProjects = gitContext.candidates;
   const focusedProject = gitContext.project;
   const scopeProjects = useMemo<ScopedProject[]>(
@@ -883,18 +878,18 @@ export const Footer: React.FC = () => {
 
   useEffect(() => {
     setGitScopeProjectId(null);
-  }, [gitContext.contextKey]);
+  }, [gitContext.contextKey, setGitScopeProjectId]);
 
   useEffect(() => {
     if (!canSelectFolder) setSelectedFolder(null);
-  }, [canSelectFolder]);
+  }, [canSelectFolder, setSelectedFolder]);
 
   useEffect(() => {
     if (!gitScopeProjectId) return;
     if (!focusProjects.some((project) => project.id === gitScopeProjectId)) {
       setGitScopeProjectId(null);
     }
-  }, [focusProjects, gitScopeProjectId]);
+  }, [focusProjects, gitScopeProjectId, setGitScopeProjectId]);
 
   useEffect(() => {
     footerMetadataSyncRef.current = footerMetadataSync;
@@ -927,7 +922,7 @@ export const Footer: React.FC = () => {
     } finally {
       setIsSelectingFolder(false);
     }
-  }, [canSelectFolder, isSelectingFolder, isTauriRuntime, t]);
+  }, [canSelectFolder, isSelectingFolder, isTauriRuntime, setSelectedFolder, t]);
 
   const refreshCodeStatus = useCallback(async () => {
     if (!isTauriRuntime || scopeProjects.length === 0) {
@@ -2382,5 +2377,75 @@ export const Footer: React.FC = () => {
         onClose={() => setNotificationCenterOpen(false)}
       />
     </>
+  );
+});
+
+FooterContent.displayName = 'FooterContent';
+
+export const Footer: React.FC = () => {
+  const appContext = useAppStore(useShallow((state) => ({
+    mode: state.mode,
+    selectedProjectId: state.selectedProjectId,
+    standaloneProjects: state.standaloneProjects ?? [],
+    projectGroups: state.projectGroups,
+    selectedTaskId: state.selectedTaskId,
+    activeArchitectPlanId: state.activeArchitectPlanId,
+    activePlanContext: state.activePlanContext,
+    visibleArchitectPlans: state.visibleArchitectPlans,
+    planNodes: state.planNodes,
+  })));
+  const tasks = useTaskStore((state) => state.tasks);
+  const chatContext = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    selectedConversationId: state.selectedConversationId,
+  })));
+  const currentContextSnapshot = useMemo<FooterContextSnapshot>(() => ({
+    ...appContext,
+    tasks,
+    ...chatContext,
+  }), [appContext, chatContext, tasks]);
+  const [gitScopeProjectId, setGitScopeProjectId] = useState<string | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<FooterGitFolder | null>(null);
+  const registeredProjectCount = currentContextSnapshot.standaloneProjects.length +
+    currentContextSnapshot.projectGroups.reduce(
+      (count, group) => count + group.projects.length,
+      0,
+    );
+  const canSelectFolder = currentContextSnapshot.mode === 'Architect' && registeredProjectCount === 0;
+  const resolvedGitContext = useMemo(() => resolveFooterGitContext({
+    mode: currentContextSnapshot.mode,
+    standaloneProjects: currentContextSnapshot.standaloneProjects,
+    projectGroups: currentContextSnapshot.projectGroups,
+    selectedTaskId: currentContextSnapshot.selectedTaskId,
+    tasks: currentContextSnapshot.tasks,
+    activeArchitectPlanId: currentContextSnapshot.activeArchitectPlanId,
+    visibleArchitectPlans: currentContextSnapshot.visibleArchitectPlans,
+    selectedConversationId: currentContextSnapshot.selectedConversationId,
+    conversations: currentContextSnapshot.conversations,
+    durableFocusProjectId: currentContextSnapshot.selectedProjectId,
+    manualProjectId: gitScopeProjectId,
+    selectedFolder: canSelectFolder ? selectedFolder : null,
+    activeArchitectPlanExecutionModesByProjectId: currentContextSnapshot.activeArchitectPlanId
+      ? getPlanExecutionModesByProjectId(
+          currentContextSnapshot.planNodes,
+          currentContextSnapshot.activePlanContext?.executionModesByProjectId,
+        )
+      : undefined,
+  }), [canSelectFolder, currentContextSnapshot, gitScopeProjectId, selectedFolder]);
+  const gitContextSignature = footerGitContextSignature(resolvedGitContext);
+  // The semantic signature keeps the previous object when an unrelated project
+  // focus update resolves to the same effective repository context.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const stableGitContext = useMemo(() => resolvedGitContext, [gitContextSignature]);
+
+  return (
+    <FooterContent
+      gitContext={stableGitContext}
+      canSelectFolder={canSelectFolder}
+      gitScopeProjectId={gitScopeProjectId}
+      setGitScopeProjectId={setGitScopeProjectId}
+      selectedFolder={selectedFolder}
+      setSelectedFolder={setSelectedFolder}
+    />
   );
 };

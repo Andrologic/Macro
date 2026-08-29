@@ -310,6 +310,18 @@ Lors de la création d'une tâche indépendante, la fenêtre présente d'abord u
 
 Le type `direct` ne crée ni branche ni worktree. Sur un projet Git, Macro capture la branche et le commit courants lors de la création, puis travaille dans le dossier du projet. Le dossier doit être propre au départ. Pendant la revue, l'utilisateur valide les fichiers comme pour une autre tâche. Le commit est créé dans le dossier du projet sur la branche capturée, puis la tâche se termine sans merge ni suppression de branche. Macro bloque le commit si la branche courante a changé entre-temps.
 
+Lors du premier envoi d'une tâche indépendante encore au brouillon, Macro enregistre et affiche le message utilisateur avant de préparer son environnement d'exécution. Une carte compacte sous ce message expose les étapes réellement franchies : préparation de la tâche, création du nom, création de l'espace de travail, préparation du projet et démarrage de l'agent. La carte coche les étapes terminées, anime l'étape active et garde les suivantes discrètes. Elle n'affiche ni pourcentage ni estimation fondée sur le temps écoulé.
+
+Avant ce premier envoi, l'instruction de démarrage flotte au bas de la conversation, au-dessus de toute la zone de composition et de ses contrôles, et non dans l'en-tête. La notice disparaît dès que le premier message est accepté. Macro vide alors le composer sans attendre la fin de la préparation. Si l'envoi échoue avant d'être accepté, Macro restaure le brouillon et ses pièces jointes.
+
+Macro persiste localement le brouillon non envoyé de chaque composer. Le texte, les images collées et les références de contexte sont isolés par conversation ou par contexte de tâche et reviennent après un redémarrage complet. Un envoi accepté efface le brouillon envoyé. Un échec le conserve. L'archivage ou la suppression définitive d'une conversation efface son brouillon, et Macro ignore au chargement tout brouillon invalide, archivé ou rattaché à une conversation absente.
+
+Le chat affiche au même emplacement flottant les informations et erreurs liées à la composition : erreur d'exécution Macro, incompatibilité entre une skill et le modèle choisi, conversation archivée et tâche bloquée. Ces notices restent au-dessus des contrôles sans modifier la hauteur du composer. Les réponses d'erreur de l'agent restent dans le transcript auquel elles appartiennent. Les questionnaires, les demandes d'approbation et la barre d'objectif gardent leurs interfaces dédiées, car l'utilisateur doit pouvoir agir directement dessus.
+
+La création du nom sollicite le fournisseur configuré pendant au plus 15 secondes. Si cette requête échoue ou ne répond pas, Macro utilise un titre et un nom de branche locaux issus du premier message, puis poursuit la création de l'espace de travail. Le fournisseur de métadonnées ne peut donc pas bloquer indéfiniment le premier démarrage.
+
+La progression reste liée à la conversation lorsque l'utilisateur consulte une autre tâche. Revenir sur la tâche montre l'étape courante sans relancer la préparation. La carte disparaît dès que l'agent commence sa première réponse. Macro remplace le titre provisoire lorsque le nom final est prêt. Si une étape échoue, la carte conserve cette étape et son erreur. Elle propose de réessayer uniquement lorsque Macro a pu remettre la tâche dans son brouillon sûr. Tant que la préparation ou l'agent est actif, un nouvel envoi ne peut pas lancer une seconde exécution de la même conversation.
+
 Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, la création d'une tâche demande uniquement de sélectionner le projet : Macro choisit automatiquement le type `direct` et ne présente aucun choix de type ou de point de départ Git. Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche `direct` peut être active par projet et les outils Git ne sont pas exposés à l'agent.
 
 Architect peut créer un plan direct, Git ou mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation, l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les cibles directes utilisent leur dossier source et leur point de restauration privé. Le plan et son transcript restent dans les métadonnées locales du projet, même si Git est initialisé ensuite. Les nouvelles tâches peuvent utiliser Git, mais une cible déjà persistée en mode direct conserve ce mode jusqu'à la fin de la tâche.
@@ -368,6 +380,16 @@ Exemples :
 - file de tâches en mode Implement
 - historique ou navigation de conversations en mode Chat
 - navigation directe dans les projets, groupes et plans en mode Architect
+
+Chaque panneau gauche propose une recherche locale propre à son mode. Implement
+recherche uniquement les tâches, Chat uniquement les conversations et Architect
+uniquement les plans. Une icône compacte dans l'en-tête du panneau ouvre le
+champ à la place du titre, sans ajouter de bandeau ni modifier durablement la
+hauteur du panneau. Le filtre s'applique dès la saisie, sans tenir compte de la
+casse ni des accents. Une requête vide restitue la liste courante. Les filtres,
+les archives et le tri déjà actifs restent appliqués aux résultats. Une
+recherche sans correspondance affiche un état vide explicite. Choisir un
+résultat déclenche la même sélection que dans la liste non filtrée.
 
 En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.
 
@@ -726,6 +748,10 @@ L'utilisateur doit pouvoir :
 - approuver le résultat
 - demander des améliorations
 - apporter de petits ajustements manuels
+
+Si un objet Git nécessaire à la review reste absent après une actualisation et une seule relance, Macro suspend les actualisations automatiques de cette review. L’interface précise qu’aucun fichier de travail n’a été modifié, propose de réessayer et donne accès aux détails Git. Une nouvelle tentative explicite, un changement de tâche ou une modification des métadonnées de review peut reprendre le chargement. Un changement d’état sans lien avec la review ne la relance pas. Macro ne lance aucune réparation destructive pour traiter cette erreur.
+
+Pour un projet sans Git, la review repose sur l’historique interne de Macro. Si ce checkpoint est absent, lié à un autre projet ou incomplet, le panneau suspend ses actualisations et nomme le checkpoint interne, pas un dépôt Git utilisateur. Macro conserve l’historique disponible et les fichiers du projet. Une réparation qui pourrait perdre un état accepté n’est jamais automatique.
 
 ### 14.5 Édition manuelle autorisée pendant la review
 

@@ -52,6 +52,18 @@ export const resolveProjectExecutionMode = (params: {
     return { mode: 'invalid', reason: 'target_project_mismatch', source: 'persisted_target' };
   }
 
+  if (
+    target?.executionMode !== undefined &&
+    target.executionMode !== 'git' &&
+    target.executionMode !== 'direct'
+  ) {
+    return {
+      mode: 'invalid',
+      reason: 'contradictory_project_metadata',
+      source: 'persisted_target',
+    };
+  }
+
   if (target?.checkpointId && target.executionMode === 'git') {
     return {
       mode: 'invalid',

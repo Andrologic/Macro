@@ -16,6 +16,7 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { presentServiceError } from '../../services/degradedErrorPresentation';
 import type {
+  ComposerDraft,
   ManualCompactionResult,
   ManualCompactionSkipReason,
   MessageImageAttachment,
@@ -29,6 +30,7 @@ import type {
   PredictedBranch,
   SkillManifest,
   SkillTurnFeedback,
+  StandaloneTaskLaunchProgress,
   WorkspaceFileReference,
 } from '../../types';
 import { useProviderStore } from '../../stores/useProviderStore';
@@ -103,6 +105,9 @@ import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation
 import { notify } from '../ui/toastService';
 import { toServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
+import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
+import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
+import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -403,6 +408,7 @@ interface ChatMessageRowProps {
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
   skillTurnFeedback?: SkillTurnFeedback | null;
+  standaloneLaunchProgress?: StandaloneTaskLaunchProgress | null;
 }
 
 const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
@@ -412,6 +418,28 @@ interface SavedComposerDraft {
   savedDraftImages: MessageImageAttachment[];
   savedDraftContextRefs: ContextReference[];
 }
+
+const isComposerDraftEmpty = (draft: ComposerDraft): boolean =>
+  draft.text.length === 0 && draft.images.length === 0 && draft.contextRefs.length === 0;
+
+const composerDraftMatchesSavedDraft = (
+  draft: ComposerDraft | null,
+  savedDraft: SavedComposerDraft,
+): boolean =>
+  Boolean(
+    draft &&
+    draft.text === savedDraft.savedDraftText &&
+    draft.images.length === savedDraft.savedDraftImages.length &&
+    draft.images.every((image, index) => {
+      const savedImage = savedDraft.savedDraftImages[index];
+      return savedImage?.id === image.id && savedImage.dataUrl === image.dataUrl;
+    }) &&
+    draft.contextRefs.length === savedDraft.savedDraftContextRefs.length &&
+    draft.contextRefs.every((ref, index) => {
+      const savedRef = savedDraft.savedDraftContextRefs[index];
+      return savedRef?.id === ref.id && savedRef.kind === ref.kind;
+    }),
+  );
 
 interface ComposerEditSession extends SavedComposerDraft {
   messageId: string;
@@ -709,6 +737,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onEditStart,
   onRegenerate,
   skillTurnFeedback,
+  standaloneLaunchProgress,
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
@@ -753,6 +782,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
         )}
       >
         <div
+          data-chat-message-bubble="true"
           className={cn(
             'relative rounded-lg group',
             message.role === 'user'
@@ -902,6 +932,17 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           )}
         </div>
       </div>
+      {message.role === 'user' && standaloneLaunchProgress && (
+        <div
+          data-testid="standalone-task-launch-progress-container"
+          className="mx-auto w-full max-w-sm"
+        >
+          <StandaloneTaskLaunchProgressCard
+            progress={standaloneLaunchProgress}
+            onRetry={() => void onRegenerate(message.id, message.content)}
+          />
+        </div>
+      )}
     </div>
   );
 };
@@ -917,7 +958,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
-    prev.skillTurnFeedback === next.skillTurnFeedback
+    prev.skillTurnFeedback === next.skillTurnFeedback &&
+    prev.standaloneLaunchProgress === next.standaloneLaunchProgress
 );
 
 /**
@@ -1014,6 +1056,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationId,
     activeContextKey,
     selectedConversationRuntime,
+    standaloneTaskLaunchByConversationId,
     conversationCompactionStatusById,
     sessionCompactionEventsByConversationId,
     contextDiagnosticsByConversationId,
@@ -1070,6 +1113,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
+    standaloneTaskLaunchByConversationId:
+      state.standaloneTaskLaunchByConversationId ?? {},
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     sessionCompactionEventsByConversationId:
       state.sessionCompactionEventsByConversationId,
@@ -1207,6 +1252,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [composerDraftContextKey]);
   const activeComposerDraftContextKeyRef = useRef<string | null>(null);
   const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
+  const skipComposerDraftPersistenceRef = useRef(false);
+  const pendingSentComposerDraftContextKeysRef = useRef(new Set<string>());
   const latestComposerDraftRef = useRef({
     text: '',
     images: [] as MessageImageAttachment[],
@@ -1226,6 +1273,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           messages.filter((message) => message.conversation_id === selectedConversationId)
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
+  );
+  const activeStandaloneLaunchProgress = selectedConversationId
+    ? standaloneTaskLaunchByConversationId[selectedConversationId]
+    : undefined;
+  const visibleStandaloneLaunchProgress = useMemo(() => {
+    if (!activeStandaloneLaunchProgress) return undefined;
+    const kickoffMessageIndex = currentMessages.findIndex(
+      (message) => message.id === activeStandaloneLaunchProgress.userMessageId
+    );
+    if (kickoffMessageIndex < 0) return activeStandaloneLaunchProgress;
+    const agentHasStartedReplying = currentMessages
+      .slice(kickoffMessageIndex + 1)
+      .some((message) => message.role === 'assistant');
+    return agentHasStartedReplying ? undefined : activeStandaloneLaunchProgress;
+  }, [activeStandaloneLaunchProgress, currentMessages]);
+  const showManualDraftComposerNotice = Boolean(
+    mode === 'Implement' &&
+      isManualDraftPendingInitialization(selectedTask) &&
+      !activeStandaloneLaunchProgress &&
+      !currentMessages.some((message) => message.role === 'user')
   );
 
   useEffect(() => {
@@ -1613,10 +1680,27 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               contextRefs: goalComposerEditSession.savedDraftContextRefs,
             }
         : latestComposerDraftRef.current;
-      saveComposerDraftForContext(previousContextKey, draftToSave);
+      const hasVisibleDraft =
+        draftToSave.text.length > 0 ||
+        draftToSave.images.length > 0 ||
+        draftToSave.contextRefs.length > 0;
+      if (
+        hasVisibleDraft ||
+        !pendingSentComposerDraftContextKeysRef.current.has(previousContextKey)
+      ) {
+        if (hasVisibleDraft) {
+          pendingSentComposerDraftContextKeysRef.current.delete(previousContextKey);
+        }
+        saveComposerDraftForContext(previousContextKey, draftToSave);
+      }
     }
 
-    const savedNextDraft = getComposerDraftForContext(composerDraftContextKey);
+    const savedNextDraft = pendingSentComposerDraftContextKeysRef.current.has(
+      composerDraftContextKey,
+    )
+      ? null
+      : getComposerDraftForContext(composerDraftContextKey);
+    skipComposerDraftPersistenceRef.current = true;
     activeComposerDraftContextKeyRef.current = composerDraftContextKey;
     if (!previousContextKey && !savedNextDraft) {
       return;
@@ -1675,6 +1759,61 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       contextRefs: cloneContextRefs(composerContextRefs),
     };
   }, [composerContextRefs, composerImages, inputValue]);
+
+  useEffect(() => {
+    if (activeComposerDraftContextKeyRef.current !== composerDraftContextKey) return;
+    if (skipComposerDraftPersistenceRef.current) {
+      skipComposerDraftPersistenceRef.current = false;
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      const hasVisibleDraft =
+        inputValue.length > 0 ||
+        composerImages.length > 0 ||
+        composerContextRefs.length > 0;
+      if (
+        !hasVisibleDraft &&
+        pendingSentComposerDraftContextKeysRef.current.has(composerDraftContextKey)
+      ) {
+        return;
+      }
+      if (hasVisibleDraft) {
+        pendingSentComposerDraftContextKeysRef.current.delete(composerDraftContextKey);
+      }
+      saveComposerDraftForContext(composerDraftContextKey, {
+        text: inputValue,
+        images: [...composerImages],
+        contextRefs: cloneContextRefs(composerContextRefs),
+      });
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    composerContextRefs,
+    composerDraftContextKey,
+    composerImages,
+    inputValue,
+    saveComposerDraftForContext,
+  ]);
+
+  useEffect(() => {
+    const persistActiveDraft = () => {
+      const contextKey = activeComposerDraftContextKeyRef.current;
+      if (contextKey) {
+        const draft = latestComposerDraftRef.current;
+        if (
+          pendingSentComposerDraftContextKeysRef.current.has(contextKey) &&
+          draft.text.length === 0 &&
+          draft.images.length === 0 &&
+          draft.contextRefs.length === 0
+        ) {
+          return;
+        }
+        saveComposerDraftForContext(contextKey, draft);
+      }
+    };
+    window.addEventListener('pagehide', persistActiveDraft);
+    return () => window.removeEventListener('pagehide', persistActiveDraft);
+  }, [saveComposerDraftForContext]);
 
   const streamingMessageContentLength =
     currentMessages[currentMessages.length - 1]?.content.length ?? 0;
@@ -2345,6 +2484,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         estimatedChanges: selectedTask.estimated_changes,
         notes: params?.notesOverride ?? composerEditorRef.current?.getTextContent() ?? '',
       });
+      const sentDraft: SavedComposerDraft = {
+        savedDraftText: latestComposerDraftRef.current.text,
+        savedDraftImages: [...latestComposerDraftRef.current.images],
+        savedDraftContextRefs: cloneContextRefs(latestComposerDraftRef.current.contextRefs),
+      };
+      saveComposerDraftForContext(composerDraftContextKey, {
+        text: sentDraft.savedDraftText,
+        images: sentDraft.savedDraftImages,
+        contextRefs: sentDraft.savedDraftContextRefs,
+      });
+      migrateComposerDraftContext(
+        composerDraftContextKey,
+        `conversation:${conversationId}`,
+      );
 
       const result = await sendMessage({
         conversationId,
@@ -2357,11 +2510,41 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           result.status === 'sent' ? 'executor_running' : 'paused',
         );
       }
-      clearComposerDraftForContext(composerDraftContextKey);
-      clearComposerDraftForContext(`conversation:${conversationId}`);
-      composerEditorRef.current?.clear();
-      setInputValue('');
-      resetPromptHistoryNavigation();
+      if (result.status !== 'sent') {
+        delete executionKickoffByConversationRef.current[conversationId];
+        return false;
+      }
+
+      const conversationDraftKey = `conversation:${conversationId}`;
+      const activeDraftContext = activeComposerDraftContextKeyRef.current;
+      const activeDraftTargetsSentConversation =
+        activeDraftContext === composerDraftContextKey ||
+        activeDraftContext === conversationDraftKey;
+      const latestDraft = latestComposerDraftRef.current;
+      const visibleDraftWasReplaced =
+        activeDraftTargetsSentConversation &&
+        !isComposerDraftEmpty(latestDraft) &&
+        !composerDraftMatchesSavedDraft(latestDraft, sentDraft);
+      const storedDraft =
+        getComposerDraftForContext(conversationDraftKey) ??
+        getComposerDraftForContext(composerDraftContextKey);
+      const storedDraftWasReplaced =
+        storedDraft !== null && !composerDraftMatchesSavedDraft(storedDraft, sentDraft);
+
+      if (visibleDraftWasReplaced) {
+        saveComposerDraftForContext(activeDraftContext, latestDraft);
+      } else if (!storedDraftWasReplaced) {
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(conversationDraftKey);
+      }
+      if (activeDraftTargetsSentConversation && !visibleDraftWasReplaced) {
+        composerEditorRef.current?.clear();
+        clearComposerContextRefs();
+        setComposerImages([]);
+        setInputValue('');
+        latestComposerDraftRef.current = { text: '', images: [], contextRefs: [] };
+        resetPromptHistoryNavigation();
+      }
       return true;
     } catch (error) {
       if (conversationId) {
@@ -2382,10 +2565,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ensureConversation,
     activateConversationGoal,
     clearComposerDraftForContext,
+    clearComposerContextRefs,
     composerDraftContextKey,
+    getComposerDraftForContext,
     isConversationPending,
     isBusySending,
     mode,
+    migrateComposerDraftContext,
     selectedModelId,
     selectedProviderId,
     selectedReasoningEffort,
@@ -2393,6 +2579,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTaskProjectSummary,
     selectedTaskRequiresKickoff,
     sendMessage,
+    saveComposerDraftForContext,
+    setComposerImages,
     setConversationGoalStatus,
     startTask,
     resetPromptHistoryNavigation,
@@ -2656,14 +2844,86 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
     }
 
+    const sentDraft: SavedComposerDraft = {
+      savedDraftText: text,
+      savedDraftImages: imagesForMessage,
+      savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+    };
+    const clearsComposerImmediately = !goalComposerEditSession;
+    const pendingDraftContextKeys = [composerDraftContextKey, conversationDraftKey];
+    const finishPendingDraft = (confirmed: boolean) => {
+      pendingDraftContextKeys.forEach((contextKey) => {
+        pendingSentComposerDraftContextKeysRef.current.delete(contextKey);
+      });
+      const activeDraftContext = activeComposerDraftContextKeyRef.current;
+      const latestDraft = latestComposerDraftRef.current;
+      if (
+        (activeDraftContext === composerDraftContextKey ||
+          activeDraftContext === conversationDraftKey) &&
+        !isComposerDraftEmpty(latestDraft)
+      ) {
+        saveComposerDraftForContext(activeDraftContext, latestDraft);
+        return;
+      }
+      const storedDraft = getComposerDraftForContext(conversationDraftKey);
+      if (confirmed) {
+        if (composerDraftMatchesSavedDraft(storedDraft, sentDraft)) {
+          clearComposerDraftForContext(composerDraftContextKey);
+          clearComposerDraftForContext(conversationDraftKey);
+        }
+        return;
+      }
+      if (storedDraft && !composerDraftMatchesSavedDraft(storedDraft, sentDraft)) return;
+      saveComposerDraftForContext(conversationDraftKey, {
+        text: sentDraft.savedDraftText,
+        images: sentDraft.savedDraftImages,
+        contextRefs: sentDraft.savedDraftContextRefs,
+      });
+    };
+    const restoreSentDraft = () => {
+      finishPendingDraft(false);
+      const activeDraftContext = activeComposerDraftContextKeyRef.current;
+      if (
+        activeDraftContext !== composerDraftContextKey &&
+        activeDraftContext !== conversationDraftKey
+      ) {
+        return;
+      }
+      const latestDraft = latestComposerDraftRef.current;
+      if (
+        latestDraft.text.length > 0 ||
+        latestDraft.images.length > 0 ||
+        latestDraft.contextRefs.length > 0
+      ) {
+        return;
+      }
+      applySavedComposerDraft(sentDraft);
+    };
+
     try {
-      const result = await sendMessage({
+      const sendPromise = sendMessage({
         conversationId,
         content,
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
+      if (clearsComposerImmediately) {
+        pendingDraftContextKeys.forEach((contextKey) => {
+          pendingSentComposerDraftContextKeysRef.current.add(contextKey);
+        });
+        composerEditorRef.current?.clear();
+        clearComposerContextRefs();
+        setComposerImages([]);
+        setInputValue('');
+        latestComposerDraftRef.current = {
+          text: '',
+          images: [],
+          contextRefs: [],
+        };
+        resetPromptHistoryNavigation();
+      }
+      const result = await sendPromise;
       if (result.status === 'sent') {
         if (goalEditTransactionId) {
           if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
@@ -2689,18 +2949,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             restoreGoalComposerDraft(goalComposerEditSession);
           }
         } else {
-          clearComposerDraftForContext(composerDraftContextKey);
-          clearComposerDraftForContext(conversationDraftKey);
-          composerEditorRef.current?.clear();
-          clearComposerContextRefs();
-          setComposerImages([]);
-          setInputValue('');
+          finishPendingDraft(true);
         }
         resetPromptHistoryNavigation();
       } else if (goalEditTransactionId) {
         settleConversationGoalEdit(goalEditTransactionId, 'rollback');
       } else if (tracksGoalTurn) {
         setConversationGoalStatus(conversationId, 'paused');
+        if (clearsComposerImmediately) restoreSentDraft();
+      } else if (clearsComposerImmediately) {
+        restoreSentDraft();
       }
     } catch (error) {
       if (goalEditTransactionId) {
@@ -2712,6 +2970,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           toServiceError(error).message,
         );
       }
+      if (clearsComposerImmediately) restoreSentDraft();
       // Keep the draft intact. The visible error feedback comes from the chat store.
     }
   };
@@ -3382,7 +3641,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
                   message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
-
                 return (
                   <MemoizedChatMessageRow
                     key={virtualMessage.key}
@@ -3401,6 +3659,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
+                    standaloneLaunchProgress={
+                      visibleStandaloneLaunchProgress?.userMessageId === message.id
+                        ? visibleStandaloneLaunchProgress
+                        : null
+                    }
                   />
                 );
               })}
@@ -3445,6 +3708,67 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             </div>
           )}
         </div>
+
+        {(showManualDraftComposerNotice ||
+          (selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0) ||
+          composerError ||
+          showSkillNativeToolWarning ||
+          isSelectedConversationArchived) && (
+          <ChatFloatingNoticeStack>
+            {composerError && (
+              <ActionableErrorCallout
+                className="shadow-lg shadow-black/15 backdrop-blur"
+                compact
+                presentation={presentServiceError(composerError, {
+                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                    ? t(
+                        'chat.providerRestoreUnavailable',
+                        'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
+                      )
+                    : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
+                })}
+              />
+            )}
+
+            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
+              <ChatFloatingNotice icon="lock" tone="neutral">
+                <div className="font-medium text-foreground">
+                  {t('implement.taskBlockedTitle', 'Task blocked')}
+                </div>
+                {selectedTaskBlockedMessage && (
+                  <p className="mt-1">{selectedTaskBlockedMessage}</p>
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {showSkillNativeToolWarning && (
+              <ChatFloatingNotice icon="triangle-alert" tone="warning">
+                {t(
+                  'skills.nativeToolRequiredWarning',
+                  'Skills require a native tool-calling model/provider.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {isSelectedConversationArchived && (
+              <ChatFloatingNotice icon="archive" tone="neutral">
+                {t(
+                  'chat.archivedConversationReadOnly',
+                  'This conversation is archived. Restore it before sending another message.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {showManualDraftComposerNotice && (
+              <ChatFloatingNotice icon="alert-circle" testId="manual-draft-composer-notice">
+                {t(
+                  'terminal.manualDraftBanner',
+                  'Send a first message to name this feature and initialize its terminal.'
+                )}
+              </ChatFloatingNotice>
+            )}
+          </ChatFloatingNoticeStack>
+        )}
 
         {/* Input Area */}
         <ScrollSeparator state={separatorState} />
@@ -3546,14 +3870,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               )}
             </div>
 
-            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
-              <TaskBlockedState
-                variant="compact"
-                title={t('implement.taskBlockedTitle', 'Task blocked')}
-                message={selectedTaskBlockedMessage}
-              />
-            )}
-
             {selectedTask && !isSelectedTaskDependencyBlocked && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
               <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
@@ -3599,45 +3915,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     {t('implement.startExecution', 'Start execution')}
                   </button>
                 </div>
-              </div>
-            )}
-
-            {composerError && (
-              <ActionableErrorCallout
-                className="mb-3"
-                compact
-                presentation={presentServiceError(composerError, {
-                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
-                    ? t(
-                        'chat.providerRestoreUnavailable',
-                        'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
-                      )
-                    : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
-                })}
-              />
-            )}
-
-            {showSkillNativeToolWarning && (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                <Icon name="triangle-alert" size={14} className="mt-0.5 shrink-0" />
-                <span>
-                  {t(
-                    'skills.nativeToolRequiredWarning',
-                    'Skills require a native tool-calling model/provider.'
-                  )}
-                </span>
-              </div>
-            )}
-
-            {isSelectedConversationArchived && (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                <Icon name="archive" size={14} className="mt-0.5 shrink-0" />
-                <span>
-                  {t(
-                    'chat.archivedConversationReadOnly',
-                    'This conversation is archived. Restore it before sending another message.'
-                  )}
-                </span>
               </div>
             )}
 

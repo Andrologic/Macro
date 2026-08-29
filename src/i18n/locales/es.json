@@ -648,7 +648,7 @@
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "Esta conversación está archivada. Restáurala antes de enviar otro mensaje.",
     "archivedConversationPlaceholder": "Restaura esta conversación para continuar.",
-    "noArchivedResults": "No archived conversations match this search",
+    "noArchivedResults": "Ninguna conversación archivada coincide con esta búsqueda.",
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
     "noActiveConversationsDescription": "Start a new conversation to see it here.",
@@ -1447,6 +1447,8 @@
     },
     "projectNavigator": {
       "title": "Proyectos",
+      "searchPlans": "Buscar planes...",
+      "noSearchResults": "Ningún plan coincide con esta búsqueda.",
       "projects": "Todos los proyectos",
       "pinned": "Fijados",
       "archived": "Archivados",
@@ -1999,6 +2001,11 @@
         "unknownError": { "title": "Falló la sincronización de metadatos de Macro", "body": "Macro no pudo completar la sincronización de metadatos de forma segura.", "nextStep": "Vuelva a intentar la sincronización. Si vuelve a fallar, consulte los detalles técnicos." }
       },
       "service": {
+        "gitObjectMissing": { "title": "La revisión de Git está en pausa", "body": "Un objeto de Git necesario para esta revisión no está disponible. Macro no modificó ningún archivo de trabajo.", "bodyUncertain": "Git no pudo leer un objeto necesario para esta operación. Consulta los detalles técnicos antes de volver a intentarlo.", "nextStep": "Vuelve a intentarlo para que Git solicite el objeto otra vez. Abre los detalles técnicos para consultar la operación, el ID del objeto y la salida de Git depurada." },
+        "directModeConfigurationRequired": { "title": "El modo de revisión necesita configuración", "body": "Este proyecto no es un repositorio Git, pero los metadatos de la tarea no permiten una revisión directa. Macro no inició una revisión Git ni modificó archivos de trabajo.", "nextStep": "Configura Git para este proyecto o vuelve a crear la tarea en modo directo. Los detalles técnicos muestran el modo guardado." },
+        "directCheckpointMissing": { "title": "El punto de control de revisión de Macro no está disponible", "body": "Falta el punto de control interno para revisar este proyecto sin Git. Macro no modificó archivos de trabajo.", "nextStep": "Vuelve a intentarlo después de preparar de nuevo la tarea. Abre los detalles técnicos para consultar el identificador del punto de control." },
+        "directCheckpointCorrupt": { "title": "El punto de control de revisión de Macro está dañado", "body": "El punto de control interno para revisar este proyecto sin Git está incompleto. Macro lo conservó y no modificó archivos de trabajo.", "nextStep": "Vuelve a intentarlo una vez. No restablezcas el punto de control si hay que conservar el historial aceptado. Abre los detalles técnicos para diagnosticarlo." },
+        "directCheckpointProjectMismatch": { "title": "El punto de control de revisión de Macro pertenece a otra ruta de proyecto", "body": "La identidad guardada del punto de control no coincide con la ruta actual de este proyecto. Macro conservó el punto de control y no modificó archivos de trabajo.", "nextStep": "Comprueba la ruta guardada del proyecto o vuelve a abrir el proyecto original. Consulta los detalles técnicos para identificar el punto de control antes de corregir sus metadatos." },
         "resourcePressure": { "title": "Macro está sobrecargado temporalmente", "body": "El sistema tiene demasiados archivos abiertos, así que Macro pausó las actualizaciones automáticas de los repositorios antes de volver a intentarlo.", "nextStep": "Espere un momento y vuelva a intentarlo. Si sigue ocurriendo, cierre ventanas de proyecto o terminales adicionales." },
         "replicaRepair": { "title": "Los metadatos del plan deben repararse", "body": "Macro encontró metadatos del plan incoherentes y debe reparar la copia canónica antes de continuar.", "nextStep": "Repare los metadatos del plan y vuelva a intentarlo." },
         "metadataMissing": { "title": "Los metadatos del plan están incompletos", "body": "Macro encontró una tarea o conversación que apunta a metadatos del plan ausentes o guardados solo parcialmente.", "nextStep": "Repare los vínculos de metadatos y vuelva a intentarlo." },

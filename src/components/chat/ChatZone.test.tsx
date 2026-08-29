@@ -95,6 +95,17 @@ export type MockChatState = {
     }>
   >;
   contextDiagnosticsByConversationId: Record<string, unknown>;
+  standaloneTaskLaunchByConversationId?: Record<string, {
+    conversationId: string;
+    taskId: string;
+    userMessageId: string;
+    sessionId: string;
+    activeStep: 'preparing_task' | 'creating_name' | 'creating_workspace' | 'preparing_project' | 'starting_agent';
+    completedSteps: Array<'preparing_task' | 'creating_name' | 'creating_workspace' | 'preparing_project' | 'starting_agent'>;
+    status: 'running' | 'completed' | 'error';
+    error: string | null;
+    canRetry: boolean;
+  }>;
   getConversationRuntime: (conversationId: string) => {
     phase: 'idle' | 'preparing' | 'overflow_recovery' | 'streaming' | 'error';
     sessionId: string | null;
@@ -226,6 +237,7 @@ export type TaskState = {
     title: string;
     draft?: boolean;
     task_source?: 'architect' | 'standalone' | 'plan_finalization';
+    standalone_kind?: 'legacy' | 'manual_feature' | null;
     is_blocked?: boolean;
     blocked_by?: string[];
     status?: string;
@@ -762,6 +774,7 @@ const resetState = () => {
     conversationCompactionStatusById: {},
     sessionCompactionEventsByConversationId: {},
     contextDiagnosticsByConversationId: {},
+    standaloneTaskLaunchByConversationId: {},
     getConversationRuntime: (conversationId: string) =>
       getMockConversationRuntime(chatState, conversationId),
     createConversation: mock(async () => buildConversation()),
@@ -1094,6 +1107,303 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('Type your message');
   });
 
+  it('clears the composer as soon as an accepted send starts preparing', async () => {
+    const sendDeferred = createDeferred<{ status: 'sent' }>();
+    chatState = {
+      ...chatState,
+      sendMessage: mock(() => sendDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Prépare la branche et le worktree.');
+    await clickSendButton();
+
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(1);
+    expect(getComposerEditor().value).toBe('');
+
+    await setComposerText('Message suivant pendant la préparation.');
+
+    await act(async () => {
+      sendDeferred.resolve({ status: 'sent' });
+      await sendDeferred.promise;
+    });
+
+    expect(getComposerEditor().value).toBe('Message suivant pendant la préparation.');
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Message suivant pendant la préparation.',
+    );
+  });
+
+  it('removes the persisted draft after a confirmed send', async () => {
+    const sendDeferred = createDeferred<{ status: 'sent' }>();
+    chatState = {
+      ...chatState,
+      sendMessage: mock(() => sendDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Brouillon envoyé et confirmé.');
+    await clickSendButton();
+
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Brouillon envoyé et confirmé.',
+    );
+
+    await act(async () => {
+      sendDeferred.resolve({ status: 'sent' });
+      await sendDeferred.promise;
+    });
+
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+  });
+
+  it('keeps the composer draft when an Implement kickoff is cancelled', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Persist composer drafts',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Running',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/composer-drafts',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Persist unsent composer content.',
+        },
+      ],
+    };
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => ({ status: 'cancelled' as const })),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Conserver ces notes si le démarrage est annulé.');
+
+    const kickoffButton = requireContainer().querySelector(
+      '[data-tour-id="implement-start-execution"]',
+    );
+    expect(kickoffButton).not.toBeNull();
+    await act(async () => {
+      kickoffButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe(
+      'Conserver ces notes si le démarrage est annulé.',
+    );
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Conserver ces notes si le démarrage est annulé.',
+    );
+  });
+
+  it('restores the composer when a send fails before Macro accepts it', async () => {
+    const draftRef = {
+      id: 'file:failure.md',
+      kind: 'file' as const,
+      title: 'failure.md',
+      data: {
+        id: 'file:failure.md',
+        path: 'C:/repo/failure.md',
+        relativePath: 'failure.md',
+      },
+    };
+    chatState = {
+      ...chatState,
+      composerContextRefs: [draftRef],
+      sendMessage: mock(async () => {
+        throw new Error('Envoi refusé');
+      }),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Brouillon à restaurer.');
+    await pasteComposerImage();
+    await clickSendButton();
+
+    expect(getComposerEditor().value).toBe('Brouillon à restaurer.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([draftRef]);
+    expect(composerDraftsByContextKey['conversation:conv-1']).toEqual({
+      text: 'Brouillon à restaurer.',
+      images: [expect.objectContaining({ mimeType: 'image/png' })],
+      contextRefs: [draftRef],
+    });
+  });
+
+  it('saves and restores text, images, and context refs when the conversation changes', async () => {
+    const draftRef = {
+      id: 'file:README.md',
+      kind: 'file' as const,
+      title: 'README.md',
+      data: {
+        id: 'file:README.md',
+        path: 'C:/repo/README.md',
+        relativePath: 'README.md',
+      },
+    };
+    chatState = {
+      ...chatState,
+      conversations: [
+        buildConversation(),
+        { ...buildConversation(), id: 'conv-2', title: 'Second conversation' },
+      ],
+      composerContextRefs: [draftRef],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Brouillon privé de la première conversation.');
+    await pasteComposerImage();
+
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+
+    expect(composerDraftsByContextKey['conversation:conv-1']).toEqual({
+      text: 'Brouillon privé de la première conversation.',
+      images: [expect.objectContaining({ mimeType: 'image/png' })],
+      contextRefs: [draftRef],
+    });
+    expect(getComposerEditor().value).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+
+    await setComposerText('Brouillon de la seconde conversation.');
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-1' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+
+    expect(composerDraftsByContextKey['conversation:conv-2']?.text).toBe(
+      'Brouillon de la seconde conversation.',
+    );
+    expect(getComposerEditor().value).toBe(
+      'Brouillon privé de la première conversation.',
+    );
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([draftRef]);
+  });
+
+  it('renders standalone launch steps under the first message and retries a safe failure', async () => {
+    const progress = {
+      conversationId: 'conv-1',
+      taskId: 'task-1',
+      userMessageId: 'msg-user-1',
+      sessionId: 'session-1',
+      activeStep: 'creating_workspace' as const,
+      completedSteps: ['preparing_task', 'creating_name'] as const,
+      status: 'running' as const,
+      error: null,
+      canRetry: false,
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Prépare cette tâche.' }),
+      ],
+      standaloneTaskLaunchByConversationId: {
+        'conv-1': { ...progress, completedSteps: [...progress.completedSteps] },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const card = requireContainer().querySelector(
+      '[data-testid="standalone-task-launch-progress"]',
+    );
+    expect(card).not.toBeNull();
+    expect(card?.closest('[data-chat-message-bubble="true"]')).toBeNull();
+    const progressContainer = card?.closest(
+      '[data-testid="standalone-task-launch-progress-container"]',
+    );
+    expect(progressContainer?.className).toContain('mx-auto');
+    expect(progressContainer?.previousElementSibling?.querySelector(
+      '[data-chat-message-bubble="true"]',
+    )).not.toBeNull();
+    expect(card?.querySelector('[data-step="creating_name"]')?.getAttribute('data-step-state')).toBe('completed');
+    expect(card?.querySelector('[data-step="creating_workspace"]')?.getAttribute('data-step-state')).toBe('active');
+    expect(card?.querySelector('[data-step="starting_agent"]')?.getAttribute('data-step-state')).toBe('future');
+
+    await act(async () => {
+      chatState = {
+        ...chatState,
+        standaloneTaskLaunchByConversationId: {
+          'conv-1': {
+            ...progress,
+            completedSteps: [...progress.completedSteps],
+            status: 'error',
+            error: 'Le worktree n’a pas pu être créé.',
+            canRetry: true,
+          },
+        },
+      };
+      useChatStore.emit();
+    });
+
+    const failedCard = requireContainer().querySelector(
+      '[data-testid="standalone-task-launch-progress"]',
+    );
+    expect(failedCard?.getAttribute('data-status')).toBe('error');
+    expect(failedCard?.querySelector('[data-step="creating_workspace"]')?.getAttribute('data-step-state')).toBe('error');
+    const retryButton = Array.from(failedCard?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Réessayer'),
+    );
+    expect(retryButton).toBeDefined();
+
+    await act(async () => {
+      retryButton?.click();
+      await Promise.resolve();
+    });
+    expect(chatState.editMessage).toHaveBeenCalledWith(
+      'msg-user-1',
+      'Prépare cette tâche.',
+      { skipAgentCodeReplayCheck: undefined },
+    );
+
+    await act(async () => {
+      chatState = {
+        ...chatState,
+        messages: [
+          ...chatState.messages,
+          buildMessage({
+            id: 'msg-assistant-1',
+            role: 'assistant',
+            content: 'Je commence la mise en œuvre.',
+          }),
+        ],
+      };
+      useChatStore.emit();
+    });
+
+    expect(requireContainer().querySelector(
+      '[data-testid="standalone-task-launch-progress"]',
+    )).toBeNull();
+  });
+
   it('keeps the composer locked until archived conversations are hydrated', async () => {
     useConversationArchiveStore.setState({
       archivedConversationIds: new Set(),
@@ -1110,6 +1420,26 @@ describe('ChatZone', () => {
     );
     expect(composer?.disabled).toBe(true);
     expect(composer?.placeholder).toBe('Restoring conversation...');
+  });
+
+  it('shows archived conversation information in the floating chat notice area', async () => {
+    useConversationArchiveStore.setState({
+      archivedConversationIds: new Set(['conv-1']),
+      isArchiveHydrated: true,
+      archiveHydrationError: null,
+    });
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const notice = Array.from(
+      requireContainer().querySelectorAll('[data-chat-floating-notice="true"]'),
+    ).find((element) => element.textContent?.includes('This conversation is archived.'));
+    const footer = requireContainer().querySelector('[data-tour-id="chat-footer"]');
+    expect(notice).toBeDefined();
+    expect(notice?.closest('[data-chat-floating-notices="true"]')).not.toBeNull();
+    expect(footer?.contains(notice ?? null)).toBe(false);
   });
 
   it('does not render the legacy skills dropdown in the composer control row', async () => {
@@ -2164,6 +2494,13 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain(
       'Skills require a native tool-calling model/provider.'
     );
+    const skillNotice = Array.from(
+      requireContainer().querySelectorAll('[data-chat-floating-notice="true"]'),
+    ).find((element) => element.textContent?.includes('Skills require a native tool-calling model/provider.'));
+    expect(skillNotice?.getAttribute('data-chat-floating-notice-tone')).toBe('warning');
+    expect(
+      requireContainer().querySelector('[data-tour-id="chat-footer"]')?.contains(skillNotice ?? null),
+    ).toBe(false);
 
     await act(async () => {
       useChatStore.setState({ composerContextRefs: [] });
@@ -2313,7 +2650,7 @@ describe('ChatZone', () => {
     );
   });
 
-  it('keeps Macro runtime errors in the composer notice', async () => {
+  it('keeps Macro runtime errors in the floating chat notice area', async () => {
     chatState = {
       ...chatState,
       sendState: 'error',
@@ -2334,6 +2671,13 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).not.toContain('Task worktree is not ready yet.');
     expect(requireContainer().textContent).toContain('Show details');
+    const errorCallout = Array.from(requireContainer().querySelectorAll('button')).find(
+      (button) => button.textContent === 'Show details'
+    )?.closest('[data-chat-floating-notices="true"]');
+    expect(errorCallout).not.toBeNull();
+    expect(
+      requireContainer().querySelector('[data-tour-id="chat-footer"]')?.contains(errorCallout ?? null),
+    ).toBe(false);
     await act(async () => {
       Array.from(requireContainer().querySelectorAll('button')).find(
         (button) => button.textContent === 'Show details'

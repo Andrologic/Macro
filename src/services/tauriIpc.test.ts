@@ -698,6 +698,27 @@ describe("tauriIpc executeWorkspaceTool", () => {
     ]);
   });
 
+  it("binds a legacy direct checkpoint through the workspace command", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.workspaceBindManualFeatureDirectCheckpoint({
+      taskId: "task-direct",
+      projectId: "project-direct",
+      checkpointId: "task-direct-0000000000000001",
+    });
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "workspace_bind_manual_feature_direct_checkpoint",
+        payload: {
+          taskId: "task-direct",
+          projectId: "project-direct",
+          checkpointId: "task-direct-0000000000000001",
+        },
+      },
+    ]);
+  });
+
   it("uses camelCase payload keys for atomic workspace git setup and access previews", async () => {
     const tauriIpc = await loadTauriIpc();
 

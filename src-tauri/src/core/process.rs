@@ -20,6 +20,14 @@ pub enum ProcessLaunchVisibility {
 
 #[cfg(target_os = "windows")]
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(target_os = "windows")]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+#[cfg(windows)]
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtResumeProcess(process_handle: windows_sys::Win32::Foundation::HANDLE) -> i32;
+}
 
 #[cfg(not(target_os = "windows"))]
 pub const CREATE_NO_WINDOW: u32 = 0;
@@ -144,6 +152,8 @@ pub struct ContainedBackgroundProcess {
 impl ContainedBackgroundProcess {
     pub fn spawn(mut command: tokio::process::Command) -> io::Result<Self> {
         apply_background_containment(&mut command);
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         let child = command.spawn()?;
         #[cfg(unix)]
         let process_group_id = child.id();
@@ -156,6 +166,11 @@ impl ContainedBackgroundProcess {
                 return Err(error);
             }
         };
+        #[cfg(windows)]
+        if let Err(error) = resume_child_process(&child) {
+            unsafe { TerminateJobObject(job_object.as_raw_handle() as _, ERROR_PROCESS_ABORTED) };
+            return Err(error);
+        }
         Ok(Self {
             child,
             #[cfg(unix)]
@@ -270,6 +285,24 @@ impl ContainedBackgroundProcess {
     }
 }
 
+#[cfg(windows)]
+fn resume_child_process(child: &tokio::process::Child) -> io::Result<()> {
+    let Some(process_handle) = child.raw_handle() else {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "tokio child did not expose a raw process handle",
+        ));
+    };
+    let status = unsafe { NtResumeProcess(process_handle) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "failed to resume contained process after job assignment: NTSTATUS {status:#x}"
+        )))
+    }
+}
+
 #[cfg(unix)]
 fn signal_process_group(process_group_id: u32, signal: i32) {
     let _ = unsafe { libc::kill(-(process_group_id as libc::pid_t), signal) };
@@ -364,6 +397,33 @@ mod tests {
         assert!(is_known_visible_terminal_app_id("PowerShell"));
         assert!(is_known_visible_terminal_app_id("windows-terminal"));
         assert!(!is_known_visible_terminal_app_id("code"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn contained_process_captures_an_immediate_windows_descendant() {
+        use super::{background_contained_tokio_command, ContainedBackgroundProcess};
+        use std::time::Duration;
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let marker = temp.path().join("escaped-descendant.txt");
+        let child_script = format!(
+            "Start-Sleep -Milliseconds 750; Set-Content -LiteralPath '{}' -Value escaped",
+            marker.to_string_lossy().replace('\'', "''")
+        );
+        let parent_script = format!(
+            "Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList @('-NoProfile','-Command','{}')",
+            child_script.replace('\'', "''")
+        );
+        let mut command = background_contained_tokio_command("powershell.exe");
+        command.args(["-NoProfile", "-Command", &parent_script]);
+        let mut process = ContainedBackgroundProcess::spawn(command).expect("spawn parent");
+        process.wait().await.expect("wait parent");
+        process
+            .terminate_with_grace(Duration::ZERO)
+            .await
+            .expect("terminate job");
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        assert!(!marker.exists(), "descendant escaped its Windows job");
     }
 
     #[test]

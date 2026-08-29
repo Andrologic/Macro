@@ -3,6 +3,8 @@ import {
   SERVICE_ERROR_CODES,
   createPlanMetadataMissingError,
   isPlanMetadataMissingError,
+  isGitObjectMissingError,
+  isReviewSuspendingError,
   isResourcePressureError,
   toServiceError,
 } from './errors';
@@ -68,5 +70,26 @@ describe('toServiceError', () => {
         message: 'workspace refresh paused',
       })
     ).toBe(true);
+  });
+
+  it('classifies missing Git objects by stable code only', () => {
+    expect(isGitObjectMissingError({
+      code: SERVICE_ERROR_CODES.GIT_OBJECT_MISSING,
+      message: 'missing',
+    })).toBe(true);
+    expect(isGitObjectMissingError('object not found')).toBe(false);
+  });
+
+  it('suspends review for checkpoint and direct-mode errors by stable code', () => {
+    for (const code of [
+      SERVICE_ERROR_CODES.GIT_OBJECT_MISSING,
+      SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_MISSING,
+      SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_CORRUPT,
+      SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_PROJECT_MISMATCH,
+      SERVICE_ERROR_CODES.DIRECT_MODE_CONFIGURATION_REQUIRED,
+    ]) {
+      expect(isReviewSuspendingError({ code, message: 'blocked' })).toBe(true);
+    }
+    expect(isReviewSuspendingError('object not found')).toBe(false);
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useChatStore } from '../../stores/useChatStore';
@@ -125,6 +125,49 @@ describe('ConversationArchive', () => {
     expect(document.body.textContent).toContain('No archived conversations');
   });
 
+  it('opens and closes search inside the existing compact header', async () => {
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-tour-id="chat-conversation-search"]')).toBeNull();
+    const searchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="chat-search-toggle"]'
+    );
+    const header = searchToggle?.closest('.h-12');
+    expect(searchToggle?.className).toContain('h-7 w-7');
+
+    await act(async () => {
+      searchToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const searchInput = document.body.querySelector<HTMLInputElement>(
+      '[data-tour-id="chat-conversation-search"] input'
+    );
+    const openSearchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="chat-search-toggle"]'
+    );
+    const searchBar = document.body.querySelector<HTMLElement>(
+      '[data-tour-id="chat-conversation-search"]'
+    );
+    expect(searchInput?.closest('.h-12')).toBe(header ?? null);
+    expect(document.activeElement).toBe(searchInput ?? null);
+    expect(header?.className).toContain('gap-2');
+    expect(openSearchToggle?.className).toContain('h-8 w-8');
+    expect(searchBar?.className).toContain('focus-within:border-border');
+    expect(searchBar?.className).toContain('focus-within:ring-0');
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-search-toggle"]')
+        ?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="chat-conversation-search"]')).toBeNull();
+    expect(header?.className).toContain('h-12');
+  });
+
   it('selects the first archived conversation and restores the previous active selection', () => {
     const conversations = [{ id: 'conversation-1' }, { id: 'conversation-2' }];
     const archivedIds = new Set(['conversation-2']);
@@ -154,5 +197,17 @@ describe('ConversationArchive', () => {
 
     expect(selected).toBe(false);
     expect(cleared).toBe(false);
+  });
+
+  it('selects a conversation search result with the existing list action', async () => {
+    const selectConversation = mock(async () => true);
+    const selected = await applyArchiveViewSelection(
+      'conversation-1',
+      selectConversation,
+      () => undefined,
+    );
+
+    expect(selected).toBe(true);
+    expect(selectConversation).toHaveBeenCalledWith('conversation-1');
   });
 });

@@ -225,19 +225,6 @@ export const ImplementCenter: React.FC = () => {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className={cn('min-h-0 flex flex-col', panelOpen ? 'flex-1' : 'h-full')}>
-        {manualDraftPendingInitialization && (
-          <div className="mx-3 mt-3 rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-sm text-sky-50">
-            <div className="flex items-start gap-2">
-              <Icon name="alert-circle" size={14} className="mt-0.5 shrink-0 text-sky-300" />
-              <p>
-                {t(
-                  'terminal.manualDraftBanner',
-                  'Send a first message to name this feature and initialize its terminal.'
-                )}
-              </p>
-            </div>
-          </div>
-        )}
         <ChatZone headerActions={terminalButton} />
       </div>
 

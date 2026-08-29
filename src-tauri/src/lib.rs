@@ -732,6 +732,7 @@ pub fn run() {
             commands::workspace::workspace_debug_reset_project,
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
+            commands::workspace::workspace_bind_manual_feature_direct_checkpoint,
             commands::workspace::workspace_revert_manual_feature_to_draft,
             commands::workspace::workspace_delete_manual_feature_draft,
             commands::workspace::workspace_rename_manual_feature,
@@ -826,6 +827,7 @@ pub fn run() {
             commands::git::git_read_file_pair,
             commands::git::git_review_snapshot,
             commands::git::git_review_file,
+            commands::git::git_cancel_review,
             commands::git::direct_checkpoint_ensure,
             commands::git::direct_checkpoint_resolve_id,
             commands::git::direct_checkpoint_remove,
@@ -888,11 +890,13 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { .. } => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");
+            commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
         }
         tauri::RunEvent::Exit => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
+            commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
         }
         _ => {}

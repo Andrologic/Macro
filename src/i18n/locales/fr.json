@@ -1463,6 +1463,8 @@
     },
     "projectNavigator": {
       "title": "Projets",
+      "searchPlans": "Rechercher des plans...",
+      "noSearchResults": "Aucun plan ne correspond à cette recherche.",
       "projects": "Tous les projets",
       "pinned": "Épinglés",
       "archived": "Archivés",
@@ -2015,6 +2017,11 @@
         "unknownError": { "title": "La synchronisation des métadonnées Macro a échoué", "body": "Macro n’a pas pu terminer la synchronisation des métadonnées de manière sûre.", "nextStep": "Relancez la synchronisation. Si elle échoue encore, consultez les détails techniques." }
       },
       "service": {
+        "gitObjectMissing": { "title": "La révision Git est suspendue", "body": "Un objet Git nécessaire à cette révision est indisponible. Macro n’a modifié aucun fichier de travail.", "bodyUncertain": "Git n’a pas pu lire un objet nécessaire à cette opération. Consultez les détails techniques avant de réessayer.", "nextStep": "Réessayez pour demander de nouveau l’objet à Git. Ouvrez les détails techniques pour consulter l’opération, l’identifiant de l’objet et la sortie Git expurgée." },
+        "directModeConfigurationRequired": { "title": "Le mode de review doit être configuré", "body": "Ce projet n’est pas un dépôt Git, mais les métadonnées de la tâche ne permettent pas une review directe. Macro n’a lancé aucune review Git et n’a modifié aucun fichier de travail.", "nextStep": "Configurez Git pour ce projet, ou recréez la tâche en mode direct. Les détails techniques indiquent le mode enregistré." },
+        "directCheckpointMissing": { "title": "Le point de contrôle de révision Macro est indisponible", "body": "Le point de contrôle interne de ce projet sans Git est absent. Macro n’a modifié aucun fichier de travail.", "nextStep": "Réessayez après une nouvelle préparation de la tâche. Ouvrez les détails techniques pour consulter l’identifiant du point de contrôle." },
+        "directCheckpointCorrupt": { "title": "Le point de contrôle de révision Macro est endommagé", "body": "Le point de contrôle interne de ce projet sans Git est incomplet. Macro l’a conservé et n’a modifié aucun fichier de travail.", "nextStep": "Réessayez une fois. Ne réinitialisez pas le point de contrôle si l’historique accepté doit être préservé. Ouvrez les détails techniques pour le diagnostic." },
+        "directCheckpointProjectMismatch": { "title": "Le point de contrôle de révision Macro appartient à un autre chemin de projet", "body": "L’identité enregistrée du point de contrôle ne correspond pas au chemin actuel de ce projet. Macro a conservé le point de contrôle et n’a modifié aucun fichier de travail.", "nextStep": "Vérifiez le chemin enregistré du projet ou rouvrez le projet d’origine. Consultez les détails techniques pour identifier le point de contrôle avant de corriger ses métadonnées." },
         "resourcePressure": { "title": "Macro est temporairement surchargé", "body": "Le système a trop de fichiers ouverts ; Macro a donc suspendu les actualisations automatiques des dépôts avant de réessayer.", "nextStep": "Patientez un instant, puis réessayez. Si le problème persiste, fermez des fenêtres de projet ou des terminaux supplémentaires." },
         "replicaRepair": { "title": "Les métadonnées du plan doivent être réparées", "body": "Macro a trouvé des métadonnées de plan incohérentes et doit réparer la copie canonique avant de continuer.", "nextStep": "Réparez les métadonnées du plan, puis réessayez." },
         "metadataMissing": { "title": "Les métadonnées du plan sont incomplètes", "body": "Macro a trouvé une tâche ou une conversation qui pointe vers des métadonnées de plan manquantes ou seulement partiellement enregistrées.", "nextStep": "Réparez les liens des métadonnées, puis réessayez." },

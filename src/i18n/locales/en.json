@@ -1464,6 +1464,8 @@
     },
     "projectNavigator": {
       "title": "Projects",
+      "searchPlans": "Search plans...",
+      "noSearchResults": "No plan matches this search.",
       "projects": "All projects",
       "pinned": "Pinned",
       "archived": "Archived",
@@ -2061,6 +2063,11 @@
         "unknownError": { "title": "Macro metadata sync failed", "body": "Macro could not complete the metadata sync safely.", "nextStep": "Retry the sync. If it fails again, inspect the technical details." }
       },
       "service": {
+        "gitObjectMissing": { "title": "Git review is paused", "body": "A Git object needed for this review is unavailable. Macro did not modify any working files.", "bodyUncertain": "Git could not read an object required for this operation. Check the technical details before retrying.", "nextStep": "Retry to ask Git for the object again. Open the technical details to inspect the operation, object ID, and sanitized Git output." },
+        "directModeConfigurationRequired": { "title": "The review mode needs configuration", "body": "This project is not a Git repository, but the task metadata does not allow direct review. Macro did not start a Git review or modify any working files.", "nextStep": "Configure Git for this project, or recreate the task in direct mode. The technical details show the stored mode." },
+        "directCheckpointMissing": { "title": "Macro's review checkpoint is unavailable", "body": "The internal checkpoint for this non-Git project's review is missing. Macro did not modify any working files.", "nextStep": "Retry after the task has been prepared again. Open the technical details to inspect the checkpoint identifier." },
+        "directCheckpointCorrupt": { "title": "Macro's review checkpoint is damaged", "body": "The internal checkpoint for this non-Git project's review is incomplete. Macro preserved it and did not modify any working files.", "nextStep": "Retry once. Do not reset the checkpoint if accepted review history must be preserved; open the technical details for diagnosis." },
+        "directCheckpointProjectMismatch": { "title": "Macro's review checkpoint belongs to another project path", "body": "The saved checkpoint identity does not match this project's current path. Macro preserved the checkpoint and did not modify any working files.", "nextStep": "Check the project's saved path or reopen the original project. Use the technical details to identify the checkpoint before changing its metadata." },
         "resourcePressure": { "title": "Macro is temporarily overloaded", "body": "The system has too many files open, so Macro paused automatic repository refreshes before retrying.", "nextStep": "Wait a moment, then retry. If this keeps happening, close extra project windows or terminals." },
         "replicaRepair": { "title": "Plan metadata needs repair", "body": "Macro found inconsistent plan metadata and needs to repair the canonical copy before continuing.", "nextStep": "Repair the plan metadata, then retry the action." },
         "metadataMissing": { "title": "Plan metadata is incomplete", "body": "Macro found a task or conversation that points to plan metadata that is missing or only partially persisted.", "nextStep": "Repair the metadata links, then retry the action." },
