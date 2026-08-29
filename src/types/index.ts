@@ -1094,6 +1094,25 @@ export interface ConversationRuntimeState {
   lastErrorDisplayTarget?: 'composer' | 'transcript' | null;
 }
 
+export type StandaloneTaskLaunchStep =
+  | 'preparing_task'
+  | 'creating_name'
+  | 'creating_workspace'
+  | 'preparing_project'
+  | 'starting_agent';
+
+export interface StandaloneTaskLaunchProgress {
+  conversationId: string;
+  taskId: string;
+  userMessageId: string;
+  sessionId: string;
+  activeStep: StandaloneTaskLaunchStep;
+  completedSteps: StandaloneTaskLaunchStep[];
+  status: 'running' | 'completed' | 'error';
+  error: string | null;
+  canRetry: boolean;
+}
+
 // Conversation goal tracking and read-only goal audit
 
 export type ConversationGoalStatus =

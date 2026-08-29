@@ -95,6 +95,17 @@ export type MockChatState = {
     }>
   >;
   contextDiagnosticsByConversationId: Record<string, unknown>;
+  standaloneTaskLaunchByConversationId?: Record<string, {
+    conversationId: string;
+    taskId: string;
+    userMessageId: string;
+    sessionId: string;
+    activeStep: 'preparing_task' | 'creating_name' | 'creating_workspace' | 'preparing_project' | 'starting_agent';
+    completedSteps: Array<'preparing_task' | 'creating_name' | 'creating_workspace' | 'preparing_project' | 'starting_agent'>;
+    status: 'running' | 'completed' | 'error';
+    error: string | null;
+    canRetry: boolean;
+  }>;
   getConversationRuntime: (conversationId: string) => {
     phase: 'idle' | 'preparing' | 'overflow_recovery' | 'streaming' | 'error';
     sessionId: string | null;
@@ -762,6 +773,7 @@ const resetState = () => {
     conversationCompactionStatusById: {},
     sessionCompactionEventsByConversationId: {},
     contextDiagnosticsByConversationId: {},
+    standaloneTaskLaunchByConversationId: {},
     getConversationRuntime: (conversationId: string) =>
       getMockConversationRuntime(chatState, conversationId),
     createConversation: mock(async () => buildConversation()),
@@ -1092,6 +1104,77 @@ describe('ChatZone', () => {
 
     expect(requireContainer().textContent).toContain('Bonjour Macro');
     expect(requireContainer().textContent).not.toContain('Type your message');
+  });
+
+  it('renders standalone launch steps under the first message and retries a safe failure', async () => {
+    const progress = {
+      conversationId: 'conv-1',
+      taskId: 'task-1',
+      userMessageId: 'msg-user-1',
+      sessionId: 'session-1',
+      activeStep: 'creating_workspace' as const,
+      completedSteps: ['preparing_task', 'creating_name'] as const,
+      status: 'running' as const,
+      error: null,
+      canRetry: false,
+    };
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Prépare cette tâche.' }),
+      ],
+      standaloneTaskLaunchByConversationId: {
+        'conv-1': { ...progress, completedSteps: [...progress.completedSteps] },
+      },
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const card = requireContainer().querySelector(
+      '[data-testid="standalone-task-launch-progress"]',
+    );
+    expect(card).not.toBeNull();
+    expect(card?.querySelector('[data-step="creating_name"]')?.getAttribute('data-step-state')).toBe('completed');
+    expect(card?.querySelector('[data-step="creating_workspace"]')?.getAttribute('data-step-state')).toBe('active');
+    expect(card?.querySelector('[data-step="starting_agent"]')?.getAttribute('data-step-state')).toBe('future');
+
+    await act(async () => {
+      chatState = {
+        ...chatState,
+        standaloneTaskLaunchByConversationId: {
+          'conv-1': {
+            ...progress,
+            completedSteps: [...progress.completedSteps],
+            status: 'error',
+            error: 'Le worktree n’a pas pu être créé.',
+            canRetry: true,
+          },
+        },
+      };
+      useChatStore.emit();
+    });
+
+    const failedCard = requireContainer().querySelector(
+      '[data-testid="standalone-task-launch-progress"]',
+    );
+    expect(failedCard?.getAttribute('data-status')).toBe('error');
+    expect(failedCard?.querySelector('[data-step="creating_workspace"]')?.getAttribute('data-step-state')).toBe('error');
+    const retryButton = Array.from(failedCard?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent?.includes('Réessayer'),
+    );
+    expect(retryButton).toBeDefined();
+
+    await act(async () => {
+      retryButton?.click();
+      await Promise.resolve();
+    });
+    expect(chatState.editMessage).toHaveBeenCalledWith(
+      'msg-user-1',
+      'Prépare cette tâche.',
+      { skipAgentCodeReplayCheck: undefined },
+    );
   });
 
   it('keeps the composer locked until archived conversations are hydrated', async () => {

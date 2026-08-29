@@ -585,7 +585,10 @@ const taskStoreState = {
     );
     emitTaskStoreUpdate(previousTasks);
   }),
-  startTask: mock(async (taskId: string) => {
+  startTask: mock(async (
+    taskId: string,
+    options?: { onWorkspacesPrepared?: () => void },
+  ) => {
     const previousTasks = taskStoreState.tasks;
     taskStoreState.tasks = taskStoreState.tasks.map((task) =>
       task.id === taskId
@@ -596,6 +599,7 @@ const taskStoreState = {
         : task
     );
     emitTaskStoreUpdate(previousTasks);
+    options?.onWorkspacesPrepared?.();
   }),
   markTaskAwaitingResponse: mock(async (taskId: string) => {
     const previousTasks = taskStoreState.tasks;

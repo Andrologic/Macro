@@ -1,6 +1,7 @@
 {
   "tasks": "Tasks",
   "createStandaloneTask": "Create standalone task",
+  "standaloneLaunch": { "title": "Task preparation", "preparingTask": "Preparing task", "creatingName": "Creating name", "creatingWorkspace": "Creating workspace", "preparingProject": "Preparing project", "startingAgent": "Starting agent", "ready": "Ready", "retry": "Retry", "details": "Details" },
   "selectProject": "Select a project to view tasks",
   "selectTaskShort": "Select a task",
   "selectTask": "Select a task to review changes",

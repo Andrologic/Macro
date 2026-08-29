@@ -29,6 +29,7 @@ import type {
   PredictedBranch,
   SkillManifest,
   SkillTurnFeedback,
+  StandaloneTaskLaunchProgress,
   WorkspaceFileReference,
 } from '../../types';
 import { useProviderStore } from '../../stores/useProviderStore';
@@ -103,6 +104,7 @@ import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation
 import { notify } from '../ui/toastService';
 import { toServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
+import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -403,6 +405,7 @@ interface ChatMessageRowProps {
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
   skillTurnFeedback?: SkillTurnFeedback | null;
+  standaloneLaunchProgress?: StandaloneTaskLaunchProgress | null;
 }
 
 const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
@@ -709,6 +712,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onEditStart,
   onRegenerate,
   skillTurnFeedback,
+  standaloneLaunchProgress,
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
@@ -816,6 +820,12 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
               {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
               )}
+              {message.role === 'user' && standaloneLaunchProgress && (
+                <StandaloneTaskLaunchProgressCard
+                  progress={standaloneLaunchProgress}
+                  onRetry={() => void onRegenerate(message.id, message.content)}
+                />
+              )}
               {message.role === 'user' && messageImages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {messageImages.map((image) => (
@@ -917,7 +927,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
-    prev.skillTurnFeedback === next.skillTurnFeedback
+    prev.skillTurnFeedback === next.skillTurnFeedback &&
+    prev.standaloneLaunchProgress === next.standaloneLaunchProgress
 );
 
 /**
@@ -1014,6 +1025,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationId,
     activeContextKey,
     selectedConversationRuntime,
+    standaloneTaskLaunchByConversationId,
     conversationCompactionStatusById,
     sessionCompactionEventsByConversationId,
     contextDiagnosticsByConversationId,
@@ -1070,6 +1082,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
+    standaloneTaskLaunchByConversationId:
+      state.standaloneTaskLaunchByConversationId ?? {},
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     sessionCompactionEventsByConversationId:
       state.sessionCompactionEventsByConversationId,
@@ -3382,6 +3396,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
                   message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
+                const standaloneLaunchProgress = selectedConversationId
+                  ? standaloneTaskLaunchByConversationId[selectedConversationId]
+                  : undefined;
 
                 return (
                   <MemoizedChatMessageRow
@@ -3401,6 +3418,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
+                    standaloneLaunchProgress={
+                      standaloneLaunchProgress?.userMessageId === message.id
+                        ? standaloneLaunchProgress
+                        : null
+                    }
                   />
                 );
               })}

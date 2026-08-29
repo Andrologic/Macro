@@ -8,8 +8,10 @@ export const registerImplementSelectionScenarios = (
   const {
     appState,
     createConversation,
+    createDeferred,
     createImplementTask,
     createManualFeatureTask,
+    flushAsyncWork,
     getLocalProjectContextStateMock,
     gitBranchListMock,
     loadChatStore,
@@ -526,7 +528,10 @@ export const registerImplementSelectionScenarios = (
         featureSlug: 'quick-export',
         taskKind: 'bugfix',
       });
-      expect(taskStoreState.startTask).toHaveBeenCalledWith('manual-task-1');
+      expect(taskStoreState.startTask).toHaveBeenCalledWith(
+        'manual-task-1',
+        expect.any(Object),
+      );
       expect(taskStoreState.getTaskById('manual-task-1')).toMatchObject({
         draft: false,
         status: 'InProgress',
@@ -539,6 +544,103 @@ export const registerImplementSelectionScenarios = (
       ).toMatchObject({
         title: 'Quick export',
         description: 'Add a quick CSV export from the table.',
+      });
+      expect(
+        useChatStore.getState().standaloneTaskLaunchByConversationId['manual-conv'],
+      ).toMatchObject({
+        status: 'completed',
+        activeStep: 'starting_agent',
+        completedSteps: [
+          'preparing_task',
+          'creating_name',
+          'creating_workspace',
+          'preparing_project',
+          'starting_agent',
+        ],
+      });
+    });
+
+    it('publishes the first message while naming runs, keeps progress across navigation, and fences duplicate launches', async () => {
+      appState.mode = 'Implement';
+      appState.selectedTaskId = 'manual-task-1';
+      taskStoreState.tasks = [createManualFeatureTask()];
+      const metadata = createDeferred<string>();
+      queueSendChatNonStreamingImplementation(async () => metadata.promise);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [
+          {
+            ...createConversation('manual-conv'),
+            scope_mode: 'Implement',
+            task_id: 'manual-task-1',
+            title: 'New feature',
+          },
+        ],
+        messages: [],
+        selectedConversationId: 'manual-conv',
+        selectedConversationIdsByMode: { Implement: 'manual-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      const firstSend = useChatStore.getState().sendMessage({
+        conversationId: 'manual-conv',
+        content: 'Ajoute un export CSV rapide depuis le tableau.',
+        taskId: 'manual-task-1',
+      });
+      await flushAsyncWork();
+
+      const firstMessage = useChatStore
+        .getState()
+        .getConversationMessages('manual-conv')
+        .find((message: { role: string }) => message.role === 'user');
+      expect(firstMessage).toMatchObject({
+        content: 'Ajoute un export CSV rapide depuis le tableau.',
+      });
+      const namingProgress =
+        useChatStore.getState().standaloneTaskLaunchByConversationId['manual-conv'];
+      expect(namingProgress).toMatchObject({
+        status: 'running',
+        activeStep: 'creating_name',
+        completedSteps: ['preparing_task'],
+        userMessageId: (firstMessage as { id: string }).id,
+      });
+
+      await expect(
+        useChatStore.getState().sendMessage({
+          conversationId: 'manual-conv',
+          content: 'Deuxième lancement involontaire.',
+          taskId: 'manual-task-1',
+        }),
+      ).rejects.toThrow('already running');
+      expect(taskStoreState.finalizeManualFeatureDraft).not.toHaveBeenCalled();
+
+      useChatStore.setState({ selectedConversationId: null });
+      expect(
+        useChatStore.getState().standaloneTaskLaunchByConversationId['manual-conv'],
+      ).toEqual(namingProgress);
+      useChatStore.setState({ selectedConversationId: 'manual-conv' });
+
+      metadata.resolve(JSON.stringify({
+        title: 'Quick export',
+        description: 'Add a quick CSV export from the table.',
+        featureSlug: 'quick-export',
+        taskKind: 'feature',
+      }));
+      await firstSend;
+
+      expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenCalledTimes(1);
+      expect(taskStoreState.startTask).toHaveBeenCalledTimes(1);
+      expect(
+        useChatStore.getState().standaloneTaskLaunchByConversationId['manual-conv'],
+      ).toMatchObject({
+        status: 'completed',
+        completedSteps: expect.arrayContaining(['preparing_project', 'starting_agent']),
       });
     });
 
@@ -739,6 +841,34 @@ export const registerImplementSelectionScenarios = (
         status: 'Pending',
         feature_slug: null,
         branch_name: '',
+      });
+      expect(
+        useChatStore.getState().standaloneTaskLaunchByConversationId['manual-conv'],
+      ).toMatchObject({
+        status: 'error',
+        activeStep: 'creating_workspace',
+        error: 'Worktree could not be prepared.',
+        canRetry: true,
+      });
+
+      const firstMessage = useChatStore
+        .getState()
+        .getConversationMessages('manual-conv')
+        .find((message: { role: string }) => message.role === 'user') as {
+          id: string;
+          content: string;
+        };
+      await useChatStore.getState().editMessage(
+        firstMessage.id,
+        firstMessage.content,
+        { skipAgentCodeReplayCheck: true },
+      );
+      expect(
+        useChatStore.getState().standaloneTaskLaunchByConversationId['manual-conv'],
+      ).toMatchObject({
+        status: 'completed',
+        activeStep: 'starting_agent',
+        canRetry: false,
       });
     });
 

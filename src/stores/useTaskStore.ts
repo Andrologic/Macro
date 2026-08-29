@@ -1697,6 +1697,7 @@ const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
   branchWorktrees: Record<string, string>,
   commandRegistryOverride?: Awaited<ReturnType<typeof loadTaskProjectCommandRegistry>>,
+  options?: { onWorkspacesPrepared?: () => void },
 ): Promise<{
   createdWorktrees: Record<string, string>;
   preparedTargets: PreparedTaskExecutionTarget[];
@@ -1747,53 +1748,54 @@ const ensureTaskExecutionTargetsReady = async (
         rollbackTargets.push({ ...target, repoPath });
       }
 
-      const isDirectEdit = isDirectEditTarget(target);
-      const setupCommand = isDirectEdit
-        ? ''
-        : getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
-      if (setupCommand) {
-        try {
-          const setupResult = await runWorktreeSetupCommand({
-            taskId: executionTask.id,
-            taskTitle: executionTask.title,
-            projectId: target.projectId,
-            projectName: project?.name ?? target.projectId,
-            repoPath,
-            worktreePath,
-            command: setupCommand,
-          });
-          if (setupResult.failed) {
-            notify.warning(
-              tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
-                project: project?.name ?? target.projectId,
-              }),
-              {
-                description: tTask(
-                  'implement.worktreeSetupFailedDescription',
-                  'Macro will continue. The setup terminal was opened for review.'
-                ),
-              }
-            );
-          }
-        } catch (error) {
-          const normalized = toServiceError(error);
-          notify.warning(
-            tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
-              project: project?.name ?? target.projectId,
-            }),
-            {
-              description: normalized.message,
-            }
-          );
-        }
-      }
-
       preparedTargets.push({
         ...target,
         projectName: project?.name ?? target.projectId,
         repoPath,
         worktreePath,
       });
+    }
+
+    options?.onWorkspacesPrepared?.();
+
+    for (const target of preparedTargets) {
+      const setupCommand = isDirectEditTarget(target)
+        ? ''
+        : getTaskProjectCommand(commandRegistry, target.repoPath)?.worktreeSetupCommand.trim() || '';
+      if (!setupCommand) continue;
+
+      try {
+        const setupResult = await runWorktreeSetupCommand({
+          taskId: executionTask.id,
+          taskTitle: executionTask.title,
+          projectId: target.projectId,
+          projectName: target.projectName,
+          repoPath: target.repoPath,
+          worktreePath: target.worktreePath,
+          command: setupCommand,
+        });
+        if (setupResult.failed) {
+          notify.warning(
+            tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
+              project: target.projectName,
+            }),
+            {
+              description: tTask(
+                'implement.worktreeSetupFailedDescription',
+                'Macro will continue. The setup terminal was opened for review.'
+              ),
+            }
+          );
+        }
+      } catch (error) {
+        const normalized = toServiceError(error);
+        notify.warning(
+          tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
+            project: target.projectName,
+          }),
+          { description: normalized.message }
+        );
+      }
     }
   } catch (error) {
     for (const target of rollbackTargets.reverse()) {
@@ -1898,7 +1900,10 @@ interface TaskStore {
   restoreTask: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   reopenTask: (taskId: string) => Promise<void>;
-  startTask: (taskId: string) => Promise<void>;
+  startTask: (
+    taskId: string,
+    options?: { onWorkspacesPrepared?: () => void },
+  ) => Promise<void>;
   promoteTaskContextProjects: (
     taskId: string,
     projectIds: string[],
@@ -3839,7 +3844,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     await get().setTaskStatus(taskId, 'Pending');
   },
 
-  startTask: async (taskId) => {
+  startTask: async (taskId, options) => {
     if (!canUseImplementExecutionRuntime()) {
       set({ lastError: getRemoteTaskActionUnavailableMessage() });
       return;
@@ -3965,7 +3970,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     try {
       const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
         task,
-        get().branchWorktrees
+        get().branchWorktrees,
+        undefined,
+        { onWorkspacesPrepared: options?.onWorkspacesPrepared },
       );
       const primaryTarget =
         preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
