@@ -673,7 +673,7 @@ describe('Footer', () => {
     expect(gitFetchMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
   });
 
-  it('defers the Git footer update until after a project selection paints', async () => {
+  it('updates the Architect Git context synchronously when the selected project changes', async () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = null;
     appState.visibleArchitectPlans = [];
@@ -691,19 +691,38 @@ describe('Footer', () => {
     appState.selectedProjectId = 'project-b';
     flushSync(() => root?.render(<Footer />));
 
-    expect(container.textContent ?? '').toContain('API');
-    expect(container.textContent ?? '').not.toContain('Web');
-    expect(gitStatusMock).not.toHaveBeenCalledWith('/repo/web');
-    expect(footerContentRenderProbe).toHaveBeenCalledTimes(0);
-
-    await waitForText(container, 'feature-b');
-
     expect(container.textContent ?? '').toContain('Web');
     expect(container.textContent ?? '').not.toContain('API');
     expect(footerContentRenderProbe.mock.calls.length).toBeGreaterThan(0);
-    expect(
-      gitStatusMock.mock.calls.filter(([repoPath]) => repoPath === '/repo/web')
-    ).toHaveLength(2);
+  });
+
+  it('skips FooterContent renders when project focus changes outside the effective task context', async () => {
+    appState.mode = 'Implement';
+    appState.selectedTaskId = 'task-web';
+    appState.selectedProjectId = 'project-a';
+    taskState.tasks = [{
+      id: 'task-web',
+      project_id: 'project-b',
+      project_ids: ['project-b'],
+      execution_targets: [],
+    }];
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    root.render(<Footer />);
+    await waitForText(container, 'feature-b');
+    gitStatusMock.mockClear();
+    footerContentRenderProbe.mockClear();
+
+    appState.selectedProjectId = 'project-c';
+    flushSync(() => root?.render(<Footer />));
+    await flushAsyncWork();
+
+    expect(container.textContent ?? '').toContain('Web');
+    expect(footerContentRenderProbe).toHaveBeenCalledTimes(0);
+    expect(gitStatusMock).toHaveBeenCalledTimes(0);
   });
 
   it('disables Git actions and executes no fallback command without an active Chat project', async () => {
