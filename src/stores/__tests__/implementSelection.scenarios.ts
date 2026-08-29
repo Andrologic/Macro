@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, jest } from 'bun:test';
 import type { Conversation } from '../../types';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -642,6 +642,72 @@ export const registerImplementSelectionScenarios = (
         status: 'completed',
         completedSteps: expect.arrayContaining(['preparing_project', 'starting_agent']),
       });
+    });
+
+    it('falls back to local metadata when standalone task naming times out', async () => {
+      jest.useFakeTimers();
+      try {
+        appState.mode = 'Implement';
+        appState.selectedTaskId = 'manual-task-1';
+        taskStoreState.tasks = [createManualFeatureTask()];
+        queueSendChatNonStreamingImplementation(async () => new Promise<string>(() => {}));
+
+        const { useChatStore } = await loadChatStore();
+        useChatStore.setState({
+          conversations: [
+            {
+              ...createConversation('manual-conv'),
+              scope_mode: 'Implement',
+              task_id: 'manual-task-1',
+              title: 'New feature',
+            },
+          ],
+          messages: [],
+          selectedConversationId: 'manual-conv',
+          selectedConversationIdsByMode: { Implement: 'manual-conv' },
+          isLoading: false,
+          isStreaming: false,
+          lastError: null,
+          abortController: null,
+          messageImagesByMessageId: {},
+          composerContextRefs: [],
+        });
+
+        const send = useChatStore.getState().sendMessage({
+          conversationId: 'manual-conv',
+          content: 'Ajoute un export CSV rapide depuis le tableau.',
+          taskId: 'manual-task-1',
+        });
+        for (
+          let index = 0;
+          index < 20 && sendChatNonStreamingMock.mock.calls.length === 0;
+          index += 1
+        ) {
+          jest.advanceTimersByTime(0);
+          await Promise.resolve();
+        }
+
+        const metadataRequestSignal = sendChatNonStreamingMock.mock.calls[0]?.[0]
+          ?.signal as AbortSignal | undefined;
+        expect(sendChatNonStreamingMock).toHaveBeenCalledTimes(1);
+        expect(metadataRequestSignal?.aborted).toBe(false);
+
+        jest.advanceTimersByTime(15_000);
+        for (let index = 0; index < 20; index += 1) {
+          jest.advanceTimersByTime(0);
+          await Promise.resolve();
+        }
+        await send;
+
+        expect(metadataRequestSignal?.aborted).toBe(true);
+        expect(taskStoreState.finalizeManualFeatureDraft).toHaveBeenCalledTimes(1);
+        expect(taskStoreState.startTask).toHaveBeenCalledTimes(1);
+        expect(
+          useChatStore.getState().standaloneTaskLaunchByConversationId['manual-conv'],
+        ).toMatchObject({ status: 'completed' });
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('keeps a standalone manual feature initialized after assistant generation fails, then retries as an in-progress task', async () => {

@@ -411,6 +411,7 @@ const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
 const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
+const MANUAL_FEATURE_METADATA_TIMEOUT_MS = 15_000;
 const ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT = 3;
 const COPILOT_COMPACTION_SUMMARY_TIMEOUT_MS = 60_000;
 const metadataGenerationInFlight = new Set<string>();
@@ -8446,22 +8447,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const requestManualFeatureMetadata = async (
       unavailableBranchNames: string[],
     ) => {
-      const output = await sendChatNonStreaming({
-        providerId: metadataProviderContext.providerId,
-        providerType: metadataProviderContext.providerType,
-        baseUrl: metadataProviderContext.baseUrl,
-        apiKey: metadataProviderContext.apiKey,
-        modelId: metadataProviderContext.modelId,
-        reasoningEffort: metadataProviderContext.reasoningEffort,
-        messages: prepareManualFeatureMetadataMessages(
-          task.title,
-          params.firstUserContent,
-          unavailableBranchNames,
-          selectedTaskKind,
-        ),
-        onComplete: () => {},
-        onError: () => {},
+      const abortController = new AbortController();
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          abortController.abort();
+          reject(new Error('Manual feature metadata generation timed out.'));
+        }, MANUAL_FEATURE_METADATA_TIMEOUT_MS);
       });
+
+      let output: string;
+      try {
+        output = await Promise.race([
+          sendChatNonStreaming({
+            providerId: metadataProviderContext.providerId,
+            providerType: metadataProviderContext.providerType,
+            baseUrl: metadataProviderContext.baseUrl,
+            apiKey: metadataProviderContext.apiKey,
+            modelId: metadataProviderContext.modelId,
+            reasoningEffort: metadataProviderContext.reasoningEffort,
+            messages: prepareManualFeatureMetadataMessages(
+              task.title,
+              params.firstUserContent,
+              unavailableBranchNames,
+              selectedTaskKind,
+            ),
+            signal: abortController.signal,
+            onComplete: () => {},
+            onError: () => {},
+          }),
+          timeout,
+        ]);
+      } finally {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+      }
       return keepSelectedTaskKind(extractManualFeatureMetadataFromModelOutput(output));
     };
 
