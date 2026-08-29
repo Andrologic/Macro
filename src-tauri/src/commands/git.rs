@@ -1083,6 +1083,11 @@ where
     };
 
     let first_error = match first_result {
+        Ok(_) if git_review_is_cancelled(&cancellation) => {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
         Ok(value) => return Ok(value),
         Err(error) if error.is_git_object_missing() => error,
         Err(error) => return Err(error),
@@ -1157,6 +1162,11 @@ where
         operation(&refreshed_repo)
     };
 
+    if retry_result.is_ok() && git_review_is_cancelled(&cancellation) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
     retry_result.map_err(|retry_error| {
         if retry_error.is_git_object_missing() {
             retry_error.with_git_object_diagnostics(
@@ -7032,9 +7042,12 @@ pub async fn git_review_snapshot(
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
+        let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
-            review::build_git_review_snapshot(repo, &validated)
-                .map_err(|error| error.with_git_object_context(None, "git_review_snapshot"))
+            review::build_git_review_snapshot_with_cancellation(repo, &validated, || {
+                git_review_is_cancelled(&operation_cancellation)
+            })
+            .map_err(|error| error.with_git_object_context(None, "git_review_snapshot"))
         })
     })
     .await
@@ -7481,6 +7494,29 @@ fn register_direct_review_authorization(
         },
     );
     Ok(snapshot_id)
+}
+
+fn register_direct_review_authorization_if_checkpoint_unchanged(
+    repo: &Repository,
+    expected_checkpoint_revision: &str,
+    task_id: &str,
+    project_path: &Path,
+    checkpoint_id: &str,
+    restore_revisions: &HashMap<String, String>,
+) -> Result<String> {
+    if direct_checkpoint_revision(repo)? != expected_checkpoint_revision {
+        return Err(BackendError::RevisionConflict {
+            message: "The direct checkpoint changed while its review snapshot was loaded."
+                .to_string(),
+        });
+    }
+    register_direct_review_authorization(
+        task_id,
+        project_path,
+        checkpoint_id,
+        expected_checkpoint_revision,
+        restore_revisions,
+    )
 }
 
 fn resolve_direct_review_authorization(
@@ -9025,6 +9061,7 @@ pub async fn direct_review_snapshot(
             checkpoint_id.as_deref(),
             cancellation,
             |repo, validated| {
+                let checkpoint_revision = direct_checkpoint_revision(repo)?;
                 let status = build_git_status(repo)?;
                 let mut visible_paths = HashSet::new();
                 for path in status
@@ -9095,11 +9132,12 @@ pub async fn direct_review_snapshot(
                     })?
                     .parent_count()
                     > 0;
-                let snapshot_id = register_direct_review_authorization(
+                let snapshot_id = register_direct_review_authorization_if_checkpoint_unchanged(
+                    repo,
+                    &checkpoint_revision,
                     &task_id,
                     validated,
                     &direct_checkpoint_repo_id(repo),
-                    &direct_checkpoint_revision(repo)?,
                     &restore_revisions,
                 )?;
                 Ok(DirectReviewSnapshotDto {
@@ -11224,7 +11262,13 @@ pub async fn git_review_file(
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
+        let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
+            if git_review_is_cancelled(&operation_cancellation) {
+                return Err(BackendError::Git {
+                    message: "Git review was cancelled.".to_string(),
+                });
+            }
             let status = build_git_status(repo)?;
             let status_label = status
                 .staged_files
@@ -11235,8 +11279,14 @@ pub async fn git_review_file(
                 .map(|file| file.status.as_str())
                 .unwrap_or("modified");
 
-            review::build_git_review_file(repo, &validated, &relative_path, status_label)
-                .map_err(|error| error.with_git_object_context(None, "git_review_file"))
+            review::build_git_review_file_with_cancellation(
+                repo,
+                &validated,
+                &relative_path,
+                status_label,
+                || git_review_is_cancelled(&operation_cancellation),
+            )
+            .map_err(|error| error.with_git_object_context(None, "git_review_file"))
         })
     })
     .await
@@ -12717,6 +12767,74 @@ mod tests {
 
         assert!(error.to_string().contains("cancelled"));
         assert_eq!(operation_calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn cancellation_arriving_during_the_first_review_discards_its_success() {
+        let temp = TempDir::new().expect("temporary repository");
+        Repository::init(temp.path()).expect("initialize repository");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let operation_calls = AtomicUsize::new(0);
+
+        let error = run_review_with_missing_object_retry(
+            &GitState::new(),
+            temp.path(),
+            Some(cancellation.clone()),
+            |_repo| {
+                operation_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                cancellation.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .expect_err("a cancellation during the first read must win over success");
+
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(operation_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancellation_arriving_during_the_retried_review_discards_its_success() {
+        let temp = TempDir::new().expect("temporary repository");
+        let repo = Repository::init(temp.path()).expect("initialize repository");
+        repo.config()
+            .and_then(|mut config| {
+                config.set_bool("remote.origin.promisor", true)?;
+                config.set_str("remote.origin.partialCloneFilter", "blob:none")?;
+                config.set_str("remote.origin.url", "https://example.test/repository.git")
+            })
+            .expect("configure partial repository");
+        drop(repo);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let operation_calls = AtomicUsize::new(0);
+
+        let error = run_review_with_missing_object_retry_and_hydrator(
+            &GitState::new(),
+            temp.path(),
+            Some(cancellation.clone()),
+            |_repo| {
+                let call = operation_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                if call == 0 {
+                    Err(BackendError::GitObjectMissing {
+                        message: "missing promised object".to_string(),
+                        object_id: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                        operation: Some("test_review".to_string()),
+                        repository_path: None,
+                        partial_clone: false,
+                        retry_attempted: false,
+                        worktree_modified: Some(false),
+                        git_output: None,
+                    })
+                } else {
+                    cancellation.store(true, Ordering::Release);
+                    Ok(())
+                }
+            },
+            |_repo_root, _object_id, _cancellation| Ok("hydrated".to_string()),
+        )
+        .expect_err("a cancellation during the retry must win over success");
+
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(operation_calls.load(AtomicOrdering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -15521,6 +15639,36 @@ mod tests {
             &["file.txt".to_string()],
         )
         .expect_err("an old snapshot must not authorize a changed checkpoint");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(fs::read_to_string(path).expect("file"), "pending\n");
+    }
+
+    #[test]
+    fn direct_review_snapshot_registration_rejects_an_index_change_during_capture() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let path = project_path.join("file.txt");
+        fs::write(&path, "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "pending\n").expect("pending file");
+        let checkpoint_revision = direct_checkpoint_revision(&repo).expect("starting revision");
+        review::build_git_review_snapshot(&repo, &project_path).expect("captured snapshot");
+
+        let mut index = repo.index().expect("index");
+        index
+            .remove_path(Path::new("file.txt"))
+            .expect("concurrent index change");
+        index.write().expect("persist concurrent index change");
+
+        let error = register_direct_review_authorization_if_checkpoint_unchanged(
+            &repo,
+            &checkpoint_revision,
+            "task-1",
+            &project_path,
+            "task-1-0000000000000001",
+            &HashMap::from([("file.txt".to_string(), "v1:absent".to_string())]),
+        )
+        .expect_err("a mixed-revision snapshot must not receive an authorization token");
 
         assert!(matches!(error, BackendError::RevisionConflict { .. }));
         assert_eq!(fs::read_to_string(path).expect("file"), "pending\n");
