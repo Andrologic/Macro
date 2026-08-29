@@ -2039,6 +2039,7 @@ export const registerCompactionAndDiagnosticsScenarios = (
     });
 
     it('uses the completed stream provider for the final full context refresh', async () => {
+      context.tauriAvailable = true;
       appState.mode = 'Chat';
       providerState.providerConfigs = [
         { ...DEFAULT_PROVIDER_CONFIGS[0], id: 'provider-1', providerType: 'openai' },

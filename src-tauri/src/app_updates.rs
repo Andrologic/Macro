@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use crate::core::process::background_command;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
@@ -587,8 +589,6 @@ fn install_package(
     manifest: &StagedUpdateManifest,
     bytes: &[u8],
 ) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-
     let directory = update_dir(app)?;
     fs::create_dir_all(&directory)
         .map_err(|error| format!("Impossible de préparer l'installateur : {error}"))?;
@@ -629,9 +629,8 @@ fn install_package(
         return Err("UPDATE_INSTALLER_VERSION_MISMATCH".to_string());
     }
 
-    std::process::Command::new(&installer_path)
+    background_command(&installer_path)
         .args(["/S", "/R", "/UPDATE"])
-        .creation_flags(0x0800_0000)
         .spawn()
         .map_err(|error| format!("Impossible de lancer l'installation silencieuse : {error}"))?;
     app.exit(0);

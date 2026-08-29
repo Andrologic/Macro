@@ -202,7 +202,7 @@ async fn stream_chat_inner(
                     reasoning_summary: optional_text(completion_accumulator.reasoning_summary),
                     tool_traces: None,
                     hidden_context: None,
-                    completion_reason: Some("completed".to_string()),
+                    completion_reason: Some("incomplete".to_string()),
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -502,8 +502,71 @@ fn process_sse_event(
             Ok(true)
         }
         "response.failed" => Err(extract_stream_error(&value)),
-        "response.incomplete" => Err("Incomplete response returned by ChatGPT.".to_string()),
+        "response.incomplete" => {
+            let output_text = select_best_output_text(
+                extract_completed_output_text(&value),
+                &completion_accumulator.output_text,
+            );
+            let reasoning_summary = select_best_optional_text(
+                extract_completed_reasoning_summary(&value),
+                &completion_accumulator.reasoning_summary,
+            );
+            let tool_calls = merge_tool_calls(
+                extract_completed_tool_calls(&value)?,
+                &completion_accumulator.tool_calls,
+            );
+            let output_items = select_best_output_items(
+                extract_completed_items(&value).cloned(),
+                &completion_accumulator.output_items,
+            );
+            let provider_input_items = output_items
+                .as_ref()
+                .map(|items| normalize_provider_input_items_for_replay(items))
+                .transpose()?
+                .and_then(optional_output_items);
+            let response_id =
+                extract_response_id(&value).or_else(|| completion_accumulator.response_id.clone());
+            emit_timeline(
+                app_handle,
+                &request.request_id,
+                &request.provider_id,
+                "chatgpt",
+                started_at,
+                "done",
+            );
+            app_handle
+                .emit(
+                    "ai:done",
+                    AiStreamDoneEvent {
+                        request_id: request.request_id.to_string(),
+                        output_text,
+                        tool_calls,
+                        response_id,
+                        output_items,
+                        provider_input_items,
+                        provider_turn_state: None,
+                        reasoning_summary,
+                        tool_traces: None,
+                        hidden_context: None,
+                        completion_reason: Some(extract_incomplete_reason(&value).to_string()),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(true)
+        }
         _ => Ok(false),
+    }
+}
+
+fn extract_incomplete_reason(value: &Value) -> &str {
+    let reason = value
+        .pointer("/response/incomplete_details/reason")
+        .or_else(|| value.pointer("/incomplete_details/reason"))
+        .and_then(Value::as_str);
+    match reason {
+        Some("max_output_tokens" | "max_tokens" | "length") => "length",
+        Some(reason) if !reason.trim().is_empty() => reason,
+        _ => "incomplete",
     }
 }
 
@@ -1310,4 +1373,26 @@ fn extract_stream_error(payload: &Value) -> String {
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| "ChatGPT stream failed.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_incomplete_reason;
+    use serde_json::json;
+
+    #[test]
+    fn incomplete_response_maps_output_limit_to_length() {
+        assert_eq!(
+            extract_incomplete_reason(&json!({
+                "response": { "incomplete_details": { "reason": "max_output_tokens" } }
+            })),
+            "length"
+        );
+        assert_eq!(
+            extract_incomplete_reason(&json!({
+                "response": { "incomplete_details": { "reason": "content_filter" } }
+            })),
+            "content_filter"
+        );
+    }
 }

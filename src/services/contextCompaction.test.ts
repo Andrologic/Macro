@@ -181,7 +181,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.threshold).toBe('blocking');
   });
 
-  it('prunes old large tool contexts while preserving recent and protected tool output during normal pruning', () => {
+  it('prunes a superseded read while preserving the newest result and protected tool output', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect old files.'),
       makeMessage('a1', 'assistant', 'Old result.', {
@@ -189,9 +189,10 @@ describe('buildCompactedMessagesForRequest', () => {
           `<tool_context tool="read" detail="src/old.ts">\n${'old line\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u2', 'user', 'Check plan state.'),
-      makeMessage('a2', 'assistant', 'Protected result.', {
+      makeMessage('a2', 'assistant', 'Protected and refreshed results.', {
         hidden_context:
-          `<tool_context tool="plan_get" detail="plan-1">\n${'plan detail\n'.repeat(300)}\n</tool_context>`,
+          `<tool_context tool="plan_get" detail="plan-1">\n${'plan detail\n'.repeat(300)}\n</tool_context>\n` +
+          `<tool_context tool="read" detail="src/old.ts">\n${'new line\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u3', 'user', 'Continue.'),
     ];
@@ -205,6 +206,14 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(result.prunedMessageIds).toEqual(['a1']);
     expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
     expect(String(result.messages[3]?.content)).toContain('plan detail');
+    expect(String(result.messages[3]?.content)).toContain('new line');
+    expect(result.pruning.elements).toEqual([
+      expect.objectContaining({
+        messageId: 'a1',
+        reason: 'superseded',
+        target: 'src/old.ts',
+      }),
+    ]);
   });
 
   it('preserves activated skill context during normal pruning', () => {
@@ -220,7 +229,10 @@ describe('buildCompactedMessagesForRequest', () => {
           `<tool_context tool="read" detail="src/old.ts">\n${'old line\n'.repeat(300)}\n</tool_context>`,
       }),
       makeMessage('u3', 'user', 'Recent turn.'),
-      makeMessage('a3', 'assistant', 'Recent answer.'),
+      makeMessage('a3', 'assistant', 'Recent answer.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/old.ts">\n${'new line\n'.repeat(300)}\n</tool_context>`,
+      }),
       makeMessage('u4', 'user', 'Continue with that skill.'),
     ];
 
@@ -235,7 +247,7 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(String(result.messages[3]?.content)).toContain('[pruned tool context]');
   });
 
-  it('limits protected tool output during forced pruning', () => {
+  it('never prunes active plan output during forced pruning', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect plan state.'),
       makeMessage('a1', 'assistant', 'Protected result.', {
@@ -253,8 +265,105 @@ describe('buildCompactedMessagesForRequest', () => {
       { force: true },
     );
 
+    expect(result.prunedMessageIds).toEqual([]);
+    expect(String(result.messages[1]?.content)).toContain('plan detail');
+  });
+
+  it('scopes superseded reads by project, canonical path, and selector', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect both projects.'),
+      makeMessage('a1', 'assistant', 'First reads.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/../src/app.ts">\nFILE: src/../src/app.ts\nPROJECT_ID: api\nLINES: 1-10\nTOTAL_LINES: 100\n${'old api\n'.repeat(100)}\n</tool_context>\n` +
+          `<tool_context tool="read" detail="src/app.ts">\nFILE: src/app.ts\nPROJECT_ID: web\nLINES: 1-10\nTOTAL_LINES: 100\n${'web result\n'.repeat(100)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Read a different page.'),
+      makeMessage('a2', 'assistant', 'Second page.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\nFILE: src/app.ts\nPROJECT_ID: api\nLINES: 11-20\nTOTAL_LINES: 100\n${'api page two\n'.repeat(100)}\n</tool_context>`,
+      }),
+      makeMessage('u3', 'user', 'Refresh the first page.'),
+      makeMessage('a3', 'assistant', 'Fresh first page.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\nFILE: src/app.ts\nPROJECT_ID: api\nLINES: 1-10\nTOTAL_LINES: 100\n${'new api\n'.repeat(100)}\n</tool_context>`,
+      }),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true, cacheWillBeRebuilt: true },
+    );
+
     expect(result.prunedMessageIds).toEqual(['a1']);
     expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
+    expect(String(result.messages[1]?.content)).toContain('web result');
+    expect(String(result.messages[3]?.content)).toContain('api page two');
+    expect(String(result.messages[5]?.content)).toContain('new api');
+    expect(result.pruning.estimatedTokensSaved).toBeGreaterThan(0);
+  });
+
+  it('keeps distinct raw byte pages while pruning a refreshed page', () => {
+    const rawContext = (range: string, value: string) =>
+      `<tool_context tool="read_file" detail="notes.txt">\n` +
+      `FILE: notes.txt\nMODE: RAW_UTF8\nBYTES: ${range}\nTOTAL_BYTES: 80000\n` +
+      `${value.repeat(300)}\n</tool_context>`;
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Read the first raw page.'),
+      makeMessage('a1', 'assistant', 'First page.', {
+        hidden_context: rawContext('0-40000', 'old first page\n'),
+      }),
+      makeMessage('u2', 'user', 'Read the second raw page.'),
+      makeMessage('a2', 'assistant', 'Second page.', {
+        hidden_context: rawContext('40000-80000', 'second page\n'),
+      }),
+      makeMessage('u3', 'user', 'Refresh the first raw page.'),
+      makeMessage('a3', 'assistant', 'Fresh first page.', {
+        hidden_context: rawContext('0-40000', 'new first page\n'),
+      }),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true, cacheWillBeRebuilt: true },
+    );
+
+    expect(result.prunedMessageIds).toEqual(['a1']);
+    expect(String(result.messages[1]?.content)).toContain('[pruned tool context]');
+    expect(String(result.messages[3]?.content)).toContain('second page');
+    expect(String(result.messages[5]?.content)).toContain('new first page');
+  });
+
+  it('preserves errors and a warm cached prefix', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Read a file.'),
+      makeMessage('a1', 'assistant', 'Old read.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\n${'old result\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u2', 'user', 'Retry another file.'),
+      makeMessage('a2', 'assistant', 'Failed read.', {
+        hidden_context:
+          '<tool_context tool="read" detail="src/error.ts">\nError reading file: denied\n</tool_context>',
+      }),
+      makeMessage('u3', 'user', 'Refresh the first file.'),
+      makeMessage('a3', 'assistant', 'Fresh read.', {
+        hidden_context:
+          `<tool_context tool="read" detail="src/app.ts">\n${'fresh result\n'.repeat(300)}\n</tool_context>`,
+      }),
+      makeMessage('u4', 'user', 'Use those results. '.repeat(4_000)),
+    ];
+
+    const result = pruneToolContextBlocks(
+      makePreparedMessages(orderedMessages),
+      orderedMessages,
+      { force: true, cacheWarmSuffixTokens: 100 },
+    );
+
+    expect(result.prunedMessageIds).toEqual([]);
+    expect(String(result.messages[3]?.content)).toContain('Error reading file');
+    expect(result.pruning.promptCacheCompatibility).toBe('preserved');
   });
 
   it('compacts provider input items instead of relying on visible content trimming', () => {
@@ -540,6 +649,135 @@ describe('buildCompactedMessagesForRequest', () => {
     expect(footprint.providerInputTokens).toBeGreaterThan(0);
   });
 
+  it('keeps the latest Responses function call output intact', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the file.'),
+      makeMessage('a1', 'assistant', 'Tool exchange.'),
+      makeMessage('u2', 'user', 'Continue.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      ...preparedMessages[1]!,
+      provider_input_items: [
+        {
+          type: 'function_call',
+          call_id: 'call_read',
+          name: 'read',
+          arguments: '{"path":"README.md"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_read',
+          output: `FILE: README.md\n${'large result\n'.repeat(500)}`,
+        },
+      ],
+    };
+
+    const result = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    const items = result.messages[1]?.provider_input_items as Array<
+      Record<string, unknown>
+    >;
+
+    expect(items.map((item) => item.type)).toEqual([
+      'function_call',
+      'function_call_output',
+    ]);
+    expect(items[0]?.call_id).toBe('call_read');
+    expect(items[1]?.call_id).toBe('call_read');
+    expect(String(items[1]?.output)).toContain('FILE: README.md');
+    expect(String(items[1]?.output)).toBe(`FILE: README.md\n${'large result\n'.repeat(500)}`);
+  });
+
+  it('keeps older Responses function calls paired with their compacted outputs', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect both files.'),
+      makeMessage('a1', 'assistant', 'First call.'),
+      makeMessage('a2', 'assistant', 'First result.'),
+      makeMessage('a3', 'assistant', 'Second call.'),
+      makeMessage('a4', 'assistant', 'Second result.'),
+      makeMessage('u2', 'user', 'Continue.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    preparedMessages[1] = {
+      ...preparedMessages[1]!,
+      provider_input_items: [
+        { type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' },
+      ],
+    };
+    preparedMessages[2] = {
+      ...preparedMessages[2]!,
+      provider_input_items: [
+        { type: 'function_call_output', call_id: 'c1', output: 'first '.repeat(500) },
+      ],
+    };
+    preparedMessages[3] = {
+      ...preparedMessages[3]!,
+      provider_input_items: [
+        { type: 'function_call', call_id: 'c2', name: 'read', arguments: '{}' },
+      ],
+    };
+    preparedMessages[4] = {
+      ...preparedMessages[4]!,
+      provider_input_items: [
+        { type: 'function_call_output', call_id: 'c2', output: 'second '.repeat(500) },
+      ],
+    };
+
+    const result = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    const serialized = JSON.stringify(result.messages);
+
+    expect(serialized).toContain('"type":"function_call","call_id":"c1"');
+    expect(serialized).toContain('"type":"function_call_output","call_id":"c1"');
+    expect(serialized).toContain('"type":"function_call","call_id":"c2"');
+    expect(serialized).toContain('"type":"function_call_output","call_id":"c2"');
+  });
+
+  it('keeps provider tool errors and skill resources intact', () => {
+    const orderedMessages = [
+      makeMessage('u1', 'user', 'Inspect the project.'),
+      makeMessage('a1', 'assistant', 'First tool exchange.'),
+      makeMessage('a2', 'assistant', 'Second tool exchange.'),
+      makeMessage('a3', 'assistant', 'Latest tool exchange.'),
+      makeMessage('u2', 'user', 'Continue.'),
+    ];
+    const preparedMessages = makePreparedMessages(orderedMessages);
+    const cases = [
+      ['call_error', 'read', `Error executing tool read: ${'details '.repeat(500)}`],
+      ['call_skill', 'skill_read', `Skill resource: ${'instructions '.repeat(500)}`],
+      ['call_latest', 'read', `FILE: latest.ts\n${'source '.repeat(500)}`],
+    ] as const;
+    for (const [offset, [callId, toolName, output]] of cases.entries()) {
+      preparedMessages[offset + 1] = {
+        ...preparedMessages[offset + 1]!,
+        provider_input_items: [
+          { type: 'function_call', call_id: callId, name: toolName, arguments: '{}' },
+          { type: 'function_call_output', call_id: callId, output },
+        ],
+      };
+    }
+
+    const result = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+
+    for (const [offset, [, , output]] of cases.entries()) {
+      const items = result.messages[offset + 1]?.provider_input_items as Array<
+        Record<string, unknown>
+      >;
+      expect(items[1]?.output).toBe(output);
+    }
+  });
+
   it('does not reintroduce pruned hidden context when measuring a compacted payload', () => {
     const orderedMessages = [
       makeMessage('u1', 'user', 'Inspect old files.'),
@@ -616,6 +854,18 @@ describe('buildCompactedMessagesForRequest', () => {
       ],
     };
 
+    const providerCompacted = compactProviderInputItemsForContext(
+      preparedMessages,
+      orderedMessages,
+      'forced',
+    );
+    expect(
+      JSON.stringify(providerCompacted.messages[1]?.provider_input_items),
+    ).toContain('"id":"call_read"');
+    expect(
+      JSON.stringify(providerCompacted.messages[2]?.provider_input_items),
+    ).toContain('"tool_call_id":"call_read"');
+
     const result = await buildCompactedMessagesForRequest({
       systemMessage: 'You are Macro.',
       preparedMessages,
@@ -630,7 +880,8 @@ describe('buildCompactedMessagesForRequest', () => {
     });
     const serializedMessages = JSON.stringify(result.messages);
 
-    expect(serializedMessages).toContain('Tool calls preserved as fact: read');
+    expect(serializedMessages).toContain('Current objective: answer from compacted provider history.');
+    expect(serializedMessages).not.toContain('call_read');
     expect(serializedMessages).not.toContain('"tool_calls"');
     expect(serializedMessages).not.toContain('native reasoning payload');
   });

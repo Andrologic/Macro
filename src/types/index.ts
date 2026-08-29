@@ -18,8 +18,13 @@ export type TaskStatus =
 export type MessageRole = 'user' | 'assistant';
 export type ChatCompletionReason =
   | 'completed'
+  | 'length'
+  | 'length_recovered'
+  | 'incomplete'
+  | 'incomplete_recovered'
   | 'tool_turn_limit'
-  | 'post_tool_empty_fallback';
+  | 'post_tool_empty_fallback'
+  | (string & {});
 export type FileOperation = 'Create' | 'Modify' | 'Delete' | 'Rename';
 export type GitNodeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 export type AppMode = 'Architect' | 'Implement' | 'Chat';
@@ -922,6 +927,20 @@ export interface ContextCompactionDecisionAudit {
   contextLimitWarning?: string | null;
   autoCompactionEnabled?: boolean | null;
   formula?: string | null;
+  completionReason?: ChatCompletionReason | null;
+  compactionMethod?: string | null;
+  prunedElements?: Array<{
+    messageId: string;
+    toolName: string;
+    target: string;
+    reason: string;
+    estimatedTokensSaved: number;
+  }>;
+  estimatedTokensGained?: number | null;
+  pruningEstimatedTokensGained?: number | null;
+  checkpointDecision?: string | null;
+  checkpointInvalidated?: boolean | null;
+  promptCacheCompatibility?: string | null;
 }
 
 export type ContextCompactionKind =

@@ -67,6 +67,11 @@ installReactI18nextMock(createTranslationMock({
   'chat.contextWindow.manual.feedback.belowThresholdDetail': 'Le contexte est sous le seuil de compactage utile',
   'chat.contextWindow.compaction': 'Compaction',
   'chat.contextWindow.countSummary': '{{messages}} messages · {{sources}} sources',
+  'chat.contextWindow.repositoryInstructions': 'Instructions du dépôt',
+  'chat.contextWindow.repositoryInstructionIssue.countLimit': 'Des fichiers ont été omis à cause de la limite.',
+  'chat.contextWindow.repositoryInstructionIssue.sizeLimit': 'Des instructions ont été omises à cause de leur taille.',
+  'chat.contextWindow.repositoryInstructionIssue.outsideProject': 'Macro a refusé un chemin extérieur au projet.',
+  'chat.contextWindow.repositoryInstructionIssue.loadFailure': "Macro n'a pas pu charger certaines instructions.",
   'chat.contextWindow.refresh': 'Actualiser',
 }));
 
@@ -218,6 +223,48 @@ describe('ContextWindowIndicator', () => {
       writable: true,
       value: originalMatchMedia,
     });
+  });
+
+  it('shows repository instruction sources and load problems in diagnostics', async () => {
+    await act(async () => {
+      root?.render(
+        <ContextWindowIndicator
+          diagnostics={buildDiagnostics({
+            repositoryInstructionSources: [
+              {
+                projectId: 'web',
+                projectName: 'Web app',
+                sourcePath: 'C:/repos/web/AGENTS.md',
+                relativePath: 'AGENTS.md',
+                depth: 0,
+                sizeBytes: 120,
+              },
+            ],
+            repositoryInstructionIssues: [
+              {
+                projectId: 'web',
+                code: 'file_limit_reached',
+                sourcePath: 'C:/repos/web/src/AGENTS.md',
+                message: 'Repository instruction file limit reached: 1.',
+              },
+            ],
+          })}
+        />,
+      );
+      await flushRender();
+    });
+
+    await act(async () => {
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Diagnostic du contexte"]')
+        ?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Instructions du dépôt · 1');
+    expect(document.body.textContent).toContain('Web app');
+    expect(document.body.textContent).toContain('AGENTS.md');
+    expect(document.body.textContent).toContain('file_limit_reached');
   });
 
   it('renders a clockwise fill based on the usable context pressure', async () => {

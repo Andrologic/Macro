@@ -699,6 +699,13 @@
       "none": "없음",
       "compaction": "압축",
       "countSummary": "{{messages}} messages · {{sources}} sources",
+      "repositoryInstructions": "저장소 지침",
+      "repositoryInstructionIssue": {
+        "countLimit": "개수 제한에 도달하여 일부 저장소 지침 파일을 생략했습니다.",
+        "sizeLimit": "크기 제한에 도달하여 일부 저장소 지침을 생략했습니다.",
+        "outsideProject": "Macro가 프로젝트 외부의 저장소 지침 경로를 거부했습니다.",
+        "loadFailure": "Macro가 일부 저장소 지침을 불러오지 못했습니다."
+      },
       "refresh": "새로고침",
       "source": {
         "userOverride": "사용자 설정",

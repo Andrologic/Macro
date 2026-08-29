@@ -699,6 +699,13 @@
       "none": "なし",
       "compaction": "圧縮",
       "countSummary": "{{messages}} messages · {{sources}} sources",
+      "repositoryInstructions": "リポジトリの指示",
+      "repositoryInstructionIssue": {
+        "countLimit": "件数の上限に達したため、一部のリポジトリ指示ファイルを省略しました。",
+        "sizeLimit": "サイズの上限に達したため、一部のリポジトリ指示を省略しました。",
+        "outsideProject": "Macro はプロジェクト外のリポジトリ指示パスを拒否しました。",
+        "loadFailure": "Macro は一部のリポジトリ指示を読み込めませんでした。"
+      },
       "refresh": "更新",
       "source": {
         "userOverride": "ユーザー設定",
