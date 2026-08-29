@@ -3,6 +3,13 @@ import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 
 const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+const workflowsWithFrontendCaches = [
+  '.github/workflows/ci.yml',
+  '.github/workflows/preview.yml',
+  '.github/workflows/release.yml',
+].map((path) => parse(readFileSync(path, 'utf8')));
+type WorkflowStep = { name?: string; with?: { path?: string; key?: string } };
+type WorkflowJob = { steps?: WorkflowStep[] };
 const stepByName = (jobName: string, stepName: string) => (
   workflow.jobs[jobName].steps.find((step: { name?: string }) => step.name === stepName)
 );
@@ -43,14 +50,20 @@ describe('GitHub CI routing', () => {
       .toContain('--profile windows --skip-install');
   });
 
-  test('keys dependency caches by platform, architecture, Bun, and lock state', () => {
-    for (const jobName of ['linux', 'windows']) {
-      const cache = stepByName(jobName, 'Restore frontend dependency cache');
-      expect(cache.with.path).toBe('node_modules');
-      expect(cache.with.key).toContain('${{ runner.os }}');
-      expect(cache.with.key).toContain('${{ runner.arch }}');
-      expect(cache.with.key).toContain('bun-1.3.14');
-      expect(cache.with.key).toContain("hashFiles('package.json', 'bun.lock')");
+  test('keys every dependency cache by platform, architecture, Bun, and install configuration', () => {
+    const caches = workflowsWithFrontendCaches.flatMap((document) => (
+      Object.values(document.jobs as Record<string, WorkflowJob>)
+        .flatMap((job) => job.steps || [])
+        .filter((step) => step.name === 'Restore frontend dependency cache')
+    ));
+    expect(caches).toHaveLength(6);
+
+    for (const cache of caches) {
+      expect(cache.with?.path).toBe('node_modules');
+      expect(cache.with?.key).toContain('${{ runner.os }}');
+      expect(cache.with?.key).toContain('${{ runner.arch }}');
+      expect(cache.with?.key).toContain('bun-1.3.14');
+      expect(cache.with?.key).toContain("hashFiles('package.json', 'bun.lock', 'bunfig.toml')");
     }
   });
 });

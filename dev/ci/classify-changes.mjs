@@ -37,6 +37,12 @@ const SIDECAR_PATTERNS = [
   /^dev\/(?:ai-runtime-linux-wrapper|build-ai-runtime)\.mjs$/,
 ];
 
+const DESKTOP_CONFIGURATION_PATTERNS = [
+  /^src-tauri\/tauri(?:\.[^/]+)?\.conf\.json$/,
+  /^src-tauri\/(?:Info\.plist|entitlements\.plist|installer-hooks\.nsh)$/,
+  /^src-tauri\/(?:capabilities|config-schemas|icons|resources)\//,
+];
+
 const CONFIG_PATTERNS = [
   /^\.github\/workflows\//,
   /^(?:package\.json|bun\.lock|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml)$/,
@@ -44,6 +50,7 @@ const CONFIG_PATTERNS = [
   /^scripts\//,
   /^(?:vite|eslint|postcss|tailwind)\.config(?:\.[^/]+)?$/,
   /^tsconfig(?:\.[^/]+)?\.json$/,
+  ...DESKTOP_CONFIGURATION_PATTERNS,
 ];
 
 export function classifyPaths(inputPaths) {

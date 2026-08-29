@@ -54,6 +54,23 @@ describe('classifyPaths', () => {
     }
   });
 
+  test('routes Tauri and packaging configuration through conservative validation', () => {
+    for (const path of [
+      'src-tauri/tauri.conf.json',
+      'src-tauri/tauri.macos.conf.json',
+      'src-tauri/capabilities/default.json',
+      'src-tauri/resources/runtime-policy.json',
+      'src-tauri/Info.plist',
+      'src-tauri/installer-hooks.nsh',
+    ]) {
+      const result = classifyPaths([path]);
+      expect(result.native).toBe(true);
+      expect(result.configuration).toBe(true);
+      expect(result.linux).toBe(true);
+      expect(result.windows).toBe(true);
+    }
+  });
+
   test('treats workflows and manifests conservatively', () => {
     for (const path of ['.github/workflows/ci.yml', 'package.json', 'bun.lock']) {
       const result = classifyPaths([path]);
