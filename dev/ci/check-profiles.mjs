@@ -18,25 +18,24 @@ const frontendChecks = [
   step('Check bundle budgets', 'bun', ['run', 'bundle:check']),
 ];
 
-const nativeChecks = [
-  step('Build AI runtime sidecar', 'bun', ['run', 'build:ai-runtime']),
-  step('Run locked Rust tests for all targets', 'cargo', [
-    'test',
-    '--manifest-path',
-    'src-tauri/Cargo.toml',
-    '--locked',
-    '--all-targets',
-    '--',
-    '--test-threads=1',
-  ]),
-  step('Run locked Rust doc tests', 'cargo', [
-    'test',
-    '--manifest-path',
-    'src-tauri/Cargo.toml',
-    '--locked',
-    '--doc',
-  ]),
-];
+const sidecarCheck = step('Build AI runtime sidecar', 'bun', ['run', 'build:ai-runtime']);
+const rustTestCheck = step('Run locked Rust tests for all targets', 'cargo', [
+  'test',
+  '--manifest-path',
+  'src-tauri/Cargo.toml',
+  '--locked',
+  '--all-targets',
+  '--',
+  '--test-threads=1',
+]);
+const rustDocTestCheck = step('Run locked Rust doc tests', 'cargo', [
+  'test',
+  '--manifest-path',
+  'src-tauri/Cargo.toml',
+  '--locked',
+  '--doc',
+]);
+const nativeChecks = [sidecarCheck, rustTestCheck, rustDocTestCheck];
 
 const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
   'check',
@@ -50,7 +49,10 @@ export const CHECK_PROFILES = Object.freeze([
   'documentation',
   'frontend',
   'native',
+  'native-core',
+  'sidecar',
   'windows',
+  'windows-core',
   'full',
 ]);
 
@@ -65,8 +67,14 @@ export function stepsForProfile(profile, options = {}) {
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks];
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
+    case 'native-core':
+      return [...repositoryChecks, rustTestCheck, rustDocTestCheck];
+    case 'sidecar':
+      return [...install, sidecarCheck];
     case 'windows':
-      return [...install, workflowStep, ...repositoryChecks, nativeChecks[0], windowsNativeCheck];
+      return [...install, workflowStep, ...repositoryChecks, sidecarCheck, windowsNativeCheck];
+    case 'windows-core':
+      return [...repositoryChecks, windowsNativeCheck];
     case 'full': {
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     }

@@ -28,8 +28,19 @@ const FRONTEND_PATTERNS = [
 const NATIVE_PATTERNS = [
   /^src-tauri\//,
   /^copilot-bridge\//,
-  /^dev\/(?:build-ai-runtime|tauri-cli|verify-macos-bundle)\.mjs$/,
+  /^dev\/(?:ai-runtime-linux-wrapper|build-ai-runtime|tauri-cli|verify-macos-bundle)\.mjs$/,
   /^(?:Cargo\.toml|Cargo\.lock|rust-toolchain\.toml)$/,
+];
+
+const SIDECAR_PATTERNS = [
+  /^copilot-bridge\//,
+  /^dev\/(?:ai-runtime-linux-wrapper|build-ai-runtime)\.mjs$/,
+];
+
+const DESKTOP_CONFIGURATION_PATTERNS = [
+  /^src-tauri\/tauri(?:\.[^/]+)?\.conf\.json$/,
+  /^src-tauri\/(?:Info\.plist|entitlements\.plist|installer-hooks\.nsh)$/,
+  /^src-tauri\/(?:capabilities|config-schemas|icons|resources)\//,
 ];
 
 const CONFIG_PATTERNS = [
@@ -39,6 +50,7 @@ const CONFIG_PATTERNS = [
   /^scripts\//,
   /^(?:vite|eslint|postcss|tailwind)\.config(?:\.[^/]+)?$/,
   /^tsconfig(?:\.[^/]+)?\.json$/,
+  ...DESKTOP_CONFIGURATION_PATTERNS,
 ];
 
 export function classifyPaths(inputPaths) {
@@ -46,6 +58,7 @@ export function classifyPaths(inputPaths) {
   const documentationOnly = paths.length > 0 && paths.every((path) => matchesAny(path, DOCUMENTATION_PATTERNS));
   const frontend = paths.some((path) => matchesAny(path, FRONTEND_PATTERNS));
   const native = paths.some((path) => matchesAny(path, NATIVE_PATTERNS));
+  const sidecar = paths.some((path) => matchesAny(path, SIDECAR_PATTERNS));
   const explicitlyConfigured = paths.some((path) => matchesAny(path, CONFIG_PATTERNS));
   const hasUnknownPath = paths.length === 0 || paths.some((path) => !matchesAny(path, [
     ...DOCUMENTATION_PATTERNS,
@@ -59,6 +72,7 @@ export function classifyPaths(inputPaths) {
     documentation_only: documentationOnly,
     frontend,
     native,
+    sidecar,
     configuration,
     linux: !documentationOnly && (frontend || native || configuration),
     windows: !documentationOnly && (native || configuration),
