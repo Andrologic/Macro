@@ -119,6 +119,7 @@ enum BridgeSendEvent {
         reasoning_summary: Option<String>,
         hidden_context: Option<String>,
         tool_traces: Option<Vec<AiToolTrace>>,
+        completion_reason: Option<String>,
     },
     Error {
         code: Option<String>,
@@ -2373,6 +2374,7 @@ async fn stream_chat_inner(
                 reasoning_summary,
                 hidden_context,
                 tool_traces,
+                completion_reason,
             } => {
                 saw_done = true;
                 if !emitted_first_provider_event {
@@ -2394,7 +2396,8 @@ async fn stream_chat_inner(
                             reasoning_summary,
                             tool_traces,
                             hidden_context,
-                            completion_reason: None,
+                            completion_reason: completion_reason
+                                .or_else(|| Some("incomplete".to_string())),
                         },
                     )
                     .map_err(|error| error.to_string())?;
@@ -2506,7 +2509,8 @@ mod tests {
             r#"{
                 "type": "done",
                 "content": "Final answer.",
-                "reasoning_summary": "Reasoning shown to the user."
+                "reasoning_summary": "Reasoning shown to the user.",
+                "completion_reason": "length"
             }"#,
         )
         .expect("done event should deserialize");
@@ -2515,6 +2519,7 @@ mod tests {
             BridgeSendEvent::Done {
                 content,
                 reasoning_summary,
+                completion_reason,
                 ..
             } => {
                 assert_eq!(content, "Final answer.");
@@ -2522,6 +2527,7 @@ mod tests {
                     reasoning_summary.as_deref(),
                     Some("Reasoning shown to the user.")
                 );
+                assert_eq!(completion_reason.as_deref(), Some("length"));
             }
             _ => panic!("expected done event"),
         }

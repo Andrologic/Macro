@@ -264,6 +264,7 @@ import {
 } from "../services/contextCompaction";
 import { fingerprintImageSource } from "../services/contextTokenEstimation";
 import {
+  buildAppliedCompactionAuditDetails,
   buildCompactionDecisionAuditMetadata,
   consolidateCompletedAssistantTurnCompaction,
   getCompactionBoundaryForMode,
@@ -271,6 +272,7 @@ import {
   runContextCompactionOrchestration,
   type PendingToolBoundaryCompaction,
 } from "../services/contextCompactionOrchestrator";
+import { shouldProactivelyCompactContext } from "../services/contextCompactionPlanner";
 import {
   buildCompactionActivityStatus,
   getCompactionEventTrigger,
@@ -3829,6 +3831,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const currentCompactionState = await getConversationCompactionState(
       params.conversationId,
     );
+    const completionReason = [...params.orderedMessages]
+      .reverse()
+      .find((message) => message.role === "assistant")
+      ?.completion_reason ?? null;
     if (isTransientCompactionStatus(previousCompactionStatus)) {
       const persistedStatus = currentCompactionState
         ? resolveCompactionStatusFromState(currentCompactionState)
@@ -3852,6 +3858,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.providerConfig.providerType,
     );
     const budgetPolicy = await loadContextBudgetPolicy();
+    const conversation = get().conversations.find(
+      (candidate) => candidate.id === params.conversationId,
+    );
+    const projectIdentity = conversation?.project_id
+      ? `project:${conversation.project_id}`
+      : conversation?.group_id
+        ? `group:${conversation.group_id}`
+        : conversation?.task_id
+          ? `task:${conversation.task_id}`
+          : `conversation:${params.conversationId}`;
     const preparedMessagesForContext = normalizeMessagesForProviderContext(
       params.providerConfig.providerType,
       params.preparedMessages,
@@ -3886,9 +3902,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerType: params.providerConfig.providerType,
         baseUrl: params.providerConfig.baseUrl,
         modelId: params.modelId,
+        projectIdentity,
         currentCompactionState,
         budgetPolicy,
         forceCompaction: params.forceCompaction,
+        buildForceCompaction: true,
         forcePrune: params.forcePrune,
         estimateSerializedPayloadTokens,
         countProviderInputItems,
@@ -3933,6 +3951,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: toServiceError(error).message,
           result: "compaction_error",
+          completionReason,
         }),
       });
       throw error;
@@ -3969,6 +3988,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: orchestration.evaluation.reason,
           result: "latest_boundary_payload_too_large",
+          completionReason,
         }),
       });
       throw buildSendError(orchestration.errorMessage);
@@ -4011,12 +4031,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: "manual_compaction_required",
           result: "auto_compaction_disabled",
+          completionReason,
         }),
       });
       throw buildSendError(orchestration.errorMessage);
     }
 
     const { result } = orchestration;
+    const appliedAuditDetails = buildAppliedCompactionAuditDetails({
+      result,
+      previousCheckpoint: currentCompactionState,
+    });
     if (result.manualSkip) {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
@@ -4042,6 +4067,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: result.manualSkip.reason,
           result: "manual_compaction_skipped",
+          completionReason,
+          ...appliedAuditDetails,
         }),
       });
       return result;
@@ -4083,6 +4110,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: result.usedExistingCompaction
             ? "used_existing_compaction"
             : "created_or_refreshed_compaction",
+          completionReason,
+          ...appliedAuditDetails,
         }),
       });
     } else if (orchestration.hasCompaction) {
@@ -8873,13 +8902,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let needsSafetyPrestream =
       autoCompactionEnabled &&
       !params.compactionMode &&
-      isBlockableContextOverUsableBudget(initialFootprint);
+      shouldProactivelyCompactContext({
+        boundary: "pre_send",
+        footprint: initialFootprint,
+      });
     let compactedRequest: MaybeCompactConversationResult;
     if (needsSafetyPrestream) {
       markSafetyPrestreamCompacting(initialFootprint);
       compactedRequest = await compactPreparedRequest({
         mode: "safety_prestream",
-        forceCompaction: true,
         forcePrune: true,
       });
     } else {
@@ -8887,12 +8918,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       needsSafetyPrestream =
         autoCompactionEnabled &&
         !params.compactionMode &&
-        isBlockableContextOverUsableBudget(compactedRequest.footprintAfter);
+        shouldProactivelyCompactContext({
+          boundary: "pre_send",
+          footprint: compactedRequest.footprintAfter,
+        });
       if (needsSafetyPrestream) {
         markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
         compactedRequest = await compactPreparedRequest({
           mode: "safety_prestream",
-          forceCompaction: true,
           forcePrune: true,
         });
       }
@@ -8959,6 +8992,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: autoCompactionBlocked
             ? "auto_compaction_disabled"
             : "context_too_large",
+          completionReason:
+            [...preparedRequest.orderedMessages]
+              .reverse()
+              .find((message) => message.role === "assistant")
+              ?.completion_reason ?? null,
+          ...buildAppliedCompactionAuditDetails({
+            result: compactedRequest,
+          }),
         }),
       });
       throw buildSendError(
@@ -10625,6 +10666,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           providerType: params.providerConfig.providerType,
           baseUrl: params.providerConfig.baseUrl,
           modelId: params.selectedModelId,
+          projectIdentity: params.executionContext.focusedProjectId
+            ? `project:${params.executionContext.focusedProjectId}`
+            : params.executionContext.groupId
+              ? `group:${params.executionContext.groupId}`
+              : `conversation:${params.conversationId}`,
           estimateSerializedPayloadTokens,
           countProviderInputItems,
           budgetPolicy,
@@ -10650,6 +10696,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ),
         });
       } catch (error) {
+        if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
+          return;
+        }
         clearLatestRunningSessionCompactionEvent(
           params.conversationId,
           "safety_prestream",
@@ -10682,6 +10731,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }),
         });
         throw error;
+      }
+      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
+        return;
       }
       if (orchestration.outcome === "blocked") {
         throw buildSendError(orchestration.errorMessage);
@@ -10731,6 +10783,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             budgetPolicy,
             reason: result.footprintAfter.reason,
             result: "tool_boundary_context_too_large",
+            ...buildAppliedCompactionAuditDetails({
+              result,
+              syntheticBoundary: true,
+            }),
           }),
         });
         throw buildSendError(buildContextTooLargeErrorMessage(result.footprintAfter));
@@ -10749,6 +10805,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             footprintBefore: result.footprintBefore,
             footprintAfter: result.footprintAfter,
             messages: result.messages.map(cloneStreamMessage),
+            pruning: result.pruning,
           };
         }
         completeLatestSessionCompactionEvent(
@@ -10790,6 +10847,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           budgetPolicy,
           reason: result.footprintAfter.reason,
           result: "tool_boundary_compaction",
+          ...buildAppliedCompactionAuditDetails({
+            result,
+            syntheticBoundary: true,
+          }),
         }),
       });
 
@@ -10805,6 +10866,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!pending) {
         return;
       }
+      const stillOwnsCompletionConsolidation = (): boolean => {
+        const owner = completionPersistenceOwnersByConversationId.get(
+          params.conversationId,
+        );
+        return (
+          !deletedConversationIds.has(params.conversationId) &&
+          latestConversationSessionIdByConversationId.get(
+            params.conversationId,
+          ) === params.sessionId &&
+          owner?.sessionId === params.sessionId &&
+          owner.turnId === streamTurnId &&
+          owner.assistantMessageId === params.assistantMessage.id
+        );
+      };
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
 
       const { footprintFields } = getSelectedModelContext(
         params.selectedProviderId,
@@ -10812,6 +10890,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.providerConfig.providerType,
       );
       const budgetPolicy = await loadContextBudgetPolicy();
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
       const preparedRequest = await prepareMessagesForRequest(
         params.conversationId,
         params.allowedToolIds,
@@ -10823,6 +10904,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         params.executionContext,
         params.riskLevel,
       );
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
       const toolDefinitions = getToolDefinitionsForIds(
         params.allowedToolIds,
         params.mcpTools,
@@ -10854,6 +10938,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         providerType: params.providerConfig.providerType,
         baseUrl: params.providerConfig.baseUrl,
         modelId: params.selectedModelId,
+        projectIdentity: params.executionContext.focusedProjectId
+          ? `project:${params.executionContext.focusedProjectId}`
+          : params.executionContext.groupId
+            ? `group:${params.executionContext.groupId}`
+            : `conversation:${params.conversationId}`,
         budgetPolicy,
         estimateSerializedPayloadTokens,
         countProviderInputItems,
@@ -10866,6 +10955,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             input,
           ),
       });
+      if (!stillOwnsCompletionConsolidation()) {
+        return;
+      }
 
       if (consolidation.outcome === "consolidated") {
         if (
@@ -10903,6 +10995,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
             budgetPolicy,
             reason: consolidation.result.footprintAfter.reason,
             result: "tool_boundary_consolidation",
+            completionReason:
+              [...preparedRequest.orderedMessages]
+                .reverse()
+                .find((message) => message.role === "assistant")
+                ?.completion_reason ?? null,
+            ...buildAppliedCompactionAuditDetails({
+              result: {
+                ...consolidation.result,
+                pruning:
+                  consolidation.result.pruning.elements.length > 0
+                    ? consolidation.result.pruning
+                    : pending.pruning,
+              },
+              previousCheckpoint: pending.compactionState,
+            }),
           }),
         });
         return;
@@ -11104,20 +11211,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
           presentation,
           assistantMessageId,
         }) => {
-          updateConversationRuntimeIfSessionMatches(
-            params.conversationId,
-            params.sessionId,
-            () => ({
-              phase: "error",
-              sessionId: params.sessionId,
-              turnId: streamTurnId,
-              assistantMessageId,
-              abortController: null,
-              lastError: presentation.message,
-              lastErrorOrigin: presentation.origin,
-              lastErrorDisplayTarget: presentation.displayTarget,
-            }),
-          );
+          if (
+            deletedConversationIds.has(params.conversationId) ||
+            latestConversationSessionIdByConversationId.get(
+              params.conversationId,
+            ) !== params.sessionId
+          ) {
+            return;
+          }
+          setConversationRuntime(params.conversationId, {
+            phase: "error",
+            sessionId: params.sessionId,
+            turnId: streamTurnId,
+            assistantMessageId,
+            abortController: null,
+            lastError: presentation.message,
+            lastErrorOrigin: presentation.origin,
+            lastErrorDisplayTarget: presentation.displayTarget,
+          });
           set(
             presentation.displayTarget === "composer"
               ? { lastError: presentation.message, sendState: "error" }

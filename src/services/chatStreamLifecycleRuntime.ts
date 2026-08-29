@@ -175,7 +175,7 @@ export const createChatStreamLifecycleRuntime = (params: {
 
   const persistAssistantStreamResultAndConsolidate = async (
     result: StreamCompletionResult,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       await adapters.persistAssistantStreamResult(
         stream.conversationId,
@@ -184,15 +184,14 @@ export const createChatStreamLifecycleRuntime = (params: {
       );
     } catch (error) {
       handleCompletionPersistenceFailure(error);
-      return;
+      adapters.clearCompletionPersistenceOwnership({
+        conversationId: stream.conversationId,
+        sessionId: stream.sessionId,
+        turnId: stream.turnId,
+        assistantMessageId: stream.assistantMessageId,
+      });
+      return false;
     }
-
-    adapters.clearCompletionPersistenceOwnership({
-      conversationId: stream.conversationId,
-      sessionId: stream.sessionId,
-      turnId: stream.turnId,
-      assistantMessageId: stream.assistantMessageId,
-    });
 
     try {
       await adapters.consolidatePendingToolBoundaryCompactionAfterPersistence();
@@ -200,7 +199,15 @@ export const createChatStreamLifecycleRuntime = (params: {
       adapters.info(
         `Tool-boundary compaction consolidation failed after stream persistence: ${toServiceError(error).message}`,
       );
+    } finally {
+      adapters.clearCompletionPersistenceOwnership({
+        conversationId: stream.conversationId,
+        sessionId: stream.sessionId,
+        turnId: stream.turnId,
+        assistantMessageId: stream.assistantMessageId,
+      });
     }
+    return true;
   };
 
   const maybeMarkTaskAwaitingResponse = (
@@ -298,6 +305,37 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext.providerId,
         stream.providerContext.modelId,
       );
+
+      if (
+        result.completionReason === "length" ||
+        result.completionReason === "incomplete"
+      ) {
+        adapters.updateConversationAfterCompletion(
+          stream.conversationId,
+          result.visibleContent,
+        );
+        adapters.clearLiveStreamContextEstimate(stream.conversationId);
+        const persisted = await persistAssistantStreamResultAndConsolidate(result);
+        if (!persisted) {
+          tokenControls.dispose();
+          return;
+        }
+        adapters.setStreamErrorState({
+          presentation: {
+            origin: "provider",
+            displayTarget: "transcript",
+            title: "Réponse incomplète",
+            message:
+              result.completionReason === "length"
+                ? "Le fournisseur a de nouveau atteint sa limite de sortie après la tentative de reprise."
+                : "Le fournisseur a interrompu la réponse avant sa fin.",
+            suggestedAction: "Relance la demande pour poursuivre la réponse.",
+          },
+          assistantMessageId: stream.assistantMessageId,
+        });
+        tokenControls.dispose();
+        return;
+      }
 
       maybeMarkTaskAwaitingResponse(result);
       adapters.updateConversationAfterCompletion(
