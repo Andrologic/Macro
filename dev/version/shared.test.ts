@@ -1,13 +1,67 @@
 import { describe, expect, it } from 'bun:test';
 import {
   bumpVersion,
+  getCargoLockDependencyVersions,
   getCargoLockPackageVersion,
   getCargoPackageVersion,
+  getTauriDependencyIssues,
   updateCargoLockPackageVersion,
   updateCargoPackageVersion,
 } from './shared.mjs';
 
+const cargoLockWith = (packages: Record<string, string>) =>
+  Object.entries(packages)
+    .map(([name, version]) => `[[package]]\nname = "${name}"\nversion = "${version}"\n`)
+    .join('\n');
+
 describe('version shared helpers', () => {
+  it('reads dependency versions from Cargo.lock package blocks', () => {
+    const versions = getCargoLockDependencyVersions(
+      cargoLockWith({ tauri: '2.10.2', 'tauri-plugin-dialog': '2.6.0' })
+    );
+
+    expect(versions.get('tauri')).toBe('2.10.2');
+    expect(versions.get('tauri-plugin-dialog')).toBe('2.6.0');
+  });
+
+  it('accepts aligned Tauri JavaScript and Rust dependencies', () => {
+    const issues = getTauriDependencyIssues(
+      {
+        dependencies: {
+          '@tauri-apps/api': '2.10.1',
+          '@tauri-apps/plugin-dialog': '2.6.0',
+        },
+        devDependencies: { '@tauri-apps/cli': '2.10.1' },
+      },
+      cargoLockWith({ tauri: '2.10.2', 'tauri-plugin-dialog': '2.6.0' })
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it('reports core and plugin Tauri version drift', () => {
+    const issues = getTauriDependencyIssues(
+      {
+        dependencies: {
+          '@tauri-apps/api': '2.10.1',
+          '@tauri-apps/plugin-dialog': '2.5.0',
+        },
+        devDependencies: { '@tauri-apps/cli': '2.10.0' },
+      },
+      cargoLockWith({ tauri: '2.11.0', 'tauri-plugin-dialog': '2.6.0' })
+    );
+
+    expect(issues).toContain(
+      '@tauri-apps/api (2.10.1) and @tauri-apps/cli (2.10.0) must use the same version.'
+    );
+    expect(issues).toContain(
+      '@tauri-apps/api (2.10.1) and Rust tauri (2.11.0) must use the same major and minor version.'
+    );
+    expect(issues).toContain(
+      '@tauri-apps/plugin-dialog (2.5.0) does not match tauri-plugin-dialog in Cargo.lock (2.6.0).'
+    );
+  });
+
   it('updates the Cargo package version without touching dependency versions', () => {
     const input = [
       '[package]',

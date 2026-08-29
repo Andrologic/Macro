@@ -1,25 +1,76 @@
-LangString MacroCloseCancelled ${LANG_ENGLISH} "Macro is still running. The installation was cancelled."
-LangString MacroCloseCancelled ${LANG_FRENCH} "Macro est toujours ouvert. L’installation a été annulée."
-LangString MacroCloseCancelled ${LANG_GERMAN} "Macro ist noch geöffnet. Die Installation wurde abgebrochen."
-LangString MacroCloseCancelled ${LANG_SPANISH} "Macro sigue abierto. La instalación se ha cancelado."
-LangString MacroCloseCancelled ${LANG_JAPANESE} "Macro がまだ実行中です。インストールを中止しました。"
-LangString MacroCloseCancelled ${LANG_KOREAN} "Macro가 아직 실행 중입니다. 설치가 취소되었습니다."
+; Tauri stores the selected language under Software\macro\Macro. Keep the
+; graphical selector visible even when that value exists. Silent packaging
+; tests can seed the same isolated value to exercise every language table.
+!define MUI_LANGDLL_ALWAYSSHOW
 
-LangString MacroCloseTimeout ${LANG_ENGLISH} "Macro could not close. Close it manually, then try the installation again."
-LangString MacroCloseTimeout ${LANG_FRENCH} "Macro n’a pas pu se fermer. Fermez-le manuellement, puis relancez l’installation."
-LangString MacroCloseTimeout ${LANG_GERMAN} "Macro konnte nicht geschlossen werden. Schließen Sie es manuell und starten Sie die Installation erneut."
-LangString MacroCloseTimeout ${LANG_SPANISH} "Macro no se ha podido cerrar. Ciérrelo manualmente y vuelva a iniciar la instalación."
-LangString MacroCloseTimeout ${LANG_JAPANESE} "Macro を終了できませんでした。手動で終了してから、インストールを再試行してください。"
-LangString MacroCloseTimeout ${LANG_KOREAN} "Macro를 종료할 수 없습니다. 수동으로 종료한 후 설치를 다시 시도하세요."
+LangString MacroCloseCancelled 1033 "Macro is still running. The installation was cancelled."
+LangString MacroCloseCancelled 1036 "Macro est toujours ouvert. L’installation a été annulée."
+LangString MacroCloseCancelled 1031 "Macro ist noch geöffnet. Die Installation wurde abgebrochen."
+LangString MacroCloseCancelled 1034 "Macro sigue abierto. La instalación se ha cancelado."
+LangString MacroCloseCancelled 1041 "Macro がまだ実行中です。インストールを中止しました。"
+LangString MacroCloseCancelled 1042 "Macro가 아직 실행 중입니다. 설치가 취소되었습니다."
 
-LangString MacroClosePrompt ${LANG_ENGLISH} "Macro is open. Continuing will close it. Any work still running may be interrupted. Continue?"
-LangString MacroClosePrompt ${LANG_FRENCH} "Macro est ouvert. Continuer va le fermer. Tout travail encore en cours risque d’être interrompu. Continuer ?"
-LangString MacroClosePrompt ${LANG_GERMAN} "Macro ist geöffnet. Wenn Sie fortfahren, wird die Anwendung geschlossen. Laufende Arbeiten können unterbrochen werden. Fortfahren?"
-LangString MacroClosePrompt ${LANG_SPANISH} "Macro está abierto. Si continúa, se cerrará y cualquier trabajo en curso podría interrumpirse. ¿Continuar?"
-LangString MacroClosePrompt ${LANG_JAPANESE} "Macro が開いています。続行すると Macro が終了し、実行中の作業が中断される可能性があります。続行しますか？"
-LangString MacroClosePrompt ${LANG_KOREAN} "Macro가 열려 있습니다. 계속하면 Macro가 종료되며 진행 중인 작업이 중단될 수 있습니다. 계속하시겠습니까?"
+LangString MacroCloseTimeout 1033 "Macro could not close. Close it manually, then try the installation again."
+LangString MacroCloseTimeout 1036 "Macro n’a pas pu se fermer. Fermez-le manuellement, puis relancez l’installation."
+LangString MacroCloseTimeout 1031 "Macro konnte nicht geschlossen werden. Schließen Sie es manuell und starten Sie die Installation erneut."
+LangString MacroCloseTimeout 1034 "Macro no se ha podido cerrar. Ciérrelo manualmente y vuelva a iniciar la instalación."
+LangString MacroCloseTimeout 1041 "Macro を終了できませんでした。手動で終了してから、インストールを再試行してください。"
+LangString MacroCloseTimeout 1042 "Macro를 종료할 수 없습니다. 수동으로 종료한 후 설치를 다시 시도하세요."
+
+LangString MacroClosePrompt 1033 "Macro is open. Continuing will close it. Any work still running may be interrupted. Continue?"
+LangString MacroClosePrompt 1036 "Macro est ouvert. Continuer va le fermer. Tout travail encore en cours risque d’être interrompu. Continuer ?"
+LangString MacroClosePrompt 1031 "Macro ist geöffnet. Wenn Sie fortfahren, wird die Anwendung geschlossen. Laufende Arbeiten können unterbrochen werden. Fortfahren?"
+LangString MacroClosePrompt 1034 "Macro está abierto. Si continúa, se cerrará y cualquier trabajo en curso podría interrumpirse. ¿Continuar?"
+LangString MacroClosePrompt 1041 "Macro が開いています。続行すると Macro が終了し、実行中の作業が中断される可能性があります。続行しますか？"
+LangString MacroClosePrompt 1042 "Macro가 열려 있습니다. 계속하면 Macro가 종료되며 진행 중인 작업이 중단될 수 있습니다. 계속하시겠습니까?"
+
+Function MacroResolveInstallLocation
+  ; Tauri 2.10 initializes $INSTDIR to $LOCALAPPDATA\Macro and then trusts the
+  ; saved manufacturer key without checking whether that installation remains.
+  ; Keep an explicit NSIS /D override, otherwise retain only a location that
+  ; still contains Macro or its uninstaller.
+  ReadRegStr $R8 SHCTX "Software\macro\Macro" ""
+  ${If} $R8 != ""
+    IfFileExists "$R8\macro.exe" macro_install_location_found 0
+    IfFileExists "$R8\uninstall.exe" macro_install_location_found 0
+    ; Without /D, Tauri copied the stale registry value into $INSTDIR. A
+    ; different value is an explicit destination and remains authoritative.
+    ${If} $INSTDIR != $R8
+      Return
+    ${EndIf}
+  ${Else}
+    ; $LOCALAPPDATA\Macro is Tauri 2.10's clean-install default. Any other
+    ; value can only have come from an explicit /D destination.
+    ${If} $INSTDIR != "$LOCALAPPDATA\Macro"
+      Return
+    ${EndIf}
+  ${EndIf}
+
+  StrCpy $INSTDIR "$LOCALAPPDATA\Programs\Macro"
+  SetOutPath $INSTDIR
+  ; SetOutPath in Tauri's template may already have recreated a stale saved
+  ; directory. Remove it only when it is empty; never delete user files.
+  ${If} $R8 != ""
+    RMDir "$R8"
+  ${EndIf}
+  Return
+
+  macro_install_location_found:
+    StrCpy $INSTDIR $R8
+FunctionEnd
+
+; .onInit belongs to Tauri's generated template. MUI2 owns .onGUIInit when the
+; language selector is enabled, so use its supported callback to update the
+; directory before any page is shown. The preinstall hook below covers silent
+; executions, where the GUI callback does not always run.
+!define MUI_CUSTOMFUNCTION_GUIINIT MacroResolveInstallLocation
 
 !macro NSIS_HOOK_PREINSTALL
+  Call MacroResolveInstallLocation
+  ; Tauri calls SetOutPath immediately before this hook. Repeat it after
+  ; resolving $INSTDIR so silent installs copy files to the corrected path.
+  SetOutPath $INSTDIR
+
   ; The built-in Tauri check terminates a running process. Ask Macro to close
   ; itself first so it can protect active work and flush local data.
   nsis_tauri_utils::FindProcessCurrentUser "macro.exe"

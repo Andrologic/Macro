@@ -17,6 +17,12 @@ macOS package is signed, notarized, and runs on Apple Silicon and Intel Macs.
 The Windows installer is Authenticode-signed, and the Linux packages are smoke
 tested on the release runner before their checksums are generated.
 
+On Windows, a new per-user installation defaults to
+`%LOCALAPPDATA%\Programs\Macro`. An update or reinstall keeps the previous
+location when that directory still contains Macro or its uninstaller. If the
+saved directory no longer exists, the installer falls back to the default
+instead of recreating the stale path.
+
 After installing, configure your AI providers from the app settings. Macro does
 not require provider keys to launch, but agentic workflows need at least one
 configured provider.
