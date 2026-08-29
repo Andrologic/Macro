@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
+import type { WorkspaceScope } from './tauriIpc';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
 import { registerAppStateGetter } from './appStateRuntime';
@@ -42,6 +43,10 @@ interface LoadArchitectPlanServiceOptions {
   registrySnapshot?: ValidProjectRegistrySnapshot;
   workspaceRoot?: string;
   macroBranchCommitIfDirty?: typeof actualTauriIpc.macroBranchCommitIfDirty;
+  workspaceScopeCalls?: Array<{
+    operation: string;
+    workspaceScope?: WorkspaceScope;
+  }>;
 }
 
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
@@ -174,7 +179,12 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       reason: null,
       next_action: null,
     })),
-    fsReadFileWithOptions: async (params: { path: string; workspacePath?: string | null }) => {
+    fsReadFileWithOptions: async (params: {
+      path: string;
+      workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
+    }) => {
+      options.workspaceScopeCalls?.push({ operation: 'read', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       const content = workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(params.path)];
       if (typeof content !== 'string') {
@@ -186,7 +196,9 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       path: string;
       content: string;
       workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
     }) => {
+      options.workspaceScopeCalls?.push({ operation: 'write', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       if (!workspaceFilesByWorkspacePath[workspacePath]) {
         workspaceFilesByWorkspacePath[workspacePath] = {};
@@ -204,7 +216,9 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     fsListDir: async (params: {
       path: string;
       workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
     }) => {
+      options.workspaceScopeCalls?.push({ operation: 'list', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       return listWorkspaceDir(workspacePath, params.path);
     },
@@ -212,7 +226,9 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       path: string;
       recursive?: boolean;
       workspacePath?: string | null;
+      workspaceScope?: WorkspaceScope;
     }) => {
+      options.workspaceScopeCalls?.push({ operation: 'delete', workspaceScope: params.workspaceScope });
       const workspacePath = params.workspacePath ?? '';
       const workspaceFiles = workspaceFilesByWorkspacePath[workspacePath] ?? {};
       const normalizedPath = normalizeMockPath(params.path);
@@ -1100,6 +1116,122 @@ describe('architectPlanService', () => {
       commitMessage: 'chore(metadata): finalize architect plan direct-plan',
     });
     expect(macroBranchCommitIfDirty).not.toHaveBeenCalled();
+  });
+
+  it('keeps persisted direct plan metadata in the project after Git is initialized', async () => {
+    const appProject: {
+      id: string;
+      path: string;
+      isReadOnly: boolean;
+      gitSetupState: 'not_git' | 'ready';
+      directEdit: boolean;
+    } = {
+      id: 'docs',
+      path: '/repos/docs',
+      isReadOnly: false,
+      gitSetupState: 'not_git' as const,
+      directEdit: true,
+    };
+    registerAppStateGetter(() => ({
+      standaloneProjects: [appProject],
+      projectGroups: [],
+    }));
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+    const workspaceScopeCalls: Array<{ operation: string; workspaceScope?: WorkspaceScope }> = [];
+    const macroBranchCommitIfDirty = mock(async () => ({
+      branch: '@macro',
+      state: 'clean' as const,
+      worktree_path: '/repos/docs/.git/macro-metadata-worktree',
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+      output: '',
+      error: null,
+    }));
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+      workspaceScopeCalls,
+      macroBranchCommitIfDirty,
+    });
+    await service.createArchitectPlan({
+      branchName,
+      planId: 'transition-plan',
+      projectIds: ['docs'],
+      nodes: [{
+        id: 'edit-docs',
+        title: 'Edit docs',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs'],
+        executionModesByProjectId: { docs: 'direct' },
+      }],
+    });
+
+    appProject.gitSetupState = 'ready';
+    appProject.directEdit = false;
+    const gitSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      repoPathByProjectId: new Map([['docs', '/repos/docs']]),
+      executionModeByProjectId: new Map([['docs', 'git']]),
+    };
+    storage.clear();
+    workspaceScopeCalls.length = 0;
+    macroBranchCommitIfDirty.mockClear();
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: gitSnapshot,
+      filesByWorkspacePath,
+      workspaceScopeCalls,
+      macroBranchCommitIfDirty,
+    });
+
+    const reloaded = await service.getArchitectPlan(branchName, 'transition-plan');
+
+    expect(reloaded?.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
+    expect(workspaceScopeCalls.length).toBeGreaterThan(0);
+    expect(workspaceScopeCalls.every((call) => call.workspaceScope === 'direct')).toBe(true);
+    expect(macroBranchCommitIfDirty).not.toHaveBeenCalled();
+
+    workspaceScopeCalls.length = 0;
+    const activation = await service.getArchitectPlanActivationPayload(
+      branchName,
+      'transition-plan',
+    );
+    expect(activation?.plan.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
+    expect(workspaceScopeCalls.length).toBeGreaterThan(0);
+    expect(workspaceScopeCalls.every((call) => call.workspaceScope === 'direct')).toBe(true);
   });
 
   it('removes orphaned planned metadata while preserving executed task history', async () => {

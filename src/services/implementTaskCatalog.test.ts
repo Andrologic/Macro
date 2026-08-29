@@ -516,6 +516,41 @@ describe('buildImplementTaskCatalog', () => {
       hasMixedTargetBranches: true,
     });
   });
+
+  it('keeps direct plan finalization targets free of branch metadata', () => {
+    const catalog = buildImplementTaskCatalog({
+      plans: [makePlan({
+        id: 'direct-finalization',
+        title: 'Direct finalization',
+        status: 'validated',
+        targetBranch: 'develop',
+        projectId: 'docs',
+        projectIds: ['docs'],
+        nodes: [{
+          id: 'edit-docs',
+          title: 'Edit docs',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          assignedBranch: '',
+          projectId: 'docs',
+          projectIds: ['docs'],
+          executionModesByProjectId: { docs: 'direct' },
+        }],
+      })],
+      fallbackTasks: [],
+    });
+
+    const finalizationTask = catalog.tasks.find((task) => task.task_source === 'plan_finalization');
+    expect(finalizationTask?.execution_targets).toEqual([{
+      projectId: 'docs',
+      branchName: '',
+      targetBranchName: '',
+      executionMode: 'direct',
+      executionKind: 'repository_root',
+      worktreeKey: 'plan-finalization:docs:docs',
+    }]);
+  });
 });
 
 describe('deriveFallbackImplementTasks', () => {

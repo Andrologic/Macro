@@ -1316,7 +1316,7 @@ export interface TerminalOutputEvent {
   updated_at: string;
 }
 
-export type WorkspaceScope = "default" | "metadata";
+export type WorkspaceScope = "default" | "metadata" | "direct";
 export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface FrontendLogParams {

@@ -310,7 +310,7 @@ Lors de la création d'une tâche indépendante, l'utilisateur choisit d'abord l
 
 Un dossier sans dépôt Git peut aussi être importé en édition directe. Dans ce mode, Implement travaille dans le dossier source lui-même, sans branche, worktree, commit ni merge utilisateur. Macro crée un point de restauration privé avant la première modification et conserve le même parcours de revue : l'utilisateur ouvre les diffs, valide les fichiers, peut restaurer leur état initial, puis accepte les changements et termine la tâche. Une seule tâche d'édition directe peut être active par projet. Les outils Git ne sont pas exposés à l'agent pour cette cible.
 
-Architect peut créer un plan direct, Git ou mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation, l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les cibles directes utilisent leur dossier source et leur point de restauration privé. L'utilisateur peut initialiser Git ultérieurement pour les nouvelles tâches, mais une cible déjà persistée en mode direct conserve ce mode jusqu'à la fin de la tâche.
+Architect peut créer un plan direct, Git ou mixte. Chaque nœud conserve le mode de chacune de ses cibles. La préparation, l'exécution et la finalisation appliquent Git uniquement aux cibles Git. Les cibles directes utilisent leur dossier source et leur point de restauration privé. Le plan et son transcript restent dans les métadonnées locales du projet, même si Git est initialisé ensuite. Les nouvelles tâches peuvent utiliser Git, mais une cible déjà persistée en mode direct conserve ce mode jusqu'à la fin de la tâche.
 
 ### 7.3 Mode Chat
 

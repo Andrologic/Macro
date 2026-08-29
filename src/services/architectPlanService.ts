@@ -1455,6 +1455,7 @@ interface ArchitectMetadataScope {
   repoPath: string | null;
   workspacePath: string | null;
   source: 'local' | 'project' | 'workspace';
+  workspaceScope?: tauriIpc.WorkspaceScope;
 }
 
 interface ArchitectPlanReplicaSnapshot {
@@ -1522,7 +1523,8 @@ const resolveScopeProjectId = (
 
 const getProjectMetadataScopes = (
   registrySnapshot: ValidProjectRegistrySnapshot,
-  projectIds?: string[]
+  projectIds?: string[],
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>,
 ): ArchitectMetadataScope[] => {
   const targetProjectIds = projectIds && projectIds.length > 0
     ? Array.from(new Set(projectIds))
@@ -1534,15 +1536,21 @@ const getProjectMetadataScopes = (
     if (!workspacePath) {
       return [];
     }
+    const executionMode = executionModesByProjectId?.[projectId] ??
+      registrySnapshot.executionModeByProjectId.get(projectId);
     return [{
       scopeKey: buildScopeKey(repoPath ? 'project' : 'workspace', workspacePath, projectId),
       projectId,
       repoPath,
       workspacePath,
       source: repoPath ? 'project' as const : 'workspace' as const,
+      workspaceScope: executionMode === 'direct' ? 'direct' : METADATA_WORKSPACE_SCOPE,
     }];
   });
 };
+
+const getScopeWorkspaceScope = (scope: ArchitectMetadataScope): tauriIpc.WorkspaceScope =>
+  scope.workspaceScope ?? METADATA_WORKSPACE_SCOPE;
 
 const getWorkspaceFallbackScope = async (): Promise<ArchitectMetadataScope | null> => {
   if (!tauriIpc.isTauriAvailable()) {
@@ -1567,6 +1575,7 @@ const getWorkspaceFallbackScope = async (): Promise<ArchitectMetadataScope | nul
 const resolveMetadataScopes = async (projectIds?: string[], options?: {
   includeAllKnown?: boolean;
   includeWorkspaceFallback?: boolean;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }, registrySnapshot?: ValidProjectRegistrySnapshot | null, deps?: ResolvedArchitectPlanServiceDependencies): Promise<ArchitectMetadataScope[]> => {
   const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   if (!resolvedDeps.tauri.isTauriAvailable()) {
@@ -1584,10 +1593,18 @@ const resolveMetadataScopes = async (projectIds?: string[], options?: {
     await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState });
   const scopes: ArchitectMetadataScope[] = [];
   if (projectIds && projectIds.length > 0) {
-    scopes.push(...getProjectMetadataScopes(resolvedRegistrySnapshot, projectIds));
+    scopes.push(...getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      projectIds,
+      options?.executionModesByProjectId,
+    ));
   }
   if (options?.includeAllKnown || ((!projectIds || projectIds.length === 0) && scopes.length === 0)) {
-    scopes.push(...getProjectMetadataScopes(resolvedRegistrySnapshot));
+    scopes.push(...getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      undefined,
+      options?.executionModesByProjectId,
+    ));
   }
   if (options?.includeWorkspaceFallback !== false) {
     const workspaceScope = await getWorkspaceFallbackScope();
@@ -2409,7 +2426,7 @@ const syncPlanTaskMetadataAtScope = async (
       recursive: false,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
 
@@ -2420,7 +2437,7 @@ const syncPlanTaskMetadataAtScope = async (
         .map((entry) =>
           tauriIpc.fsDelete({
             path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, entry.name),
-            workspaceScope: METADATA_WORKSPACE_SCOPE,
+            workspaceScope: getScopeWorkspaceScope(scope),
             workspacePath: scope.workspacePath,
           }).catch(() => undefined)
         )
@@ -2449,7 +2466,7 @@ const readJsonFileAtScope = async <T>(
     const file = await tauriIpc.fsReadFileWithOptions({
       path,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     return JSON.parse(file.content) as T;
@@ -2474,7 +2491,7 @@ const writeJsonFileAtScope = async (
     content,
     createDirs: true,
     allowOutsideWorkspace: false,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
   return true;
@@ -2489,7 +2506,7 @@ const readTextFileAtScope = async (
     const file = await tauriIpc.fsReadFileWithOptions({
       path,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     return file.content;
@@ -2513,7 +2530,7 @@ const writeTextFileAtScope = async (
     content,
     createDirs: true,
     allowOutsideWorkspace: false,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
   return true;
@@ -2971,13 +2988,13 @@ const removePlanAtScope = async (scope: ArchitectMetadataScope, branchName: stri
 
   const path = getPlanDir(normalized, safeId);
   if (!await tauriIpc.fsExists(path, {
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   })) return;
   await tauriIpc.fsDelete({
     path,
     recursive: true,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
+    workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
 };
@@ -3077,6 +3094,68 @@ const getPlanExecutionModes = (
   return modes;
 };
 
+interface PersistedDirectPlanDiscovery {
+  plan: ArchitectPlanRecord;
+  scopes: ArchitectMetadataScope[];
+}
+
+const discoverPersistedDirectPlan = async (params: {
+  branchName: string;
+  planId: string;
+  registrySnapshot?: ValidProjectRegistrySnapshot | null;
+  deps: ResolvedArchitectPlanServiceDependencies;
+}): Promise<PersistedDirectPlanDiscovery | null> => {
+  const registrySnapshot = params.registrySnapshot;
+  if (!registrySnapshot || !params.deps.tauri.isTauriAvailable()) {
+    return null;
+  }
+  const directModes = Object.fromEntries(
+    registrySnapshot.validProjectIds.map((projectId) => [projectId, 'direct' as const]),
+  );
+  const directScopes = getProjectMetadataScopes(
+    registrySnapshot,
+    registrySnapshot.validProjectIds,
+    directModes,
+  );
+  const candidates = (
+    await Promise.all(directScopes.map(async (scope) => ({
+      scope,
+      result: await readPlanAtScopeWithDiagnostics(
+        scope,
+        params.branchName,
+        params.planId,
+        registrySnapshot,
+      ),
+    })))
+  ).filter(({ scope, result }) => {
+    if (!scope.projectId || !result.plan) return false;
+    return getPlanExecutionModesByProjectId(result.plan.nodes)[scope.projectId] === 'direct';
+  });
+  if (candidates.length === 0) {
+    return null;
+  }
+  const plan = candidates
+    .map(({ result }) => result.plan as ArchitectPlanRecord)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  if (!plan) {
+    return null;
+  }
+  const executionModesByProjectId = getPlanExecutionModes(plan, registrySnapshot);
+  const expectedProjectIds = normalizeArchitectPlanScope(plan, {
+    useExpectedAsActionableFallback: true,
+  }).expectedProjectIds;
+  const scopes = await resolveMetadataScopes(
+    expectedProjectIds,
+    {
+      includeWorkspaceFallback: false,
+      executionModesByProjectId,
+    },
+    registrySnapshot,
+    params.deps,
+  );
+  return { plan, scopes };
+};
+
 const getReplicaMutationWorkspaceKey = (targets: ArchitectPlanReplicaMutationTarget[]): string => {
   const roots = Array.from(new Set(targets.map((target) =>
     normalizeProjectRegistryPath(target.scope.workspacePath || target.scope.repoPath) || `local:${target.scope.scopeKey}`
@@ -3122,7 +3201,7 @@ const applyArchitectPlanReplicaMutation = async (
             content,
             createDirs: true,
             allowOutsideWorkspace: false,
-            workspaceScope: METADATA_WORKSPACE_SCOPE,
+            workspaceScope: getScopeWorkspaceScope(target.scope),
             workspacePath: target.scope.workspacePath,
           });
         }
@@ -3375,7 +3454,7 @@ const readPlanFilesAtScope = async (
       recursive: true,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     const files = entries.filter((entry) => entry.kind === 'file');
@@ -3385,7 +3464,7 @@ const readPlanFilesAtScope = async (
         const content = await tauriIpc.fsReadFileWithOptions({
           path: `${planDir}/${relativePath}`,
           allowOutsideWorkspace: false,
-          workspaceScope: METADATA_WORKSPACE_SCOPE,
+          workspaceScope: getScopeWorkspaceScope(scope),
           workspacePath: scope.workspacePath,
         });
         return [relativePath, content.content] as const;
@@ -3536,7 +3615,7 @@ const listTargetBranchesAtScope = async (
       recursive: true,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
 
@@ -3659,7 +3738,13 @@ const loadPlanReplicaSet = async (
       ? (options?.registrySnapshot ??
         await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState }))
       : undefined;
-  const scopes = await resolveMetadataScopes(
+  const persistedDirectPlan = await discoverPersistedDirectPlan({
+    branchName: normalizedBranch,
+    planId: safeId,
+    registrySnapshot: resolvedRegistrySnapshot,
+    deps: resolvedDeps,
+  });
+  const scopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
     undefined,
     { includeAllKnown: true },
     resolvedRegistrySnapshot,
@@ -3734,7 +3819,10 @@ const loadPlanReplicaSet = async (
   const expectedScopes = dedupeScopes([
     ...(await resolveMetadataScopes(
       expectedProjectIds,
-      { includeWorkspaceFallback: false },
+      {
+        includeWorkspaceFallback: false,
+        executionModesByProjectId: getPlanExecutionModes(canonical.plan, resolvedRegistrySnapshot),
+      },
       resolvedRegistrySnapshot,
       resolvedDeps
     )),
@@ -4149,40 +4237,56 @@ const loadArchitectPlanActivationPayloadImpl = async (
     return payload;
   }
 
-  try {
-    const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
-      normalizedBranch,
-      safeId,
-      options,
-      deps
-    );
-    if (runtimePayload) {
-      logArchitectPlanActivationLoad({
-        branchName: normalizedBranch,
-        planId: safeId,
-        resolutionMode: runtimePayload.resolutionMode,
-        sharedConversation: runtimePayload.sharedConversation,
-        durationMs: Date.now() - startedAt,
-      });
-      return runtimePayload;
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const persistedDirectPlan = await discoverPersistedDirectPlan({
+    branchName: normalizedBranch,
+    planId: safeId,
+    registrySnapshot,
+    deps,
+  });
+  const persistedDirectSummary: ArchitectPlanSummary | null = persistedDirectPlan
+    ? {
+        ...persistedDirectPlan.plan,
+        nodeCount: persistedDirectPlan.plan.nodes.length,
+        predictedBranchCount: persistedDirectPlan.plan.predictedBranches.length,
+      }
+    : null;
+
+  if (!persistedDirectPlan) {
+    try {
+      const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
+        normalizedBranch,
+        safeId,
+        options,
+        deps
+      );
+      if (runtimePayload) {
+        logArchitectPlanActivationLoad({
+          branchName: normalizedBranch,
+          planId: safeId,
+          resolutionMode: runtimePayload.resolutionMode,
+          sharedConversation: runtimePayload.sharedConversation,
+          durationMs: Date.now() - startedAt,
+        });
+        return runtimePayload;
+      }
+    } catch (error) {
+      devLogger.warn(
+        JSON.stringify({
+          event: 'architect_plan_runtime_activation_fallback',
+          at: new Date().toISOString(),
+          branchName: normalizedBranch,
+          planId: safeId,
+          error: toErrorMessage(error),
+        })
+      );
     }
-  } catch (error) {
-    devLogger.warn(
-      JSON.stringify({
-        event: 'architect_plan_runtime_activation_fallback',
-        at: new Date().toISOString(),
-        branchName: normalizedBranch,
-        planId: safeId,
-        error: toErrorMessage(error),
-      })
-    );
   }
 
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   let index: ArchitectPlanIndex | null = null;
-  let summary = hintedSummary;
+  let summary: ArchitectPlanSummary | null = hintedSummary ?? persistedDirectSummary;
 
-  if (!summary || options.allowIndexFallback !== false) {
+  if (!persistedDirectPlan && (!summary || options.allowIndexFallback !== false)) {
     index = await readAggregatedIndex(normalizedBranch, registrySnapshot, deps);
     summary =
       summary ??
@@ -4226,7 +4330,7 @@ const loadArchitectPlanActivationPayloadImpl = async (
         .filter((projectId) => projectId.length > 0)
     )
   );
-  const scopes = await resolveMetadataScopes(
+  const scopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
     scopedProjectIds.length > 0 ? scopedProjectIds : undefined,
     {
       includeAllKnown: !summary && scopedProjectIds.length === 0,
@@ -4497,7 +4601,8 @@ const commitMetadataScopes = async (
 const ensurePlanScopes = async (
   projectIds: string[],
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  deps?: ResolvedArchitectPlanServiceDependencies
+  deps?: ResolvedArchitectPlanServiceDependencies,
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>,
 ): Promise<ArchitectMetadataScope[]> => {
   const resolvedDeps = deps ?? resolveArchitectPlanServiceDependencies();
   if (!resolvedDeps.tauri.isTauriAvailable()) {
@@ -4515,7 +4620,11 @@ const ensurePlanScopes = async (
     await resolvedDeps.loadRegistrySnapshot({ getAppState: resolvedDeps.getAppState });
 
   if (projectIds.length > 0) {
-    const scopes = dedupeScopes(getProjectMetadataScopes(resolvedRegistrySnapshot, projectIds));
+    const scopes = dedupeScopes(getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      projectIds,
+      executionModesByProjectId,
+    ));
     if (scopes.length > 0) {
       return scopes;
     }
@@ -4523,7 +4632,11 @@ const ensurePlanScopes = async (
 
   const scopedProjectIds = resolvedRegistrySnapshot.scopedProjectIds;
   if (scopedProjectIds.length > 0) {
-    const selectedScopes = dedupeScopes(getProjectMetadataScopes(resolvedRegistrySnapshot, scopedProjectIds));
+    const selectedScopes = dedupeScopes(getProjectMetadataScopes(
+      resolvedRegistrySnapshot,
+      scopedProjectIds,
+      executionModesByProjectId,
+    ));
     if (selectedScopes.length > 0) {
       return selectedScopes;
     }
@@ -4830,7 +4943,12 @@ const createArchitectPlanUnlocked = async (
   }
   const plan = planResult.plan;
 
-  const scopes = await ensurePlanScopes(plan.expectedProjectIds || plan.projectIds || [], registrySnapshot, deps);
+  const scopes = await ensurePlanScopes(
+    plan.expectedProjectIds || plan.projectIds || [],
+    registrySnapshot,
+    deps,
+    getPlanExecutionModes(plan, registrySnapshot),
+  );
   const targets = await Promise.all(scopes.map((scope) => buildUpsertReplicaMutationTarget({
     scope,
     branchName: normalizedBranch,
@@ -5069,7 +5187,8 @@ export const updateArchitectPlan = async (input: {
   const targetScopes = await ensurePlanScopes(
     candidate.expectedProjectIds || candidate.projectIds || [],
     registrySnapshot,
-    deps
+    deps,
+    getPlanExecutionModes(candidate, registrySnapshot),
   );
   const existingScopes = dedupeScopes([
     ...replicaSet.expectedScopes,
@@ -5782,7 +5901,7 @@ const listPlanRelativeFilesAtScope = async (
       recursive: true,
       includeHidden: true,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
+      workspaceScope: getScopeWorkspaceScope(scope),
       workspacePath: scope.workspacePath,
     });
     return entries
@@ -5963,7 +6082,7 @@ export const writeArchitectTaskExecution = async (params: {
         content: buildTaskExecutedMarkdown(replicaSet.canonical.plan, params.execution),
         createDirs: true,
         allowOutsideWorkspace: false,
-        workspaceScope: METADATA_WORKSPACE_SCOPE,
+        workspaceScope: getScopeWorkspaceScope(scope),
         workspacePath: scope.workspacePath,
       })
     )

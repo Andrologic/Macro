@@ -130,11 +130,12 @@ const buildPlanFinalizationExecutionTargets = (
 
   return projectIds.map((projectId) => {
     const targetBranchName = plan.targetBranchesByProjectId?.[projectId] || plan.targetBranch;
+    const executionMode = executionModesByProjectId[projectId];
     return {
       projectId,
-      branchName: targetBranchName,
-      targetBranchName,
-      executionMode: executionModesByProjectId[projectId],
+      branchName: executionMode === 'direct' ? '' : targetBranchName,
+      targetBranchName: executionMode === 'direct' ? '' : targetBranchName,
+      executionMode,
       executionKind: 'repository_root',
       worktreeKey: `${PLAN_FINALIZATION_TASK_PREFIX}${plan.projectId || projectId}:${projectId}`,
     };
