@@ -40,6 +40,7 @@ export type GitFlowBranchType = 'plan' | 'feature' | 'release' | 'hotfix' | 'bug
 export type StandaloneTaskKind = 'feature' | 'bugfix' | 'hotfix';
 export type CompletionMergePolicy = 'merge_commit' | 'fast_forward';
 export type ProjectGitSetupState =
+  | 'unknown'
   | 'not_git'
   | 'unborn'
   | 'single_main_only'
@@ -134,6 +135,8 @@ export interface PlanNode {
   branchSlug?: string;
   projectId?: string;
   projectIds?: string[];
+  /** Mode snapshot used when this plan target was accepted. */
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   estimatedTime?: string;
   archivedAt?: string | null;
   archiveReason?: string | null;
@@ -608,7 +611,7 @@ export interface Project {
   gitFlowSettings?: ProjectGitFlowSettings;
   userReadOnly?: boolean;
   directEdit?: boolean;
-  gitSetupState?: Extract<ProjectGitSetupState, 'ready' | 'not_git' | 'unborn'>;
+  gitSetupState?: Extract<ProjectGitSetupState, 'unknown' | 'ready' | 'not_git' | 'unborn'>;
   isReadOnly?: boolean;
   readOnlyReason?: 'manual' | 'missing_git' | 'missing_initial_commit' | 'manual_and_missing_git' | null;
   metadata: ProjectMetadata;
@@ -641,6 +644,8 @@ export interface ProjectMount {
   displayName: string;
   workspacePath: string | null;
   isReadOnly?: boolean;
+  executionMode?: 'git' | 'direct' | 'blocked' | 'invalid';
+  executionModeReason?: string;
 }
 
 export interface FileChange {

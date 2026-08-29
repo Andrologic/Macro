@@ -46,6 +46,16 @@ describe('macroMetadataCoordinator', () => {
   beforeEach(() => {
     clearMacroMetadataCoordinatorForTests();
     macroBranchCommitIfDirtyMock.mockClear();
+    registerAppStateGetter(() => ({
+      standaloneProjects: [{
+        id: 'web',
+        path: '/repos/web',
+        isReadOnly: false,
+        gitSetupState: 'ready' as const,
+        directEdit: false,
+      }],
+      projectGroups: [],
+    }));
   });
 
   afterEach(() => {
@@ -171,7 +181,7 @@ describe('macroMetadataCoordinator', () => {
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
 
-  it('keeps Git projects and unknown external folders flushable', async () => {
+  it('flushes confirmed Git projects but rejects folders missing project metadata', async () => {
     const guardedDeps = {
       ...deps,
       isWorkspaceGitActionable: (workspacePath: string) => workspacePath === '/repos/git',
@@ -187,10 +197,9 @@ describe('macroMetadataCoordinator', () => {
       workspacePaths: ['/external/folder'],
     }, deps);
 
-    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
     expect(macroBranchCommitIfDirtyMock.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
       '/repos/git',
-      '/external/folder',
     ]);
   });
 
@@ -199,6 +208,7 @@ describe('macroMetadataCoordinator', () => {
       standaloneProjects: [],
       projectGroups: [{
         projects: [{
+          id: 'direct',
           path: 'C:\\repos\\direct',
           isReadOnly: false,
           gitSetupState: 'not_git' as const,

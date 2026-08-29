@@ -1423,10 +1423,14 @@ export const registerArchitectLifecycleScenarios = (
         label: 'new plan',
         description: '',
         conversationId: 'plan-conv',
+        executionModesByProjectId: { 'project-1': 'direct' },
       });
       architectPlans.set(plan.id, plan);
       appState.activeArchitectPlanId = plan.id;
-      appState.activePlanContext = { targetBranch: 'develop' };
+      appState.activePlanContext = {
+        targetBranch: 'develop',
+        executionModesByProjectId: { 'project-1': 'direct' },
+      };
 
       const { useChatStore } = await loadChatStore();
       useChatStore.setState({
@@ -1469,6 +1473,9 @@ export const registerArchitectLifecycleScenarios = (
       expect(architectPlans.get('1710000000000')?.description).toBe(
         'Refresh checkout state and cart recovery.'
       );
+      expect(appState.activePlanContext?.executionModesByProjectId).toEqual({
+        'project-1': 'direct',
+      });
       expect(useChatStore.getState().conversations[0]?.title).toBe(
         'Plan - Checkout refresh - 1710000000000'
       );

@@ -1173,6 +1173,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         taskMatchesProjectId(task, project.id)
       ).length,
       isReadOnly: Boolean(project.isReadOnly),
+      directEdit: project.directEdit,
+      gitSetupState: project.gitSetupState,
       gitFlowSettings: project.gitFlowSettings,
     })),
     [availableProjects, projectGroups, tasks]

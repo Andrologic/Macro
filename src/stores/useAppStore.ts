@@ -252,6 +252,7 @@ export interface ArchitectPlanContext {
   status: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   hasMixedTargetBranches?: boolean;
 }
 
@@ -295,6 +296,7 @@ const buildArchitectPlanContext = (
         | "status"
         | "targetBranch"
         | "targetBranchesByProjectId"
+        | "executionModesByProjectId"
       >
     | Pick<
         ArchitectPlanSummary,
@@ -308,6 +310,7 @@ const buildArchitectPlanContext = (
         | "status"
         | "targetBranch"
         | "targetBranchesByProjectId"
+        | "executionModesByProjectId"
       >
 ): ArchitectPlanContext => ({
   id: plan.id,
@@ -320,6 +323,7 @@ const buildArchitectPlanContext = (
   status: plan.status,
   targetBranch: plan.targetBranch,
   targetBranchesByProjectId: plan.targetBranchesByProjectId,
+  executionModesByProjectId: plan.executionModesByProjectId,
   hasMixedTargetBranches:
     Boolean(plan.targetBranchesByProjectId) &&
     new Set(Object.values(plan.targetBranchesByProjectId || {})).size > 1,
@@ -837,6 +841,7 @@ const hydrateArchitectPlanInStore = async (input: {
     branchName: reconciledActivationPayload.targetBranch,
     planId: plan.id,
     projectIds: plan.projectIds,
+    executionModesByProjectId: plan.executionModesByProjectId,
   });
   const persistedPreview = runtime?.strategyPreview ?? null;
   if (!persistedPreview) {

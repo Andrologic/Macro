@@ -27,7 +27,7 @@ L'architecture repose sur quatre principes :
 - local-first par défaut
 - séparation stricte entre surface produit et détails d'implémentation
 - transport interchangeable entre backend desktop et backend distant
-- préservation d'un historique de travail auditable via la persistence locale et la branche metadata
+- préservation d'un historique de travail auditable via la persistance locale et la branche metadata
 
 Macro doit pouvoir fonctionner dans trois topologies techniques :
 
@@ -49,7 +49,7 @@ Elle est responsable de :
 - la visualisation des plans, tâches, diffs et états
 - la configuration des providers, outils et préférences
 
-Le frontend ne doit pas contenir la logique bas niveau du système de fichiers, de Git ou de la persistence native.
+Le frontend ne doit pas contenir la logique bas niveau du système de fichiers, de Git ou de la persistance native.
 
 ### 3.2 Couche état client
 
@@ -484,7 +484,7 @@ Le module `db` porte :
 - l'initialisation SQLite
 - les migrations
 - les modèles et repositories
-- les commandes de persistence de conversations, messages, providers et contextes locaux
+- les commandes de persistance de conversations, messages, providers et contextes locaux
 
 ### 9.4 `fs`
 
@@ -510,7 +510,7 @@ Le module `workspace` porte :
 
 - le bootstrap du workspace
 - la liste des groupes et projets
-- la persistence du fichier `workspace.json`
+- la persistance du fichier `workspace.json`
 - les opérations de création, import, renommage, archivage et fermeture de projets
 
 ### 9.7 `ai`
@@ -576,7 +576,7 @@ Elle stocke notamment :
 
 ### 10.2 Persistance locale frontend
 
-Le frontend utilise aussi de la persistence locale légère pour :
+Le frontend utilise aussi de la persistance locale légère pour :
 
 - certaines préférences
 - le fournisseur vocal actif, la langue et la durée maximale de dictée
@@ -711,7 +711,7 @@ Elle est synchronisée separatement du code métier.
 Le système doit pouvoir :
 
 - s'assurer de son existence
-- connaitre son état de divergence
+- connaître son état de divergence
 - committer les metadata si nécessaire
 - push et pull cette branche
 
@@ -727,11 +727,15 @@ Cette séparation permet :
 
 ### 12.7 Exécution directe sans dépôt Git
 
-Un projet `not_git` peut être marqué `directEdit`. Il est alors modifiable dans Implement, mais reste non actionnable dans Architect. Les tâches directes s'exécutent dans le chemin du projet, sans provisionnement de branche ou de worktree, et le filtre de capacités retire tous les outils Git du runtime agent.
+Le résolveur typé `projectExecutionMode` est la source de vérité commune. Il retourne `git`, `direct`, `blocked` ou `invalid` à partir de l'état observé du projet et du mode persisté de la cible. Un état observé `not_git` ne devient jamais Git par défaut. Une ancienne cible sans `executionMode` suit l'état confirmé du projet. Une cible persistée valide conserve son mode pendant sa tâche, y compris si le projet est ensuite initialisé en Git ou si l'édition directe est désactivée.
+
+Un projet `not_git` peut être marqué `directEdit`. Il est alors modifiable dans Implement et Architect. Les plans enregistrent `executionModesByProjectId` sur leurs nœuds. Un plan mixte provisionne les branches et les worktrees de ses seules cibles Git. Les cibles directes s'exécutent dans le chemin du projet, sans nom de branche ni worktree. Le filtre de capacités retire les outils Git lorsqu'aucune cible Git n'existe et les conserve pour un plan mixte. L'exécuteur vérifie ensuite le `project_id` et le mode de la cible avant tout appel backend.
+
+Les métadonnées d'un plan direct vivent dans `<projet>/.macro` grâce au scope FS `direct`. Ce scope ne résout jamais la branche `@macro`. Si le projet est initialisé en Git après la création du plan, les lectures, les écritures et le transcript de ce plan restent dans ce dossier. Les nouveaux plans Git utilisent le scope metadata habituel. La synchronisation de fin de stream copie toujours le transcript local, puis inspecte `@macro` uniquement pour les cibles dont le mode persisté vaut `git`.
 
 La revue repose sur un dépôt de point de restauration privé stocké dans les données applicatives de Macro. Son worktree pointe vers le dossier du projet, sans y créer de `.git`. Le premier démarrage capture une base ; les commandes natives de revue, validation, dévalidation, restauration et acceptation réutilisent ensuite le modèle de diff existant. Le dépôt privé exclut notamment `.git`, `.macro`, les dépendances, les sorties de build et les secrets usuels. L'identité du point de restauration combine l'identifiant de tâche et le chemin canonique du projet.
 
-Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`.
+Comme le dossier source n'est pas isolé, le backend refuse une deuxième tâche active sur le même projet direct. La fin de tâche passe directement à `Completed` après acceptation des changements, sans workflow de merge ni synchronisation `@macro`. Une cible `blocked` ou `invalid` ne reçoit aucun répertoire de travail et propose de vérifier les réglages du projet. Le runtime distant ne prépare pas ces tâches tant que son contrat d'exécution directe n'est pas pris en charge explicitement.
 
 ---
 
@@ -1107,7 +1111,7 @@ Le backend Rust charge une configuration runtime pour :
 
 Les préférences utilisateur sont réparties entre :
 
-- persistence locale frontend
+- persistance locale frontend
 - settings backend
 - configurations providers et modèles
 - configurations des fournisseurs vocaux

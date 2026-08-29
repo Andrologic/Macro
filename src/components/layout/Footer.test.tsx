@@ -8,6 +8,8 @@ type Project = {
   id: string;
   name: string;
   path: string;
+  gitSetupState?: 'ready' | 'unborn' | 'not_git' | 'unknown';
+  directEdit?: boolean;
 };
 
 type ProjectGroup = {
@@ -141,11 +143,11 @@ let importCounter = 0;
 let originalConsoleError: typeof console.error;
 
 const GROUP_ONE_PROJECTS: Project[] = [
-  { id: 'project-a', name: 'API', path: '/repo/api' },
-  { id: 'project-b', name: 'Web', path: '/repo/web' },
+  { id: 'project-a', name: 'API', path: '/repo/api', gitSetupState: 'ready', directEdit: false },
+  { id: 'project-b', name: 'Web', path: '/repo/web', gitSetupState: 'ready', directEdit: false },
 ];
 const GROUP_TWO_PROJECTS: Project[] = [
-  { id: 'project-c', name: 'Docs', path: '/repo/docs' },
+  { id: 'project-c', name: 'Docs', path: '/repo/docs', gitSetupState: 'ready', directEdit: false },
 ];
 
 const createStoreHook = <T,>(getSnapshot: () => T) => {

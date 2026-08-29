@@ -29,6 +29,11 @@ import { filterNonWslProjectPaths } from './wslPaths';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
+type ArtifactWorkspaceTarget = {
+  workspacePath: string;
+  workspaceScope: tauriIpc.WorkspaceScope;
+};
+
 export class PlanTaskArtifactIndexReadError extends Error {
   constructor(planId: string, path: string, cause?: unknown) {
     super(`Unable to read artifact index ${path} for plan ${planId}: ${toServiceError(cause).message}`);
@@ -304,13 +309,14 @@ const normalizeArtifactIndex = (
 const getPlanWorkspaceHints = (
   plan: Pick<
     ArchitectPlanRecord,
-    'projectId' | 'projectIds' | 'availableProjectIds' | 'replicas'
+    'projectId' | 'projectIds' | 'availableProjectIds' | 'replicas' | 'executionModesByProjectId'
   >,
   repoPaths: Array<string | null | undefined> = [],
 ) => ({
   projectIds: unique([...(plan.projectIds || []), plan.projectId]),
   availableProjectIds: plan.availableProjectIds,
   replicas: plan.replicas,
+  executionModesByProjectId: plan.executionModesByProjectId,
   repoPaths: [
     ...repoPaths,
     ...(plan.replicas || []).map((replica) => replica.repoPath),
@@ -323,7 +329,9 @@ const resolveWorkspacePaths = async (params: {
   availableProjectIds?: string[] | null;
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
-}): Promise<string[]> => {
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  allowFallbackPaths?: boolean;
+}): Promise<ArtifactWorkspaceTarget[]> => {
   const appState = useAppStore.getState();
   const knownProjectIds = collectKnownProjectIds({
     standaloneProjects: appState.standaloneProjects,
@@ -342,11 +350,28 @@ const resolveWorkspacePaths = async (params: {
     scopedProjectIds,
     knownProjectIds,
   });
-  const projectPaths = projectIds.map((projectId) =>
-    typeof appState.getProjectById === 'function'
+  const registeredTargets = projectIds.flatMap((projectId): ArtifactWorkspaceTarget[] => {
+    const projectPath = typeof appState.getProjectById === 'function'
       ? appState.getProjectById(projectId)?.path ?? null
-      : null,
-  );
+      : null;
+    if (!projectPath || filterNonWslProjectPaths([projectPath]).length === 0) {
+      return [];
+    }
+    return [{
+      workspacePath: projectPath,
+      workspaceScope: params.executionModesByProjectId?.[projectId] === 'direct'
+        ? 'direct'
+        : METADATA_WORKSPACE_SCOPE,
+    }];
+  });
+  if (registeredTargets.length > 0) {
+    return Array.from(new Map(
+      registeredTargets.map((target) => [`${target.workspaceScope}:${target.workspacePath}`, target])
+    ).values());
+  }
+  if (params.allowFallbackPaths === false) {
+    return [];
+  }
   const replicaRepoPaths = (params.replicas || []).map((replica) => replica.repoPath);
   let activeRoot: string | null = null;
   if (tauriIpc.isTauriAvailable()) {
@@ -356,21 +381,24 @@ const resolveWorkspacePaths = async (params: {
       activeRoot = null;
     }
   }
+  const fallbackScope = projectIds.length > 0 && projectIds.every(
+    (projectId) => params.executionModesByProjectId?.[projectId] === 'direct'
+  ) ? 'direct' : METADATA_WORKSPACE_SCOPE;
   return filterNonWslProjectPaths(
-    unique([...(params.repoPaths || []), ...projectPaths, ...replicaRepoPaths, activeRoot]),
-  );
+    unique([...(params.repoPaths || []), ...replicaRepoPaths, activeRoot]),
+  ).map((workspacePath) => ({ workspacePath, workspaceScope: fallbackScope }));
 };
 
 const readTextAtWorkspace = async (
-  workspacePath: string,
+  target: ArtifactWorkspaceTarget,
   path: string,
 ): Promise<string | null> => {
   try {
     const file = await tauriIpc.fsReadFileWithOptions({
       path,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
-      workspacePath,
+      workspaceScope: target.workspaceScope,
+      workspacePath: target.workspacePath,
     });
     return file.content;
   } catch {
@@ -379,7 +407,7 @@ const readTextAtWorkspace = async (
 };
 
 const writeTextAtWorkspace = async (
-  workspacePath: string,
+  target: ArtifactWorkspaceTarget,
   path: string,
   content: string,
 ): Promise<void> => {
@@ -388,8 +416,8 @@ const writeTextAtWorkspace = async (
     content,
     createDirs: true,
     allowOutsideWorkspace: false,
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
-    workspacePath,
+    workspaceScope: target.workspaceScope,
+    workspacePath: target.workspacePath,
   });
 };
 
@@ -419,15 +447,15 @@ const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
 });
 
 const updateArtifactManifestAtWorkspace = async (params: {
-  workspacePath: string;
+  target: ArtifactWorkspaceTarget;
   branchName: string;
   planId: string;
   index: PlanTaskArtifactIndex;
 }): Promise<void> => {
   const manifestPath = getPlanManifestPath(params.branchName, params.planId);
   const exists = await tauriIpc.fsExists(manifestPath, {
-    workspaceScope: METADATA_WORKSPACE_SCOPE,
-    workspacePath: params.workspacePath,
+    workspaceScope: params.target.workspaceScope,
+    workspacePath: params.target.workspacePath,
   });
   if (!exists) {
     return;
@@ -437,8 +465,8 @@ const updateArtifactManifestAtWorkspace = async (params: {
     const file = await tauriIpc.fsReadFileWithOptions({
       path: manifestPath,
       allowOutsideWorkspace: false,
-      workspaceScope: METADATA_WORKSPACE_SCOPE,
-      workspacePath: params.workspacePath,
+      workspaceScope: params.target.workspaceScope,
+      workspacePath: params.target.workspacePath,
     });
     const parsed: unknown = JSON.parse(file.content);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -449,7 +477,7 @@ const updateArtifactManifestAtWorkspace = async (params: {
     throw new PlanTaskArtifactIndexReadError(params.planId, manifestPath, error);
   }
   await writeTextAtWorkspace(
-    params.workspacePath,
+    params.target,
     manifestPath,
     `${JSON.stringify(
       {
@@ -470,19 +498,20 @@ export const readPlanTaskArtifactIndex = async (params: {
   availableProjectIds?: string[] | null;
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }): Promise<PlanTaskArtifactIndex> => {
   if (!tauriIpc.isTauriAvailable()) {
     return emptyArtifactIndex(params.planId);
   }
   const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
-  const workspacePaths = await resolveWorkspacePaths(params);
+  const workspaceTargets = await resolveWorkspacePaths(params);
   const validIndexes: PlanTaskArtifactIndex[] = [];
-  for (const workspacePath of workspacePaths) {
+  for (const target of workspaceTargets) {
     let indexExists = false;
     try {
       indexExists = await tauriIpc.fsExists(indexPath, {
-        workspaceScope: METADATA_WORKSPACE_SCOPE,
-        workspacePath,
+        workspaceScope: target.workspaceScope,
+        workspacePath: target.workspacePath,
       });
     } catch (error) {
       throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, error);
@@ -492,8 +521,8 @@ export const readPlanTaskArtifactIndex = async (params: {
       const file = await tauriIpc.fsReadFileWithOptions({
         path: indexPath,
         allowOutsideWorkspace: false,
-        workspaceScope: METADATA_WORKSPACE_SCOPE,
-        workspacePath,
+        workspaceScope: target.workspaceScope,
+        workspacePath: target.workspacePath,
       });
       const parsed: unknown = JSON.parse(file.content);
       if (
@@ -535,14 +564,15 @@ const writePlanTaskArtifactIndex = async (params: {
   availableProjectIds?: string[] | null;
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   index: PlanTaskArtifactIndex;
   contentWrites?: Array<{ path: string; content: string }>;
 }): Promise<void> => {
   if (!tauriIpc.isTauriAvailable()) {
     return;
   }
-  const workspacePaths = await resolveWorkspacePaths(params);
-  if (workspacePaths.length === 0) {
+  const workspaceTargets = await resolveWorkspacePaths({ ...params, allowFallbackPaths: false });
+  if (workspaceTargets.length === 0) {
     return;
   }
   const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
@@ -552,31 +582,31 @@ const writePlanTaskArtifactIndex = async (params: {
     indexPath,
     getPlanManifestPath(params.branchName, params.planId),
   ];
-  const snapshots = await Promise.all(workspacePaths.map(async (workspacePath) => ({
-    workspacePath,
+  const snapshots = await Promise.all(workspaceTargets.map(async (target) => ({
+    target,
     files: await Promise.all(paths.map(async (path) => ({
       path,
       exists: await tauriIpc.fsExists(path, {
-        workspaceScope: METADATA_WORKSPACE_SCOPE,
-        workspacePath,
+        workspaceScope: target.workspaceScope,
+        workspacePath: target.workspacePath,
       }),
-      content: await readTextAtWorkspace(workspacePath, path),
+      content: await readTextAtWorkspace(target, path),
     }))),
   })));
   try {
-    for (const workspacePath of workspacePaths) {
+    for (const target of workspaceTargets) {
       for (const write of params.contentWrites || []) {
-        await writeTextAtWorkspace(workspacePath, write.path, write.content);
+        await writeTextAtWorkspace(target, write.path, write.content);
       }
-      await writeTextAtWorkspace(workspacePath, indexPath, indexContent);
+      await writeTextAtWorkspace(target, indexPath, indexContent);
       await updateArtifactManifestAtWorkspace({
-        workspacePath,
+        target,
         branchName: params.branchName,
         planId: params.planId,
         index: params.index,
       });
       recordMacroMetadataMutation({
-        workspacePath,
+        workspacePath: target.workspacePath,
         kind: 'task_metadata',
         entityId: params.planId,
         label: 'task artifacts',
@@ -591,16 +621,16 @@ const writePlanTaskArtifactIndex = async (params: {
           if (!file.exists) {
             await tauriIpc.fsDelete({
               path: file.path,
-              workspaceScope: METADATA_WORKSPACE_SCOPE,
-              workspacePath: snapshot.workspacePath,
+              workspaceScope: snapshot.target.workspaceScope,
+              workspacePath: snapshot.target.workspacePath,
             });
           } else if (file.content !== null) {
-            await writeTextAtWorkspace(snapshot.workspacePath, file.path, file.content);
+            await writeTextAtWorkspace(snapshot.target, file.path, file.content);
           } else {
             throw new Error(`Cannot restore ${file.path}: its prior content is unreadable.`);
           }
         } catch (rollbackError) {
-          rollbackFailures.push(`${snapshot.workspacePath}:${file.path}: ${toServiceError(rollbackError).message}`);
+          rollbackFailures.push(`${snapshot.target.workspacePath}:${file.path}: ${toServiceError(rollbackError).message}`);
         }
       }
     }
@@ -890,11 +920,11 @@ export const readVisibleTaskArtifactContent = async (params: {
   if (!artifact) {
     throw toServiceError(`Artifact is not visible from task ${params.task.id}: ${params.artifactId}`);
   }
-  const workspacePaths = await resolveWorkspacePaths({
+  const workspaceTargets = await resolveWorkspacePaths({
     ...getPlanWorkspaceHints(params.plan),
   });
-  for (const workspacePath of workspacePaths) {
-    const content = await readTextAtWorkspace(workspacePath, artifact.path);
+  for (const target of workspaceTargets) {
+    const content = await readTextAtWorkspace(target, artifact.path);
     if (content !== null) {
       return { artifact, content };
     }
@@ -908,17 +938,19 @@ const readArtifactContentByPath = async (params: {
   availableProjectIds?: string[] | null;
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   path: string;
 }): Promise<string> => {
-  const workspacePaths = await resolveWorkspacePaths({
+  const workspaceTargets = await resolveWorkspacePaths({
     projectId: params.projectId,
     projectIds: params.projectIds,
     availableProjectIds: params.availableProjectIds,
     replicas: params.replicas,
     repoPaths: params.repoPaths,
+    executionModesByProjectId: params.executionModesByProjectId,
   });
-  for (const workspacePath of workspacePaths) {
-    const content = await readTextAtWorkspace(workspacePath, params.path);
+  for (const target of workspaceTargets) {
+    const content = await readTextAtWorkspace(target, params.path);
     if (content !== null) {
       return content;
     }

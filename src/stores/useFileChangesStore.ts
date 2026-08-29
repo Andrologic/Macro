@@ -45,6 +45,7 @@ import {
   getReadyCommitRepositories,
   isRepositoryReadyToCommit,
 } from '../services/smartCommitDrafts';
+import { resolveProjectExecutionMode } from '../services/projectExecutionMode';
 
 export type DiffPresentationMode = 'focused' | 'full';
 export type FileChangeContextMode = DiffPresentationMode;
@@ -200,10 +201,13 @@ const EMPTY_STATS: ReviewRepositoryStats = {
 };
 
 interface FileChangesProjectRef {
-  path?: string | null;
+  id: string;
+  path: string;
   name?: string | null;
   directEdit?: boolean;
   gitSetupState?: Project['gitSetupState'];
+  userReadOnly?: boolean;
+  isReadOnly?: boolean;
 }
 
 interface FileChangesTaskLike {
@@ -529,6 +533,15 @@ const buildSmartCommitMessageInput = async (
     repositories: await Promise.all(repositories.map(async (repository) => {
       const project = appState.getProjectById(repository.projectId);
       const files = await Promise.all(repository.stagedPaths.map(async (path) => {
+        if (repository.executionMode === 'direct') {
+          const change = repository.changes.find((candidate) => candidate.path === path);
+          return {
+            path,
+            summary: change
+              ? summarizeLineChanges(change.originalContent, change.modifiedContent)
+              : 'Direct workspace change.',
+          };
+        }
         try {
           const pair = await deps.tauri.gitReadFilePair({
             repoPath: repository.worktreePath,
@@ -991,9 +1004,16 @@ const loadRepositoryState = async (params: {
 
   const repositoryId = buildFileChangesRepositoryId(target);
   const previousById = new Map((previousRepository?.changes || []).map((change) => [change.id, change]));
-  const executionMode = target.executionMode ?? (
-    project?.directEdit && project.gitSetupState === 'not_git' ? 'direct' : 'git'
-  );
+  const executionResolution = resolveProjectExecutionMode({ project, target });
+  if (executionResolution.mode !== 'git' && executionResolution.mode !== 'direct') {
+    throw new Error(
+      tChanges(
+        'implement.errors.projectExecutionInvalid',
+        'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
+      ),
+    );
+  }
+  const executionMode = executionResolution.mode;
   if (executionMode === 'direct' || deps.tauri.gitReviewSnapshot) {
     try {
       const snapshot = executionMode === 'direct'

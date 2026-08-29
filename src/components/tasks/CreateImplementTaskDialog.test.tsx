@@ -32,6 +32,7 @@ const project = (
   name: string,
   baseBranch: string,
   mainBranch: string,
+  overrides: Partial<TaskProjectFilterOption> = {},
 ): TaskProjectFilterOption => ({
   id,
   name,
@@ -49,6 +50,7 @@ const project = (
     hotfixBranchTemplate: 'hotfix/{hotfixSlug}',
     bugfixBranchTemplate: 'bugfix/{bugfixSlug}',
   },
+  ...overrides,
 });
 
 describe('CreateImplementTaskDialog task type help', () => {
@@ -234,6 +236,54 @@ describe('CreateImplementTaskDialog task type help', () => {
     await act(async () => createButton.click());
     expect(onCreate).toHaveBeenCalledWith({
       projectId: 'mainline',
+      taskKind: 'hotfix',
+      startPoint: { kind: 'new' },
+    });
+  });
+
+  it('offers every task kind without branch selection for a direct-edit project', async () => {
+    const onCreate = mock(() => undefined);
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[project('direct', 'Direct project', 'develop', 'main', {
+            directEdit: true,
+            gitSetupState: 'not_git',
+          })]}
+          initialProjectId="direct"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={onCreate}
+        />
+      );
+    });
+
+    const findButton = (label: string) => Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === label,
+    ) as HTMLButtonElement;
+    expect(findButton('Feature').getAttribute('aria-disabled')).toBe('false');
+    expect(findButton('Bugfix').getAttribute('aria-disabled')).toBe('false');
+    expect(findButton('Hotfix').getAttribute('aria-disabled')).toBe('false');
+    expect(container.textContent).not.toContain('Resume work');
+    const directHelp = 'Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.';
+    for (const label of ['Feature', 'Bugfix', 'Hotfix']) {
+      const button = findButton(label);
+      const descriptionId = button.getAttribute('aria-describedby');
+      expect(descriptionId).toBeTruthy();
+      expect(container.querySelector(`#${descriptionId}`)?.textContent).toBe(directHelp);
+    }
+    await act(async () => findButton('Feature').dispatchEvent(new MouseEvent('mouseover', {
+      bubbles: true,
+      clientX: 100,
+      clientY: 120,
+    })));
+    expect(document.body.querySelector<HTMLElement>('[role="tooltip"]')?.textContent).toBe(directHelp);
+    await act(async () => findButton('Feature').dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
+
+    await act(async () => findButton('Hotfix').click());
+    await act(async () => findButton('Create task').click());
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: 'direct',
       taskKind: 'hotfix',
       startPoint: { kind: 'new' },
     });

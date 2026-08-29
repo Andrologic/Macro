@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { getCreatableStandaloneTaskKinds } from '../../services/standaloneTaskKinds';
+import { resolveProjectExecutionMode } from '../../services/projectExecutionMode';
 import {
   gitTaskStartPoints,
   type GitAvailableTaskBranchDto,
@@ -145,20 +146,23 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   const filteredBranches = normalizedStartPointQuery
     ? branches.filter((branch) => branch.name.toLocaleLowerCase().includes(normalizedStartPointQuery))
     : branches;
-  const isDirectEditProject = Boolean(
-    selectedProject?.directEdit && selectedProject.gitSetupState === 'not_git'
-  );
+  const isDirectEditProject = selectedProject
+    ? resolveProjectExecutionMode({
+        project: {
+          ...selectedProject,
+          userReadOnly: false,
+        },
+      }).mode === 'direct'
+    : false;
   const creatableTaskKinds = useMemo(
     () => selectedProject
       ? isDirectEditProject
-        ? ['feature'] as StandaloneTaskKind[]
+        ? TASK_KIND_OPTIONS.map(({ kind }) => kind)
         : getCreatableStandaloneTaskKinds(selectedProject.gitFlowSettings)
       : [],
     [isDirectEditProject, selectedProject],
   );
-  const visibleTaskKindOptions = isDirectEditProject
-    ? TASK_KIND_OPTIONS.filter(({ kind }) => kind === 'feature')
-    : TASK_KIND_OPTIONS;
+  const visibleTaskKindOptions = TASK_KIND_OPTIONS;
   const selectedTaskKindIsCreatable = selectedTaskKind
     ? creatableTaskKinds.includes(selectedTaskKind)
     : false;
@@ -172,12 +176,19 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     bugfix: t('implement.taskKindBugfixHelp', 'Bugfix creates a branch from the configured development branch and merges it back into that branch.'),
     hotfix: t('implement.taskKindHotfixHelp', 'Hotfix creates a branch from the configured production branch and merges it back into that branch.'),
   };
+  const directTaskDescription = t(
+    'implement.taskKindDirectEditHelp',
+    'Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.',
+  );
   const getTaskKindDescription = (kind: StandaloneTaskKind): string => {
     if (!selectedProject) {
       return t(
         'implement.taskKindSelectProjectHelp',
         'Select a target project to see which task types are available.',
       );
+    }
+    if (isDirectEditProject) {
+      return directTaskDescription;
     }
     if (!creatableTaskKinds.includes(kind)) {
       return t(
@@ -333,14 +344,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
   }, [tooltipAnchor, tooltipSize.height, tooltipSize.width]);
 
   useEffect(() => {
-    if (isDirectEditProject && selectedTaskKind !== 'feature') {
-      setSelectedTaskKind('feature');
-      return;
-    }
     if (selectedTaskKind && !creatableTaskKinds.includes(selectedTaskKind)) {
       setSelectedTaskKind(null);
     }
-  }, [creatableTaskKinds, isDirectEditProject, selectedTaskKind]);
+  }, [creatableTaskKinds, selectedTaskKind]);
 
   useEffect(() => {
     let cancelled = false;
@@ -460,12 +467,10 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           <legend className="text-xs font-medium text-foreground">
             {t('implement.taskKindLabel', 'Task type')}
           </legend>
-          <div className={cn('grid gap-2', isDirectEditProject ? 'grid-cols-1' : 'grid-cols-3')}>
+          <div className="grid grid-cols-3 gap-2">
             {visibleTaskKindOptions.map(({ kind, icon }) => {
               const selected = selectedTaskKind === kind;
-              const label = isDirectEditProject
-                ? t('implement.taskKindDirectEdit', 'Direct edit')
-                : kind === 'feature'
+              const label = kind === 'feature'
                 ? t('implement.taskKindFeature', 'Feature')
                 : kind === 'bugfix'
                   ? t('implement.taskKindBugfix', 'Bugfix')
@@ -521,10 +526,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           {visibleTaskKindOptions.map(({ kind }) => (
             <span key={kind} id={`implement-task-kind-${kind}-description`} className="sr-only">
               {isDirectEditProject
-                ? t(
-                    'implement.taskKindDirectEditHelp',
-                    'Macro edits the project folder directly without branches, worktrees, or Git commits.'
-                  )
+                ? directTaskDescription
                 : getTaskKindDescription(kind)}
             </span>
           ))}

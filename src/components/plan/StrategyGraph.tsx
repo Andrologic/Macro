@@ -968,6 +968,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
           id: activePlanContext.id,
           projectId: projectIds[0],
           projectIds,
+          executionModesByProjectId: activePlanContext.executionModesByProjectId,
         },
         preview: null,
       });
@@ -999,6 +1000,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         status: updatedPlan.status,
         targetBranch: updatedPlan.targetBranch,
         targetBranchesByProjectId: updatedPlan.targetBranchesByProjectId,
+        executionModesByProjectId: updatedPlan.executionModesByProjectId,
         hasMixedTargetBranches:
           Boolean(updatedPlan.targetBranchesByProjectId) &&
           new Set(Object.values(updatedPlan.targetBranchesByProjectId || {})).size > 1,

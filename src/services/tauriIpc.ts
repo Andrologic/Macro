@@ -1099,6 +1099,7 @@ export interface WorkspaceArchitectPlanSummaryDto {
   deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
+  executionModesByProjectId?: Record<string, "git" | "direct"> | null;
   conversationId?: string | null;
   projectId?: string | null;
   projectIds?: string[];
@@ -1131,6 +1132,7 @@ export interface WorkspaceArchitectPlanRecordDto {
   deletedAt?: string | null;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string> | null;
+  executionModesByProjectId?: Record<string, "git" | "direct"> | null;
   conversationId?: string | null;
   projectId?: string | null;
   projectIds?: string[];
@@ -1198,6 +1200,8 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
   projectId: string;
   branchName: string;
   targetBranchName?: string | null;
+  executionMode?: 'git' | 'direct' | null;
+  checkpointId?: string | null;
   worktreeKey: string;
   repoPath?: string | null;
 }
@@ -1346,7 +1350,7 @@ export interface TerminalOutputEvent {
   updated_at: string;
 }
 
-export type WorkspaceScope = "default" | "metadata";
+export type WorkspaceScope = "default" | "metadata" | "direct";
 export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface FrontendLogParams {

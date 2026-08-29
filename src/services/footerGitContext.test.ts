@@ -10,6 +10,9 @@ const project = (id: string): Project => ({
   path: `/repo/${id}`,
   created_at: '2026-01-01',
   status: 'active',
+  gitSetupState: 'ready',
+  directEdit: false,
+  isReadOnly: false,
   metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
 });
 
@@ -218,5 +221,69 @@ describe('resolveFooterGitContext', () => {
     });
     expect(chat.project).toBeNull();
     expect(registeredProject.project).toBeNull();
+  });
+
+  it.each([
+    ['direct', { gitSetupState: 'not_git' as const, directEdit: true, isReadOnly: false }],
+    ['blocked', { gitSetupState: 'not_git' as const, directEdit: false, isReadOnly: true }],
+  ])('does not expose %s projects to footer Git polling', (_label, overrides) => {
+    const directProject = { ...project('direct'), ...overrides };
+    const result = resolveFooterGitContext({
+      ...baseInput(),
+      standaloneProjects: [directProject],
+      projectGroups: [],
+      selectedTaskId: 'task-direct',
+      tasks: [task('task-direct', ['direct'])],
+    });
+
+    expect(result).toMatchObject({ project: null, candidates: [], reason: 'missing_context' });
+  });
+
+  it('honors a persisted direct target after the project gains Git', () => {
+    const directTask = {
+      ...task('task-direct', ['direct']),
+      execution_targets: [{
+        projectId: 'direct',
+        branchName: 'feature/direct',
+        worktreeKey: 'direct::feature/direct',
+        executionMode: 'direct' as const,
+        repoPath: '/repo/direct',
+      }],
+    };
+    const result = resolveFooterGitContext({
+      ...baseInput(),
+      standaloneProjects: [project('direct')],
+      projectGroups: [],
+      selectedTaskId: directTask.id,
+      tasks: [directTask],
+    });
+
+    expect(result.project).toBeNull();
+  });
+
+  it('hides an active Architect plan target that persists direct mode after Git is added', () => {
+    const result = resolveFooterGitContext({
+      ...baseInput(),
+      mode: 'Architect',
+      standaloneProjects: [project('direct')],
+      projectGroups: [],
+      activeArchitectPlanId: 'plan-direct',
+      visibleArchitectPlans: [{
+        id: 'plan-direct',
+        slug: 'plan-direct',
+        title: 'Direct plan',
+        description: '',
+        status: 'in_progress',
+        targetBranch: 'develop',
+        projectId: 'direct',
+        projectIds: ['direct'],
+        createdAt: '',
+        updatedAt: '',
+        nodeCount: 1,
+      }],
+      activeArchitectPlanExecutionModesByProjectId: { direct: 'direct' },
+    });
+
+    expect(result).toMatchObject({ project: null, candidates: [], reason: 'missing_context' });
   });
 });

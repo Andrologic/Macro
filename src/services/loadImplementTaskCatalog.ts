@@ -7,6 +7,7 @@ import {
   listArchitectPlans,
   listArchitectPlanTargetBranches,
   resolveTargetBranch,
+  updateArchitectPlan,
   type ArchitectPlanRecord,
 } from './architectPlanService';
 import {
@@ -20,10 +21,10 @@ import { buildPlanFinalizationTaskId } from './planFinalization';
 import { getTaskBusinessId, toPlanLocatorKey } from './durableIdentity';
 import {
   collectKnownProjects,
-  collectKnownProjectIds,
   retargetPlanForExecution,
   retargetTaskForExecution,
 } from './projectIdentityReconciliation';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 interface ActivePlanContextState {
   id: string;
@@ -34,6 +35,7 @@ interface ActivePlanContextState {
   status: string;
   targetBranch: string;
   targetBranchesByProjectId?: Record<string, string>;
+  executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   hasMixedTargetBranches?: boolean;
 }
 
@@ -56,17 +58,50 @@ interface LoadImplementTaskCatalogDependencies {
   getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
   resolveTargetBranch: typeof resolveTargetBranch;
   buildImplementTaskCatalog: typeof buildImplementTaskCatalog;
+  updateArchitectPlan?: typeof updateArchitectPlan;
 }
+
+const migrateLegacyPlanExecutionModes = (
+  plan: ArchitectPlanRecord,
+  appState: AppState,
+): { plan: ArchitectPlanRecord; changed: boolean } => {
+  const projectById = new Map(
+    collectKnownProjects(appState).map((project) => [project.id, project]),
+  );
+  let changed = false;
+  const nodes = (plan.nodes || []).map((node) => {
+    const projectIds = Array.from(new Set([
+      ...(node.projectIds || []),
+      ...(node.projectId ? [node.projectId] : []),
+    ]));
+    const executionModesByProjectId = { ...(node.executionModesByProjectId || {}) };
+    let nodeChanged = false;
+    for (const projectId of projectIds) {
+      if (executionModesByProjectId[projectId]) continue;
+      const mode = resolveProjectExecutionMode({ project: projectById.get(projectId) }).mode;
+      if (mode !== 'git' && mode !== 'direct') continue;
+      executionModesByProjectId[projectId] = mode;
+      nodeChanged = true;
+      changed = true;
+    }
+    return nodeChanged ? { ...node, executionModesByProjectId } : node;
+  });
+  return {
+    plan: changed ? { ...plan, nodes } : plan,
+    changed,
+  };
+};
 
 const reconcileFallbackTasksForCurrentScope = (
   tasks: Task[],
   relevantProjectIds: string[] | null,
-  validProjectIds: string[]
+  validProjects: Project[]
 ): Task[] => {
   return tasks.map((task) =>
     retargetTaskForExecution(task, {
       scopedProjectIds: relevantProjectIds,
-      knownProjectIds: validProjectIds,
+      knownProjectIds: validProjects.map((project) => project.id),
+      knownProjects: validProjects,
     })
   );
 };
@@ -129,6 +164,7 @@ const buildExecutableActivePlanRecord = (appState: AppState): ArchitectPlanRecor
     status: activePlanContext.status as ArchitectPlanRecord['status'],
     targetBranch: activePlanContext.targetBranch,
     targetBranchesByProjectId: activePlanContext.targetBranchesByProjectId,
+    executionModesByProjectId: activePlanContext.executionModesByProjectId,
     projectId: projectIds[0],
     projectIds,
     createdAt: new Date().toISOString(),
@@ -214,12 +250,14 @@ export const createLoadImplementTaskCatalog = (
     getGitFlowBaseBranch,
     resolveTargetBranch,
     buildImplementTaskCatalog,
+    updateArchitectPlan,
   }
 ) => {
   return async (fallbackTasks: Task[]): Promise<ImplementTaskCatalog> => {
     const appState = await dependencies.getAppState();
     const reconciliationProjectIds = resolveRelevantProjectIds(appState);
-    const validProjectIds = collectKnownProjectIds(appState);
+    const validProjects = collectKnownProjects(appState);
+    const validProjectIds = validProjects.map((project) => project.id);
     const activeTargetBranch = resolveCandidateTargetBranches(
       [appState.activePlanContext?.targetBranch || null],
       dependencies.resolveTargetBranch
@@ -308,10 +346,27 @@ export const createLoadImplementTaskCatalog = (
         })
       );
     }
+    plans = await Promise.all(plans.map(async (plan) => {
+      const migration = migrateLegacyPlanExecutionModes(plan, appState);
+      if (!migration.changed || !dependencies.updateArchitectPlan) {
+        return migration.plan;
+      }
+      try {
+        return await dependencies.updateArchitectPlan({
+          branchName: migration.plan.targetBranch,
+          planId: migration.plan.id,
+          nodes: migration.plan.nodes,
+          setActive: false,
+        });
+      } catch {
+        // Keep the safe in-memory migration usable and retry persistence on the next refresh.
+        return migration.plan;
+      }
+    }));
     const reconciledFallbackTasks = reconcileFallbackTasksForCurrentScope(
       fallbackTasks,
       reconciliationProjectIds,
-      validProjectIds
+      validProjects
     );
 
     const catalog = dependencies.buildImplementTaskCatalog({
@@ -326,6 +381,7 @@ export const createLoadImplementTaskCatalog = (
             branchName: plan.targetBranch,
             planId: plan.id,
             projectIds: plan.projectIds,
+            executionModesByProjectId: plan.executionModesByProjectId,
           });
           return runtime ? ([toPlanLocatorKey({ branchName: plan.targetBranch, planId: plan.id }), runtime] as const) : null;
         }),

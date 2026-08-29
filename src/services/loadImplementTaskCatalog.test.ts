@@ -19,6 +19,9 @@ const makePlan = (
   conversationId: overrides.conversationId,
   projectId: overrides.projectId || 'web',
   projectIds: overrides.projectIds || ['web'],
+  availableProjectIds: overrides.availableProjectIds,
+  replicas: overrides.replicas,
+  executionModesByProjectId: overrides.executionModesByProjectId,
   createdAt: overrides.createdAt || '2026-03-08T00:00:00.000Z',
   updatedAt: overrides.updatedAt || '2026-03-08T00:00:00.000Z',
   nodes: overrides.nodes || [],
@@ -54,6 +57,100 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
 });
 
 describe('createLoadImplementTaskCatalog', () => {
+  it('persists a Git mode snapshot for legacy plan targets only when the project is confirmed ready', async () => {
+    const legacyPlan = makePlan({
+      id: 'plan-legacy-git',
+      title: 'Legacy Git plan',
+      status: 'validated',
+      targetBranch: 'develop',
+      projectId: 'web',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'task-legacy-git',
+          title: 'Migrate legacy target',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'legacy-target',
+          projectId: 'web',
+        },
+      ],
+      predictedBranches: [
+        {
+          id: 'branch-legacy-git',
+          name: 'legacy-target',
+          color: '#3b82f6',
+          parentBranch: 'plan/legacy-git',
+          projectId: 'web',
+          taskIds: ['task-legacy-git'],
+          status: 'pending',
+        },
+      ],
+    });
+    const updates: Array<{
+      branchName: string;
+      planId: string;
+      nodes?: ArchitectPlanRecord['nodes'];
+      setActive?: boolean;
+    }> = [];
+    const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        activeArchitectPlanId: null,
+        activePlanContext: null,
+        planNodes: [],
+        predictedBranches: [],
+        selectedGroupId: null,
+        selectedProjectId: 'web',
+        standaloneProjects: [
+          {
+            id: 'web',
+            name: 'Web',
+            mountName: 'web',
+            path: '/repos/web',
+            created_at: '',
+            status: 'active',
+            gitSetupState: 'ready',
+            directEdit: false,
+            metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+          },
+        ],
+        projectGroups: [],
+      } as never),
+      listArchitectPlans: async () => ({
+        activePlanId: null,
+        plans: [toSummary(legacyPlan)],
+      }),
+      getArchitectPlan: async () => legacyPlan,
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+      updateArchitectPlan: async (input) => {
+        updates.push(input);
+        return { ...legacyPlan, nodes: input.nodes || legacyPlan.nodes };
+      },
+    });
+
+    const catalog = await loadImplementTaskCatalog([]);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      branchName: 'develop',
+      planId: 'plan-legacy-git',
+      setActive: false,
+      nodes: [
+        expect.objectContaining({
+          id: 'task-legacy-git',
+          executionModesByProjectId: { web: 'git' },
+        }),
+      ],
+    });
+    expect(catalog.tasks.find((task) => task.node_id === 'task-legacy-git')?.execution_targets).toEqual([
+      expect.objectContaining({ projectId: 'web', executionMode: 'git' }),
+    ]);
+  });
+
   it('aggregates executable plans across every project and target branch', async () => {
     const webPlan = makePlan({
       id: 'plan-web',
@@ -273,6 +370,7 @@ describe('createLoadImplementTaskCatalog', () => {
           description: 'Live in-memory version',
           status: 'validated',
           targetBranch: 'feature/live-checkout',
+          executionModesByProjectId: { web: 'direct' },
         },
         planNodes: [
           {
@@ -330,6 +428,10 @@ describe('createLoadImplementTaskCatalog', () => {
       'plan-finalization:plan-live',
     ]);
     expect(catalog.tasks[0]?.plan_target_branch).toBe('feature/live-checkout');
+    expect(
+      catalog.plans.find((plan) => plan.targetBranch === 'feature/live-checkout')
+        ?.executionModesByProjectId,
+    ).toEqual({ web: 'direct' });
     expect(catalog.plans.map((plan) => [plan.id, plan.targetBranch])).toEqual([
       ['plan-live', 'develop'],
       ['plan-live', 'feature/live-checkout'],
@@ -576,7 +678,7 @@ describe('createLoadImplementTaskCatalog', () => {
     expect(capturedPlans[0]?.replicationState).toBe('missing_projects');
   });
 
-  it('retargets standalone fallback tasks with stale project ids to the selected single project scope', async () => {
+  it('does not retarget standalone fallback tasks without physical identity proof', async () => {
     const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
       getAppState: () => ({
         activeArchitectPlanId: null,
@@ -612,9 +714,11 @@ describe('createLoadImplementTaskCatalog', () => {
     ]);
     const task = catalog.tasks.find((candidate) => candidate.id === 'standalone-stale');
 
-    expect(task?.project_id).toBe('project-lplr-current');
-    expect(task?.project_ids).toEqual(['project-lplr-current']);
-    expect(task?.execution_targets.map((target) => target.projectId)).toEqual(['project-lplr-current']);
+    expect(task?.project_id).toBe('project-lplr-app-1780237886690');
+    expect(task?.project_ids).toEqual(['project-lplr-app-1780237886690']);
+    expect(task?.execution_targets.map((target) => target.projectId)).toEqual([
+      'project-lplr-app-1780237886690',
+    ]);
   });
 
   it('ignores invalid target branches and preserves valid plans when one branch or plan load fails', async () => {

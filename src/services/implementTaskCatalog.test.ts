@@ -40,6 +40,7 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
   dependencies: overrides.dependencies ?? [],
   estimated_changes: overrides.estimated_changes ?? [],
   code_diff: overrides.code_diff,
+  execution_targets: overrides.execution_targets,
 });
 
 describe('buildImplementTaskCatalog', () => {
@@ -515,9 +516,73 @@ describe('buildImplementTaskCatalog', () => {
       hasMixedTargetBranches: true,
     });
   });
+
+  it('keeps direct plan finalization targets free of branch metadata', () => {
+    const catalog = buildImplementTaskCatalog({
+      plans: [makePlan({
+        id: 'direct-finalization',
+        title: 'Direct finalization',
+        status: 'validated',
+        targetBranch: 'develop',
+        projectId: 'docs',
+        projectIds: ['docs'],
+        nodes: [{
+          id: 'edit-docs',
+          title: 'Edit docs',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          assignedBranch: '',
+          projectId: 'docs',
+          projectIds: ['docs'],
+          executionModesByProjectId: { docs: 'direct' },
+        }],
+      })],
+      fallbackTasks: [],
+    });
+
+    const finalizationTask = catalog.tasks.find((task) => task.task_source === 'plan_finalization');
+    expect(finalizationTask?.execution_targets).toEqual([{
+      projectId: 'docs',
+      branchName: '',
+      targetBranchName: '',
+      executionMode: 'direct',
+      executionKind: 'repository_root',
+      worktreeKey: 'plan-finalization:docs:docs',
+    }]);
+    expect(finalizationTask).toMatchObject({
+      assigned_branch: '',
+      branch_name: '',
+      plan_target_branch: null,
+      base_branch: null,
+      plan_target_branches_by_project_id: {},
+    });
+  });
 });
 
 describe('deriveFallbackImplementTasks', () => {
+  it('preserves an empty branch for a persisted direct target', () => {
+    const [task] = deriveFallbackImplementTasks([makeTask({
+      id: 'direct-task',
+      title: 'Edit directly',
+      project_id: 'docs',
+      execution_targets: [{
+        projectId: 'docs',
+        executionMode: 'direct',
+        branchName: '',
+        worktreeKey: 'docs::direct',
+      }],
+    })]);
+
+    expect(task.assigned_branch).toBe('');
+    expect(task.branch_name).toBe('');
+    expect(task.execution_targets[0]).toMatchObject({
+      executionMode: 'direct',
+      branchName: '',
+      executionKind: 'repository_root',
+    });
+  });
+
   it('recomputes dependency blocking for standalone tasks', () => {
     const tasks = deriveFallbackImplementTasks([
       makeTask({

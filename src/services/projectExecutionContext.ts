@@ -4,11 +4,10 @@ import {
   getFocusedProjectForGroup,
   getGlobalProjectById,
   getProjectGroupByProjectId,
-  isProjectActionable,
-  isProjectReadOnly,
 } from './globalProjects';
 import { resolveCachedPreparedTaskWorktreePath } from './preparedTaskWorktrees';
 import { retargetTaskForExecution } from './projectIdentityReconciliation';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 export interface ExecutionTaskLike {
   id: string;
@@ -32,6 +31,7 @@ export interface ResolveProjectExecutionContextInput {
   activeRepositoryPath?: string | null;
   workspacePathOverridesByProjectId?: Record<string, string>;
   branchWorktrees?: Record<string, string>;
+  architectExecutionModesByProjectId?: Record<string, 'git' | 'direct'>;
 }
 
 export interface ProjectExecutionContext {
@@ -127,6 +127,7 @@ export const resolveProjectExecutionContext = (
     ? retargetTaskForExecution(rawTask, {
         scopedProjectIds: selectedScopeProjectIds,
         knownProjectIds: Array.from(projectById.keys()),
+        knownProjects: input.projects,
       })
     : null;
   const executionTargets = getExecutionTargets(task).filter((target) => projectById.has(target.projectId));
@@ -140,6 +141,12 @@ export const resolveProjectExecutionContext = (
   ]).filter((projectId) => projectById.has(projectId));
   const taskContextProjectIds = uniqueStrings(task?.context_project_ids || [])
     .filter((projectId) => projectById.has(projectId));
+  const hasDeclaredTaskScope = Boolean(task && uniqueStrings([
+    ...(task.execution_targets ?? []).map((target) => target.projectId),
+    ...(task.project_ids ?? []),
+    ...(task.context_project_ids ?? []),
+    task.project_id,
+  ]).length > 0);
   const conversationProjectId = cleanString(conversation?.project_id);
   const knownConversationProjectId =
     conversationProjectId && projectById.has(conversationProjectId)
@@ -170,7 +177,7 @@ export const resolveProjectExecutionContext = (
         )?.id
       : null) ||
     null;
-  const hasTaskScope = taskProjectIds.length > 0 || taskContextProjectIds.length > 0;
+  const hasTaskScope = hasDeclaredTaskScope || taskProjectIds.length > 0 || taskContextProjectIds.length > 0;
   const scopedProjectIds = uniqueStrings([
     ...(hasTaskScope
       ? [...taskProjectIds, ...taskContextProjectIds]
@@ -186,19 +193,36 @@ export const resolveProjectExecutionContext = (
       taskProjectIds[0] ||
       scopedProjectIds[0] ||
       null;
-  const actionableProjectIds = hasTaskScope
-    ? taskProjectIds.filter((scopedProjectId) =>
-        isProjectActionable(projectById.get(scopedProjectId) || null)
-      )
-    : scopedProjectIds.filter((scopedProjectId) =>
-        isProjectActionable(projectById.get(scopedProjectId) || null)
-      );
+  const resolveTargetForProject = (scopedProjectId: string): TaskExecutionTarget | undefined => {
+    const taskTarget = executionTargets.find((target) => target.projectId === scopedProjectId);
+    if (taskTarget) return taskTarget;
+    const architectMode = input.mode === 'Architect'
+      ? input.architectExecutionModesByProjectId?.[scopedProjectId]
+      : undefined;
+    return architectMode
+      ? {
+          projectId: scopedProjectId,
+          executionMode: architectMode,
+          branchName: '',
+          worktreeKey: `architect:${scopedProjectId}`,
+          repoPath: projectById.get(scopedProjectId)?.path,
+        }
+      : undefined;
+  };
+  const resolveScopedMode = (scopedProjectId: string) => resolveProjectExecutionMode({
+    project: projectById.get(scopedProjectId),
+    target: resolveTargetForProject(scopedProjectId),
+  });
+  const actionableProjectIds = (hasTaskScope ? taskProjectIds : scopedProjectIds).filter(
+    (scopedProjectId) => {
+      const mode = resolveScopedMode(scopedProjectId).mode;
+      return mode === 'git' || mode === 'direct';
+    },
+  );
   const actionableProjectIdSet = new Set(actionableProjectIds);
   const contextProjectIds = hasTaskScope
     ? taskContextProjectIds.filter((scopedProjectId) => !actionableProjectIdSet.has(scopedProjectId))
-    : scopedProjectIds.filter((scopedProjectId) =>
-        isProjectReadOnly(projectById.get(scopedProjectId) || null)
-      );
+    : scopedProjectIds.filter((scopedProjectId) => !actionableProjectIdSet.has(scopedProjectId));
 
   const projectId =
     cleanString(executionTarget?.projectId) ||
@@ -209,13 +233,13 @@ export const resolveProjectExecutionContext = (
     null;
   const project = projectId ? projectById.get(projectId) || null : null;
 
-  const branchName = cleanString(
-    (projectId
-      ? executionTargets.find((target) => target.projectId === projectId)?.branchName
-      : null) ||
-      executionTarget?.branchName ||
-      task?.assigned_branch
-  );
+  const branchTarget = projectId
+    ? executionTargets.find((target) => target.projectId === projectId)
+    : executionTarget;
+  const branchResolution = projectId ? resolveScopedMode(projectId) : null;
+  const branchName = branchResolution?.mode === 'git'
+    ? cleanString(branchTarget?.branchName || executionTarget?.branchName || task?.assigned_branch)
+    : null;
 
   const canReuseActiveRepository =
     input.mode === 'Implement' &&
@@ -277,12 +301,22 @@ export const resolveProjectExecutionContext = (
           });
           return mounts;
         }, []);
-  const scopedProjectMounts = hasTaskScope
-    ? fallbackProjectMounts.map((mount) => ({
-        ...mount,
-        isReadOnly: contextProjectIds.includes(mount.projectId) || mount.isReadOnly,
-      }))
-    : fallbackProjectMounts;
+  const scopedProjectMounts = fallbackProjectMounts.map((mount) => {
+    const target = resolveTargetForProject(mount.projectId);
+    const resolution = resolveProjectExecutionMode({
+      project: projectById.get(mount.projectId),
+      target,
+    });
+    return {
+      ...mount,
+      isReadOnly: hasTaskScope
+        ? contextProjectIds.includes(mount.projectId) || mount.isReadOnly ||
+          (resolution.mode !== 'git' && resolution.mode !== 'direct')
+        : mount.isReadOnly || (resolution.mode !== 'git' && resolution.mode !== 'direct'),
+      executionMode: resolution.mode,
+      executionModeReason: resolution.reason,
+    };
+  });
   const virtualRootEnabled = Boolean(inferredGroupId && fallbackProjectMounts.length > 0);
 
   return {

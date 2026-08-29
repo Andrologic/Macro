@@ -7,6 +7,7 @@ import {
 } from './globalProjects';
 import { isManualDraftPendingInitialization } from './manualDraftInitialization';
 import {
+  collectKnownProjects,
   collectKnownProjectIds,
   retargetTaskForExecution,
 } from './projectIdentityReconciliation';
@@ -94,6 +95,10 @@ const retargetTerminalTask = (
   return retargetTaskForExecution(params.selectedTask, {
     scopedProjectIds: resolveSelectedScopeProjectIds(params),
     knownProjectIds: collectKnownProjectIds({
+      standaloneProjects: params.standaloneProjects,
+      projectGroups: params.projectGroups,
+    }),
+    knownProjects: collectKnownProjects({
       standaloneProjects: params.standaloneProjects,
       projectGroups: params.projectGroups,
     }),

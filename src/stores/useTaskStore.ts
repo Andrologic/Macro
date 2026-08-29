@@ -126,6 +126,10 @@ import {
 } from '../services/mergeWorkflowRuntime';
 import { resolveStandaloneTargetBranchName } from '../services/standaloneTargetBranch';
 import { isStandaloneTaskKindCreatable } from '../services/standaloneTaskKinds';
+import {
+  resolveProjectExecutionMode,
+  type ResolvedProjectExecutionMode,
+} from '../services/projectExecutionMode';
 import { notify } from '../components/ui/toastService';
 import { devLogger } from '../utils/devLogger';
 
@@ -249,20 +253,74 @@ const getPrimaryExecutionTarget = (task: CatalogedImplementTask): TaskExecutionT
   return getExecutionTargets(task)[0] || null;
 };
 
-const isDirectEditTarget = (target: TaskExecutionTarget): boolean => {
-  if (target.executionMode) {
-    return target.executionMode === 'direct';
-  }
+const resolveExecutionTargetMode = (target: TaskExecutionTarget) => {
   const project = useAppStore.getState().getProjectById(target.projectId);
-  return project?.directEdit === true && project.gitSetupState === 'not_git';
+  return resolveProjectExecutionMode({ project, target });
+};
+
+const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
+  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
+
+const formatProjectExecutionError = (
+  resolution: ResolvedProjectExecutionMode,
+): string => {
+  if (resolution.mode !== 'blocked') {
+    return tTask(
+      'implement.errors.projectExecutionInvalid',
+      'The task execution metadata conflicts with the current project state. Reopen the project settings before retrying.',
+    );
+  }
+  if (resolution.reason === 'initial_commit_missing') {
+    return tTask(
+      'implement.errors.projectExecutionInitialCommitMissing',
+      'Create the initial commit from the project settings before continuing.',
+    );
+  }
+  if (resolution.reason === 'project_read_only') {
+    return tTask(
+      'implement.errors.projectExecutionReadOnly',
+      'Change the project access setting before continuing.',
+    );
+  }
+  return tTask(
+    'implement.errors.projectExecutionBlocked',
+    'Initialize Git or enable direct editing in the project settings before continuing.',
+  );
+};
+
+const isDirectEditTarget = (target: TaskExecutionTarget): boolean =>
+  resolveExecutionTargetMode(target).mode === 'direct';
+
+const isGitExecutionTarget = (target: TaskExecutionTarget): boolean =>
+  resolveExecutionTargetMode(target).mode === 'git';
+
+const assertExecutionTargetRunnable = (target: TaskExecutionTarget): void => {
+  const resolution = resolveExecutionTargetMode(target);
+  if (resolution.mode === 'git' || resolution.mode === 'direct') {
+    return;
+  }
+  throw new Error(
+    formatProjectExecutionError(resolution),
+  );
 };
 
 const isDirectEditTask = (task: CatalogedImplementTask): boolean => {
-  if (task.task_source !== 'standalone') return false;
   const targets = getExecutionTargets(task);
   if (targets.length === 0) return false;
   return targets.every(isDirectEditTarget);
 };
+
+const getTaskExecutionModesByProjectId = (
+  task: CatalogedImplementTask
+): Record<string, 'git' | 'direct'> =>
+  Object.fromEntries(
+    getExecutionTargets(retargetTaskForCurrentAppScope(task)).flatMap((target) => {
+      const resolution = resolveExecutionTargetMode(target);
+      return resolution.mode === 'git' || resolution.mode === 'direct'
+        ? [[target.projectId, resolution.mode] as const]
+        : [];
+    })
+  );
 
 const DIRECT_DRAFT_REVERT_SAGA_TARGET = '@direct-draft-revert';
 
@@ -636,9 +694,11 @@ const findActiveTasksSharingExecutionBranch = (
   }
 
   const targetKeys = new Set(
-    getExecutionTargets(executionTask).map(
-      (target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`
-    )
+    getExecutionTargets(executionTask)
+      .filter(isGitExecutionTarget)
+      .map(
+        (target) => `${target.projectId}::${normalizeBranchName(target.branchName)}`
+      )
   );
   if (targetKeys.size === 0) {
     return [];
@@ -651,9 +711,11 @@ const findActiveTasksSharingExecutionBranch = (
     if (candidate.plan_id !== executionTask.plan_id) return false;
     if (candidate.archived_at || candidate.status === 'Completed') return false;
 
-    return getExecutionTargets(executionCandidate).some((target) =>
-      targetKeys.has(`${target.projectId}::${normalizeBranchName(target.branchName)}`)
-    );
+    return getExecutionTargets(executionCandidate)
+      .filter(isGitExecutionTarget)
+      .some((target) =>
+        targetKeys.has(`${target.projectId}::${normalizeBranchName(target.branchName)}`)
+      );
   });
 };
 
@@ -668,9 +730,11 @@ const assertArchitectTaskBranchIsExclusive = (
 
   const sharedBranches = Array.from(
     new Set(
-      getExecutionTargets(retargetTaskForCurrentAppScope(task)).map((target) =>
-        normalizeBranchName(target.branchName)
-      )
+      getExecutionTargets(retargetTaskForCurrentAppScope(task))
+        .filter(isGitExecutionTarget)
+        .map((target) =>
+          normalizeBranchName(target.branchName)
+        )
     )
   ).join(', ');
   const taskTitles = sharingTasks.map((candidate) => candidate.title).join(', ');
@@ -1030,6 +1094,7 @@ const persistMergeWorkflowSessionForTask = async (
       id: task.plan_id,
       projectId: task.project_id,
       projectIds: task.project_ids,
+      executionModesByProjectId: getTaskExecutionModesByProjectId(task),
     },
     taskId: task.id,
     session,
@@ -1055,7 +1120,7 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
     return false;
   }
 
-  const executionTargets = getExecutionTargetsWithRepoPaths(task);
+  const executionTargets = getExecutionTargetsWithRepoPaths(task).filter(isGitExecutionTarget);
   for (const target of executionTargets) {
     try {
       const branches = await tauriIpc.gitBranchList(target.repoPath);
@@ -1130,10 +1195,12 @@ const inspectTargetWorktreePath = async (
 const ensureTargetWorktreePath = async (
   task: CatalogedImplementTask,
   target: TaskExecutionTarget,
-  branchWorktrees: Record<string, string>
+  branchWorktrees: Record<string, string>,
+  onGitEnsureResult?: (status: 'created' | 'reused' | 'repaired') => void,
 ): Promise<string> => {
   const directProject = useAppStore.getState().getProjectById(target.projectId);
-  if (isDirectEditTarget(target)) {
+  const targetMode = resolveExecutionTargetMode(target);
+  if (targetMode.mode === 'direct') {
     const projectPath = directProject?.path?.trim() || target.repoPath?.trim();
     if (!projectPath) {
       throw toServiceError(
@@ -1149,6 +1216,9 @@ const ensureTargetWorktreePath = async (
       checkpointId: target.checkpointId,
     });
     return projectPath;
+  }
+  if (targetMode.mode !== 'git') {
+    assertExecutionTargetRunnable(target);
   }
 
   const inspectedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
@@ -1222,6 +1292,7 @@ const ensureTargetWorktreePath = async (
     );
   }
 
+  onGitEnsureResult?.(ensured.status);
   return ensured.worktreePath;
 };
 
@@ -1344,17 +1415,24 @@ const taskMatchesAnyProjectId = (
   projectIds: string[]
 ): boolean => projectIds.some((projectId) => taskMatchesProjectId(task, projectId));
 
-const tTask = (key: string, fallback: string, options?: Record<string, unknown>): string =>
-  i18n.t(key, { defaultValue: fallback, ...(options || {}) });
-
 const assertStandaloneTaskKindCreatableForProjects = (
   taskKind: StandaloneTaskKind,
   projectIds: string[],
 ): void => {
   const appState = useAppStore.getState();
-  const unavailableProject = projectIds
-    .map((projectId) => appState.getProjectById(projectId))
-    .find((project) => project && !isStandaloneTaskKindCreatable(taskKind, project.gitFlowSettings));
+  const projects = projectIds.map((projectId) => appState.getProjectById(projectId));
+  for (const project of projects) {
+    const resolution = resolveProjectExecutionMode({ project });
+    if (resolution.mode !== 'git' && resolution.mode !== 'direct') {
+      throw new Error(formatProjectExecutionError(resolution));
+    }
+  }
+
+  const unavailableProject = projects.find((project) => {
+    if (!project) return false;
+    return resolveProjectExecutionMode({ project }).mode === 'git' &&
+      !isStandaloneTaskKindCreatable(taskKind, project.gitFlowSettings);
+  });
 
   if (!unavailableProject) return;
 
@@ -1631,72 +1709,105 @@ const ensureTaskExecutionTargetsReady = async (
 
   const createdWorktrees: Record<string, string> = {};
   const preparedTargets: PreparedTaskExecutionTarget[] = [];
+  const rollbackTargets: Array<TaskExecutionTarget & { repoPath: string }> = [];
+  executionTargets.forEach(assertExecutionTargetRunnable);
   const commandRegistry = commandRegistryOverride ?? await loadTaskProjectCommandRegistry(
     executionTargets.map((target) => target.projectId),
   );
 
-  for (const target of executionTargets) {
-    const worktreePath = await ensureTargetWorktreePath(executionTask, target, branchWorktrees);
-
-    createdWorktrees[target.worktreeKey] = worktreePath;
-
-    const project = appState.getProjectById(target.projectId);
-    const repoPath = project?.path ?? target.repoPath ?? null;
-    if (!repoPath) {
-      throw toServiceError(
-        tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
-          taskId: task.id,
-        })
+  try {
+    for (const target of executionTargets) {
+      let createdByThisAttempt = false;
+      const worktreePath = await ensureTargetWorktreePath(
+        executionTask,
+        target,
+        branchWorktrees,
+        (status) => {
+          createdByThisAttempt = status === 'created';
+        },
       );
-    }
 
-    const isDirectEdit = isDirectEditTarget(target);
-    const setupCommand = isDirectEdit
-      ? ''
-      : getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
-    if (setupCommand) {
-      try {
-        const setupResult = await runWorktreeSetupCommand({
-          taskId: executionTask.id,
-          taskTitle: executionTask.title,
-          projectId: target.projectId,
-          projectName: project?.name ?? target.projectId,
-          repoPath,
-          worktreePath,
-          command: setupCommand,
-        });
-        if (setupResult.failed) {
+      createdWorktrees[target.worktreeKey] = worktreePath;
+
+      const project = appState.getProjectById(target.projectId);
+      const repoPath = project?.path ?? target.repoPath ?? null;
+      if (!repoPath) {
+        throw toServiceError(
+          tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
+            taskId: task.id,
+          })
+        );
+      }
+      if (isGitExecutionTarget(target) && createdByThisAttempt) {
+        rollbackTargets.push({ ...target, repoPath });
+      }
+
+      const isDirectEdit = isDirectEditTarget(target);
+      const setupCommand = isDirectEdit
+        ? ''
+        : getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
+      if (setupCommand) {
+        try {
+          const setupResult = await runWorktreeSetupCommand({
+            taskId: executionTask.id,
+            taskTitle: executionTask.title,
+            projectId: target.projectId,
+            projectName: project?.name ?? target.projectId,
+            repoPath,
+            worktreePath,
+            command: setupCommand,
+          });
+          if (setupResult.failed) {
+            notify.warning(
+              tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
+                project: project?.name ?? target.projectId,
+              }),
+              {
+                description: tTask(
+                  'implement.worktreeSetupFailedDescription',
+                  'Macro will continue. The setup terminal was opened for review.'
+                ),
+              }
+            );
+          }
+        } catch (error) {
+          const normalized = toServiceError(error);
           notify.warning(
             tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
               project: project?.name ?? target.projectId,
             }),
             {
-              description: tTask(
-                'implement.worktreeSetupFailedDescription',
-                'Macro will continue. The setup terminal was opened for review.'
-              ),
+              description: normalized.message,
             }
           );
         }
-      } catch (error) {
-        const normalized = toServiceError(error);
-        notify.warning(
-          tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
-            project: project?.name ?? target.projectId,
-          }),
-          {
-            description: normalized.message,
-          }
-        );
+      }
+
+      preparedTargets.push({
+        ...target,
+        projectName: project?.name ?? target.projectId,
+        repoPath,
+        worktreePath,
+      });
+    }
+  } catch (error) {
+    for (const target of rollbackTargets.reverse()) {
+      try {
+        await tauriIpc.gitWorktreeRemove({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          force: false,
+          branchName: target.branchName,
+        });
+      } catch (rollbackError) {
+        devLogger.warn('[tasks] Could not roll back a worktree after task preparation failed.', {
+          taskId: task.id,
+          projectId: target.projectId,
+          error: toServiceError(rollbackError).message,
+        });
       }
     }
-
-    preparedTargets.push({
-      ...target,
-      projectName: project?.name ?? target.projectId,
-      repoPath,
-      worktreePath,
-    });
+    throw error;
   }
 
   return {
@@ -2879,11 +2990,32 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const preferredTarget = getPreferredExecutionTarget(executionTask, appState.selectedProjectId);
     const primaryTarget = preferredTarget || getPrimaryExecutionTarget(executionTask);
     const branchName = primaryTarget?.branchName || executionTask.assigned_branch;
-    const knownWorktree = primaryTarget
-      ? task.draft && task.branch_name
-        ? await ensureTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
-        : await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
+    const targetMode = primaryTarget ? resolveExecutionTargetMode(primaryTarget) : null;
+    if (targetMode && targetMode.mode !== 'git' && targetMode.mode !== 'direct') {
+      if (requestId !== taskActivationRequestId) return;
+      const message = formatProjectExecutionError(targetMode);
+      set({
+        activeBranchName: null,
+        activeRepositoryPath: null,
+        activeWorkspacePathOverridesByProjectId: {},
+        lastError: message,
+      });
+      await syncWorkspaceRoot(null);
+      return;
+    }
+
+    const shouldRestoreExecutionWorkspace =
+      task.draft || ['InProgress', 'AwaitingResponse', 'InReview'].includes(task.status);
+    let knownWorktree = primaryTarget
+      ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
+    if (!knownWorktree && primaryTarget && shouldRestoreExecutionWorkspace) {
+      knownWorktree = await ensureTargetWorktreePath(
+        executionTask,
+        primaryTarget,
+        get().branchWorktrees,
+      );
+    }
     if (requestId !== taskActivationRequestId) return;
     if (knownWorktree) {
       if (primaryTarget) {
@@ -3034,7 +3166,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const gitTargets = executionTargets.filter(isGitExecutionTarget);
       const directTargets = executionTargets.filter(isDirectEditTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
@@ -3309,7 +3442,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const gitTargets = executionTargets.filter(isGitExecutionTarget);
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
       await tauriIpc.workspaceArchiveManualFeature({
         taskId,
@@ -3468,7 +3602,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
-      const gitTargets = executionTargets.filter((target) => !isDirectEditTarget(target));
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const gitTargets = executionTargets.filter(isGitExecutionTarget);
       const directTargets = executionTargets.filter(isDirectEditTarget);
       const directCheckpointIds = new Map(
         await Promise.all(
@@ -3702,10 +3837,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       throw error;
     }
 
-    if (task.status === 'InProgress') {
-      return;
-    }
-
     if (task.status === 'AwaitingResponse') {
       await get().setTaskStatus(task.id, 'InProgress');
       return;
@@ -3725,6 +3856,29 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           'implement.errors.taskBlockedByDependencies',
           'Task is blocked by unresolved dependencies: {{reason}}',
           { reason }
+        ),
+      });
+      return;
+    }
+
+    const directProjectIds = new Set(
+      getExecutionTargets(task).filter(isDirectEditTarget).map((target) => target.projectId),
+    );
+    const conflictingDirectTask = directProjectIds.size > 0
+      ? get().tasks.find((candidate) =>
+          candidate.id !== task.id &&
+          ['InProgress', 'AwaitingResponse', 'InReview'].includes(candidate.status) &&
+          getExecutionTargets(candidate).some(
+            (target) => directProjectIds.has(target.projectId) && isDirectEditTarget(target),
+          ),
+        )
+      : null;
+    if (conflictingDirectTask) {
+      set({
+        lastError: tTask(
+          'implement.errors.directProjectTaskAlreadyActive',
+          'Another direct-edit task is already active for this project: {{task}}',
+          { task: conflictingDirectTask.title },
         ),
       });
       return;
@@ -4404,9 +4558,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               )
             );
           }
+          executionTargets.forEach(assertExecutionTargetRunnable);
+          const gitExecutionTargets = executionTargets.filter(isGitExecutionTarget);
           nextRuntime = await buildTaskCompletionMergeWorkflowRuntime({
             task,
-            executionTargets,
+            executionTargets: gitExecutionTargets,
           });
         }
 
@@ -4778,6 +4934,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           )
         );
       }
+      executionTargets.forEach(assertExecutionTargetRunnable);
+      const hasDirectTargets = executionTargets.some(isDirectEditTarget);
 
       let executionTargetsWithRepoPaths: Array<
         TaskExecutionTarget & { repoPath: string; worktreePath: string }
@@ -4792,7 +4950,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           },
           missingBaseBranchIssue: null,
         }));
-        executionTargetsWithRepoPaths = preparedTargets;
+        executionTargetsWithRepoPaths = preparedTargets.filter(isGitExecutionTarget);
       } catch (error) {
         if (error instanceof MissingTaskBaseBranchError) {
           set({
@@ -4937,7 +5095,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
       }
 
-      if (!allowWithoutCodeChanges && mergedRepositoryCount === 0) {
+      if (!allowWithoutCodeChanges && mergedRepositoryCount === 0 && !hasDirectTargets) {
         throw new Error(
           tTask(
             'implement.errors.noIntegratedChanges',
@@ -4995,13 +5153,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           const targetBranch = getTaskPlanStorageBranch(task);
           const plan = await getArchitectPlan(targetBranch, task.plan_id);
           if (!plan || plan.status === 'deleted') {
-            set({
-              lastError: tTask(
+            throw new Error(
+              tTask(
                 'implement.errors.unknownTaskPlan',
                 'Cannot update plan metadata for task {{taskId}}.',
                 { taskId: task.id }
-              ),
-            });
+              )
+            );
           } else {
             const nextPlanNodes = (plan.nodes || []).map((node) =>
               node.id === getTaskBusinessId(task)

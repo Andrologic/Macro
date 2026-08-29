@@ -1,5 +1,6 @@
 import type { Project, TaskExecutionTarget } from '../types';
 import type * as tauriIpc from './tauriIpc';
+import { resolveProjectExecutionMode } from './projectExecutionMode';
 
 export interface PreparedTaskWorktreeProjectRef {
   path?: string | null;
@@ -52,10 +53,17 @@ export const resolvePreparedTaskWorktreePath = async (params: {
   }
 
   try {
-    const isDirectEdit = params.target.executionMode === 'direct' || (
-      !params.target.executionMode && project?.directEdit && project.gitSetupState === 'not_git'
-    );
-    if (isDirectEdit) {
+    const resolution = resolveProjectExecutionMode({
+      project: project
+        ? {
+            id: params.target.projectId,
+            ...project,
+            path: project.path ?? repoPath,
+          }
+        : null,
+      target: params.target,
+    });
+    if (resolution.mode === 'direct') {
       if (!params.taskId || !params.tauri.directCheckpointEnsure) {
         return null;
       }
@@ -65,6 +73,9 @@ export const resolvePreparedTaskWorktreePath = async (params: {
         checkpointId: params.target.checkpointId,
       });
       return repoPath;
+    }
+    if (resolution.mode !== 'git') {
+      return null;
     }
 
     const inspection = await params.tauri.gitWorktreeInspect({

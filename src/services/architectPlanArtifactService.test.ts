@@ -191,10 +191,31 @@ describe('architectPlanArtifactService reviews and versions', () => {
     dependencies: ['audit'],
   } as CatalogedImplementTask;
   const files = new Map<string, string>();
+  const fsCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
 
   beforeEach(() => {
     files.clear();
+    fsCalls.length = 0;
+    useAppStore.setState({
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Project',
+        mountName: 'project',
+        path: '/workspace',
+        created_at: '',
+        status: 'active',
+        gitSetupState: 'ready',
+        directEdit: false,
+        metadata: emptyProjectMetadata,
+      }],
+      projectGroups: [],
+      selectedProjectId: 'project-1',
+      selectedGroupId: null,
+    });
     installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command.startsWith('fs_')) {
+        fsCalls.push({ command, payload: (payload || {}) as Record<string, unknown> });
+      }
       if (command === 'workspace_get_active_root') {
         return '/workspace';
       }
@@ -309,6 +330,42 @@ describe('architectPlanArtifactService reviews and versions', () => {
       'api-notes',
       'ui-notes',
     ]);
+  });
+
+  it('keeps direct plan artifacts in the current project .macro scope after Git appears', async () => {
+    useAppStore.setState({
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Moved project',
+        mountName: 'moved-project',
+        path: '/repo/moved-project',
+        created_at: '',
+        status: 'active',
+        gitSetupState: 'ready',
+        directEdit: true,
+        metadata: emptyProjectMetadata,
+      }],
+      projectGroups: [],
+      selectedProjectId: 'project-1',
+      selectedGroupId: null,
+    });
+    const directPlan = {
+      ...plan,
+      executionModesByProjectId: { 'project-1': 'direct' as const },
+      replicas: [{ projectId: 'project-1', repoPath: '/repo/old-project' }] as never,
+    };
+
+    await putTaskArtifact({
+      target: { branchName, plan: directPlan, task: apiTask, currentTask: apiTask },
+      args: { title: 'Direct notes', kind: 'note', content: 'Stored directly.' },
+    });
+
+    const writes = fsCalls.filter((call) => call.command === 'fs_write_file');
+    expect(writes.length).toBeGreaterThan(0);
+    for (const write of writes) {
+      expect(write.payload.workspacePath).toBe('/repo/moved-project');
+      expect(write.payload.workspaceScope).toBe('direct');
+    }
   });
 
   it('stores descendant edits as a new artifact that supersedes the visible parent', async () => {
