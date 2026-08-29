@@ -757,6 +757,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
         )}
       >
         <div
+          data-chat-message-bubble="true"
           className={cn(
             'relative rounded-lg group',
             message.role === 'user'
@@ -819,12 +820,6 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
               )}
               {message.role === 'user' && !questionnaireResponseSummary && !architectActionMessage && (
                 <SkillTurnFeedbackRow feedback={skillTurnFeedback} />
-              )}
-              {message.role === 'user' && standaloneLaunchProgress && (
-                <StandaloneTaskLaunchProgressCard
-                  progress={standaloneLaunchProgress}
-                  onRetry={() => void onRegenerate(message.id, message.content)}
-                />
               )}
               {message.role === 'user' && messageImages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -912,6 +907,17 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           )}
         </div>
       </div>
+      {message.role === 'user' && standaloneLaunchProgress && (
+        <div
+          data-testid="standalone-task-launch-progress-container"
+          className="mx-auto w-full max-w-sm"
+        >
+          <StandaloneTaskLaunchProgressCard
+            progress={standaloneLaunchProgress}
+            onRetry={() => void onRegenerate(message.id, message.content)}
+          />
+        </div>
+      )}
     </div>
   );
 };

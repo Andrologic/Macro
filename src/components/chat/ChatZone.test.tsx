@@ -1136,6 +1136,14 @@ describe('ChatZone', () => {
       '[data-testid="standalone-task-launch-progress"]',
     );
     expect(card).not.toBeNull();
+    expect(card?.closest('[data-chat-message-bubble="true"]')).toBeNull();
+    const progressContainer = card?.closest(
+      '[data-testid="standalone-task-launch-progress-container"]',
+    );
+    expect(progressContainer?.className).toContain('mx-auto');
+    expect(progressContainer?.previousElementSibling?.querySelector(
+      '[data-chat-message-bubble="true"]',
+    )).not.toBeNull();
     expect(card?.querySelector('[data-step="creating_name"]')?.getAttribute('data-step-state')).toBe('completed');
     expect(card?.querySelector('[data-step="creating_workspace"]')?.getAttribute('data-step-state')).toBe('active');
     expect(card?.querySelector('[data-step="starting_agent"]')?.getAttribute('data-step-state')).toBe('future');
